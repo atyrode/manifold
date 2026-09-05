@@ -76,7 +76,7 @@ export interface TerminalHomePort {
 export interface EventSubscriber {
   readonly id: string;
   readonly auth: AuthContext;
-  deliver(frame: string): void;
+  deliver(frame: string, bytes: number): boolean;
 }
 
 /**
@@ -460,15 +460,21 @@ export class EventHub {
       }
     }
     let frame: string | null = null;
+    let bytes = 0;
     for (const id of audience) {
       const entry = this.subscriptions.get(id);
       if (entry === undefined) continue;
       if (!this.authorized(entry.subscriber.auth, containerId)) continue;
       reached.add(id);
-      frame ??= JSON.stringify(
-        CONNECTION_BODIES.event.parse({ type: "event", topic, kind, at, actor, payload }),
-      );
-      entry.subscriber.deliver(frame);
+      if (frame === null) {
+        frame = JSON.stringify(
+          CONNECTION_BODIES.event.parse({ type: "event", topic, kind, at, actor, payload }),
+        );
+        bytes = Buffer.byteLength(frame);
+      }
+      if (!entry.subscriber.deliver(frame, bytes)) {
+        this.logger.warn("socket_backpressure", { connectionId: id, topic });
+      }
     }
   }
 }

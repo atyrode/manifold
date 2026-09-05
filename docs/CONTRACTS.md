@@ -1442,6 +1442,9 @@ re-declares every live topic after each rejoin (never before it: the credential 
 `join`). Bounds: `MAX_SUBSCRIBE_TOPICS` (64) topics per frame, over which the frame is malformed
 (4002), and `MAX_SUBSCRIPTIONS_PER_CONNECTION` (256) per socket, past which further topics are
 dropped and logged with the socket left alone.
+Event delivery uses the session channel's bounded send policy (256 queued frames or 1 MiB per
+socket's event queue); overflow closes the subscriber's socket with 1013 `outbound queue
+overflow`, logs `socket_backpressure`, and discards queued events without replay.
 
 **Which subscription hears which event** is `topicMatches(subscribed, topic)`, published by
 `@manifold/protocol` and used by BOTH halves — the server to pick sockets, the SDK to pick

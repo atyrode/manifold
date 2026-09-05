@@ -59,19 +59,27 @@ interface PlaneFixture {
   readonly host: PluginHost;
   readonly events: EventHub;
   readonly gateway: SessionGateway;
-  readonly logs: { readonly level: LogLevel; readonly evt: string }[];
+  readonly logs: {
+    readonly level: LogLevel;
+    readonly evt: string;
+    readonly fields?: Readonly<Record<string, unknown>>;
+  }[];
 }
 
 /** Records what the plane said, so a refusal can be asserted as an observable rather than a hole. */
 class CaptureLogger implements Logger {
-  readonly lines: { level: LogLevel; evt: string }[] = [];
+  readonly lines: {
+    level: LogLevel;
+    evt: string;
+    fields?: Readonly<Record<string, unknown>>;
+  }[] = [];
 
   info(evt: string): void {
     this.lines.push({ level: "info", evt });
   }
 
-  warn(evt: string): void {
-    this.lines.push({ level: "warn", evt });
+  warn(evt: string, fields?: Readonly<Record<string, unknown>>): void {
+    this.lines.push({ level: "warn", evt, ...(fields === undefined ? {} : { fields }) });
   }
 
   error(evt: string): void {
@@ -139,7 +147,7 @@ async function planeFixture(): Promise<PlaneFixture> {
     broker,
     host,
     clock,
-    silentLogger,
+    logger,
     runtime,
     events,
   );
@@ -420,6 +428,85 @@ describe("event plane matching", () => {
 });
 
 describe("event plane fan-out", () => {
+  test("a slow event subscriber closes at the session send bound without affecting others", async () => {
+    const fixture = await planeFixture();
+    try {
+      const slow = connect(fixture, "slow");
+      const healthy = connect(fixture, "healthy");
+      subscribe(fixture, "slow", [SPACE_TOPIC]);
+      subscribe(fixture, "healthy", [SPACE_TOPIC]);
+      slow.bufferedAmount = 1;
+
+      for (let index = 0; index < 300; index += 1) {
+        fixture.events.emit("core.space", SPACE_TOPIC, "item_placed", null, { index });
+      }
+
+      expect(slow.closed).toEqual({ code: 1013, reason: "outbound queue overflow" });
+      expect(eventsOn(slow)).toEqual([]);
+      expect(fixture.events.held("slow")).toBe(0);
+      expect(fixture.logs.filter((line) => line.evt === "socket_backpressure")).toEqual([
+        {
+          level: "warn",
+          evt: "socket_backpressure",
+          fields: { connectionId: "slow", topic: SPACE_TOPIC },
+        },
+      ]);
+      expect(eventsOn(healthy).map((event) => event.payload.index)).toEqual(
+        Array.from({ length: 300 }, (_, index) => index),
+      );
+      expect(healthy.closed).toBeNull();
+      slow.bufferedAmount = 0;
+      fixture.gateway.drain("slow");
+      expect(eventsOn(slow)).toEqual([]);
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
+  test("event buffering counts UTF-8 bytes as well as frames", async () => {
+    const fixture = await planeFixture();
+    try {
+      const socket = connect(fixture, "tab");
+      subscribe(fixture, "tab", [SPACE_TOPIC]);
+      socket.bufferedAmount = 1;
+      // Fewer than 256 frames and fewer than 1 MiB of JS characters, but over 1 MiB
+      // on the wire: the same byte bound that protects room traffic must apply.
+      for (let index = 0; index < 80; index += 1) {
+        fixture.events.emit("core.space", SPACE_TOPIC, "item_placed", null, {
+          detail: "é".repeat(8_000),
+        });
+      }
+      expect(socket.closed).toEqual({ code: 1013, reason: "outbound queue overflow" });
+      expect(eventsOn(socket)).toEqual([]);
+      expect(fixture.events.held("tab")).toBe(0);
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
+  test("queued events drain in order without a room routing tag", async () => {
+    const fixture = await planeFixture();
+    try {
+      const socket = connect(fixture, "tab");
+      subscribe(fixture, "tab", [SPACE_TOPIC]);
+      socket.bufferedAmount = 1;
+      for (let index = 0; index < 3; index += 1) {
+        fixture.events.emit("core.space", SPACE_TOPIC, "item_placed", null, { index });
+      }
+      expect(eventsOn(socket)).toEqual([]);
+      socket.bufferedAmount = 0;
+      fixture.gateway.drain("tab");
+      expect(eventsOn(socket).map((event) => event.payload.index)).toEqual([0, 1, 2]);
+      expect(socket.frames().every((frame) => !("ch" in frame))).toBe(true);
+      expect(socket.closed).toBeNull();
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
   test("two live sockets on one topic each hear it exactly once", async () => {
     const fixture = await planeFixture();
     const first = connect(fixture, "tab-a");

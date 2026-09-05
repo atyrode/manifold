@@ -22,7 +22,12 @@ import type { EventHub, EventSubscriber } from "./event-hub.ts";
 import type { Logger } from "./log.ts";
 import type { PluginHost } from "./plugin-host.ts";
 import type { Room, RoomManager, RoomTimers } from "./room.ts";
-import { SessionChannel, serializeServerMessage, type RawSocket } from "./session-channel.ts";
+import {
+  SessionChannel,
+  SessionSender,
+  serializeServerMessage,
+  type RawSocket,
+} from "./session-channel.ts";
 import type { TerminalBroker } from "./terminal-broker.ts";
 
 type ClassifiedFrame =
@@ -157,6 +162,7 @@ interface SessionConnection {
    * credential closes the whole socket (`revokePrincipal`), so it cannot outlive its grant.
    */
   subscriber: EventSubscriber | null;
+  eventSender: SessionSender | null;
   cancelJoinTimeout: (() => void) | null;
   /**
    * The liveness watchdog, armed at the first surviving join and never re-armed: a socket
@@ -231,6 +237,7 @@ export class SessionGateway {
       channels: new Map(),
       drainCursor: 0,
       subscriber: null,
+      eventSender: null,
       cancelJoinTimeout: null,
       cancelPing: null,
       awaitingPong: false,
@@ -434,13 +441,21 @@ export class SessionGateway {
     // THE EVENT-PLANE SEAT, taken once per socket at the first join that survives every
     // refusal above. `context` is what the hub discharges every subscribe and every delivery
     // against; the closure is the only thing the hub ever learns about a WebSocket.
-    connection.subscriber ??= {
-      id: connection.id,
-      auth: context,
-      deliver: (frame) => {
-        if (!connection.closed) connection.socket.send(frame);
-      },
-    };
+    if (connection.subscriber === null) {
+      const close = (code: number, reason: string): void => {
+        connection.socket.close(code, reason);
+        this.close(connection.id);
+      };
+      const sender = new SessionSender(connection.socket, (body) => body, 0, close, close);
+      connection.eventSender = sender;
+      connection.subscriber = {
+        id: connection.id,
+        auth: context,
+        deliver: (body, bytes) => {
+          return sender.sendSerialized({ type: "event", body, bytes, authoritative: false });
+        },
+      };
+    }
     const peer = new SessionChannel(
       `${connection.id}.${(connection.nextPeerSeq += 1)}`,
       connection.socket,
@@ -840,12 +855,12 @@ export class SessionGateway {
    */
   drain(id: string): void {
     const connection = this.connections.get(id);
-    if (connection === undefined || connection.channels.size === 0) return;
-    if (connection.channels.size === 1) {
-      for (const channel of connection.channels.values()) channel.peer.drain();
-      return;
-    }
-    const peers = [...connection.channels.values()].map((channel) => channel.peer);
+    if (connection === undefined) return;
+    const peers = [...connection.channels.values()].map(
+      (channel): SessionChannel | SessionSender => channel.peer,
+    );
+    if (connection.eventSender !== null) peers.push(connection.eventSender);
+    if (peers.length === 0) return;
     const start = connection.drainCursor % peers.length;
     for (let offset = 0; offset < peers.length; offset += 1) {
       peers[(start + offset) % peers.length]?.drain();
@@ -863,6 +878,8 @@ export class SessionGateway {
     if (connection === undefined) return;
     this.connections.delete(id);
     connection.closed = true;
+    connection.eventSender?.stop();
+    connection.eventSender = null;
     connection.cancelJoinTimeout?.();
     connection.cancelJoinTimeout = null;
     connection.cancelPing?.();
