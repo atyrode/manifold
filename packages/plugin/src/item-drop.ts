@@ -54,17 +54,19 @@ import { carriedPlacement, envelopeRef, readEnvelope, type ItemEnvelope } from "
  * references sits.
  *
  * The discipline, not the destination FORM's container family: the family is closed wire
- * vocabulary (`canvas`, `composition`, `unplaced`) and the roster is open, so a
- * `spreadsheet` container refuses as "a spreadsheet" instead of as whichever family its
- * destination form reports. A container whose discipline nothing declares reads as "an
- * item", which is `itemNoun`'s truthful generic and exactly what the sentence for
- * `unknown_discipline` is about.
+ * vocabulary (`canvas`, `composition`, `unplaced`) and the roster is open. A container
+ * the census does not know is named by its id, never by a kind inferred from the
+ * destination form. A known `spreadsheet` container refuses as "a spreadsheet"; a
+ * container whose discipline nothing declares reads as "an item", `itemNoun`'s truthful
+ * generic and exactly what the sentence for `unknown_discipline` is about.
  */
 function containerNoun(container: PlacementContainer, lookup: ItemLookup): string {
   if (container.kind === "unplaced") return "the index";
   // `noun` answers in the SUBJECT position ("A canvas"); an object position wants the
   // same phrase uncapitalised, and the article is already the right one.
-  const phrase = lookup.noun(lookup.disciplineOf(container.containerId) ?? container.kind);
+  const discipline = lookup.disciplineOf(container.containerId);
+  if (discipline === null) return `container ${container.containerId}`;
+  const phrase = lookup.noun(discipline);
   return phrase.charAt(0).toLowerCase() + phrase.slice(1);
 }
 
@@ -174,13 +176,13 @@ const DENIAL_PROSE: Record<PlacementDenialRule, (subject: string, container: str
   not_displaceable: () =>
     "The note in that tile has nowhere else to live, so it cannot be displaced.",
   unknown_ref: () => "That item no longer exists.",
-  unknown_container: () => "That container no longer exists.",
+  unknown_container: (_subject, container) =>
+    `${container.charAt(0).toUpperCase() + container.slice(1)} is not known to this workspace.`,
   /*
     The container is there and its renderer is not (#110). The sentence names the RENDERER
     rather than the container, because the container is fine — this build simply has no
-    plugin that reads its discipline, and "no longer exists" (the `unknown_container`
-    sentence) would be a lie a principal would act on by recreating something they already
-    have.
+    plugin that reads its discipline, and the `unknown_container` sentence would be a lie
+    a principal would act on by recreating something they already have.
   */
   unknown_discipline: (subject, container) =>
     `${subject} cannot go in ${container}: nothing here knows how to render it.`,

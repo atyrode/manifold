@@ -731,6 +731,10 @@ export type PlacementDenial = z.infer<typeof PlacementDenialSchema>;
  * on the wire, and `not_accepted` keeps exactly one wording (ADR 0013 §14).
  */
 export function placementRefusal(denial: PlacementDenial): string {
+  if (denial.rule === "unknown_container") {
+    const id = denial.container.kind === "unplaced" ? "" : ` ${denial.container.containerId}`;
+    return `unknown_container: container${id} is not known to this workspace`;
+  }
   return `${denial.rule}: ${denial.ref.kind} -> ${denial.container.kind}`;
 }
 

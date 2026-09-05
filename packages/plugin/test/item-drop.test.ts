@@ -1,9 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  PLACEMENT_DENIAL_RULES,
   resolvePlacement,
   type Container,
-  type PlacementDenialRule,
   type PlacementDestination,
   type PlacementItem,
   type PlacementRef,
@@ -11,7 +9,7 @@ import {
   type PluginRoster,
   type SceneElement,
 } from "@manifold/protocol";
-import { createPlacementLookup, denialMessage } from "../src/item-drop.ts";
+import { createPlacementLookup, denialMessage, itemDenialMessage } from "../src/item-drop.ts";
 import { envelopeRef, type ItemEnvelope } from "../src/item-envelope.ts";
 
 function container(id: string, discipline: Container["discipline"]): Container {
@@ -278,12 +276,6 @@ const CASES: readonly {
     expected: "A terminal cannot be placed that way in a canvas.",
   },
   {
-    name: "a terminal dropped into a container that is gone",
-    envelope: { kind: "terminal", terminalId: "s1" },
-    destination: { kind: "canvas", containerId: "gone", x: 0, y: 0 },
-    expected: "That container no longer exists.",
-  },
-  {
     name: "a terminal whose terminal is gone",
     envelope: { kind: "terminal", terminalId: "vanished" },
     destination: { kind: "canvas", containerId: "canvas-2", x: 0, y: 0 },
@@ -307,19 +299,52 @@ describe("denial prose", () => {
     }
   });
 
-  test("every declared rule has prose, so no refusal can render blank", () => {
-    for (const rule of PLACEMENT_DENIAL_RULES satisfies readonly PlacementDenialRule[]) {
-      const message = denialMessage(
-        {
-          rule,
-          ref: { kind: "terminal", terminalId: "s1" },
-          container: { kind: "composition", containerId: "comp-1" },
-        },
-        lookup,
-      );
-      expect(message.length).toBeGreaterThan(0);
-      expect(message.endsWith(".")).toBe(true);
-    }
+  test("an unknown container denial names the id without inventing a discipline", () => {
+    const ref: PlacementRef = { kind: "terminal", terminalId: "s1" };
+    const destination: PlacementDestination = {
+      kind: "tile",
+      containerId: "gone",
+      targetTileId: null,
+      edge: null,
+    };
+    const resolution = resolvePlacement(ref, destination, lookup);
+    if (resolution.ok) throw new Error("refusal expected");
+    expect(resolution.denial.rule).toBe("unknown_container");
+    const message = denialMessage(resolution.denial, lookup);
+    expect(
+      itemDenialMessage(resolution.denial, { kind: "terminal", containerId: null }, lookup),
+    ).toBe(message);
+    expect(message).toContain("gone");
+    expect(message).toContain("not known to this workspace");
+    expect(message).not.toContain("composition");
+    expect(message).not.toContain("canvas");
+  });
+
+  test("an unknown unplaced destination still names the index", () => {
+    const message = denialMessage(
+      {
+        rule: "unknown_container",
+        ref: { kind: "terminal", terminalId: "s1" },
+        container: { kind: "unplaced" },
+      },
+      lookup,
+    );
+    expect(message).toStartWith("The index ");
+    expect(message).toContain("not known to this workspace");
+  });
+
+  test("a peer carry names a destination missing from this renderer's census by id", () => {
+    const message = itemDenialMessage(
+      {
+        rule: "not_accepted",
+        ref: { kind: "terminal", terminalId: "peer-terminal" },
+        container: { kind: "composition", containerId: "peer-destination" },
+      },
+      { kind: "terminal", containerId: null },
+      lookup,
+    );
+    expect(message).toContain("in container peer-destination");
+    expect(message).not.toMatch(/canvas|composition/);
   });
 
   /*

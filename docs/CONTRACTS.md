@@ -438,13 +438,17 @@ home.
   and that is the difference between "already so" and the silent no-op the algebra refuses to
   have.
 - A refusal is DATA, and it travels on the action door's `refused` rung: the message is
-  `"<rule>: <ref kind> -> <container kind>"` (e.g. `not_accepted: terminal -> canvas`), whose
-  leading class is a member of the published `PLACEMENT_DENIAL_RULES` and is read back by
-  `placementRefusalRule(message)`. Rules are `not_accepted` (group containment failed),
+  `"<rule>: <ref kind> -> <container kind>"` (e.g. `not_accepted: terminal -> canvas`), except
+  `unknown_container`, which says `"unknown_container: container <id> is not known to this workspace"`.
+  An absent destination has no kind: its refusal names its state and id, never an inferred
+  discipline. The leading class remains a member of the published `PLACEMENT_DENIAL_RULES`
+  and is read back by `placementRefusalRule(message)`. Rules are `not_accepted` (group containment failed),
   `self_embed`, `discipline`, `not_solo`, `unknown_ref`, `unknown_container`. Clients switch on
   the RULE; nobody parses the remainder. The SDK's `place()` keeps its signature and rebuilds the
   full `PlacementDenial` from the rule plus the ref it sent and `placementContainerFor(destination)`,
-  because the caller already holds those. `PLACEMENT_DENIED_CODE` and
+  because the caller already holds those. The placement denial note likewise says
+  `"Container <id> is not known to this workspace."`; both the committed refusal and the carry
+  preview use the destination id from the denial. `PLACEMENT_DENIED_CODE` and
   `PlacementDeniedResponseSchema` are DELETED with the route — no
   `placement_denied` code exists anywhere — and the display noun for a kind has exactly one
   home, `ITEM_NOUNS` in `packages/plugin/src/item-noun.ts`, where a floor kind takes the
