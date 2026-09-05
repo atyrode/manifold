@@ -45,7 +45,7 @@ const STANDALONE_ROOT = "/$bunfs/";
  * tree, the hub image), otherwise a `bun` on PATH — or null, and the load says so by name
  * rather than spawning a hub inside a hub. The nix-packaged server is the compiled case.
  */
-export function isolateInterpreter(): string | null {
+function isolateInterpreter(): string | null {
   if (!Bun.main.startsWith(STANDALONE_ROOT)) return process.execPath;
   return Bun.which("bun");
 }
