@@ -23,6 +23,7 @@ import {
   swapTileLeaves,
   tileLeaf,
   tileLeafIds,
+  tileIdForRef,
   tileParentId,
   withTileLeaf,
   withTileLeafRef,
@@ -359,6 +360,23 @@ describe("tile layout document", () => {
     expect(readTileLayout(doc)).toBeNull();
     initCompositionLayout(doc, SERVER_PLACE_ORIGIN);
     expect(readTileLayout(doc)).toEqual(emptyTileLayout());
+  });
+
+  test("element identity survives document serialization and a split renaming its leaf", () => {
+    const doc = compositionDoc();
+    const ref: TileRef = { kind: "element", elementId: "ink" };
+    writeTileLeaf(doc, ref, ROOT_TILE_ID, "center", SERVER_PLACE_ORIGIN);
+    writeTileLeaf(doc, terminal("ink"), ROOT_TILE_ID, "right", SERVER_PLACE_ORIGIN);
+    const replica = createSceneDoc();
+    Y.applyUpdate(replica, Y.encodeStateAsUpdate(doc));
+    const layout = readTileLayout(replica);
+    const elementTile = tileIdForRef(layout, ref);
+    expect(elementTile).toBe(layout?.root?.children[0] ?? null);
+    expect(layout?.[elementTile ?? ""]?.ref).toEqual(ref);
+    expect(tileIdForRef(layout, terminal("ink"))).toBe(layout?.root?.children[1] ?? null);
+    expect(tileIdForRef(layout, { kind: "element", elementId: "other" })).toBeNull();
+    doc.destroy();
+    replica.destroy();
   });
 
   test("initialisation is idempotent and never disturbs live tiles", () => {

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { TileEdgeSchema } from "./layout.ts";
 import { PlacementItemSchema, PlacementRefSchema } from "./placement.ts";
 import { PrincipalSchema } from "./principal.ts";
+import { ManifoldRefSchema, formatManifoldUri } from "./uri.ts";
 
 /**
  * Presence is ephemeral by contract: it is never persisted and never enters the event log.
@@ -23,6 +24,45 @@ export const CursorSchema = z.strictObject({
   y: z.number().finite(),
 });
 export type Cursor = z.infer<typeof CursorSchema>;
+
+/** Mounted ancestry, including element/tile placements, in the existing canonical address space. */
+export const MAX_LOCATION_PATH_LENGTH = 32;
+export const LocationPathSchema = z.array(ManifoldRefSchema).min(1).max(MAX_LOCATION_PATH_LENGTH);
+export type LocationPath = z.infer<typeof LocationPathSchema>;
+
+/** Unknown paths never match, including the empty prefix. No canonical-parent inference. */
+export function locationPathContains(
+  path: LocationPath | null | undefined,
+  prefix: LocationPath | null | undefined,
+): boolean {
+  return (
+    path != null &&
+    prefix != null &&
+    prefix.length > 0 &&
+    prefix.length <= path.length &&
+    prefix.every((ref, index) => formatManifoldUri(ref) === formatManifoldUri(path[index]!))
+  );
+}
+
+export function locationPathsEqual(
+  left: LocationPath | null | undefined,
+  right: LocationPath | null | undefined,
+): boolean {
+  return (
+    left === right ||
+    (left != null &&
+      right != null &&
+      left.length === right.length &&
+      locationPathContains(left, right))
+  );
+}
+
+/** Server-stamped connection identity; a null path means this connection declared no location. */
+export const ConnectionLocationSchema = z.strictObject({
+  connId: z.string().min(1),
+  locationPath: LocationPathSchema.nullable(),
+});
+export type ConnectionLocation = z.infer<typeof ConnectionLocationSchema>;
 
 /** Partial update; omitted fields keep their previous value, `null` clears. */
 export const PresencePayloadSchema = z.strictObject({
@@ -63,6 +103,8 @@ export const PresencePayloadSchema = z.strictObject({
       tool: z.string().min(1).max(64).nullish(),
       editingElementId: z.string().min(1).nullish(),
       focusedContainerId: z.string().min(1).nullish(),
+      /** Ordered mounted ancestry; omitted means undeclared, null explicitly clears. */
+      locationPath: LocationPathSchema.nullish(),
       sidebarCollapsed: z.boolean().optional(),
       arranging: z.boolean().optional(),
       /** Bounded exactly as a `panel` tile ref is (`TileRefSchema`): it is the same string. */
@@ -89,6 +131,8 @@ export const PresenceStateSchema = z.strictObject({
    * to retire a closed tab's cursor while sibling tabs of the same principal remain.
    */
   connIds: z.array(z.string().min(1)).min(1).max(64),
+  /** Per-connection locations prevent one tab's path from being attributed to its siblings. */
+  connectionLocations: z.array(ConnectionLocationSchema).max(64).optional(),
   payload: PresencePayloadSchema,
 });
 export type PresenceState = z.infer<typeof PresenceStateSchema>;

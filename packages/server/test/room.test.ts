@@ -5,6 +5,7 @@ import {
   censusSolo,
   type Container,
   type ContainerDiscipline,
+  type LocationPath,
   type Principal,
   type SceneElement,
 } from "@manifold/protocol";
@@ -150,6 +151,60 @@ function roomFixture(
   socket.clear();
   return { runtime, clock, store, container, socket, peer, room };
 }
+
+describe("Room connection locations", () => {
+  test("snapshot replacement and closing one tab preserve the sibling path and legacy focus", () => {
+    const { runtime, room, peer, socket, store, container } = roomFixture();
+    const sibling = new SessionChannel(
+      runtime.newId(),
+      new FakeSocket(),
+      peer.auth,
+      container.id,
+      "c2",
+    );
+    const left: LocationPath = [
+      { kind: "container", containerId: container.id },
+      { kind: "element", containerId: container.id, elementId: "left" },
+    ];
+    const right: LocationPath = [
+      { kind: "container", containerId: container.id },
+      { kind: "element", containerId: container.id, elementId: "right" },
+    ];
+    try {
+      room.join(sibling);
+      room.updatePresence(peer, {
+        vantage: { locationPath: left },
+        focus: { elementId: "terminal" },
+      });
+      room.updatePresence(sibling, { vantage: { locationPath: right } });
+      room.sendResync(peer);
+      const snapshot = socket.messages().at(-1);
+      if (snapshot?.type !== "resync") throw new Error("missing resync");
+      expect(snapshot.attendance[0]?.connectionLocations).toEqual([
+        { connId: peer.id, locationPath: left },
+        { connId: sibling.id, locationPath: right },
+      ]);
+      room.updatePresence(sibling, { vantage: { locationPath: left } });
+      room.leave(sibling);
+      const departed = socket.messages().at(-1);
+      if (departed?.type !== "attendance") throw new Error("missing departure attendance");
+      expect(departed.joined?.connectionLocations).toEqual([
+        { connId: peer.id, locationPath: left },
+      ]);
+      expect(departed.joined?.payload.focus).toEqual({ elementId: "terminal" });
+      room.updatePresence(peer, { vantage: {} });
+      room.sendResync(peer);
+      const cleared = socket.messages().at(-1);
+      if (cleared?.type !== "resync") throw new Error("missing cleared resync");
+      expect(cleared.attendance[0]?.connectionLocations).toEqual([
+        { connId: peer.id, locationPath: null },
+      ]);
+    } finally {
+      room.closeAll(1000, "test complete");
+      store.close();
+    }
+  });
+});
 
 describe("Room Yjs document consistency", () => {
   test("init carries a complete encoded document", () => {
@@ -607,6 +662,32 @@ describe("Room element rules", () => {
     // composition and the canvas reference both still exist.
     expect(fixture.homeRoom.removeTileLeafById(ROOT_TILE_ID)).toBeTrue();
     expect(fixture.homeRoom.homesTerminal("terminal-1")).toBeFalse();
+    fixture.store.close();
+  });
+
+  test("composition census resolves element refs to their contributed payload kinds", () => {
+    const fixture = containerPair();
+    const noteElement = note("caption");
+    const ink: SceneElement = {
+      id: "ink",
+      type: "acme-ink",
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 80,
+      zIndex: 1,
+      points: [0, 0, 30, 40],
+    };
+    for (const element of [noteElement, ink]) {
+      writeElement(fixture.homeRoom.doc, element, LOCAL_ORIGIN);
+      fixture.homeRoom.placeTile({ kind: "element", elementId: element.id }, null, null);
+    }
+    expect(
+      fixture.homeRoom
+        .census()
+        .items.map((item) => item.kind)
+        .sort(),
+    ).toEqual(["acme-ink", "text"]);
     fixture.store.close();
   });
 

@@ -1,6 +1,7 @@
 import { StructureSchema } from "@manifold/protocol";
 import type {
   CarriedItem,
+  CarryAim,
   ContainerDiscipline,
   PlacementItem,
   PlacementRef,
@@ -131,8 +132,9 @@ export function parseEnvelope(payload: string): ItemEnvelope | null {
 }
 
 /** The register's own record: the addressing form plus the two resolved wire fields. */
-interface LiveCarry extends CarriedItem {
+export interface LiveCarry extends CarriedItem {
   readonly envelope: ItemEnvelope;
+  readonly aim?: CarryAim | undefined;
 }
 
 /**
@@ -152,7 +154,32 @@ interface LiveCarry extends CarriedItem {
  * re-deriving it from an address against a census it may not have yet.
  */
 let carried: LiveCarry | null = null;
+let placementSnapshot: CarriedItem | null = null;
 let watchingDragEnd = false;
+const carryListeners = new Set<() => void>();
+
+/** Stable snapshot for source projection; the same register drives drop legality. */
+export function carriedSnapshot(): LiveCarry | null {
+  return carried;
+}
+
+export function subscribeCarry(listener: () => void): () => void {
+  carryListeners.add(listener);
+  return () => {
+    carryListeners.delete(listener);
+  };
+}
+
+function notifyCarry(): void {
+  for (const listener of carryListeners) listener();
+}
+
+/** Called by the carry transport only when its normalized aim changes. */
+export function updateCarryAim(aim: CarryAim | undefined): void {
+  if (carried === null || carried.aim === aim) return;
+  carried = { ...carried, aim };
+  notifyCarry();
+}
 
 /**
  * `dragend` always fires on the source, including on an aborted drag, so it is the one
@@ -176,11 +203,16 @@ function watchDragEnd(): void {
  */
 export function beginCarry(envelope: ItemEnvelope, item: PlacementItem): void {
   watchDragEnd();
-  carried = { envelope, ref: envelopeRef(envelope), item };
+  placementSnapshot = { ref: envelopeRef(envelope), item };
+  carried = { envelope, ...placementSnapshot };
+  notifyCarry();
 }
 
 export function endCarry(): void {
+  if (carried === null) return;
   carried = null;
+  placementSnapshot = null;
+  notifyCarry();
 }
 
 /** The envelope in hand: the addressing form the drag's zone logic reads. */
@@ -190,7 +222,7 @@ export function carriedItem(): ItemEnvelope | null {
 
 /** What is in hand, resolved — the local half of what a peer receives on the wire. */
 export function carriedPlacement(): CarriedItem | null {
-  return carried === null ? null : { ref: carried.ref, item: carried.item };
+  return placementSnapshot;
 }
 
 /**

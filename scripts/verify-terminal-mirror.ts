@@ -476,27 +476,33 @@ try {
 
   // 4. The mono portal's chrome is a real POINTER ref. A canvas terminal renders
   //    element-chrome-first: the terminal's own titlebar IS the node's bar, carrying the
-  //    node's verbs and acting as its React Flow drag handle. `.terminal-titlebar` is
-  //    `pointer-events: none` by default (it floats over the xterm ref), so this is
-  //    the assertion that catches a bar which renders but takes no pointer — a state in
-  //    which the terminal cannot be dragged and none of its controls can be pressed, and
-  //    which every `element.click()` in this file would sail straight through.
+  //    node's verbs and acting as its React Flow drag handle. These host-owned controls
+  //    must exist even while the terminal body watches through a spectator socket.
+  //    Hit-testing catches chrome which renders but takes no pointer, a state that
+  //    every `element.click()` in this file would sail straight through.
   const monoChrome = await browser.evaluate<{
     readonly mono: boolean;
     readonly handleOwned: boolean;
     readonly handleCursor: string;
+    readonly watched: boolean;
     readonly unreachable: readonly string[];
   }>(
     `(() => {
       const node = document.querySelector('.react-flow__node[data-id="${clone.id}"]');
       const bar = node?.querySelector('.portal--mono .terminal-titlebar');
       if (!(bar instanceof HTMLElement)) {
-        return { mono: false, handleOwned: false, handleCursor: "none", unreachable: [] };
+        return { mono: false, handleOwned: false, handleCursor: "none", watched: false, unreachable: [] };
       }
       const box = bar.getBoundingClientRect();
       // A quarter width: clear of the controls on the right, squarely on the drag handle.
       const grabbed = document.elementFromPoint(box.left + box.width / 4, box.top + box.height / 2);
       const unreachable = [];
+      for (const label of [
+        'Park terminal to sidebar', 'Expand terminal to full view', 'Kill terminal',
+      ]) {
+        if (bar.querySelector('[aria-label="' + label + '"]') === null)
+          unreachable.push('missing: ' + label);
+      }
       for (const control of bar.querySelectorAll('[aria-label]')) {
         const rect = control.getBoundingClientRect();
         const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
@@ -508,6 +514,7 @@ try {
         mono: true,
         handleOwned: grabbed instanceof Element && bar.contains(grabbed),
         handleCursor: grabbed === null ? "none" : getComputedStyle(grabbed).cursor,
+        watched: node.querySelector('.portal--engaged, .portal--engaging') === null,
         unreachable,
       };
     })()`,
@@ -517,10 +524,11 @@ try {
     monoChrome.mono &&
       monoChrome.handleOwned &&
       monoChrome.handleCursor === "grab" &&
+      monoChrome.watched &&
       monoChrome.unreachable.length === 0,
     `mono=${String(monoChrome.mono)} handleOwned=${String(monoChrome.handleOwned)} cursor=${
       monoChrome.handleCursor
-    } unreachableControls=[${monoChrome.unreachable.join(", ")}]`,
+    } watched=${String(monoChrome.watched)} unreachableControls=[${monoChrome.unreachable.join(", ")}]`,
   );
 
   // 5. Unplacing one mirror removes only that REFERENCE; the other view stays live and
@@ -738,7 +746,7 @@ try {
   */
   const containerTileEnter = await pointIn(
     browser,
-    `.composition-tile__bar [aria-label="Open canvas mirror-gate-embedded"]`,
+    `.canvas-header [aria-label="Open canvas mirror-gate-embedded"]`,
     0.5,
     0.5,
   );
@@ -843,7 +851,7 @@ try {
   */
   const anchorBody = await pointIn(
     browser,
-    `.react-flow__node[data-id="${anchor.id}"] .portal__shield`,
+    `.react-flow__node[data-id="${anchor.id}"] .portal__tile .xterm`,
     0.5,
     0.5,
   );
@@ -1008,7 +1016,7 @@ try {
       })()`,
     );
   const atRest = await veils();
-  const engageAt = await pointIn(browser, `${portalTiles} .portal__shield`, 0.5, 0.5);
+  const engageAt = await pointIn(browser, `${portalTiles} .xterm`, 0.5, 0.5);
   if (engageAt === null) throw new Error("the composed portal offers no tile to engage");
   await clickAt(browser, engageAt);
   const engagedVeils = await settles(async () => {
@@ -1114,7 +1122,7 @@ try {
 
   const extraction = await nativeDrag(
     browser,
-    `.react-flow__node[data-id="${anchor.id}"] .portal__shield`,
+    `.react-flow__node[data-id="${anchor.id}"] .portal__tile [data-titlebar-draggable]`,
     { selector: ".react-flow__pane", fx: 0.2, fy: 0.85 },
   );
   check(

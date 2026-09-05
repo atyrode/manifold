@@ -19,7 +19,6 @@ import {
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
-  type PointerEvent as ReactPointerEvent,
   type ReactElement,
   type ReactNode,
 } from "react";
@@ -37,7 +36,11 @@ import {
   TileTree,
   TileZoneDebug,
   subscribeVantage,
+  currentVantage,
   useNotice,
+  type TitlebarDragProps,
+  useTileDeparture,
+  type TilePreviewOverlayProps,
 } from "@manifold/plugin/ui";
 import {
   ElementOutlet,
@@ -45,6 +48,13 @@ import {
   ContainerRenderer,
   REMOTE_CURSOR_FALLBACK_COLOR,
   TerminalRenderer,
+  ProjectionScopeProvider,
+  TitlebarOutlet,
+  extendProjectionScope,
+  publishLocation,
+  useProjectionScope,
+  usePublishLocation,
+  type ProjectionScope,
   carriesItem,
   carryGhosts,
   clampCursorFraction,
@@ -70,6 +80,7 @@ import {
   type ItemEnvelope,
   type ContainerRendererProps,
   type TileDropHost,
+  type GestureOverride,
 } from "@manifold/plugin/hooks";
 
 /**
@@ -106,7 +117,7 @@ import {
 const SOLO_ITEM_KINDS: Record<TileRef["kind"], PlacementItem["kind"]> = {
   terminal: "terminal",
   container: "canvas",
-  text: "text",
+  element: "element",
   panel: "panel",
   // Unreachable in practice — a composition never legitimately holds a spacer, exactly as it
   // never holds a panel (issue #89's spacer is workspace-tree furniture) — but the record is
@@ -128,14 +139,29 @@ const SOLO_ITEM_KINDS: Record<TileRef["kind"], PlacementItem["kind"]> = {
 function soloOccupancy(
   containerId: string,
   layout: TileLayout | null,
+  client: SessionClient,
 ): ReadonlyMap<string, PlacementItem> {
   const solo = layout === null ? null : soloLeaf(layout);
   if (solo === null) return NO_SOLO_OCCUPANTS;
-  const kind = SOLO_ITEM_KINDS[solo.ref.kind];
+  const kind =
+    solo.ref.kind === "element"
+      ? (client.elements.get(solo.ref.elementId)?.type ?? "element")
+      : SOLO_ITEM_KINDS[solo.ref.kind];
   return new Map<string, PlacementItem>([[containerId, { kind, containerId: containerId }]]);
 }
 
 const NO_SOLO_OCCUPANTS: ReadonlyMap<string, PlacementItem> = new Map();
+
+/** The high-cadence carry subscription belongs to motion, never to live leaf contents. */
+function CompositionMotionOverlay({
+  overrides,
+  ...props
+}: Omit<TilePreviewOverlayProps, "departure"> & {
+  readonly overrides: ReadonlyMap<string, GestureOverride>;
+}): ReactNode {
+  const departure = useTileDeparture(props.drop.host.containerId, overrides.values());
+  return <TilePreviewOverlay {...props} departure={departure} />;
+}
 
 /**
  * THE TILED RENDERER, as the projection registry mounts it: `ContainerRendererProps` and nothing of
@@ -151,6 +177,12 @@ export function CompositionView({
   presence,
   soloOccupants = NO_SOLO_OCCUPANTS,
   navigate,
+  depth = 1,
+  projectionScope,
+  frame = "window",
+  titlebarDragProps,
+  titlebarExtras,
+  titlebarMiddle,
 }: ContainerRendererProps): ReactElement {
   const route = useContainerRoute();
   const {
@@ -186,6 +218,27 @@ export function CompositionView({
   const [client] = useState(
     () => new SessionClient({ url: sessionUrl(), containerId, token: host.token }),
   );
+  const inheritedScope = useProjectionScope();
+  const scope = useMemo<ProjectionScope | null>(
+    () =>
+      projectionScope !== undefined
+        ? projectionScope
+        : (inheritedScope ??
+          (depth === 1
+            ? {
+                host,
+                client,
+                locationPath: [{ kind: "container", containerId }],
+              }
+            : null)),
+    [projectionScope, inheritedScope, depth, host, client, containerId],
+  );
+  const publishHere = usePublishLocation(scope);
+  useEffect(() => {
+    if (depth !== 1) return;
+    publishHere();
+    return () => publishLocation(null);
+  }, [depth, publishHere]);
   const registerRoomPipe = useRoomPipeRegistration();
   useEffect(() => registerRoomPipe(containerId, client), [registerRoomPipe, containerId, client]);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
@@ -202,8 +255,6 @@ export function CompositionView({
   const [sceneRevision, setSceneRevision] = useState(0);
   /** Which note tile is in its editor; a note carries no selection model of its own. */
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
-  /** The tile this browser is carrying, so its leaf can show that it is in flight. */
-  const [carriedTileId, setCarriedTileId] = useState<string | null>(null);
   const connectStartedRef = useRef(false);
   /** One delete per view: the confirmed click navigates away, a second would 404. */
   const deletingRef = useRef(false);
@@ -236,8 +287,18 @@ export function CompositionView({
    * per device, and the socket that speaks for it is whichever route is mounted.
    */
   useEffect(() => {
-    return subscribeVantage((vantage) => client.sendPresence({ vantage }));
-  }, [client]);
+    if (depth !== 1) return;
+    const send = (): void => client.sendPresence({ vantage: currentVantage() });
+    const offVantage = subscribeVantage(send);
+    const offStatus = client.on("status", (status) => {
+      if (status === "open") send();
+    });
+    if (client.status === "open") send();
+    return () => {
+      offVantage();
+      offStatus();
+    };
+  }, [client, depth]);
 
   useEffect(() => {
     // The tree is small and read whole: subscribers re-read rather than diff tile ids.
@@ -316,6 +377,7 @@ export function CompositionView({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
+      if (depth !== 1) return;
       if (event.key !== "Escape" || event.defaultPrevented) return;
       // Escape belongs to whatever shell has focus inside a tile — vim would be
       // unusable otherwise. It only shrinks the view from the view's own chrome.
@@ -325,7 +387,7 @@ export function CompositionView({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [shrink]);
+  }, [depth, shrink]);
 
   /**
    * The machine a terminal in a composition is running on, straight off the inventory. The dot's colour
@@ -496,16 +558,17 @@ export function CompositionView({
   );
 
   /**
-   * A NOTE tile's close. Removal addresses the LEAF, and the server deletes the note
-   * element with it, because a note's leaf is its only placement — there is nowhere else
-   * for a note to be, so an orphaned element would be invisible garbage.
+   * An element tile's close removes its leaf and owned payload together. Keeping the
+   * unseated element would leave invisible garbage in the composition document.
    */
-  const removeNoteTile = useCallback(
+  const removeElementTile = useCallback(
     (tileId: string): void => {
       void host.client
         .removeContainerTile(containerId, tileId)
         .then(onContainerChanged)
-        .catch((reason: unknown) => failed(reason, "Could not delete this note", "delete-note"));
+        .catch((reason: unknown) =>
+          failed(reason, "Could not delete this element", "delete-element"),
+        );
     },
     [failed, host.client, onContainerChanged, containerId],
   );
@@ -604,7 +667,7 @@ export function CompositionView({
         soloOccupants: (() => {
           const merged = new Map(soloOccupants);
           merged.delete(containerId);
-          for (const [id, item] of soloOccupancy(containerId, client.layout()))
+          for (const [id, item] of soloOccupancy(containerId, client.layout(), client))
             merged.set(id, item);
           return merged;
         })(),
@@ -667,7 +730,7 @@ export function CompositionView({
       refDisplayLabel(ref, {
         terminalName: (terminalId) => client.terminals.get(terminalId)?.name ?? null,
         containerName: containerNameFor,
-        textElement: (elementId) => {
+        elementContent: (elementId) => {
           const element = client.elements.get(elementId);
           /*
             No `type === "text"` guard: the payload answers null for an element that bears no
@@ -783,12 +846,10 @@ export function CompositionView({
    * dragging a tile out of a composition looks to collaborators exactly like dragging a
    * node across a canvas, and the same envelope decides where it may land.
    */
-  const gripProps = (tileId: string, label: string | null) => ({
+  const tileDragProps = (tileId: string, label: string | null): TitlebarDragProps => ({
     draggable: true,
-    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => event.stopPropagation(),
-    onDragStart: (event: ReactDragEvent<HTMLElement>): void => {
+    onDragStart: (event): void => {
       event.stopPropagation();
-      setCarriedTileId(tileId);
       carry.begin(
         { kind: "tile", containerId: containerId, tileId },
         {
@@ -801,8 +862,12 @@ export function CompositionView({
         },
       );
     },
+    onDrag: (event): void => {
+      if (event.clientX === 0 && event.clientY === 0) return;
+      const at = bodyFraction(event.clientX, event.clientY);
+      if (at !== null) carry.track(at, dropStore.get().aim?.tile);
+    },
     onDragEnd: (): void => {
-      setCarriedTileId(null);
       carry.end();
     },
   });
@@ -893,7 +958,6 @@ export function CompositionView({
       // The ghost is retired before the write: the payload is in the transfer, so
       // ending the carry here cannot cost the drop its envelope.
       carry.end(at ?? undefined);
-      setCarriedTileId(null);
       clearDrop();
       /*
         The same rule the `dragover` above answers to: released between zones (a divider,
@@ -930,6 +994,15 @@ export function CompositionView({
         </Cover>
       );
     }
+    const leafScope = extendProjectionScope(
+      scope,
+      { kind: "tile", containerId, tileId: node.id },
+      ref.kind === "element"
+        ? { kind: "element", containerId, elementId: ref.elementId }
+        : ref.kind === "panel"
+          ? { kind: "tile", containerId, tileId: node.id }
+          : ref,
+    );
     switch (ref.kind) {
       case "terminal":
         return (
@@ -938,6 +1011,9 @@ export function CompositionView({
             client={client}
             terminalId={ref.terminalId}
             elementId={node.id}
+            frame="tile"
+            projectionScope={leafScope}
+            titlebarDragProps={tileDragProps(node.id, refLabel(ref))}
             active={focusedTileId === node.id}
             panelHighlighted={false}
             machine={machineFor(ref.terminalId)}
@@ -952,57 +1028,55 @@ export function CompositionView({
         );
       case "container":
         return (
-          /*
-            A canvas tile wears the same bar as every other placed object. Maximize is the
-            load-bearing control: an embedded canvas is a CANVAS — its interior belongs to
-            React Flow, panning and all — so the titlebar is the only door INTO the canvas
-            from here. Minimize drops just this representation; close deletes the canvas
-            for everyone, on the click.
-
-            The bar sits ABOVE the canvas rather than over it, so nothing about the
-            embedded canvas's own pointer handling changes.
-          */
-          <div className="composition-tile">
-            <NodeTitleBar
-              className="composition-tile__bar"
-              icon={<ItemIcon kind="canvas" size={13} />}
-              title={containerNameFor(ref.containerId)}
-              defaultTitle={itemNoun("canvas", roster)}
-              onMinimize={() => detachContainerTile(node.id)}
-              minimizeLabel={`Remove canvas ${containerLabelFor(ref.containerId)} from this composition`}
-              minimizeTooltip="Remove this canvas from the composition (the canvas keeps existing)"
-              onMaximize={() => navigate(`/p/${encodeURIComponent(ref.containerId)}`)}
-              maximizeLabel={`Open canvas ${containerLabelFor(ref.containerId)}`}
-              maximizeTooltip="Open this canvas"
-              onClose={() => deleteContainerTile(ref.containerId)}
-              closeLabel={`Delete canvas ${containerLabelFor(ref.containerId)}`}
-              closeTooltip="Delete this canvas for everyone"
-            />
-            <div className="composition-tile__body">
-              {/*
-                PROJECTED, not imported: the leaf holds a container belonging to whichever
-                plugin renders that container's discipline, and this renderer may not name it
-                (A4 — resolve the reference, open a pipe, project it). The index answers which
-                discipline; an id it has not answered yet, or one whose discipline nothing in
-                this build declares, reads as the engine's named placeholder rather than as a
-                guess (#110).
-              */}
-              <ContainerRenderer
-                key={ref.containerId}
-                layout={disciplineFor(ref.containerId)}
-                host={host}
-                containerId={ref.containerId}
-                depth={2}
-                navigate={navigate}
-                presence={presence}
-                // The embedded renderer answers the algebra from the same container index
-                // this composition was handed; without it its own previews would be blind.
-                containers={containers}
-              />
-            </div>
-          </div>
+          <ContainerRenderer
+            key={ref.containerId}
+            layout={disciplineFor(ref.containerId)}
+            host={host}
+            containerId={ref.containerId}
+            depth={depth + 1}
+            navigate={navigate}
+            presence={presence}
+            containers={containers}
+            frame="tile"
+            projectionScope={leafScope}
+            titlebarMiddle={<TitlebarOutlet scope={leafScope} />}
+            titlebarDragProps={tileDragProps(node.id, refLabel(ref))}
+            titlebarExtras={
+              <>
+                <button
+                  type="button"
+                  className="node-titlebar__ctl"
+                  data-action="core.space.removeTile"
+                  aria-label={`Remove canvas ${containerLabelFor(ref.containerId)} from this composition`}
+                  title="Remove this representation"
+                  onClick={() => detachContainerTile(node.id)}
+                >
+                  <ControlIcon kind="park" size={12} />
+                </button>
+                <button
+                  type="button"
+                  className="node-titlebar__ctl"
+                  aria-label={`Open canvas ${containerLabelFor(ref.containerId)}`}
+                  title="Open this container"
+                  onClick={() => navigate(`/p/${encodeURIComponent(ref.containerId)}`)}
+                >
+                  <ControlIcon kind="maximize" size={12} />
+                </button>
+                <button
+                  type="button"
+                  className="node-titlebar__ctl"
+                  data-action="core.index.deleteContainer"
+                  aria-label={`Delete canvas ${containerLabelFor(ref.containerId)}`}
+                  title="Delete this container for everyone"
+                  onClick={() => deleteContainerTile(ref.containerId)}
+                >
+                  <ControlIcon kind="close" size={12} />
+                </button>
+              </>
+            }
+          />
         );
-      case "text": {
+      case "element": {
         // A note has no identity outside the container holding it, so the element is
         // always in THIS room's document. It is missing only for the frame between a
         // placement landing in the layout and the element arriving with it.
@@ -1010,17 +1084,15 @@ export function CompositionView({
         const text = element === undefined ? "" : (elementString(element, "text") ?? "");
         /*
           The occupant names ITSELF: its declared element type is what the mark and the
-          fallback noun are looked up with, so a leaf holding some other plugin's text-bearing
-          element wears that plugin's word instead of this renderer's guess. The ref form
-          (`text`) is only an address, and it is the best guess available for the one frame
-          where the element has not arrived yet.
+          fallback noun are looked up with, so every contributed element wears its own
+          plugin's word instead of this renderer's guess. The element ref is an address,
+          never an assumption about the payload's species.
         */
-        const kind = element?.type ?? "text";
+        const kind = element?.type ?? "element";
         return (
           /*
-            A note tile borrows the canvas tile's frame — `.composition-tile` is the bar/body
-            rhythm every embedded object wears — and edits the SAME `Y.Text` it would edit
-            on a canvas, through the room this composition is joined to.
+            Every contributed element shares the composition bar/body frame, while its
+            plugin owns the body and edits the same document payload as on a canvas.
           */
           <div className="composition-tile">
             <NodeTitleBar
@@ -1028,17 +1100,16 @@ export function CompositionView({
               icon={<ItemIcon kind={kind} size={13} />}
               title={firstLineLabel(text)}
               defaultTitle={itemNoun(kind, roster)}
-              // Close, not minimize: a note's leaf is its ONLY placement, so the server
-              // deletes the note element together with the leaf. There is no "remove the
-              // representation" for an object that exists nowhere else.
-              onClose={() => removeNoteTile(node.id)}
+              middle={<TitlebarOutlet scope={leafScope} />}
+              dragProps={tileDragProps(node.id, refLabel(ref))}
+              // Close removes the leaf and its owned element, not just a representation.
+              onClose={() => removeElementTile(node.id)}
               closeLabel={`Delete ${itemNoun(kind, roster)}`}
               closeTooltip={`Delete this ${itemNoun(kind, roster)}`}
             />
             <div className="composition-tile__body">
               <ElementOutlet
-                // The occupant's OWN type, not the ref form: a leaf addressed as `text` is
-                // rendered by whichever plugin declared the element actually sitting in it.
+                // The occupant's OWN type, rendered by the declaring plugin.
                 type={kind}
                 elementId={ref.elementId}
                 data={element === undefined ? {} : elementPayload(element)}
@@ -1072,70 +1143,78 @@ export function CompositionView({
     }
   };
 
-  const renderLeaf = (node: Tile): ReactNode => (
-    <div
-      className={`composition-leaf${focusedTileId === node.id ? " is-focused" : ""}${
-        carriedTileId === node.id ? " is-carried" : ""
-      }`}
-      onPointerDownCapture={() => setFocusedTileId(node.id)}
-    >
-      {renderRef(node, node.ref)}
-      {node.ref === null ? null : (
-        /*
-          The grip is this leaf's chrome-as-handle. A terminal tile's own titlebar
-          cannot be it — xterm needs the bar for rename and the frame swallows
-          pointerdown — so every species wears the same corner handle the portal's
-          tiles wear on a canvas, and the gesture behind it is the same carry.
-        */
+  const renderLeaf = (node: Tile): ReactNode => {
+    const placement = extendProjectionScope(scope, { kind: "tile", containerId, tileId: node.id });
+    const target = node.ref;
+    const placementScope =
+      target === null || target.kind === "spacer" || target.kind === "panel"
+        ? placement
+        : extendProjectionScope(
+            placement,
+            target.kind === "element"
+              ? { kind: "element", containerId, elementId: target.elementId }
+              : target,
+          );
+    return (
+      <ProjectionScopeProvider value={placementScope}>
         <div
-          className="composition-leaf__grip"
-          title="Drag to move this tile — onto a canvas to pull it out"
-          {...gripProps(node.id, refLabel(node.ref))}
+          className={`composition-leaf${focusedTileId === node.id ? " is-focused" : ""}`}
+          onPointerDownCapture={() => {
+            setFocusedTileId(node.id);
+            publishLocation(placementScope?.locationPath ?? null);
+          }}
+          onFocusCapture={() => {
+            setFocusedTileId(node.id);
+            publishLocation(placementScope?.locationPath ?? null);
+          }}
         >
-          <ControlIcon kind="grip" size={12} />
+          {renderRef(node, node.ref)}
         </div>
-      )}
-    </div>
+      </ProjectionScopeProvider>
+    );
+  };
+
+  const body = (
+    <TileTree
+      layout={layout ?? {}}
+      classes={COMPOSITION_TREE_CLASSES}
+      interactive
+      onRatios={setRatios}
+      renderLeaf={renderLeaf}
+    />
   );
 
-  const body =
-    layout === null ? (
-      <Cover className="composition-placeholder">
-        {status === "open" ? "Preparing this view…" : "Connecting to this view…"}
-      </Cover>
-    ) : (
-      /*
-        THE tile tree — the same component a container portal draws on a canvas. Here it
-        is always interactive: this route is an occupant socket by construction, so a
-        divider drag writes the ratios straight into the doc.
-      */
-      <TileTree
-        layout={layout}
-        classes={COMPOSITION_TREE_CLASSES}
-        interactive
-        onRatios={setRatios}
-        renderLeaf={renderLeaf}
-      />
-    );
-
   return (
-    <div className="composition-view">
-      <NodeTitleBar
-        className="composition-header"
-        icon={<ItemIcon kind="composition" size={15} />}
-        title={containerName}
-        defaultTitle={itemNoun("composition", roster)}
-        onRenameTitle={rename}
-        extraActions={<span className={`composition-status is-${status}`}>{status}</span>}
-        onMaximize={shrink}
-        maximizeControl="shrink"
-        maximizeLabel="Shrink view"
-        maximizeTooltip="Leave this view (Esc)"
-        onClose={removeView}
-        closeLabel={`Delete view ${containerName ?? containerId}`}
-        closeTooltip="Delete this view for everyone"
-      />
-      {/*
+    <ProjectionScopeProvider value={scope}>
+      <div
+        className="composition-view"
+        data-frame={frame}
+        onPointerDownCapture={publishHere}
+        onFocusCapture={publishHere}
+      >
+        <NodeTitleBar
+          className="composition-header"
+          icon={<ItemIcon kind="composition" size={15} />}
+          title={containerName}
+          defaultTitle={itemNoun("composition", roster)}
+          onRenameTitle={rename}
+          middle={titlebarMiddle ?? <TitlebarOutlet scope={scope} />}
+          dragProps={titlebarDragProps}
+          extraActions={
+            <>
+              {titlebarExtras}
+              <span className={`composition-status is-${status}`}>{status}</span>
+            </>
+          }
+          onMaximize={depth === 1 ? shrink : undefined}
+          maximizeControl="shrink"
+          maximizeLabel="Shrink view"
+          maximizeTooltip="Leave this view (Esc)"
+          onClose={depth === 1 ? removeView : undefined}
+          closeLabel={`Delete view ${containerName ?? containerId}`}
+          closeTooltip="Delete this view for everyone"
+        />
+        {/*
         Capture phase, wired on the tile area rather than on each leaf: xterm owns the
         pointer inside a terminal, and with mouse tracking on (DECSET 1003) it handles
         motion itself. A capture-phase listener on an ancestor runs before the target's
@@ -1145,93 +1224,90 @@ export function CompositionView({
         handler and emits React-Flow coordinates to its own room; the two disciplines
         share this DOM subtree, never a coordinate space.
       */}
-      <div
-        className="composition-body"
-        ref={bodyRef}
-        onPointerMoveCapture={(event) => emitCursor(event.clientX, event.clientY)}
-      >
-        {/*
+        <div
+          className="composition-body"
+          ref={bodyRef}
+          onPointerMoveCapture={(event) => emitCursor(event.clientX, event.clientY)}
+        >
+          {/*
           The tile AREA: the one DOM object drop geometry measures (chrome excluded by
           construction), the drag transport's single handler set, and the overlay's
           unambiguous root — its `firstElementChild` is the tree, which is what the
           FLIP falls back to when a single-leaf tree renders no pane box.
         */}
-        <div className="tile-area" ref={areaRef} {...areaDropProps}>
-          {body}
-          <TilePreviewOverlay drop={tileDrop} store={dropStore} refLabel={refLabel} />
-          <TileZoneDebug
-            layout={layout}
-            areaRef={areaRef}
-            dividerPx={COMPOSITION_TREE_CLASSES.dividerPx}
-          />
-        </div>
-        <div className="composition-presence-layer" aria-hidden="true">
-          {remoteCursors.cursors.map((cursor) => {
-            const color = remoteCursors.colorFor(cursor);
-            const fraction = clampCursorFraction(cursor);
-            return (
-              <div
-                className="remote-cursor"
-                data-cursor-color={color ?? ""}
-                key={remoteCursorSocketId(cursor.principalId, cursor.connId)}
-                style={{
-                  color: color ?? REMOTE_CURSOR_FALLBACK_COLOR,
-                  left: `${String(fraction.x * 100)}%`,
-                  top: `${String(fraction.y * 100)}%`,
-                }}
-              >
-                <RemoteCursorIcon />
-                <span>{remoteCursors.labelFor(cursor)}</span>
-              </div>
-            );
-          })}
-          {/*
+          <div className="tile-area" ref={areaRef} {...areaDropProps}>
+            {body}
+            {layout === null ? (
+              <Cover className="composition-placeholder">
+                {status === "open" ? "Drop an item here" : "Connecting to this view…"}
+              </Cover>
+            ) : null}
+            <CompositionMotionOverlay
+              drop={tileDrop}
+              store={dropStore}
+              refLabel={refLabel}
+              overrides={remoteGestures}
+            />
+            <TileZoneDebug
+              layout={layout}
+              areaRef={areaRef}
+              dividerPx={COMPOSITION_TREE_CLASSES.dividerPx}
+            />
+          </div>
+          <div className="composition-presence-layer" aria-hidden="true">
+            {remoteCursors.cursors.map((cursor) => {
+              const color = remoteCursors.colorFor(cursor);
+              const fraction = clampCursorFraction(cursor);
+              return (
+                <div
+                  className="remote-cursor"
+                  data-cursor-color={color ?? ""}
+                  key={remoteCursorSocketId(cursor.principalId, cursor.connId)}
+                  style={{
+                    color: color ?? REMOTE_CURSOR_FALLBACK_COLOR,
+                    left: `${String(fraction.x * 100)}%`,
+                    top: `${String(fraction.y * 100)}%`,
+                  }}
+                >
+                  <RemoteCursorIcon />
+                  <span>{remoteCursors.labelFor(cursor)}</span>
+                </div>
+              );
+            })}
+            {/*
             A collaborator's carry. Every carry gets a ghost here: a composition has no
             free geometry to move a leaf through, so the chip under their pointer is the
             only way the motion is visible — while the source leaf wears `is-carried`
             for the person holding it.
           */}
-          {remoteCarries.map((ghost) => (
-            <div
-              className="carry-ghost"
-              data-carry-kind={ghost.kind}
-              key={ghost.key}
-              style={{
-                borderColor:
-                  client.attendance.get(ghost.principalId)?.principal.color ??
-                  REMOTE_CURSOR_FALLBACK_COLOR,
-                left: `${String(ghost.x * 100)}%`,
-                top: `${String(ghost.y * 100)}%`,
-              }}
-            >
-              <span className="carry-ghost__glyph" aria-hidden="true">
-                <ItemIcon kind={ghost.kind} size={12} />
-              </span>
-              <span className="carry-ghost__label">{ghost.label}</span>
-            </div>
-          ))}
+            {remoteCarries.map((ghost) => (
+              <div
+                className="carry-ghost"
+                data-carry-kind={ghost.kind}
+                key={ghost.key}
+                style={{
+                  borderColor:
+                    client.attendance.get(ghost.principalId)?.principal.color ??
+                    REMOTE_CURSOR_FALLBACK_COLOR,
+                  left: `${String(ghost.x * 100)}%`,
+                  top: `${String(ghost.y * 100)}%`,
+                }}
+              >
+                <span className="carry-ghost__glyph" aria-hidden="true">
+                  <ItemIcon kind={ghost.kind} size={12} />
+                </span>
+                <span className="carry-ghost__label">{ghost.label}</span>
+              </div>
+            ))}
+          </div>
+          <ContainerOverlayOutlet
+            slot="container-spotlight"
+            client={client}
+            containerId={containerId}
+            host={host}
+          />
         </div>
-        {/*
-          The presence CHROME, which is somebody else's: the roster island and the spotlight
-          receipt belong to `core.presence` and reach every mounted ref through the same
-          two overlay slots the canvas mounts. Remote cursors and carry ghosts above are this
-          renderer's own paint, because only this renderer knows that a composition room measures in
-          view-root fractions — the plane mechanism is the engine's, the projection is the
-          view's, and the decoration is the presence plugin's.
-        */}
-        <ContainerOverlayOutlet
-          slot="container-roster"
-          client={client}
-          containerId={containerId}
-          host={host}
-        />
-        <ContainerOverlayOutlet
-          slot="container-spotlight"
-          client={client}
-          containerId={containerId}
-          host={host}
-        />
       </div>
-    </div>
+    </ProjectionScopeProvider>
   );
 }

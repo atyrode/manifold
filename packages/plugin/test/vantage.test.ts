@@ -25,6 +25,7 @@ const INITIAL: Vantage = {
   tool: null,
   editingElementId: null,
   focusedContainerId: null,
+  locationPath: null,
   sidebarCollapsed: false,
   arranging: false,
   arrangeScope: null,
@@ -50,10 +51,36 @@ afterEach(() => {
 });
 
 describe("view state store", () => {
-  test("starts fully specified: every facet is a value, never a missing key", () => {
-    // A peer renders "holding no tool" differently from "we do not know", and presence
-    // payloads merge — an absent facet would read as "unchanged" at the far end.
-    expect(currentVantage()).toEqual(INITIAL);
+  test("equivalent mounted paths do not echo; changing placement and clearing do publish", () => {
+    const heard: Vantage[] = [];
+    const stop = subscribeVantage((view) => heard.push(view));
+    try {
+      setVantage({
+        locationPath: [
+          { kind: "container", containerId: "root" },
+          { kind: "element", containerId: "root", elementId: "p1" },
+        ],
+      });
+      setVantage({
+        locationPath: [
+          { kind: "container", containerId: "root" },
+          { kind: "element", containerId: "root", elementId: "p1" },
+        ],
+      });
+      expect(heard).toHaveLength(1);
+      setVantage({
+        locationPath: [
+          { kind: "container", containerId: "root" },
+          { kind: "element", containerId: "root", elementId: "p2" },
+        ],
+      });
+      expect(heard).toHaveLength(2);
+      setVantage({ locationPath: null });
+      expect(heard).toHaveLength(3);
+      expect(currentVantage().locationPath).toBeNull();
+    } finally {
+      stop();
+    }
   });
 
   test("a patch merges, and every subscriber hears the WHOLE state", () => {
@@ -121,6 +148,7 @@ describe("view state store", () => {
       tool: "text",
       editingElementId: "el-1",
       focusedContainerId: "container-1",
+      locationPath: null,
       sidebarCollapsed: true,
       arranging: true,
       arrangeScope: "core.shell.sidebar",

@@ -151,7 +151,7 @@ function tileRefAsPlacement(ref: TileRef, containerId: string): PlacementRef {
       return { kind: "terminal", terminalId: ref.terminalId };
     case "container":
       return { kind: "container", containerId: ref.containerId };
-    case "text":
+    case "element":
       return { kind: "element", containerId, elementId: ref.elementId };
     case "panel":
       // No placement ref names a panel: a workspace layout is written whole by

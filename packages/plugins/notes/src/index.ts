@@ -56,6 +56,7 @@ export const notesManifest: PluginManifest = {
       {
         type: "text",
         title: "Note",
+        presentation: { canvas: "body", composition: "titlebar" },
         placement: { groups: ["tileable", "canvas_item"], guards: [], homed: "on_claim" },
       },
     ],

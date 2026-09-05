@@ -132,8 +132,8 @@ export const manifest: PluginManifest = {
   dataVersion: { major: 1, minor: 0 }, // the shape of the data you store
   dependencies: {
     "core.canvas": {
-      type: "required",
-      reason: "strokes are canvas elements; without the canvas renderer the tool has no surface",
+      type: "optional",
+      reason: "the drawing tool needs a canvas; a drawing in a composition renders independently",
     },
   },
   after: ["core.shell"], // soft ordering only; a missing target is ignored
@@ -157,7 +157,8 @@ export const manifest: PluginManifest = {
       {
         type: "draw",
         title: "Drawing",
-        placement: { groups: ["canvas_item"], guards: [], homed: "inline" },
+        placement: { groups: ["tileable", "canvas_item"], guards: [], homed: "on_claim" },
+        presentation: { canvas: "body", composition: "titlebar" },
       },
     ],
     // `tools` are toolbar tools. `toolbar` NAMES THE BAR the tool paints into, from the
@@ -254,10 +255,24 @@ Rules worth knowing before you write one:
 
   `placement` is optional, and omitting it means `DEFAULT_ELEMENT_PLACEMENT_TRAITS`
   (`{ groups: ["canvas_item"], guards: [], homed: "inline" }`, exported from the protocol — the
-  `draw` row verbatim). When you DO declare it, all three fields are required: `homed: null` is how
-  you say "no home", not omission. There is no canvas-operation key — the op is derived by the
+  default). When you DO declare it, all three fields are required: `homed: null` is how
+  you say "no home", not omission. Draw and Notes instead declare `tileable` plus `canvas_item`
+  with `on_claim` homing, so placement can move their element into a composition. There is no
+  canvas-operation key — the op is derived by the
   algebra, which is the half that stays engine (ADR 0013 §12). The container-site-only guard
   `discipline_match` is refused on an element. Every closed wire literal is `snake_case`.
+
+- **Element presentation is declared per discipline**, independently of placement:
+  `presentation?: Record<ContainerDiscipline, "body" | "titlebar">`. The map uses discipline
+  names (at most 32 entries) and stays optional through `RegisteredElement`; omitting a
+  declaration does not manufacture one in the manifest. Canvas reads
+  `projection.element(type)?.presentation?.["canvas"] ?? "titlebar"` rather than branching on
+  plugin/type names. Its own builtin portal uses shared titlebar policy. Notes and Draw declare
+  `{ canvas: "body", composition: "titlebar" }`: inline content keeps its natural text/ink
+  presentation while a composition always titles its occupant. Unknown/unavailable elements
+  get a sensible titled placeholder; no declaration may make missing work an unlabelled hole.
+  Draw and Notes use the same `{ kind: "element", elementId }` tile reference. Its scene
+  record lives in the composition's document; the contributed type selects its renderer.
 
 - **`purges` is a declaration for audit, never a trigger.** It says which of the closed purge
   targets (`storage`, `elements`, `ownership`) you hold, so a human can see what
@@ -924,6 +939,66 @@ grant, project it), and it publishes that pipe with `useRoomPipeRegistration` fr
 `@manifold/plugin/hooks` on mount so the routing above has something to route through — the
 shipped canvas and composition renderers are the worked examples.
 
+### Mounted location and shared titlebars
+
+The engine's `NodeTitleBar` is the existing shared UI primitive, **not a titlebar plugin**.
+Renderers own their chrome and invite contributions into its slots. Import `ProjectionScope`,
+`ProjectionScopeProvider`, `useProjectionScope`, `extendProjectionScope`, `usePublishLocation`,
+`publishLocation`, and `TitlebarOutlet` from `@manifold/plugin/hooks`:
+
+- Create a root `ProjectionScope { host, client, locationPath }` using the routed attendance
+  client and `[{ kind: "container", containerId: rootId }]`. Keep that SAME root client in
+  every descendant scope, even when a nested renderer registers its own room pipe.
+- At each mount boundary, extend the scope with the actual containing `element` or `tile` ref
+  and then the target ref. Wrap descendants in `<ProjectionScopeProvider value={scope}>`.
+  Never derive a canonical parent from the index: two portals to one target are two locations.
+  Unknown/overlong paths stay unknown; do not truncate them to create a false ancestor match.
+- Call the callback returned by `usePublishLocation(scope?)` on engagement/focus, not during
+  render. The hook defaults to inherited scope. On disengagement publish the enclosing path;
+  on route teardown publish `null` with `publishLocation`. Equivalent paths are compared
+  structurally, so fresh arrays do not echo. Root vantage publication is independent of
+  whether any presence painter is enabled; preserve legacy `focus.elementId` sends.
+- Place `<TitlebarOutlet scope={scope} />` in `NodeTitleBar.middle`. The optional scope
+  defaults to inherited context. It reads the existing `overlays.titlebar` registration;
+  missing/disabled contributions or unknown scope paint nothing, without a wrapper.
+  `core.presence` derives compact attendance from per-connection mounted paths, deduplicates
+  principals and retains its roster popover in the browser's top layer so tile and titlebar
+  clipping cannot hide its details. Do not add renderer-specific avatars or infer a remote
+  path from the principal's aggregate vantage. `container-spotlight` remains separate.
+
+Both `TerminalRendererProps` and `ContainerRendererProps` expose `projectionScope?`,
+`frame?: "window" | "tile"`, `titlebarMiddle?`, `titlebarExtras?`, and `titlebarDragProps?`.
+Forward these to the occupant's own shared bar, not a second host-rendered bar. The middle
+slot hosts attendance; extra actions host native terminal font controls. `NodeTitleBar` maps
+`extraActions` to its action area and accepts `dragProps?: TitlebarDragProps` from
+`@manifold/plugin/ui`: `draggable?` and native div `onDragStart`/`onDrag`/`onDragEnd` handlers.
+Opting in marks the whole bar with `data-titlebar-draggable`; `draggable: false` supports an
+external pointer transport. Interactive descendants, rename input and selected title text
+remain protected from host dragging. No separate visible grip is needed.
+
+`frame` defaults to `window`: rounded exterior chrome. Use `tile` for internal occupants:
+square seams and matching backing, with the terminal plugin owning its own frame/xterm CSS.
+Portal composition chrome and terminal typography use the same native scale as mono
+windows; only canvas zoom scales the whole projection. Spectator fitting changes its
+display, never the shared PTY geometry.
+Do not reach into another plugin's CSS families to mask corners. Keep the live content host
+stable: tile preview and authoritative FLIP settlement transform `tile-content-host`, never
+both a pane ancestor and its content. Pass `useTileDeparture(containerId, overrides)` from
+`@manifold/plugin/ui` to `TilePreviewOverlay.departure`. It reactively reads the shared local
+carry register, preferring a local matching tile over the freshest source-matching remote
+override even without an aim; incoming target arbitration wins. Portals combine canvas and
+own-room overrides only at this overlay leaf, not in their live content host. Clear on
+end/expiry, and keep `TileTree` mounted for an empty layout while its bounded departure shell
+finishes. Portal body clicks engage through capture without a covering shield, leaving native
+occupant titlebar controls reachable.
+
+The existing session gesture relay also reaches a tile carry's source composition when the
+native drag streams through its enclosing canvas, with or without a target aim. Source and
+aim rooms each require the sender's `containers:read` authority and must already be resident;
+shared recipients receive one frame. These cross-room frames retain `aimOnly`, which forbids
+painting their foreign canvas geometry. The same projection memory delivers releases to
+previous source/aim rooms even when the end frame omits the carry.
+
 That is the whole host contract, and it is deliberate: no store, no room map, no React context
 from `packages/web`, nothing that would have to be re-plumbed if plugin code were later moved
 behind an isolation boundary. If you need data the host does not expose, add a typed wrapper to
@@ -1253,7 +1328,7 @@ what all six are keyed by, and which of them the manifest declares:
 | Channel               | Keyed by                                                                  | Manifest row                         |
 | --------------------- | ------------------------------------------------------------------------- | ------------------------------------ |
 | **renderers**         | a container DISCIPLINE (`canvas`, `composition`)                          | no                                   |
-| **overlays**          | a container overlay SLOT (`container-roster`, `container-spotlight`)      | no                                   |
+| **overlays**          | a mounted overlay SLOT (`titlebar`, `container-spotlight`)                | no                                   |
 | **workspaceOverlays** | a workspace overlay SLOT (`commands`, `inspector`, `toolbar`)             | no                                   |
 | **terminal facet**    | nothing: one viewer per workspace, published for other renderers to mount | no                                   |
 | **bindings**          | a KEYSTROKE (`F6`, `Mod+k`), claimed globally                             | no — declaration IS the registration |
@@ -1271,7 +1346,7 @@ what makes a registration for an undeclared segment contribute nothing.
 **A duplicate on any of the six is a refusal naming both offenders** — the four projection
 channels and routes in `buildBrowserAssembly` (`packages/web/src/plugin-host.tsx`), bindings in
 `composeBindings` — in the same sentence assembly uses for a duplicate section or element type:
-`duplicate overlay "container-roster" claimed by: core.presence, acme.presence`.
+`duplicate overlay "titlebar" claimed by: core.presence, acme.presence`.
 Claims are collected over the whole roster, disabled plugins included, so turning a plugin off
 can never mask a collision that turning it back on would resurrect. Until wave F the second
 registrant silently won by roster order, which made the owner of a discipline, a slot, a path or

@@ -649,9 +649,22 @@ export class SessionClient {
       case "presence": {
         const entry = this.attendance.get(msg.principalId);
         if (entry) {
+          // Location belongs to the stamped connection, never the principal's last-writer payload.
+          const connectionLocations =
+            msg.payload.vantage === undefined
+              ? entry.connectionLocations
+              : entry.connIds.map((connId) => ({
+                  connId,
+                  locationPath:
+                    connId === msg.connId
+                      ? (msg.payload.vantage?.locationPath ?? null)
+                      : (entry.connectionLocations?.find((location) => location.connId === connId)
+                          ?.locationPath ?? null),
+                }));
           this.attendance.set(msg.principalId, {
             ...entry,
             payload: { ...entry.payload, ...msg.payload },
+            ...(connectionLocations === undefined ? {} : { connectionLocations }),
           });
         }
         this.emit(msg.type, msg);

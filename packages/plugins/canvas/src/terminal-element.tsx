@@ -1,9 +1,4 @@
-import type {
-  CarriedItem,
-  MachineSummary,
-  Attendance,
-  PlacementDestination,
-} from "@manifold/protocol";
+import type { CarriedItem, MachineSummary, PlacementDestination } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import { createContext, useContext, useMemo } from "react";
 import type { CanvasTool } from "./canvas-tool.ts";
@@ -12,6 +7,7 @@ import {
   type CarryController,
   type ItemDropAssessment,
   type TileDropStore,
+  type GestureOverride,
 } from "@manifold/plugin/hooks";
 import type { ElementHost, HostServices } from "@manifold/plugin";
 import type { ChannelRole } from "./portal-engagement.ts";
@@ -34,10 +30,12 @@ export interface CanvasContextValue {
   readonly client: SessionClient;
   /**
    * The canvas's carry. Any chrome a node offers as a grab handle starts one through
-   * this, so a portal's tile grip and a node drag are the same gesture to everyone
+   * this, so a portal's tile titlebar and a node drag are the same gesture to everyone
    * watching — the node never opens a gesture channel of its own.
    */
   readonly carry: CarryController;
+  /** Track native tile chrome in this canvas's existing carry coordinate space. */
+  readonly trackCarry: (clientX: number, clientY: number) => void;
   readonly machines: readonly MachineSummary[] | null;
   /** Renames the terminal behind an element from its titlebar title. */
   readonly onRenameTerminal: (terminalId: string, name: string) => void;
@@ -144,34 +142,24 @@ export interface CanvasContextValue {
   readonly elementSeat: (containerId: string, elementId: string) => boolean;
 }
 
-/**
- * TWO contexts, split by CADENCE rather than by topic.
- *
- * Everything a node calls is stable for the life of the canvas, so it belongs in a value
- * that changes only when the canvas's own mode does. Polled presence is not: a new array
- * arrives every poll tick, and while it lived here every live terminal and every portal
- * re-rendered on a timer, for data all but one of them never read. The split is what
- * lets a node subscribe to the frequency it actually consumes — and what let the portal
- * socket drop its `openClient` ref indirection, since a stable callback can simply be an
- * effect dependency.
- */
 const CanvasContext = createContext<CanvasContextValue | null>(null);
-const CanvasPresenceContext = createContext<readonly Attendance[] | null>(null);
+const CanvasGestureContext = createContext<ReadonlyMap<string, GestureOverride>>(new Map());
+
+/** Only overlay leaves consume high-cadence source carry frames. */
+export function useCanvasGestures(): ReadonlyMap<string, GestureOverride> {
+  return useContext(CanvasGestureContext);
+}
 
 /**
- * One element for every context a canvas node reads. Two of them are the canvas's own — a
- * value whose lifetime is the canvas's mode, and polled presence that changes on a timer — and
- * the third is the ENGINE's element-mount contract, which floor nodes ignore and contributed
- * ones (a note) live on. Nesting the raw providers at the call site would bury those three
- * very different lifetimes in JSX indentation instead of stating them here.
+ * Canvas actions and the neutral document contract shared by contributed elements.
  */
 export function CanvasProviders({
   value,
-  presence,
+  gestures,
   children,
 }: {
   readonly value: CanvasContextValue;
-  readonly presence: readonly Attendance[];
+  readonly gestures: ReadonlyMap<string, GestureOverride>;
   readonly children: React.ReactNode;
 }): React.ReactElement {
   /*
@@ -193,9 +181,9 @@ export function CanvasProviders({
   );
   return (
     <CanvasContext.Provider value={value}>
-      <CanvasPresenceContext.Provider value={presence}>
+      <CanvasGestureContext.Provider value={gestures}>
         <ElementHostProvider value={elementHost}>{children}</ElementHostProvider>
-      </CanvasPresenceContext.Provider>
+      </CanvasGestureContext.Provider>
     </CanvasContext.Provider>
   );
 }
@@ -207,20 +195,7 @@ export function useCanvas(): CanvasContextValue {
 }
 
 /**
- * Polled principal-level presence. Read ONLY where nothing better exists: a live portal
- * has its own room socket and reads the roster from it, so this is the card form's
- * fallback, and subscribing to it anywhere else re-imposes the poll on the whole canvas.
- */
-export function useCanvasPresence(): readonly Attendance[] {
-  const value = useContext(CanvasPresenceContext);
-  if (value === null) throw new Error("CanvasPresenceContext is missing above a canvas node");
-  return value;
-}
-
-/**
- * React Flow drag handle. The terminal's OWN titlebar, which is what a user reaches for —
- * enabled by `TerminalView`'s opt-in `titlebarDragsHost` call ref, since the frame otherwise
- * swallows pointerdown so xterm can own selection.
+ * React Flow moves a mono portal by the terminal's own opt-in titlebar.
  */
 export const TERMINAL_DRAG_HANDLE = ".terminal-titlebar";
 

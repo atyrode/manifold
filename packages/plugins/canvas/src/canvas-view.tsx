@@ -8,7 +8,7 @@ import {
   type PlacementDestination,
   type PlacementItem,
 } from "@manifold/protocol";
-import { lastSpotlight, type ViewportHandle } from "@manifold/plugin";
+import { itemNoun, lastSpotlight, type ViewportHandle } from "@manifold/plugin";
 import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
 import {
   NodeResizer,
@@ -26,6 +26,13 @@ import { CanvasToolbar } from "./canvas-toolbar.tsx";
 import { toolFlags, toolForKey, type CanvasTool } from "./canvas-tool.ts";
 import {
   ContainerOverlayOutlet,
+  ProjectionScopeProvider,
+  TitlebarOutlet,
+  extendProjectionScope,
+  publishLocation,
+  useProjectionScope,
+  usePublishLocation,
+  type ProjectionScope,
   REMOTE_CURSOR_FALLBACK_COLOR,
   carrierColor,
   carriesItem,
@@ -61,6 +68,7 @@ import {
 } from "@manifold/plugin/hooks";
 import {
   ItemIcon,
+  NodeTitleBar,
   RemoteCursorIcon,
   currentVantage,
   setVantage,
@@ -111,6 +119,10 @@ const CANVAS_NODE_TYPES: NodeTypes = {
  */
 const MIN_PLUGIN_ELEMENT_SIZE = 16;
 
+// Selection chrome must win over the positioned element body and its titlebar, just
+// like the terminal resize band. Otherwise a visible handle can drag the body beneath it.
+const PLUGIN_ELEMENT_RESIZE_STYLE = { zIndex: 6 };
+
 /**
  * Stable tags for contributed renderers. The node-type map has to be memoized on WHICH
  * components are registered — a fresh map remounts every node, live PTYs included — and a
@@ -143,7 +155,9 @@ function componentTag(component: ComponentType<never> | null): string {
 function elementRegistrySignature(elements: ReadonlyMap<string, RegisteredElement>): string {
   const parts: string[] = [];
   for (const [type, element] of elements) {
-    parts.push(`${type}:${element.enabled ? "1" : "0"}:${componentTag(element.Component)}`);
+    parts.push(
+      `${type}:${element.enabled ? "1" : "0"}:${componentTag(element.Component)}:${element.presentation?.["canvas"] ?? "titlebar"}`,
+    );
   }
   return parts.sort().join("|");
 }
@@ -162,14 +176,31 @@ function pluginElementNode(Component: ComponentType<never>): ComponentType<NodeP
   const Painter = Component as unknown as ComponentType<NodeProps>;
   return memo(function PluginElementNode(props: NodeProps) {
     const container = useCanvas();
+    const projection = useProjection();
+    const inherited = useProjectionScope();
+    const scope = useMemo(
+      () =>
+        extendProjectionScope(inherited, {
+          kind: "element",
+          containerId: container.containerId,
+          elementId: props.id,
+        }),
+      [inherited, container.containerId, props.id],
+    );
+    const publishHere = usePublishLocation(scope);
+    const type = props.type ?? "element";
+    const titled =
+      (projection.element(type)?.presentation?.["canvas"] ?? "titlebar") === "titlebar";
     return (
-      <>
+      <ProjectionScopeProvider value={scope}>
         {/* Ink and text keep the classic bounding-box handles; only terminals grab by border. */}
         <NodeResizer
           nodeId={props.id}
           isVisible={container.tool === "select" && props.selected === true}
           minWidth={MIN_PLUGIN_ELEMENT_SIZE}
           minHeight={MIN_PLUGIN_ELEMENT_SIZE}
+          handleStyle={PLUGIN_ELEMENT_RESIZE_STYLE}
+          lineStyle={PLUGIN_ELEMENT_RESIZE_STYLE}
           onResize={(_event, params) =>
             container.onResize(props.id, params.x, params.y, params.width, params.height)
           }
@@ -177,8 +208,26 @@ function pluginElementNode(Component: ComponentType<never>): ComponentType<NodeP
             container.onResizeEnd(props.id, params.x, params.y, params.width, params.height)
           }
         />
-        <Painter {...props} />
-      </>
+        <div
+          className={titled ? "canvas-element canvas-element--titled" : "canvas-element"}
+          onPointerDownCapture={publishHere}
+          onFocusCapture={publishHere}
+        >
+          {titled ? (
+            <NodeTitleBar
+              className="canvas-element__bar"
+              icon={<ItemIcon kind={type} size={13} />}
+              title={typeof props.data["name"] === "string" ? props.data["name"] : null}
+              defaultTitle={projection.element(type)?.title ?? type}
+              middle={<TitlebarOutlet scope={scope} />}
+              dragProps={{ draggable: false }}
+            />
+          ) : null}
+          <div className="canvas-element__body">
+            <Painter {...props} />
+          </div>
+        </div>
+      </ProjectionScopeProvider>
     );
   });
 }
@@ -194,9 +243,10 @@ function pluginPlaceholderNode(
   name: string,
   state: ProjectionState,
 ): ComponentType<NodeProps> {
-  return memo(function PluginElementPlaceholderNode() {
+  const Missing = memo(function PluginElementPlaceholderNode() {
     return <Placeholder name={name} state={state} />;
   });
+  return pluginElementNode(Missing as ComponentType<never>);
 }
 
 function buildNodeTypes(
@@ -217,7 +267,11 @@ function buildNodeTypes(
   // This plugin's own species last: `portal` is not overridable by a manifest that happens to
   // declare its wire type (D5 refuses plugin/plugin collisions; this refuses shadowing of the
   // ref's own addressing species at the one place it could bite).
-  return { ...contributed, ...CANVAS_NODE_TYPES };
+  return {
+    default: pluginPlaceholderNode(Placeholder, "Element", "unknown"),
+    ...contributed,
+    ...CANVAS_NODE_TYPES,
+  };
 }
 
 /**
@@ -316,10 +370,14 @@ export function CanvasView({
   host,
   containerId,
   navigate,
-  presence,
   containers,
   soloOccupants = NO_SOLO_OCCUPANTS,
   depth = 1,
+  projectionScope,
+  frame = "window",
+  titlebarDragProps,
+  titlebarExtras,
+  titlebarMiddle,
 }: ContainerRendererProps) {
   const { notify } = useNotice();
   const route = useContainerRoute();
@@ -333,6 +391,50 @@ export function CanvasView({
   const [client] = useState(
     () => new SessionClient({ url: sessionUrl(), containerId, token: host.token }),
   );
+  const inheritedScope = useProjectionScope();
+  const scope = useMemo<ProjectionScope | null>(
+    () =>
+      projectionScope !== undefined
+        ? projectionScope
+        : (inheritedScope ??
+          (routed
+            ? {
+                host,
+                client,
+                locationPath: [{ kind: "container", containerId }],
+              }
+            : null)),
+    [projectionScope, inheritedScope, routed, host, client, containerId],
+  );
+  const publishHere = usePublishLocation(scope);
+  useEffect(() => {
+    if (!routed) return;
+    publishHere();
+    return () => publishLocation(null);
+  }, [routed, publishHere]);
+  const containerName =
+    (route.activeContainer?.id === containerId ? route.activeContainer.name : null) ??
+    containers.find((entry) => entry.id === containerId)?.name ??
+    null;
+  const renameCanvas = (name: string): void => {
+    void host.client
+      .renameContainer(containerId, name)
+      .then(route.refreshActiveContainer)
+      .catch((reason: unknown) =>
+        notify(reason instanceof Error ? reason.message : "Could not rename this canvas"),
+      );
+  };
+  const closeCanvas = (): void => {
+    void host.client
+      .deleteContainer(containerId)
+      .then(() => {
+        navigate("/");
+        route.refreshActiveContainer();
+      })
+      .catch((reason: unknown) =>
+        notify(reason instanceof Error ? reason.message : "Could not delete this canvas"),
+      );
+  };
   const registerRoomPipe = useRoomPipeRegistration();
   useEffect(() => registerRoomPipe(containerId, client), [registerRoomPipe, containerId, client]);
   const [gestureStream] = useState(() => {
@@ -467,7 +569,16 @@ export function CanvasView({
    */
   useEffect(() => {
     if (depth !== 1) return;
-    return subscribeVantage((vantage) => client.sendPresence({ vantage }));
+    const send = (): void => client.sendPresence({ vantage: currentVantage() });
+    const offVantage = subscribeVantage(send);
+    const offStatus = client.on("status", (status) => {
+      if (status === "open") send();
+    });
+    if (client.status === "open") send();
+    return () => {
+      offVantage();
+      offStatus();
+    };
   }, [client, depth]);
 
   useEffect(() => {
@@ -756,10 +867,13 @@ export function CanvasView({
           ? {
               dragHandle: `${PORTAL_DRAG_HANDLE}, ${MONO_PORTAL_CLASS_SELECTOR} ${TERMINAL_DRAG_HANDLE}`,
             }
-          : {}),
+          : (projection.element(element.type)?.presentation?.["canvas"] ?? "titlebar") ===
+              "titlebar"
+            ? { dragHandle: ".canvas-element__bar" }
+            : {}),
         data: element.data,
       })),
-    [projected],
+    [projected, projection],
   );
   const [nodes, setNodes, handleNodesChange] = useNodesState<Node>(canonicalNodes);
 
@@ -772,52 +886,42 @@ export function CanvasView({
    * The server answers the same two questions from its rows and rooms, so a drag preview
    * here can never disagree with the write that follows it.
    */
-  const lookup = useMemo(
-    () =>
-      createPlacementLookup({
-        containers,
-        self: { containerId, discipline: "canvas" },
-        elements: client.elements,
-        // A terminal's home composition is on its terminal record now, so the canvas can
-        // answer "where does this terminal live" without joining anything.
-        terminalHomes: new Map(
-          [...client.terminals.values()].map(
-            (terminal) => [terminal.id, terminal.containerId] as const,
-          ),
+  const lookup = useMemo(() => {
+    // Both tables mutate in place; their revisions invalidate the derived snapshot.
+    void sceneRevision;
+    void projection.revision;
+    return createPlacementLookup({
+      containers,
+      self: { containerId, discipline: "canvas" },
+      elements: client.elements,
+      // A terminal's home composition is on its terminal record now, so the canvas can
+      // answer "where does this terminal live" without joining anything.
+      terminalHomes: new Map(
+        [...client.terminals.values()].map(
+          (terminal) => [terminal.id, terminal.containerId] as const,
         ),
-        // Supplied by the index, which is the only party that can see the arity of a
-        // container this canvas merely points at. Handing it down is what lets a canvas
-        // drag preview agree with the write the server performs.
-        soloOccupants,
-        /*
+      ),
+      // Supplied by the index, which is the only party that can see the arity of a
+      // container this canvas merely points at. Handing it down is what lets a canvas
+      // drag preview agree with the write the server performs.
+      soloOccupants,
+      /*
           The composed vocabulary, because a CONTRIBUTED element kind's placement traits live
           in its manifest rather than in the closed floor table (ADR 0013 §12): without it a
           note dragged into a composition would be refused by this preview and accepted by the
           server, which is the one disagreement the local algebra exists to prevent.
         */
-        roster: host.assembly.roster(),
-      }),
-    /*
-      `sceneRevision` is a KEY, not a closure read, and the exhaustive-deps rule says so out
-      loud — leave it anyway: the session client's tables mutate in place, so the version
-      counter is the only value that moves when the scene does, and the terminal-home map
-      above is a SNAPSHOT of one of them. Drop this dependency and a terminal created a
-      moment ago has no home here, which reads as a placement denial mid-drag.
-
-      `projection.revision` is the roster's version for the same reason: `roster()` answers a
-      fresh array every call, so the revision is the only value that moves when the composed
-      vocabulary does.
-    */
-    [
-      client,
-      containers,
-      containerId,
-      sceneRevision,
-      soloOccupants,
-      host.assembly,
-      projection.revision,
-    ],
-  );
+      roster: host.assembly.roster(),
+    });
+  }, [
+    client,
+    containers,
+    containerId,
+    sceneRevision,
+    soloOccupants,
+    host.assembly,
+    projection.revision,
+  ]);
 
   const drop = useItemDrop({
     lookup,
@@ -1400,13 +1504,20 @@ export function CanvasView({
   const flags = toolFlags(tool);
 
   /**
-   * The canvas's API, and deliberately NOT its polled data: presence rides its own
-   * context (see `CanvasPresenceProvider` below), so a poll tick no longer rebuilds
-   * this object and re-renders every live terminal on the canvas for it.
+   * The canvas's stable actions. High-cadence gesture snapshots use a separate context,
+   * consumed only by motion overlays.
    */
   const context = useMemo<CanvasContextValue>(
     () => ({
       carry,
+      trackCarry: (clientX, clientY) => {
+        const flow = flowRef.current;
+        if (flow === null) return;
+        carry.track(
+          flow.screenToFlowPosition({ x: clientX, y: clientY }),
+          dropStore.get().aim?.tile,
+        );
+      },
       client,
       host,
       machines,
@@ -1552,47 +1663,66 @@ export function CanvasView({
   }, [client, remoteGestures, sceneRevision]);
 
   return (
-    <div className="canvas-view">
+    <ProjectionScopeProvider value={scope}>
       <div
-        className="canvas"
-        ref={canvasRef}
-        tabIndex={0}
-        onDoubleClick={(event) => {
-          if (
-            !(event.target instanceof Element) ||
-            !event.target.classList.contains("react-flow__pane")
-          ) {
-            return;
-          }
-          createTextAt(event.clientX, event.clientY);
-        }}
-        onKeyDown={(event) => {
-          if (isTypingTarget(event.target)) return;
-          const modifier = event.ctrlKey || event.metaKey;
-          if (modifier && event.key.toLowerCase() === "z") {
-            event.preventDefault();
-            if (event.shiftKey) client.redo();
-            else client.undo();
-            return;
-          }
-          if (!modifier && !event.altKey) {
-            const nextTool = toolForKey(event.key);
-            // A shortcut naming a tool means nothing while its plugin is off: the key binding
-            // is this ref's, the vocabulary is the composition's.
+        className="canvas-view"
+        data-frame={frame}
+        onPointerDownCapture={publishHere}
+        onFocusCapture={publishHere}
+      >
+        <NodeTitleBar
+          className="canvas-header"
+          icon={<ItemIcon kind="canvas" size={15} />}
+          title={containerName}
+          defaultTitle={itemNoun("canvas", host.assembly.roster())}
+          onRenameTitle={renameCanvas}
+          middle={titlebarMiddle ?? <TitlebarOutlet scope={scope} />}
+          extraActions={titlebarExtras}
+          dragProps={titlebarDragProps}
+          onClose={routed ? closeCanvas : undefined}
+          closeLabel={`Delete canvas ${containerName ?? containerId}`}
+          closeTooltip="Delete this canvas for everyone"
+        />
+        <div
+          className="canvas"
+          ref={canvasRef}
+          tabIndex={0}
+          onDoubleClick={(event) => {
             if (
-              nextTool !== null &&
-              projection.tools.some((candidate) => candidate.enabled && candidate.id === nextTool)
+              !(event.target instanceof Element) ||
+              !event.target.classList.contains("react-flow__pane")
             ) {
-              event.preventDefault();
-              setTool(nextTool);
               return;
             }
-          }
-          if (event.key !== "Delete" && event.key !== "Backspace") return;
-          const selected = flowRef.current?.getNodes().filter((node) => node.selected) ?? [];
-          if (selected.length === 0) return;
-          event.preventDefault();
-          /*
+            createTextAt(event.clientX, event.clientY);
+          }}
+          onKeyDown={(event) => {
+            if (isTypingTarget(event.target)) return;
+            const modifier = event.ctrlKey || event.metaKey;
+            if (modifier && event.key.toLowerCase() === "z") {
+              event.preventDefault();
+              if (event.shiftKey) client.redo();
+              else client.undo();
+              return;
+            }
+            if (!modifier && !event.altKey) {
+              const nextTool = toolForKey(event.key);
+              // A shortcut naming a tool means nothing while its plugin is off: the key binding
+              // is this ref's, the vocabulary is the composition's.
+              if (
+                nextTool !== null &&
+                projection.tools.some((candidate) => candidate.enabled && candidate.id === nextTool)
+              ) {
+                event.preventDefault();
+                setTool(nextTool);
+                return;
+              }
+            }
+            if (event.key !== "Delete" && event.key !== "Backspace") return;
+            const selected = flowRef.current?.getNodes().filter((node) => node.selected) ?? [];
+            if (selected.length === 0) return;
+            event.preventDefault();
+            /*
             One verb for every species now: Delete removes the REPRESENTATION. A note or
             a stroke exists nowhere else, so that ends it; a portal's portal is only a
             reference, so the composition behind it lives on — and a terminal whose last
@@ -1600,29 +1730,29 @@ export function CanvasView({
             nothing pointing at its home rather than stored anywhere. That is why this is
             an ordinary undoable scene edit and no longer a server round trip.
           */
-          tombstone(selected.map((node) => node.id));
-        }}
-        onDragOver={(event) => {
-          if (!carriesItem(event.dataTransfer)) return;
-          carryingRef.current = true;
-          const flow = flowRef.current;
-          const at =
-            flow === null
-              ? null
-              : flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
-          const pane =
-            at === null ? null : drop.assess({ kind: "canvas", containerId, x: at.x, y: at.y });
-          // Pointer FIRST, then read the answer: this frame's pointer reaches the armed
-          // portal's overlay before anything here consults the store, so the aim is one
-          // frame behind — the same lag the node-drag transport has, instead of two.
-          trackCompose(event.clientX, event.clientY, null);
-          const aim = dropStore.get().aim;
-          // The carry streams from wherever the pointer IS, so a drag that began on a
-          // sidebar row or a portal's tile becomes visible to collaborators the moment
-          // it enters this canvas — the same motion a node drag broadcasts.
-          if (at !== null) carry.track(at, aim?.tile);
-          const verdict = aim !== null ? drop.assess(aim.destination) : pane;
-          /*
+            tombstone(selected.map((node) => node.id));
+          }}
+          onDragOver={(event) => {
+            if (!carriesItem(event.dataTransfer)) return;
+            carryingRef.current = true;
+            const flow = flowRef.current;
+            const at =
+              flow === null
+                ? null
+                : flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+            const pane =
+              at === null ? null : drop.assess({ kind: "canvas", containerId, x: at.x, y: at.y });
+            // Pointer FIRST, then read the answer: this frame's pointer reaches the armed
+            // portal's overlay before anything here consults the store, so the aim is one
+            // frame behind — the same lag the node-drag transport has, instead of two.
+            trackCompose(event.clientX, event.clientY, null);
+            const aim = dropStore.get().aim;
+            // The carry streams from wherever the pointer IS, so a drag that began on a
+            // sidebar row or a portal's tile becomes visible to collaborators the moment
+            // it enters this canvas — the same motion a node drag broadcasts.
+            if (at !== null) carry.track(at, aim?.tile);
+            const verdict = aim !== null ? drop.assess(aim.destination) : pane;
+            /*
             A DROP TARGET CLAIMS A POINT ONLY IF IT CAN TAKE WHAT IS OVER IT.
 
             This used to claim every point and explain the refusal afterwards, so that the
@@ -1639,279 +1769,266 @@ export function CanvasView({
             denials in general, so a terminal this canvas refuses falls through for exactly
             the same reason a structure does.
           */
-          if (verdict?.denial != null) return;
-          event.preventDefault();
-          event.dataTransfer.dropEffect = "move";
-        }}
-        onDragLeave={(event) => {
-          const next = event.relatedTarget;
-          if (next instanceof Element && event.currentTarget.contains(next)) return;
-          clearCompose();
-        }}
-        onDrop={(event) => {
-          if (!carriesItem(event.dataTransfer)) return;
-          const flow = flowRef.current;
-          if (flow === null) return;
-          const aim = dropStore.get().aim;
-          const transfer = event.dataTransfer;
-          const at = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
-          // Bare canvas is the one POLYMORPHIC door: a terminal portals, a container
-          // becomes a portal, a tile is extracted, a note or a stroke moves. Which of
-          // those it is comes from the declarations, not from a branch here — which is
-          // exactly the gap that used to swallow a container dropped on empty canvas.
-          const destination =
-            aim !== null
-              ? aim.destination
-              : { kind: "canvas" as const, containerId, x: at.x, y: at.y };
-          /*
+            if (verdict?.denial != null) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+          }}
+          onDragLeave={(event) => {
+            const next = event.relatedTarget;
+            if (next instanceof Element && event.currentTarget.contains(next)) return;
+            clearCompose();
+          }}
+          onDrop={(event) => {
+            if (!carriesItem(event.dataTransfer)) return;
+            const flow = flowRef.current;
+            if (flow === null) return;
+            const aim = dropStore.get().aim;
+            const transfer = event.dataTransfer;
+            const at = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+            // Bare canvas is the one POLYMORPHIC door: a terminal portals, a container
+            // becomes a portal, a tile is extracted, a note or a stroke moves. Which of
+            // those it is comes from the declarations, not from a branch here — which is
+            // exactly the gap that used to swallow a container dropped on empty canvas.
+            const destination =
+              aim !== null
+                ? aim.destination
+                : { kind: "canvas" as const, containerId, x: at.x, y: at.y };
+            /*
             The verdict is read BEFORE the carry is retired, and the order is load-bearing:
             `carry.end` empties the register `assess` judges from (`endCarry`), so a verdict
             taken after it always reads "nothing to judge" — which is a claim on every point
             this canvas is handed, including the ones it is about to refuse.
           */
-          const verdict = drop.assess(destination);
-          clearCompose();
-          // Released: the ghost is retired before the write, so nobody watches a carried
-          // item hover over a canvas it has already landed on. The payload lives in the
-          // transfer, so ending the carry cannot cost the drop its envelope.
-          carry.end(at);
-          // The same rule the `dragover` above answers to: a release this canvas cannot take
-          // is neither committed nor claimed, so it keeps bubbling to whatever weaker
-          // claimant is behind it — the workspace tree, for a carry aimed past this pane.
-          if (verdict?.denial != null) return;
-          event.preventDefault();
-          drop.commit(transfer, destination);
-        }}
-        /*
+            const verdict = drop.assess(destination);
+            clearCompose();
+            // Released: the ghost is retired before the write, so nobody watches a carried
+            // item hover over a canvas it has already landed on. The payload lives in the
+            // transfer, so ending the carry cannot cost the drop its envelope.
+            carry.end(at);
+            // The same rule the `dragover` above answers to: a release this canvas cannot take
+            // is neither committed nor claimed, so it keeps bubbling to whatever weaker
+            // claimant is behind it — the workspace tree, for a carry aimed past this pane.
+            if (verdict?.denial != null) return;
+            event.preventDefault();
+            drop.commit(transfer, destination);
+          }}
+          /*
           The STROKE gesture: what holding the contributed `draw` tool does. The tool's name
           and its button come from the assembly, but the pointer behaviour is still floor
           — `until core.canvas tool-behavior contributions`, when a tool will bring its own
           gesture and this handler will dispatch to it instead of naming an id.
         */
-        onPointerDownCapture={(event) => {
-          if (tool !== "draw" || event.button !== 0 || isTypingTarget(event.target)) return;
-          if (
-            event.target instanceof Element &&
-            event.target.closest(".canvas-toolbar, .canvas-presence") !== null
-          ) {
-            return;
-          }
-          const flow = flowRef.current;
-          if (flow === null) return;
-          const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
-          const points: number[] = [];
-          appendPoint(points, point.x, point.y);
-          strokeRef.current = {
-            id: crypto.randomUUID(),
-            pointerId: event.pointerId,
-            points,
-          };
-          event.currentTarget.setPointerCapture(event.pointerId);
-          setActiveStrokePoints([...points]);
-          event.preventDefault();
-        }}
-        onPointerMoveCapture={(event) => {
-          emitCursor(event.clientX, event.clientY);
-          const stroke = strokeRef.current;
-          const flow = flowRef.current;
-          if (stroke === null || stroke.pointerId !== event.pointerId || flow === null) return;
-          const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
-          if (appendPoint(stroke.points, point.x, point.y)) {
-            const points = gesturePoints(stroke.points);
-            gestureStream.push({
-              kind: "draw",
-              phase: "active",
-              elementId: stroke.id,
-              x: points.at(-2) ?? 0,
-              y: points.at(-1) ?? 0,
+          onPointerDownCapture={(event) => {
+            if (tool !== "draw" || event.button !== 0 || isTypingTarget(event.target)) return;
+            if (
+              event.target instanceof Element &&
+              event.target.closest(".canvas-toolbar, .canvas-presence") !== null
+            ) {
+              return;
+            }
+            const flow = flowRef.current;
+            if (flow === null) return;
+            const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+            const points: number[] = [];
+            appendPoint(points, point.x, point.y);
+            strokeRef.current = {
+              id: crypto.randomUUID(),
+              pointerId: event.pointerId,
               points,
-            });
-            setActiveStrokePoints([...stroke.points]);
-          }
-        }}
-        onPointerUpCapture={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          }
-          completeStroke(event.pointerId);
-        }}
-        onPointerCancelCapture={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          }
-          completeStroke(event.pointerId);
-          // A cancelled pointer is gone without ever crossing the boundary: no
-          // `pointerleave` follows a touch the browser took back.
-          retractCursor();
-        }}
-        // Fires only when the pointer leaves the canvas AND everything drawn inside it, so
-        // crossing into an element does not retract. A captured pointer (a live stroke)
-        // suppresses it, which is the wanted answer: that pointer has not left.
-        onPointerLeave={retractCursor}
-      >
-        {/*
-          WHO is here, and "look at this" — `core.presence`'s chrome, mounted rather than
-          imported. Two named slots: the canvas owns WHERE presence chrome sits on its own
-          ref, `core.presence` owns what goes in it, and neither package names the other.
-          Only the routed canvas mounts them: an embedded canvas would stack a second island
-          and centre a second time for one ask.
-        */}
-        {routed ? (
-          <>
-            <div className="canvas-presence">
+            };
+            event.currentTarget.setPointerCapture(event.pointerId);
+            setActiveStrokePoints([...points]);
+            event.preventDefault();
+          }}
+          onPointerMoveCapture={(event) => {
+            emitCursor(event.clientX, event.clientY);
+            const stroke = strokeRef.current;
+            const flow = flowRef.current;
+            if (stroke === null || stroke.pointerId !== event.pointerId || flow === null) return;
+            const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+            if (appendPoint(stroke.points, point.x, point.y)) {
+              const points = gesturePoints(stroke.points);
+              gestureStream.push({
+                kind: "draw",
+                phase: "active",
+                elementId: stroke.id,
+                x: points.at(-2) ?? 0,
+                y: points.at(-1) ?? 0,
+                points,
+              });
+              setActiveStrokePoints([...stroke.points]);
+            }
+          }}
+          onPointerUpCapture={(event) => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }
+            completeStroke(event.pointerId);
+          }}
+          onPointerCancelCapture={(event) => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }
+            completeStroke(event.pointerId);
+            // A cancelled pointer is gone without ever crossing the boundary: no
+            // `pointerleave` follows a touch the browser took back.
+            retractCursor();
+          }}
+          // Fires only when the pointer leaves the canvas AND everything drawn inside it, so
+          // crossing into an element does not retract. A captured pointer (a live stroke)
+          // suppresses it, which is the wanted answer: that pointer has not left.
+          onPointerLeave={retractCursor}
+        >
+          {routed ? (
+            <>
               <ContainerOverlayOutlet
-                slot="container-roster"
+                slot="container-spotlight"
                 client={client}
                 containerId={containerId}
                 host={host}
               />
-            </div>
-            <ContainerOverlayOutlet
-              slot="container-spotlight"
-              client={client}
-              containerId={containerId}
-              host={host}
-            />
-          </>
-        ) : null}
-        <CanvasToolbar tool={tool} onChange={setTool} />
-        <CanvasProviders value={context} presence={presence}>
-          {/* Laptop-native gestures (Excalidraw convention): two-finger scroll pans,
+            </>
+          ) : null}
+          <CanvasToolbar tool={tool} onChange={setTool} />
+          <CanvasProviders value={context} gestures={remoteGestures}>
+            {/* Laptop-native gestures (Excalidraw convention): two-finger scroll pans,
               pinch zooms (browsers report trackpad pinch as ctrl+wheel), and plain
               wheel-zoom is off so panning never zooms by surprise. */}
-          <ReactFlow
-            nodes={nodes}
-            edges={NO_EDGES as never[]}
-            nodeTypes={nodeTypes}
-            onInit={(instance) => {
-              flowRef.current = instance;
-            }}
-            defaultViewport={initialViewport}
-            onPaneClick={(event) => {
-              if (tool === "text") createTextAt(event.clientX, event.clientY);
-            }}
-            onMove={(_event, viewport) => publishViewport(viewport, false)}
-            onMoveEnd={(_event, viewport) => {
-              saveViewport(window.localStorage, containerId, viewport);
-              publishViewport(viewport, true);
-              cursorLastSentRef.current = 0;
-              reemitCursor();
-            }}
-            onNodesChange={handleNodesChange}
-            onNodeDragStart={handleNodeDragStart}
-            onNodeDrag={handleNodeDrag}
-            onSelectionChange={publishSelection}
-            onNodeDragStop={handleNodeDragStop}
-            nodesDraggable={flags.nodesDraggable}
-            panOnDrag={flags.panOnDrag}
-            elementsSelectable={flags.elementsSelectable}
-            zIndexMode="manual"
-            onlyRenderVisibleElements={false}
-            nodesConnectable={false}
-            connectOnClick={false}
-            deleteKeyCode={null}
-            selectionKeyCode="Shift"
-            multiSelectionKeyCode="Shift"
-            panActivationKeyCode={null}
-            zoomActivationKeyCode={null}
-            zoomOnDoubleClick={false}
-            panOnScroll
-            zoomOnScroll={false}
-            zoomOnPinch
-            nodeDragThreshold={2}
-            minZoom={MIN_ZOOM}
-            maxZoom={MAX_ZOOM}
-            proOptions={PRO_OPTIONS}
-          >
-            <ViewportPortal>
-              <div className="canvas-presence-layer" style={{ zIndex: presenceZIndex }}>
-                {activeStrokePoints === null ? null : (
-                  <svg className="stroke-preview" overflow="visible">
-                    <path
-                      d={polylinePath(activeStrokePoints)}
-                      stroke={host.principal.color}
-                      strokeWidth={DEFAULT_STROKE_WIDTH}
-                      fill="none"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                )}
-                {[...remoteGestures.values()].map((gesture) => {
-                  if (gesture.kind !== "draw" || gesture.points === undefined) return null;
-                  return (
-                    <svg
-                      className="stroke-preview"
-                      data-gesture-element={gesture.elementId}
-                      key={`${gesture.connId}:${gesture.elementId}`}
-                      overflow="visible"
-                    >
+            <ReactFlow
+              nodes={nodes}
+              edges={NO_EDGES as never[]}
+              nodeTypes={nodeTypes}
+              onInit={(instance) => {
+                flowRef.current = instance;
+              }}
+              defaultViewport={initialViewport}
+              onPaneClick={(event) => {
+                publishHere();
+                if (tool === "text") createTextAt(event.clientX, event.clientY);
+              }}
+              onMove={(_event, viewport) => publishViewport(viewport, false)}
+              onMoveEnd={(_event, viewport) => {
+                saveViewport(window.localStorage, containerId, viewport);
+                publishViewport(viewport, true);
+                cursorLastSentRef.current = 0;
+                reemitCursor();
+              }}
+              onNodesChange={handleNodesChange}
+              onNodeDragStart={handleNodeDragStart}
+              onNodeDrag={handleNodeDrag}
+              onSelectionChange={publishSelection}
+              onNodeDragStop={handleNodeDragStop}
+              nodesDraggable={flags.nodesDraggable}
+              panOnDrag={flags.panOnDrag}
+              elementsSelectable={flags.elementsSelectable}
+              zIndexMode="manual"
+              onlyRenderVisibleElements={false}
+              nodesConnectable={false}
+              connectOnClick={false}
+              deleteKeyCode={null}
+              selectionKeyCode="Shift"
+              multiSelectionKeyCode="Shift"
+              panActivationKeyCode={null}
+              zoomActivationKeyCode={null}
+              zoomOnDoubleClick={false}
+              panOnScroll
+              zoomOnScroll={false}
+              zoomOnPinch
+              nodeDragThreshold={2}
+              minZoom={MIN_ZOOM}
+              maxZoom={MAX_ZOOM}
+              proOptions={PRO_OPTIONS}
+            >
+              <ViewportPortal>
+                <div className="canvas-presence-layer" style={{ zIndex: presenceZIndex }}>
+                  {activeStrokePoints === null ? null : (
+                    <svg className="stroke-preview" overflow="visible">
                       <path
-                        d={polylinePath(gesture.points)}
-                        stroke={carrierColor(client, gesture.principalId)}
+                        d={polylinePath(activeStrokePoints)}
+                        stroke={host.principal.color}
                         strokeWidth={DEFAULT_STROKE_WIDTH}
                         fill="none"
                         strokeLinecap="round"
                         strokeLinejoin="round"
                       />
                     </svg>
-                  );
-                })}
-                {remoteSelections.map((selection) => (
-                  <div
-                    className="remote-selection"
-                    key={selection.key}
-                    style={{
-                      borderColor: selection.color,
-                      height: selection.height,
-                      transform: `translate(${String(selection.x)}px, ${String(selection.y)}px)`,
-                      width: selection.width,
-                    }}
-                  />
-                ))}
-                {/*
+                  )}
+                  {[...remoteGestures.values()].map((gesture) => {
+                    if (gesture.kind !== "draw" || gesture.points === undefined) return null;
+                    return (
+                      <svg
+                        className="stroke-preview"
+                        data-gesture-element={gesture.elementId}
+                        key={`${gesture.connId}:${gesture.elementId}`}
+                        overflow="visible"
+                      >
+                        <path
+                          d={polylinePath(gesture.points)}
+                          stroke={carrierColor(client, gesture.principalId)}
+                          strokeWidth={DEFAULT_STROKE_WIDTH}
+                          fill="none"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    );
+                  })}
+                  {remoteSelections.map((selection) => (
+                    <div
+                      className="remote-selection"
+                      key={selection.key}
+                      style={{
+                        borderColor: selection.color,
+                        height: selection.height,
+                        transform: `translate(${String(selection.x)}px, ${String(selection.y)}px)`,
+                        width: selection.width,
+                      }}
+                    />
+                  ))}
+                  {/*
                   A collaborator's carry, drawn where their pointer holds it. Only for
                   items this canvas does NOT already draw: an element carried across it
                   IS its own ghost, moving live under their cursor.
                 */}
-                {remoteCarries.map((ghost) => (
-                  <div
-                    className="carry-ghost"
-                    data-carry-kind={ghost.kind}
-                    key={ghost.key}
-                    style={{
-                      borderColor: carrierColor(client, ghost.principalId),
-                      transform: `translate(${String(ghost.x)}px, ${String(ghost.y)}px)`,
-                    }}
-                  >
-                    <span className="carry-ghost__glyph" aria-hidden="true">
-                      <ItemIcon kind={ghost.kind} size={12} />
-                    </span>
-                    <span className="carry-ghost__label">{ghost.label}</span>
-                  </div>
-                ))}
-                {remoteCursors.cursors.map((cursor) => {
-                  const color = remoteCursors.colorFor(cursor);
-                  return (
+                  {remoteCarries.map((ghost) => (
                     <div
-                      className="remote-cursor"
-                      data-cursor-color={color ?? ""}
-                      key={remoteCursorSocketId(cursor.principalId, cursor.connId)}
+                      className="carry-ghost"
+                      data-carry-kind={ghost.kind}
+                      key={ghost.key}
                       style={{
-                        color: color ?? REMOTE_CURSOR_FALLBACK_COLOR,
-                        transform: `translate(${String(cursor.x)}px, ${String(cursor.y)}px)`,
+                        borderColor: carrierColor(client, ghost.principalId),
+                        transform: `translate(${String(ghost.x)}px, ${String(ghost.y)}px)`,
                       }}
                     >
-                      <RemoteCursorIcon />
-                      <span>{remoteCursors.labelFor(cursor)}</span>
+                      <span className="carry-ghost__glyph" aria-hidden="true">
+                        <ItemIcon kind={ghost.kind} size={12} />
+                      </span>
+                      <span className="carry-ghost__label">{ghost.label}</span>
                     </div>
-                  );
-                })}
-              </div>
-            </ViewportPortal>
-          </ReactFlow>
-        </CanvasProviders>
+                  ))}
+                  {remoteCursors.cursors.map((cursor) => {
+                    const color = remoteCursors.colorFor(cursor);
+                    return (
+                      <div
+                        className="remote-cursor"
+                        data-cursor-color={color ?? ""}
+                        key={remoteCursorSocketId(cursor.principalId, cursor.connId)}
+                        style={{
+                          color: color ?? REMOTE_CURSOR_FALLBACK_COLOR,
+                          transform: `translate(${String(cursor.x)}px, ${String(cursor.y)}px)`,
+                        }}
+                      >
+                        <RemoteCursorIcon />
+                        <span>{remoteCursors.labelFor(cursor)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </ViewportPortal>
+            </ReactFlow>
+          </CanvasProviders>
+        </div>
       </div>
-    </div>
+    </ProjectionScopeProvider>
   );
 }

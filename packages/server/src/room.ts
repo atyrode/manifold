@@ -9,6 +9,8 @@ import {
   type ClientMessageBody,
   type ContainerCensus,
   type EventKind,
+  type ConnectionLocation,
+  type LocationPath,
   type PresencePayload,
   type PresenceState,
   type Principal,
@@ -90,6 +92,8 @@ export function censusFor(
       items.push({ kind: "composition", containerId: target, terminalId: null });
     }
   } else {
+    const elementTypes = new Map<string, string>();
+    for (const element of elements) elementTypes.set(element.id, element.type);
     for (const node of Object.values(layout)) {
       const ref = node.ref;
       if (ref === null) continue;
@@ -105,7 +109,9 @@ export function censusFor(
         items.push({ kind: "canvas", containerId: ref.containerId, terminalId: null });
         continue;
       }
-      items.push({ kind: "text", containerId: null, terminalId: null });
+      const kind =
+        ref.kind === "element" ? (elementTypes.get(ref.elementId) ?? ref.kind) : ref.kind;
+      items.push({ kind, containerId: null, terminalId: null });
     }
   }
   const discipline = layout === null ? "canvas" : "composition";
@@ -178,6 +184,7 @@ export class Room {
    */
   private readonly spectators = new Set<SessionChannel>();
   private readonly presences = new Map<string, PresencePayload>();
+  private readonly connectionLocations = new Map<string, LocationPath>();
   private readonly updateBuckets = new Map<string, { tokens: number; at: number }>();
   private dirty = false;
   private cancelQuiet: (() => void) | null = null;
@@ -262,6 +269,13 @@ export class Room {
     if (holdsTileTree) initCompositionLayout(this.doc, SERVER_PLACE_ORIGIN);
   }
 
+  private locationsFor(peers: ReadonlySet<SessionChannel>): ConnectionLocation[] {
+    return [...peers].map((peer) => ({
+      connId: peer.id,
+      locationPath: this.connectionLocations.get(peer.id) ?? null,
+    }));
+  }
+
   private attendance(): PresenceState[] {
     const result: PresenceState[] = [];
     for (const [principalId, peers] of this.connections) {
@@ -271,6 +285,7 @@ export class Room {
         principal: first.auth.principal,
         connections: peers.size,
         connIds: [...peers].map((connected) => connected.id),
+        connectionLocations: this.locationsFor(peers),
         payload: this.presences.get(principalId) ?? {},
       });
     }
@@ -345,6 +360,7 @@ export class Room {
       principal: peer.auth.principal,
       connections: peers.size,
       connIds: [...peers].map((connected) => connected.id),
+      connectionLocations: this.locationsFor(peers),
       payload: this.presences.get(principalId) ?? {},
     };
     this.broadcast({ type: "attendance", joined }, false, peer);
@@ -369,6 +385,7 @@ export class Room {
     const peers = this.connections.get(principalId);
     if (peers === undefined || !peers.delete(peer)) return;
     this.updateBuckets.delete(peer.id);
+    this.connectionLocations.delete(peer.id);
     if (peers.size === 0) {
       this.connections.delete(principalId);
       this.presences.delete(principalId);
@@ -385,6 +402,7 @@ export class Room {
           principal: first.auth.principal,
           connections: peers.size,
           connIds: [...peers].map((connected) => connected.id),
+          connectionLocations: this.locationsFor(peers),
           payload: this.presences.get(principalId) ?? {},
         },
       });
@@ -488,6 +506,12 @@ export class Room {
     const principalId = peer.auth.principal.id;
     const client: PresencePayload = { ...payload };
     delete client.spotlight;
+    // Vantage is a replacement facet: an omitted path declares no location, not a sibling's.
+    if (client.vantage !== undefined) {
+      const path = client.vantage.locationPath;
+      if (path == null) this.connectionLocations.delete(peer.id);
+      else this.connectionLocations.set(peer.id, path);
+    }
     const current = this.presences.get(principalId) ?? {};
     this.presences.set(principalId, { ...current, ...client });
     this.broadcast({ type: "presence", principalId, connId: peer.id, payload: client });
@@ -648,6 +672,7 @@ export class Room {
     this.connections.clear();
     this.spectators.clear();
     this.presences.clear();
+    this.connectionLocations.clear();
     this.updateBuckets.clear();
     for (const peer of members) peer.close(code, reason);
   }

@@ -73,11 +73,11 @@ export type ContainerDiscipline = z.infer<typeof ContainerDisciplineSchema>;
 
 /**
  * What a leaf shows: a REFERENCE to the item occupying it. Every tileable item kind has
- * one form here, and each form names its item by identity: a terminal, a container, or —
- * for a note, which has no identity outside the document holding it — the element the
- * composition's own scene doc stores it under. A composition therefore OWNS its notes the
- * way a canvas does; placing a note into one moves the element into its document rather
- * than referencing it across two.
+ * one form here, and each form names its item by identity: a terminal, a container, or
+ * a contributed element in the document holding it. A composition OWNS its elements
+ * the way a canvas does; placing one into a composition moves its scene record into
+ * that document rather than referencing it across two. The element's type selects
+ * its renderer independently of this reference form.
  *
  * It is one of the two shapes of the SAME addressing concept `PlacementRef` and
  * `ManifoldRef` carry (D7): a leaf's occupant is a reference, so it is named one.
@@ -85,7 +85,7 @@ export type ContainerDiscipline = z.infer<typeof ContainerDisciplineSchema>;
 export const TileRefSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("terminal"), terminalId: z.string().min(1) }),
   z.strictObject({ kind: z.literal("container"), containerId: z.string().min(1) }),
-  z.strictObject({ kind: z.literal("text"), elementId: z.string().min(1) }),
+  z.strictObject({ kind: z.literal("element"), elementId: z.string().min(1) }),
   /**
    * A plugin PANEL, named by its fully qualified panel id (`core.shell.sidebar`). This is
    * the form that makes the workspace shell itself a composition: a principal's workspace

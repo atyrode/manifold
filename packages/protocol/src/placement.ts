@@ -589,10 +589,10 @@ void guardRulesComplete;
  * multi-placed terminal becomes addressable; `structure` names NOTHING THAT EXISTS YET —
  * it carries the shape a palette drag is holding, and the drop authors it (issue #104).
  *
- * These are ADDRESSING forms, deliberately not `TileRef`'s STORAGE forms. A note has
- * no identity outside the document that holds it, so it is addressed as an `element` of
- * that container and stored as a tile's `text` ref — the executor translates between
- * the two, and no caller can name a note it cannot say the location of.
+ * These are ADDRESSING forms, deliberately not `TileRef`'s STORAGE forms. A contributed
+ * element has no identity outside the document that holds it, so its placement address
+ * includes that container while a tile's `element` ref stores only its local element id.
+ * No caller can name an element it cannot say the location of.
  *
  * `structure` is the one form with no identity on either side of that translation, and it
  * is a REF rather than a second request shape because a palette drag is an ordinary carry:

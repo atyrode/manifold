@@ -104,6 +104,58 @@ try {
     20_000,
     "xterm rendered",
   );
+  // DOM-rendered rows can lie below the browser's viewport: native-scale terminals
+  // are no longer shrunk into their portal. Move the canvas only when measured
+  // clipping proves it necessary; never substitute easier rows for the fixed probes.
+  async function revealScreen(): Promise<void> {
+    const pan = await browser!.evaluate<{
+      x: number;
+      y: number;
+      deltaX: number;
+      deltaY: number;
+      screen: { left: number; top: number; right: number; bottom: number };
+      visible: { left: number; top: number; right: number; bottom: number };
+    } | null>(`(() => {
+      const screen = document.querySelector('.xterm-screen').getBoundingClientRect();
+      const canvas = document.querySelector('.canvas').getBoundingClientRect();
+      const visible = {
+        left: Math.max(0, canvas.left) + 20,
+        top: Math.max(0, canvas.top) + 20,
+        right: Math.min(innerWidth, canvas.right) - 20,
+        bottom: Math.min(innerHeight, canvas.bottom) - 20,
+      };
+      if (screen.width > visible.right - visible.left || screen.height > visible.bottom - visible.top)
+        throw new Error('the native terminal does not fit the selection gate viewport');
+      const deltaX = screen.left < visible.left || screen.right > visible.right
+        ? (screen.left + screen.right - visible.left - visible.right) / 2 : 0;
+      const deltaY = screen.top < visible.top || screen.bottom > visible.bottom
+        ? (screen.top + screen.bottom - visible.top - visible.bottom) / 2 : 0;
+      if (deltaX === 0 && deltaY === 0) return null;
+      for (const x of [visible.left, visible.right]) {
+        for (const y of [visible.top, visible.bottom]) {
+          if (!document.elementFromPoint(x, y)?.matches('.react-flow__pane')) continue;
+          return {
+            x, y, deltaX, deltaY,
+            screen: { left: screen.left, top: screen.top, right: screen.right, bottom: screen.bottom },
+            visible,
+          };
+        }
+      }
+      throw new Error('no exposed canvas point for revealing the clipped terminal');
+    })()`);
+    if (pan === null) return;
+    console.log("revealing clipped terminal:", JSON.stringify(pan));
+    await browser!.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x: pan.x,
+      y: pan.y,
+      // Canvas uses React Flow's default panOnScrollSpeed of 0.5.
+      deltaX: pan.deltaX / 0.5,
+      deltaY: pan.deltaY / 0.5,
+    });
+    await sleep(300);
+  }
+
   // Activate the embed (click-to-focus model), then focus xterm itself.
   await browser.evaluate(`(() => {
     const r = document.querySelector('.terminal-frame').getBoundingClientRect();
@@ -125,6 +177,7 @@ try {
   await browser.typeText("clear; seq 1 40");
   await browser.typeText("\r");
   await sleep(1200);
+  await revealScreen();
 
   async function dragAndPaint(rowIndex: number): Promise<{
     draggedOn: string;
@@ -140,6 +193,17 @@ try {
       "document.querySelector('.xterm-screen').getBoundingClientRect().x + 40",
     );
     const yc = row.top + row.h * 0.5;
+    const hits = await browser!.evaluate<boolean>(
+      `(() => {
+        const screen = document.querySelector('.xterm-screen');
+        return ${JSON.stringify([250, 200, 150, 100, 60])}.every(offset => {
+          const hit = document.elementFromPoint(${sx} + offset, ${yc});
+          return hit !== null && screen.contains(hit);
+        });
+      })()`,
+    );
+    if (!hits)
+      throw new Error(`row ${rowIndex} ("${row.text}") is not pointer-reachable at y=${yc}`);
     await browser!.drag(
       [
         { x: sx + 250, y: yc },
@@ -171,6 +235,9 @@ try {
   }
 
   // Baseline at zoom 1: must always pass.
+  const baselineZoom = await browser.evaluate<number>("window.__manifold.viewport().zoom");
+  if (Math.abs(baselineZoom - 1) >= 0.06)
+    throw new Error(`baseline canvas zoom is not 1 (got ${baselineZoom})`);
   for (const rowIndex of [2, 12, 24]) await assertRow(`zoom 1 selects the dragged row`, rowIndex);
 
   // Zoom through the canvas's real pinch interaction: trackpad pinches arrive as
@@ -215,6 +282,8 @@ try {
     ),
   );
 
+  await revealScreen();
+
   // THE REGRESSION: drift grows with distance from the terminal origin.
   for (const rowIndex of [2, 8, 14, 20])
     await assertRow(`zoomed canvas selects the dragged row`, rowIndex);
@@ -226,11 +295,16 @@ try {
     await browser.send("Input.dispatchMouseEvent", {
       type: "mouseWheel",
       ...zoomPoint,
+      modifiers: 2,
       deltaX: 0,
       deltaY: z > 1 ? 80 : -80,
     });
     await sleep(200);
   }
+  const restoredZoom = await browser.evaluate<number>("window.__manifold.viewport().zoom");
+  if (Math.abs(restoredZoom - 1) >= 0.06)
+    throw new Error(`could not restore canvas zoom to 1 (got ${restoredZoom})`);
+  await revealScreen();
   await assertRow("zoom restored to 1 selects the dragged row", 12);
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));

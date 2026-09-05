@@ -79,7 +79,7 @@ must never be taught one.
         "packages/server/src/index.ts"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the registry itself plus the doors it dispatches through, including the engine-owned enablement door (engine.plugins, a builtin roster row) and the isolation runner (ADR 0016 §9, R7: joined here rather than seated as its own pillar — the thing that loads a plugin's code is the same loader, one process boundary further out). Plugins presuppose the loader; it refuses collisions, resolves dependencies and order, and intersects capabilities — arbitration by definition. It ASSEMBLES the roster; it never renders a composition.",
+      "verdict": "the registry itself plus the doors it dispatches through, including the engine-owned enablement door (engine.plugins, a builtin roster row) and the isolation runner (ADR 0016 §9, R7: joined here rather than seated as its own pillar — the thing that loads a plugin's code is the same loader, one process boundary further out). Plugins presuppose the loader; it refuses collisions, resolves dependencies and order, and intersects capabilities — arbitration by definition. It ASSEMBLES the roster; it never renders a composition. Mounted projection scopes, optional titlebar contributions and the single tile-motion owner are neutral renderer contracts admitted by ADR 0024, not plugin policy.",
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {
@@ -882,7 +882,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "element",
-      "means": "a canvas record type plus its renderer",
+      "means": "a scene record type plus its renderer, in a canvas or composition",
       "banned": [],
       "allow": []
     },
@@ -1386,8 +1386,10 @@ RED: adding a family is a row, exactly as adding a canon word is.
 family; classes written beside it in that compound qualify it (`.status-dot.open` is the
 `status` family in its `open` state, never an `open` family). A rule belongs to the owner of
 the LEFTMOST such family in each of its selectors — the subtree the rule reaches into — because
-that is the code whose removal makes the rule dead. `.portal--mono .terminal-frame` is the
-canvas plugin's rule about a terminal, and it goes when portals go. Compounds further right are
+that is the code whose removal makes the rule dead. `.portal .node-titlebar` is the canvas
+plugin's scoped use of shared engine chrome, and it goes when portals go. Terminals own their
+window/tile frame CSS; canvas and composition renderers pass `frame`, never mask terminal corners.
+Compounds further right are
 context: they are checked for REGISTRATION, so no family hides inside a descendant selector,
 and never for ownership. `@keyframes` names are families too. A rule with no class anywhere —
 the reset, `:root`, `[data-drop-denial]` — is the floor's by construction and may appear
@@ -1577,6 +1579,11 @@ prefix, never a scope root, and belongs to no stylesheet.
       "why": "the tile area, the live drop preview and its glyphs, the content host a pane's content rides in, and the F9 zone probe — `tile-tree.tsx`, `tile-preview-overlay.tsx`, `tile-zone-debug.tsx`"
     },
     {
+      "family": "tile-departure-shell",
+      "owner": "packages/plugin/src/ui/styles.css",
+      "why": "bounded empty exit geometry owned by TileTree after an authoritative tile removal; live content stays on its stable content host, never cloned into the shell"
+    },
+    {
       "family": "carry-ghost",
       "owner": "packages/plugin/src/ui/styles.css",
       "why": "the ghost that follows a carry, plus the ease-away the held item rides — `carry.ts`"
@@ -1664,7 +1671,7 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "terminal",
       "owner": "packages/plugins/terminals/src/styles.css",
-      "why": "the terminal frame, its titlebar, the idle veil, the focus-presence chips, the exited and restart states, and the pool's rows"
+      "why": "the terminal's window/tile frame, titlebar action area and bounded device-local font controls, font readiness state, idle veil, exited and restart states, and the pool's rows; attendance is the shared titlebar contribution, not terminal-owned avatars"
     },
     {
       "family": "xterm",
@@ -1679,7 +1686,7 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "canvas",
       "owner": "packages/plugins/canvas/src/styles.css",
-      "why": "the freeform discipline's renderer: the canvas, its toolbar, its presence layer and its skeletonless empty"
+      "why": "the freeform discipline's renderer: the canvas, its shared titlebar mount, toolbar, coordinate-space cursor/selection layer and skeletonless empty"
     },
     {
       "family": "portal",
@@ -1699,12 +1706,12 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "composition",
       "owner": "packages/plugins/compositions/src/styles.css",
-      "why": "the tiled discipline's renderer: its page chrome, tiles, leaves and grips, its placeholder, its empty state and its presence layer"
+      "why": "the composition discipline's renderer: its shared titlebar mounts, tiles, leaves, placeholder, empty state and coordinate-space cursor layer"
     },
     {
       "family": "presence",
       "owner": "packages/plugins/presence/src/styles.css",
-      "why": "the attendance stack, its popover and rows, and the peer dot"
+      "why": "the shared titlebar's path-filtered compact attendance stack, its popover and rows, and the peer dot; no renderer-specific roster placement"
     },
     {
       "family": "spotlight",
@@ -1813,6 +1820,10 @@ register. Anything else is presence, document, or action state — A2 leaves no 
       "key": "manifold.last-container.",
       "prefix": true,
       "why": "per-principal last container used on this device, so the root route reopens where this browser left off"
+    },
+    {
+      "key": "manifold:terminal-font-sizes",
+      "why": "core.terminals' per-device, per-terminalId font-size map: integer pixels 8..32, default/reset 13, at most 128 non-default entries with oldest-updated eviction and malformed entries ignored. Readability depends on THIS display, so it is neither shared document nor action state; spectators may adjust their own font, while PTY resize remains controller-only after snapshot and never from a preview"
     },
     {
       "key": "manifold:show-container-terminals",
@@ -2158,13 +2169,13 @@ parser over the dispatch ladder; its live half dispatches every registered door.
 | S13   | **CSS ownership**: every selector family in every stylesheet under `packages/` resolves to a §Lexicon `cssFamilies` row, and every rule is defined by the owner of the leftmost family it scopes into. A family painted from another package's sheet, a family with no row, a row whose stylesheet defines nothing, or a classless rule outside the floor sheet — each is RED, named by file and selector.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | S14   | **Log-event vocabulary**: every `evt` a producer passes to `Logger.info/warn/error` in `packages/server/src` or to the agent's log sink, and every `"evt":"…"` literal a `packages/testkit` e2e or a `scripts/` gate matches inside raw stdout, is a member of `LOG_EVENTS` — and every member has a live producer, so a name nobody emits is a stale row. The producer half is also a compile error (`LogEvent`); the CONSUMER half is why the check exists, because no type reaches inside a string literal.                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | S15   | **Gate contracts**: every `[data-testid=…]` literal and every `clickTestId(…)` argument in `scripts/` resolves to a §Gate-contracts row AND to a live `data-testid=` attribute in that row's renderer (templated attributes match by shape), and every row is queried by some script. A gate keyed off button copy, or off a test-id nobody declared, fails.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| S16   | **The floor's budget**: `packages/plugin/src` (source only, tests excluded) stays inside a declared line ceiling — a printed WARN at 9,000 and RED above 12,000. Every other static check asks whether a boundary is clean; this one asks how big the engine got, which is the failure mode the litmus test cannot see because it governs each addition and never the aggregate. `packages/plugin/src` is where growth lands first: every plugin imports it, so a helper put there is reachable by everything without justifying itself to a second party. Raising a threshold is a diff somebody defends.                                                                                                                                                                                                                                                                                                                                          |
+| S16   | **The floor's budget**: `packages/plugin/src` (source only, tests excluded) stays inside a declared line ceiling — a printed WARN at 9,000 and RED above 13,233. Every other static check asks whether a boundary is clean; this one asks how big the engine got, which is the failure mode the litmus test cannot see because it governs each addition and never the aggregate. `packages/plugin/src` is where growth lands first: every plugin imports it, so a helper put there is reachable by everything without justifying itself to a second party. Raising a threshold is a diff somebody defends; [ADR 0024](docs/decisions/0024-mounted-projection-and-tile-motion.md) records this change's bounded admission. |
 | S17   | **Hosting neutrality**: no file a self-hoster ships or runs — `Dockerfile`, `compose.yaml`, `flake.nix`, `infra/**`, `packages/**`, `scripts/**`, `.github/workflows/**` — names a hosting provider or carries its env prefix; the one exemption is the operator's own deployment workflow, `.github/workflows/deploy-hub.yml`, which is gated on a repository variable so a fork never runs it (ADR 0022). A hit is reworded, never allow-listed: the exemption list is that one path.                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | R1    | Vocabulary: `GET /api/protocol` actions ≡ the assembly; `GET /api/plugins` ≡ the roster; input/result schemas are present.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | R2    | Parity both directions: an SDK `core.terminals.rename` updates the browser DOM with no reload, and the browser's rename affordance is observed by the SDK as a `terminal_event`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | R3    | Hot enable/disable with no reload: `core.draw` off removes the tool and placeholders existing strokes; `core.machines` off makes its section VANISH from the sidebar while the manager row stays the ledger, and re-enable restores its manifest-ordered place (D4′ — chrome renders absence; data ghosts); `core.terminals` off refuses `terminal_open` while an existing terminal still accepts `kill` (D12); disabling `core.shell` is `refused`/`essential`, and so is each of the three seats the floor itself dispatches — `core.space`, `core.index`, `core.access` — whose `essential` flag the live roster must also carry, while an ordinary coupling (`core.machines`, named by the floor's `FEED_TOPICS`) goes off and comes back with the rail and the canvas still painting (issue #113).                                                                                                                                             |
 | R4    | Shell as composition: `GET /api/layout` has panel leaves; a real divider drag changes the stored ratios and dispatches exactly ONE `core.space.setLayout`; another principal's layout is untouched; arming the mode moves nothing, because every affordance it adds is out of flow. Inside a scoped panel every grabbable row is GLYPHLESS (the tint is the whole affordance), a real pointer drag across three rows passes through exactly one order per boundary it crosses and never returns to an order it left, three slow passes over one boundary make six reorders and end where they began, and a glyphless row still carries its label and answers the arrow keys.                                                                                                                                                                                                                                                                        |
-| R5    | Presence and spotlight: a picked tool is visible to an SDK peer as `vantage.tool` within 2s; `core.presence.focus` centers the target's viewport through the debug probe; a container-scoped token invoking it is `forbidden`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| R5    | Presence and spotlight: a picked tool is visible to an SDK peer as `vantage.tool` within 2s; a connection's mounted path paints its principal in the shared titlebar, explicit null retracts it, and hot disable/re-enable removes/restores attendance without reload or republish; `core.presence.focus` still centers the target's viewport through the debug probe and a container-scoped token invoking it is `forbidden`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | R6    | Addressing: `GET /api/resolve` round-trips a terminal and a container, and the `/uri/<encoded>` deep link navigates.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | R7    | Every `[data-action]` in the live DOM names an action in the roster.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | R8    | The denial ladder end to end, including a container-scoped token on `engine.plugins.setEnabled` → `forbidden` (a door's audience is DECLARED: `scope: "workspace"` refuses scoped callers, `scope: "container"` admits them and obliges the handler to confine the answer — ADR 0013 §15).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |

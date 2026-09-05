@@ -7,6 +7,7 @@ import {
   ClientMessageSchema,
   DIAL_PING_INTERVAL_MS,
   GESTURE_MIN_INTERVAL_MS,
+  GESTURE_TTL_MS,
   MAX_SESSION_CHANNELS_PER_CONNECTION,
   MAX_SESSION_FRAME_BYTES,
   PROTOCOL_VERSION,
@@ -120,12 +121,10 @@ interface ChannelState {
   pendingGesture: GestureUpdate | null;
   cancelGestureFlush: (() => void) | null;
   /**
-   * The container this channel's carry was last PROJECTED into — a room other than its
-   * own, named by the aim (issue #66). Remembered because the frames that must retire a
-   * projection are precisely the ones that cannot name it: an `end` frame carries no aim,
-   * and an aim that moves to another container says nothing about the one it left.
+   * Foreign recipients per carry element, so concurrent carries cannot retire each other.
+   * Only cadence-limited active frames retain records; end and the gesture TTL retire them.
    */
-  aimedContainerId: string | null;
+  carryProjections: Map<string, { containerIds: Set<string>; updatedAt: number }>;
 }
 
 interface SessionConnection {
@@ -464,7 +463,7 @@ export class SessionGateway {
       lastGestureAt: null,
       pendingGesture: null,
       cancelGestureFlush: null,
-      aimedContainerId: null,
+      carryProjections: new Map(),
     };
     connection.channels.set(message.ch, channel);
     // A refused join already closed the peer, and `retireChannel` cleaned its record —
@@ -577,18 +576,15 @@ export class SessionGateway {
    * EVERY ROOM ONE GESTURE FRAME ADDRESSES.
    *
    * A gesture belongs to the room it happens in, and for `move`, `resize` and `draw` that
-   * is the whole story. A CARRY also names the container its aim would land in, and that
-   * container is frequently a different room: a tile dragged over a portal streams through
-   * the CANVAS's room while the split it previews lands in the portal's container, so a
-   * collaborator sitting in that container's own fullscreen view — staring at the very
-   * tree about to change — received nothing at all. The client half of this ships as the
-   * portal's own socket feed, which fixes the direction where the viewer happens to hold a
-   * socket per container; this is the direction that cannot be fixed from a client, and
-   * without it `CarryAim.containerId` addressed a container the transport could not reach.
+   * is the whole story. A CARRY also addresses its aim and, for a tile, its source.
+   * A native portal carry streams through the canvas room even when it has no aim;
+   * the source composition's fullscreen viewers still need its departure and release.
+   * Both projections use the same relay, stamped `aimOnly` so foreign canvas coordinates
+   * never become geometry in the receiving room.
    *
-   * READ AUTHORITY ON THE AIMED CONTAINER IS THE BAR, and it is exactly the right one: it
-   * is what opening that container's view costs, so a peer may only project an aim into a
-   * room it could have joined outright, and a forged `containerId` reaches nobody. Only
+   * READ AUTHORITY ON EACH ADDRESSED CONTAINER IS THE BAR: it is what opening that
+   * container's view costs, so a forged source or aim cannot reach a room the sender
+   * could not have joined outright. Only
    * RESIDENT rooms are addressed — a preview is never a reason to load a document.
    *
    * The PREVIOUS projection is fanned too whenever it differs, because the frame that must
@@ -598,18 +594,44 @@ export class SessionGateway {
    */
   private deliverGesture(channel: ChannelState, gesture: GestureUpdate): void {
     channel.room.relayGesture(channel.peer, gesture);
-    const aimed = gesture.carry?.aim?.containerId ?? null;
-    const projected =
-      gesture.phase === "end" || aimed === null || aimed === channel.peer.containerId
-        ? null
-        : aimed;
-    const previous = channel.aimedContainerId;
-    channel.aimedContainerId = projected;
-    if (projected === null && previous === null) return;
-    for (const containerId of new Set([projected, previous])) {
-      if (containerId === null) continue;
+    if (gesture.kind !== "carry") return;
+    const now = this.runtime.now();
+    for (const [elementId, projection] of channel.carryProjections) {
+      if (now - projection.updatedAt > GESTURE_TTL_MS) channel.carryProjections.delete(elementId);
+    }
+    const previous = channel.carryProjections.get(gesture.elementId)?.containerIds;
+    const carry = gesture.carry;
+    if (carry === undefined && previous === undefined) return;
+    const projected = new Set<string>();
+    for (const containerId of [
+      carry?.aim?.containerId,
+      carry?.ref.kind === "tile" ? carry.ref.containerId : undefined,
+    ]) {
+      if (
+        containerId === undefined ||
+        containerId === channel.peer.containerId ||
+        projected.has(containerId)
+      )
+        continue;
+      const room = this.rooms.live(containerId);
+      if (room === null) continue;
       if (!this.auth.allows(channel.peer.auth, "containers:read", containerId)) continue;
-      this.rooms.live(containerId)?.relayGesture(channel.peer, gesture, true);
+      projected.add(containerId);
+      room.relayGesture(channel.peer, gesture, true);
+    }
+    if (previous !== undefined) {
+      for (const containerId of previous) {
+        if (projected.has(containerId)) continue;
+        const room = this.rooms.live(containerId);
+        if (room === null) continue;
+        if (!this.auth.allows(channel.peer.auth, "containers:read", containerId)) continue;
+        room.relayGesture(channel.peer, gesture, true);
+      }
+    }
+    if (gesture.phase === "end" || projected.size === 0) {
+      channel.carryProjections.delete(gesture.elementId);
+    } else {
+      channel.carryProjections.set(gesture.elementId, { containerIds: projected, updatedAt: now });
     }
   }
 

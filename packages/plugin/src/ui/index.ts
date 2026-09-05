@@ -47,6 +47,7 @@ export {
   TITLEBAR_ACTIONS_CLASS,
   type MaximizeControl,
   type NodeTitleBarProps,
+  type TitlebarDragProps,
 } from "./node-titlebar.tsx";
 /**
  * The row vocabulary: THE chip (a bordered token that is a button exactly when it is
@@ -126,7 +127,12 @@ export {
   type TileTreeClasses,
   type TileTreeProps,
 } from "./tile-tree.tsx";
-export { TilePreviewOverlay, type TilePreviewOverlayProps } from "./tile-preview-overlay.tsx";
+export {
+  TilePreviewOverlay,
+  useTileDeparture,
+  type TileDeparture,
+  type TilePreviewOverlayProps,
+} from "./tile-preview-overlay.tsx";
 export { TileZoneDebug, toggleZoneProbe } from "./tile-zone-debug.tsx";
 export {
   NoticeContext,

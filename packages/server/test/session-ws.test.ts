@@ -812,6 +812,217 @@ describe("SessionGateway gesture cadence", () => {
     },
   });
 
+  const tileCarryFrame = (
+    sourceContainerId: string,
+    aimContainerId: string | null = null,
+    phase: "active" | "end" = "active",
+  ): Record<string, unknown> => {
+    const frame = carryFrame(aimContainerId, phase);
+    return {
+      ...frame,
+      carry: {
+        ...(frame["carry"] as Record<string, unknown>),
+        ref: { kind: "tile", containerId: sourceContainerId, tileId: "source-leaf" },
+      },
+    };
+  };
+
+  test("a native tile carry reaches its source without an aim and retracts on a bare end", async () => {
+    const fixture = await gatewayFixture();
+    const source = fixture.secondContainer("source composition");
+    const dragger = new FakeSocket();
+    const watcher = new FakeSocket();
+    join(fixture.gateway, "dragger", dragger, fixture.container.id, fixture.ownerKey);
+    join(fixture.gateway, "watcher", watcher, source.id, fixture.ownerKey);
+    watcher.clear();
+
+    send(fixture.gateway, "dragger", CH, tileCarryFrame(source.id));
+    expect(watcher.messages()).toEqual([
+      expect.objectContaining({
+        type: "gesture",
+        phase: "active",
+        aimOnly: true,
+        carry: expect.objectContaining({
+          ref: { kind: "tile", containerId: source.id, tileId: "source-leaf" },
+        }),
+      }),
+    ]);
+    watcher.clear();
+    send(fixture.gateway, "dragger", CH, {
+      type: "gesture",
+      kind: "carry",
+      phase: "end",
+      elementId: "element",
+      x: 1,
+      y: 1,
+    });
+    expect(watcher.messages()).toEqual([
+      expect.objectContaining({ type: "gesture", phase: "end", aimOnly: true }),
+    ]);
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("unrelated gestures stay home without erasing carry source and aim end recipients", async () => {
+    const fixture = await gatewayFixture();
+    const source = fixture.secondContainer("source composition");
+    const aim = fixture.secondContainer("aim composition");
+    const dragger = new FakeSocket();
+    const homeWatcher = new FakeSocket();
+    const sourceWatcher = new FakeSocket();
+    const aimWatcher = new FakeSocket();
+    join(fixture.gateway, "dragger", dragger, fixture.container.id, fixture.ownerKey);
+    join(fixture.gateway, "home", homeWatcher, fixture.container.id, fixture.ownerKey);
+    join(fixture.gateway, "source", sourceWatcher, source.id, fixture.ownerKey);
+    join(fixture.gateway, "aim", aimWatcher, aim.id, fixture.ownerKey);
+    for (const watcher of [homeWatcher, sourceWatcher, aimWatcher]) watcher.clear();
+
+    send(fixture.gateway, "dragger", CH, tileCarryFrame(source.id, aim.id));
+    for (const watcher of [sourceWatcher, aimWatcher]) {
+      expect(watcher.messages()).toEqual([
+        expect.objectContaining({ type: "gesture", kind: "carry", phase: "active", aimOnly: true }),
+      ]);
+      watcher.clear();
+    }
+    homeWatcher.clear();
+    for (const kind of ["move", "resize", "draw"]) {
+      fixture.clock.advance(30);
+      send(fixture.gateway, "dragger", CH, {
+        type: "gesture",
+        kind,
+        phase: "active",
+        elementId: "other",
+        x: 2,
+        y: 2,
+      });
+      expect(homeWatcher.messages()).toEqual([
+        expect.objectContaining({ type: "gesture", kind, phase: "active" }),
+      ]);
+      homeWatcher.clear();
+      expect(sourceWatcher.messages()).toEqual([]);
+      expect(aimWatcher.messages()).toEqual([]);
+    }
+    send(fixture.gateway, "dragger", CH, {
+      type: "gesture",
+      kind: "carry",
+      phase: "end",
+      elementId: "element",
+      x: 1,
+      y: 1,
+    });
+    for (const watcher of [sourceWatcher, aimWatcher]) {
+      expect(watcher.messages()).toEqual([
+        expect.objectContaining({ type: "gesture", kind: "carry", phase: "end", aimOnly: true }),
+      ]);
+    }
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("ending one simultaneous carry preserves the other carry's foreign recipients", async () => {
+    const fixture = await gatewayFixture();
+    const first = fixture.secondContainer("first source");
+    const second = fixture.secondContainer("second source");
+    const dragger = new FakeSocket();
+    const firstWatcher = new FakeSocket();
+    const secondWatcher = new FakeSocket();
+    join(fixture.gateway, "dragger", dragger, fixture.container.id, fixture.ownerKey);
+    join(fixture.gateway, "first", firstWatcher, first.id, fixture.ownerKey);
+    join(fixture.gateway, "second", secondWatcher, second.id, fixture.ownerKey);
+    firstWatcher.clear();
+    secondWatcher.clear();
+    send(fixture.gateway, "dragger", CH, tileCarryFrame(first.id));
+    firstWatcher.clear();
+    fixture.clock.advance(30);
+    send(fixture.gateway, "dragger", CH, { ...tileCarryFrame(second.id), elementId: "second" });
+    expect(firstWatcher.messages()).toEqual([]);
+    expect(secondWatcher.messages()).toEqual([
+      expect.objectContaining({
+        kind: "carry",
+        phase: "active",
+        elementId: "second",
+        aimOnly: true,
+      }),
+    ]);
+    secondWatcher.clear();
+    send(fixture.gateway, "dragger", CH, {
+      type: "gesture",
+      kind: "carry",
+      phase: "end",
+      elementId: "element",
+      x: 1,
+      y: 1,
+    });
+    expect(firstWatcher.messages()).toEqual([
+      expect.objectContaining({ kind: "carry", phase: "end", elementId: "element", aimOnly: true }),
+    ]);
+    expect(secondWatcher.messages()).toEqual([]);
+    firstWatcher.clear();
+    send(fixture.gateway, "dragger", CH, {
+      type: "gesture",
+      kind: "carry",
+      phase: "end",
+      elementId: "second",
+      x: 1,
+      y: 1,
+    });
+    expect(firstWatcher.messages()).toEqual([]);
+    expect(secondWatcher.messages()).toEqual([
+      expect.objectContaining({ kind: "carry", phase: "end", elementId: "second", aimOnly: true }),
+    ]);
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("source and aim sharing one room receive each carry frame only once", async () => {
+    const fixture = await gatewayFixture();
+    const source = fixture.secondContainer("source and target composition");
+    const dragger = new FakeSocket();
+    const watcher = new FakeSocket();
+    join(fixture.gateway, "dragger", dragger, fixture.container.id, fixture.ownerKey);
+    join(fixture.gateway, "watcher", watcher, source.id, fixture.ownerKey);
+    watcher.clear();
+
+    send(fixture.gateway, "dragger", CH, tileCarryFrame(source.id, source.id));
+    expect(watcher.messages()).toEqual([
+      expect.objectContaining({ type: "gesture", phase: "active", aimOnly: true }),
+    ]);
+    watcher.clear();
+    send(fixture.gateway, "dragger", CH, tileCarryFrame(source.id, null, "end"));
+    expect(watcher.messages()).toEqual([
+      expect.objectContaining({ type: "gesture", phase: "end", aimOnly: true }),
+    ]);
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("a forged source receives neither active nor end without read authority", async () => {
+    const fixture = await gatewayFixture();
+    const source = fixture.secondContainer("unreadable source composition");
+    const scoped = fixture.auth.mintToken(
+      {
+        principal: { name: "scoped dragger", kind: "human" },
+        caps: ["containers:read", "scenes:write"],
+        containerId: fixture.container.id,
+      },
+      fixture.auth.authenticate(fixture.ownerKey),
+    ).token;
+    const dragger = new FakeSocket();
+    const watcher = new FakeSocket();
+    join(fixture.gateway, "dragger", dragger, fixture.container.id, scoped);
+    join(fixture.gateway, "watcher", watcher, source.id, fixture.ownerKey);
+    watcher.clear();
+
+    send(fixture.gateway, "dragger", CH, tileCarryFrame(source.id));
+    send(fixture.gateway, "dragger", CH, tileCarryFrame(source.id, null, "end"));
+    expect(watcher.messages()).toEqual([]);
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
   test("a carry aimed at another container reaches that container's own room", async () => {
     const fixture = await gatewayFixture();
     const aimed = fixture.secondContainer("the aimed composition");

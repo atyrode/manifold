@@ -64,7 +64,7 @@ export {
   type CarrySource,
   type RemoteTileCarry,
   type RefLabelLookups,
-  type RefTextElement,
+  type RefElementContent,
 } from "./carry.ts";
 export {
   useCarry,
@@ -164,7 +164,14 @@ export {
   ContainerRenderer,
   ProjectionProvider,
   RoomPipeRegistrationProvider,
+  ProjectionScopeProvider,
+  TitlebarOutlet,
+  extendProjectionScope,
+  useProjectionScope,
+  usePublishLocation,
+  type ProjectionScope,
   TerminalRenderer,
+  type TerminalRendererProps,
   SectionOutlet,
   ViewportRegistrationProvider,
   useProjection,
@@ -193,6 +200,7 @@ export {
   type RoomPipeRegistration,
   type TerminalFacet,
 } from "./projection.ts";
+export { publishLocation } from "./ui/vantage.ts";
 /**
  * WHICH INSTANCE the lens looks at, and the doors derived from it. Browser-only (it reads
  * `window.location` and this device's memory), so it rides this subpath with the rest of the

@@ -25,7 +25,7 @@
  *   7. REMOUNT PROBE — a pane that merely gains a sibling keeps its xterm DOM across
  *      the commit (the Step-10 decision: a changed stamp means the commit remounts).
  *   8. SEAM DRAG ON A WIDGET — an engaged portal resizes its composition from a press on
- *      the seam's VISIBLE centre, the gesture the half-scale preview used to swallow.
+ *      the seam's VISIBLE centre at canvas zoom, without neighbouring content stealing it.
  *
  * Self-contained: builds the web bundle to a temp dir, spawns its own server + agent,
  * cleans up. Env: MANIFOLD_CHROMIUM (else system chromium).
@@ -104,12 +104,93 @@ const elementRect = (target: Browser, selector: string): Promise<Rect | null> =>
     })()`,
   );
 
-/** One mid-drag observation: the slot, the written pane transforms, and a custom extra. */
+interface TileMotionSample {
+  readonly rect: Rect;
+  readonly unitRect: Rect;
+  readonly transform: string;
+  readonly moved: boolean;
+  readonly opacity: number;
+}
+
+/** Read the painted WAAPI value, not its inline destination or an ancestor pane. */
+const tileMotionJs = `(area) => {
+  const samples = {};
+  if (area === null) return samples;
+  const areaBox = area.getBoundingClientRect();
+  for (const host of area.querySelectorAll('.tile-content-host')) {
+    const id = host.parentElement?.getAttribute('data-tile-id');
+    if (id === null || id === undefined) continue;
+    const box = host.getBoundingClientRect();
+    const style = getComputedStyle(host);
+    const matrix = new DOMMatrixReadOnly(style.transform === 'none' ? undefined : style.transform);
+    samples[id] = {
+      rect: { left: box.left, top: box.top, width: box.width, height: box.height },
+      unitRect: { left: (box.left - areaBox.left) / areaBox.width,
+        top: (box.top - areaBox.top) / areaBox.height,
+        width: box.width / areaBox.width, height: box.height / areaBox.height },
+      transform: style.transform,
+      moved: Math.max(Math.abs(matrix.e), Math.abs(matrix.f),
+        Math.abs(matrix.a - 1) * host.offsetWidth, Math.abs(matrix.d - 1) * host.offsetHeight) > 1,
+      opacity: Number(style.opacity),
+    };
+  }
+  return samples;
+}`;
+
+const rectDrift = (a: Rect, b: Rect): number =>
+  Math.max(
+    Math.abs(a.left - b.left),
+    Math.abs(a.top - b.top),
+    Math.abs(a.width - b.width),
+    Math.abs(a.height - b.height),
+  );
+
+/** Keep actual nodes and layout dimensions, so cancellation cannot pass by remounting. */
+const rememberTileState = (target: Browser): Promise<boolean> =>
+  target.evaluate<boolean>(
+    `(() => {
+    const area = document.querySelector('.tile-area');
+    if (area === null) return false;
+    if (window.__resizeFrames === undefined) {
+      window.__resizeFrames = [];
+      const original = WebSocket.prototype.send;
+      WebSocket.prototype.send = function (data) {
+        if (typeof data === 'string' && data.includes('terminal_resize')) window.__resizeFrames.push(data);
+        return original.call(this, data);
+      };
+    }
+    const hosts = [...area.querySelectorAll('.tile-content-host')];
+    window.__tileMotionBaseline = hosts.map((host) => {
+      const terminal = host.querySelector('.xterm');
+      const box = host.getBoundingClientRect();
+      return { host, terminal, w: terminal?.offsetWidth, h: terminal?.offsetHeight,
+        rect: { left: box.left, top: box.top, width: box.width, height: box.height } };
+    });
+    window.__tileMotionResizeCount = window.__resizeFrames?.length ?? 0;
+    return hosts.some((host) => host.querySelector('.xterm') !== null);
+  })()`,
+  );
+
+const tileStateRestoredJs = `() => {
+  const before = window.__tileMotionBaseline;
+  if (before === undefined || before.length === 0) return false;
+  const hosts = document.querySelectorAll('.tile-area .tile-content-host');
+  return hosts.length === before.length && before.every(({ host, terminal, w, h, rect }) => {
+    if (!host.isConnected || host.querySelector('.xterm') !== terminal) return false;
+    const box = host.getBoundingClientRect();
+    return Math.max(Math.abs(box.left - rect.left), Math.abs(box.top - rect.top),
+      Math.abs(box.width - rect.width), Math.abs(box.height - rect.height)) <= 1 &&
+      getComputedStyle(host).opacity === '1' &&
+      terminal?.offsetWidth === w && terminal?.offsetHeight === h;
+  }) && (window.__resizeFrames?.length ?? 0) === window.__tileMotionResizeCount;
+}`;
+
+/** One mid-drag observation: the slot, painted content-host motion, and a custom extra. */
 interface HoverSample {
   readonly present: boolean;
   readonly rect: Rect | null;
   readonly className: string;
-  readonly transforms: Record<string, string>;
+  readonly motion: Record<string, TileMotionSample>;
   readonly extra: unknown;
 }
 
@@ -174,22 +255,21 @@ async function dragSequence(
           Zones resolve in the AREA's stable geometry while the FLIP has visually moved
           the panes — the vacated space is exactly where the slot paints — so hover
           coordinates must come from the UNTRANSFORMED boxes, the way a pointer's
-          position is judged by the app. A previous stop's transforms are lifted for
-          the measurement (transitions suppressed, or the rect reads a mid-flight
-          animation value) and restored verbatim.
+          position is judged by the app. Pane seats already have committed geometry.
+          Only a target INSIDE a moving content host needs its ancestor projection
+          lifted: !important overrides WAAPI without cancelling or restarting it.
         */
         const lifted = [];
         for (let el = onto; el !== null && el !== document.body; el = el.parentElement) {
-          if (el.hasAttribute('data-tile-id') && el.style.transform !== '') {
-            lifted.push([el, el.style.transform]);
-            el.style.transition = 'none';
-            el.style.transform = 'none';
+          if (el.classList.contains('tile-content-host')) {
+            lifted.push([el, el.style.getPropertyValue('transform'), el.style.getPropertyPriority('transform')]);
+            el.style.setProperty('transform', 'none', 'important');
           }
         }
         const box = onto.getBoundingClientRect();
-        for (const [el, transform] of lifted) {
-          el.style.transform = transform;
-          el.style.transition = '';
+        for (const [el, transform, priority] of lifted) {
+          if (transform === '') el.style.removeProperty('transform');
+          else el.style.setProperty('transform', transform, priority);
         }
         const x = box.left + box.width * stop.fx;
         const y = box.top + box.height * stop.fy;
@@ -214,17 +294,12 @@ async function dragSequence(
           const b = slot.getBoundingClientRect();
           return { left: b.left, top: b.top, width: b.width, height: b.height };
         })();
-        const transforms = {};
-        if (areaEl !== null) {
-          for (const el of areaEl.querySelectorAll('[data-tile-id]')) {
-            if (el.style.transform !== '') transforms[el.getAttribute('data-tile-id')] = el.style.transform;
-          }
-        }
+        const motion = (${tileMotionJs})(areaEl);
         samples.push({
           present: slot !== null,
           rect,
           className: slot === null ? '' : slot.className,
-          transforms,
+          motion,
           extra: (${extraJs})(),
         });
         last = { x, y };
@@ -408,7 +483,7 @@ try {
   /* ── Rounds 1 + 3 + 5 + 7 ride one gesture: C dropped on the lower half of B ── */
 
   // Round 5's spy and round 7's stamp go in before the gesture.
-  await browser.evaluate(
+  const paneBBefore = await browser.evaluate<(Rect & { w: number; h: number }) | null>(
     `(() => {
       window.__resizeFrames = [];
       const original = WebSocket.prototype.send;
@@ -419,8 +494,13 @@ try {
         return original.call(this, data);
       };
       const keeper = document.querySelector('[data-tile-id="${leafB}"] .xterm');
-      if (keeper !== null) keeper.setAttribute('data-mount-probe', 'keep-b');
-      return null;
+      const host = keeper?.closest('.tile-content-host');
+      if (keeper === null || host === null || host === undefined) return null;
+      window.__motionKeeper = { host, keeper };
+      keeper.setAttribute('data-mount-probe', 'keep-b');
+      const box = host.getBoundingClientRect();
+      return { w: keeper.offsetWidth, h: keeper.offsetHeight,
+        left: box.left, top: box.top, width: box.width, height: box.height };
     })()`,
   );
 
@@ -500,41 +580,57 @@ try {
     paneW: number;
     paneH: number;
   } | null;
-  const shifted = hover1?.transforms[leafB] ?? "";
-  const paneBBefore = await browser.evaluate<{ w: number; h: number } | null>(
-    `(() => {
-      const pane = document.querySelector('[data-tile-id="${leafB}"] .xterm');
-      return pane === null ? null : { w: pane.offsetWidth, h: pane.offsetHeight };
-    })()`,
-  );
-  void paneBBefore;
+  const shifted = hover1?.motion[leafB] ?? null;
   check(
     "panes really move",
-    shifted !== "" && shifted.includes("translate") && shifted.includes("scale"),
-    `B's pane wore ${shifted === "" ? "no transform" : shifted} during the hover`,
+    shifted !== null &&
+      shifted.moved &&
+      paneBBefore !== null &&
+      rectDrift(shifted.rect, paneBBefore) > 4,
+    `B's content host painted ${shifted?.transform ?? "no transform"} during the hover`,
   );
   check(
     "transform, not reflow",
-    extras1 !== null && extras1.resizeFrames === 0 && extras1.paneW > 0,
-    `terminal layout box ${String(extras1?.paneW)}×${String(extras1?.paneH)} with ${String(extras1?.resizeFrames)} terminal_resize frames mid-hover`,
+    extras1 !== null &&
+      paneBBefore !== null &&
+      extras1.resizeFrames === 0 &&
+      paneBBefore.w > 0 &&
+      paneBBefore.h > 0 &&
+      extras1.paneW === paneBBefore.w &&
+      extras1.paneH === paneBBefore.h,
+    `terminal layout box ${String(paneBBefore?.w)}×${String(paneBBefore?.h)} -> ${String(extras1?.paneW)}×${String(extras1?.paneH)} with ${String(extras1?.resizeFrames)} terminal_resize frames mid-hover`,
   );
 
-  const probe = await browser.evaluate<string>(
-    `document.querySelector('[data-tile-id="${leafB}"] .xterm')?.getAttribute('data-mount-probe') ?? ''`,
+  const probe = await browser.evaluate<boolean>(
+    `(() => {
+      const keeper = document.querySelector('[data-tile-id="${leafB}"] .xterm');
+      return keeper !== null && keeper === window.__motionKeeper.keeper &&
+        keeper.closest('.tile-content-host') === window.__motionKeeper.host;
+    })()`,
   );
   check(
     "no remount on commit",
-    probe === "keep-b",
-    probe === "keep-b"
+    probe,
+    probe
       ? "the pre-existing pane kept its xterm DOM across the split"
       : "the split REMOUNTED the pre-existing pane's xterm (Step 10 fix required)",
   );
 
   /* ── Round 6: five zones on nested leaf B of `A | (B/C)` ── */
 
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `[...document.querySelectorAll('.tile-area .tile-content-host')].every(
+        (host) => host.getAnimations().every((animation) => animation.playState === 'finished'))`,
+      ),
+    10_000,
+    "committed tile motion settled before cancellation baseline",
+  );
+  const rememberedCancel = await rememberTileState(browser);
   const zones = await dragSequence(
     browser,
-    `[data-tile-id="${leafA}"] .composition-leaf__grip`,
+    `[data-tile-id="${leafA}"] [data-titlebar-draggable]`,
     ".tile-area",
     [
       { selector: `[data-tile-id="${leafB}"]`, fx: 0.08, fy: 0.5, holdMs: 120 },
@@ -580,6 +676,43 @@ try {
     "abort mutates nothing",
     JSON.stringify(layoutAfterAbort) === JSON.stringify(layout1),
     "the aborted tile carry left the layout untouched",
+  );
+  const cancelRestored = await settles(
+    () => browser!.evaluate<boolean>(`(${tileStateRestoredJs})()`),
+    10_000,
+  );
+  check(
+    "cancellation restores live content without terminal reflow",
+    rememberedCancel &&
+      edgeSamples.some(
+        (sample) => sample !== null && Object.values(sample.motion).some((motion) => motion.moved),
+      ) &&
+      cancelRestored,
+    "after changing preview zones and cancelling, the same hosts/xterms regain their original painted boxes, layout sizes and opacity with no terminal_resize",
+  );
+
+  // A composition cannot be embedded into itself. The refused prospect may paint a
+  // denial slot, but must never move or reflow any live content.
+  const rememberedDenial = await rememberTileState(browser);
+  const deniedDrop = await dragSequence(
+    browser,
+    `.index-item[data-tree-id="${containerId}"]`,
+    ".tile-area",
+    [{ selector: `[data-tile-id="${leafB}"]`, fx: 0.5, fy: 0.85, holdMs: 350 }],
+    true,
+    tileStateRestoredJs,
+  );
+  const deniedSample = deniedDrop.samples[0] ?? null;
+  check(
+    "denied targets never project or reflow terminals",
+    rememberedDenial &&
+      deniedDrop.ok &&
+      deniedSample !== null &&
+      deniedSample.className.includes("is-denied") &&
+      deniedSample.extra === true &&
+      Object.values(deniedSample.motion).every((motion) => !motion.moved && motion.opacity === 1) &&
+      JSON.stringify(layoutNow()) === JSON.stringify(layout1),
+    "self-embedding refused with the same content hosts, painted boxes, xterm layout and terminal_resize count",
   );
 
   // The seatless half: a sidebar terminal on B's center replaces, re-homing B.
@@ -858,6 +991,7 @@ try {
 
   // The producer holds a drag over a pane's flank WITHOUT releasing; the aim rides its
   // carry frames, and the viewer re-derives the same prospect from the same kernel.
+  const rememberedPeer = await rememberTileState(viewer);
   const heldDrag = dragSequence(
     browser,
     `.index-item[data-tree-id="${termJ.containerId}"]`,
@@ -875,26 +1009,39 @@ try {
   const viewerSample = await (async () => {
     const deadline = Date.now() + 8_000;
     while (Date.now() < deadline) {
-      const sample = await viewer!.evaluate<{ cls: string; moved: boolean; note: string } | null>(
+      const sample = await viewer!.evaluate<{
+        cls: string;
+        moved: boolean;
+        motion: Record<string, TileMotionSample>;
+      } | null>(
         `(() => {
           const slot = document.querySelector('.tile-area .tile-preview');
           if (slot === null) return null;
-          const moved = [...document.querySelectorAll('.tile-area [data-tile-id]')]
-            .some((el) => el.style.transform !== '');
-          const note = document.querySelector('.tile-area .drop-denial-note')?.textContent ?? '';
-          return { cls: slot.className, moved, note };
+          const motion = (${tileMotionJs})(document.querySelector('.tile-area'));
+          const moved = Object.values(motion).some((sample) => sample.moved);
+          const settling = [...document.querySelectorAll('.tile-area .tile-content-host')]
+            .some((host) => host.getAnimations().some((animation) => animation.playState !== 'finished'));
+          return settling ? null : { cls: slot.className, moved, motion };
         })()`,
       );
-      if (sample !== null && sample.cls.includes("is-remote")) return sample;
+      if (sample !== null && sample.moved && sample.cls.includes("is-remote")) return sample;
       await sleep(100);
     }
     return null;
   })();
-  await heldDrag;
+  const localHeld = await heldDrag;
+  const localMotion = localHeld.samples[0]?.motion ?? {};
+  const peerMotionMatches =
+    viewerSample !== null &&
+    Object.keys(localMotion).length === Object.keys(viewerSample.motion).length &&
+    Object.entries(localMotion).every(([id, motion]) => {
+      const peer = viewerSample.motion[id];
+      return peer !== undefined && rectDrift(motion.unitRect, peer.unitRect) <= 0.005;
+    });
   check(
     "a collaborator paints the dragger's preview (#61)",
-    viewerSample !== null && viewerSample.moved,
-    `viewer slot "${String(viewerSample?.cls)}", panes glided: ${String(viewerSample?.moved)} — second real browser, same kernel`,
+    viewerSample !== null && viewerSample.moved && peerMotionMatches,
+    `viewer slot "${String(viewerSample?.cls)}", panes glided: ${String(viewerSample?.moved)}, local/remote painted geometry agrees: ${String(peerMotionMatches)}`,
   );
   await until(
     () => viewer!.evaluate<boolean>("document.querySelector('.tile-area .tile-preview') === null"),
@@ -905,6 +1052,15 @@ try {
     "a silent carry releases the viewer's preview (#61)",
     true,
     "the gesture TTL retired the remote aim with no end frame needed",
+  );
+  const peerRestored = await settles(
+    () => viewer!.evaluate<boolean>(`(${tileStateRestoredJs})()`),
+    10_000,
+  );
+  check(
+    "remote cancellation restores the same content hosts",
+    rememberedPeer && peerRestored,
+    "silent remote carry restored original painted geometry and terminal layout without remounting",
   );
 
   /* ── Round A: a SEAM is ONE object, answering the same across its whole band ── */
@@ -921,31 +1077,17 @@ try {
     disagree, or the "band" would be collapsing into a single zone and proving nothing.
   */
   const seamArea = await elementRect(browser, ".tile-area");
-  /*
-    Measured with any residual FLIP transform LIFTED (transitions suppressed, or the
-    rect reads a mid-flight animation value) and restored verbatim — the seam lives in
-    the layout's stable geometry, which is where the pointer's position is judged.
-  */
+  // Structural pane seats are never projected: their seam boxes are already committed.
   const seamKids = await browser.evaluate<readonly { id: string; top: number; bottom: number }[]>(
     `(() => {
       const root = document.querySelector('.tile-area [data-tile-id="root"]');
       if (root === null) return [];
       const kids = [...root.children].filter((el) => el.hasAttribute('data-tile-id'));
-      const lifted = [];
-      for (const el of kids) {
-        if (el.style.transform === '') continue;
-        lifted.push([el, el.style.transform]);
-        el.style.transition = 'none';
-        el.style.transform = 'none';
-      }
+      // Motion belongs to descendant content hosts, not these structural seats.
       const measured = kids.map((el) => {
         const box = el.getBoundingClientRect();
         return { id: el.getAttribute('data-tile-id') ?? '', top: box.top, bottom: box.bottom };
       });
-      for (const [el, transform] of lifted) {
-        el.style.transform = transform;
-        el.style.transition = '';
-      }
       return measured;
     })()`,
   );
@@ -1115,7 +1257,7 @@ try {
   */
   const carriedLeaf = leafOf(termG.id);
   const hostLeaf = leafOf(termF.id);
-  const gripSelector = `[data-tile-id="${carriedLeaf}"] .composition-leaf__grip`;
+  const gripSelector = `[data-tile-id="${carriedLeaf}"] [data-titlebar-draggable]`;
   const gripPresent = await browser.evaluate<boolean>(
     `document.querySelector(${JSON.stringify(gripSelector)}) !== null`,
   );
@@ -1124,10 +1266,12 @@ try {
     readonly border: string;
     readonly bg: string;
     readonly style: string;
+    readonly opacity: number;
   }
   const slotStyleJs = `() => {
     const slot = document.querySelector('.tile-area .tile-preview');
-    if (slot === null) return null;
+    const content = document.querySelector('[data-tile-id="${carriedLeaf}"] > .tile-content-host');
+    if (slot === null || content === null) return null;
     const shown = getComputedStyle(slot);
     return {
       border: shown.borderColor,
@@ -1135,6 +1279,7 @@ try {
       style: shown.borderStyle,
       cls: slot.className,
       fade: document.querySelector('[data-tile-id="${carriedLeaf}"]')?.classList.contains('is-carried-away') === true,
+      opacity: Number(getComputedStyle(content).opacity),
     };
   }`;
   const fadeDrag = dragSequence(
@@ -1154,7 +1299,9 @@ try {
         `(() => {
           const pane = document.querySelector('[data-tile-id="${carriedLeaf}"]');
           const slot = document.querySelector('.tile-area .tile-preview');
-          if (pane === null || slot === null) return null;
+          const content = pane?.querySelector(':scope > .tile-content-host');
+          if (pane === null || slot === null || content === null || content === undefined) return null;
+          if (content.getAnimations().some((animation) => animation.playState !== 'finished')) return null;
           const shown = getComputedStyle(slot);
           return {
             border: shown.borderColor,
@@ -1162,10 +1309,11 @@ try {
             style: shown.borderStyle,
             cls: slot.className,
             fade: pane.classList.contains('is-carried-away'),
+            opacity: Number(getComputedStyle(content).opacity),
           };
         })()`,
       );
-      if (sample !== null && sample.fade) return sample;
+      if (sample !== null && sample.fade && sample.opacity <= 0.2) return sample;
       await sleep(100);
     }
     return null;
@@ -1173,7 +1321,11 @@ try {
   const fadeHeld = await fadeDrag;
   check(
     "a viewer sees the carried tile ease away",
-    gripPresent && carriedLeaf !== "" && hostLeaf !== "" && peerSample !== null,
+    gripPresent &&
+      carriedLeaf !== "" &&
+      hostLeaf !== "" &&
+      peerSample !== null &&
+      peerSample.opacity <= 0.2,
     peerSample === null
       ? `no viewer frame showed [data-tile-id="${carriedLeaf}"] wearing is-carried-away beside a live slot (grip present: ${String(gripPresent)})`
       : `the peer faded the carried pane while its slot "${peerSample.cls}" stood armed`,
@@ -1192,7 +1344,9 @@ try {
       ownSample.border === peerSample.border &&
       ownSample.bg === peerSample.bg &&
       ownSample.style === peerSample.style &&
-      ownSample.style === "solid",
+      ownSample.style === "solid" &&
+      ownSample.opacity <= 0.2 &&
+      Math.abs(ownSample.opacity - peerSample.opacity) <= 0.01,
     `dragger ${stateOf(ownSample)} vs viewer ${stateOf(peerSample)} — carried pane faded for the dragger: ${String(ownSample?.fade)}, for the viewer: ${String(peerSample?.fade)}`,
   );
 
@@ -1201,7 +1355,12 @@ try {
   await until(
     () =>
       viewer!.evaluate<boolean>(
-        `document.querySelector('[data-tile-id="${carriedLeaf}"]')?.classList.contains('is-carried-away') !== true`,
+        `(() => {
+          const pane = document.querySelector('[data-tile-id="${carriedLeaf}"]');
+          const content = pane?.querySelector(':scope > .tile-content-host');
+          return pane !== null && content !== null && content !== undefined &&
+            !pane.classList.contains('is-carried-away') && getComputedStyle(content).opacity === '1';
+        })()`,
       ),
     10_000,
     "viewer's carried pane lost its fade",
@@ -1215,15 +1374,10 @@ try {
   /* ── Round 8: an engaged portal's seam drags, exactly like the route's ── */
 
   /*
-    THE SEAM YOU SEE IS THE SEAM YOU GRAB. A portal draws its tree under
-    `transform: scale(PORTAL_PREVIEW_SCALE)` and any canvas zoom, so a seam's paint and
-    its pointer band shrink together — and the band was additionally defeated on its
-    trailing side by the neighbouring pane's own positioned content, which left the live
-    band entirely on the LEADING side of the line a viewer aims at. Pressing the visible
-    centre landed in the terminal, so the resize never started on a canvas while the
-    fullscreen route (drawn 1:1) was fine. The gesture below is the operator's: engage the
-    portal, press the seam's visible centre the way a real mouse does (whole device
-    pixels), drag, and read the ratios back off the SERVER rather than the paint.
+    THE SEAM YOU SEE IS THE SEAM YOU GRAB. Canvas zoom scales a seam's paint and pointer
+    band together, and neighbouring positioned content must not intercept its visible
+    centre. The gesture below engages the portal, presses that centre using whole device
+    pixels, drags, and reads ratios back off the SERVER rather than trusting the paint.
   */
   await browser.goto(`${origin}/p/${canvasContainerId}`);
   await until(

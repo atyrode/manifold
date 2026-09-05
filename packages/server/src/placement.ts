@@ -21,7 +21,7 @@ import {
   type TileLayout,
   type TileRef,
 } from "@manifold/protocol";
-import { tileIdForRef, tileLeafIds } from "@manifold/scene";
+import { sameTileRef, tileIdForRef, tileLeafIds } from "@manifold/scene";
 import type { Room, RoomManager, TileTreeDisciplines } from "./room.ts";
 import type { ServerStore } from "./stores.ts";
 
@@ -526,12 +526,6 @@ export class PlaceExecutor {
     if (item.kind === "canvas" && item.containerId !== null) {
       return { kind: "container", containerId: item.containerId };
     }
-    if (item.kind === "text") {
-      // A note is addressed as an element of the container holding it, and stored as the
-      // element id the DESTINATION will hold it under — the ids are the same because the
-      // element MOVES between documents rather than being copied.
-      return source.addressed === null ? null : { kind: "text", elementId: source.addressed };
-    }
     if (item.kind === "tile" && source.containerId !== null && source.addressed !== null) {
       /*
         A leaf places WHAT IT HOLDS. The algebra classifies a leaf opaquely on purpose —
@@ -540,6 +534,16 @@ export class PlaceExecutor {
         owns the tree reads it, and every op downstream sees an ordinary tileable ref.
        */
       return this.rooms.get(source.containerId)?.tileLayout()?.[source.addressed]?.ref ?? null;
+    }
+    if (
+      item.containerId === null &&
+      source.containerId !== null &&
+      source.addressed !== null &&
+      this.rooms.get(source.containerId)?.element(source.addressed)?.type === item.kind
+    ) {
+      // The wire address names the contributed element independently of its payload type.
+      // Legality comes from the element's declared traits; identity survives the move.
+      return { kind: "element", elementId: source.addressed };
     }
     return null;
   }
@@ -575,7 +579,11 @@ export class PlaceExecutor {
     // no home to be sent to, and a panel is not an object at all. The spot they hold is not
     // up for grabs, so a center drop onto one is refused rather than silently destructive.
     // `panel` is named here because it IS a floor kind; the other rule reads the trait.
-    if (this.bornUnhomed(occupant.kind) || occupant.kind === "panel") {
+    const occupantKind =
+      occupant.kind === "element"
+        ? (composition.element(occupant.elementId)?.type ?? occupant.kind)
+        : occupant.kind;
+    if (this.bornUnhomed(occupantKind) || occupant.kind === "panel") {
       return {
         status: "denied",
         denial: {
@@ -632,32 +640,30 @@ export class PlaceExecutor {
   }
 
   /**
-   * The note behind a `text` ref, read before anything is written so a placement that
-   * cannot be carried out mutates neither document. Null when the element is gone or was
-   * never a note.
+   * The element behind its wire ref, read before anything is written so a placement
+   * that cannot be carried out mutates neither document. The address does not constrain
+   * the contributed payload's type.
    */
-  private noteAt(containerId: string | null, elementId: string): SceneElement | null {
+  private elementAt(containerId: string | null, elementId: string): SceneElement | null {
     if (containerId === null) return null;
-    const element = this.rooms.get(containerId)?.element(elementId) ?? null;
-    return element?.type === "text" ? element : null;
+    return this.rooms.get(containerId)?.element(elementId) ?? null;
   }
 
   /**
-   * Moves a note into the container that now holds its leaf. A composition OWNS its notes:
-   * its own document stores the element, so the text stays collaborative through the same
-   * room everyone in the composition is already joined to, with no second socket and no
-   * cross-document reference to keep alive.
+   * Moves a contributed element into the container that now holds its leaf. A composition
+   * owns its element payloads in the same document its viewers already share, with no
+   * second socket or cross-document reference to keep alive.
    *
    * Which payload fields were COLLABORATIVE is read from the source before the source loses
    * the record, because only the document that held it knows, and it stops knowing the moment
    * the record leaves (ADR 0013 §16). Reading it after the removal would silently flatten a
    * note's shared text into a plain string on every cross-document move.
    */
-  private adoptNote(source: SourceLocation, note: SceneElement, target: Room): void {
+  private adoptCarriedElement(source: SourceLocation, element: SceneElement, target: Room): void {
     const from = source.containerId === null ? null : this.rooms.get(source.containerId);
-    const carried = from?.collaborativeFields(note.id) ?? [];
+    const carried = from?.collaborativeFields(element.id) ?? [];
     if (from !== null && source.addressed !== null) from.removeElementById(source.addressed);
-    target.adoptElement(note, note.x, note.y, carried);
+    target.adoptElement(element, element.x, element.y, carried);
     this.afterLeaving(source.containerId);
   }
 
@@ -684,8 +690,11 @@ export class PlaceExecutor {
       if (occupant?.kind === "container") {
         return this.store.getContainer(occupant.containerId)?.name ?? "canvas";
       }
-      if (occupant !== null && this.bornUnhomed(occupant.kind)) {
-        return this.elementNoun(occupant.kind);
+      if (occupant?.kind === "element") {
+        const element = this.elementAt(source.containerId, occupant.elementId);
+        if (element !== null && this.bornUnhomed(element.type)) {
+          return this.elementNoun(element.type);
+        }
       }
     }
     if (this.bornUnhomed(item.kind)) return this.elementNoun(item.kind);
@@ -915,13 +924,13 @@ export class PlaceExecutor {
         return this.executeReplace(ref, dragged, occupant, containerId, targetTileId, source);
       }
     }
-    // A note carried as an ELEMENT is read before the write, so a placement that cannot be
+    // A contributed ELEMENT is read before the write, so a placement that cannot be
     // carried out mutates neither document. One carried as a LEAF travels with the leaf.
-    const note =
-      fromLeaf === null && dragged.kind === "text"
-        ? this.noteAt(source.containerId, dragged.elementId)
+    const element =
+      fromLeaf === null && dragged.kind === "element"
+        ? this.elementAt(source.containerId, dragged.elementId)
         : null;
-    if (fromLeaf === null && dragged.kind === "text" && note === null) {
+    if (fromLeaf === null && dragged.kind === "element" && element === null) {
       return { status: "failed", failure: "not_found" };
     }
     const tileId = composition.placeTile(dragged, targetTileId, edge, between);
@@ -934,7 +943,7 @@ export class PlaceExecutor {
     if (dragged.kind === "terminal" && source.homeId !== null && source.homeId !== containerId) {
       this.absorbHome(dragged.terminalId, source, containerId, tileId);
     }
-    if (note !== null) this.adoptNote(source, note, composition);
+    if (element !== null) this.adoptCarriedElement(source, element, composition);
     return { status: "placed", result: { op: "add_tile", tileId } };
   }
 
@@ -1110,7 +1119,7 @@ export class PlaceExecutor {
    * is displaced into a place of its own. A composition can always re-home what it
    * displaces — a terminal into a fresh solo composition, an embedded canvas into the index
    * it already lives in — which is why the tile door has no `not_swappable` to raise. Only
-   * a note cannot be displaced, and `evictLeaf` refuses that one by name before any write.
+   * an on_claim element cannot be displaced, and `evictLeaf` reads its traits before any write.
    *
    * The ORDER is what makes this atomic:
    *
@@ -1135,14 +1144,14 @@ export class PlaceExecutor {
   ): PlaceOutcome {
     const composition = this.rooms.get(containerId);
     if (composition === null) return { status: "failed", failure: "not_found" };
-    // A note carried as an ELEMENT is read before anything is written, so a placement that
+    // A contributed ELEMENT is read before anything is written, so a placement that
     // cannot be carried out mutates neither document. One carried as a LEAF travels with it.
     const fromLeaf = ref.kind === "tile" ? source.addressed : null;
-    const note =
-      fromLeaf === null && dragged.kind === "text"
-        ? this.noteAt(source.containerId, dragged.elementId)
+    const element =
+      fromLeaf === null && dragged.kind === "element"
+        ? this.elementAt(source.containerId, dragged.elementId)
         : null;
-    if (fromLeaf === null && dragged.kind === "text" && note === null) {
+    if (fromLeaf === null && dragged.kind === "element" && element === null) {
       return { status: "failed", failure: "not_found" };
     }
     const evicted = this.evictLeaf(composition, containerId, targetTileId, ref);
@@ -1175,7 +1184,7 @@ export class PlaceExecutor {
     ) {
       this.absorbHome(dragged.terminalId, source, containerId, targetTileId);
     }
-    if (note !== null) this.adoptNote(source, note, composition);
+    if (element !== null) this.adoptCarriedElement(source, element, composition);
     return {
       status: "placed",
       result: { op: "replace", tileId, displacedContainerId: evicted.homeId },
@@ -1190,8 +1199,8 @@ export class PlaceExecutor {
    *   a TERMINAL lives in exactly one composition, so the mirrors its old container still
    *     held for it go — a leaf naming a terminal that lives somewhere else is a reference
    *     to a place the item no longer is, which is the state invariant 3 exists to forbid;
-   *   a NOTE is owned by the composition showing it, so its element travels between the two
-   *     documents, or the leaf would render text nobody in the new room can read or edit;
+   *   an ELEMENT is owned by the composition showing it, so its scene record travels between
+   *     the two documents, or the new room would have no payload to render or edit;
    *   an embedded CANVAS is a reference and needs nothing: the container keeps living where
    *     it lives and only which tree points at it changed.
    *
@@ -1207,12 +1216,12 @@ export class PlaceExecutor {
       }
       return;
     }
-    if (ref.kind === "text") {
-      const note = from.element(ref.elementId);
-      if (note === null) return;
+    if (ref.kind === "element") {
+      const element = from.element(ref.elementId);
+      if (element === null) return;
       const carried = from.collaborativeFields(ref.elementId);
       from.removeElementById(ref.elementId);
-      to.adoptElement(note, note.x, note.y, carried);
+      to.adoptElement(element, element.x, element.y, carried);
     }
   }
 
@@ -1315,25 +1324,30 @@ export class PlaceExecutor {
     if (item.containerId !== null && item.containerId === targetHomeId) {
       return { status: "failed", failure: "conflict" };
     }
-    const targetRef = this.tileRefFor(targetSolo.item, {
-      ...NO_SOURCE,
-      containerId: targetHomeId,
-      discipline: "composition",
-      terminalId: targetSolo.terminalId,
-      homeId: targetSolo.terminalId === null ? null : targetHomeId,
-    });
+    // Vacant structure can precede the solo occupant: only an occupied leaf names the item.
+    const targetLayout = this.rooms.get(targetHomeId)?.tileLayout() ?? null;
+    let targetRef: TileRef | null = null;
+    if (targetLayout !== null) {
+      for (const leafId of tileLeafIds(targetLayout)) {
+        targetRef = targetLayout[leafId]?.ref ?? null;
+        if (targetRef !== null) break;
+      }
+    }
     const dragged = this.tileRefFor(item, source);
     if (targetRef === null || dragged === null) {
       return { status: "failed", failure: "conflict" };
     }
-    // A note carried as an ELEMENT is read before the write; one carried as a LEAF travels
+    if (source.containerId === targetHomeId && sameTileRef(dragged, targetRef)) {
+      return { status: "failed", failure: "conflict" };
+    }
+    // A contributed ELEMENT is read before the write; one carried as a LEAF travels
     // with the leaf, so the same `fromLeaf` split the tile destination makes applies here.
     const fromLeaf = ref.kind === "tile" ? source.addressed : null;
-    const note =
-      fromLeaf === null && dragged.kind === "text"
-        ? this.noteAt(source.containerId, dragged.elementId)
+    const element =
+      fromLeaf === null && dragged.kind === "element"
+        ? this.elementAt(source.containerId, dragged.elementId)
         : null;
-    if (fromLeaf === null && dragged.kind === "text" && note === null) {
+    if (fromLeaf === null && dragged.kind === "element" && element === null) {
       return { status: "failed", failure: "not_found" };
     }
 
@@ -1361,6 +1375,10 @@ export class PlaceExecutor {
       this.store.deleteContainer(compositionId);
       return { status: "failed", failure: "conflict" };
     }
+
+    // Read and transfer collaborative fields before absorbing the target home: a distinct
+    // unseated source element may live in that same document, which the merge will retire.
+    if (element !== null) this.adoptCarriedElement(source, element, composition);
 
     // The target's reference becomes a reference to the newborn IN PLACE, before its old
     // home retires — otherwise retiring the home would take this element with it.
@@ -1394,9 +1412,6 @@ export class PlaceExecutor {
     if (fromLeaf === null && dragged.kind === "terminal") {
       this.absorbHome(dragged.terminalId, source, compositionId, addedTileId);
     }
-    // The note moves into the composition that now holds its leaf, exactly as it would for
-    // a plain tile add: a merge is the same placement with a container born first.
-    if (note !== null) this.adoptNote(source, note, composition);
     this.rooms.evictIfIdle(destination.containerId);
     return {
       status: "placed",
@@ -1465,8 +1480,8 @@ export class PlaceExecutor {
 
   /**
    * Hands a solo composition's NON-terminal occupant over to the composition absorbing it:
-   * an embedded canvas is a reference, so only the leaf moves, while a note's element has to
-   * travel between documents the way any note does.
+   * an embedded canvas is a reference, so only the leaf moves, while a contributed element
+   * travels between documents with its payload.
    */
   private moveNonTerminalLeaf(fromContainerId: string, target: Room, toContainerId: string): void {
     const from = this.rooms.get(fromContainerId);
@@ -1475,12 +1490,12 @@ export class PlaceExecutor {
       for (const leafId of layout === null ? [] : tileLeafIds(layout)) {
         const occupant = layout?.[leafId]?.ref ?? null;
         if (occupant === null) continue;
-        if (occupant.kind === "text") {
-          const note = from.element(occupant.elementId);
-          if (note !== null) {
+        if (occupant.kind === "element") {
+          const element = from.element(occupant.elementId);
+          if (element !== null) {
             const carried = from.collaborativeFields(occupant.elementId);
             from.removeElementById(occupant.elementId);
-            target.adoptElement(note, note.x, note.y, carried);
+            target.adoptElement(element, element.x, element.y, carried);
           }
         }
         from.removeTileLeafById(leafId);
@@ -1498,7 +1513,8 @@ export class PlaceExecutor {
    * portal onto that — because a terminal always lives in a composition and the one it was
    * sharing is not it any more. When the source composition is already solo there is nothing
    * to re-home: that composition IS the item, so the drop simply authors a reference to it
-   * and no id churns. A note travels as its own element; an embedded canvas as a reference.
+   * and no id churns. A contributed element travels as its scene record; an embedded canvas
+   * as a reference.
    * A composition emptied by the extraction retires.
    */
   private executeExtract(
@@ -1552,18 +1568,20 @@ export class PlaceExecutor {
     // for the identical reason: unreachable through the door, refused here all the same.
     if (occupant.kind === "spacer") return { status: "failed", failure: "conflict" };
 
-    if (!composition.removeTileLeafById(tileId)) return { status: "failed", failure: "conflict" };
-    if (occupant.kind === "text") {
-      const note = composition.element(occupant.elementId);
-      if (note === null || note.type !== "text") return { status: "failed", failure: "not_found" };
+    if (occupant.kind === "element") {
+      // Validate the payload before removing its leaf: a stale ref must not destroy a seat.
+      const element = this.elementAt(containerId, occupant.elementId);
+      if (element === null) return { status: "failed", failure: "not_found" };
+      if (!composition.removeTileLeafById(tileId)) return { status: "failed", failure: "conflict" };
       const carried = composition.collaborativeFields(occupant.elementId);
       composition.removeElementById(occupant.elementId);
-      canvas.adoptElement(note, destination.x, destination.y, carried);
+      canvas.adoptElement(element, destination.x, destination.y, carried);
       this.deleteIfEmptied(containerId);
       this.afterLeaving(containerId);
       this.rooms.evictIfIdle(destination.containerId);
       return { status: "placed", result: { op: "extract", elementId: occupant.elementId } };
     }
+    if (!composition.removeTileLeafById(tileId)) return { status: "failed", failure: "conflict" };
     const elementId = canvas.placePortalElement(occupant.containerId, destination.x, destination.y);
     this.deleteIfEmptied(containerId);
     this.afterLeaving(containerId);
@@ -1600,9 +1618,10 @@ export class PlaceExecutor {
     ) {
       this.terminals.reapTerminal(occupant.terminalId);
     }
-    // A note's leaf IS its only placement, and a composition renders only its layout, so
+    // An element's leaf IS its only placement, and a composition renders only its layout, so
     // leaving the element behind would be invisible garbage.
-    if (occupant !== null && occupant.kind === "text") room.removeElementById(occupant.elementId);
+    if (occupant !== null && occupant.kind === "element")
+      room.removeElementById(occupant.elementId);
     if (occupant !== null) this.deleteIfEmptied(containerId);
     this.afterLeaving(containerId);
     return "ok";

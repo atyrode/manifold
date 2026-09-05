@@ -1,7 +1,8 @@
 import type { ContainerOverlayProps } from "@manifold/plugin/hooks";
+import { currentVantage, subscribeVantage } from "@manifold/plugin/ui";
 import { useEffect, useState, type ReactElement } from "react";
 import { PresenceIsland } from "./presence-island.tsx";
-import { deriveAttendanceRows, type AttendanceRow } from "./attendance-model.ts";
+import { deriveLocationAttendanceRows, type AttendanceRow } from "./attendance-model.ts";
 import { SpotlightChip, useSpotlight } from "./spotlight.tsx";
 
 /**
@@ -22,20 +23,40 @@ import { SpotlightChip, useSpotlight } from "./spotlight.tsx";
  * boundary leak; what would be a leak is this package reaching into React Flow.
  */
 
-/** WHO ELSE IS HERE: the avatar stack and its roster popover, over any ref that asks. */
-export function AttendanceOverlay({ client, host }: ContainerOverlayProps): ReactElement {
+/** The single path-filtered roster painter, invited by any participating titlebar. */
+export function TitlebarAttendance({
+  client,
+  host,
+  locationPath,
+}: ContainerOverlayProps): ReactElement | null {
   const [rows, setRows] = useState<readonly AttendanceRow[]>([]);
 
   useEffect(() => {
     const refresh = (): void => {
-      setRows(deriveAttendanceRows(client.attendance.values(), client.self ?? host.principal));
+      setRows(
+        client.status !== "open" || locationPath == null
+          ? []
+          : deriveLocationAttendanceRows(
+              client.attendance.values(),
+              client.self ?? host.principal,
+              client.selfConnId,
+              currentVantage(),
+              locationPath,
+            ),
+      );
     };
-    const off = client.on("attendance_changed", refresh);
+    const offAttendance = client.on("attendance_changed", refresh);
+    const offStatus = client.on("status", refresh);
+    const offVantage = subscribeVantage(refresh);
     refresh();
-    return off;
-  }, [client, host.principal]);
+    return () => {
+      offAttendance();
+      offStatus();
+      offVantage();
+    };
+  }, [client, host.principal, locationPath]);
 
-  return <PresenceIsland rows={rows} />;
+  return rows.length === 0 ? null : <PresenceIsland rows={rows} compact />;
 }
 
 /**

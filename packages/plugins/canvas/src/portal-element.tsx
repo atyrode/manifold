@@ -1,8 +1,9 @@
 import { itemNoun, type HostServices } from "@manifold/plugin";
 import {
   elementString,
+  elementPayload,
+  locationPathContains,
   soloLeaf,
-  type Principal,
   type TileLayout,
   type Tile,
   type TileRef,
@@ -11,7 +12,6 @@ import type { SessionClient } from "@manifold/sdk";
 import { NodeResizer, type NodeProps } from "@xyflow/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  ControlIcon,
   Cover,
   ItemIcon,
   NodeTitleBar,
@@ -21,9 +21,21 @@ import {
   TileTree,
   TileZoneDebug,
   setVantage,
+  currentVantage,
+  useTileDeparture,
+  type TilePreviewOverlayProps,
 } from "@manifold/plugin/ui";
+import type { TitlebarDragProps } from "@manifold/plugin/ui";
 import {
   TerminalRenderer,
+  ElementOutlet,
+  ProjectionScopeProvider,
+  TitlebarOutlet,
+  extendProjectionScope,
+  publishLocation,
+  useProjectionScope,
+  usePublishLocation,
+  type ProjectionScope,
   countRender,
   remoteTileCarries,
   refDisplayLabel,
@@ -31,13 +43,12 @@ import {
   useTileDrop,
   type ItemEnvelope,
   type TileDropHost,
-  type TileDropStore,
 } from "@manifold/plugin/hooks";
 import {
   MIN_TERMINAL_HEIGHT,
   MIN_TERMINAL_WIDTH,
   useCanvas,
-  useCanvasPresence,
+  useCanvasGestures,
 } from "./terminal-element.tsx";
 import {
   createPortalSocketSwitch,
@@ -103,18 +114,6 @@ export const MIN_PORTAL_HEIGHT = 160;
  */
 export const MAX_LIVE_DEPTH = 2;
 
-/**
- * Previews are scaled with a transform rather than by shrinking the box, because
- * cols/rows are shared terminal state: xterm fits against the element's computed
- * width/height, which a transform leaves alone, so previewing a terminal never
- * reflows the PTY for the people actually working in it.
- */
-const PREVIEW_SCALE = 0.5;
-
-const MAX_PRESENCE_AVATARS = 3;
-
-const NO_PRINCIPALS: readonly Principal[] = [];
-
 /** Container names live in the container's row, not its room, so the portal reads its own. */
 function useContainerName(host: HostServices, containerId: string): string | null {
   const [name, setName] = useState<string | null>(null);
@@ -142,9 +141,8 @@ function useContainerName(host: HostServices, containerId: string): string | nul
 /**
  * One room socket per live portal, opened through the canvas's factory so the terminal
  * URL and identity stay in one place. Both callbacks are plain dependencies: the canvas
- * hands down a context whose callbacks are stable by construction (presence, the one
- * thing that churned, is a context of its own now), so the socket can be tied to them
- * honestly instead of smuggled past the dependency array in a ref.
+ * hands down stable actions while high-cadence motion has its own context, so the socket
+ * can depend on those callbacks without sharing the motion subscription.
  *
  * Ownership follows the CONTAINER, never the role. Escalating to an occupant is a
  * gapless swap (`createPortalSocketSwitch`), and an effect keyed on the role would
@@ -218,106 +216,8 @@ function usePreviewLayout(client: SessionClient | null): TileLayout | null {
   return client.layout();
 }
 
-/**
- * Who is IN the container this portal points at, straight off the portal's own socket.
- * A spectator receives the room's roster without joining it, so this is live in both
- * states AND includes this browser the moment engagement makes it an occupant — which
- * the polled container presence cannot do, since it relocates the local principal to whatever
- * route the browser is on.
- *
- * Roster frames also carry cursors, so the principal set is compared before re-rendering
- * a portal that owns live terminals.
- */
-function useRoomOccupants(client: SessionClient | null): readonly Principal[] {
-  const [occupants, setOccupants] = useState<readonly Principal[]>(NO_PRINCIPALS);
-  useEffect(() => {
-    if (client === null) return;
-    let signature = "";
-    const refresh = (): void => {
-      // A principal with two connections in the room is one avatar.
-      const seen = new Set<string>();
-      const next: Principal[] = [];
-      let nextSignature = "";
-      for (const state of client.attendance.values()) {
-        const principal = state.principal;
-        if (seen.has(principal.id)) continue;
-        seen.add(principal.id);
-        next.push(principal);
-        nextSignature += ` ${principal.id}`;
-      }
-      if (nextSignature === signature) return;
-      signature = nextSignature;
-      setOccupants(next);
-    };
-    const offAttendance = client.on("attendance_changed", refresh);
-    const offStatus = client.on("status", (status) => {
-      if (status === "open") refresh();
-    });
-    refresh();
-    return () => {
-      offAttendance();
-      offStatus();
-    };
-  }, [client]);
-  return occupants;
-}
-
-interface OccupantAvatarsProps {
-  readonly occupants: readonly Principal[];
-  readonly selfId: string | null;
-}
-
-/** The name strip's avatar cluster: who is in the container this portal points at. */
-function OccupantAvatars({ occupants, selfId }: OccupantAvatarsProps): React.ReactElement | null {
-  if (occupants.length === 0) return null;
-  return (
-    <span
-      className="portal__presence"
-      aria-label={`${String(occupants.length)} in this composition`}
-    >
-      {occupants.slice(0, MAX_PRESENCE_AVATARS).map((principal) => (
-        <span
-          key={principal.id}
-          className="portal__avatar"
-          style={{ backgroundColor: principal.color }}
-          title={
-            principal.id === selfId
-              ? "you are in this composition"
-              : `${principal.name} is in this composition`
-          }
-        >
-          {principal.name.slice(0, 1).toUpperCase()}
-        </span>
-      ))}
-      {occupants.length > MAX_PRESENCE_AVATARS ? (
-        <span className="portal__avatar portal__avatar--more">
-          +{occupants.length - MAX_PRESENCE_AVATARS}
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
-/**
- * The card form's avatars, and the ONLY subscriber to polled presence on a canvas. A
- * card owns no room socket, so the sidebar's poll is all it has — and isolating that
- * read in a leaf is what keeps the 1.5s tick from re-rendering live portals and the
- * terminals inside them, which is all any of them ever wanted from it.
- */
-function PolledOccupantAvatars({
-  containerId,
-}: {
-  readonly containerId: string;
-}): React.ReactElement | null {
-  const presence = useCanvasPresence();
-  const occupants =
-    presence.find((entry) => entry.containerId === containerId)?.principals ?? NO_PRINCIPALS;
-  return <OccupantAvatars occupants={occupants} selfId={null} />;
-}
-
 interface PortalTerminalTileProps {
   readonly client: SessionClient;
-  readonly containerId: string;
   readonly tileId: string;
   readonly terminalId: string;
   /** True once the portal paints from an occupant socket: this terminal is real. */
@@ -333,6 +233,8 @@ interface PortalTerminalTileProps {
    * away, close deletes the composition (which reaps the shell), maximize walks into it.
    */
   readonly mono: PortalMonoChrome | null;
+  readonly projectionScope: ProjectionScope | null;
+  readonly dragProps: TitlebarDragProps;
 }
 
 export interface PortalMonoChrome {
@@ -344,16 +246,23 @@ export interface PortalMonoChrome {
 
 function PortalTerminalTile({
   client,
-  containerId,
   tileId,
   terminalId,
   interactive,
   active,
   onEngage,
   mono,
+  projectionScope,
+  dragProps,
 }: PortalTerminalTileProps): React.ReactElement {
   const container = useCanvas();
   const machineId = client.terminals.get(terminalId)?.machineId;
+  const publishHere = usePublishLocation(projectionScope);
+  const engage = (event: React.SyntheticEvent<HTMLDivElement>): void => {
+    publishHere();
+    if (event.target instanceof Element && event.target.closest(".node-titlebar") !== null) return;
+    onEngage(tileId);
+  };
   return (
     <div
       className={interactive ? "portal__tile flow-portal__tile--live" : "portal__tile"}
@@ -362,11 +271,11 @@ function PortalTerminalTile({
         swallow it, and on CLICK so a decompose drag never escalates a socket. In the
         engaged state the same handler moves the keyboard between tiles.
       */
-      onClickCapture={() => onEngage(tileId)}
+      onClickCapture={engage}
+      onFocusCapture={engage}
       onDoubleClick={(event) => {
         // A live terminal owns double-click (word selection), so it must not also reach
-        // the portal root's navigate-into handler. Watching keeps the old gesture: the
-        // shield below still navigates, and it runs before this.
+        // the portal root's navigate-into handler.
         if (interactive) event.stopPropagation();
       }}
     >
@@ -379,6 +288,9 @@ function PortalTerminalTile({
         client={client}
         terminalId={terminalId}
         elementId={tileId}
+        projectionScope={projectionScope}
+        frame={mono === null ? "tile" : "window"}
+        titlebarDragProps={mono === null ? dragProps : { draggable: false }}
         active={active}
         panelHighlighted={false}
         machine={
@@ -386,57 +298,11 @@ function PortalTerminalTile({
             ? null
             : (container.machines?.find((candidate) => candidate.id === machineId) ?? null)
         }
-        // A mono portal's bar is the NODE's chrome, so it stays full even while
-        // watching: it is the only titlebar this element has.
-        chrome={interactive || mono !== null ? "full" : "preview"}
+        chrome={interactive ? "full" : "preview"}
         {...(mono ?? {})}
         // The mono bar renames the TERMINAL, so its input names the action it fires.
         {...(mono === null ? {} : { renameAction: "core.terminals.rename" })}
       />
-      {/*
-        Watching: a full-bleed shield keeps clicks and keystrokes out of a terminal
-        nobody engaged, navigates on double-click, and is the decompose grab zone —
-        dragging it onto empty canvas extracts the tile back into an element.
-
-        Engaged: the SAME element shrinks to the corner grip (`--grip`), which is the
-        pointer-events surgery that lets plain clicks, selection and mouse-mode TUIs
-        reach the terminal while extraction stays a drag on a visible handle. Disabling
-        pointer events instead would have cost the decompose gesture in this state.
-
-        pointerdown is stopped in both so React Flow does not move the node instead
-        (the portal moves by its name strip, PORTAL_DRAG_HANDLE).
-      */}
-      <div
-        className={interactive ? "portal__shield portal__shield--grip" : "portal__shield"}
-        title={
-          interactive
-            ? "Drag onto the canvas to pull this terminal out of the composition"
-            : "Click to work in this terminal — drag onto the canvas to pull it out of the composition"
-        }
-        draggable
-        onPointerDown={(event) => event.stopPropagation()}
-        /*
-          One carry, like every other grab: the envelope is sealed into the drag AND
-          the gesture opens, so collaborators watch the tile travel across the canvas
-          instead of seeing it teleport on release. The label rides along because the
-          viewer has not joined the composition this tile belongs to.
-        */
-        onDragStart={(event) => {
-          container.carry.begin(
-            { kind: "tile", containerId, tileId },
-            {
-              transfer: event.dataTransfer,
-              label: client.terminals.get(terminalId)?.name ?? null,
-            },
-          );
-        }}
-        onDragEnd={() => container.carry.end()}
-        onDoubleClick={() => container.navigate(`/p/${encodeURIComponent(containerId)}`)}
-      >
-        <span className="portal__grip" aria-hidden="true">
-          <ControlIcon kind="grip" size={12} />
-        </span>
-      </div>
     </div>
   );
 }
@@ -504,8 +370,7 @@ interface PortalLeafProps {
 /**
  * ONE leaf of a portal's tree. The recursion above it — splits, ratio dividers, panes —
  * is `TileTree`, the same component the fullscreen route draws, so this is the whole of
- * what a canvas portal still renders for itself: the species switch plus the engagement
- * shield that makes a previewed terminal watchable and extractable.
+ * what a canvas portal still renders for itself: occupant projection and titlebar engagement.
  */
 function PortalLeaf({
   client,
@@ -516,6 +381,46 @@ function PortalLeaf({
   onEngage,
   mono,
 }: PortalLeafProps): React.ReactElement {
+  const container = useCanvas();
+  const inheritedScope = useProjectionScope();
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const scope = useMemo(() => {
+    const placement = extendProjectionScope(inheritedScope, {
+      kind: "tile",
+      containerId,
+      tileId: node.id,
+    });
+    const ref = node.ref;
+    return ref === null || ref.kind === "spacer" || ref.kind === "panel"
+      ? placement
+      : extendProjectionScope(
+          placement,
+          ref.kind === "element" ? { kind: "element", containerId, elementId: ref.elementId } : ref,
+        );
+  }, [inheritedScope, containerId, node.id, node.ref]);
+  const publishHere = usePublishLocation(scope);
+  const dragProps: TitlebarDragProps = {
+    draggable: true,
+    onDragStart: (event) => {
+      event.stopPropagation();
+      container.carry.begin(
+        { kind: "tile", containerId, tileId: node.id },
+        {
+          transfer: event.dataTransfer,
+          label:
+            node.ref?.kind === "terminal"
+              ? (client.terminals.get(node.ref.terminalId)?.name ?? null)
+              : null,
+        },
+      );
+      container.trackCarry(event.clientX, event.clientY);
+    },
+    onDrag: (event) => {
+      if (event.clientX !== 0 || event.clientY !== 0)
+        container.trackCarry(event.clientX, event.clientY);
+    },
+    onDragEnd: () => container.carry.end(),
+  };
   const ref = node.ref;
   // A spacer is inert workspace furniture (issue #89) — a portal preview never legitimately
   // holds one, any more than it holds a panel, but unlike a stray panel it carries no
@@ -528,7 +433,6 @@ function PortalLeaf({
       return (
         <PortalTerminalTile
           client={client}
-          containerId={containerId}
           tileId={node.id}
           terminalId={ref.terminalId}
           interactive={interactive}
@@ -537,24 +441,68 @@ function PortalLeaf({
           // Only a mono container hands this down; inside a multi-tile preview the
           // portal keeps its own bar and each tile keeps its preview chrome.
           mono={mono}
+          projectionScope={scope}
+          dragProps={dragProps}
         />
       );
     case "container":
-      return <PortalContainerTile containerId={ref.containerId} />;
-    case "text":
-      /*
-        A note inside a portal preview is a READ of the composition's own document — the
-        element lives there, so the text is whatever the room says it is. It is not editable
-        from a preview even when engaged: editing belongs to the composition's renderer,
-        which is one double-click away, and a scaled 0.5 textarea is not an editor.
-      */
       return (
-        <div className="flow-portal__note">
-          {client.elements.get(ref.elementId)?.type === "text"
-            ? client.elementText(ref.elementId)?.toString()
-            : null}
-        </div>
+        <ProjectionScopeProvider value={scope}>
+          <div className="portal__occupant" onPointerDownCapture={publishHere}>
+            <NodeTitleBar
+              icon={<ItemIcon kind="canvas" size={13} />}
+              title={container.containerName(ref.containerId)}
+              defaultTitle="Container"
+              middle={<TitlebarOutlet scope={scope} />}
+              dragProps={dragProps}
+            />
+            <PortalContainerTile containerId={ref.containerId} />
+          </div>
+        </ProjectionScopeProvider>
       );
+    case "element": {
+      const element = client.elements.get(ref.elementId);
+      const kind = element?.type ?? "element";
+      return (
+        <ProjectionScopeProvider value={scope}>
+          <div
+            className="portal__occupant"
+            onPointerDownCapture={publishHere}
+            onFocusCapture={() => {
+              onEngage(node.id);
+              publishHere();
+            }}
+            onClickCapture={() => {
+              onEngage(node.id);
+              publishHere();
+            }}
+          >
+            <NodeTitleBar
+              icon={<ItemIcon kind={kind} size={13} />}
+              title={null}
+              defaultTitle={itemNoun(kind, container.host.assembly.roster())}
+              middle={<TitlebarOutlet scope={scope} />}
+              dragProps={dragProps}
+            />
+            <div className="portal__occupant-body">
+              <ElementOutlet
+                type={kind}
+                elementId={ref.elementId}
+                data={element === undefined ? {} : elementPayload(element)}
+                doc={client}
+                editingElementId={interactive ? editingId : null}
+                onBeginEditing={(id) => {
+                  onEngage(node.id);
+                  if (interactive) setEditingId(id);
+                }}
+                onEndEditing={() => setEditingId(null)}
+                removeWhenEmpty={false}
+              />
+            </div>
+          </div>
+        </ProjectionScopeProvider>
+      );
+    }
     case "panel":
       /*
         A portal preview is a window onto a ROOM's tree, and no room's tree holds panels:
@@ -570,34 +518,27 @@ function PortalLeaf({
   }
 }
 
-/**
- * The portal's OWN room, as a second feed of peer aims.
- *
- * Gesture relay is room-scoped while `CarryAim.containerId` addresses a CONTAINER, so a
- * collaborator dragging inside this composition's fullscreen route publishes into that
- * container's room and the canvas — listening only to its own room — never hears it,
- * even though this portal holds a live socket to exactly that room and is already
- * receiving those frames. Reading them here closes that direction with no protocol
- * change: the store merges feeds per container, freshest wins.
- *
- * The reverse direction (someone dragging over this portal, watched by a peer sitting in
- * the container's route) still needs a SERVER-side relay of carry frames whose
- * `aim.containerId` names another room, and is not solved here.
- *
- * A component rather than a hook call in the parent, because the socket only exists
- * while the portal is live: mounting is the honest way to express "listen while there is
- * something to listen to", and unmounting retires the feed.
- */
-function PortalAimFeed({
+/** Live portal-room aims and source departures share the canvas-room motion feed. */
+function PortalMotionOverlay({
   client,
-  containerId,
-  store,
-}: {
+  ...props
+}: Omit<TilePreviewOverlayProps, "departure"> & {
   readonly client: SessionClient;
-  readonly containerId: string;
-  readonly store: TileDropStore;
-}): null {
+}): ReactNode {
   const overrides = useRemoteGestures(client);
+  const canvasOverrides = useCanvasGestures();
+  const containerId = props.drop.host.containerId;
+  const store = props.store;
+  const sources = useMemo(
+    () => ({
+      *[Symbol.iterator]() {
+        yield* canvasOverrides.values();
+        yield* overrides.values();
+      },
+    }),
+    [canvasOverrides, overrides],
+  );
+  const departure = useTileDeparture(containerId, sources);
   useEffect(() => {
     store.setRemote(`portal:${containerId}`, remoteTileCarries(overrides.values()));
   }, [containerId, overrides, store]);
@@ -607,13 +548,26 @@ function PortalAimFeed({
     },
     [containerId, store],
   );
-  return null;
+  return <TilePreviewOverlay {...props} departure={departure} />;
 }
 
 function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
   countRender("portal-node");
   const containerId = typeof data["containerId"] === "string" ? data["containerId"] : "";
   const container = useCanvas();
+  const inheritedScope = useProjectionScope();
+  const scope = useMemo(
+    () =>
+      containerId === ""
+        ? null
+        : extendProjectionScope(
+            inheritedScope,
+            { kind: "element", containerId: container.containerId, elementId: id },
+            { kind: "container", containerId },
+          ),
+    [inheritedScope, container.containerId, id, containerId],
+  );
+  const publishHere = usePublishLocation(scope);
   const live = container.depth < MAX_LIVE_DEPTH && containerId !== "";
   const rootRef = useRef<HTMLDivElement | null>(null);
   /** The tile AREA: what drop geometry measures, so the strip is excluded by construction. */
@@ -661,8 +615,6 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
   const interactive = slot !== null && slot.role === "occupant";
   const layout = usePreviewLayout(client);
   const name = useContainerName(container.host, containerId);
-  const roomOccupants = useRoomOccupants(client);
-  const selfId = client?.self?.id ?? null;
   /** Stable per roster change: what to CALL a kind whose word is not the floor's. */
   const roster = container.host.assembly.roster();
 
@@ -689,6 +641,10 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
         return;
       }
       setEngagement(null);
+      if (locationPathContains(currentVantage().locationPath, scope?.locationPath)) {
+        setVantage({ focusedContainerId: null });
+        publishLocation(inheritedScope?.locationPath ?? null);
+      }
     };
     // Capture on the document: a press a canvas handler stops must still end
     // engagement, and only the document sees every press on the page.
@@ -696,7 +652,14 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
     return () => {
       document.removeEventListener("pointerdown", disengage, true);
     };
-  }, [engaged]);
+  }, [engaged, inheritedScope, scope]);
+
+  const engagementScope = useRef(scope);
+  const enclosingScope = useRef(inheritedScope);
+  useEffect(() => {
+    engagementScope.current = scope;
+    enclosingScope.current = inheritedScope;
+  }, [scope, inheritedScope]);
 
   /**
    * Focus, published (A2). The ENGAGED portal is the one that speaks: every other portal on
@@ -705,10 +668,17 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
    * whole writer. Floor for now, `"until": "core.presence"`.
    */
   useEffect(() => {
-    if (engagedTileId === null) return;
+    if (!engaged) return;
     setVantage({ focusedContainerId: containerId });
-    return () => setVantage({ focusedContainerId: null });
-  }, [containerId, engagedTileId]);
+    return () => {
+      if (
+        locationPathContains(currentVantage().locationPath, engagementScope.current?.locationPath)
+      ) {
+        setVantage({ focusedContainerId: null });
+        publishLocation(enclosingScope.current?.locationPath ?? null);
+      }
+    };
+  }, [containerId, engaged]);
 
   const enter = (): void => {
     if (containerId === "") return;
@@ -717,9 +687,8 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
 
   /**
    * The arity rule, resolved. A composition holding exactly one terminal renders AS
-   * that terminal: no portal name strip, no half-scale preview, the terminal's own
-   * titlebar carrying this element's verbs. Everything else — an empty container, two
-   * tiles, a canvas, a note — is a composition and wears composition chrome.
+   * that terminal: no portal name strip, the terminal's own titlebar carrying this
+   * element's verbs. Other occupants wear composition chrome at the same native scale.
    */
   const solo = client === null || layout === null ? null : soloTerminal(layout);
   const mono: PortalMonoChrome | null =
@@ -767,7 +736,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
       refDisplayLabel(ref, {
         terminalName: (terminalId) => client?.terminals.get(terminalId)?.name ?? null,
         containerName: container.containerName,
-        textElement: (elementId) => {
+        elementContent: (elementId) => {
           const element = client?.elements.get(elementId);
           /*
             No `type === "text"` guard: the payload answers null for an element bearing no text
@@ -842,10 +811,12 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
 
   const overlay = (
     <>
-      {client === null ? null : (
-        <PortalAimFeed client={client} containerId={containerId} store={container.dropStore} />
-      )}
-      <TilePreviewOverlay drop={tileDrop} store={container.dropStore} refLabel={occupantLabel} />
+      <PortalMotionOverlay
+        client={client ?? container.client}
+        drop={tileDrop}
+        store={container.dropStore}
+        refLabel={occupantLabel}
+      />
       <TileZoneDebug layout={layout} areaRef={areaRef} dividerPx={PORTAL_TREE_CLASSES.dividerPx} />
     </>
   );
@@ -860,7 +831,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
     .join(" ");
 
   return (
-    <>
+    <ProjectionScopeProvider value={scope}>
       {/*
         Desktop-window ergonomics, identical to a terminal node's: the frame border is
         the grab zone, so the pointer turns into a resize cursor on hover and no
@@ -884,20 +855,21 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
           container.onResizeEnd(id, params.x, params.y, params.width, params.height)
         }
       />
-      <div className={rootClass} ref={rootRef} onDoubleClick={enter}>
+      <div
+        className={rootClass}
+        ref={rootRef}
+        onDoubleClick={enter}
+        onPointerDownCapture={publishHere}
+        onFocusCapture={publishHere}
+      >
         {mono !== null ? null : (
           <NodeTitleBar
             className="portal__strip"
             icon={<ItemIcon kind="composition" size={13} />}
             title={name}
             defaultTitle={itemNoun("composition", roster)}
-            middle={
-              client === null ? (
-                <PolledOccupantAvatars containerId={containerId} />
-              ) : (
-                <OccupantAvatars occupants={roomOccupants} selfId={selfId} />
-              )
-            }
+            middle={<TitlebarOutlet scope={scope} />}
+            dragProps={{ draggable: false }}
             onMinimize={() => container.unplaceElement(id)}
             minimizeLabel={`Put away composition ${name ?? containerId}`}
             minimizeTooltip="Remove this portal from the canvas (the composition keeps running)"
@@ -910,40 +882,11 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
           />
         )}
         <div className="portal__viewport">
-          {mono !== null && solo !== null && client !== null ? (
-            // 1:1, not the half-scale preview: this IS the terminal, not a picture of one.
-            <div className="tile-area" ref={areaRef}>
-              <TileTree
-                layout={layout ?? {}}
-                classes={PORTAL_TREE_CLASSES}
-                interactive={interactive}
-                /*
-                  A divider only drags in the ENGAGED state, and the socket being painted
-                  then IS the occupant one — so this is the very write the fullscreen route
-                  makes, over the channel this portal already holds.
-                */
-                onRatios={(splitId, ratios) => client.setTileRatios(splitId, ratios)}
-                renderLeaf={renderLeaf(client)}
-              />
-              {overlay}
-            </div>
-          ) : client !== null && layout !== null ? (
-            <div
-              className="portal__preview"
-              style={{
-                width: `${String(100 / PREVIEW_SCALE)}%`,
-                height: `${String(100 / PREVIEW_SCALE)}%`,
-                transform: `scale(${String(PREVIEW_SCALE)})`,
-              }}
-            >
-              {/*
-                The area sits INSIDE the scale: its layout px match the tree's own
-                (divider math), while its client rect is the on-screen box (pointer
-                and ring math) — the overlay's unit space is indifferent to both.
-              */}
+          {client !== null ? (
+            <div className="portal__preview">
               <div className="tile-area" ref={areaRef}>
                 <TileTree
-                  layout={layout}
+                  layout={layout ?? {}}
                   classes={PORTAL_TREE_CLASSES}
                   interactive={interactive}
                   onRatios={(splitId, ratios) => client.setTileRatios(splitId, ratios)}
@@ -971,7 +914,7 @@ function PortalNodeImpl({ id, data }: NodeProps): React.ReactElement {
           )}
         </div>
       </div>
-    </>
+    </ProjectionScopeProvider>
   );
 }
 

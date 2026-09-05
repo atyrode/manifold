@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { Principal, PresenceState } from "@manifold/protocol";
-import { deriveAttendanceRows } from "../src/attendance-model.ts";
+import type { LocationPath, Principal, PresenceState } from "@manifold/protocol";
+import { deriveAttendanceRows, deriveLocationAttendanceRows } from "../src/attendance-model.ts";
 
 function principal(id: string, name: string, kind: Principal["kind"] = "human"): Principal {
   return { id, kind, name, color: "#336699" };
@@ -79,5 +79,67 @@ describe("deriveAttendanceRows", () => {
     expect(rows).toEqual([
       { principal: self, connections: 3, status: "active", tool: null, isSelf: true },
     ]);
+  });
+});
+
+describe("mounted location attendance", () => {
+  test("deduplicates principals by path, excludes siblings and never infers unknown ancestry", () => {
+    const self = principal("me", "Me");
+    const root: LocationPath = [{ kind: "container", containerId: "root" }];
+    const left: LocationPath = [
+      ...root,
+      { kind: "element", containerId: "root", elementId: "left" },
+    ];
+    const right: LocationPath = [
+      ...root,
+      { kind: "element", containerId: "root", elementId: "right" },
+    ];
+    const remote: PresenceState = {
+      ...entry(principal("peer", "Peer"), 2, { vantage: { locationPath: left } }),
+      connIds: ["a", "b"],
+      connectionLocations: [
+        { connId: "a", locationPath: left },
+        { connId: "b", locationPath: right },
+      ],
+    };
+    const rows = (prefix: LocationPath) =>
+      deriveLocationAttendanceRows([remote], self, "local", {}, prefix);
+    expect(rows(root).map((row) => [row.principal.id, row.connections])).toEqual([["peer", 2]]);
+    expect(rows(left).map((row) => [row.principal.id, row.connections])).toEqual([["peer", 1]]);
+    remote.connectionLocations = [{ connId: "b", locationPath: right }];
+    remote.connIds = ["b"];
+    expect(rows(left)).toEqual([]);
+    expect(rows(right).map((row) => row.principal.id)).toEqual(["peer"]);
+    delete remote.connectionLocations;
+    expect(rows(root)).toEqual([]);
+  });
+
+  test("local vantage replaces only this connection, not another tab of the same principal", () => {
+    const self = principal("me", "Me");
+    const left: LocationPath = [{ kind: "container", containerId: "left" }];
+    const right: LocationPath = [{ kind: "container", containerId: "right" }];
+    const remote: PresenceState = {
+      ...entry(self, 2),
+      connIds: ["local", "sibling"],
+      connectionLocations: [
+        { connId: "local", locationPath: left },
+        { connId: "sibling", locationPath: left },
+      ],
+    };
+    const local = { locationPath: right, tool: "select" };
+    expect(
+      deriveLocationAttendanceRows([remote], self, "local", local, left).map(
+        (row) => row.connections,
+      ),
+    ).toEqual([1]);
+    expect(
+      deriveLocationAttendanceRows([remote], self, "local", local, right).map((row) => [
+        row.connections,
+        row.tool,
+      ]),
+    ).toEqual([[1, "select"]]);
+    expect(
+      deriveLocationAttendanceRows([remote], self, "local", { locationPath: null }, right),
+    ).toEqual([]);
   });
 });

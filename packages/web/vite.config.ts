@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, relative, resolve, sep } from "node:path";
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 
 const packageRoot = dirname(fileURLToPath(import.meta.url));
@@ -30,6 +30,104 @@ const dirty = gitOutput(["status", "--porcelain"]) !== null;
 const webBuild =
   process.env["VITE_MANIFOLD_WEB_BUILD"]?.trim() || `${commit}${dirty ? "-dirty" : ""}`;
 
+function escapeMarkup(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => {
+    switch (character) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&apos;";
+    }
+  });
+}
+
+/**
+ * Browser identity belongs to the build, never to the instance hostname. Public files are
+ * production templates; one generation serves both Vite development and emitted builds.
+ * Content-addressed URLs also bypass a previous worker's cache when only branding changes.
+ */
+function shellIdentity(env: Record<string, string>): Plugin {
+  const title = env["VITE_MANIFOLD_SITE_TITLE"]?.trim() || "manifold";
+  const background = env["VITE_MANIFOLD_ICON_BACKGROUND"]?.trim();
+  if (background && !/^#[\da-f]{6}$/i.test(background)) {
+    throw new Error("VITE_MANIFOLD_ICON_BACKGROUND must be a six-digit hex color (#rrggbb)");
+  }
+  const assets = new Map<string, { source: string; contentType: string }>();
+  function asset(name: string, source: string, contentType: string): string {
+    const digest = createHash("sha256").update(source).digest("hex").slice(0, 16);
+    const dot = name.lastIndexOf(".");
+    const path = `/${name.slice(0, dot)}-${digest}${name.slice(dot)}`;
+    assets.set(path, { source, contentType });
+    return path;
+  }
+  function icon(name: string): string {
+    let source = readFileSync(resolve(packageRoot, "public", name), "utf8").replace(
+      "<title>manifold</title>",
+      () => `<title>${escapeMarkup(title)}</title>`,
+    );
+    if (background) {
+      source = source
+        .replace(/stop-color="#(?:364fc7|5f3dc4)"/g, () => `stop-color="${background}"`)
+        .replace('stroke="#4c6ef5"', () => `stroke="${background}"`);
+    }
+    return asset(name, source, "image/svg+xml");
+  }
+  const favicon = icon("icon.svg");
+  const maskable = icon("icon-maskable.svg");
+  const manifest = JSON.parse(
+    readFileSync(resolve(packageRoot, "public/app.webmanifest"), "utf8"),
+  ) as {
+    name: string;
+    short_name: string;
+    icons: { src: string; purpose: "any" | "maskable" }[];
+  };
+  manifest.name = title;
+  manifest.short_name = title;
+  for (const entry of manifest.icons) {
+    entry.src = entry.purpose === "maskable" ? maskable : favicon;
+  }
+  const manifestPath = asset(
+    "app.webmanifest",
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    "application/manifest+json",
+  );
+  return {
+    name: "manifold-shell-identity",
+    transformIndexHtml: {
+      order: "post",
+      handler(html) {
+        return html.replace(
+          "<!-- MANIFOLD_IDENTITY -->",
+          () =>
+            `<title>${escapeMarkup(title)}</title>\n` +
+            `    <link rel="icon" href="${favicon}" type="image/svg+xml" />\n` +
+            `    <link rel="manifest" href="${manifestPath}" />`,
+        );
+      },
+    },
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        const entry = assets.get((request.url ?? "").split("?")[0] ?? "");
+        if (!entry) return next();
+        response.setHeader("Content-Type", entry.contentType);
+        response.setHeader("Cache-Control", "no-cache");
+        response.end(entry.source);
+      });
+    },
+    generateBundle() {
+      for (const [path, { source }] of assets) {
+        this.emitFile({ type: "asset", fileName: path.slice(1), source });
+      }
+    },
+  };
+}
+
 /**
  * The line in `sw.js` that this build rewrites. Matched rather than templated so the worker
  * stays a readable, runnable file on disk: a reader opens it and sees real code, not a
@@ -44,18 +142,19 @@ const SHELL_MARKER = /^const SHELL = .*; \/\/ MANIFOLD_SHELL$/m;
  *
  * All this plugin does is answer the two questions the worker cannot answer about itself: WHICH
  * files this build shipped, and WHICH generation they belong to. The generation folds a digest
- * of the asset names into the build id, and those names carry vite's content hashes — so the
- * cache name changes whenever the shell's bytes do, even if two builds claim the same commit.
+ * of the asset names AND bytes into the build id, including unhashed public files and HTML —
+ * so the cache name changes whenever the shell does, even if two builds claim the same commit.
  * That is what ties cache invalidation to the build rather than to a human remembering to bump
  * something.
  *
- * It reads the emitted TREE rather than the rollup bundle, because `public/` (the icon, the web
- * app manifest) is copied outside the bundle and is every bit as much the shell.
+ * It reads the final emitted TREE rather than an intermediate rollup bundle, so HTML,
+ * generated identity and any other shipped shell files all participate in cache identity.
  */
 function shellWorker(): Plugin {
   let outDir = resolve(packageRoot, "dist");
   return {
     name: "manifold-shell-worker",
+    apply: "build",
     enforce: "post",
     configResolved(config) {
       outDir = resolve(config.root, config.build.outDir);
@@ -69,7 +168,15 @@ function shellWorker(): Plugin {
         )
         .filter((entry) => entry !== "/sw.js" && !entry.endsWith(".map"))
         .sort();
-      const digest = createHash("sha256").update(shipped.join("\n")).digest("hex");
+      const hash = createHash("sha256");
+      for (const path of shipped) {
+        hash
+          .update(path)
+          .update("\0")
+          .update(readFileSync(resolve(outDir, `.${path}`)))
+          .update("\0");
+      }
+      const digest = hash.digest("hex");
       const source = readFileSync(resolve(packageRoot, "sw.js"), "utf8");
       if (!SHELL_MARKER.test(source)) {
         throw new Error("packages/web/sw.js is missing its MANIFOLD_SHELL line");
@@ -85,8 +192,10 @@ function shellWorker(): Plugin {
 
 // Dev: vite on :5173 proxies API/WS to the manifold server on :7777.
 // Prod: `vite build` emits dist/, served directly by the manifold server.
-export default defineConfig({
-  plugins: [react(), shellWorker()],
+export default defineConfig(({ mode }) => ({
+  // These files are templates for shellIdentity, not a second set of unbranded public URLs.
+  publicDir: false,
+  plugins: [react(), shellIdentity(loadEnv(mode, packageRoot, "VITE_MANIFOLD_")), shellWorker()],
   define: {
     "import.meta.env.VITE_MANIFOLD_WEB_VERSION": JSON.stringify(packageMetadata.version),
     "import.meta.env.VITE_MANIFOLD_WEB_BUILD": JSON.stringify(webBuild),
@@ -102,4 +211,4 @@ export default defineConfig({
     outDir: "dist",
     sourcemap: true,
   },
-});
+}));

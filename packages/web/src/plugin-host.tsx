@@ -386,6 +386,7 @@ export function buildBrowserAssembly(
       elements.set(element.type, {
         plugin: manifest.id,
         title: element.title,
+        ...(element.presentation === undefined ? {} : { presentation: element.presentation }),
         Component: def?.elements?.[element.type] ?? null,
         enabled,
       });

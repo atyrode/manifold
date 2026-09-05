@@ -235,7 +235,7 @@ describe("buildBrowserAssembly", () => {
     // (ADR 0013 §4).
     const defs: readonly WebPluginDef[] = [
       { id: "core.canvas", renderers: { canvas: ContainerView } },
-      { id: "core.presence", overlays: { "container-roster": UriRoute } },
+      { id: "core.presence", overlays: { titlebar: UriRoute } },
       { id: "core.terminals", terminals: TERMINALS },
     ];
     const roster: PluginRoster = [
@@ -254,7 +254,7 @@ describe("buildBrowserAssembly", () => {
     // A registration for a discipline nobody registered is simply absent, and the outlet
     // reads that as "unknown" rather than guessing a renderer.
     expect(assembly.renderers.get("composition")).toBeUndefined();
-    expect(assembly.overlays.get("container-roster")?.enabled).toBe(false);
+    expect(assembly.overlays.get("titlebar")?.enabled).toBe(false);
     // The facet SURVIVES the disable, tagged, because the placeholder has to name the plugin
     // whose viewer is missing — and re-enabling must not need a re-registration.
     expect(assembly.terminals).toEqual({
@@ -425,12 +425,12 @@ describe("buildBrowserAssembly collisions", () => {
       entry({ id: "acme.presence", title: "Acme presence" }),
     ];
     const defs: readonly WebPluginDef[] = [
-      { id: "core.presence", overlays: { "container-roster": UriRoute } },
-      { id: "acme.presence", overlays: { "container-roster": UriRoute } },
+      { id: "core.presence", overlays: { titlebar: UriRoute } },
+      { id: "acme.presence", overlays: { titlebar: UriRoute } },
     ];
 
     expect(refusal(() => buildBrowserAssembly(roster, 1, defs))).toEqual([
-      'duplicate overlay "container-roster" claimed by: core.presence, acme.presence',
+      'duplicate overlay "titlebar" claimed by: core.presence, acme.presence',
     ]);
   });
 

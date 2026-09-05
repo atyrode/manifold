@@ -2,6 +2,7 @@ import {
   createContext,
   createElement,
   useContext,
+  useCallback,
   type ComponentType,
   type ReactElement,
   type ReactNode,
@@ -9,13 +10,19 @@ import {
 import type {
   MachineSummary,
   Container,
+  ContainerDiscipline,
   Attendance,
   PlacementItem,
   Toolbar,
+  LocationPath,
+  ManifoldRef,
 } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 
 import { ElementHostProvider } from "./element-host.ts";
+import { MAX_LOCATION_PATH_LENGTH } from "@manifold/protocol";
+import { publishLocation } from "./ui/vantage.ts";
+import type { TitlebarDragProps } from "./ui/node-titlebar.tsx";
 import type {
   ElementDocument,
   ElementProps,
@@ -87,6 +94,8 @@ export interface RegisteredElement {
   readonly plugin: string;
   readonly title: string;
   readonly enabled: boolean;
+  /** Per-discipline framing; an undeclared discipline defaults to titlebar at its mount site. */
+  readonly presentation?: Readonly<Record<ContainerDiscipline, "body" | "titlebar">>;
   readonly Component: ComponentType<never> | null;
 }
 
@@ -123,7 +132,10 @@ export interface TerminalRendererProps {
   readonly panelHighlighted: boolean;
   /** The terminal's machine as the wire publishes it; null before the first fetch resolves. */
   readonly machine: MachineSummary | null;
-  /** `preview` is the read-only chrome a WATCHED portal paints; `full` is the default. */
+  /**
+   * `preview` keeps the PTY body read-only; host-owned titlebar actions remain independent.
+   * `full` is the default.
+   */
   readonly chrome?: "full" | "preview";
   readonly onPark?: () => void;
   readonly onClose?: () => void;
@@ -134,6 +146,11 @@ export interface TerminalRendererProps {
   readonly renameAction?: string;
   readonly onShrink?: () => void;
   readonly titlebarExtras?: ReactNode;
+  readonly titlebarMiddle?: ReactNode;
+  readonly titlebarDragProps?: TitlebarDragProps | undefined;
+  readonly projectionScope?: ProjectionScope | null;
+  /** `window` (default) owns an outer frame; `tile` meets adjacent leaves with square seams. */
+  readonly frame?: "window" | "tile";
 }
 
 /**
@@ -181,6 +198,12 @@ export interface ContainerRendererProps {
   readonly navigate: (path: string) => void;
   /** Container nesting depth: 1 when routed, 2 when embedded in another container. */
   readonly depth?: number;
+  readonly projectionScope?: ProjectionScope | null;
+  /** `window` (default) owns an outer frame; `tile` meets adjacent leaves with square seams. */
+  readonly frame?: "window" | "tile";
+  readonly titlebarDragProps?: TitlebarDragProps | undefined;
+  readonly titlebarExtras?: ReactNode;
+  readonly titlebarMiddle?: ReactNode;
 }
 
 /**
@@ -193,10 +216,12 @@ export interface ContainerOverlayProps {
   readonly host: HostServices;
   readonly client: SessionClient;
   readonly containerId: string;
+  /** Declared mounted ancestry for a titlebar; absent in legacy container overlays. */
+  readonly locationPath?: LocationPath | null;
 }
 
 /**
- * The overlay slots a container renderer offers, and the whole of them.
+ * The overlay slots a mounted renderer offers, including its optional titlebar contribution.
  *
  * This is a CLOSED vocabulary because the join is otherwise invisible: a plugin registers a
  * component under a slot name, a renderer mounts `ContainerOverlayOutlet slot="…"`, and the
@@ -210,14 +235,14 @@ export interface ContainerOverlayProps {
  * `@manifold/plugin` is the only thing both are allowed to import. Adding a slot is a one-line
  * append plus the outlet that mounts it.
  */
-export const OVERLAY_SLOTS = ["container-roster", "container-spotlight"] as const;
+export const OVERLAY_SLOTS = ["container-spotlight", "titlebar"] as const;
 
 /** One named overlay position on a mounted container ref. */
 export type OverlaySlot = (typeof OVERLAY_SLOTS)[number];
 
 /**
  * What a plugin's browser half puts in the overlay channel: the slots it fills, by name.
- * `Partial` because filling one slot is normal — `core.presence` happens to fill both.
+ * `Partial` because filling one slot is normal; contributions need not participate everywhere.
  */
 export type OverlayRegistrations = Readonly<
   Partial<Record<OverlaySlot, ComponentType<ContainerOverlayProps>>>
@@ -315,6 +340,85 @@ export function useProjection(): ProjectionRegistry {
     throw new Error("useProjection requires a <ProjectionProvider> ancestor");
   }
   return registry;
+}
+
+/**
+ * A mounted projection's neutral participation contract. All descendants share the root
+ * attendance client, not the child room's principal aggregate. Hosts append actual mount refs.
+ */
+export interface ProjectionScope {
+  readonly host: HostServices;
+  readonly client: SessionClient;
+  readonly locationPath: LocationPath | null;
+}
+
+const ProjectionScopeContext = createContext<ProjectionScope | null>(null);
+
+export function ProjectionScopeProvider({
+  value,
+  children,
+}: {
+  readonly value: ProjectionScope | null;
+  readonly children: ReactNode;
+}): ReactElement {
+  return createElement(ProjectionScopeContext.Provider, { value }, children);
+}
+
+/** Missing scope is legitimate for an unparticipating renderer or standalone preview. */
+export function useProjectionScope(): ProjectionScope | null {
+  return useContext(ProjectionScopeContext);
+}
+
+/** Extend only declared ancestry. Never truncate a deep path into a false ancestor match. */
+export function extendProjectionScope(
+  scope: ProjectionScope | null,
+  ...refs: ManifoldRef[]
+): ProjectionScope | null {
+  if (scope === null) return null;
+  if (scope.locationPath === null) return scope;
+  return {
+    ...scope,
+    locationPath:
+      scope.locationPath.length + refs.length > MAX_LOCATION_PATH_LENGTH
+        ? null
+        : [...scope.locationPath, ...refs],
+  };
+}
+
+/** Call on engagement/focus, not render; publication works even with no painter installed. */
+export function usePublishLocation(scope?: ProjectionScope | null): () => void {
+  const inherited = useProjectionScope();
+  const locationPath = (scope === undefined ? inherited : scope)?.locationPath ?? null;
+  return useCallback(() => publishLocation(locationPath), [locationPath]);
+}
+
+/** The existing overlay composition policy, hosted in NodeTitleBar.middle without a ghost box. */
+export function TitlebarOutlet({
+  scope,
+}: {
+  readonly scope?: ProjectionScope | null;
+}): ReactElement | null {
+  const inherited = useProjectionScope();
+  const resolved = scope === undefined ? inherited : scope;
+  const registry = useProjection();
+  const registered = registry.overlay("titlebar");
+  if (
+    resolved?.locationPath == null ||
+    registered === null ||
+    !registered.enabled ||
+    registered.Component === null
+  ) {
+    return null;
+  }
+  const root = resolved.locationPath.find((ref) => ref.kind === "container");
+  const containerId = resolved.host.containerId ?? root?.containerId;
+  if (containerId === undefined) return null;
+  return createElement(registered.Component, {
+    host: resolved.host,
+    client: resolved.client,
+    containerId,
+    locationPath: resolved.locationPath,
+  });
 }
 
 /**

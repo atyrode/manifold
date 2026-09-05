@@ -89,13 +89,9 @@
   min-height: 0;
 }
 
-/* A portal wears the route's dividers, because it IS the route's tree: an engaged portal
-   resizes its composition through the same drag and the same doc write. Exactly DOUBLE
-   the route's 0.35rem, because a preview is drawn at PORTAL_PREVIEW_SCALE — the transform
-   shrinks paint and hit area together, so twice the layout thickness is what makes the
-   seam the same size ON SCREEN as the one the route offers. */
+/* Portal and routed compositions use the same native geometry and seam reach. */
 .portal-divider {
-  flex: 0 0 0.7rem;
+  flex: 0 0 0.35rem;
   background: #23272e;
   touch-action: none;
 }
@@ -152,8 +148,8 @@
    Every container node wears the same bar (`@manifold/plugin/ui`): a type icon, the
    editable title, a modular middle slot, and a right-justified control cluster.
    Adopters keep their own class on the same element for drag handles and proof
-   hooks, and override only what is genuinely theirs (the terminal bar floats, the
-   composed renderer's header is page chrome). */
+   hooks, and override only their page-level geometry. Shared typography and
+   control contrast belong to this bar. */
 .node-titlebar {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
@@ -161,6 +157,22 @@
   align-items: center;
   gap: 0.35rem;
   padding-inline: 0.5rem 0.2rem;
+  border-bottom: 1px solid #23272e;
+  background: #14181e;
+}
+
+/* A host opts the entire bar into movement, not a second corner handle. */
+.node-titlebar[data-titlebar-draggable] {
+  pointer-events: auto;
+  cursor: grab;
+}
+
+.node-titlebar[data-titlebar-draggable]:hover {
+  box-shadow: inset 0 -1px rgb(116 143 252 / 30%);
+}
+
+.node-titlebar[data-titlebar-draggable]:active {
+  cursor: grabbing;
 }
 
 .node-titlebar__icon {
@@ -177,8 +189,9 @@
   overflow: hidden;
   max-width: 100%;
   justify-self: start;
-  color: #adb5bd;
-  font-size: 0.7rem;
+  color: #e6e9ef;
+  font-size: 0.75rem;
+  font-weight: 500;
   letter-spacing: 0.02em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -193,7 +206,8 @@
   padding: 0.05rem 0.25rem;
   color: #f1f3f5;
   background: #0b0d10;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
+  font-weight: 500;
   font-family: inherit;
   pointer-events: auto;
 }
@@ -224,7 +238,7 @@
   border: none;
   border-radius: 0.25rem;
   padding: 0;
-  color: #868e96;
+  color: #adb5bd;
   background: transparent;
   line-height: 1;
   cursor: pointer;
@@ -402,13 +416,6 @@
   background: rgb(255 107 107 / 10%);
 }
 
-/* The FLIP: panes glide as transforms the overlay writes imperatively. Longer than the
-   slot's own rect above because a pane travels further and carries live content — both
-   numbers are named together in the floor's `--preview-*` block. */
-.tile-area.is-previewing [data-tile-id] {
-  transition: transform var(--preview-pane-transition);
-}
-
 /* The stable seat a pane's content rides in between structural edits (see
    tile-tree.tsx): MOVED with appendChild, never re-created, so a committed split
    cannot tear an xterm down. */
@@ -419,26 +426,24 @@
   min-height: 0;
 }
 
-/* While a carry has an armed drop target, the item IN HAND fades almost away so the
-   live preview underneath stays readable. THE EASE-AWAY IS A PROPERTY OF THE CARRY,
-   NOT OF BEING THE DRAGGER: your own canvas drag (React Flow marks the node
-   `.dragging`, the canvas root wears `is-composing` while a target is armed, both
-   written imperatively — arming never touches React state on the drag hot path), a
-   peer's carried node, and a carried tile pane all resolve to the SAME declarations
-   below, so a viewer sees exactly what the dragger sees.
-   The transition sits on the classes that persist across arming, so the fade runs BOTH
-   ways — easing in when a target arms and back out when it disarms — reading as a
-   deliberate "stepping aside", never as the held item vanishing.
-   The canvas half of this pair lives in packages/plugins/canvas/src/styles.css, because
-   `.canvas` is that plugin's family; ONE VALUE FOR EVERYONE survives the split because
-   both halves read the floor's `--carry-fade-*` tokens rather than repeating a number. */
-.tile-area .is-carried-away {
-  transition: var(--carry-fade-transition);
+/* Departure retains only this bounded, inert shell, never live rendered descendants. */
+.tile-departure-shell {
+  position: absolute;
+  z-index: 44;
+  border: 1px solid rgb(116 143 252 / 35%);
+  background: rgb(35 39 46 / 70%);
+  pointer-events: none;
 }
 
-.tile-area .is-carried-away {
-  opacity: var(--carry-fade-opacity);
+@media (prefers-reduced-motion: reduce) {
+  .tile-preview {
+    transition: none;
+  }
 }
+
+/* The carry marker belongs to the pane; its stable content host is the sole motion
+   surface. Preview and authoritative settlement share one WAAPI owner, so a CSS
+   transition or a second ancestor opacity here would multiply the projection. */
 
 /* The armed fade SUPERSEDES the in-flight dim rather than multiplying with it: only the
    person holding a tile sees `is-carried` on its leaf, so without this the holder's fade

@@ -13,20 +13,24 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { base64ToBytes, type SessionClient } from "@manifold/sdk";
-import type { MachineSummary, Principal } from "@manifold/protocol";
+import { base64ToBytes } from "@manifold/sdk";
 import {
+  TitlebarOutlet,
+  usePublishLocation,
+  type TerminalRendererProps,
+} from "@manifold/plugin/hooks";
+import {
+  useCallback,
   useEffect,
   useReducer,
   useRef,
   useState,
+  useSyncExternalStore,
   type FocusEvent,
   type MouseEvent as ReactMouseEvent,
-  type ReactNode,
   type WheelEvent,
 } from "react";
 import {
-  Cluster,
   ControlIcon,
   Cover,
   ItemIcon,
@@ -36,73 +40,13 @@ import {
   currentVantage,
   useNotice,
 } from "@manifold/plugin/ui";
-
-interface TerminalViewProps {
-  readonly client: SessionClient;
-  readonly terminalId: string;
-  /**
-   * Stable placement id: the canvas element id, or the tile id inside a
-   * container. It is only ever a presence focus key, so either one is correct.
-   */
-  readonly elementId: string;
-  /** Host-canvas selection state; a rising edge focuses xterm so typing works immediately. */
-  readonly active: boolean;
-  /** Terminal-panel hover target; highlights this copy without changing the viewport. */
-  readonly panelHighlighted: boolean;
-  /**
-   * This terminal's machine as the wire publishes it (`core.machines.list`); null before the
-   * first fetch resolves, so the badge never flashes before it knows. The dot's colour is
-   * `MachineSummary.color` — DERIVED SERVER-SIDE from the machine id over the shared identity
-   * palette, so every viewer paints the same dot and no client re-implements the hash.
-   */
-  readonly machine: MachineSummary | null;
-  /**
-   * `preview` is the read-only chrome a WATCHED portal portal paints inside a canvas:
-   * the titlebar keeps the name and the machine badge, while the control cluster and
-   * the idle veil are gone because nothing anyone is only watching is actionable.
-   *
-   * It tracks the socket, not the ref: engaging a portal's tile swaps its spectator
-   * socket for an occupant one and the same tile switches to `full`, because at that
-   * point every write this view makes is a write the server accepts. Which controls
-   * appear stays a question of which callbacks the host passes.
-   */
-  readonly chrome?: "full" | "preview";
-  /** Parks this element: the PTY keeps running in the workspace terminal pool. */
-  readonly onPark?: () => void;
-  /** Kills the PTY and removes this element. */
-  readonly onClose?: () => void;
-  /** Opens a fresh PTY terminal and rebinds it to this element (restart in place). */
-  readonly onRestart?: () => Promise<void>;
-  /**
-   * Transmutes this terminal into a composition born around it — the titlebar
-   * Expand button and titlebar double-click. Omitted inside a view: the terminal
-   * already lives in one.
-   */
-  readonly onExpand?: () => void;
-  /**
-   * Renames this terminal (`core.terminals.rename`) from the titlebar title.
-   * Omitted in preview chrome and wherever the caller holds no token.
-   */
-  readonly onRenameTitle?: (name: string) => void;
-  /**
-   * The composed action {@link TerminalViewProps.onRenameTitle} dispatches, marked onto the
-   * rename input as `data-action`. The caller names it: this component is handed a callback,
-   * and only the caller knows which door it goes through.
-   */
-  readonly renameAction?: string;
-  /**
-   * A BUBBLE's terminal is a terminal in temporary view mode: it is the only leaf
-   * of a transient container, so it already fills the screen and its maximize slot
-   * becomes Shrink — the way back out of the view born around it. Wins over
-   * `onExpand`, which is the canvas-side half of the same slot.
-   */
-  readonly onShrink?: () => void;
-  /**
-   * Titlebar extras next to minimize/maximize/close: a bubble's Pin, which claims
-   * the container the terminal is temporarily wearing.
-   */
-  readonly titlebarExtras?: ReactNode;
-}
+import { loadTerminalFont, TERMINAL_FONT_FAMILY, TERMINAL_FONT_SIZE } from "./terminal-font";
+import {
+  MAX_TERMINAL_FONT_SIZE,
+  MIN_TERMINAL_FONT_SIZE,
+  subscribeTerminalFontPreferences,
+  terminalFontPreferences,
+} from "./terminal-font-preferences";
 
 /** Hosts one no-gap terminal viewer and keeps controller-only input and sizing explicit. */
 export function TerminalView({
@@ -119,9 +63,13 @@ export function TerminalView({
   onExpand,
   onShrink,
   titlebarExtras,
+  titlebarMiddle,
+  titlebarDragProps,
+  projectionScope,
+  frame = "window",
   onRenameTitle,
   renameAction,
-}: TerminalViewProps) {
+}: TerminalRendererProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -137,9 +85,49 @@ export function TerminalView({
   const settleRef = useRef<(() => void) | null>(null);
   const focusedRef = useRef(false);
   const [viewOnlyError, setViewOnlyError] = useState(false);
+  const [fontState, setFontState] = useState<"loading" | "ready" | Error>("loading");
+  const fontReady = fontState === "ready";
   const [, rerender] = useReducer((version: number) => version + 1, 0);
   const [isRestarting, setIsRestarting] = useState(false);
   const { notify } = useNotice();
+  const publishLocation = usePublishLocation(projectionScope);
+  const fontSize = useSyncExternalStore(
+    subscribeTerminalFontPreferences,
+    useCallback(() => terminalFontPreferences.get(terminalId), [terminalId]),
+    () => TERMINAL_FONT_SIZE,
+  );
+  const changeFontSize = (size: number): void => {
+    try {
+      terminalFontPreferences.set(terminalId, size);
+    } catch (error: unknown) {
+      notify(
+        error instanceof Error
+          ? `Could not save terminal font size: ${error.message}`
+          : "Could not save terminal font size",
+        { key: `terminal-font-size:${terminalId}` },
+      );
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadTerminalFont().then(
+      () => {
+        if (!cancelled) setFontState("ready");
+      },
+      (error: unknown) => {
+        if (!cancelled) {
+          const failure =
+            error instanceof Error ? error : new Error("Could not load terminal font.");
+          setFontState(failure);
+          notify(failure.message, { key: `terminal-font:${terminalId}` });
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [notify, terminalId]);
 
   const terminal = client.terminals.get(terminalId);
   const terminalReady = terminal !== undefined;
@@ -154,11 +142,10 @@ export function TerminalView({
   }, [isController]);
 
   /**
-   * Preview chrome paints a portal's read-only body over a SPECTATOR socket, so nothing
-   * in it may write; an engaged portal hands the same tile an occupant socket and `full`
-   * chrome, and every guard below lifts together with the prop. Held in a ref for the
-   * same reason `isController` is: the xterm lifecycle effect must not tear a live
-   * terminal down to observe a prop.
+   * Preview bodies use a SPECTATOR socket, so PTY input, resize and focus traffic
+   * remain read-only. Host-supplied titlebar callbacks use the host's own authority
+   * and remain available independently of that socket. Held in a ref so changing
+   * chrome never tears down the live xterm instance.
    */
   const readOnly = chrome === "preview";
   const readOnlyRef = useRef(readOnly);
@@ -176,6 +163,7 @@ export function TerminalView({
    */
   const wasActiveRef = useRef(false);
   useEffect(() => {
+    if (!fontReady || !terminalReady) return;
     const wasActive = wasActiveRef.current;
     wasActiveRef.current = active;
     if (!active || wasActive) return;
@@ -193,7 +181,8 @@ export function TerminalView({
         focused instanceof HTMLElement &&
         (focused.tagName === "INPUT" ||
           focused.tagName === "TEXTAREA" ||
-          focused.isContentEditable);
+          focused.isContentEditable ||
+          focused.closest(".node-titlebar") !== null);
       if (editableElsewhere) return; // user chose another input: stop wrestling
       if (!settled) terminal.focus();
       // Keep watching through the whole activation transition: browser refocus
@@ -205,7 +194,7 @@ export function TerminalView({
       cancelled = true;
       cancelAnimationFrame(frame);
     };
-  }, [active]);
+  }, [active, fontReady, terminalReady]);
 
   useEffect(() => {
     const refreshTerminal = (): void => {
@@ -247,7 +236,7 @@ export function TerminalView({
    * flickers this effect.
    */
   useEffect(() => {
-    if (!terminalReady) return;
+    if (!terminalReady || !fontReady) return;
     const container = containerRef.current;
     if (container === null) return;
 
@@ -259,7 +248,8 @@ export function TerminalView({
       convertEol: false,
       cursorBlink: true,
       scrollback: 2000,
-      fontSize: 13,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: terminalFontPreferences.get(terminalId),
       theme: {
         background: "#0b0d10",
         foreground: "#e6e9ef",
@@ -278,10 +268,8 @@ export function TerminalView({
 
     const sendCurrentGeometry = (): void => {
       resizeTimerRef.current = null;
-      // A preview paints a scaled-down box, and its socket is a spectator the server
-      // refuses writes from. Sending this geometry would either be rejected or — worse,
-      // if the same principal happens to hold the PTY — squeeze the real terminal down
-      // to the size of somebody's portal.
+      // A preview may fit its own display, but its spectator socket never changes
+      // shared PTY geometry, even when another connection of this principal controls it.
       if (readOnlyRef.current) return;
       if (!isControllerRef.current) return;
       const geometry = { cols: terminal.cols, rows: terminal.rows };
@@ -354,7 +342,20 @@ export function TerminalView({
       fitRef.current = null;
       paintedRef.current = false;
     };
-  }, [terminalId, terminalReady]);
+  }, [terminalId, terminalReady, fontReady]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (terminal === null || terminal.options.fontSize === fontSize) return;
+    terminal.options.fontSize = fontSize;
+    // Queue behind pending snapshot writes, using the existing post-replay fit.
+    // Its geometry publication remains controller-only and forbidden in previews.
+    if (paintedRef.current) {
+      terminal.write("", () => {
+        if (terminalRef.current === terminal) settleRef.current?.();
+      });
+    }
+  }, [fontSize, fontReady, terminalReady]);
 
   /**
    * The SOCKET half: output subscriptions, keyboard input and the attach refcount.
@@ -369,7 +370,7 @@ export function TerminalView({
    * creates it; React runs setups in declaration order.
    */
   useEffect(() => {
-    if (!terminalReady) return;
+    if (!terminalReady || !fontReady) return;
     const terminal = terminalRef.current;
     if (terminal === null) return;
 
@@ -424,9 +425,9 @@ export function TerminalView({
       }
     });
 
-    // A WATCHED portal is read-only: its shield keeps focus out, and this keeps a stray
-    // keystroke from ever reaching a spectator socket the server would refuse. Engaging
-    // the tile re-renders with `full` chrome, and the very next keystroke is legal.
+    // A watched portal may receive browser focus before its occupant socket is ready.
+    // Keep keystrokes off the spectator socket throughout that transition; host-owned
+    // titlebar controls never lift this PTY input guard.
     const inputDisposable = terminal.onData((data) => {
       if (readOnlyRef.current) return;
       client.sendTerminalInput(terminalId, data);
@@ -453,41 +454,22 @@ export function TerminalView({
       inputDisposable.dispose();
       client.detachTerminal(terminalId);
     };
-  }, [client, terminalId, terminalReady]);
+  }, [client, terminalId, terminalReady, fontReady]);
 
   useEffect(() => {
-    if (!isController) return;
+    if (!isController || !paintedRef.current) return;
     fitRef.current?.fit();
     scheduleResizeRef.current?.();
   }, [isController]);
 
   const showViewOnly = viewOnlyError && !isController;
 
-  /*
-    Focus presence — other principals whose ephemeral focus is on THIS terminal. Distinct
-    from controllerId (the write lease): this is "who is looking/typing here right now", the
-    signal that veils the terminal for everyone else.
-
-    A local projection over the roster on purpose, and not a borrowed one: `core.presence`
-    answers roster ROWS (who is here, what each holds) and nothing in the tree asks
-    "who has focus on this element" anywhere but here, so this stays exactly one
-    implementation. S2 forbids plugin→plugin imports outright, so the alternative would be
-    growing the foundation to host a four-line filter — which fails the floor litmus on its
-    face. If a second consumer ever appears, the shape to reach for is a presence
-    contribution, not an engine export.
-  */
-  const selfPrincipalId = client.self?.id ?? null;
-  const remoteFocusers: Principal[] = [];
-  for (const state of client.attendance.values()) {
-    if (state.principal.id === selfPrincipalId) continue;
-    if (state.payload.focus?.elementId === elementId) remoteFocusers.push(state.principal);
-  }
-  const remoteFocuser = remoteFocusers[0] ?? null;
-
-  // Focus presence is a write, and a preview's socket is a spectator: xterm's helper
-  // textarea is tabbable even under the portal's shield, so the guard lives here.
+  // The preview's input remains read-only even when its host permits titlebar placement
+  // actions. Terminal focus traffic belongs to the occupant socket, never to its chrome.
   const handleFocus = (): void => {
-    if (readOnly || focusedRef.current) return;
+    if (readOnly) return;
+    publishLocation();
+    if (focusedRef.current) return;
     focusedRef.current = true;
     // The view rides every presence payload (`@manifold/plugin/ui` view state), so a focus
     // re-publishes what this device is holding.
@@ -555,7 +537,7 @@ export function TerminalView({
 
   const frameClass = [
     "terminal-frame",
-    remoteFocuser === null ? "" : "terminal-frame--remote-focus",
+    frame === "tile" ? "terminal-frame--tile" : "",
     panelHighlighted ? "terminal-frame--panel-highlight" : "",
   ]
     .filter(Boolean)
@@ -564,70 +546,107 @@ export function TerminalView({
   return (
     <div
       className={frameClass}
-      style={
-        remoteFocuser === null
-          ? undefined
-          : { borderColor: remoteFocuser.color, boxShadow: `0 0 0 2px ${remoteFocuser.color}` }
-      }
       onPointerDown={(event) => {
         const target = event.target;
         if (target instanceof Element && target.closest(".terminal-titlebar") !== null) return;
         event.stopPropagation();
+        handleFocus();
       }}
       onWheel={stopFocusedWheel}
       onKeyDown={(event) => event.stopPropagation()}
-      onFocus={handleFocus}
+      onFocus={(event) => {
+        if (event.target.closest(".node-titlebar") !== null) {
+          publishLocation();
+          return;
+        }
+        handleFocus();
+      }}
       onBlur={handleBlur}
     >
-      {remoteFocuser === null ? null : (
-        <Cluster className="terminal-presence" gap="0.25rem" justify="center" aria-hidden="true">
-          {remoteFocusers.slice(0, 3).map((principal) => (
-            <span
-              key={principal.id}
-              className="terminal-presence__tag"
-              style={{ backgroundColor: principal.color }}
-              title={`${principal.name} is here`}
-            >
-              <span className="terminal-presence__initial">
-                {principal.name.slice(0, 1).toUpperCase()}
-              </span>
-              <span className="terminal-presence__name">{principal.name}</span>
-            </span>
-          ))}
-        </Cluster>
-      )}
       <NodeTitleBar
         className="terminal-titlebar"
+        dragProps={titlebarDragProps}
         icon={<ItemIcon kind="terminal" size={13} />}
         title={terminal?.name ?? null}
         defaultTitle="terminal"
-        onRenameTitle={readOnly ? undefined : onRenameTitle}
+        onRenameTitle={onRenameTitle}
         {...(renameAction === undefined ? {} : { renameAction })}
-        onDoubleClick={readOnly ? undefined : handleTitlebarDoubleClick}
+        onDoubleClick={handleTitlebarDoubleClick}
         middle={
-          machine === null ? null : (
-            <span className="terminal-machine-badge" title={`machine ${machine.name}`}>
-              {machine.color === undefined ? null : (
-                <span className="machine-dot" style={{ backgroundColor: machine.color }} />
-              )}
-              {machine.name}
-            </span>
-          )
+          <>
+            <TitlebarOutlet
+              {...(projectionScope === undefined ? {} : { scope: projectionScope })}
+            />
+            {titlebarMiddle}
+            {machine === null ? null : (
+              <span className="terminal-machine-badge" title={`machine ${machine.name}`}>
+                {machine.color === undefined ? null : (
+                  <span className="machine-dot" style={{ backgroundColor: machine.color }} />
+                )}
+                {machine.name}
+              </span>
+            )}
+          </>
         }
-        onMinimize={readOnly ? undefined : onPark}
+        onMinimize={onPark}
         minimizeLabel="Park terminal to sidebar"
         minimizeTooltip="Park terminal to sidebar (keeps the shell running)"
-        onMaximize={readOnly ? undefined : maximize.onActivate}
+        onMaximize={maximize.onActivate}
         maximizeControl={maximize.control}
         maximizeLabel={maximize.label}
         maximizeTooltip={maximize.tooltip}
-        onClose={readOnly ? undefined : onClose}
+        onClose={onClose}
         closeLabel="Kill terminal"
         closeTooltip="Kill terminal (ends the terminal)"
         closeClassName="terminal-ctl--close"
-        extraActions={readOnly ? null : titlebarExtras}
+        extraActions={
+          <>
+            <button
+              type="button"
+              className="node-titlebar__ctl"
+              aria-label="Decrease terminal font size"
+              title="Decrease terminal font size (minimum 8 px)"
+              disabled={fontSize <= MIN_TERMINAL_FONT_SIZE}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => changeFontSize(fontSize - 1)}
+            >
+              −
+            </button>
+            <button
+              type="button"
+              className="node-titlebar__ctl terminal-font-size"
+              aria-label={`Terminal font size ${fontSize} pixels; reset to 13 pixels`}
+              title={`Font size: ${fontSize} px. Reset to 13 px`}
+              disabled={fontSize === TERMINAL_FONT_SIZE}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => changeFontSize(TERMINAL_FONT_SIZE)}
+            >
+              {fontSize}
+            </button>
+            <button
+              type="button"
+              className="node-titlebar__ctl"
+              aria-label="Increase terminal font size"
+              title="Increase terminal font size (maximum 32 px)"
+              disabled={fontSize >= MAX_TERMINAL_FONT_SIZE}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => changeFontSize(fontSize + 1)}
+            >
+              +
+            </button>
+            {titlebarExtras}
+          </>
+        }
       />
       <div className="xterm-host" ref={containerRef} />
+      {fontReady ? null : (
+        <div
+          className="terminal-font-status"
+          role={fontState instanceof Error ? "alert" : "status"}
+        >
+          {fontState instanceof Error ? fontState.message : "Loading terminal font…"}
+        </div>
+      )}
       {/*
         The idle veil is a property of ATTENTION, not of chrome. It used to be skipped in
         preview because a preview had no notion of a focused tile; a portal's tiles now
@@ -648,7 +667,7 @@ export function TerminalView({
         just happened and then stops being true; this stays true until clicked, and
         in a canvas of many terminals it has to say WHICH terminal by sitting on it.
       */}
-      {showViewOnly ? (
+      {showViewOnly && !readOnly ? (
         <button
           className="view-only-ribbon"
           type="button"
@@ -676,7 +695,10 @@ export function TerminalView({
                   : "exited"}
               </span>
             )}
-            {terminal?.status === "exited" && offlineMachine === null && onRestart !== undefined ? (
+            {!readOnly &&
+            terminal?.status === "exited" &&
+            offlineMachine === null &&
+            onRestart !== undefined ? (
               <button
                 type="button"
                 className="terminal-restart"

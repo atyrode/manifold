@@ -710,8 +710,8 @@ export function refKey(ref: TileRef | null): string | null {
       return `terminal:${ref.terminalId}`;
     case "container":
       return `container:${ref.containerId}`;
-    case "text":
-      return `text:${ref.elementId}`;
+    case "element":
+      return `element:${ref.elementId}`;
     case "panel":
       return `panel:${ref.panelId}`;
     case "spacer":

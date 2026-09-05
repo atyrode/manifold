@@ -36,6 +36,19 @@
   font-weight: 650;
 }
 
+.presence-wrapper--compact .presence-stack {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.presence-wrapper--compact .presence-avatar {
+  width: 1.125rem;
+  height: 1.125rem;
+  font-size: 0.6rem;
+}
+
 .presence-avatar + .presence-avatar {
   margin-left: -0.25rem;
 }
@@ -55,10 +68,9 @@
 }
 
 .presence-popover {
-  position: absolute;
-  z-index: 10;
-  top: calc(100% + 0.5rem);
-  right: 0;
+  position: fixed;
+  margin: 0;
+  inset: auto;
   display: grid;
   gap: 0.25rem;
   width: max-content;

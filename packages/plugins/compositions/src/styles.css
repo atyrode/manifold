@@ -1,5 +1,5 @@
 /*
- * THE COMPOSITIONS PLUGIN'S SKIN — the tiled discipline's renderer: its page chrome, tiles, leaves and grips, its placeholder and empty states, and the presence layer over them.
+ * THE COMPOSITIONS PLUGIN'S SKIN — the tiled discipline's renderer: its page chrome, tiles and leaves, its placeholder and empty states, and the presence layer over them.
  *
  * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
  * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in REGISTRY.md
@@ -13,6 +13,10 @@
   height: 100%;
   flex-direction: column;
   background: #101216;
+}
+
+.composition-view[data-frame="tile"] {
+  background: #0b0d10;
 }
 
 /* Page-level chrome of the composed renderer: taller than a node's bar, but the same
@@ -60,6 +64,9 @@
 
 /* Centering is the layout Cover's; skin and constraint stay. */
 .composition-placeholder {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
   width: 100%;
   color: #868e96;
   font-size: 0.8rem;
@@ -137,10 +144,7 @@
    height and the embedded canvas takes the rest, so the canvas's own pointer
    handling (pan, node drags, its tools) is never overlaid by tile controls.
 
-   The frame is the TERMINAL's frame (same border, radius and depth): a container and a
-   terminal are both placed objects, so a composition must not draw them as two
-   different species — and copying the border is also what puts the two kinds of
-   titlebar on the same baseline. */
+   Internal occupants meet the same square, unbordered seams as terminal tile frames. */
 .composition-tile {
   display: flex;
   width: 100%;
@@ -149,16 +153,13 @@
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid #2c3239;
-  border-radius: 0.5rem;
+  border: 0;
+  border-radius: 0;
   background: #0b0d10;
-  box-shadow: 0 4px 18px rgb(0 0 0 / 35%);
 }
 
 .composition-tile__bar {
   flex: 0 0 auto;
-  border-bottom: 1px solid #23272e;
-  background: #14181e;
 }
 
 .composition-tile__bar .node-titlebar__icon {
@@ -179,36 +180,4 @@
   min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
-}
-
-/* The leaf's grab handle inside a composition: the same corner grip a portal's tiles
-   wear on a canvas, so "grab it here" is one affordance in both renderers. */
-.composition-leaf__grip {
-  display: grid;
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  z-index: 9;
-  place-items: center;
-  width: 1.6rem;
-  height: 1.6rem;
-  color: #868e96;
-  font-size: 0.9rem;
-  opacity: 0.45;
-  cursor: grab;
-}
-
-.composition-leaf__grip:hover {
-  color: #dee2e6;
-  opacity: 1;
-}
-
-.composition-leaf__grip:active {
-  cursor: grabbing;
-}
-
-/* The source mutates live for the person carrying it too: a leaf whose tile is in
-   flight reads as lifted rather than as still sitting there. */
-.composition-leaf.is-carried {
-  opacity: 0.55;
 }
