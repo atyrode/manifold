@@ -157,7 +157,7 @@ Not ratified text; each is an issue, and the spec section it edits lands with th
   only while root-only `engine.plugins.setDeveloperMode` is on (off: `developer_mode_off`, a named
   refusal the manager marks); the hub watches it, rebuilds with `Bun.build`, installs through the
   ONE install path with the hash pinned from the built bytes, and publishes; `engine.plugins.author
-  { id, files }` writes into it, so "ask an agent, the panel appears" is one door and one file
+{ id, files }` writes into it, so "ask an agent, the panel appears" is one door and one file
   write. Promote = `pack` the same files. #257.
 - **§7 Ink: S13 at load.** The gate's stylesheet-ownership rule at runtime: an installed or
   unpacked `styles.css` is admitted only if every selector's leftmost compound is the plugin's own
@@ -171,7 +171,7 @@ Not ratified text; each is an issue, and the spec section it edits lands with th
   gate. The design system leaves `packages/plugin/src` as `@manifold/ui`, dogfooded by the shell
   and every `core.*` panel, imported by every mod; the hardened renderer serializes the same
   components. The roster becomes `install: { mode: "bundle" | "unpacked", hardened: boolean,
-  sha256, source, grantedCaps, installedBy, installedAt, refusal? }`, both new fields additive. #240.
+sha256, source, grantedCaps, installedBy, installedAt, refusal? }`, both new fields additive. #240.
 - **The guide.** `docs/PLUGINS.md` §10 "Authoring a plugin on your instance"; §9 re-scoped in
   full to hardened rows. #260.
 
