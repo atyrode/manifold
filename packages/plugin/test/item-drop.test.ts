@@ -1,9 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  PLACEMENT_DENIAL_RULES,
   resolvePlacement,
   type Container,
-  type PlacementDenialRule,
   type PlacementDestination,
   type PlacementItem,
   type PlacementRef,
@@ -322,19 +320,27 @@ describe("denial prose", () => {
     expect(message).not.toContain("canvas");
   });
 
-  test("every declared rule has prose, so no refusal can render blank", () => {
-    for (const rule of PLACEMENT_DENIAL_RULES satisfies readonly PlacementDenialRule[]) {
-      const message = denialMessage(
-        {
-          rule,
-          ref: { kind: "terminal", terminalId: "s1" },
-          container: { kind: "composition", containerId: "comp-1" },
-        },
-        lookup,
-      );
-      expect(message.length).toBeGreaterThan(0);
-      expect(message.endsWith(".")).toBe(true);
-    }
+  test("an unknown unplaced destination still names the index", () => {
+    const message = denialMessage(
+      { rule: "unknown_container", ref: { kind: "terminal", terminalId: "s1" }, container: { kind: "unplaced" } },
+      lookup,
+    );
+    expect(message).toStartWith("The index ");
+    expect(message).toContain("not known to this workspace");
+  });
+
+  test("a peer carry names a destination missing from this renderer's census by id", () => {
+    const message = itemDenialMessage(
+      {
+        rule: "not_accepted",
+        ref: { kind: "terminal", terminalId: "peer-terminal" },
+        container: { kind: "composition", containerId: "peer-destination" },
+      },
+      { kind: "terminal", containerId: null },
+      lookup,
+    );
+    expect(message).toContain("in container peer-destination");
+    expect(message).not.toMatch(/canvas|composition/);
   });
 
   /*

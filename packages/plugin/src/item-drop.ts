@@ -54,17 +54,19 @@ import { carriedPlacement, envelopeRef, readEnvelope, type ItemEnvelope } from "
  * references sits.
  *
  * The discipline, not the destination FORM's container family: the family is closed wire
- * vocabulary (`canvas`, `composition`, `unplaced`) and the roster is open, so a
- * `spreadsheet` container refuses as "a spreadsheet" instead of as whichever family its
- * destination form reports. A container whose discipline nothing declares reads as "an
- * item", which is `itemNoun`'s truthful generic and exactly what the sentence for
- * `unknown_discipline` is about.
+ * vocabulary (`canvas`, `composition`, `unplaced`) and the roster is open. A container
+ * the census does not know is named by its id, never by a kind inferred from the
+ * destination form. A known `spreadsheet` container refuses as "a spreadsheet"; a
+ * container whose discipline nothing declares reads as "an item", `itemNoun`'s truthful
+ * generic and exactly what the sentence for `unknown_discipline` is about.
  */
 function containerNoun(container: PlacementContainer, lookup: ItemLookup): string {
   if (container.kind === "unplaced") return "the index";
   // `noun` answers in the SUBJECT position ("A canvas"); an object position wants the
   // same phrase uncapitalised, and the article is already the right one.
-  const phrase = lookup.noun(lookup.disciplineOf(container.containerId) ?? container.kind);
+  const discipline = lookup.disciplineOf(container.containerId);
+  if (discipline === null) return `container ${container.containerId}`;
+  const phrase = lookup.noun(discipline);
   return phrase.charAt(0).toLowerCase() + phrase.slice(1);
 }
 
@@ -164,10 +166,7 @@ export function createPlacementLookup(inputs: PlacementLookupInputs): ItemLookup
  * vocabulary of items or containers never grows this function. The table is keyed by the
  * exported rule union, so a rule added to the algebra cannot ship without a sentence.
  */
-const DENIAL_PROSE: Record<
-  PlacementDenialRule,
-  (subject: string, container: string, destination: PlacementContainer) => string
-> = {
+const DENIAL_PROSE: Record<PlacementDenialRule, (subject: string, container: string) => string> = {
   not_accepted: (subject, container) => `${subject} does not go in ${container}.`,
   self_embed: (subject) => `${subject} cannot be placed inside itself.`,
   discipline: (subject, container) => `${subject} cannot be placed that way in ${container}.`,
@@ -177,8 +176,7 @@ const DENIAL_PROSE: Record<
   not_displaceable: () =>
     "The note in that tile has nowhere else to live, so it cannot be displaced.",
   unknown_ref: () => "That item no longer exists.",
-  unknown_container: (_subject, _container, destination) =>
-    `Container${destination.kind === "unplaced" ? "" : ` ${destination.containerId}`} is not known to this workspace.`,
+  unknown_container: (_subject, container) => `${container.charAt(0).toUpperCase() + container.slice(1)} is not known to this workspace.`,
   /*
     The container is there and its renderer is not (#110). The sentence names the RENDERER
     rather than the container, because the container is fine — this build simply has no
@@ -201,11 +199,7 @@ export function itemDenialMessage(
   item: PlacementItem,
   lookup: ItemLookup,
 ): string {
-  return DENIAL_PROSE[denial.rule](
-    lookup.noun(item.kind),
-    containerNoun(denial.container, lookup),
-    denial.container,
-  );
+  return DENIAL_PROSE[denial.rule](lookup.noun(item.kind), containerNoun(denial.container, lookup));
 }
 
 /**
@@ -217,11 +211,7 @@ export function itemDenialMessage(
 export function denialMessage(denial: PlacementDenial, lookup: ItemLookup): string {
   const item = placementItemFor(denial.ref, lookup);
   const subject = item === null ? "That item" : lookup.noun(item.kind);
-  return DENIAL_PROSE[denial.rule](
-    subject,
-    containerNoun(denial.container, lookup),
-    denial.container,
-  );
+  return DENIAL_PROSE[denial.rule](subject, containerNoun(denial.container, lookup));
 }
 
 /** What a carry would do at one destination: nothing to say, allowed, or refused. */
