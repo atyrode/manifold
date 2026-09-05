@@ -1123,8 +1123,10 @@ denial rung (`TRACE_OUTCOMES` in `@manifold/protocol`), and NULL means the dispa
 flight — the ledger is written AHEAD of the handler, so an unsettled row is a dispatch that never
 came back rather than a row somebody forgot to finish; `session` is the socket it arrived on, NULL
 meaning the HTTP action door. The `payload` of a trace row is the ARGUMENTS as received, run
-through the same field redaction the JSONL log applies (no `token`/`key`/`authorization`/`secret`,
-no `data`/`env`/`payload` — invariants 5 and 6) and bounded at 4 KiB, past which the row keeps
+through the same field redaction the JSONL log applies (case-insensitive substrings
+`token`/`key`/`authorization`/`secret`/`password`/`passwd`/`credential`/`passphrase`,
+plus exact field names `data`/`env`/`payload`/`terminalData`, also case-insensitive —
+invariants 5 and 6) and bounded at 4 KiB, past which the row keeps
 `{ oversize, keys }` instead of the bytes.
 
 **Refusals are traced and unregistered names are not.** Every denial rung the ladder can answer

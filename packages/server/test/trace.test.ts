@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { defineAction } from "@manifold/plugin";
 import { EventsListResponseSchema } from "@manifold-plugin/events";
 import {
@@ -15,7 +15,7 @@ import { tileIdForRef } from "@manifold/scene";
 import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
-import { silentLogger } from "../src/log.ts";
+import { createLogger, silentLogger } from "../src/log.ts";
 import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
 import { PluginHost, type ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
@@ -165,6 +165,12 @@ function probeDefs(): readonly ServerPluginDef[] {
             token: z.string(),
             data: z.string(),
             keep: z.string(),
+            password: z.string(),
+            passwd: z.string(),
+            credential: z.string(),
+            passphrase: z.string(),
+            nested: z.array(z.record(z.string(), z.unknown())),
+            private: z.string(),
           }),
           result: z.strictObject({}),
         }),
@@ -537,27 +543,79 @@ describe("the trace ledger records every exercise of authority", () => {
     base.store.close();
   });
 
-  test("secrets and terminal bytes never reach the ledger", async () => {
+  test("secrets and terminal bytes never reach stdout or the ledger read door", async () => {
     const base = await fixture();
     const host = await probeHost(base);
-    // A non-root caller, so the door's EMPTY cap list is what the row reports: `open` says
-    // authority was never the question here, which a blank column would say far less clearly.
+    // A non-root caller, so the door's EMPTY cap list is what the row reports.
     const guest = tokenContext(base, ["containers:read"]);
-
-    await host.dispatch(guest, "test.probe.keepSecrets", {
+    const args = {
       secret: "hunter2",
       token: "bearer-abc",
       data: "\u001b[2Jrm -rf /",
       keep: "visible",
+      password: "password-value",
+      passwd: "passwd-value",
+      credential: "credential-value",
+      passphrase: "passphrase-value",
+      nested: [
+        {
+          restic_PASSWORD: "nested-password-value",
+          dbPasswd: "nested-passwd-value",
+          clientCredential: "nested-credential-value",
+          backupPassphrase: "nested-passphrase-value",
+          privateKey: "private-key-value",
+          keep: "nested-visible",
+        },
+      ],
+      private: "not-a-secret-field",
+    };
+    const lines: string[] = [];
+    const stdout = spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      lines.push(String(chunk));
+      return true;
     });
-
-    const row = newestTrace(base);
-    expect(JSON.parse(row.payload)).toEqual({ keep: "visible" });
-    expect(row.payload).not.toContain("hunter2");
-    expect(row.payload).not.toContain("bearer-abc");
-    expect(row.payload).not.toContain("rm -rf");
-    expect(row.authority).toBe(TRACE_AUTHORITY_OPEN);
-    base.store.close();
+    try {
+      createLogger(base.runtime).info("action", { name: "test.probe.keepSecrets", args });
+      const dispatched = await host.dispatch(guest, "test.probe.keepSecrets", args);
+      expect(dispatched.ok).toBeTrue();
+      const outcome = await base.host.dispatch(base.owner, "core.events.list", {
+        kind: TRACE_ROW_TYPE,
+        limit: 10,
+      });
+      expect(outcome.ok).toBeTrue();
+      if (!outcome.ok) throw new Error("unreachable");
+      const row = EventsListResponseSchema.parse(outcome.result).events.find(
+        (entry) => entry.door === "test.probe.keepSecrets",
+      );
+      if (row === undefined) throw new Error("the read door returned no trace");
+      const line = lines[0];
+      if (line === undefined) throw new Error("the logger wrote nothing");
+      const safe = {
+        keep: "visible",
+        nested: [{ keep: "nested-visible" }],
+        private: "not-a-secret-field",
+      };
+      expect({
+        stdout: JSON.parse(line).args,
+        trace: JSON.parse(row.payload),
+      }).toEqual({ stdout: safe, trace: safe });
+      for (const value of [
+        args.secret,
+        args.token,
+        args.data,
+        args.password,
+        args.passwd,
+        args.credential,
+        args.passphrase,
+      ]) {
+        expect(line).not.toContain(value);
+        expect(JSON.stringify(outcome.result)).not.toContain(value);
+      }
+      expect(row.authority).toBe(TRACE_AUTHORITY_OPEN);
+    } finally {
+      stdout.mockRestore();
+      base.store.close();
+    }
   });
 
   test("an oversize argument list is recorded as a shape, not as bytes", async () => {
