@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   ActionOutcomeSchema,
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
+  PROTOCOL_VERSION,
   DESTINATION_KINDS,
   ITEM_KINDS,
   PlaceResponseSchema,
@@ -72,6 +73,7 @@ const temporaryDirectories: string[] = [];
 
 class FakeMachine implements MachineChannel {
   readonly sent: ServerToAgentMessage[] = [];
+  readonly protocolVersion = PROTOCOL_VERSION;
 
   constructor(readonly machineId: string) {}
 

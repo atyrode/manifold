@@ -129,6 +129,19 @@ export function resolveShellCommand(): readonly string[] {
 }
 
 /**
+ * Names a spawn that never produced a process. Bun reports a missing or unrunnable `argv[0]`
+ * as an errno error naming the syscall; an opener that asked for a program deserves the
+ * program's name back as the `create_error` reason, never a garbled shell and never
+ * `posix_spawn`. Anything else is rethrown untouched.
+ */
+function spawnFailure(error: unknown, argv0: string): unknown {
+  const code = typeof error === "object" && error !== null ? Reflect.get(error, "code") : undefined;
+  if (code === "ENOENT") return new PtyError(`program not found: ${argv0}`);
+  if (code === "EACCES") return new PtyError(`program not executable: ${argv0}`);
+  return error;
+}
+
+/**
  * Builds a PTY environment without inheriting daemon credentials. Every MANIFOLD_* value in
  * the agent process is excluded so future agent-only credentials are safe by default; the
  * server's fixed, terminal-scoped MANIFOLD_URL/CONTAINER/ELEMENT/TOKEN values are then added back.
@@ -161,8 +174,9 @@ export interface PtyTerminalOptions {
   /** Ring cap in bytes; defaults to {@link DEFAULT_RING_CAP_BYTES}. Tests pass a tiny cap. */
   readonly ringCapBytes?: number;
   /**
-   * Shell argv. Defaults to {@link resolveShellCommand} (`$SHELL` → `bash` → `sh` on PATH).
-   * A DI seam so PTY tests pin a deterministic shell instead of inheriting the ambient one.
+   * The argv to exec: an opener's `create.program` (issue #192), or the pinned shell a PTY
+   * test names. Defaults to {@link resolveShellCommand} (`$SHELL` → `bash` → `sh` on PATH).
+   * A missing or unrunnable `argv[0]` throws {@link PtyError} naming the program.
    */
   readonly command?: readonly string[];
   /** Mirror factory seam used to verify construction cleanup without patching xterm globals. */
@@ -238,7 +252,7 @@ export class PtyTerminal {
       const pty = proc?.terminal;
       if (pty !== undefined && !pty.closed) pty.close();
       this.mirror.dispose();
-      throw error;
+      throw spawnFailure(error, command[0] ?? "");
     }
   }
 

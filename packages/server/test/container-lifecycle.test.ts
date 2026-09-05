@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   ActionOutcomeSchema,
   ContainerCensusResponseSchema,
+  PROTOCOL_VERSION,
   ContainerResponseSchema,
   ROOT_TILE_ID,
   ServerToAgentMessageSchema,
@@ -80,6 +81,7 @@ const temporaryDirectories: string[] = [];
 
 class FakeMachine implements MachineChannel {
   readonly sent: ServerToAgentMessage[] = [];
+  readonly protocolVersion = PROTOCOL_VERSION;
 
   constructor(readonly machineId: string) {}
 

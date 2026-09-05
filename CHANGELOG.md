@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- A terminal can be born running a program: `terminal_open` (and `SessionClient.openTerminal`) take an optional `program { argv }` the PTY execs in place of the login shell, plus an optional `env` allowlist merged under the fixed `MANIFOLD_*` keys, so a plugin can launch a named program on a machine and see its output first — no prompt, nothing typed. Both go through the `core.terminals.open` policy door before any machine hears of them — the door's input carries the program and env, a denial refuses the program before anything is created, and the trace ledger records what was authorized. A machine whose agent predates the field (protocol 22) refuses by name instead of dropping its connection, and a program the machine cannot run is a named creation error rather than a garbled shell. Existing agents keep their terminals across this deploy. (#192, #200)
+
 ### Changed
 
 - The plugin storage docs now give advance notice that `ctx.storage` becomes promise-returning for every plugin with ADR 0016 stage 1, and state the authoring idiom that makes that migration a type change. (#187, #194)

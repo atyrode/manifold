@@ -1,6 +1,8 @@
 import { defineAction } from "@manifold/plugin";
 import {
   ContainerTerminalSummarySchema,
+  TerminalEnvSchema,
+  TerminalProgramSchema,
   TerminalSummarySchema,
   type PluginManifest,
 } from "@manifold/protocol";
@@ -97,6 +99,15 @@ export const terminalsActions = [
       socket, which the gateway sends through here first (`docs/PLUGINS.md` §3, issue #185
       for whether an action should ever create one).
      */
+    /*
+      Since issue #192 that includes WHAT the terminal is born running. `program` and `env`
+      are the FRAME's own fields, handed to this door by the gateway before the broker hears
+      of the frame, so what the door judged and what the machine is asked to exec are one
+      value read once: a socket cannot present a shell here and a program there. The trace
+      the ladder writes is the durable record of the program (`env` is redacted by name, like
+      every env the ledger sees), and a denial here means no token was minted and no `create`
+      left the server. An argv or env rule lands in the handler and nowhere else.
+     */
     name: "open",
     title: "Authorize a new terminal in a container",
     caps: ["terminals:spawn"],
@@ -111,6 +122,13 @@ export const terminalsActions = [
       machineId: z.string().min(1).optional(),
       /** Who authors the placement — the canvas opener, or the composition itself. */
       placement: z.enum(["element", "tile"]).optional(),
+      /**
+       * What the PTY execs in place of the machine's shell (issue #192): the same shape the
+       * frame carries and the agent receives as `create.program`. Absent ≡ the login shell.
+       */
+      program: TerminalProgramSchema.optional(),
+      /** The opener's env allowlist, merged UNDER the minted `MANIFOLD_*` keys; absent ≡ none. */
+      env: TerminalEnvSchema.optional(),
     }),
     result: z.strictObject({}),
   }),

@@ -1,4 +1,9 @@
-import type { ContainerTerminalSummary, TerminalSummary } from "@manifold/protocol";
+import type {
+  ContainerTerminalSummary,
+  TerminalEnv,
+  TerminalProgram,
+  TerminalSummary,
+} from "@manifold/protocol";
 
 /** A durable terminal row, as this plugin needs to read it. */
 interface StoredTerminal {
@@ -57,10 +62,25 @@ export const terminalsHandlers = {
    * channel (see the action's own comment), so this answers the question and the transport
    * does the work. What is left for the handler once the ladder has run is the containment
    * obligation — a container-scoped opener may only be born where its token lives.
+   *
+   * `program` and `env` arrive here judged by shape and otherwise unjudged: no rule about
+   * WHICH argv or WHICH keys a principal may name exists yet, and when one does it is a line
+   * in this function. It runs before anything is minted or sent — the gateway asks this door
+   * and only then hands the same frame to the broker — so a refusal here costs nothing to
+   * undo.
    */
   async open(
     ctx: TerminalsCtx,
-    args: { containerId: string; elementId: string; cols: number; rows: number },
+    args: {
+      containerId: string;
+      elementId: string;
+      cols: number;
+      rows: number;
+      machineId?: string;
+      placement?: "element" | "tile";
+      program?: TerminalProgram;
+      env?: TerminalEnv;
+    },
   ): Promise<Outcome<Record<string, never>>> {
     const outside = ctx.outsideScope(args.containerId);
     if (outside !== null) return outside;

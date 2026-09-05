@@ -1,4 +1,5 @@
 import {
+  TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION,
   hasCap,
   type AdvertisedTerminal,
   type AgentMessage,
@@ -42,6 +43,11 @@ const SNAPSHOT_DEADLINE_MS = 10_000;
 /** Online agent connection used by the broker without depending on Bun WebSocket types. */
 export interface MachineChannel {
   readonly machineId: string;
+  /**
+   * The protocol the agent's `hello` named — one of `MACHINE_PROTOCOL_COMPAT_VERSIONS`. The
+   * broker reads it before sending a frame an older agent parses as malformed (`program`).
+   */
+  readonly protocolVersion: number;
   send(message: ServerToAgentMessage): boolean;
 }
 
@@ -445,8 +451,9 @@ export class TerminalBroker implements TerminalPlacementPort {
    * Starts a PTY create request. Spawn AUTHORITY is not asked here any more: the session
    * gateway dispatches `core.terminals.open` before it calls this, and that door carries
    * `terminals:spawn` at the container's scope (ADR 0013 — terminal policy is a plugin,
-   * terminal bytes are floor). What remains is mechanism: placement discipline, machine
-   * selection, and the create round trip.
+   * terminal bytes are floor). The door saw THIS frame's `program` and `env`, so what rides
+   * to the agent below is what the ledger recorded as authorized (issue #192). What remains
+   * is mechanism: placement discipline, machine selection, and the create round trip.
    */
   open(channel: SessionChannel, message: TerminalOpen): void {
     /*
@@ -478,6 +485,28 @@ export class TerminalBroker implements TerminalPlacementPort {
         code: "no_machine",
         message: "no unambiguous online machine",
         ref: message.elementId,
+      });
+      return;
+    }
+    if (
+      message.program !== undefined &&
+      machine.protocolVersion < TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION
+    ) {
+      /*
+        A pre-v22 agent parses `create` strictly, so a `program` key would be a malformed
+        frame to it — it would drop the socket and re-dial, and the opener would learn
+        nothing. Naming the skew here, before anything is minted, is what makes the field
+        additive for the fleet: the old agent never sees a byte it cannot read.
+      */
+      channel.send({
+        type: "error",
+        code: "unsupported",
+        message: `machine agent speaks protocol ${machine.protocolVersion}; programs need ${TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION}`,
+        ref: message.elementId,
+      });
+      this.logger.warn("terminal_program_unsupported", {
+        machineId: machine.machineId,
+        agentProtocolVersion: machine.protocolVersion,
       });
       return;
     }
@@ -533,6 +562,10 @@ export class TerminalBroker implements TerminalPlacementPort {
       rows: message.rows,
       ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
       env: {
+        // The opener's own keys go FIRST so the fixed keys below always win. The schema
+        // already refuses the `MANIFOLD_` prefix; the order makes the rule true even if it
+        // did not.
+        ...message.env,
         MANIFOLD_URL: this.publicUrl(),
         // The container the terminal LIVES in, which is what a program inside it should see
         // when it asks where it is. `MANIFOLD_ELEMENT` is only meaningful for a canvas
@@ -541,6 +574,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         ...(placement === "tile" ? {} : { MANIFOLD_ELEMENT: message.elementId }),
         MANIFOLD_TOKEN: grant.token,
       },
+      ...(message.program === undefined ? {} : { program: message.program }),
     });
     if (!sent) {
       pending.cancelDeadline?.();

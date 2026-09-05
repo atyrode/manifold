@@ -724,8 +724,16 @@ describe("floor doors emit at their commit points", () => {
     subscribe(fixture, "tab", [{ kind: "plugin", pluginId: FLOOR_EVENT_OWNERS.machines }]);
     const enrollment = fixture.auth.enrollMachine("builder", fixture.owner);
 
-    const first = { machineId: enrollment.machine.id, send: () => true };
-    const second = { machineId: enrollment.machine.id, send: () => true };
+    const first = {
+      machineId: enrollment.machine.id,
+      protocolVersion: PROTOCOL_VERSION,
+      send: () => true,
+    };
+    const second = {
+      machineId: enrollment.machine.id,
+      protocolVersion: PROTOCOL_VERSION,
+      send: () => true,
+    };
     fixture.broker.setMachineOnline(first);
     // A machine reconnecting supersedes its own socket without ever having gone offline.
     fixture.broker.setMachineOnline(second);

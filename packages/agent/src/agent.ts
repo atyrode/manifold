@@ -349,6 +349,9 @@ export class Agent {
       this.send(socket, { type: "created", terminalId: msg.terminalId });
       return;
     }
+    // A program named by the opener execs in place of the shell — the pinned test shell
+    // included, since a test that names a program means that program (issue #192).
+    const command = msg.program?.argv ?? this.shellCommand;
     try {
       const terminal = new PtyTerminal({
         terminalId: msg.terminalId,
@@ -357,7 +360,7 @@ export class Agent {
         env: msg.env,
         onOutput: (output) => this.onOutput(msg.terminalId, output),
         ...(msg.cwd !== undefined ? { cwd: msg.cwd } : {}),
-        ...(this.shellCommand !== undefined ? { command: this.shellCommand } : {}),
+        ...(command !== undefined ? { command } : {}),
       });
       this.terminals.set(msg.terminalId, terminal);
       void this.watchExit(msg.terminalId, terminal);

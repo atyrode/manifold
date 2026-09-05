@@ -219,13 +219,15 @@ describe("the instance channel handshake", () => {
       set would mean an agent-wire reset locking out federated instances that never spoke that
       wire, and an instance-frame change restarting a fleet of PTY agents that never spoke this
       one. The set GROWS by the same first clause the machine set grows by — v19 moved a
-      session frame pair, v20 bounded a token row's life and v21 opened the container
-      discipline roster and added two optional fields to a gesture frame, none of which a
-      guest instance sees (a share secret is not a token row, carries no expiry, and names
-      no container) — so a v18 dial survives all three deploys.
+      session frame pair, v20 bounded a token row's life, v21 opened the container
+      discipline roster and added two optional fields to a gesture frame, and v22 let a
+      terminal be born running a program — none of which a guest instance sees (a share
+      secret is not a token row, carries no expiry, names no container and creates no PTY) —
+      so a v18 dial survives all four deploys.
     */
     expect(INSTANCE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
     expect([...INSTANCE_PROTOCOL_COMPAT_VERSIONS]).toEqual([
+      PROTOCOL_VERSION - 4,
       PROTOCOL_VERSION - 3,
       PROTOCOL_VERSION - 2,
       PROTOCOL_VERSION - 1,

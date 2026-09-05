@@ -1,4 +1,10 @@
-import type { SceneElement, ServerMessageBody, TerminalInfo } from "@manifold/protocol";
+import type {
+  SceneElement,
+  ServerMessageBody,
+  TerminalEnv,
+  TerminalInfo,
+  TerminalProgram,
+} from "@manifold/protocol";
 import { base64ToText, type SessionClient } from "@manifold/sdk";
 import {
   connect,
@@ -165,6 +171,9 @@ export interface OpenTerminalOptions {
   readonly cols?: number;
   readonly rows?: number;
   readonly machineId?: string;
+  /** What the PTY execs instead of the shell, and the env it is handed (issue #192). */
+  readonly program?: TerminalProgram;
+  readonly env?: TerminalEnv;
   /** Where to author the canvas's own portal onto the new home; omitted authors none. */
   readonly portalAt?: { readonly x: number; readonly y: number };
 }
@@ -195,6 +204,8 @@ export async function openTerminalAt(
     cols: options.cols ?? 80,
     rows: options.rows ?? 24,
     ...(options.machineId === undefined ? {} : { machineId: options.machineId }),
+    ...(options.program === undefined ? {} : { program: options.program }),
+    ...(options.env === undefined ? {} : { env: options.env }),
   });
   if (terminal.status !== "running") {
     throw new Error(`terminal ${terminal.id} was born ${terminal.status}`);

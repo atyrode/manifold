@@ -6,6 +6,7 @@ import {
   type Cap,
   type Container,
   type ServerToAgentMessage,
+  type TerminalProgram,
 } from "@manifold/protocol";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { silentLogger } from "../src/log.ts";
@@ -14,7 +15,7 @@ import { OUTSIDE_SCOPE_REFUSAL, type PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
 import { SessionGateway } from "../src/session-ws.ts";
-import type { ServerStore } from "../src/stores.ts";
+import { TRACE_ROW_TYPE, type ServerStore, type StoredEvent } from "../src/stores.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
 import {
   FakeClock,
@@ -42,6 +43,7 @@ const OWNER_KEY = "c".repeat(64);
 
 class FakeMachine implements MachineChannel {
   readonly sent: ServerToAgentMessage[] = [];
+  readonly protocolVersion = PROTOCOL_VERSION;
 
   constructor(readonly machineId: string) {}
 
@@ -510,6 +512,15 @@ function errors(socket: FakeSocket): { code: string; message?: string; ref?: str
     }));
 }
 
+/** The newest `core.terminals.open` row of the ledger: what the door was asked, and its answer. */
+function newestOpenTrace(base: TerminalsFixture): StoredEvent {
+  const row = base.store
+    .listEvents({ type: TRACE_ROW_TYPE, limit: 100 })
+    .find((event) => event.door === "core.terminals.open");
+  if (row === undefined) throw new Error("the ledger recorded no core.terminals.open dispatch");
+  return row;
+}
+
 describe("session channel terminal verbs speak the ladder", () => {
   test("a refused creation answers with the ladder's own denial, on the same frame shape", async () => {
     const base = fixture();
@@ -605,6 +616,86 @@ describe("session channel terminal verbs speak the ladder", () => {
 
     expect(base.broker.liveTerminal(create.terminalId)).toBeNull();
     expect(errors(socket)).toEqual([]);
+  });
+
+  test("the program and env a frame names are judged at the door, and the ledger records the program", async () => {
+    const base = fixture();
+    const { id, socket } = joinedSocket(base, OWNER_KEY);
+    const argv: TerminalProgram["argv"] = ["/bin/sh", "-c", "printf CMD_OK; exec cat"];
+
+    base.gateway.message(
+      id,
+      JSON.stringify({
+        ch: "c1",
+        type: "terminal_open",
+        elementId: "el-program",
+        cols: 80,
+        rows: 24,
+        placement: "tile",
+        program: { argv },
+        env: { CODE_TEST: "launch-7" },
+      }),
+    );
+    await settled();
+
+    // One value, read once: what the door was asked about is what rides to the machine.
+    expect(errors(socket)).toEqual([]);
+    const create = base.machine.sent.find((message) => message.type === "create");
+    if (create === undefined || create.type !== "create") throw new Error("missing create request");
+    expect(create.program).toEqual({ argv });
+    expect(create.env.CODE_TEST).toBe("launch-7");
+
+    // The trace is the durable record of the program (invariant 5). The env never reaches
+    // the ledger: `env` is a redacted field name, so neither its keys nor its values persist.
+    const trace = newestOpenTrace(base);
+    expect(trace.outcome).toBe("ok");
+    expect(JSON.parse(trace.payload)).toEqual({
+      containerId: base.container.id,
+      elementId: "el-program",
+      cols: 80,
+      rows: 24,
+      placement: "tile",
+      program: { argv },
+    });
+    expect(trace.payload).not.toContain("launch-7");
+  });
+
+  test("a program the door refuses never reaches the machine, and the refusal names it", async () => {
+    const base = fixture();
+    const guest = base.auth.mintToken(
+      { principal: { name: "no spawner", kind: "human" }, caps: ["containers:read"] },
+      base.owner,
+    );
+    const { id, socket } = joinedSocket(base, guest.token);
+    const argv: TerminalProgram["argv"] = ["/usr/bin/env", "true"];
+
+    base.gateway.message(
+      id,
+      JSON.stringify({
+        ch: "c1",
+        type: "terminal_open",
+        elementId: "el-refused-program",
+        cols: 80,
+        rows: 24,
+        placement: "tile",
+        program: { argv },
+      }),
+    );
+    await settled();
+
+    expect(errors(socket)).toEqual([
+      {
+        code: "forbidden",
+        message: "terminals:spawn capability required",
+        ref: "el-refused-program",
+      },
+    ]);
+    // Denied BEFORE anything was minted or sent: no create, no pending open, no principal.
+    expect(base.machine.sent).toEqual([]);
+    expect(base.broker.hasPendingOpenForContainer(base.container.id)).toBe(false);
+    const trace = newestOpenTrace(base);
+    expect(trace.outcome).toBe("forbidden");
+    expect(JSON.parse(trace.payload)).toMatchObject({ program: { argv } });
   });
 
   test("a kill of somebody else's live terminal is refused with the door's reason", async () => {

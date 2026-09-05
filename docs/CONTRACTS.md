@@ -775,11 +775,21 @@ which is
 exactly what invariant 14 forbids, so the cutover took the channel's answer rather than the route's.
 `kill` is `cleanup: true` (removal survives a disable), the rename broadcasts
 `terminal_event { kind:"renamed", name }` into the home, and the kill sweeps the terminal, its home,
-and every portal onto that home. `open` carries `terminals:spawn` at `scope: "container"`, because a
+and every portal onto that home. `open { containerId, elementId, cols, rows, machineId?,
+placement?, program?, env? }` carries `terminals:spawn` at `scope: "container"`, because a
 terminal is born inside one container and the per-terminal agent token minted for it is
 container-scoped
 with that cap — a workspace-graded creation door would have quietly ended agents spawning their own
-terminals. The reads are doors too: `listByContainer` is `scope: "container"` (the route it replaces
+terminals. `program { argv }` and `env` (issue #192) are the SAME shapes and bounds the
+`terminal_open` frame carries (§Terminals over the session channel), and they are in the door's
+input so the policy door judges WHAT a terminal is born running, not only who may open where: the
+gateway hands the door the frame's own program and env before anything is minted or sent, and
+the broker receives that frame only once the door allowed, so a socket cannot present a shell to
+the policy and a program to the machine — one value, read once. The trace of the dispatch is the
+durable record of the program (`env` is redacted from the ledger by name, like every env the
+ledger sees). Today the handler judges neither beyond their shape; an argv or env rule lands in
+`core.terminals.open` and nowhere else.
+The reads are doors too: `listByContainer` is `scope: "container"` (the route it replaces
 answered a
 scoped token with its own container's rows), while `listAll` keeps the default because the terminal
 index it
@@ -788,8 +798,9 @@ replaces refused scoped tokens outright. Mutating affordances in the DOM carry
 
 Two things about that door are worth stating because they are what "one door per concept" cost here.
 The session channel now DISPATCHES the action rather than duplicating its authority:
-`terminal_open` calls `core.terminals.open` first and only then asks the broker (a create is a
-machine round trip whose reply is socket traffic, so the PTY is still born on the channel), and
+`terminal_open` calls `core.terminals.open` first — with the frame's own `program` and `env` in
+the door's input — and only then asks the broker (a create is a machine round trip whose reply
+is socket traffic, so the PTY is still born on the channel), and
 `terminal_kill` dispatches `core.terminals.kill` — `broker.kill(channel, …)` is deleted, so one door
 answers for both the UI and the channel, and the surviving rule is the stricter one: an exited
 terminal is
@@ -1404,14 +1415,38 @@ engaged is a socket role rather than a UI mode anyone has to learn.
 
 ### Terminals over the session channel
 
-- `terminal_open { elementId, cols, rows, cwd?, machineId?, placement? }` → server targets
-  `machineId` when given (error `no_machine` if it is unknown or offline); without it the
-  server falls back to the sole online machine (error `no_machine` when zero or several are
+- `terminal_open { elementId, cols, rows, cwd?, machineId?, placement?, program?, env? }` →
+  server targets `machineId` when given (error `no_machine` if it is unknown or offline); without
+  it the server falls back to the sole online machine (error `no_machine` when zero or several are
   online — clients with a picker, like the web menu, pass `machineId` explicitly).
   Discipline decides who authors the placement, and a mismatch is refused (`conflict`)
   rather than spawning a PTY no renderer would ever show: on a CANVAS the opener authors the
   element (`placement` absent ≡ `"element"`), and in a COMPOSITION the container places the
   leaf itself (`placement: "tile"`).
+- **A terminal may be born running a program** (issue #192, protocol v22). `program { argv }`
+  names what the PTY execs in place of the machine's shell: `argv[0]` with `argv.slice(1)`,
+  under the same PTY, the same lifecycle (snapshot, resize, `terminal_exited`, controller lease)
+  and the same injected environment, so the first bytes a viewer sees are the program's own —
+  no login shell, no prompt, nothing typed. `argv[0]` must be non-empty (an empty later argument
+  is legal), at most 64 items of at most 4096 chars each. Absent ≡ `$SHELL` → `bash` → `sh`,
+  exactly the pre-v22 gesture. `env` is an allowlist the opener adds to the PTY: at most 32
+  keys, each an upper-case POSIX name (`^[A-Z_][A-Z0-9_]*$`), values at most 4096 chars, and
+  NEVER the `MANIFOLD_` prefix — refused `invalid` at the frame by shape, and merged UNDER the
+  four fixed keys so those always win even so. Both fields go THROUGH THE DOOR FIRST: the
+  gateway dispatches `core.terminals.open` with this frame's `program` and `env` in its input
+  (§Terminal administration) before anything is minted or sent, so a policy denial
+  (`error { code:"forbidden" }`, the door's own message, on the opener's `ref`) refuses the
+  program before any machine hears of it, and what the ledger records as authorized is what the
+  agent is then asked to exec — the socket has no second place to present a different program.
+  `cwd` stays the transport's: it is where the shell starts, never what runs. Two further
+  refusals are the opener's to handle: `error { code:"unsupported" }` when the target machine's
+  agent spoke a protocol older than v22 (`TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION`) — the server
+  never sends `create.program` to such an agent, whose strict parser would read it as a
+  malformed frame and drop its socket; the remedy is another machine or an upgraded agent — and
+  `error { code:"conflict" }` "terminal creation failed" when the agent could not exec `argv[0]`,
+  whose named reason (`program not found: <argv0>`, `program not executable: <argv0>`) travels
+  the machine channel as `create_error.message` and lands in the agent's log, never on the
+  session channel (agent diagnostics stay off the client wire, as for every create failure).
 - **A terminal is born with a home** (`homed: "eager"`). The home id is minted BEFORE the
   PTY, because the terminal-scoped agent token and the `MANIFOLD_CONTAINER` a program inside the
   terminal reads must both name the container the terminal LIVES in — and a canvas is never
@@ -1519,22 +1554,30 @@ disconnected; absence is equivalent to `null`. Such exited terminals are retaine
 the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` arrives).
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
 4403 revoked, 4409 version. Version acceptance is the
-`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18, 19}` (protocol/version.ts), NOT strict equality:
-agents are long-lived and survive server deploys, so every compatible agent version stays
-accepted (session/browser joins remain strictly current). An unchanged agent wire adds the
-new version to the set; a strictly additive-optional change also adds it when every old
+`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18, 19, 20, 21, 22}` (protocol/version.ts), NOT
+strict equality: agents are long-lived and survive server deploys, so every compatible agent
+version stays accepted (session/browser joins remain strictly current). An unchanged agent wire
+adds the new version to the set; a strictly additive-optional change also adds it when every old
 frame still parses and the absent-field default reproduces pre-bump semantics. Any other
 agent-wire change resets the set to the new version and requires a coordinated fleet
 restart — which v16 did: `terminal_event`, `TerminalInfo` and `MANIFOLD_CONTAINER` renamed
-the agent wire, so the set was reset to v16 alone and the fleet restarted together. v17, v18
-and v19 are all the other case and ADDED: the event plane is session-only, cross-instance
+the agent wire, so the set was reset to v16 alone and the fleet restarted together. v17 through
+v21 are the first ADDING case: the event plane is session-only, cross-instance
 sharing is a channel of its own (`/ws/instance`, its own `INSTANCE_PROTOCOL_COMPAT_VERSIONS`
-set), and v19 reoriented a SESSION frame pair — so `AgentMessage` and `ServerToAgentMessage`
-are byte-identical across all three bumps (an agent never sees a `Principal`, and therefore
-never sees `origin`, nor any session frame) and a v16 agent keeps its terminals across any of
-those deploys. Every
+set), v19 reoriented a SESSION frame pair, v20 bounded credentials an agent is exempt from and
+v21 opened the discipline roster — so `AgentMessage` and `ServerToAgentMessage` are byte-identical
+across all five bumps (an agent never sees a `Principal`, and therefore never sees `origin`, nor
+any session frame). v22 is the SECOND adding case, the additive-optional one, applied for the
+first time: `create` gained an optional `program` (issue #192), whose absence is the
+byte-identical v21 frame and the same shell spawn, and the broker never sends the key to an agent
+whose `hello` named a protocol below `TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION` (22) — the agent's
+`create` parser is strict, so the key would be a malformed frame to it — refusing the OPENER
+`unsupported` instead. A v16 agent therefore observes a v22 hub exactly as it observed a v21 one
+and keeps its terminals across any of those deploys; what it cannot do is run a program, and that
+is a named refusal rather than a lockout. Every
 rejection path emits a structured server log (`machine_version_rejected`,
-`machine_rejected`, …) — silent closes are how a whole fleet goes dark undiagnosed.
+`machine_rejected`, `terminal_program_unsupported`, …) — silent closes are how a whole fleet goes
+dark undiagnosed.
 
 The unknown-NEWER direction is the one with no recovery, and it is the operator-facing failure
 mode. A hub cannot accept a protocol version that did not exist when it was built, so an agent
@@ -1549,8 +1592,13 @@ discipline: `bun run release` publishes the agent binary and the fleet picks it 
 release is a fleet action (AGENTS.md invariant 10) and the hub ships at or ahead of any release
 whose `PROTOCOL_VERSION` exceeds the deployed one.
 
-Server→agent: `create { terminalId, cols, rows, cwd?, env }`, `input { terminalId, data }`,
-`resize`, `kill`, `snapshot_request { terminalId }`, `ping`.
+Server→agent: `create { terminalId, cols, rows, cwd?, env, program? }`, `input { terminalId,
+data }`, `resize`, `kill`, `snapshot_request { terminalId }`, `ping`. `create.env` is the
+opener's `terminal_open.env` (if any) with the four minted `MANIFOLD_*` keys written LAST, so
+those always win; `create.program { argv }` is the opener's `terminal_open.program` verbatim, and
+the agent execs `argv[0]` with `argv.slice(1)` in place of `$SHELL` → `bash` → `sh`. A missing
+or unrunnable `argv[0]` is `create_error { message: "program not found: <argv0>" }` (or
+`program not executable`), never a shell standing in for it.
 Agent→server: `created { terminalId }` | `create_error { terminalId, message }`,
 `output { terminalId, seq, data }` (seq: monotonic per terminal, assigned at emission),
 `snapshot { terminalId, seq, data }`, `exited { terminalId, exitCode }`, `pong`.
@@ -1606,8 +1654,8 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{18, 19}` — its own wire, its own set, the same
-invariant-10 discipline the machine channel follows.
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{18, 19, 20, 21, 22}` — its own wire, its own set, the
+same invariant-10 discipline the machine channel follows.
 
 Guest→host: `pong`, `ticket_request { requestId, principal }` — the guest's OWN principal
 verbatim; the host mints its own mirror id and never adopts a foreign one, because two

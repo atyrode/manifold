@@ -2,6 +2,7 @@ import { z } from "zod";
 import { MAX_GESTURE_POINT_VALUES, MAX_SESSION_BASE64_CHARS } from "./elements.ts";
 import { CapSchema } from "./capabilities.ts";
 import { EventKindSchema, EventPayloadSchema, MAX_SUBSCRIBE_TOPICS } from "./events.ts";
+import { TerminalProgramSchema } from "./machine.ts";
 import {
   CarrySchema,
   GestureKindSchema,
@@ -113,8 +114,46 @@ export const ErrorCodeSchema = z.enum([
   "not_controller",
   "epoch_mismatch",
   "rate_limited",
+  /**
+   * The request is well-formed and permitted, but the peer it targets predates a field it
+   * carries: today, `terminal_open.program` aimed at a machine whose agent spoke a protocol
+   * older than v22. The remedy is a different machine (or an upgraded agent), which neither
+   * `no_machine` (offline or ambiguous) nor `conflict` (state) would say.
+   */
+  "unsupported",
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
+
+/**
+ * Bounds for the environment an opener may hand a PTY (`terminal_open.env`): a handful of
+ * mode flags and paths, never a payload channel — the shell is the payload channel.
+ */
+export const MAX_TERMINAL_ENV_KEYS = 32;
+export const MAX_TERMINAL_ENV_VALUE_CHARS = 4096;
+/** POSIX portable-name keys, upper case, and NEVER the server's own prefix. */
+export const TERMINAL_ENV_KEY_PATTERN = /^[A-Z_][A-Z0-9_]*$/;
+export const TERMINAL_ENV_RESERVED_PREFIX = "MANIFOLD_";
+
+/**
+ * Environment an opener adds to the PTY it births, merged UNDER the four fixed `MANIFOLD_*`
+ * keys the server mints (CONTRACTS.md §terminals over the session channel). The reserved
+ * prefix is refused by SHAPE rather than by merge order alone, so a plugin that tries to
+ * forge `MANIFOLD_TOKEN` is told `invalid` at the frame instead of silently losing.
+ */
+export const TerminalEnvSchema = z
+  .record(
+    z
+      .string()
+      .regex(TERMINAL_ENV_KEY_PATTERN, "env keys are upper-case POSIX names")
+      .refine((key) => !key.startsWith(TERMINAL_ENV_RESERVED_PREFIX), {
+        message: `env keys may not start with ${TERMINAL_ENV_RESERVED_PREFIX}`,
+      }),
+    z.string().max(MAX_TERMINAL_ENV_VALUE_CHARS),
+  )
+  .refine((env) => Object.keys(env).length <= MAX_TERMINAL_ENV_KEYS, {
+    message: `at most ${MAX_TERMINAL_ENV_KEYS} env keys`,
+  });
+export type TerminalEnv = z.infer<typeof TerminalEnvSchema>;
 
 const terminalGeometry = {
   cols: z.number().int().positive().max(1000),
@@ -207,6 +246,16 @@ const CLIENT_BODIES = {
      * pre-flag client keeps its exact semantics.
      */
     placement: z.literal("tile").optional(),
+    /**
+     * The program the PTY execs instead of the machine's shell (issue #192). The gateway
+     * hands it, with `env`, to `core.terminals.open` before any create — the door judges
+     * what will run and its trace records it — and only then carries it to the agent as
+     * `create.program`, refused `unsupported` when the target machine's agent predates the
+     * field. Absent ≡ the login shell, exactly the pre-v22 gesture.
+     */
+    program: TerminalProgramSchema.optional(),
+    /** Environment merged under the fixed `MANIFOLD_*` keys; absent ≡ nothing added. */
+    env: TerminalEnvSchema.optional(),
   }),
   terminal_attach: z.strictObject({
     type: z.literal("terminal_attach"),

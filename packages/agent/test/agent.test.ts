@@ -562,3 +562,78 @@ test("shutdown escalates a signal-trapping PTY after its grace window", async ()
   expect(performance.now() - startedAt).toBeLessThan(1_000);
   expect(agent.terminalCount).toBe(0);
 }, 5000);
+
+test("a create naming a program execs it in place of the shell; a missing program is a named create_error", async () => {
+  /*
+    Issue #192. The pinned test shell is the DEFAULT, not an override: a create that names a
+    program runs that program, so the first bytes on the wire are the program's own — no
+    prompt, no rc file, nothing typed. And an argv[0] the machine cannot exec is answered
+    with the program's name, never with a shell that garbles it or a bare `posix_spawn`.
+  */
+  const socket = new ScriptedSocket();
+  const created = Promise.withResolvers<void>();
+  const createError = Promise.withResolvers<Extract<AgentMessage, { type: "create_error" }>>();
+  const printed = Promise.withResolvers<void>();
+  let outputText = "";
+  const agent = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "program-machine",
+    backoff: { baseMs: 5_000, capMs: 5_000 },
+    shellCommand: [BASH, "--norc", "-i"],
+    createSocket: () => {
+      socket.onSend = (msg) => {
+        switch (msg.type) {
+          case "hello":
+            socket.receive({ type: "welcome", machineId: "m-1", serverEpoch: "e-1" });
+            return;
+          case "created":
+            created.resolve();
+            return;
+          case "create_error":
+            createError.resolve(msg);
+            return;
+          case "output":
+            outputText += Buffer.from(msg.data, "base64").toString("utf8");
+            if (outputText.includes("PROG_x_OK")) printed.resolve();
+            return;
+          default:
+            return;
+        }
+      };
+      queueMicrotask(() => socket.open());
+      return socket.asWebSocket();
+    },
+  });
+
+  try {
+    await agent.connect();
+    socket.receive({
+      type: "create",
+      terminalId: "runs-a-program",
+      cols: 80,
+      rows: 24,
+      env: { CODE_TEST: "x" },
+      program: { argv: ["/bin/sh", "-c", 'printf "PROG_%s_OK\\n" "$CODE_TEST"; exec cat'] },
+    });
+    await created.promise;
+    await printed.promise;
+    // The program's stdout IS the first thing on the wire: nothing prompted before it.
+    expect(outputText.startsWith("PROG_x_OK")).toBe(true);
+
+    socket.receive({
+      type: "create",
+      terminalId: "no-such-program",
+      cols: 80,
+      rows: 24,
+      env: {},
+      program: { argv: ["/nonexistent/bin", "--flag"] },
+    });
+    const failure = await createError.promise;
+    expect(failure.terminalId).toBe("no-such-program");
+    expect(failure.message).toBe("program not found: /nonexistent/bin");
+    expect(agent.terminalCount).toBe(1);
+  } finally {
+    await agent.shutdown();
+  }
+}, 20000);
