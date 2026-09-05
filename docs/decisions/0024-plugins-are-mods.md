@@ -283,7 +283,6 @@ Flagged, not resolved.
 4. The S13-at-load check, shared with the gate.
 5. `docs/PLUGINS.md` §10 "Authoring a plugin on your instance"; §9 re-scoped to hardened rows.
 6. The React-over-frames reconciler and the `ui.*` deprecation, with its dependency verdict.
-
 7. `@manifold/ui`: the design-system extraction (#240) — components and tokens out of
    `packages/plugin/src`, dogfooded by the shell and every `core.*` panel; the hardened renderer and
    the kit consume the same components.
