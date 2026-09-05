@@ -190,7 +190,10 @@ try {
   // Real CDP click to give the hidden textarea focus, then load known content.
   await browser.drag([screenBox], 30);
   await until(
-    () => browser!.evaluate<boolean>("document.activeElement?.matches('.xterm-helper-textarea') === true"),
+    () =>
+      browser!.evaluate<boolean>(
+        "document.activeElement?.matches('.xterm-helper-textarea') === true",
+      ),
     20_000,
     "xterm textarea focused",
   );
@@ -306,7 +309,8 @@ try {
       deltaY: z > 1.3 ? 80 : -80,
     });
     await until(
-      () => browser!.evaluate<boolean>(`window.__manifold.viewport().zoom ${z > 1.3 ? "<" : ">"} ${z}`),
+      () =>
+        browser!.evaluate<boolean>(`window.__manifold.viewport().zoom ${z > 1.3 ? "<" : ">"} ${z}`),
       20_000,
       `canvas zoom ${z > 1.3 ? "decreased" : "increased"} from ${z} after pinch`,
     );
@@ -350,7 +354,8 @@ try {
       deltaY: z > 1 ? 80 : -80,
     });
     await until(
-      () => browser!.evaluate<boolean>(`window.__manifold.viewport().zoom ${z > 1 ? "<" : ">"} ${z}`),
+      () =>
+        browser!.evaluate<boolean>(`window.__manifold.viewport().zoom ${z > 1 ? "<" : ">"} ${z}`),
       20_000,
       `canvas zoom ${z > 1 ? "decreased" : "increased"} from ${z} while restoring baseline`,
     );
