@@ -117,7 +117,10 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  padding: 0.35rem;
+  /* FitAddon reads this box's computed size, not its content box. Keep the
+     inset outside the measured host so xterm's screen and viewport share the
+     same padding-free bounds, including the full last fitted row. */
+  margin: 0.35rem;
 }
 
 .xterm-host .xterm {

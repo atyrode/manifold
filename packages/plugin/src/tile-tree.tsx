@@ -11,33 +11,21 @@ import {
 import { createPortal } from "react-dom";
 
 import { FLIP_EPSILON, prefersReducedMotion } from "@manifold/ui";
-import { refKey } from "./tile-geometry.ts";
+import { layoutRevision, refKey } from "./tile-geometry.ts";
 import { dividerRatios, type DividerDrag } from "./tile-snap.ts";
 
 /**
- * One tile tree for workspace, composition and portal skins; hosts supply leaf chrome
- * and interactivity. Inert spectators neither capture pointers nor write ratios.
+ * One tile tree for workspace, composition and portal skins. Stable ref-keyed portals keep
+ * live leaf content mounted across structural edits. Inert spectators do not capture or write.
  * Divider frames call `onRatios`; release/cancel calls `onRatiosCommit` once if moved.
- * Document hosts stream frames; action hosts preview locally and commit at release.
- *
- * Structural edits rebuild keyed boxes, never leaf content: stable portals keyed by
- * ref identity are seated by TileMotionBoundary. Terminals keep their DOM and buffers
- * across splits (scripts/verify-tile-drop.ts proves this with its remount probe).
- * Divider delta and bounding-box size both use client space, so ratios are scale-invariant.
+ * Client-space pointer and box measurements keep ratios scale-invariant.
  */
 
-/** The class family one host paints its tree with; every box the tree owns is here. */
+/** The host's box classes and divider thickness in its own layout pixels. */
 export interface TileTreeClasses {
-  /** The flex box of a split. Gets `is-row` / `is-column` for its direction. */
   readonly split: string;
-  /** One child's box inside a split; carries the stored ratio as `flex-grow`. */
   readonly pane: string;
-  /** The grab band between two panes. Gets `is-inert` when not interactive. */
   readonly divider: string;
-  /**
-   * One divider's thickness in this skin's own layout px — the flex-basis its
-   * stylesheet declares — so drop geometry subtracts exactly what the tree draws.
-   */
   readonly dividerPx: number;
 }
 
@@ -245,6 +233,7 @@ class TileMotionBoundary extends Component<
 > {
   private readonly shells = new Map<HTMLElement, Animation>();
   private reduced: MediaQueryList | null = null;
+  private structureRevision = layoutRevision(this.props.layout);
 
   private readonly finishMotion = (): void => {
     if (!this.reduced?.matches) return;
@@ -289,6 +278,12 @@ class TileMotionBoundary extends Component<
 
   override getSnapshotBeforeUpdate(previous: TileMotionProps): TileSnapshot | null {
     if (previous.layout === this.props.layout) return null;
+    const revision = layoutRevision(this.props.layout);
+    const structureChanged = revision !== this.structureRevision;
+    this.structureRevision = revision;
+    // Continuous proportions are layout, not a placement transition: scaling a live
+    // content host here stretches its glyphs and makes the divider trail the pointer.
+    if (!structureChanged) return null;
     const area = previous.rootRef.current?.parentElement;
     if (area === null || area === undefined) return null;
     const tiles = new Map<string, TileVisual>();
@@ -300,12 +295,22 @@ class TileMotionBoundary extends Component<
   }
 
   override componentDidUpdate(
-    _previous: TileMotionProps,
+    previous: TileMotionProps,
     _state: Record<string, never>,
     first: TileSnapshot | null,
   ): void {
     this.seat();
-    if (first === null) return;
+    if (first === null) {
+      if (previous.layout !== this.props.layout) {
+        // A resize also interrupts any earlier settlement. Preserve an active
+        // preview's inline target; only stop interpolation on the live contents.
+        for (const host of this.props.hosts.values()) {
+          tileAnimations.get(host)?.cancel();
+          tileAnimations.delete(host);
+        }
+      }
+      return;
+    }
     // Clear all projections before Last, never measure a pane through a preview ancestor.
     for (const host of this.props.hosts.values()) resetTileMotion(host);
     for (const { key } of this.props.keyed) {

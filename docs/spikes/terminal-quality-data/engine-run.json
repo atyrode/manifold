@@ -1,0 +1,559 @@
+{
+  "schema": 1,
+  "experiment": "isolated-published-browser-engine-replay",
+  "source": [
+    "https://registry.npmjs.org/@xterm/xterm/6.0.0",
+    "https://registry.npmjs.org/@xterm/addon-webgl/0.19.0",
+    "https://registry.npmjs.org/ghostty-web/0.4.0"
+  ],
+  "implementationSources": [
+    "https://github.com/coder/ghostty-web/blob/9e4e126d89ac3537d2b2ebec075849851566de9f/lib/terminal.ts",
+    "https://unpkg.com/ghostty-web@0.4.0/dist/index.d.ts",
+    "https://github.com/xtermjs/xterm.js/tree/f447274f430fd22513f6adbf9862d19524471c04/addons/addon-webgl"
+  ],
+  "environment": {
+    "platform": "linux",
+    "arch": "x64",
+    "bun": "1.3.13",
+    "chromium": {
+      "protocolVersion": "1.3",
+      "product": "Chrome/148.0.7778.215",
+      "revision": "@7c855c70efe3f6ade6663c1520913fa7f63a0b2b",
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/148.0.0.0 Safari/537.36",
+      "jsVersion": "14.8.178.28"
+    },
+    "gpuMode": "--disable-gpu; explicitly nonrepresentative software/headless experiment",
+    "physicalPaintMeasured": false
+  },
+  "callbackCaveat": "ghostty-web 0.4.0 lib/terminal.ts:534-574 writes synchronously to WASM, then requestAnimationFrame(callback); its callback timing must not be compared as parser-only latency against xterm's queued parser callback.",
+  "workload": {
+    "grids": [
+      [80, 24],
+      [132, 40]
+    ],
+    "trialsPerGrid": 3,
+    "maxBytesPerTrial": 32768,
+    "scrollback": 2000,
+    "transport": "none: no Manifold, PTY, network stream, native Ghostty or production terminal touched",
+    "input": "deterministic UTF-8 bytes; 240 colored scrolling lines then cursor redraw, wide and combining text",
+    "units": {
+      "timing": "milliseconds",
+      "payload": "UTF-8 bytes"
+    }
+  },
+  "dependencies": [
+    {
+      "name": "@xterm/xterm",
+      "version": "6.0.0",
+      "url": "https://registry.npmjs.org/@xterm/xterm/-/xterm-6.0.0.tgz",
+      "integrity": "sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==",
+      "sha256": "908e66e04af6c8dc6b00dd3b54de088e2e81e5ed866284fd6c2fb3c2d1c7a3f6",
+      "archiveBytes": 1418562,
+      "installScriptsRun": false
+    },
+    {
+      "name": "@xterm/addon-webgl",
+      "version": "0.19.0",
+      "url": "https://registry.npmjs.org/@xterm/addon-webgl/-/addon-webgl-0.19.0.tgz",
+      "integrity": "sha512-b3fMOsyLVuCeNJWxolACEUED0vm7qC0cy4wRvf3oURSzDTYVQiGPhTnhWZwIHdvC48Y+oLhvYXnY4XDXPoJo6A==",
+      "sha256": "b51c9ca08dfd1b35e1f1b833334497a9a8412110569b26e03cb6e1ab7341fb61",
+      "archiveBytes": 582339,
+      "installScriptsRun": false
+    },
+    {
+      "name": "ghostty-web",
+      "version": "0.4.0",
+      "url": "https://registry.npmjs.org/ghostty-web/-/ghostty-web-0.4.0.tgz",
+      "integrity": "sha512-0puDBik2qapbD/QQBW9o5ZHfXnZBqZWx/ctBiVtKZ6ZLds4NYb+wZuw1cRLXZk9zYovIQ908z3rvFhexAvc5Hg==",
+      "sha256": "90bf473b6c7f43ab5e52ee98d8295e04fb1c6b07b928e9795489df1e8cb8802e",
+      "archiveBytes": 645565,
+      "installScriptsRun": false
+    }
+  ],
+  "engines": [
+    {
+      "kind": "xterm-dom",
+      "grids": [
+        {
+          "cols": 80,
+          "rows": 24,
+          "samples": [
+            {
+              "trial": 0,
+              "bytes": 10446,
+              "timing": {
+                "writeCallbackMs": 37.199999928474426,
+                "callReturnMs": 37.199999928474426,
+                "synchronousCallback": true
+              },
+              "correctness": {
+                "marker": true,
+                "cursorRedraw": true,
+                "wideCombining": true,
+                "firstFourPublicBufferLines": [
+                  "ENGINE-END-80x24-0",
+                  "REDRAW-OK!",
+                  "wide: 界 combining: é",
+                  "styled"
+                ],
+                "bufferLength": 241,
+                "scrollbackLines": 217
+              },
+              "rafScheduleProxyMs": 22
+            },
+            {
+              "trial": 1,
+              "bytes": 10446,
+              "timing": {
+                "writeCallbackMs": 32.40000009536743,
+                "callReturnMs": 0.10000002384185791,
+                "synchronousCallback": false
+              },
+              "correctness": {
+                "marker": true,
+                "cursorRedraw": true,
+                "wideCombining": true,
+                "firstFourPublicBufferLines": [
+                  "ENGINE-END-80x24-1",
+                  "REDRAW-OK!",
+                  "wide: 界 combining: é",
+                  "styled"
+                ],
+                "bufferLength": 458,
+                "scrollbackLines": 434
+              },
+              "rafScheduleProxyMs": 2
+            },
+            {
+              "trial": 2,
+              "bytes": 10446,
+              "timing": {
+                "writeCallbackMs": 31.200000047683716,
+                "callReturnMs": 0,
+                "synchronousCallback": false
+              },
+              "correctness": {
+                "marker": true,
+                "cursorRedraw": true,
+                "wideCombining": true,
+                "firstFourPublicBufferLines": [
+                  "ENGINE-END-80x24-2",
+                  "REDRAW-OK!",
+                  "wide: 界 combining: é",
+                  "styled"
+                ],
+                "bufferLength": 675,
+                "scrollbackLines": 651
+              },
+              "rafScheduleProxyMs": 2.700000047683716
+            }
+          ],
+          "renderer": {
+            "domRows": 24,
+            "attachedContexts": []
+          },
+          "completion": "xterm 6.0.0 write callback follows queued parser processing; not render completion or physical paint",
+          "correctnessScope": "public buffer assertions, not pixel/glyph-shaping proof"
+        },
+        {
+          "cols": 132,
+          "rows": 40,
+          "samples": [
+            {
+              "trial": 0,
+              "bytes": 10447,
+              "timing": {
+                "writeCallbackMs": 29.5,
+                "callReturnMs": 0.10000002384185791,
+                "synchronousCallback": false
+              },
+              "correctness": {
+                "marker": true,
+                "cursorRedraw": true,
+                "wideCombining": true,
+                "firstFourPublicBufferLines": [
+                  "ENGINE-END-132x40-0",
+                  "REDRAW-OK!",
+                  "wide: 界 combining: é",
+                  "styled"
+                ],
+                "bufferLength": 892,
+                "scrollbackLines": 852
+              },
+              "rafScheduleProxyMs": 6.600000023841858
+            },
+            {
+              "trial": 1,
+              "bytes": 10447,
+              "timing": {
+                "writeCallbackMs": 11.199999928474426,
+                "callReturnMs": 0.09999990463256836,
+                "synchronousCallback": false
+              },
+              "correctness": {
+                "marker": true,
+                "cursorRedraw": true,
+                "wideCombining": true,
+                "firstFourPublicBufferLines": [
+                  "ENGINE-END-132x40-1",
+                  "REDRAW-OK!",
+                  "wide: 界 combining: é",
+                  "styled"
+                ],
+                "bufferLength": 1093,
+                "scrollbackLines": 1053
+              },
+              "rafScheduleProxyMs": 2.100000023841858
+            },
+            {
+              "trial": 2,
+              "bytes": 10447,
+              "timing": {
+                "writeCallbackMs": 10.299999952316284,
+                "callReturnMs": 0.09999990463256836,
+                "synchronousCallback": false
+              },
+              "correctness": {
+                "marker": true,
+                "cursorRedraw": true,
+                "wideCombining": true,
+                "firstFourPublicBufferLines": [
+                  "ENGINE-END-132x40-2",
+                  "REDRAW-OK!",
+                  "wide: 界 combining: é",
+                  "styled"
+                ],
+                "bufferLength": 1294,
+                "scrollbackLines": 1254
+              },
+              "rafScheduleProxyMs": 10.600000023841858
+            }
+          ],
+          "renderer": {
+            "domRows": 40,
+            "attachedContexts": []
+          },
+          "completion": "xterm 6.0.0 write callback follows queued parser processing; not render completion or physical paint",
+          "correctnessScope": "public buffer assertions, not pixel/glyph-shaping proof"
+        }
+      ],
+      "errors": [],
+      "setup": {
+        "renderer": {
+          "domRows": 24,
+          "attachedContexts": []
+        },
+        "gpu": null,
+        "fontStatus": "loaded",
+        "boundary": {
+          "syntheticArrowUpOnData": ["\u001b[A"],
+          "expectedArrowUpObserved": true,
+          "keyScope": "synthetic DOM key event only, not native keyboard or PTY",
+          "textareaPresent": true,
+          "registeredInputHooks": [
+            "compositionstart",
+            "compositionupdate",
+            "compositionend",
+            "input"
+          ],
+          "accessibilityAttributes": [
+            {
+              "role": "presentation",
+              "label": null,
+              "live": null
+            },
+            {
+              "role": null,
+              "label": "Terminal input",
+              "live": null
+            },
+            {
+              "role": "presentation",
+              "label": null,
+              "live": null
+            },
+            {
+              "role": "presentation",
+              "label": null,
+              "live": null
+            }
+          ],
+          "hostRole": null,
+          "screenReaderModeOptionPresent": true,
+          "imeBehavior": "not tested; hook registration is introspection only",
+          "accessibilityBehavior": "not tested with assistive technology"
+        }
+      },
+      "teardown": {
+        "contextLoss": {
+          "attempted": false,
+          "reason": "not a WebGL run"
+        }
+      }
+    },
+    {
+      "kind": "xterm-webgl2",
+      "grids": [],
+      "errors": [
+        "{\"exceptionId\":1,\"text\":\"Uncaught (in promise) Error: WebGL2 not supported null\",\"lineNumber\":13152,\"columnNumber\":13,\"scriptId\":\"5\",\"stackTrace\":{\"callFrames\":[{\"functionName\":\"ui2\",\"scriptId\":\"5\",\"url\":\"http://127.0.0.1:38393/replay.js\",\"lineNumber\":13151,\"columnNumber\":12},{\"functionName\":\"activate\",\"scriptId\":\"5\",\"url\":\"http://127.0.0.1:38393/replay.js\",\"lineNumber\":13406,\"columnNumber\":44},{\"functionName\":\"loadAddon\",\"scriptId\":\"5\",\"url\":\"http://127.0.0.1:38393/replay.js\",\"lineNumber\":9364,\"columnNumber\":76},{\"functionName\":\"loadAddon\",\"scriptId\":\"5\",\"url\":\"http://127.0.0.1:38393/replay.js\",\"lineNumber\":9702,\"columnNumber\":23},{\"functionName\":\"setup\",\"scriptId\":\"5\",\"url\":\"http://127.0.0.1:38393/replay.js\",\"lineNumber\":15654,\"columnNumber\":19}]},\"exception\":{\"type\":\"object\",\"subtype\":\"error\",\"className\":\"Error\",\"description\":\"Error: WebGL2 not supported null\\n    at new ui2 (http://127.0.0.1:38393/replay.js:13152:13)\\n    at xr2.activate (http://127.0.0.1:38393/replay.js:13407:45)\\n    at xn.loadAddon (http://127.0.0.1:38393/replay.js:9365:77)\\n    at Dl.loadAddon (http://127.0.0.1:38393/replay.js:9703:24)\\n    at Object.setup (http://127.0.0.1:38393/replay.js:15655:20)\",\"objectId\":\"-5670332688895283462.3.1\"}}"
+      ],
+      "teardown": {
+        "contextLoss": {
+          "attempted": false,
+          "reason": "not a WebGL run"
+        }
+      }
+    },
+    {
+      "kind": "ghostty-canvas2d",
+      "grids": [
+        {
+          "cols": 80,
+          "rows": 24,
+          "samples": [
+            {
+              "trial": 0,
+              "bytes": 10446,
+              "timing": {
+                "writeCallbackMs": 26,
+                "callReturnMs": 8.299999952316284,
+                "synchronousCallback": false
+              },
+              "correctness": {
+                "marker": true,
+                "cursorRedraw": true,
+                "wideCombining": false,
+                "firstFourPublicBufferLines": [
+                  "ENGINE-END-80x24-0",
+                  "REDRAW-OK!",
+                  "wide: 界 combining: e",
+                  "styled"
+                ],
+                "bufferLength": 241,
+                "scrollbackLines": 217
+              },
+              "rafScheduleProxyMs": 10.700000047683716
+            },
+            {
+              "trial": 1,
+              "bytes": 10446,
+              "timing": {
+                "writeCallbackMs": 14.100000023841858,
+                "callReturnMs": 2.399999976158142,
+                "synchronousCallback": false
+              },
+              "correctness": {
+                "marker": true,
+                "cursorRedraw": true,
+                "wideCombining": false,
+                "firstFourPublicBufferLines": [
+                  "ENGINE-END-80x24-1",
+                  "REDRAW-OK!",
+                  "wide: 界 combining: e",
+                  "styled"
+                ],
+                "bufferLength": 458,
+                "scrollbackLines": 434
+              },
+              "rafScheduleProxyMs": 3.899999976158142
+            },
+            {
+              "trial": 2,
+              "bytes": 10446,
+              "timing": {
+                "writeCallbackMs": 20.299999952316284,
+                "callReturnMs": 1.5,
+                "synchronousCallback": false
+              },
+              "correctness": {
+                "marker": true,
+                "cursorRedraw": true,
+                "wideCombining": false,
+                "firstFourPublicBufferLines": [
+                  "ENGINE-END-80x24-2",
+                  "REDRAW-OK!",
+                  "wide: 界 combining: e",
+                  "styled"
+                ],
+                "bufferLength": 675,
+                "scrollbackLines": 651
+              },
+              "rafScheduleProxyMs": 9
+            }
+          ],
+          "renderer": {
+            "domRows": 0,
+            "attachedContexts": [
+              {
+                "type": "2d",
+                "width": 720,
+                "height": 360,
+                "contextLost": null
+              }
+            ]
+          },
+          "completion": "ghostty-web 0.4.0 writes synchronously to WASM then schedules its callback with requestAnimationFrame; callback time includes scheduling, not parser-only time or physical paint",
+          "correctnessScope": "public buffer assertions, not pixel/glyph-shaping proof"
+        },
+        {
+          "cols": 132,
+          "rows": 40,
+          "samples": [
+            {
+              "trial": 0,
+              "bytes": 10447,
+              "timing": {
+                "writeCallbackMs": 29.299999952316284,
+                "callReturnMs": 0.7999999523162842,
+                "synchronousCallback": false
+              },
+              "correctness": {
+                "marker": true,
+                "cursorRedraw": true,
+                "wideCombining": false,
+                "firstFourPublicBufferLines": [
+                  "ENGINE-END-132x40-0",
+                  "REDRAW-OK!",
+                  "wide: 界 combining: e",
+                  "styled"
+                ],
+                "bufferLength": 534,
+                "scrollbackLines": 494
+              },
+              "rafScheduleProxyMs": 10.100000023841858
+            },
+            {
+              "trial": 1,
+              "bytes": 10447,
+              "timing": {
+                "writeCallbackMs": 23.299999952316284,
+                "callReturnMs": 0.8999999761581421,
+                "synchronousCallback": false
+              },
+              "correctness": {
+                "marker": true,
+                "cursorRedraw": true,
+                "wideCombining": false,
+                "firstFourPublicBufferLines": [
+                  "ENGINE-END-132x40-1",
+                  "REDRAW-OK!",
+                  "wide: 界 combining: e",
+                  "styled"
+                ],
+                "bufferLength": 377,
+                "scrollbackLines": 337
+              },
+              "rafScheduleProxyMs": 12.199999928474426
+            },
+            {
+              "trial": 2,
+              "bytes": 10447,
+              "timing": {
+                "writeCallbackMs": 26.59999990463257,
+                "callReturnMs": 0.5999999046325684,
+                "synchronousCallback": false
+              },
+              "correctness": {
+                "marker": true,
+                "cursorRedraw": true,
+                "wideCombining": false,
+                "firstFourPublicBufferLines": [
+                  "ENGINE-END-132x40-2",
+                  "REDRAW-OK!",
+                  "wide: 界 combining: e",
+                  "styled"
+                ],
+                "bufferLength": 578,
+                "scrollbackLines": 538
+              },
+              "rafScheduleProxyMs": 6.299999952316284
+            }
+          ],
+          "renderer": {
+            "domRows": 0,
+            "attachedContexts": [
+              {
+                "type": "2d",
+                "width": 1188,
+                "height": 600,
+                "contextLost": null
+              }
+            ]
+          },
+          "completion": "ghostty-web 0.4.0 writes synchronously to WASM then schedules its callback with requestAnimationFrame; callback time includes scheduling, not parser-only time or physical paint",
+          "correctnessScope": "public buffer assertions, not pixel/glyph-shaping proof"
+        }
+      ],
+      "errors": [],
+      "setup": {
+        "renderer": {
+          "domRows": 0,
+          "attachedContexts": [
+            {
+              "type": "2d",
+              "width": 720,
+              "height": 360,
+              "contextLost": null
+            }
+          ]
+        },
+        "gpu": null,
+        "fontStatus": "loaded",
+        "boundary": {
+          "syntheticArrowUpOnData": ["\u001b[A"],
+          "expectedArrowUpObserved": true,
+          "keyScope": "synthetic DOM key event only, not native keyboard or PTY",
+          "textareaPresent": true,
+          "registeredInputHooks": [
+            "beforeinput",
+            "compositionstart",
+            "compositionupdate",
+            "compositionend"
+          ],
+          "accessibilityAttributes": [
+            {
+              "role": null,
+              "label": "Terminal input",
+              "live": null
+            }
+          ],
+          "hostRole": "textbox",
+          "screenReaderModeOptionPresent": false,
+          "imeBehavior": "not tested; hook registration is introspection only",
+          "accessibilityBehavior": "not tested with assistive technology"
+        }
+      },
+      "teardown": {
+        "contextLoss": {
+          "attempted": false,
+          "reason": "not a WebGL run"
+        }
+      }
+    }
+  ],
+  "errors": [],
+  "limitations": [
+    "Write callbacks and RAF scheduling are not physical paint or identical parser-only spans.",
+    "Sequential isolated engine runs, not a concurrent throughput comparison; no warmup or statistical significance claim.",
+    "Canvas2D/WASM ghostty-web is not native Ghostty GPU renderer parity.",
+    "Pinned xterm and WebGL addon share upstream commit f447274f430fd22513f6adbf9862d19524471c04.",
+    "Public buffer text is checked; combining/wide glyph pixels, native IME and assistive technology behavior are not verified.",
+    "SRI verification uses hardcoded npm publish integrity, not a publisher-signature/provenance attestation verification."
+  ],
+  "font": {
+    "source": "packages/plugins/terminals/src/fonts/manifold-terminal-mono.woff2",
+    "sha256": "d02ced77185cd23a3fdaaeba0bdc47c59fc8d03059dad2802742e6962c11dcc6",
+    "bytes": 833059
+  },
+  "wasm": {
+    "bytes": 423045,
+    "sha256": "d6f0326f1874ad2ce9f289e3a4a0c5f3507d4cb38d8747e4b287def470a0c60a",
+    "source": "ghostty-web@0.4.0 integrity-verified archive"
+  },
+  "bundle": {
+    "bytes": 1268401,
+    "sha256": "359f905a99a62a769fd309955d14f64be9cf496f2749b21d291a0ecbe44b8883"
+  },
+  "pageExceptions": [],
+  "artifactDirectory": "/tmp/manifold-engine-replay-Io9aEx"
+}

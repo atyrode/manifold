@@ -2099,12 +2099,15 @@ aim?: CarryAim, denied?: boolean }`. `useTileDeparture(sourceContainerId, overri
   it never changes the carried item's kind, its payload, or durable layout.
   Incoming target arbitration wins. Preview and pre-mutation FLIP settlement transform stable
   `tile-content-host` elements, not ancestor pane boxes; composing both transforms would move
-  live content twice. Commits settle from captured visual geometry to authoritative layout;
+  live content twice. Structural commits settle from captured visual geometry to authoritative layout;
   cancellation/refusal restores projection and end/expiry clears departure. Content is neither
   cloned nor additionally reparented for animation. A removed tile may leave a bounded empty
   `tile-departure-shell`; keep `TileTree` mounted for an empty layout to retain that exit.
   Existing `--preview-pane-transition` / `--carry-fade-transition` tokens govern timing;
   reduced motion skips movement and cancels active animations.
+  Ratio-only updates are continuous layout, not placement transitions: the canonical structural
+  revision excludes proportions, so divider changes neither start a FLIP nor leave an earlier
+  settlement stretching live contents. This policy is identical for local and remote producers.
 - **Cursor coordinate space is the room's discipline.** Cursors are container-scoped
   (per-room, like all presence): canvas rooms carry React-Flow scene coordinates; composition
   rooms carry fractions of the container's tile area in `[0,1]²` (ratios are shared CRDT
@@ -2173,6 +2176,13 @@ share that local preference; other devices do not. This is local readability, no
 document edit or an action. Spectators can adjust their own font; a resulting PTY resize is
 still controller-only, post-snapshot and non-preview. Zoom updates the existing xterm instance,
 not the socket or terminal lifecycle.
+
+The terminal's visual inset is outside the FitAddon measurement box, so the measured host
+is usable cell space rather than padding counted as rows. After snapshot replay, fitting
+schedules at most one pending animation-frame publication; unchanged geometry is not sent.
+Publication re-measures the current host before reading the grid, because an earlier resize
+echo may have changed xterm's dimensions since the scheduling fit. This removes the trailing
+quiet-period delay without changing controller/preview authority or the terminal wire.
 
 ### Terminals over the session channel
 

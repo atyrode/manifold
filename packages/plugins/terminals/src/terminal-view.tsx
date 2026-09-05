@@ -41,6 +41,7 @@ import {
   TITLEBAR_ACTIONS_CLASS,
 } from "@manifold/ui";
 import { loadTerminalFont, TERMINAL_FONT_FAMILY, TERMINAL_FONT_SIZE } from "./terminal-font";
+import { installTerminalGestures } from "./terminal-gestures";
 import {
   MAX_TERMINAL_FONT_SIZE,
   MIN_TERMINAL_FONT_SIZE,
@@ -73,7 +74,7 @@ export function TerminalView({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  const resizeTimerRef = useRef<number | null>(null);
+  const resizeFrameRef = useRef<number | null>(null);
   const scheduleResizeRef = useRef<(() => void) | null>(null);
   /**
    * True once a snapshot has been painted into the LIVE terminal. It outlives socket
@@ -90,6 +91,10 @@ export function TerminalView({
   const [, rerender] = useReducer((version: number) => version + 1, 0);
   const [isRestarting, setIsRestarting] = useState(false);
   const { notify } = useNotice();
+  const notifyRef = useRef(notify);
+  useEffect(() => {
+    notifyRef.current = notify;
+  }, [notify]);
   const publishLocation = usePublishLocation(projectionScope);
   const fontSize = useSyncExternalStore(
     subscribeTerminalFontPreferences,
@@ -260,6 +265,12 @@ export function TerminalView({
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(container);
+    const disposeGestures = installTerminalGestures(
+      terminal,
+      container,
+      () => readOnlyRef.current,
+      (message) => notifyRef.current(message, { key: `terminal-clipboard:${terminalId}` }),
+    );
     terminalRef.current = terminal;
     fitRef.current = fitAddon;
     paintedRef.current = false;
@@ -267,11 +278,14 @@ export function TerminalView({
     let lastSentGeometry: { cols: number; rows: number } | null = null;
 
     const sendCurrentGeometry = (): void => {
-      resizeTimerRef.current = null;
+      resizeFrameRef.current = null;
       // A preview may fit its own display, but its spectator socket never changes
       // shared PTY geometry, even when another connection of this principal controls it.
       if (readOnlyRef.current) return;
       if (!isControllerRef.current) return;
+      // An earlier resize echo may have changed the grid since the scheduling fit.
+      // Publish the controller's current host geometry, not that stale echoed grid.
+      fitAddon.fit();
       const geometry = { cols: terminal.cols, rows: terminal.rows };
       if (
         lastSentGeometry !== null &&
@@ -285,8 +299,8 @@ export function TerminalView({
     };
 
     const scheduleResize = (): void => {
-      if (resizeTimerRef.current !== null) window.clearTimeout(resizeTimerRef.current);
-      resizeTimerRef.current = window.setTimeout(sendCurrentGeometry, 250);
+      if (resizeFrameRef.current !== null) return;
+      resizeFrameRef.current = window.requestAnimationFrame(sendCurrentGeometry);
     };
     scheduleResizeRef.current = scheduleResize;
 
@@ -331,12 +345,13 @@ export function TerminalView({
       window.cancelAnimationFrame(initialFitFrame);
       if (settleFrame !== null) window.cancelAnimationFrame(settleFrame);
       if (settleFollowupFrame !== null) window.cancelAnimationFrame(settleFollowupFrame);
-      if (resizeTimerRef.current !== null) {
-        window.clearTimeout(resizeTimerRef.current);
-        resizeTimerRef.current = null;
+      if (resizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
       }
       scheduleResizeRef.current = null;
       settleRef.current = null;
+      disposeGestures();
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;

@@ -8,9 +8,9 @@
  * distance from the terminal origin ("the more down I go, the greater the offset").
  *
  * The gate drives a REAL browser drag over known rows at zoom 1 (baseline) and at
- * canvas zoom ≈ 1.2, then reads the PAINTED `.xterm-selection` layer (what the user
- * sees) and asserts the dragged row is exactly what got highlighted. It must fail on
- * unpatched @xterm/xterm and pass after the fix.
+ * canvas zoom ≈ 1.2, checks the painted selection while the button is held, then
+ * checks actual clipboard text and deselection after release. Selection must never
+ * clear mid-drag, and copying must select the row under the pointer at every zoom.
  *
  * Self-contained: builds the web bundle to a temp dir, spawns its own server + agent,
  * cleans up. Env: MANIFOLD_CHROMIUM (else system chromium).
@@ -73,6 +73,10 @@ try {
 
   browser = new Browser();
   await browser.launch();
+  await browser.send("Browser.grantPermissions", {
+    origin,
+    permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+  });
   await browser.goto(`${origin}/#key=${ownerKey}`);
   await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
   if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
@@ -197,12 +201,12 @@ try {
     20_000,
     "xterm textarea focused",
   );
-  await browser.typeText("clear; seq 1 40");
+  await browser.typeText("clear; seq 1 40 | sed 's/.*/ROW-& selection clipboard target/'");
   await browser.typeText("\r");
   await until(
     () =>
       browser!.evaluate<boolean>(
-        "(() => { const rows = [...document.querySelector('.xterm-rows').children].map(row => row.textContent.trim()); const last = rows.indexOf('40'); return last >= 0 && rows.slice(last + 1).some(text => text.length > 0); })()",
+        "(() => { const rows = [...document.querySelector('.xterm-rows').children].map(row => row.textContent.trim()); const last = rows.indexOf('ROW-40 selection clipboard target'); return last >= 0 && rows.slice(last + 1).some(text => text.length > 0); })()",
       ),
     20_000,
     "known terminal output through row 40 and returned shell prompt painted",
@@ -213,6 +217,8 @@ try {
     draggedOn: string;
     paintedRows: string[];
     zoom: number;
+    copied: string;
+    cleared: boolean;
   }> {
     const info = await browser!.evaluate<{ top: number; h: number; text: string }[]>(
       "[...document.querySelector('.xterm-rows').querySelectorAll(':scope > div')].map(d => { const r = d.getBoundingClientRect(); return { top: r.top, h: r.height, text: d.textContent.trim() }; })",
@@ -220,13 +226,13 @@ try {
     const row = info[rowIndex];
     if (row === undefined) throw new Error(`row index ${rowIndex} not rendered`);
     const sx = await browser!.evaluate<number>(
-      "document.querySelector('.xterm-screen').getBoundingClientRect().x + 40",
+      "document.querySelector('.xterm-screen').getBoundingClientRect().x + 2",
     );
     const yc = row.top + row.h * 0.5;
     const hits = await browser!.evaluate<boolean>(
       `(() => {
         const screen = document.querySelector('.xterm-screen');
-        return ${JSON.stringify([250, 200, 150, 100, 60])}.every(offset => {
+        return ${JSON.stringify([350, 280, 210, 140, 0])}.every(offset => {
           const hit = document.elementFromPoint(${sx} + offset, ${yc});
           return hit !== null && screen.contains(hit);
         });
@@ -236,7 +242,7 @@ try {
       throw new Error(`row ${rowIndex} ("${row.text}") is not pointer-reachable at y=${yc}`);
     // Clear the preceding selection through real input, so old paint cannot satisfy
     // this drag's readiness check. Keep geometry assertions separate from readiness:
-    // painting the WRONG row must still fail, not wait for a more convenient result.
+    // painting the wrong row must still fail, not wait for a more convenient result.
     await browser!.drag([{ x: sx + 250, y: yc }], 40);
     await until(
       () =>
@@ -246,16 +252,25 @@ try {
       20_000,
       `previous selection cleared before row ${rowIndex}`,
     );
-    await browser!.drag(
-      [
-        { x: sx + 250, y: yc },
-        { x: sx + 200, y: yc },
-        { x: sx + 150, y: yc },
-        { x: sx + 100, y: yc },
-        { x: sx + 60, y: yc },
-      ],
-      40,
-    );
+    await browser!.evaluate("navigator.clipboard.writeText('selection gate sentinel')");
+    await browser!.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: sx + 350,
+      y: yc,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    for (const offset of [280, 210, 140, 0]) {
+      await browser!.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: sx + offset,
+        y: yc,
+        button: "left",
+        buttons: 1,
+      });
+      await Bun.sleep(40);
+    }
     await until(
       () =>
         browser!.evaluate<boolean>(
@@ -272,13 +287,41 @@ try {
       .filter((r) => bands.some((b) => r.y >= b.top && r.y <= b.bottom))
       .map((r) => r.text);
     const zoom = await browser!.evaluate<number>("window.__manifold.viewport().zoom");
-    return { draggedOn: row.text, paintedRows: painted, zoom };
+    const duringDrag = await browser!.evaluate<string>("navigator.clipboard.readText()");
+    if (duringDrag !== "selection gate sentinel")
+      throw new Error("clipboard changed before selection drag completed");
+    await browser!.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: sx,
+      y: yc,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          "navigator.clipboard.readText().then(text => text !== 'selection gate sentinel')",
+        ),
+      3000,
+      "completed selection copied to clipboard",
+    );
+    const copied = await browser!.evaluate<string>("navigator.clipboard.readText()");
+    await Bun.sleep(100);
+    const cleared = await browser!.evaluate<boolean>(
+      "(document.querySelector('.xterm-selection')?.children.length ?? 0) === 0",
+    );
+    return { draggedOn: row.text, paintedRows: painted, zoom, copied, cleared };
   }
 
   async function assertRow(name: string, rowIndex: number): Promise<void> {
     const result = await dragAndPaint(rowIndex);
-    const ok = result.paintedRows.length === 1 && result.paintedRows[0] === result.draggedOn;
-    const detail = `dragged on rendered row #${rowIndex} ("${result.draggedOn}") at zoom ${result.zoom.toFixed(2)}, painted [${result.paintedRows.join(", ")}]`;
+    const ok =
+      result.paintedRows.length === 1 &&
+      result.paintedRows[0] === result.draggedOn &&
+      result.copied === result.draggedOn &&
+      result.cleared;
+    const detail = `dragged on rendered row #${rowIndex} ("${result.draggedOn}") at zoom ${result.zoom.toFixed(2)}, painted [${result.paintedRows.join(", ")}], copied ${JSON.stringify(result.copied)}, cleared ${result.cleared}`;
     console.log(`${ok ? "PASS" : "FAIL"}  ${name}: ${detail}`);
     if (!ok) failures.push(`${name}: ${detail}`);
   }
@@ -365,6 +408,135 @@ try {
     throw new Error(`could not restore canvas zoom to 1 (got ${restoredZoom})`);
   await revealScreen();
   await assertRow("zoom restored to 1 selects the dragged row", 12);
+
+  // URL activation is intentionally modified-click only: ordinary clicks keep
+  // terminal focus/selection semantics, while Ctrl+click opens an external tab.
+  await browser.typeText("printf '\\nhttps://example.com/manifold-terminal-link\\n'");
+  await browser.typeText("\r");
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "[...document.querySelector('.xterm-rows').children].some(row => row.textContent.trim() === 'https://example.com/manifold-terminal-link')",
+      ),
+    3000,
+    "terminal URL rendered",
+  );
+  const linkPoint = await browser.evaluate<{ x: number; y: number }>(`(() => {
+    window.__terminalOpenedUrl = null;
+    window.open = (url, target, features) => {
+      window.__terminalOpenedUrl = { url: String(url), target, features };
+      return null;
+    };
+    const wanted = 'https://example.com/manifold-terminal-link';
+    const row = [...document.querySelector('.xterm-rows').children]
+      .find(candidate => candidate.textContent.trim() === wanted);
+    if (!row) throw new Error('terminal URL row disappeared');
+    const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const index = node.data.indexOf(wanted);
+      if (index < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, index + 4);
+      range.setEnd(node, index + 5);
+      const rect = range.getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    }
+    throw new Error('terminal URL text node disappeared');
+  })()`);
+  await browser.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    ...linkPoint,
+    button: "none",
+    buttons: 0,
+  });
+  await Bun.sleep(200);
+  await browser.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    ...linkPoint,
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+  });
+  await browser.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    ...linkPoint,
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+  });
+  if ((await browser.evaluate("window.__terminalOpenedUrl")) !== null) {
+    failures.push("plain terminal URL click unexpectedly opened a tab");
+  }
+  await browser.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    ...linkPoint,
+    modifiers: 2,
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+  });
+  await browser.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    ...linkPoint,
+    modifiers: 2,
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+  });
+  const opened = await browser.evaluate<{
+    url: string;
+    target: string;
+    features: string;
+  } | null>("window.__terminalOpenedUrl");
+  if (
+    opened?.url !== "https://example.com/manifold-terminal-link" ||
+    opened.target !== "_blank" ||
+    opened.features !== "noopener,noreferrer"
+  ) {
+    failures.push(`Ctrl+click terminal URL activation mismatch: ${JSON.stringify(opened)}`);
+  } else {
+    console.log("PASS  Ctrl+click opens terminal URLs in an isolated external tab");
+  }
+
+  // Read the real browser clipboard with a real right click, then observe PTY
+  // output that cannot be confused with the echoed command itself.
+  await browser.evaluate(`navigator.clipboard.writeText("printf 'PASTE-%s\\\\n' ARRIVED")`);
+  const pastePoint = await browser.evaluate<{ x: number; y: number }>(
+    "(() => { const r = document.querySelector('.xterm-screen').getBoundingClientRect(); return { x: r.x + 80, y: r.y + 40 }; })()",
+  );
+  await browser.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    ...pastePoint,
+    button: "right",
+    buttons: 2,
+    clickCount: 1,
+  });
+  await browser.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    ...pastePoint,
+    button: "right",
+    buttons: 0,
+    clickCount: 1,
+  });
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "document.querySelector('.xterm-rows').textContent.includes(\"printf 'PASTE-%s\")",
+      ),
+    3000,
+    "right-click clipboard text reaches the terminal",
+  );
+  await browser.typeText("\r");
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "[...document.querySelector('.xterm-rows').children].some(row => row.textContent.trim() === 'PASTE-ARRIVED')",
+      ),
+    3000,
+    "pasted command executes through PTY input",
+  );
+  console.log("PASS  right-click reads the clipboard and pastes through PTY input");
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
 } finally {
