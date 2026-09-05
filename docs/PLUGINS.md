@@ -3,6 +3,17 @@
 **Read this if you are an agent.** This file plus two live endpoints are the complete
 onboarding surface; you should not need to read manifold's source to author a plugin.
 
+**What that promise covers today.** The current authoring channel is a package inside this
+repository — `packages/plugins/<name>`, registered in the two assembly files (§1) by a
+maintainer and rebuilt with the tree. A stranger's package cannot be installed into a running
+workspace yet; the isolation runner (#151) and the install door (#152) are what make that
+possible, and `AXIOMS.md` §Roadmap says the same in its own words: the authoring half of the
+agent's plugin story is unproven, because writing a plugin today means editing a workspace
+package, adding a row to two `assembly.ts` files and rebuilding. Two places below point at the
+engine's own source for a shape — the registration shape in §6 and the web registration channels
+in §7 — and they are the named exceptions to the promise above, flagged as maintainer-only where
+they occur.
+
 ```sh
 curl -H "authorization: Bearer $TOKEN" http://localhost:7777/api/plugins    # the live roster: every plugin, its manifest, whether it is enabled, its actions
 curl -H "authorization: Bearer $TOKEN" http://localhost:7777/api/protocol   # JSON Schemas for the wire, every assembled action's input/result, and `pluginContract` — the whole plugin vocabulary as data
@@ -609,7 +620,8 @@ edit.
 
 The web half exports the renderers, keyed by the ids the manifest declared; the shape is the
 one `packages/web/src/assembly.ts` registers, so let inference type it rather than naming a
-type you have not read:
+type you have not read (a maintainer-only exception to the opening promise: the shape lives in
+the engine's source while the only authoring channel is in-tree, #151/#152):
 
 ```tsx
 // packages/plugins/draw/src/web.tsx
@@ -1116,7 +1128,8 @@ can never mask a collision that turning it back on would resurrect. Until wave F
 registrant silently won by roster order, which made the owner of a discipline, a slot, a path or
 the terminal viewer a function of composition order (issue #112).
 
-Read `packages/web/src/assembly.ts` and `packages/plugin/src/projection.ts` for the shapes.
+Read `packages/web/src/assembly.ts` and `packages/plugin/src/projection.ts` for the shapes — the
+second maintainer-only exception to the opening promise, for the same reason as §6's.
 
 **workspace overlays** — chrome with no container to hang on:
 
