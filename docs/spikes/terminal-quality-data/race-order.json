@@ -1,0 +1,64 @@
+{
+  "experiment": "stale-resize-echo-ordering",
+  "recordedAt": "2026-09-05T17:31:44.534Z",
+  "sourceBase": "c85512b01336ce433f89724b5588860565cdb127",
+  "bundle": "index-D8o7sIO9.js",
+  "condition": "Beta CSS margin + frame publication + publication-time fit; one live controller, Chromium, real local PTY",
+  "method": "A later registered ResizeObserver sees the product already fitted to the changed host, then applies terminal.resize(old.cols, old.rows), exactly the resized handler operation. The control ablates only the subsequent publication-time fit call. This is an induced ordering experiment, not a recorded network-echo trace.",
+  "fixed": {
+    "old": {
+      "cols": 136,
+      "rows": 51
+    },
+    "expected": {
+      "cols": 131,
+      "rows": 51
+    },
+    "before": {
+      "cols": 131,
+      "rows": 51
+    },
+    "injected": {
+      "cols": 136,
+      "rows": 51
+    },
+    "final": {
+      "cols": 131,
+      "rows": 51
+    },
+    "sent": [
+      {
+        "cols": 131,
+        "rows": 51,
+        "time": 56169.799999952316
+      }
+    ]
+  },
+  "ablation": {
+    "intervention": "Suppress only the second fit call (publication), retaining the first ResizeObserver fit",
+    "old": {
+      "cols": 136,
+      "rows": 51
+    },
+    "expected": {
+      "cols": 131,
+      "rows": 51
+    },
+    "before": {
+      "cols": 131,
+      "rows": 51
+    },
+    "final": {
+      "cols": 136,
+      "rows": 51
+    },
+    "fitCalls": 2,
+    "sent": []
+  },
+  "ptyOutput": "RACE_GRID 51 131",
+  "ptyMeaning": "stty size reports rows first, columns second",
+  "limitations": [
+    "No claim about frequency in natural traffic.",
+    "No same-principal ownership change or native-platform proof."
+  ]
+}

@@ -10,42 +10,20 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-import { refKey } from "../tile-geometry.ts";
+import { layoutRevision, refKey } from "../tile-geometry.ts";
 import { dividerRatios, type DividerDrag } from "../tile-snap.ts";
 import { FLIP_EPSILON, prefersReducedMotion } from "./flip.ts";
 
 /**
- * THE tile tree. A composition's layout is one recursive structure, so there is one
- * component that draws it — the fullscreen route and a container portal sitting on a
- * canvas render the same splits, the same ratio dividers and the same leaf frames from
- * the same code. A portal used to carry a parallel read-only mini-tree; it does not
- * any more, which is why an engaged portal's dividers drag exactly as fullscreen's do.
+ * One recursive tile renderer for fullscreen compositions, canvas portals and the workspace.
+ * The host supplies leaf chrome, class names and whether dividers accept input.
  *
- * What a host renderer still owns is the LEAF (`renderLeaf`) — a leaf's chrome is
- * discipline-specific (fullscreen leaves wear the carry grip, a portal's wear the
- * engagement shield) — and the two policy answers this component takes as arguments:
+ * Occupied leaves render through portals into stable hosts keyed by refKey, not tile id.
+ * Splitting replaces React's wrapper boxes; seat() moves existing hosts into those boxes
+ * so live content keeps its mounted state across structural edits.
  *
- *   `classes`     which class family the boxes wear, because both skins are proof
- *                 hooks: `.composition-*` for the route, `.portal__*` for the portal.
- *   `interactive` whether a divider is a control or just structure. A watching portal
- *                 paints from a spectator socket whose writes the server refuses, so
- *                 its dividers render (the composition's shape is the information) and
- *                 do nothing: no pointer capture, no cursor, no doc write.
- *
- * PANE CONTENT SURVIVES STRUCTURAL EDITS. The recursive boxes are keyed by tile id,
- * and a split substitutes a NEW wrapper id into its parent's children — so React
- * discards and rebuilds boxes across a committed split. That must never tear down an
- * xterm, so a leaf's content is not rendered inside its box at all: each occupied
- * leaf's content renders exactly once through `createPortal` into a STABLE host
- * element keyed by REF IDENTITY (`refKey`), and a layout effect appends that
- * host into whatever box the current tree drew (the `appendChild` move flexlayout and
- * dockview use). React never sees the move; the terminal's DOM, buffer and scrollback
- * ride along untouched. Confirmed by `scripts/verify-tile-drop.ts`'s remount probe.
- *
- * There is deliberately no `scale` argument even though a portal draws its tree under a
- * `transform: scale()` (and under the canvas's own zoom). A divider drag is computed as
- * `pointer delta / box size`, and `getBoundingClientRect()` reports the box already
- * transformed, so both terms live in client space and the fraction is scale-invariant.
+ * Divider deltas and getBoundingClientRect() are both in client space. Their ratio already
+ * accounts for ancestor zoom; a separate scale argument would apply that transform twice.
  */
 
 /** The class family one host paints its tree with; every box the tree owns is here. */
@@ -266,6 +244,7 @@ class TileMotionBoundary extends Component<
 > {
   private readonly shells = new Map<HTMLElement, Animation>();
   private reduced: MediaQueryList | null = null;
+  private structureRevision = layoutRevision(this.props.layout);
 
   private readonly finishMotion = (): void => {
     if (!this.reduced?.matches) return;
@@ -310,6 +289,12 @@ class TileMotionBoundary extends Component<
 
   override getSnapshotBeforeUpdate(previous: TileMotionProps): TileSnapshot | null {
     if (previous.layout === this.props.layout) return null;
+    const revision = layoutRevision(this.props.layout);
+    const structureChanged = revision !== this.structureRevision;
+    this.structureRevision = revision;
+    // Continuous proportions are layout, not a placement transition: scaling a live
+    // content host here stretches its glyphs and makes the divider trail the pointer.
+    if (!structureChanged) return null;
     const area = previous.rootRef.current?.parentElement;
     if (area === null || area === undefined) return null;
     const tiles = new Map<string, TileVisual>();
@@ -321,12 +306,22 @@ class TileMotionBoundary extends Component<
   }
 
   override componentDidUpdate(
-    _previous: TileMotionProps,
+    previous: TileMotionProps,
     _state: Record<string, never>,
     first: TileSnapshot | null,
   ): void {
     this.seat();
-    if (first === null) return;
+    if (first === null) {
+      if (previous.layout !== this.props.layout) {
+        // A resize also interrupts any earlier settlement. Preserve an active
+        // preview's inline target; only stop interpolation on the live contents.
+        for (const host of this.props.hosts.values()) {
+          tileAnimations.get(host)?.cancel();
+          tileAnimations.delete(host);
+        }
+      }
+      return;
+    }
     // Clear all projections before Last, never measure a pane through a preview ancestor.
     for (const host of this.props.hosts.values()) resetTileMotion(host);
     for (const { key } of this.props.keyed) {

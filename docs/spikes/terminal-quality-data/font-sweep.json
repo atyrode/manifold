@@ -1,0 +1,562 @@
+{
+  "experiment": "all-font-geometry-sweep",
+  "recordedAt": "2026-09-05T17:31:44.534Z",
+  "bundle": "index-D8o7sIO9.js",
+  "method": "Trusted real mouse clicks on font controls, observed committed value, then 120 ms settling before DOM bounds capture; one real PTY/controller. All sizes 8 through 32 at both viewport/DPR conditions.",
+  "samples": [
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 8,
+      "rows": 85,
+      "bottomExcess": -7.21875,
+      "rightExcess": -14.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 9,
+      "rows": 73,
+      "bottomExcess": -5.21875,
+      "rightExcess": -16.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 10,
+      "rows": 68,
+      "bottomExcess": -7.21875,
+      "rightExcess": -18.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 11,
+      "rows": 60,
+      "bottomExcess": -7.21875,
+      "rightExcess": -17.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 12,
+      "rows": 54,
+      "bottomExcess": -2.21875,
+      "rightExcess": -14.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 13,
+      "rows": 51,
+      "bottomExcess": -7.21875,
+      "rightExcess": -19.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 14,
+      "rows": 46,
+      "bottomExcess": -13.21875,
+      "rightExcess": -21.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 15,
+      "rows": 42,
+      "bottomExcess": -17.21875,
+      "rightExcess": -18.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 16,
+      "rows": 41,
+      "bottomExcess": -3.21875,
+      "rightExcess": -14.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 17,
+      "rows": 38,
+      "bottomExcess": -2.21875,
+      "rightExcess": -19.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 18,
+      "rows": 35,
+      "bottomExcess": -11.21875,
+      "rightExcess": -21.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 19,
+      "rows": 34,
+      "bottomExcess": -7.21875,
+      "rightExcess": -20.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 20,
+      "rows": 34,
+      "bottomExcess": -7.21875,
+      "rightExcess": -24.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 21,
+      "rows": 32,
+      "bottomExcess": -4.21875,
+      "rightExcess": -21.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 22,
+      "rows": 30,
+      "bottomExcess": -7.21875,
+      "rightExcess": -24.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 23,
+      "rows": 29,
+      "bottomExcess": -11.21875,
+      "rightExcess": -17.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 24,
+      "rows": 27,
+      "bottomExcess": -24.21875,
+      "rightExcess": -14.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 25,
+      "rows": 26,
+      "bottomExcess": -12.21875,
+      "rightExcess": -15.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 26,
+      "rows": 25,
+      "bottomExcess": -23.21875,
+      "rightExcess": -19.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 27,
+      "rows": 24,
+      "bottomExcess": -17.21875,
+      "rightExcess": -27.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 28,
+      "rows": 23,
+      "bottomExcess": -13.21875,
+      "rightExcess": -21.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 29,
+      "rows": 22,
+      "bottomExcess": -31.21875,
+      "rightExcess": -18.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 30,
+      "rows": 21,
+      "bottomExcess": -33.21875,
+      "rightExcess": -18.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 31,
+      "rows": 21,
+      "bottomExcess": -0.21875,
+      "rightExcess": -20.65625
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1.25
+      },
+      "font": 32,
+      "rows": 20,
+      "bottomExcess": -23.21875,
+      "rightExcess": -24.65625
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 8,
+      "rows": 67,
+      "bottomExcess": -0.21875,
+      "rightExcess": -16.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 9,
+      "rows": 54,
+      "bottomExcess": -9.21875,
+      "rightExcess": -16.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 10,
+      "rows": 50,
+      "bottomExcess": -3.21875,
+      "rightExcess": -19.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 11,
+      "rows": 46,
+      "bottomExcess": -5.21875,
+      "rightExcess": -19.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 12,
+      "rows": 40,
+      "bottomExcess": -3.21875,
+      "rightExcess": -18.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 13,
+      "rows": 37,
+      "bottomExcess": -11.21875,
+      "rightExcess": -20.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 14,
+      "rows": 35,
+      "bottomExcess": -8.21875,
+      "rightExcess": -23.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 15,
+      "rows": 31,
+      "bottomExcess": -14.21875,
+      "rightExcess": -16.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 16,
+      "rows": 30,
+      "bottomExcess": -3.21875,
+      "rightExcess": -16.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 17,
+      "rows": 28,
+      "bottomExcess": -15.21875,
+      "rightExcess": -21.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 18,
+      "rows": 26,
+      "bottomExcess": -5.21875,
+      "rightExcess": -22.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 19,
+      "rows": 25,
+      "bottomExcess": -3.21875,
+      "rightExcess": -16.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 20,
+      "rows": 25,
+      "bottomExcess": -3.21875,
+      "rightExcess": -26.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 21,
+      "rows": 24,
+      "bottomExcess": -3.21875,
+      "rightExcess": -14.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 22,
+      "rows": 22,
+      "bottomExcess": -9.21875,
+      "rightExcess": -19.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 23,
+      "rows": 21,
+      "bottomExcess": -15.21875,
+      "rightExcess": -14.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 24,
+      "rows": 20,
+      "bottomExcess": -23.21875,
+      "rightExcess": -26.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 25,
+      "rows": 19,
+      "bottomExcess": -14.21875,
+      "rightExcess": -26.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 26,
+      "rows": 18,
+      "bottomExcess": -27.21875,
+      "rightExcess": -28.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 27,
+      "rows": 18,
+      "bottomExcess": -9.21875,
+      "rightExcess": -16.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 28,
+      "rows": 17,
+      "bottomExcess": -8.21875,
+      "rightExcess": -23.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 29,
+      "rows": 16,
+      "bottomExcess": -27.21875,
+      "rightExcess": -14.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 30,
+      "rows": 16,
+      "bottomExcess": -11.21875,
+      "rightExcess": -26.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 31,
+      "rows": 15,
+      "bottomExcess": -18.21875,
+      "rightExcess": -20.453125
+    },
+    {
+      "viewport": {
+        "width": 1000,
+        "height": 680,
+        "deviceScaleFactor": 2
+      },
+      "font": 32,
+      "rows": 15,
+      "bottomExcess": -3.21875,
+      "rightExcess": -16.453125
+    }
+  ],
+  "limitations": [
+    "DOM geometry, not physical display/paint timing.",
+    "Does not settle the independent multi-device size authority problem."
+  ]
+}
