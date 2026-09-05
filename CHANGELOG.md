@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-05
+
 ### Breaking Changes
 
 - Composition tile references now identify contributed content as elements rather than text. Stored compositions migrate automatically behind a pre-migration backup; session clients require protocol 23, while compatible older machine agents and instance peers remain supported. (#222, #246)
