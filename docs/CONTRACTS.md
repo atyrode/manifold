@@ -327,7 +327,7 @@ pool entry and no new client (`AXIOMS.md` §The portable lens).
 | GET /api/plugins/:id/web.js          | any token                             | → the worker module of an installed, ENABLED plugin (`text/javascript`, `cache-control: no-store`, `etag: "<sha256>"`); 404 otherwise. §Hardened plugins                                                                                                                                                                                                                                                                                                                               |
 | GET /api/layout                      | any token                             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the default composed from the roster's seats when unset. Self-scoped by construction                                                                                                                                                                                                                                                                                                                                          |
 | GET /api/bindings                    | containers:read                       | → `{ overrides }` — the CALLER's key rebindings as binding id → key, self-scoped exactly as the layout read is. `core.keys.setBinding` is the only writer                                                                                                                                                                                                                                                                                                                              |
-| GET /api/settings                    | containers:read                       | → `{ values }` — the CALLER's plugin setting values as setting ref → boolean, self-scoped exactly as the bindings read is. `engine.plugins.setSetting` is the only writer                                                                                                                                                                                                                                                                                                              |
+| GET /api/settings                    | containers:read                       | → `{ values }` — effective principal and workspace plugin setting deltas as setting ref → boolean or string. `engine.plugins.setSetting` is the only writer                                                                                                                                                                                                                                                                                                                             |
 | GET /api/resolve?uri=                | containers:read                       | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                                                                                                                                                                                                                                                                                                                                                              |
 | GET /api/containers                  | containers:read                       | → `{ containers: ContainerCensus[] }` (`ContainerCensusResponseSchema`) — what every container holds and points at; the index's whole input                                                                                                                                                                                                                                                                                                                                            |
 | GET /api/introspect                  | `*`                                   | → live rooms/terminals/machines/principals snapshot                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -696,23 +696,27 @@ mechanism. Seven shipped seats are `essential` and answer `refused`/`essential`:
 non-negotiables `core.shell`, `core.brand`, `core.keys` and `core.plugins` (issue #91), and the
 three the floor itself dispatches — `core.space`, `core.index` and `core.access` (issue #113).
 
-**Plugin settings are per PRINCIPAL, declared by manifests, and written at one engine door**
-(issue #133). A manifest may declare `contributes.settings` — bounded rows of
-`{ id, title, kind, default }`, `kind` a closed set whose one member today is `boolean` — and the
-declarations ride in the roster at `GET /api/plugins` like every other contribution. Absent means
-the plugin declares none, so a manifest written before the field existed serializes byte-for-byte
-as it did. VALUES are the caller's own: read at `GET /api/settings` (`{ values }`, setting ref →
-boolean, self-scoped exactly as `/api/bindings` is), stored as one `meta` row per principal
-(`settings:<principalId>`), and written ONLY by `engine.plugins.setSetting { plugin, setting,
-value }` — `value: null` retracts the opinion so the row reads its manifest's default again.
+**Plugin settings are manifest declarations with principal or workspace scope, written at one
+engine door** (#133, #158). `contributes.settings` declares `{ id, title, kind, default, scope? }`.
+Kinds are `boolean` and `enum`; enum rows declare one to 32 `values: [{ id, title }]` with unique
+non-empty ids and a default inside that set (`invalid_setting_enum` at admission otherwise).
+Absent scope means `principal`, preserving existing manifests. `GET /api/protocol` publishes
+`settingKinds` and `settingScopes`. `GET /api/settings` returns `{ values }`, setting ref →
+boolean or string: the principal's delta with workspace declarations resolved from shared rows.
+Principal storage remains `meta` key `settings:<principalId>`; workspace storage is ONE `meta`
+row per ref, `workspace-setting:<plugin>.<setting>`, never copied into principal storage.
+`engine.plugins.setSetting { plugin, setting, value }` is the only writer; `null` retracts.
 
 That door is the engine's for the reason `setEnabled` is, not by analogy with `core.keys`: the
 sidebar composes before any plugin draws, so a plugin owning the write could be disabled and
 freeze every OTHER plugin's preferences (bootstrap circularity); the door names no plugin and no
 preference (neutrality); and it refuses a write the ASSEMBLY does not declare (arbitration), with
-both the plugin and the setting in the sentence. Unlike its two siblings it carries NO capability
-and emits NO event — a preference is stored against the caller's own principal, so there is no
-authority to grade and nothing for the workspace to hear. A key binding, by contrast, is
+both the plugin and the setting in the sentence. Principal writes require no extra capability.
+Workspace writes require `plugins:manage` and emit the declared `plugin_setting_changed`
+event on `manifold://plugin/engine.plugins` only when the stored value changes. Connected
+clients invalidate the existing settings read through the event plane, including the writer.
+The generic manager renders enum rows as selects and names shared scope and withheld authority.
+A key binding, by contrast, is
 `core.keys`' OWN concept and its own door; a setting is every other plugin's concept, and the
 engine is the only party with no favourite among them.
 

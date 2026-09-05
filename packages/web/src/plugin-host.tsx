@@ -288,7 +288,7 @@ export interface BrowserAssembly {
    * stored preferences, fetched from `GET /api/settings` at boot and re-read whenever the door
    * writes one.
    */
-  readonly settingValues: Readonly<Record<string, boolean>>;
+  readonly settingValues: Readonly<Record<string, boolean | string>>;
 }
 
 /**
@@ -305,7 +305,7 @@ export function buildBrowserAssembly(
   revision: number,
   defs: readonly WebPluginDef[],
   overrides: Readonly<Record<string, string>> = {},
-  values: Readonly<Record<string, boolean>> = {},
+  values: Readonly<Record<string, boolean | string>> = {},
 ): BrowserAssembly {
   const byId = new Map(defs.map((def) => [def.id, def]));
   const titles = new Map<string, string>();
@@ -738,7 +738,7 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
   const [overrides, setOverrides] = useState<Readonly<Record<string, string>>>({});
   /** Bumped to ask for a fresh read; the effect below is keyed on it. */
   const [overridesEpoch, setOverridesEpoch] = useState(0);
-  const [values, setValues] = useState<Readonly<Record<string, boolean>>>({});
+  const [values, setValues] = useState<Readonly<Record<string, boolean | string>>>({});
   /** Bumped to ask for a fresh read of the OTHER delta; its effect is keyed on it. */
   const [valuesEpoch, setValuesEpoch] = useState(0);
 
@@ -820,7 +820,14 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
   }, [identity.token, valuesEpoch]);
 
   const attachPluginsClient = useCallback(
-    (client: SessionClient): (() => void) => client.onPlugins(publish),
+    (client: SessionClient): (() => void) => {
+      const offRoster = client.onPlugins(publish);
+      const offSettings = client.subscribe([{ kind: "plugin", pluginId: "engine.plugins" }], (event) => {
+        if (event.kind === "plugin_setting_changed") setValuesEpoch((epoch) => epoch + 1);
+      });
+      const offStatus = client.on("status", () => setValuesEpoch((epoch) => epoch + 1));
+      return () => { offRoster(); offSettings(); offStatus(); };
+    },
     [publish],
   );
 

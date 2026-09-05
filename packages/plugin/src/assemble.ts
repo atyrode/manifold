@@ -661,10 +661,10 @@ export function assembleRoster(
       */
       if (
         section.setting !== undefined &&
-        !(manifest.contributes.settings ?? []).some((setting) => setting.id === section.setting)
+        !(manifest.contributes.settings ?? []).some((setting) => setting.id === section.setting && setting.kind === "boolean")
       ) {
         problems.push(
-          `plugin "${manifest.id}" gates section "${section.id}" on setting "${section.setting}", which it does not contribute`,
+          `plugin "${manifest.id}" gates section "${section.id}" on setting "${section.setting}", which it does not contribute as a boolean`,
         );
       }
       sections.push({

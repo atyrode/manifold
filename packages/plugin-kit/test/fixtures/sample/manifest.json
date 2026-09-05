@@ -5,6 +5,14 @@
   "description": "The plugin-kit's reference plugin, not a product: a counter kept in plugin storage, bumped through one door, shown in one panel that renders every vocabulary node. Exists to be packed by the kit's tests and read by plugin authors.",
   "capabilities": ["containers:read"],
   "contributes": {
+    "settings": [{
+      "id": "display",
+      "title": "Counter display",
+      "kind": "enum",
+      "values": [{ "id": "number", "title": "Number" }, { "id": "words", "title": "Words" }],
+      "default": "number",
+      "scope": "workspace"
+    }],
     "panels": [{ "id": "counter", "title": "Example counter" }],
     "sections": [],
     "elements": [],

@@ -832,12 +832,16 @@ their work invisible without deleting it, which is the one outcome worse than a 
   from their sidebar. Assembly refuses a `setting` your manifest does not contribute, naming
   both, and a row may never name another plugin's — a preference of theirs erasing a row of
   yours is exactly the shadowing D5 refuses one level up. Absent ≡ unconditional.
-- **`settings`** are the preferences you declare and the reader decides:
-  `{ id, title, kind, default }`, `kind` a closed engine vocabulary whose one member today is
-  `boolean`. The VALUE is per principal and server-saved, so it follows a reader across every
-  device they sign in from, and the manager renders a GENERIC pane from your declarations — one
-  control per row, no component to register, and a named "declares no settings" for a plugin
-  with none. Write one through `engine.plugins.setSetting { plugin, setting, value }`
+- **`settings`** declare `{ id, title, kind, default, scope? }`. Kinds are `boolean` (a switch)
+  and `enum` (a select). An enum adds `values: [{ id, title }]`: one to 32 choices with unique,
+  non-empty ids; `default` must name one. Invalid choices refuse manifest admission with
+  `invalid_setting_enum`. For example, `{ id: "storage", title: "Storage", kind: "enum",
+  values: [{ id: "local", title: "Local" }, { id: "external", title: "External" }],
+  default: "local", scope: "workspace" }`.
+  Omitted scope means `principal`: server-saved preferences follow the reader across devices.
+  `workspace` means one shared value for everyone; writing it requires `plugins:manage`.
+  The generic pane names this scope in words and disables writes with the refusal when the
+  reader lacks authority. Write through `engine.plugins.setSetting { plugin, setting, value }`
   (`value: null` retracts, so the row reads your `default` again) and then call
   `host.assembly.refreshSettings()`; READ them off `host.assembly.settings`, or with
   `settingValue(host.assembly.settings, myId, "thing") !== false` when your row gates part of
@@ -845,6 +849,8 @@ their work invisible without deleting it, which is the one outcome worse than a 
   Never spell your own default at the read: it lives in the manifest, and a second copy goes
   stale the moment you change the first. Absent ≡ you declare no preferences, and your manifest
   serializes exactly as it did before the field existed.
+  Workspace changes emit the declared `plugin_setting_changed` event on
+  `manifold://plugin/engine.plugins`; connected clients re-read the same settings endpoint.
 - **`tools`** are buttons in a toolbar, and **`toolbar`** says WHICH one: `canvas` is the
   freeform discipline's tool strip, `arrange` is `core.arrange`'s floating F8 editor over the
   workspace itself. The vocabulary is the engine's and closed (`toolbars` in

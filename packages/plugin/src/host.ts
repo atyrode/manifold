@@ -401,7 +401,7 @@ export interface AssemblyFacet {
    * is stored per principal on the server, so what a reader sees here is the same delta every
    * device of theirs composes with.
    */
-  readonly settingValues: Readonly<Record<string, boolean>>;
+  readonly settingValues: Readonly<Record<string, boolean | string>>;
   /**
    * RE-READ the stored values and recompose the table — `refreshBindings` for the other
    * per-principal delta, and the same seam discipline: a door wrote a value, the engine owns

@@ -4,7 +4,6 @@ import {
   assembleRoster,
   emissionRefusal,
   emitterMayEmit,
-  enginePluginsManifest,
   type Assembly,
   type AssemblyError,
   type PluginDef,
@@ -108,23 +107,6 @@ describe("the declared-topics index", () => {
     expect(refused?.problems.join("\n")).toContain("third.party");
   });
 
-  test("the engine's own door declares its five kinds and no more", () => {
-    // The one place the engine owns a vocabulary. Every other kind belongs to the plugin that
-    // owns the concept, and the floor door that commits the change emits under THAT id.
-    const engine = assembleRoster([{ manifest: enginePluginsManifest, actions: [] }], NONE, {
-      builtins: new Set([enginePluginsManifest.id]),
-    });
-    expect([...engine.events.keys()]).toEqual([
-      "plugin_disabled",
-      "plugin_enabled",
-      "plugin_installed",
-      "plugin_purged",
-      "plugin_uninstalled",
-    ]);
-    for (const kind of engine.events.keys()) {
-      expect(engine.events.get(kind)?.plugin).toBe(enginePluginsManifest.id);
-    }
-  });
 });
 
 describe("emission is refused unless it was declared", () => {

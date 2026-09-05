@@ -679,7 +679,11 @@ export class HttpApp {
       this.requireCap(context, "containers:read");
       return jsonResponse(
         SettingsResponseSchema.parse({
-          values: this.store.pluginSettings(context.principal.id),
+          values: this.store.effectivePluginSettings(context.principal.id,
+            this.plugins.roster().flatMap((entry) =>
+              (entry.manifest.contributes.settings ?? [])
+                .filter((setting) => setting.scope === "workspace")
+                .map((setting) => `${entry.manifest.id}.${setting.id}`))),
         }),
       );
     }

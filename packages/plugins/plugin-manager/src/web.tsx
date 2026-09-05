@@ -231,12 +231,14 @@ function SettingsPane({
   settings,
   pluginTitle,
   pending,
+  canManage,
   onSet,
 }: {
   readonly settings: readonly ComposedSetting[];
   readonly pluginTitle: string;
   readonly pending: string | null;
-  readonly onSet: (setting: ComposedSetting, value: boolean) => void;
+  readonly canManage: boolean;
+  readonly onSet: (setting: ComposedSetting, value: boolean | string) => void;
 }): ReactElement {
   if (settings.length === 0) {
     return (
@@ -251,25 +253,36 @@ function SettingsPane({
         <div className="plugin-manager-setting" key={setting.ref}>
           <span className="plugin-manager-setting-label">
             <strong>{setting.title}</strong>
+            <small>{setting.scope === "workspace" ? "Workspace setting — shared by everyone" : "Your own preference"}</small>
+            {setting.scope === "workspace" && !canManage ? <small>plugins:manage capability required</small> : null}
             {setting.value === setting.declared ? null : (
               <small className="plugin-manager-setting-moved">Changed from default</small>
             )}
           </span>
+          {setting.kind === "enum" ? (
+            <select aria-label={setting.title} value={String(setting.value)}
+              data-action={ENGINE_SET_SETTING_ACTION} data-setting={setting.ref}
+              disabled={pending === setting.ref || (setting.scope === "workspace" && !canManage)}
+              onChange={(event) => onSet(setting, event.target.value)}>
+              {setting.values.map((value) => <option key={value.id} value={value.id}>{value.title}</option>)}
+            </select>
+          ) : (
           <button
             className="plugin-manager-setting-toggle"
             type="button"
             role="switch"
-            aria-checked={setting.value}
+            aria-checked={setting.value === true}
             aria-label={`${setting.value ? "Turn off" : "Turn on"} ${setting.title}`}
-            title={`${setting.title} — your own preference, on every device you sign in from`}
+            title={setting.scope === "workspace" ? "Shared by everyone in this workspace" : "Your own preference, on every device"}
             data-action={ENGINE_SET_SETTING_ACTION}
             data-testid="plugin-manager-setting-toggle"
             data-setting={setting.ref}
-            disabled={pending === setting.ref}
+            disabled={pending === setting.ref || (setting.scope === "workspace" && !canManage)}
             onClick={() => onSet(setting, !setting.value)}
           >
             {setting.value ? "On" : "Off"}
           </button>
+          )}
         </div>
       ))}
     </div>
@@ -507,7 +520,7 @@ function PluginDetail({
   readonly onArm: (armed: boolean) => void;
   readonly onPurge: () => void;
   readonly onUninstall: () => void;
-  readonly onSet: (setting: ComposedSetting, value: boolean) => void;
+  readonly onSet: (setting: ComposedSetting, value: boolean | string) => void;
 }): ReactElement {
   const { manifest } = entry;
   const status = pluginStatus(roster, entry);
@@ -833,6 +846,7 @@ function PluginDetail({
           settings={declared}
           pluginTitle={manifest.title}
           pending={pendingSetting}
+          canManage={canManage}
           onSet={onSet}
         />
       </SheetCard>
@@ -1334,13 +1348,8 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
     }
   };
 
-  /**
-   * THE PREFERENCE DOOR. Unlike the others it changes nothing about the workspace: the value
-   * is stored against this principal, so nobody else's composition moves. No local flip: the
-   * switch changes when the engine re-reads the stored map (`refreshSettings`), the same read
-   * the sidebar composes its rows from.
-   */
-  const setSetting = async (setting: ComposedSetting, value: boolean): Promise<void> => {
+  /** Re-read the authoritative map after the single settings door commits. */
+  const setSetting = async (setting: ComposedSetting, value: boolean | string): Promise<void> => {
     setPendingSetting(setting.ref);
     setFailure(null);
     try {

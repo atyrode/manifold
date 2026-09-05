@@ -532,7 +532,9 @@ export type ServerPluginDef = PluginDef & {
 interface EngineDoorCtx {
   readonly principal: Principal;
   readonly host: HostControl;
-  readonly store: Pick<ServerStore, "pluginSettings" | "setPluginSettings">;
+  readonly store: Pick<ServerStore, "pluginSettings" | "setPluginSettings" | "workspacePluginSetting" | "setWorkspacePluginSetting">;
+  readonly auth: ActionAuth;
+  readonly emit: EmitEvent;
 }
 
 /**
@@ -584,27 +586,29 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
         if ("refused" in outcome) return outcome;
         return {};
       },
-      /**
-       * A PREFERENCE, written against the caller's own principal. Two rungs and no more:
-       *
-       *  1. the declaration must exist, which is the assembly's answer and not the caller's
-       *     (`settingWriteRefusal`) — a value nothing declares is a delta nothing would ever
-       *     read, and storing it would grow an unbounded map of dead refs;
-       *  2. `null` RETRACTS, so the ref leaves the map and the row reads its manifest's
-       *     default. Writing the default explicitly is deliberately NOT retraction: "I chose
-       *     this" and "I have no opinion" are different sentences, and only the second one
-       *     should follow a plugin when it changes what it ships.
-       *
-       * The whole map is read and rewritten because that is what one meta row means; the store
-       * validates and key-sorts it on the way down.
-       */
+      /** The single settings door: declaration, authority, value, then durable write. */
       async setSetting(
         ctx: EngineDoorCtx,
-        args: { plugin: string; setting: string; value: boolean | null },
+        args: { plugin: string; setting: string; value: boolean | string | null },
       ): Promise<ActionRefused | Record<string, never>> {
         const refusal = settingWriteRefusal(ctx.host.roster(), args.plugin, args.setting);
         if (refusal !== null) return { refused: refusal };
         const ref = settingRefId(args.plugin, args.setting);
+        const setting = ctx.host.roster().find((entry) => entry.manifest.id === args.plugin)!
+          .manifest.contributes.settings!.find((setting) => setting.id === args.setting)!;
+        if (setting.scope === "workspace" && !ctx.auth.allows("plugins:manage"))
+          return { refused: "plugins:manage capability required" };
+        if (args.value !== null && !(setting.kind === "boolean"
+          ? typeof args.value === "boolean"
+          : setting.values.some((value) => value.id === args.value)))
+          return { refused: `invalid_setting_value: ${ref}` };
+        if (setting.scope === "workspace") {
+          if ((ctx.store.workspacePluginSetting(ref) ?? null) === args.value) return {};
+          ctx.store.setWorkspacePluginSetting(ref, args.value);
+          ctx.emit({ kind: "plugin", pluginId: enginePluginsManifest.id },
+            "plugin_setting_changed", { plugin: args.plugin, setting: args.setting });
+          return {};
+        }
         const current = ctx.store.pluginSettings(ctx.principal.id);
         const next = { ...current };
         if (args.value === null) {
