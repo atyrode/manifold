@@ -86,13 +86,19 @@ up() {
   log "https://$number.$PREVIEW_DOMAIN runs $MANIFOLD_BUILD"
 }
 down() {
-  local number=$1 port
+  local number=$1 port image image_id
   pr_name "$number"; lookup "$number"; port=${entry_port:-7920}
   log "removing PR $number"
   if [[ -d $PREVIEW_HOME/checkouts/pr-$number ]]; then
     compose "$number" "$port" down -v
     rm -rf -- "$PREVIEW_HOME/checkouts/pr-$number"
   fi
+  for image in "manifold-pr-pr-$number:local" "manifold-pr-$number:local"; do
+    image_id=$(docker image ls --quiet "$image")
+    if [[ -n $image_id ]]; then
+      docker image rm "$image"
+    fi
+  done
   unregister "$number"
   router
 }
@@ -161,7 +167,26 @@ gc() {
     [[ $state == CLOSED || $state == MERGED ]] && closed+=("$name")
   done <"$registry"
   for name in "${closed[@]}"; do down "$name"; done
+  docker builder prune --force --keep-storage "$PREVIEW_BUILD_CACHE_KEEP_STORAGE"
+  docker image prune --force
   log 'gc complete'
+}
+gc_timer() {
+  [[ $here != *[\"\\%$'\n\r']* ]] || fail 'expected a configuration-safe tooling path'
+  mkdir -p "$HOME/.config/systemd/user"
+  {
+    printf '[Unit]\nDescription=Manifold preview garbage collection\n[Service]\nType=oneshot\n'
+    printf 'Environment="PREVIEW_HOME=%s"\nEnvironment="PATH=%s"\n' "$PREVIEW_HOME" "$PATH"
+    [[ -z ${DOCKER_HOST:-} ]] || printf 'Environment="DOCKER_HOST=%s"\n' "$DOCKER_HOST"
+    [[ -z ${DOCKER_CONTEXT:-} ]] || printf 'Environment="DOCKER_CONTEXT=%s"\n' "$DOCKER_CONTEXT"
+    printf 'ExecStart="%s" "%s/preview.sh" gc\n' "$(command -v bash)" "$here"
+  } >"$HOME/.config/systemd/user/manifold-previews-gc.service"
+  {
+    printf '[Unit]\nDescription=Daily Manifold preview garbage collection\n[Timer]\n'
+    printf 'OnCalendar=daily\nPersistent=true\n[Install]\nWantedBy=timers.target\n'
+  } >"$HOME/.config/systemd/user/manifold-previews-gc.timer"
+  systemctl --user daemon-reload
+  systemctl --user enable --now manifold-previews-gc.timer
 }
 case "${1:-}:$#" in
   up:3) up "$2" "$3" ;;
@@ -172,5 +197,6 @@ case "${1:-}:$#" in
   unlive:2) unlive "$2" ;;
   router:1) router ;;
   gc:1) gc ;;
-  *) fail 'usage: preview.sh up N SHA | down N | ls | url N-or-name | live name worktree | unlive name | router | gc' ;;
+  gc-timer:1) gc_timer ;;
+  *) fail 'usage: preview.sh up N SHA | down N | ls | url N-or-name | live name worktree | unlive name | router | gc | gc-timer' ;;
 esac

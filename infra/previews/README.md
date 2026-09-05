@@ -11,9 +11,9 @@ user services. Enable linger for the deployment user. Keep this tooling in a sta
 checkout outside disposable preview checkouts. One hub uses approximately 140 MiB.
 The registry (`name kind port` per line) and data live under `PREVIEW_HOME`, default
 `$HOME/manifold-previews`. Only this user may write it; lifecycle operations serialize.
-The router and live user units are generated, enabled at boot, and survive logout.
+The router, live user units and daily gc timer are generated, enabled at boot, and survive logout.
 `deploy-preview.yml` skips `up` for a head whose whole diff is Markdown outside `changes/`
-(nothing to show); `down` on a PR that never came up is a no-op, so teardown is unconditional.
+(nothing to show); `down` is unconditional and also cleans up images left by earlier teardowns.
 
 ## Configuration
 
@@ -65,9 +65,10 @@ restrict,command="env PREVIEW_HOME=/path/to/previews /path/to/repo/infra/preview
 ## Operations
 
 Run `infra/previews/preview.sh` with: `router`; `up 123 <sha>`; `down 123`; `ls`;
-`url 123`; `live feature /path/to/worktree`; `url feature`; `unlive feature`; `gc`.
+`url 123`; `live feature /path/to/worktree`; `url feature`; `unlive feature`; `gc`; `gc-timer`.
 `up` reuses the port and data on redeploy, waits for the exact build, then prints its URL.
-`down` destroys the container, volume and checkout. `unlive` retains live data.
+`down` destroys the container, volume, checkout and per-PR image (including an image whose
+checkout is already gone). An absent image is a no-op; `unlive` retains live data.
 `gc` removes PRs reported CLOSED or MERGED by `gh pr view`; without `gh` it is a no-op.
 The receiver accepts `dev <sha>`, `preview up 123 <sha>`, `preview down 123`, or a
 bare `<sha>` (legacy dev deployment). Other commands are refused.
@@ -79,3 +80,25 @@ output. Automated deployment never announces keys. Live keys stay in
 Observe live processes with `journalctl --user -u manifold-live-feature` and restart
 with `systemctl --user restart manifold-live-feature`. Install worktree dependencies
 with `bun install --frozen-lockfile` before `live`; source changes update without redeploy.
+
+## Disk / gc
+
+Run `infra/previews/preview.sh gc-timer` from the stable tooling checkout to install and
+enable `manifold-previews-gc.timer` immediately. Re-running the command updates the generated
+user units idempotently. With user linger enabled, it runs `preview.sh gc` daily, including
+a missed run after the host returns. It inherits the installation's `PATH` and `PREVIEW_HOME`
+and reads `$PREVIEW_HOME/env` at each run; `gh` must be authenticated for the deployment user.
+The installation also preserves `DOCKER_HOST` and `DOCKER_CONTEXT` when set, so a rootless
+Docker daemon remains reachable without an interactive login shell.
+Keep that checkout available for the service, just as for live units.
+
+After closed-PR teardown, `gc` runs `docker builder prune --force --keep-storage 5G` and
+`docker image prune --force`. The 5G constant in `common.sh` retains recent build layers
+while bounding reclaimable build-cache growth; Docker cannot prune layers still in use.
+Only dangling images are pruned globally: tagged images for open PRs are never swept.
+`down N` removes both `manifold-pr-pr-N:local` (the current Compose tag) and the older
+`manifold-pr-N:local` tag, without forcing removal of an image used by another container.
+Inspect disk use with `docker system df`, the schedule with
+`systemctl --user list-timers manifold-previews-gc.timer`, and runs with
+`journalctl --user -u manifold-previews-gc.service`. To run it immediately:
+`systemctl --user start manifold-previews-gc.service`.

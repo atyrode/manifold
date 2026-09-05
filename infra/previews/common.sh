@@ -15,6 +15,9 @@ fi
 export PREVIEW_DEV_CHECKOUT="${PREVIEW_DEV_CHECKOUT:-$HOME/manifold-dev}"
 export PREVIEW_PORT_RANGE="${PREVIEW_PORT_RANGE:-7920-7999}"
 export PREVIEW_ROUTER_PORT="${PREVIEW_ROUTER_PORT:-7900}"
+# Keep recent build layers without letting daily preview rebuilds consume the host disk.
+export PREVIEW_BUILD_CACHE_KEEP_STORAGE=5G
+readonly PREVIEW_BUILD_CACHE_KEEP_STORAGE
 log() { printf 'preview: %s\n' "$*"; }
 fail() { log "$*" >&2; exit 2; }
 require_domain() {
