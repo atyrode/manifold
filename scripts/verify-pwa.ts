@@ -32,14 +32,14 @@ import {
 } from "../packages/protocol/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser } from "./cdp.ts";
-import { ownerKeyOf, sleep, teardownServer, until } from "./gate-lib.ts";
+import { ownerKeyOf, reserveLoopbackPort, sleep, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-pwa-");
 const dataDirA = mkdtempSync(join(tmpdir(), "manifold-pwa-a-"));
 const dataDirB = mkdtempSync(join(tmpdir(), "manifold-pwa-b-"));
-const portA = 46000 + Math.floor(Math.random() * 1500);
-const portB = portA + 1;
+const portA = reserveLoopbackPort();
+const portB = reserveLoopbackPort();
 const originA = `http://127.0.0.1:${String(portA)}`;
 const originB = `http://127.0.0.1:${String(portB)}`;
 
@@ -134,7 +134,7 @@ try {
   await createContainer(originB, ownerB, nameB);
 
   browser = new Browser();
-  await browser.launch(9352);
+  await browser.launch();
   const driver = browser;
 
   // ───────────────────────────────────────────────────────────── 1. installability

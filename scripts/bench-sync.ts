@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { ActionOutcomeSchema, ContainerResponseSchema } from "../packages/protocol/src/index.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { Browser } from "./cdp.ts";
-import { ownerKeyOf, sleep, teardownServer, until } from "./gate-lib.ts";
+import { ownerKeyOf, reserveLoopbackPort, sleep, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const cadences = process.argv
@@ -55,7 +55,7 @@ interface BenchResult {
 async function benchCadence(cadenceMs: number): Promise<BenchResult> {
   const distDir = mkdtempSync(join(tmpdir(), `manifold-bench-dist-${String(cadenceMs)}-`));
   const dataDir = mkdtempSync(join(tmpdir(), "manifold-bench-data-"));
-  const port = 41000 + Math.floor(Math.random() * 2000);
+  const port = reserveLoopbackPort();
   const origin = `http://127.0.0.1:${String(port)}`;
   const browserA = new Browser();
   const browserB = new Browser();
@@ -106,12 +106,11 @@ async function benchCadence(cadenceMs: number): Promise<BenchResult> {
     if (!outcome.ok) throw new Error(`createContainer refused: ${outcome.denial.message}`);
     const containerId = ContainerResponseSchema.parse(outcome.result).container.id;
 
-    const debugPort = 9700 + Math.floor(Math.random() * 200);
-    for (const [browser, offset, name] of [
-      [browserA, 0, "benchA"],
-      [browserB, 250, "benchB"],
+    for (const [browser, name] of [
+      [browserA, "benchA"],
+      [browserB, "benchB"],
     ] as const) {
-      await browser.launch(debugPort + offset);
+      await browser.launch();
       await browser.goto(`${origin}/#key=${ownerKey}`);
       await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
       if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {

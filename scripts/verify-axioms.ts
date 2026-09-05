@@ -2302,25 +2302,6 @@ async function consumeServerLog(): Promise<void> {
   }
 }
 
-function debugPortIsAvailable(port: number): boolean {
-  try {
-    const probe = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
-    probe.stop(true);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function availableDebugPort(): number {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    // Clear of every other gate's band (9340-9378 fixed, 9400-10000 for convergence's pair).
-    const candidate = 10_100 + Math.floor(Math.random() * 300);
-    if (debugPortIsAvailable(candidate)) return candidate;
-  }
-  throw new Error("could not find an available Chromium debug port");
-}
-
 let browser: Browser | null = null;
 let canvasClient: SessionClient | null = null;
 let terminalClient: SessionClient | null = null;
@@ -2523,7 +2504,7 @@ try {
   // ─────────────────────────────────────────── the browser
 
   browser = new Browser();
-  await browser.launch(availableDebugPort());
+  await browser.launch();
   await browser.goto(`${origin}/#key=${ownerKey}`);
   await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
   if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {

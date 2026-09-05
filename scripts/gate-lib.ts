@@ -61,6 +61,39 @@ export function checkInto(failures: string[]): (name: string, ok: boolean, detai
   };
 }
 
+/** Ports this process has already handed out, so two reservations in one gate never coincide. */
+const reservedPorts = new Set<number>();
+
+/**
+ * A loopback port the kernel just confirmed free, for a server or a Chromium debug endpoint
+ * the gate is about to bind there.
+ *
+ * Asked for, not guessed: the gate listens on `127.0.0.1:0`, reads the port the kernel
+ * assigned, and closes the listener. That is a RESERVATION with a small race window — another
+ * process could bind or `connect()` from the same port between the close and the gate's own
+ * bind — but the kernel excludes every port that is bound, connected or in TIME_WAIT at the
+ * moment it answers, and picks the next one from a random offset, so the window is as narrow
+ * as the platform makes it. A blind `BASE + Math.floor(Math.random() * N)` had no such check:
+ * every band sat inside the ephemeral range, where a sibling gate's outbound connection may
+ * already hold the number as its source port, and `bun run gate` runs the gates in parallel.
+ * #198's `verify:tile-drop` went RED that way on a docs-only PR (#195, run 33943813498):
+ * `Failed to start server. Is port 44966 in use?` — Bun's own refusal to bind.
+ *
+ * Distinct within a process by construction: a repeat of a port already handed out here is
+ * asked again, so a gate that reserves for its server and then for its browsers never gets
+ * the same number twice.
+ */
+export function reserveLoopbackPort(): number {
+  for (;;) {
+    const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    const port = probe.port;
+    probe.stop(true);
+    if (reservedPorts.has(port)) continue;
+    reservedPorts.add(port);
+    return port;
+  }
+}
+
 /** The owner key a freshly booted server wrote into its data dir. */
 export async function ownerKeyOf(dataDir: string): Promise<string> {
   return (await Bun.file(join(dataDir, "owner.key")).text()).trim();
