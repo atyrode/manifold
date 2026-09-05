@@ -893,7 +893,7 @@ describe("json schema export", () => {
 });
 
 describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
-  test("v21 ADDS to the acceptance set, because the agent wire still did not move", () => {
+  test("v22 ADDS to the acceptance set: the agent wire grew, but only where an old agent never looks", () => {
     /*
       The verdict a bump owes. v15 -> v16 was the lexicon cut and RESET the set: it renamed
       the MACHINE wire — `sessionId` became `terminalId` on every agent frame,
@@ -905,14 +905,17 @@ describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
       answers), v19 -> v20 (credential expiry and the credential list, whose one exemption
       is precisely the machine token) and v20 -> v21 (the container-discipline roster
       opening into a manifest contribution, plus the carry aim's layout revision and the
-      server's aim-only gesture fan — session frames an agent never sees) are all the other
-      case. Every one of them leaves `AgentMessage` and `ServerToAgentMessage` gaining,
-      losing and renaming nothing; an agent never sees a principal, a session frame, a
-      container row, a manifest or a browser's throttled timers, and no credential an
-      enrolled spoke holds changed meaning at v20. So the invariant's first clause applies
-      verbatim — a bump that leaves the agent wire identical ADDS — and a v16 agent keeps
-      its terminals across this deploy instead of being locked out by a version check for a
-      change it cannot see.
+      server's aim-only gesture fan — session frames an agent never sees) are all the first
+      clause. Every one of them leaves `AgentMessage` and `ServerToAgentMessage` gaining,
+      losing and renaming nothing.
+
+      v21 -> v22 (a terminal born running a program, issue #192) is the SECOND clause, applied
+      for the first time: `create` gained an OPTIONAL `program`, whose absence is the
+      byte-identical v21 frame and the same shell spawn — and the broker never sends the key
+      to an agent whose hello predates it, so a v16 agent observes a v22 hub exactly as it
+      observed a v21 one. So the invariant ADDS again, and a v16 agent keeps its terminals
+      across this deploy instead of being locked out by a version check for a field it will
+      never be sent.
 
       Both halves are asserted: the running version must be accepted (or every agent is
       refused), and every version since the last reset must STILL be accepted (or this is a
@@ -921,6 +924,7 @@ describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION - 1)).toBe(true);
     expect([...MACHINE_PROTOCOL_COMPAT_VERSIONS]).toEqual([
+      PROTOCOL_VERSION - 6,
       PROTOCOL_VERSION - 5,
       PROTOCOL_VERSION - 4,
       PROTOCOL_VERSION - 3,

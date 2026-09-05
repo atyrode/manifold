@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 21;
+export const PROTOCOL_VERSION = 22;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -209,13 +209,43 @@ export const PROTOCOL_VERSION = 21;
  * first clause applies verbatim: the set is `{16, 17, 18, 19, 20, 21}` and NO fleet
  * restart is owed — an enrolled v16 spoke keeps its terminals across this deploy.
  *
- * The hub-ahead-of-fleet coupling still holds and is stated rather than assumed: the
- * compat set only makes a hub tolerant of OLDER agents, so the release carrying this bump
- * deploys the hub at or ahead of the agent binaries the pin cron ships.
+ * v21 -> v22: A TERMINAL IS BORN RUNNING A PROGRAM (issue #192), and the one bump so far
+ * whose ADDITION touches the agent wire — the second clause of invariant 10, applied for the
+ * first time. `terminal_open` gained an OPTIONAL `program { argv }` and an OPTIONAL `env`
+ * allowlist (upper-case POSIX keys, never the `MANIFOLD_` prefix, merged UNDER the four fixed
+ * keys); `create` gained the same OPTIONAL `program`, and its `env` now carries the opener's
+ * keys beside the minted ones — a record it always was, read by every agent since v16 with
+ * the same loop. The session error vocabulary gained `unsupported`.
+ *
+ * Absence reproduces v21 EXACTLY: a `create` without `program` is the byte-identical frame,
+ * and the agent that receives it resolves `$SHELL` → `bash` → `sh` as it always did. The
+ * agent's strict `create` parser means a v16–v21 agent would read a `program` key as a
+ * malformed frame — so the SERVER never sends one to such an agent: the broker compares the
+ * hello's protocol against `TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION` and refuses the OPENER
+ * (`unsupported`) instead. An enrolled pre-v22 spoke therefore observes a v22 hub exactly as
+ * it observed a v21 one, which is the second clause's test verbatim — every pre-bump frame
+ * still parses, and the default for the absent field is the pre-bump behaviour — so 22 is
+ * ADDED, the set is `{16, 17, 18, 19, 20, 21, 22}`, and NO fleet restart is owed. What a
+ * pre-v22 spoke cannot do is run a program; that is a named refusal, not a lockout.
+ *
+ * The hub-ahead-of-fleet coupling holds with more force than usual here: a v22 AGENT in
+ * front of a v21 hub is refused 4409 on every dial (the hub was built before 22 existed), so
+ * the release carrying this bump deploys the hub at or ahead of the agent binaries the pin
+ * cron ships.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  16, 17, 18, 19, 20, 21,
+  16, 17, 18, 19, 20, 21, 22,
 ]);
+
+/**
+ * The first protocol at which `create` may carry `program` (issue #192). The broker compares
+ * the target machine's HELLO version against this before sending one: an older agent parses
+ * `create` strictly, so the key would be a malformed frame to it and it would drop the socket.
+ * Refusing the opener by name (`unsupported`) instead is what lets the field be additive —
+ * an old agent never sees a byte it cannot read, which is the whole reason 22 could be
+ * ADDED to `MACHINE_PROTOCOL_COMPAT_VERSIONS` rather than resetting it.
+ */
+export const TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION = 22;
 
 /**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
@@ -240,8 +270,12 @@ export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
  * no container, no placement, no manifest and no gesture frame, and a guest holds a share
  * secret rather than a scene, so the instance wire is byte-identical a third time and the
  * version is ADDED.
+ * v22: session and machine channels only — a terminal born running a program (issue #192).
+ * `instance.ts` mentions no terminal, no PTY and no `create`, and a guest holds a share
+ * secret rather than a machine token, so the instance wire is byte-identical a fourth time
+ * and the version is ADDED.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([18, 19, 20, 21]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([18, 19, 20, 21, 22]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the
