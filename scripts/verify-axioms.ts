@@ -2186,9 +2186,20 @@ function scanTree(dir: string, out: string[]): void {
  * `install` block land in `builtin.ts` and `assemble.ts` beside `setEnabled` and `purge` — the
  * one place they can be (the enablement door "cannot be a plugin", §Foundation law), about
  * 70 lines. Same defence, same reviewability, same unmoved WARN line.
+ *
+ * RED RAISED 12,800 → 13,233 on 2026-09-05 (#216, #219, #222; ADR 0024). The added
+ * mechanisms are one mounted projection/titlebar contract, one host-owned titlebar drag
+ * boundary, and one stable-host tile-motion owner shared by incoming, departing and committed
+ * layouts. They arbitrate between renderer plugins and survive any optional contributor being
+ * disabled; no plugin owns the others' ancestry, controls or geometry. Moving them into one
+ * renderer would require cross-plugin imports or duplicate the very pipeline these issues
+ * remove. The production TypeScript delta is 491 lines, including the explicit preview/chrome
+ * contract; the integrated base was 12,742 lines. This admits exactly 13,233, without moving WARN,
+ * excluding more files, trimming explanations, or relaxing any behavior gate. ADR 0024 applies
+ * all three admission criteria and records the rejected alternatives.
  */
 const PLUGIN_SRC_WARN_LINES = 9_000;
-const PLUGIN_SRC_MAX_LINES = 12_800;
+const PLUGIN_SRC_MAX_LINES = 13_233;
 
 {
   const files = sourcesMatching("packages/plugin/src/**");
@@ -2666,6 +2677,67 @@ try {
     // Back to select: a held draw tool turns later pointer work into ink.
     await browser.evaluate(
       `document.querySelector('[data-testid="toolbar-select"]').click(), null`,
+    );
+  }
+
+  {
+    // Mounted location is per connection; the shared titlebar is the only attendance painter.
+    const peer = canvasClient.self;
+    if (peer === null) throw new Error("the connected SDK peer has no principal");
+    const peerTitle = `${peer.name} (${peer.kind})`;
+    const titlebarPeer = (): Promise<boolean> =>
+      browser!.evaluate<boolean>(
+        `Array.from(document.querySelectorAll(
+          '.canvas-view > .canvas-header.node-titlebar .node-titlebar__middle .presence-wrapper--compact .presence-avatar'
+        )).some((avatar) => avatar.getAttribute('title') === ${JSON.stringify(peerTitle)})`,
+      );
+    const rootLocation = [{ kind: "container" as const, containerId: canvasContainerId }];
+    canvasClient.sendPresence({ vantage: { locationPath: rootLocation } });
+    const appeared = await settles(titlebarPeer, 8_000);
+    check(
+      "R5 mounted titlebar presence",
+      appeared,
+      appeared
+        ? "the SDK connection's mounted path paints its principal in the shared canvas titlebar"
+        : "the mounted SDK peer never appeared in the shared titlebar slot",
+    );
+
+    canvasClient.sendPresence({ vantage: { locationPath: null } });
+    const cleared = await settles(async () => !(await titlebarPeer()), 8_000);
+    check(
+      "R5 location null clears titlebar presence",
+      appeared && cleared,
+      cleared
+        ? "clearing only location retires the peer's avatar while its room connection stays open"
+        : "the titlebar retained an avatar whose connection declared no mounted location",
+    );
+
+    canvasClient.sendPresence({ vantage: { locationPath: rootLocation } });
+    const republished = await settles(titlebarPeer, 8_000);
+    const disabled = await setEnabled("core.presence", false);
+    const absent = await settles(
+      () =>
+        browser!.evaluate<boolean>(
+          `document.querySelector('.canvas-view > .canvas-header.node-titlebar') !== null &&
+            document.querySelector('.node-titlebar__middle .presence-wrapper--compact') === null`,
+        ),
+      8_000,
+    );
+    check(
+      "R5 disabling presence removes titlebar chrome",
+      republished && disabled && absent,
+      republished && disabled && absent
+        ? "the live toggle removes the painter without removing the shared titlebar or room"
+        : "presence was not live before disable, the door refused, or its chrome remained",
+    );
+    const enabled = await setEnabled("core.presence", true);
+    const restored = await settles(titlebarPeer, 8_000);
+    check(
+      "R5 enabling presence restores mounted attendance",
+      enabled && restored,
+      enabled && restored
+        ? "the retained connection path paints again with no reload or republish"
+        : "re-enabling the painter failed to recover retained mounted attendance",
     );
   }
 

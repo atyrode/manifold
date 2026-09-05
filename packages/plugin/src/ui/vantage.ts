@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { locationPathsEqual, type LocationPath } from "@manifold/protocol";
 
 /**
  * This device's VIEW STATE, published (AXIOMS.md A2).
@@ -9,19 +10,17 @@ import { useSyncExternalStore } from "react";
  * module-level store whose value rides the presence plane, because it dies with the
  * connection and nobody merges it (D6).
  *
- * ENGINE MECHANISM, not presence's own: `core.presence` owns putting this on the wire, but the
- * writers are chrome that has nothing to do with presence — a canvas toolbar, a text editor
- * inside a node, the workspace sidebar, a terminal viewer taking focus — and no two of them
- * may import each other. A store two parties who cannot name each other both have to address
- * is the definition of a mechanism, so it lives in the engine's standard library and the
- * presence plugin merges {@link currentVantage} into its outgoing payload.
+ * ENGINE MECHANISM, not presence's own: the writers are chrome that has nothing to do with
+ * the roster painter — a canvas toolbar, a text editor, the workspace sidebar or a terminal
+ * viewer taking focus — and no two of them may import each other. Mounted root renderers
+ * publish this store through their attendance client even when no roster painter is installed.
  *
  * A store rather than a context on purpose: the writers share no ancestor, and every one of
  * them writes the SAME per-principal state. One door, and a reconnect republishes it without a
  * second send path.
  */
 
-/** The published view state of this device. Absent facets are `null`, never missing. */
+/** The published view state of this device. An omitted location declares no mounted ancestry. */
 export interface Vantage {
   /** Tool id the viewer is holding: a floor tool (`select`, `text`) or a contributed one. */
   readonly tool: string | null;
@@ -29,6 +28,7 @@ export interface Vantage {
   readonly editingElementId: string | null;
   /** Container whose tile the viewer has engaged. */
   readonly focusedContainerId: string | null;
+  readonly locationPath?: LocationPath | null;
   readonly sidebarCollapsed: boolean;
   /**
    * ARRANGE MODE (F8): the parts of ONE arrangement are grabbable within their parent, and
@@ -64,6 +64,7 @@ const INITIAL: Vantage = {
   tool: null,
   editingElementId: null,
   focusedContainerId: null,
+  locationPath: null,
   sidebarCollapsed: false,
   arranging: false,
   arrangeScope: null,
@@ -87,6 +88,7 @@ export function setVantage(patch: Partial<Vantage>): void {
     next.tool === state.tool &&
     next.editingElementId === state.editingElementId &&
     next.focusedContainerId === state.focusedContainerId &&
+    locationPathsEqual(next.locationPath, state.locationPath) &&
     next.sidebarCollapsed === state.sidebarCollapsed &&
     next.arranging === state.arranging &&
     next.arrangeScope === state.arrangeScope
@@ -95,6 +97,11 @@ export function setVantage(patch: Partial<Vantage>): void {
   }
   state = next;
   for (const listener of listeners) listener(state);
+}
+
+/** Publish mounted ancestry without changing the room-local terminal focus contract. */
+export function publishLocation(locationPath: LocationPath | null): void {
+  setVantage({ locationPath });
 }
 
 /** Subscribes to changes; the callback is NOT invoked with the current value. */

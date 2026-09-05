@@ -389,7 +389,7 @@ casing rule: `canvas_item`, `no_self_embed`, `on_claim`, `add_tile`.
 | `canvas`      | tileable, embeddable, unplaceable, canvas_item_as_portal | no_self_embed            | inline   |
 | `composition` | mergeable, unplaceable, canvas_item_as_portal            | no_self_embed, solo_only | inline   |
 | `text`        | tileable, canvas_item                                    | —                        | on_claim |
-| `draw`        | canvas_item                                              | —                        | inline   |
+| `draw`        | tileable, canvas_item                                    | —                        | on_claim |
 | `tile`        | extractable                                              | —                        | inline   |
 | `panel`       | tileable                                                 | —                        | none     |
 
@@ -418,8 +418,9 @@ home.
   becomes addressable. `PlacementRef` and `TileRef` are the same addressing concept in two
   shapes — a placement subject and a leaf's occupant — and both are bijective with a
   `manifold://` URI (`ManifoldRef`), which is why the names rhyme. They are deliberately not
-  interchangeable in storage: a note has no identity outside the document holding it, so it is
-  addressed as an `element` and stored as a leaf's `text` ref, and the executor translates.
+  interchangeable in storage: a contributed element has no identity outside the document
+  holding it. Its placement includes `containerId`; its leaf ref is `{kind:"element",elementId}`
+  local to that composition's document. Notes remain `type:"text"`; drawings remain `type:"draw"`.
 - `destination` — four forms: `{kind:"canvas", containerId, x, y}`;
   `{kind:"tile", containerId, targetTileId, edge}`, where a null target fills the first empty leaf
   else splits the root and a null edge fills an empty target else splits it;
@@ -1518,9 +1519,9 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   (`LAYOUT_KEY`): tiles are splits (`dir` row/column, parallel `ratios`/`children`,
   `ref` null) or leaves whose `ref` is `{ kind:"terminal", terminalId }`,
   `{ kind:"container", containerId }` (an embedded canvas — never the container itself), or
-  `{ kind:"text", elementId }` (a note the composition's OWN document stores, so placing a
-  note into a composition MOVES the element instead of referencing it across two docs). The
-  fourth ref kind, `{ kind:"panel", panelId }`, belongs to WORKSPACE layouts only: a room
+  `{ kind:"element", elementId }` (a contributed element, including a note or drawing, stored in
+  the composition's OWN document: placement MOVES the element rather than referencing two docs).
+  The fourth ref kind, `{ kind:"panel", panelId }`, belongs to WORKSPACE layouts only: a room
   document never carries one, and the placement algebra refuses `panel` items into any
   container (`not_accepted`). A panel leaf may additionally carry `sections: string[]` — the
   reader's own arrangement of the sections that panel hosts, which is why the field is legal on
@@ -1547,7 +1548,7 @@ engaged is a socket role rather than a UI mode anyone has to learn.
 - `presence { payload }` where payload is a partial of
   `{ cursor: {x,y} | null, selection: string[], viewport: {x,y,zoom}, focus: {elementId} | null, status: "active"|"idle"|"working"|"waiting"|"needs_attention"|"done", vantage: {…} | undefined, spotlight: {…} | null }`.
 - **Vantage is presence** (axiom A2: per-principal view state is observable AND drivable).
-  `vantage { tool?, editingElementId?, focusedContainerId?, sidebarCollapsed?, arranging?, arrangeScope? }`
+  `vantage { tool?, editingElementId?, focusedContainerId?, sidebarCollapsed?, arranging?, arrangeScope?, locationPath? }`
   is written by the
   CLIENT through the same throttled presence writer as every other field and dies with the
   connection, so a peer can see which tool somebody holds, what they are editing, whether
@@ -1556,6 +1557,33 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   descriptive, never authoritative: nothing downstream branches on whose vantage it renders,
   and every arrangement arrange mode produces — a section order, a moved panel — commits
   through `core.space.setLayout` like any other layout write.
+- **Mounted location (browser wire 23).** `locationPath?: LocationPath | null` is an ordered
+  path of 1–32 existing structured `ManifoldRef` values (`MAX_LOCATION_PATH_LENGTH`); ref IDs
+  retain their 128-character bound. It describes the actual mounted route, not a canonical
+  parent inferred from the index: root container → portal element or composition tile →
+  target container/terminal/element, repeated for nested mounts. Two placements of the same
+  target have different paths. `null` means unknown/no location. Replacing `vantage` without
+  `locationPath` also clears location; a payload omitting `vantage` preserves that facet.
+  Unknown or overlong ancestry stays unknown, never a truncated path that falsely matches.
+  These optional fields require wire 23 because old strict decoders reject unknown keys;
+  optional does NOT mean backward-decodable. The unchanged machine wire retains its explicit
+  compatibility allowance; browser peers negotiate the new wire rather than silently degrade.
+- **Location belongs to a connection.** `PresenceState.connectionLocations?` carries
+  `{ connId, locationPath: LocationPath | null }[]` alongside the existing principal aggregate.
+  Init/resync/join snapshots include every live connection; incremental presence changes only
+  the stamped `connId`. A departing tab replaces the remaining attendance row, retiring only
+  its path; the last departure removes the principal. Disconnect/room teardown retain no path.
+  Consumers never infer ancestry from the aggregate `payload.vantage.locationPath`; legacy
+  `focus.elementId` and the other aggregate fields retain their existing semantics.
+- **One titlebar presence pipeline.** Mounted renderers share the root attendance client in
+  `ProjectionScope { host, client, locationPath }`, extending actual mount refs at each boundary.
+  The root publishes vantage even when no presence painter is enabled. `core.presence` fills
+  the existing `overlays.titlebar` slot through `TitlebarOutlet` in `NodeTitleBar.middle`;
+  the engine-owned shared titlebar is a UI primitive, not another plugin. Prefix matching
+  includes an engaged descendant in its ancestor bars, excludes sibling placements, and
+  deduplicates principals. Immediate local vantage replaces only the local connection's
+  path, never a sibling tab's. Unknown scope, disconnected client, no matches, or an absent/
+  disabled painter produces no attendance chrome. Spotlight keeps its separate existing slot.
 - **Arranging is SCOPED, and the scope is a panel ref.** `arrangeScope` names the panel whose
   own parts are reachable right now; ABSENT ≡ the root, where the workspace's panels are. One
   scope is live at a time. Which panels offer an inner arrangement is PUBLISHED BY THE PLUGIN,
@@ -1589,6 +1617,28 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   the grabber has and the watcher may be a poll behind on. `item` is REQUIRED for exactly
   that reason: a watcher judges legality and paints from the frame, never by re-resolving
   somebody else's address. All other presence fields send on change only; viewport ≤1Hz.
+- **Carry relay reaches the source as well as the aim.** The sending room's fanout is unchanged.
+  Cross-room projection targets include `carry.aim.containerId` and, for a tile placement ref,
+  `carry.ref.containerId` even when the producer is a root canvas and the carry has no aim.
+  Each recipient room must be resident and authorized by `containers:read`; the sending room
+  is excluded and coincident source/aim targets receive only one frame. Remembered authorized
+  recipients also receive target changes and carry-less end frames; end clears that memory.
+  These projected frames are `aimOnly`: source departure and target preview consume the carry,
+  never foreign-room position, resize, ink, or cursor geometry.
+- **Carry projection and settlement share one content host.** `TilePreviewOverlay` accepts
+  `departure?: TileDeparture | null`, where `TileDeparture` holds `{ ref: PlacementRef,
+aim?: CarryAim, denied?: boolean }`. `useTileDeparture(sourceContainerId, overrides)` consumes
+  the existing reactive item-envelope source: local first, otherwise the freshest
+  source-matching remote, including absent/outside aims. This is an overlay-only projection;
+  it never changes the carried item's kind, its payload, or durable layout.
+  Incoming target arbitration wins. Preview and pre-mutation FLIP settlement transform stable
+  `tile-content-host` elements, not ancestor pane boxes; composing both transforms would move
+  live content twice. Commits settle from captured visual geometry to authoritative layout;
+  cancellation/refusal restores projection and end/expiry clears departure. Content is neither
+  cloned nor additionally reparented for animation. A removed tile may leave a bounded empty
+  `tile-departure-shell`; keep `TileTree` mounted for an empty layout to retain that exit.
+  Existing `--preview-pane-transition` / `--carry-fade-transition` tokens govern timing;
+  reduced motion skips movement and cancels active animations.
 - **Cursor coordinate space is the room's discipline.** Cursors are container-scoped
   (per-room, like all presence): canvas rooms carry React-Flow scene coordinates; composition
   rooms carry fractions of the container's tile area in `[0,1]²` (ratios are shared CRDT
@@ -1613,6 +1663,50 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   `GESTURE_TTL_MS` because the silences differ: a gesture is motion by definition, while a
   cursor emits only while it MOVES, so silence is the ordinary state of a resting pointer and
   the bound must outlast a reading pause rather than a send interval.
+
+### Shared chrome and terminal rendering
+
+`TerminalRendererProps` and `ContainerRendererProps` accept `projectionScope?`,
+`frame?: "window" | "tile"`, `titlebarMiddle?`, `titlebarExtras?`, and `titlebarDragProps?`.
+The mounted renderer owns its bar and forwards these slots rather than receiving a duplicate
+host-drawn bar. `NodeTitleBar.dragProps: TitlebarDragProps` opts the whole bar into dragging;
+interactive descendants and rename input remain controls, never drag sources.
+
+The frame rule is **rounded exterior windows, square internal tile seams with matching
+backing**. `frame` defaults to `window`; hosts pass `tile` for internal occupants. Terminals
+own their frame, body and xterm CSS in their plugin, not foreign selectors in a canvas or
+composition stylesheet. The titlebar stays in normal flow and pointer-active; the clipped
+body uses the terminal's own background and padding without replacing the live xterm host.
+Mono windows and embedded compositions use the same native chrome and font scale; canvas
+zoom scales the projection once. Spectators fit their local display, but the terminal's
+controller-only resize guard prevents that fit from changing shared PTY geometry.
+
+Element `presentation?: Record<discipline, "body" | "titlebar">` is inert contribution data,
+preserved through `RegisteredElement`. Canvas reads the declaration for `canvas`, defaulting
+to `titlebar`; its builtin portal keeps shared titlebar policy. Notes and Draw explicitly
+declare `{ canvas: "body", composition: "titlebar" }`: inline text/ink has no imposed bar,
+while a composition always titles its occupant. Unknown/unavailable contributions get a
+sensible titled placeholder, not an unlabelled hole. Draw is tileable with `on_claim` homing
+and uses the same generic `element` tile ref as Notes, not an address named after its payload.
+
+The terminal bundles **Manifold Terminal Mono**, derived from pinned Fira Code 6.002 / Nerd
+Fonts v3.4.0. It is an audited licensed Nerd glyph subset, not the complete Nerd set or a
+promise of CJK/emoji coverage. Source/output hashes, subset command and conversion steps live
+in `packages/plugins/terminals/src/fonts/provenance.json`; exact cmap ranges are in
+`coverage.json`, and retained notices are in `LICENSE.txt` and the WOFF2 metadata. Font Logos
+and Weather Icons are excluded for licensing/notice issues; Seti/Custom, Devicons and Font
+Awesome Extension are outside the audited subset. Shared bounded font readiness precedes
+xterm creation, socket attachment and activation; failure is visible locally, not a silent
+fallback. Snapshot-first replay and post-replay fitting remain the terminal byte contract.
+
+Native titlebar `−`/`+` controls change xterm font size by one integer pixel within **8–32**;
+the current-size button resets to **13px**. `core.terminals` stores this device's per-terminalId
+non-default sizes under `manifold:terminal-font-sizes`, bounded to 128 entries with
+oldest-updated eviction and malformed entries ignored. The same terminal's mounted projections
+share that local preference; other devices do not. This is local readability, not a shared
+document edit or an action. Spectators can adjust their own font; a resulting PTY resize is
+still controller-only, post-snapshot and non-preview. Zoom updates the existing xterm instance,
+not the socket or terminal lifecycle.
 
 ### Terminals over the session channel
 
@@ -1788,10 +1882,11 @@ and from the spoke's side it is silent. systemd keeps reporting the unit `active
 unit state is NOT evidence the agent is on the canvas — the evidence is the agent journal's
 `protocol_version_rejected` (logged at error, with the close code, on every rejected dial) and the
 server's `machine_version_rejected`, which carries both versions. The guard is not in the handshake,
-it is in release
-discipline: `bun run release` publishes the agent binary and the fleet picks it up, so publishing a
-release is a fleet action (AGENTS.md invariant 10) and the hub ships at or ahead of any release
-whose `PROTOCOL_VERSION` exceeds the deployed one.
+it is in upgrade discipline: `bun run release` publishes artifacts without deploying a hub.
+Install newer-protocol agents only after their target hub supports that protocol. Production
+promotion is an explicit, tag-selected operation; its health check precedes fleet-pin dispatch.
+The downstream pin cron independently holds candidates newer than the deployed production
+protocol, so a development-only release does not silently upgrade production or its agents.
 
 Server→agent: `create { terminalId, cols, rows, cwd?, env, program? }`, `input { terminalId,
 data }`, `resize`, `kill`, `snapshot_request { terminalId }`, `ping`. `create.env` is the
@@ -1955,21 +2050,22 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- layout:<principalId>
 ```
 
-Schema version 18 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
+Schema version 19 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
 — `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
 `grants` substrate; 14 is the trace ledger — five nullable columns on `events`; 15 is credential
 expiry — `tokens.expires_at`; 16 retires the grant rows of already-revoked tokens, the same rule
 `revokeTokensWhere` now applies at revocation, applied to history; 17 adds `plugin_installs`, one
-new table and nothing rewritten; 18 adds `plugin_installs.actions`, defaulted to `'[]'`).
+new table and nothing rewritten; 18 adds `plugin_installs.actions`, defaulted to `'[]'`;
+19 renames contributed-element TileRef discriminants from `text` to `element`).
 Migrations 12, 14, 15, 17 and 18 are plain SQL for the same reason: none touches a stored
 document and existing rows need no backfill, since absence already means the right thing — a
 NULL origin means "this instance", a NULL `door` means "this row is an event, not a trace", a
 NULL `expires_at` means "never", and an empty `actions` list is the doorless row an elder install
 already composed.
 None takes a pre-migration snapshot, and that is the house rule rather than an exception to it:
-the snapshot belongs to a one-way DATA move (9, 11, 13, and 16 — SQL, but a DELETE nothing can
-run backwards), and adding nullable columns is reversible by a later migration that drops
-them. A migration is SQL, or CODE
+the snapshot belongs to a one-way DATA move (9, 11, 13, 16, and 19 — 16 is SQL, but a DELETE
+nothing can run backwards), and adding nullable columns is reversible by a later migration
+that drops them. A migration is SQL, or CODE
 when the move is not
 expressible as SQL:
 migration 9 (solo compositions) rewrites Yjs documents — every `terminal` element becomes a
@@ -1992,14 +2088,25 @@ moved (`core.shell.pad-view`→`core.shell.container-view`). `TileSchema` is str
 left alone would fail to parse, `readTileLayout` would answer null, and the next structural write
 would seed an EMPTY tree over somebody's composition — renaming the schema without rewriting the
 documents is silent data loss, which is why both halves ride ONE transaction.
+Migration 19 (`migrateToElementRefs` in the same lexicon migration module) rewrites raw layout
+Y.Maps in EVERY saved `scene_docs` revision, including older epochs and fallback revisions,
+and every per-principal `meta` value at `layout:<principalId>`. Only a leaf's
+`{kind:"text",elementId}` becomes `{kind:"element",elementId}`; note `type:"text"` and drawing
+payloads, element ids, collaborative text and formatting, other document maps, tree topology,
+ratios, and terminal/container/panel/spacer refs are retained. Modified snapshots alone are
+re-encoded and rehashed. Undecodable historical snapshots and invalid or unrelated metadata
+bytes remain untouched for fallback loading and operator recovery; this migration never
+empties an unreadable leaf. The current TileSchema accepts only `element`, not a compatibility
+alias for `text`, so this rewrite completes before any room or workspace layout is read.
+The document and metadata changes and `schema_version=19` commit in one transaction.
 A code migration declares whether it is recoverable, and
-a one-way data move is not: 9 and 11 each take a consistent `VACUUM INTO` snapshot BEFORE the
+a one-way data move is not: 9, 11, 13, 16 and 19 each take a consistent `VACUUM INTO` snapshot BEFORE the
 transaction opens (a VACUUM cannot run inside one, which is also what
 makes it a true pre-migration image), skipped only for an in-memory or not-yet-existing
 database.
 The snapshot lands beside the database as `<db>.pre-v<version>.bak`, so a `manifold.db` opened
-at schema 8 leaves `manifold.db.pre-v9.bak` and `manifold.db.pre-v11.bak` once the replay
-finishes, and **the operator prunes them**. The server never deletes an elder VERSION's
+at schema 8 leaves the images for 9, 11, 13, 16 and 19 once the replay finishes, and
+**the operator prunes them**. The server never deletes an elder VERSION's
 snapshot: that set is the recovery path for moves nothing can run backwards, and a process
 that silently deletes a recovery image is a worse failure than a full disk. The one exception
 the engine takes is bounded to a single version — at most the NEWEST snapshot per version
@@ -2012,6 +2119,12 @@ transaction opens (`VACUUM INTO` refuses to overwrite), which is what leaves the
 migration that then throws under the documented name rather than a temporary one; an operator
 who wants an earlier attempt kept renames it out of that name, where the engine cannot reach
 it.
+For the protocol-23 element-ref rollout, a schema-18 `manifold.db` produces
+`manifold.db.pre-v19.bak` beside itself before the rewrite. Rollback requires stopping the
+server and restoring that pre-v19 database image together with a compatible pre-cutover
+server/client build; the old parser cannot read upgraded `element` refs, and the new parser
+cannot read unconverted `text` refs. Preserve any later writes separately before restoring:
+the backup is the state before migration, not a reverse transform of subsequent edits.
 
 The server snapshots a full encoded Yjs document 1.5s after the last change, at least every
 10s under sustained edits, on room eviction, and on graceful shutdown. Loading scans the
@@ -2023,12 +2136,17 @@ gesture, and carry frames NEVER touch SQLite.
 One bundle, installable from any instance, pointable at any instance. Nothing here is a second
 build target and nothing branches on which instance is being looked at.
 
-- **Web app manifest**: `packages/web/public/app.webmanifest`, linked from `index.html`, copied
-  into `dist/` by the existing vite build and served by the existing static route. `start_url`
-  and `scope` are `/`, icons are `icon.svg` (any) and `icon-maskable.svg` (maskable), display is
-  `standalone`. Every path in it is relative: the SHELL belongs to whoever served it.
+- **Web app identity**: `packages/web/public/app.webmanifest` and the two public SVGs are
+  production templates consumed by Vite's `shellIdentity` plugin. It injects the escaped HTML
+  title and content-addressed manifest/favicon links and emits any-purpose and maskable icons;
+  Vite development serves the same generated assets. `start_url`, `scope`, and `id` remain `/`,
+  display remains `standalone`, and all asset paths stay same-origin. Build inputs
+  `VITE_MANIFOLD_SITE_TITLE` (default `manifold`) and `VITE_MANIFOLD_ICON_BACKGROUND` (optional
+  six-digit `#rrggbb`, absent retains the production gradient) select identity without hostname
+  branching or selecting an instance. Docker/Compose forward the same build inputs; runtime
+  environment changes cannot rebrand an already-built image.
 - **Shell cache**: `packages/web/sw.js`, emitted to `dist/sw.js` by the build with the shipped
-  asset list and a cache name of `manifold-shell-<build>-<digest of those asset names>`.
+  asset list and a cache name of `manifold-shell-<build>-<digest of emitted asset names and bytes>`.
   Registered by `packages/web/src/lens.tsx` in a built app. It caches the document, the build's
   hashed assets, the icon and the manifest — and passes through `/api`, `/ws`, `/healthz`, every
   non-GET and every CROSS-ORIGIN request untouched, so no scene state is ever served from a

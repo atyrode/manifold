@@ -1,15 +1,15 @@
 import "./styles.css";
 import { polylinePath, polylineViewBox } from "@manifold/plugin/hooks";
-import type { NodeProps } from "@xyflow/react";
+import type { ElementProps } from "@manifold/plugin";
 import { memo } from "react";
 
 /**
  * The stroke renderer — `core.draw`'s browser half.
  *
  * It paints and nothing else. Geometry (resize handles, selection, the commit into the scene
- * document) belongs to the engine's element frame, which wraps every contributed renderer, so
- * this component never learns how a scene is written: it is handed the node's `data` and a
- * box, and it fills the box with ink. That is the whole element contract.
+ * document) belongs to the mount site's element frame, so this component never learns how a
+ * scene is written: it is handed the element's `data` and fills its box with ink. A composition
+ * supplies tile geometry through the same neutral element contract.
  *
  * The path math is NOT here. It is `@manifold/plugin/hooks`' polyline geometry, the element
  * plane's one derivation of a coordinate payload into the strings that paint it — shared with
@@ -27,7 +27,7 @@ function numbers(value: unknown): readonly number[] {
   return value.filter((item): item is number => typeof item === "number");
 }
 
-function DrawStrokeNodeImpl({ data }: NodeProps): React.ReactElement {
+function DrawStrokeNodeImpl({ data }: ElementProps): React.ReactElement {
   const points = numbers(data["points"]);
   const strokeWidth =
     typeof data["strokeWidth"] === "number" ? data["strokeWidth"] : FALLBACK_STROKE_WIDTH;

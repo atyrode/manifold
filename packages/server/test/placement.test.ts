@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ActionOutcomeSchema,
-  DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   PROTOCOL_VERSION,
   DESTINATION_KINDS,
   ITEM_KINDS,
   PlaceResponseSchema,
   ServerToAgentMessageSchema,
+  SceneElementSchema,
   censusSolo,
   elementString,
   placementContainerFor,
@@ -36,6 +36,7 @@ import {
   DEFAULT_TERMINAL_HEIGHT,
   DEFAULT_TERMINAL_WIDTH,
   LOCAL_ORIGIN,
+  elementText,
   readElements,
   tileIdForRef,
   tileLeafIds,
@@ -571,8 +572,8 @@ describe("the placement algebra, executed", () => {
         "text -> compose=compose",
         "text -> unplaced=denied:not_accepted",
         "draw -> canvas=move_element",
-        "draw -> tile=denied:not_accepted",
-        "draw -> compose=denied:not_accepted",
+        "draw -> tile=add_tile",
+        "draw -> compose=compose",
         "draw -> unplaced=denied:not_accepted",
         "tile -> canvas=extract",
         // A leaf is a re-placeable PLACEMENT: both composition cells were
@@ -1045,6 +1046,158 @@ describe("center means this exact spot", () => {
     expect(roomFor(fixture, fixture.composition.id).homesTerminal(fixture.occupant)).toBe(false);
     expect(fixture.store.getContainer(fixture.composition.id)).not.toBeNull();
     expect(fixture.store.getContainer(fixture.residentHome)).toBeNull();
+  });
+
+  test("vacant structure before a solo occupant does not block composing onto its portal", async () => {
+    const fixture = await placementFixture();
+    const structured = fixture.placement.place({
+      ref: { kind: "structure", structure: { kind: "split", dir: "column" } },
+      destination: {
+        kind: "tile",
+        containerId: fixture.residentHome,
+        targetTileId: terminalLeafId(fixture, fixture.residentHome, fixture.resident),
+        edge: "left",
+      },
+    });
+    expect(structured.status).toBe("placed");
+    const home = roomFor(fixture, fixture.residentHome);
+    const layout = home.tileLayout() ?? {};
+    expect(tileLeafIds(layout).map((id) => layout[id]?.ref)).toEqual([
+      null,
+      null,
+      { kind: "terminal", terminalId: fixture.resident },
+    ]);
+    const composed = fixture.placement.place({
+      ref: { kind: "terminal", terminalId: fixture.loose },
+      destination: {
+        kind: "compose",
+        containerId: fixture.canvas.id,
+        targetElementId: "el-portal-solo",
+        edge: "right",
+      },
+    });
+    if (composed.status !== "placed" || composed.result.op !== "compose") {
+      throw new Error(`the structured solo home did not compose: ${ruleOrStatus(composed)}`);
+    }
+    expect(homeOf(fixture, fixture.resident)).toBe(composed.result.containerId);
+    expect(homeOf(fixture, fixture.loose)).toBe(composed.result.containerId);
+    expect(roomFor(fixture, fixture.canvas.id).element("el-portal-solo")).toMatchObject({
+      containerId: composed.result.containerId,
+    });
+  });
+
+  test.each(["element", "tile"] as const)(
+    "composing its own %s onto a solo portal preserves the original collaborative text",
+    async (kind) => {
+      const fixture = await placementFixture();
+      const soloId = fixture.runtime.newId();
+      fixture.store.createContainer({
+        id: soloId,
+        name: "note home",
+        discipline: "composition",
+        createdAt: fixture.runtime.now(),
+      });
+      const canvas = roomFor(fixture, fixture.canvas.id);
+      writeElement(canvas.doc, element({ id: "el-text", type: "text" }), LOCAL_ORIGIN, ["text"]);
+      const tileId = noteLeafId(fixture, soloId);
+      const home = roomFor(fixture, soloId);
+      const text = elementText(home.doc, "el-text");
+      if (text === null) throw new Error("the note must start with collaborative text");
+      text.insert(text.length, " from a collaborator");
+      const before = home.element("el-text");
+      const beforeLayout = home.tileLayout();
+      const portalId = canvas.placePortalElement(soloId, 30, 40);
+      const containersBefore = fixture.store.listContainers();
+
+      expect(
+        fixture.placement.place({
+          ref:
+            kind === "element"
+              ? { kind, containerId: soloId, elementId: "el-text" }
+              : { kind, containerId: soloId, tileId },
+          destination: {
+            kind: "compose",
+            containerId: fixture.canvas.id,
+            targetElementId: portalId,
+            edge: "right",
+          },
+        }),
+      ).toEqual({ status: "failed", failure: "conflict" });
+      expect(fixture.store.listContainers()).toEqual(containersBefore);
+      expect(roomFor(fixture, soloId)).toBe(home);
+      expect(home.tileLayout()).toEqual(beforeLayout);
+      expect(home.element("el-text")).toEqual(before);
+      expect(elementText(home.doc, "el-text")).toBe(text);
+      text.insert(text.length, " still editable");
+      expect(home.element("el-text")?.text).toBe("note from a collaborator still editable");
+      expect(canvas.element(portalId)).toMatchObject({ containerId: soloId });
+    },
+  );
+
+  test("a distinct unseated element in the target home composes with collaborative fields intact", async () => {
+    const fixture = await placementFixture();
+    const home = roomFor(fixture, fixture.residentHome);
+    writeElement(home.doc, element({ id: "unseated", type: "text" }), LOCAL_ORIGIN, ["text"]);
+    const composed = fixture.placement.place({
+      ref: { kind: "element", containerId: fixture.residentHome, elementId: "unseated" },
+      destination: {
+        kind: "compose",
+        containerId: fixture.canvas.id,
+        targetElementId: "el-portal-solo",
+        edge: "right",
+      },
+    });
+    if (composed.status !== "placed" || composed.result.op !== "compose") {
+      throw new Error(`the distinct element did not compose: ${ruleOrStatus(composed)}`);
+    }
+    const merged = roomFor(fixture, composed.result.containerId);
+    expect(homeOf(fixture, fixture.resident)).toBe(composed.result.containerId);
+    expect(merged.element("unseated")).toMatchObject({ type: "text", text: "note" });
+    const text = elementText(merged.doc, "unseated");
+    if (text === null) throw new Error("the unseated note lost its collaborative text");
+    text.insert(text.length, " survives");
+    expect(merged.element("unseated")?.text).toBe("note survives");
+    expect(fixture.store.getContainer(fixture.residentHome)).toBeNull();
+  });
+
+  test("a same-id scene element cannot hijack a terminal tile drag or kill its PTY", async () => {
+    const fixture = await placementFixture();
+    const sourceId = homeOf(fixture, fixture.loose);
+    const source = roomFor(fixture, sourceId);
+    const tileId = terminalLeafId(fixture, sourceId, fixture.loose);
+    writeElement(
+      source.doc,
+      {
+        ...element({ id: tileId, type: "draw" }),
+        type: "tile",
+      },
+      LOCAL_ORIGIN,
+    );
+    const messagesBefore = fixture.machine.sent.length;
+    const moved = fixture.placement.place({
+      ref: { kind: "tile", containerId: sourceId, tileId },
+      destination: {
+        kind: "tile",
+        containerId: fixture.composition.id,
+        targetTileId: null,
+        edge: "right",
+      },
+    });
+    if (moved.status !== "placed" || moved.result.op !== "add_tile") {
+      throw new Error(`the terminal tile did not move: ${ruleOrStatus(moved)}`);
+    }
+    const destination = roomFor(fixture, fixture.composition.id);
+    expect(destination.tileLayout()?.[moved.result.tileId]?.ref).toEqual({
+      kind: "terminal",
+      terminalId: fixture.loose,
+    });
+    expect(destination.element(tileId)).toBeNull();
+    expect(homeOf(fixture, fixture.loose)).toBe(fixture.composition.id);
+    expect(fixture.broker.listForContainer(fixture.composition.id)).toContainEqual(
+      expect.objectContaining({ id: fixture.loose, status: "running" }),
+    );
+    expect(fixture.machine.sent.slice(messagesBefore)).toEqual([]);
+    expect(fixture.store.getContainer(sourceId)).toBeNull();
   });
 });
 
@@ -1775,17 +1928,11 @@ describe("core.space.place", () => {
   /**
    * THE FUSION, THROUGH THE DOOR (ADR 0013 §12). Neither `text` nor `draw` has a row in
    * `ITEM_KINDS`: their traits are manifest data resolved onto the assembly, and the
-   * resolver reads them from there. So these two placements prove a contributed element kind
-   * places — one by traits its plugin declared (`text` is `tileable`), one by the engine's
-   * default for a contribution that declares none (`draw` is canvas furniture).
+   * resolver reads them from there. These placements exercise contributed kinds through
+   * both destination forms without adding either kind to the floor's vocabulary.
    */
   test("a contributed element kind places by the traits its manifest declared", async () => {
     const fixture = await placementFixture();
-    const contributed = rosterElementTraits(fixture.plugins.roster());
-    expect(Object.keys(ITEM_KINDS)).not.toContain("text");
-    expect(Object.keys(ITEM_KINDS)).not.toContain("draw");
-    expect(contributed.get("text")?.groups).toContain("tileable");
-    expect(contributed.get("draw")).toEqual(DEFAULT_ELEMENT_PLACEMENT_TRAITS);
 
     const added = await dispatch(fixture, OWNER_KEY, {
       ref: { kind: "element", containerId: fixture.canvas.id, elementId: "el-text" },
@@ -1907,19 +2054,10 @@ describe("core.space.place", () => {
 /*
   THE FLOOR NAMES NO PLUGIN'S KIND, AND NO PLUGIN'S WORD.
 
-  `placement.ts` used to spell the element type `"text"` in two rules — which occupant a leaf
-  refuses to move aside, and what a merged composition is called after the thing that went
-  into it. Both are questions about a SPECIES, and both now read the species' own declaration:
-  `homed: "on_claim"` decides which rule applies, and the assembly's noun table supplies the
-  word. `core.notes` is the only kind declaring `on_claim` today, so the cases below dictate
-  the vocabulary the executor is given instead of waiting for a second plugin to exist.
-
-  The displaceability rule is deliberately NOT asserted here, and the reason is worth writing
-  down: a leaf's occupant is addressed by a `TileRef`, whose element form is still the single
-  literal `kind: "text"`, so no second element kind can occupy a leaf yet however it declares
-  itself. Generalizing that address form is a protocol change with its own name. Until then the
-  trait check there is the reason for a refusal the exhaustive `terminal`/`container` narrowing
-  below it would also reach, and a test asserting it would be asserting nothing.
+  Element payloads travel through the existing `element` wire reference, whose name does not
+  constrain the actual element type. The declaration controls legality and naming; the
+  payload and its collaborative fields move together between the source and destination.
+  These cases keep both shipped and unknown contributed kinds on that same path.
 */
 describe("placement rules read the DECLARATION, never the kind's name", () => {
   const ON_CLAIM: PlacementTraits = {
@@ -1992,5 +2130,117 @@ describe("placement rules read the DECLARATION, never the kind's name", () => {
     // quietly calling it a note.
     const inline: PlacementTraits = { ...ON_CLAIM, homed: "inline" };
     expect(composedName(fixture, executorWith(fixture, inline, "memo"))).toContain(" + ref");
+  });
+
+  test("a contributed on_claim payload moves canvas to tile and back without losing fields", async () => {
+    const fixture = await placementFixture();
+    const canvas = roomFor(fixture, fixture.canvas.id);
+    const original = SceneElementSchema.parse({
+      id: "acme-stroke",
+      type: "acme-ink",
+      x: 13,
+      y: 27,
+      width: 234,
+      height: 123,
+      zIndex: 4,
+      points: [0, 0, 17, 31, 83, 52],
+      strokeWidth: 7,
+      color: "#123456",
+      author: "peer",
+      revision: 2,
+    });
+    const preserved: Partial<typeof original> = { ...original };
+    delete preserved.zIndex;
+    const soloId = fixture.runtime.newId();
+    fixture.store.createContainer({
+      id: soloId,
+      name: "stroke home",
+      discipline: "composition",
+      createdAt: fixture.runtime.now(),
+    });
+    writeElement(canvas.doc, original, LOCAL_ORIGIN);
+    const vocabulary = assemblyPlacementVocabulary(() => fixture.plugins.roster());
+    const executor = new PlaceExecutor(
+      fixture.store,
+      fixture.rooms,
+      fixture.broker,
+      fixture.runtime,
+      {
+        ...vocabulary,
+        itemTraits: (kind) => (kind === original.type ? ON_CLAIM : vocabulary.itemTraits(kind)),
+      },
+      (kind) => (kind === original.type ? "ink specimen" : "item"),
+    );
+    const added = executor.place({
+      ref: { kind: "element", containerId: fixture.canvas.id, elementId: original.id },
+      destination: {
+        kind: "tile",
+        containerId: soloId,
+        targetTileId: null,
+        edge: null,
+      },
+    });
+    if (added.status !== "placed" || added.result.op !== "add_tile") {
+      throw new Error(`the contributed element did not tile: ${ruleOrStatus(added)}`);
+    }
+    const solo = roomFor(fixture, soloId);
+    expect(canvas.element(original.id)).toBeNull();
+    expect(solo.element(original.id)).toMatchObject(preserved);
+
+    // Compose onto its portal: the census must resolve the actual contributed kind, and
+    // the target must use its seated element ref independently of the payload type.
+    const portalId = canvas.placePortalElement(soloId, 300, 400);
+    const composed = executor.place({
+      ref: { kind: "element", containerId: fixture.canvas.id, elementId: "el-text" },
+      destination: {
+        kind: "compose",
+        containerId: fixture.canvas.id,
+        targetElementId: portalId,
+        edge: "right",
+      },
+    });
+    if (composed.status !== "placed" || composed.result.op !== "compose") {
+      throw new Error(`the contributed home did not compose: ${ruleOrStatus(composed)}`);
+    }
+    expect(fixture.store.getContainer(composed.result.containerId)?.name).toBe(
+      "ink specimen + item",
+    );
+    const composition = roomFor(fixture, composed.result.containerId);
+    expect(composition.element(original.id)).toMatchObject(preserved);
+    const strokeTileId = tileIdForRef(composition.tileLayout(), {
+      kind: "element",
+      elementId: original.id,
+    });
+    if (strokeTileId === null) throw new Error("the composed stroke lost its leaf");
+
+    const extracted = executor.place({
+      ref: { kind: "tile", containerId: composed.result.containerId, tileId: strokeTileId },
+      destination: { kind: "canvas", containerId: fixture.canvas.id, x: 91, y: 82 },
+    });
+    expect(extracted).toMatchObject({
+      status: "placed",
+      result: { op: "extract", elementId: original.id },
+    });
+    expect(composition.element(original.id)).toBeNull();
+    expect(canvas.element(original.id)).toMatchObject({ ...preserved, x: 91, y: 82 });
+  });
+
+  test("extracting a missing element payload leaves its source leaf intact", async () => {
+    const fixture = await placementFixture();
+    const tileId = noteLeafId(fixture, fixture.composition.id);
+    const composition = roomFor(fixture, fixture.composition.id);
+    composition.removeElementById("el-text");
+    const before = composition.tileLayout();
+    const canvas = roomFor(fixture, fixture.canvas.id);
+    const beforeElements = canvas.elements();
+
+    expect(
+      fixture.placement.place({
+        ref: { kind: "tile", containerId: fixture.composition.id, tileId },
+        destination: { kind: "canvas", containerId: fixture.canvas.id, x: 10, y: 20 },
+      }),
+    ).toEqual({ status: "failed", failure: "not_found" });
+    expect(composition.tileLayout()).toEqual(before);
+    expect(canvas.elements()).toEqual(beforeElements);
   });
 });

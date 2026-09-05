@@ -186,12 +186,11 @@ export function firstLineLabel(text: string): string | null {
 }
 
 /**
- * What a text-bearing element BEARS, as its host reads it out of the document: the declared
- * wire type and the raw content, together. One lookup rather than two because both answers
- * come off the same record, and the type has to travel with the text — the fallback noun is
- * the DECLARING plugin's word, and the ref form (`text`) is an address, not a species.
+ * What an element BEARS, as its host reads it out of the document: its declared
+ * wire type and any text content. A drawing supplies an empty string and names itself
+ * from its declaring plugin's vocabulary; the element ref is addressing, not species.
  */
-export interface RefTextElement {
+export interface RefElementContent {
   readonly type: string;
   readonly text: string;
 }
@@ -208,7 +207,7 @@ export interface RefLabelLookups {
   readonly terminalName: (terminalId: string) => string | null;
   readonly containerName: (containerId: string) => string | null;
   /** The element as borne; the first-line rule is applied here, once, for everyone. */
-  readonly textElement: (elementId: string) => RefTextElement | null;
+  readonly elementContent: (elementId: string) => RefElementContent | null;
   /** The composed vocabulary, for the noun a nameless kind falls back to. */
   readonly roster: PluginRoster;
 }
@@ -225,8 +224,8 @@ export function refDisplayLabel(ref: TileRef | null, lookups: RefLabelLookups): 
       return lookups.terminalName(ref.terminalId);
     case "container":
       return lookups.containerName(ref.containerId);
-    case "text": {
-      const element = lookups.textElement(ref.elementId);
+    case "element": {
+      const element = lookups.elementContent(ref.elementId);
       if (element === null) return null;
       /*
         An element holding nothing is not nameless: it is called whatever its own plugin calls

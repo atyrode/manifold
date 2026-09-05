@@ -12,6 +12,9 @@ ARG MANIFOLD_BUILD=dev
 # manifest-only install leaves those symlinks dangling.
 COPY . .
 RUN bun install --frozen-lockfile
+# Shell identity is a build input, independent of the deployment provider or hostname.
+ARG VITE_MANIFOLD_SITE_TITLE=manifold
+ARG VITE_MANIFOLD_ICON_BACKGROUND=""
 RUN VITE_MANIFOLD_WEB_BUILD="${MANIFOLD_BUILD}" bun run build:web
 
 # Runtime ships the workspace source (agent-spawn runs `bun packages/agent/src/main.ts`

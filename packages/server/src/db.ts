@@ -1,11 +1,11 @@
 import { renameSync, rmSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { migrateToGrantRows } from "./migrate-grants.ts";
-import { migrateToCanonLexicon } from "./migrate-lexicon.ts";
+import { migrateToCanonLexicon, migrateToElementRefs } from "./migrate-lexicon.ts";
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -473,6 +473,12 @@ INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '17');
 ALTER TABLE plugin_installs ADD COLUMN actions TEXT NOT NULL DEFAULT '[]';
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '18');
 `,
+  /**
+   * Contributed element refs (#222). Rewrite every saved scene revision and workspace
+   * layout before the strict TileSchema reads them; element payloads and topology stay put.
+   * This one-way document vocabulary move uses the same atomic, backed-up runner as 11.
+   */
+  19: { backup: true, apply: migrateToElementRefs },
 };
 
 interface TableRow {

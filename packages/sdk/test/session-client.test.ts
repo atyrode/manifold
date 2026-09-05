@@ -1008,6 +1008,56 @@ describe("frame policy", () => {
 });
 
 describe("attendance and presence", () => {
+  test("connection paths replace independently and departures retire only the closed tab", () => {
+    const { client, socket } = connected();
+    const left: ManifoldRef[] = [{ kind: "container", containerId: "left" }];
+    const right: ManifoldRef[] = [{ kind: "container", containerId: "right" }];
+    const peer = {
+      principal: { id: "p2", kind: "human" as const, name: "Peer", color: "#00ff00" },
+      connections: 2,
+      connIds: ["a", "b"],
+      connectionLocations: [
+        { connId: "a", locationPath: left },
+        { connId: "b", locationPath: right },
+      ],
+      payload: { focus: { elementId: "terminal" } },
+    };
+    socket.receive({ type: "attendance", joined: peer });
+    socket.receive({
+      type: "presence",
+      principalId: "p2",
+      connId: "a",
+      payload: { vantage: { locationPath: right } },
+    });
+    expect(client.attendance.get("p2")?.connectionLocations).toEqual([
+      { connId: "a", locationPath: right },
+      { connId: "b", locationPath: right },
+    ]);
+    socket.receive({
+      type: "presence",
+      principalId: "p2",
+      connId: "a",
+      payload: { vantage: { locationPath: null } },
+    });
+    expect(client.attendance.get("p2")?.connectionLocations).toEqual([
+      { connId: "a", locationPath: null },
+      { connId: "b", locationPath: right },
+    ]);
+    socket.receive({
+      type: "attendance",
+      joined: {
+        ...peer,
+        connections: 1,
+        connIds: ["b"],
+        connectionLocations: [{ connId: "b", locationPath: right }],
+      },
+    });
+    expect(client.attendance.get("p2")?.connectionLocations).toEqual([
+      { connId: "b", locationPath: right },
+    ]);
+    expect(client.attendance.get("p2")?.payload.focus).toEqual({ elementId: "terminal" });
+  });
+
   test("attendance join/leave and connection-stamped presence merge", () => {
     const { client, socket } = connected();
     const peer = {

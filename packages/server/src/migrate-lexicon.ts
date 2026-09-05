@@ -69,6 +69,7 @@ interface DocRow {
   container_id: string;
   epoch: string;
   rev: number;
+  hash: string;
   doc: Uint8Array;
 }
 
@@ -166,13 +167,25 @@ function rewriteLayoutJson(raw: string): string | null {
 export function migrateToCanonLexicon(db: Database, path: string): void {
   void path;
   db.exec(SCHEMA_SQL);
+  rewriteStoredLayouts(db, rewriteLayout, rewriteLayoutJson);
+}
 
+/** Both vocabulary cuts visit the full recovery history, never only its newest revision. */
+function rewriteStoredLayouts(
+  db: Database,
+  rewriteDoc: (doc: Y.Doc) => boolean,
+  rewriteJson: (raw: string) => string | null,
+): void {
   const updateDoc = db.query<void, [string, Uint8Array, string, string, number]>(
     `UPDATE scene_docs SET hash = ?, doc = ?
      WHERE container_id = ? AND epoch = ? AND rev = ?`,
   );
-  const rows = db.query<DocRow, []>("SELECT container_id, epoch, rev, doc FROM scene_docs").all();
+  const rows = db
+    .query<DocRow, []>("SELECT container_id, epoch, rev, hash, doc FROM scene_docs")
+    .all();
   for (const row of rows) {
+    // Preserve revisions latestDoc rejects; rehashing them would launder corrupt history.
+    if (createHash("sha256").update(row.doc).digest("hex") !== row.hash) continue;
     const doc = createSceneDoc();
     try {
       Y.applyUpdate(doc, row.doc);
@@ -182,7 +195,7 @@ export function migrateToCanonLexicon(db: Database, path: string): void {
       doc.destroy();
       continue;
     }
-    const moved = rewriteLayout(doc);
+    const moved = rewriteDoc(doc);
     if (moved) {
       const update = Y.encodeStateAsUpdate(doc);
       updateDoc.run(
@@ -200,7 +213,61 @@ export function migrateToCanonLexicon(db: Database, path: string): void {
   for (const row of db
     .query<MetaRow, []>("SELECT key, value FROM meta WHERE key LIKE 'layout:%'")
     .all()) {
-    const next = rewriteLayoutJson(row.value);
+    const next = rewriteJson(row.value);
     if (next !== null) setMeta.run(next, row.key);
   }
+}
+
+/** Historical TileRef input only: a note's own `type: "text"` is not an address. */
+function elementRef(raw: unknown): Record<string, unknown> | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const ref = raw as Record<string, unknown>;
+  if (ref["kind"] !== "text" || typeof ref["elementId"] !== "string") return null;
+  return { ...ref, kind: "element" };
+}
+
+function rewriteElementLayout(doc: Y.Doc): boolean {
+  const layout = doc.getMap<Y.Map<unknown>>(LAYOUT_KEY);
+  let changed = false;
+  doc.transact(() => {
+    for (const tile of layout.values()) {
+      if (!(tile instanceof Y.Map)) continue;
+      const ref = elementRef(tile.get("ref"));
+      if (ref === null) continue;
+      tile.set("ref", ref);
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+function rewriteElementLayoutJson(raw: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  let changed = false;
+  for (const tile of Object.values(parsed as Record<string, unknown>)) {
+    if (typeof tile !== "object" || tile === null || Array.isArray(tile)) continue;
+    const fields = tile as Record<string, unknown>;
+    const ref = elementRef(fields["ref"]);
+    if (ref === null) continue;
+    fields["ref"] = ref;
+    changed = true;
+  }
+  return changed ? JSON.stringify(parsed) : null;
+}
+
+/**
+ * Schema 19: one contributed element address, independent of its note/drawing payload.
+ * Raw maps are rewritten before the strict current TileSchema can reject historical refs.
+ * The runner owns both the pre-v19 backup and the transaction containing this version stamp.
+ */
+export function migrateToElementRefs(db: Database, path: string): void {
+  void path;
+  rewriteStoredLayouts(db, rewriteElementLayout, rewriteElementLayoutJson);
+  db.exec("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '19')");
 }

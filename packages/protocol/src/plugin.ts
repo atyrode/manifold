@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
 import { EventKindSchema } from "./events.ts";
+import { ContainerDisciplineSchema } from "./layout.ts";
 import {
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   DisciplineDefSchema,
@@ -326,10 +327,10 @@ const ContributesSchema = z.strictObject({
   /**
    * A contributed element kind: `type` is the wire type stored in scene documents, and
    * `placement` is how the algebra must treat it (G1). Traits are DATA here for the same
-   * reason they are data in `ITEM_KINDS` — legality follows from the declaration, so
-   * opening the closed kind union to composed kinds is later a wiring change, not a new
-   * concept. Absent ≡ `DEFAULT_ELEMENT_PLACEMENT_TRAITS`: free-floating canvas furniture,
-   * which is what every contributed element is this wave.
+   * reason they are data in `ITEM_KINDS` — legality follows from the declaration.
+   * Absent placement ≡ `DEFAULT_ELEMENT_PLACEMENT_TRAITS`: free-floating canvas furniture.
+   * `presentation` declares body-only or titled framing per container discipline. Absence
+   * stays absent in the registry; a mount site defaults an undeclared discipline to titlebar.
    */
   elements: z
     .array(
@@ -337,6 +338,12 @@ const ContributesSchema = z.strictObject({
         type: z.string().min(1).max(32),
         title: TitleSchema,
         placement: PlacementTraitsSchema.optional(),
+        presentation: z
+          .record(ContainerDisciplineSchema, z.enum(["body", "titlebar"]))
+          .refine((values) => Object.keys(values).length <= 32, {
+            message: "at most 32 element presentation disciplines",
+          })
+          .optional(),
       }),
     )
     .max(8)

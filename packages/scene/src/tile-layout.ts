@@ -72,8 +72,8 @@ export function sameTileRef(a: TileRef, b: TileRef): boolean {
       return b.kind === "terminal" && a.terminalId === b.terminalId;
     case "container":
       return b.kind === "container" && a.containerId === b.containerId;
-    case "text":
-      return b.kind === "text" && a.elementId === b.elementId;
+    case "element":
+      return b.kind === "element" && a.elementId === b.elementId;
     case "panel":
       return b.kind === "panel" && a.panelId === b.panelId;
     case "spacer":

@@ -10,16 +10,15 @@ import { z } from "zod";
  * principal's authority is consulted. `scenes:write` is declared for exactly that reason — the
  * capability a viewer needs to author one — even though nothing here dispatches.
  * Disabling this plugin removes the tool from the strip and turns existing strokes into named
- * placeholders on the canvas; enabling it brings both back, live, with no reload (D4/R3).
+ * placeholders wherever they are placed; enabling it brings both back with no reload (D4/R3).
  *
- * It DEPENDS on `core.canvas`, `required`, and that declaration is the whole point of the
- * dependency axis rather than a formality: a stroke is a canvas element, so with the canvas
- * renderer gone the draw tool has nothing to paint on and the ink has nowhere to live. The
- * refusal that falls out of it is the one §5 promises — disabling `core.canvas` while this
- * plugin is on is refused `dependency_disabled: core.draw`, naming the plugin in the way,
- * instead of leaving a tool in the strip whose surface has quietly gone. `docs/PLUGINS.md`
- * has shown this exact declaration as its worked example since the contract was ratified;
- * this is the code catching up to the document rather than the document to the code.
+ * A stroke is `tileable` as well as `canvas_item`, and its payload moves intact into a
+ * composition through the generic element reference. `on_claim` means its home is established
+ * only when placement claims the inline element. Canvas draws its body without a titlebar;
+ * composition supplies the titlebar and tile geometry.
+ *
+ * `core.canvas` is optional: the draw tool needs a canvas for authoring, but an existing
+ * stroke in a composition leaf is independently useful and needs no canvas renderer.
  */
 export const drawManifest: PluginManifest = {
   id: "core.draw",
@@ -29,14 +28,22 @@ export const drawManifest: PluginManifest = {
   capabilities: ["scenes:write"],
   dependencies: {
     "core.canvas": {
-      type: "required",
-      reason: "strokes are canvas elements; without the canvas renderer the tool has no surface",
+      type: "optional",
+      reason:
+        "the draw tool needs a canvas, but strokes in composition leaves render independently",
     },
   },
   contributes: {
     panels: [],
     sections: [],
-    elements: [{ type: "draw", title: "Draw stroke" }],
+    elements: [
+      {
+        type: "draw",
+        title: "Draw stroke",
+        presentation: { canvas: "body", composition: "titlebar" },
+        placement: { groups: ["tileable", "canvas_item"], guards: [], homed: "on_claim" },
+      },
+    ],
     tools: [{ id: "draw", title: "Draw" }],
     events: [],
   },

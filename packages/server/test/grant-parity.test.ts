@@ -171,8 +171,8 @@ function expectedMatrix(credentials: readonly Credential[]): Record<string, bool
 
 /**
  * A schema-12 database on disk, holding one of every authority shape migration 13 must
- * materialize. Only the tables the migration and `AuthService` touch are created: opening this
- * file runs migration 13 alone, because the stored version already says 12.
+ * materialize. Include the persisted tables later migrations touch, since opening this
+ * schema-12 file upgrades through the current version before exercising authority parity.
  *
  * The two tokens sharing `p-root` are the sharp case, and they are here deliberately. Under a
  * model where a principal's rows reached all of its credentials, `narrow` would inherit `root`'s
@@ -198,6 +198,9 @@ CREATE TABLE shares(id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, container_id
 CREATE TABLE share_tickets(share_id TEXT NOT NULL, guest_principal_id TEXT NOT NULL,
   principal_id TEXT NOT NULL, created_at INTEGER NOT NULL,
   PRIMARY KEY (share_id, guest_principal_id)) WITHOUT ROWID;
+CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INTEGER NOT NULL,
+  ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
+  PRIMARY KEY (container_id, epoch, rev));
 INSERT INTO meta(key, value) VALUES ('schema_version', '12');
 INSERT INTO meta(key, value) VALUES ('owner_principal_id', 'p-owner');
 

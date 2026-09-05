@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AttendanceRow } from "./attendance-model.ts";
 
 /**
@@ -18,9 +18,33 @@ function initials(name: string): string {
 }
 
 /** One presence ref: avatar stack collapsing into a roster popover. */
-export function PresenceIsland({ rows }: { rows: readonly AttendanceRow[] }) {
+export function PresenceIsland({
+  rows,
+  compact = false,
+}: {
+  rows: readonly AttendanceRow[];
+  compact?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const popover = popoverRef.current;
+    const wrapper = wrapperRef.current;
+    if (popover === null || wrapper === null) return;
+    popover.showPopover();
+    const rect = wrapper.getBoundingClientRect();
+    popover.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
+    popover.style.top = `${Math.max(8, Math.min(rect.bottom + 8, window.innerHeight - popover.offsetHeight - 8))}px`;
+    const dismiss = (): void => setOpen(false);
+    window.addEventListener("resize", dismiss);
+    document.addEventListener("scroll", dismiss, true);
+    return () => {
+      window.removeEventListener("resize", dismiss);
+      document.removeEventListener("scroll", dismiss, true);
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -45,7 +69,12 @@ export function PresenceIsland({ rows }: { rows: readonly AttendanceRow[] }) {
   const overflow = rows.length - visible.length;
 
   return (
-    <div className="presence-wrapper" ref={wrapperRef}>
+    <div
+      className={`presence-wrapper${compact ? " presence-wrapper--compact" : ""}`}
+      ref={wrapperRef}
+      data-titlebar-no-drag
+      onPointerDown={compact ? (event) => event.stopPropagation() : undefined}
+    >
       <button
         type="button"
         className="presence-stack"
@@ -66,7 +95,7 @@ export function PresenceIsland({ rows }: { rows: readonly AttendanceRow[] }) {
         {overflow > 0 ? <div className="presence-avatar presence-overflow">+{overflow}</div> : null}
       </button>
       {open ? (
-        <div className="presence-popover">
+        <div className="presence-popover" ref={popoverRef} popover="manual">
           {rows.map((row) => (
             <div className="presence-row" key={row.principal.id}>
               <span className="presence-dot" style={{ backgroundColor: row.principal.color }} />

@@ -1,5 +1,5 @@
 /*
- * THE TERMINALS PLUGIN'S SKIN — the terminal frame and its titlebar, the idle veil, the focus-presence chips, the xterm host, the exited/restart states, and the sidebar terminal pool's rows.
+ * THE TERMINALS PLUGIN'S SKIN — the terminal frame and its titlebar, the idle veil, the xterm host, the exited/restart states, and the sidebar terminal pool's rows.
  *
  * Loaded by this plugin's web entry, so the skin ships and disappears with the plugin that
  * paints it. `verify:axioms` S13 holds the boundary: the cssFamilies registry in REGISTRY.md
@@ -17,11 +17,23 @@
   font-size: 0.68rem;
 }
 
+/* No local() source: every client renders the same audited Nerd glyph subset. */
+@font-face {
+  font-family: "Manifold Terminal Mono";
+  src: url("./fonts/manifold-terminal-mono.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+
 .terminal-placeholder,
 .terminal-frame {
   width: 100%;
   height: 100%;
-  border-radius: 0.45rem;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 0.5rem;
   background: #0b0d10;
 }
 
@@ -34,20 +46,19 @@
 
 .terminal-frame {
   position: relative;
-  width: 100%;
-  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid #2c3239;
-  border-radius: 0.5rem;
-  background: #0b0d10;
-  /* sshx-style quiet depth: reads as a window, not a flat rectangle. */
+  /* One clipping boundary; titlebar and cell remainder share its inner background. */
   box-shadow: 0 4px 18px rgb(0 0 0 / 35%);
 }
 
-/* Remote focus: the frame wears a ring in the focuser's presence color, supplied
-   inline as border-color + box-shadow so there is no layout shift. */
-.terminal-frame--remote-focus {
-  border-color: transparent;
+/* A tile meets the host-owned neutral dividers; only an exterior window owns a frame. */
+.terminal-frame--tile {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .terminal-frame--panel-highlight::after {
@@ -78,64 +89,35 @@
   opacity: 1;
 }
 
-/* Geometry, rhythm and controls come from the shared `.node-titlebar` block at the
-   end of this file; what stays here is what makes this bar a TERMINAL's bar: it
-   floats over the xterm ref and lets the pointer through to it. */
+/* Normal-flow chrome reserves its actual height, including narrow wrapped content. */
 .terminal-titlebar {
-  position: absolute;
+  position: relative;
+  grid-area: 1 / 1;
   z-index: 3;
-  inset: 0 0 auto 0;
-  background: #14181e;
-  border-bottom: 1px solid #23272e;
-  pointer-events: none;
+  min-width: 0;
+  pointer-events: auto;
   user-select: none;
 }
 
-/* Focus-presence chips: who (other than you) is on this terminal right now. */
-/* The chip row is a layout Cluster (it WRAPS at a narrow terminal instead of
-   escaping it); this positions and constrains it. */
-.terminal-presence {
-  position: absolute;
-  z-index: 5;
-  top: 0.18rem;
-  left: 50%;
-  transform: translateX(-50%);
-  max-width: 70%;
-  pointer-events: none;
+.terminal-font-size {
+  width: 1.5rem;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
 }
 
-.terminal-presence__tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.05rem 0.45rem 0.05rem 0.05rem;
-  border-radius: 999px;
-  color: #fff;
-  font-size: 0.62rem;
-  font-weight: 600;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 45%);
-}
-
-.terminal-presence__initial {
-  display: grid;
-  place-items: center;
-  width: 1rem;
-  height: 1rem;
-  border-radius: 999px;
-  background: rgb(0 0 0 / 25%);
-  font-size: 0.6rem;
-}
-
-.terminal-presence__name {
-  overflow: hidden;
-  max-width: 9rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* The disabled reset still reports the current size; information must remain legible. */
+.terminal-font-size:disabled {
+  color: #adb5bd;
 }
 
 .xterm-host {
-  position: absolute;
-  inset: 1.75rem 0.35rem 0.35rem;
+  position: relative;
+  grid-area: 2 / 1;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0.35rem;
 }
 
 .xterm-host .xterm {
@@ -147,6 +129,23 @@
    varies with element size) reads as seamless terminal, not a stray bar. */
 .xterm-host .xterm-viewport {
   background-color: #0b0d10;
+}
+
+.terminal-font-status {
+  position: absolute;
+  grid-area: 2 / 1;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 0.75rem;
+  color: #ced4da;
+  background: #0b0d10;
+  font-size: 0.82rem;
+  text-align: center;
+  overflow-wrap: anywhere;
+  pointer-events: none;
 }
 
 .view-only-ribbon {

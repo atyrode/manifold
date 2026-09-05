@@ -2,6 +2,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type DragEventHandler,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
@@ -35,6 +36,29 @@ export type MaximizeControl = "maximize" | "shrink";
 
 const MAX_TITLE_LENGTH = 120;
 
+/** Host-owned movement; the bar supplies the grip, never the carry transport. */
+export interface TitlebarDragProps {
+  /** False opts into an external pointer-driven transport instead of native dragging. */
+  readonly draggable?: boolean | undefined;
+  readonly onDragStart?: DragEventHandler<HTMLDivElement> | undefined;
+  readonly onDrag?: DragEventHandler<HTMLDivElement> | undefined;
+  readonly onDragEnd?: DragEventHandler<HTMLDivElement> | undefined;
+}
+
+const NON_GRIP = `.${TITLEBAR_ACTIONS_CLASS}, input, textarea, select, button, a, [contenteditable]:not([contenteditable="false"]), [role="button"], [role="link"], [tabindex], [data-titlebar-no-drag]`;
+
+function blocksTitlebarDrag(bar: HTMLElement, target: EventTarget | null): boolean {
+  const control = target instanceof Element ? target.closest(NON_GRIP) : null;
+  if (control !== null && bar.contains(control)) return true;
+  const selection = bar.ownerDocument.getSelection();
+  return (
+    selection !== null &&
+    !selection.isCollapsed &&
+    ((selection.anchorNode !== null && bar.contains(selection.anchorNode)) ||
+      (selection.focusNode !== null && bar.contains(selection.focusNode)))
+  );
+}
+
 export interface NodeTitleBarProps {
   /** The object's identity mark — an `ItemIcon`, never a hand-picked drawing. */
   readonly icon: ReactNode;
@@ -44,6 +68,8 @@ export interface NodeTitleBarProps {
   readonly defaultTitle: string;
   /** Adopter class (drag handle / assertion hook), merged onto the bar. */
   readonly className?: string;
+  /** Makes the whole bar a grip, except controls, interactive content and selected text. */
+  readonly dragProps?: TitlebarDragProps | undefined;
   /**
    * Renames the object. Double-clicking the TITLE opens an inline input — Enter
    * commits, Escape cancels, blur cancels — and the gesture stops propagating so
@@ -90,6 +116,7 @@ export function NodeTitleBar({
   title,
   defaultTitle,
   className,
+  dragProps,
   onRenameTitle,
   renameAction,
   middle,
@@ -109,6 +136,8 @@ export function NodeTitleBar({
 }: NodeTitleBarProps): React.ReactElement {
   const [draft, setDraft] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const blockedDrag = useRef(false);
+  const startedDrag = useRef(false);
   const editing = draft !== null && onRenameTitle !== undefined;
   const display = title ?? defaultTitle;
 
@@ -133,18 +162,14 @@ export function NodeTitleBar({
   };
 
   /** A control's own double-click is the control's, never the bar's. */
-  const barDoubleClick =
-    onDoubleClick === undefined
-      ? undefined
-      : (event: ReactMouseEvent<HTMLDivElement>): void => {
-          if (
-            event.target instanceof Element &&
-            event.target.closest(`.${TITLEBAR_ACTIONS_CLASS}`) !== null
-          ) {
-            return;
-          }
-          onDoubleClick(event);
-        };
+  const barDoubleClick = (event: ReactMouseEvent<HTMLDivElement>): void => {
+    const control = event.target instanceof Element ? event.target.closest(NON_GRIP) : null;
+    if (control !== null && event.currentTarget.contains(control)) {
+      event.stopPropagation();
+      return;
+    }
+    onDoubleClick?.(event);
+  };
 
   const commitRename = (): void => {
     const next = (draft ?? "").trim();
@@ -163,6 +188,40 @@ export function NodeTitleBar({
     <div
       className={className === undefined ? "node-titlebar" : `node-titlebar ${className}`}
       onDoubleClick={barDoubleClick}
+      data-titlebar-draggable={dragProps !== undefined && !editing ? "" : undefined}
+      draggable={dragProps !== undefined && !editing && (dragProps.draggable ?? true)}
+      onPointerDownCapture={(event) => {
+        if (dragProps === undefined) return;
+        blockedDrag.current = editing || blocksTitlebarDrag(event.currentTarget, event.target);
+        if (blockedDrag.current) event.stopPropagation();
+      }}
+      onMouseDownCapture={(event) => {
+        if (dragProps === undefined) return;
+        blockedDrag.current = editing || blocksTitlebarDrag(event.currentTarget, event.target);
+        if (blockedDrag.current) event.stopPropagation();
+      }}
+      onDragStart={(event) => {
+        if (dragProps === undefined) return;
+        if (
+          editing ||
+          blockedDrag.current ||
+          blocksTitlebarDrag(event.currentTarget, event.target)
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        dragProps.onDragStart?.(event);
+        startedDrag.current = !event.defaultPrevented;
+      }}
+      onDrag={(event) => {
+        if (startedDrag.current) dragProps?.onDrag?.(event);
+      }}
+      onDragEnd={(event) => {
+        if (!startedDrag.current) return;
+        startedDrag.current = false;
+        dragProps?.onDragEnd?.(event);
+      }}
     >
       <span className="node-titlebar__icon" aria-hidden="true">
         {icon}

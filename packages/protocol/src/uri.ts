@@ -17,7 +17,7 @@ import { z } from "zod";
  *   manifold://action/<actionName>
  *
  * An element and a tile are addressed THROUGH their container because neither has an
- * identity outside it — the same reason `TileRef`'s note form names an element id
+ * identity outside it — the same reason `TileRef`'s element form names an element id
  * rather than a cross-document pair.
  */
 export const MANIFOLD_URI_SCHEME = "manifold://";

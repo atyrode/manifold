@@ -22,10 +22,13 @@ import {
   carriedItem,
   carriedPlacement,
   endCarry,
+  carriedSnapshot,
+  updateCarryAim,
   startItemDrag,
   type ItemEnvelope,
 } from "./item-envelope.ts";
 
+import { sameAim } from "./use-tile-drop.ts";
 /**
  * The carry lifecycle, in React. One grab is one carry whatever grabbed it — a React
  * Flow node drag, a portal's tile grip, a leaf's grip inside a composition, or an HTML5
@@ -158,6 +161,13 @@ export function useCarry({ client, describe, resolveItem }: UseCarryOptions): Ca
         if (options.at !== undefined) stream().push(carryFrame(source, options.at, "active"));
       },
       track(at, aim) {
+        const previousAim = carriedSnapshot()?.aim;
+        if (
+          previousAim !== aim &&
+          (previousAim === undefined || aim === undefined || !sameAim(previousAim, aim))
+        ) {
+          updateCarryAim(aim);
+        }
         let source = sourceRef.current;
         if (source === null) {
           const placementId = moveOnlyRef.current;

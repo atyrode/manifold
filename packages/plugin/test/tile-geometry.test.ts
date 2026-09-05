@@ -715,6 +715,17 @@ describe("resolveTileAim", () => {
     expect(layoutRevision(swapped)).not.toBe(layoutRevision(rowLayout()));
     const reoccupied: TileLayout = { ...rowLayout(), t2: leaf("t2", terminal("other")) };
     expect(layoutRevision(reoccupied)).not.toBe(layoutRevision(rowLayout()));
+    const element: TileLayout = {
+      ...rowLayout(),
+      t2: leaf("t2", { kind: "element", elementId: "s2" }),
+    };
+    expect(layoutRevision(element)).not.toBe(layoutRevision(rowLayout()));
+    expect(
+      layoutRevision({
+        ...element,
+        t2: leaf("t2", { kind: "element", elementId: "other" }),
+      }),
+    ).not.toBe(layoutRevision(element));
   });
 
   test("a seam band stays enterable at a real on-screen ring width", () => {

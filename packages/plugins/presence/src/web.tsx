@@ -1,6 +1,6 @@
 import "./styles.css";
 import type { OverlayRegistrations } from "@manifold/plugin/hooks";
-import { AttendanceOverlay, SpotlightOverlay } from "./container-overlays.tsx";
+import { SpotlightOverlay, TitlebarAttendance } from "./container-overlays.tsx";
 
 /**
  * `core.presence`, browser half — the presence PLANE made visible.
@@ -30,15 +30,18 @@ import { AttendanceOverlay, SpotlightOverlay } from "./container-overlays.tsx";
  * 11's plainest statement, so it is engine mechanism that the shell and every renderer reach
  * through one producer-agnostic function.
  */
-export { deriveAttendanceRows, type AttendanceRow } from "./attendance-model.ts";
+export {
+  deriveAttendanceRows,
+  deriveLocationAttendanceRows,
+  type AttendanceRow,
+} from "./attendance-model.ts";
 export { PresenceIsland } from "./presence-island.tsx";
 export { SpotlightChip, useSpotlight, type SpotlightState } from "./spotlight.tsx";
-export { AttendanceOverlay, SpotlightOverlay } from "./container-overlays.tsx";
+export { SpotlightOverlay, TitlebarAttendance } from "./container-overlays.tsx";
 
 /**
- * What this plugin registers in the browser. Two overlay slots, both painted over whichever
- * container ref is routed — the canvas today, a composition just as well tomorrow, with no
- * second copy of either component and no renderer naming this package.
+ * What this plugin registers in the browser: the shared titlebar roster and the container
+ * spotlight. Roster details live in the same titlebar painter at every mounted depth.
  *
  * Overlays carry no manifest row, exactly as `routes` do not: a slot is not a ref the
  * workspace composes, it is decoration a ref invites. The roster still decides whether
@@ -53,7 +56,7 @@ export const presenceWebPlugin = {
     survives the check, so the engine still sees exactly which slots this plugin fills.
    */
   overlays: {
-    "container-roster": AttendanceOverlay,
     "container-spotlight": SpotlightOverlay,
+    titlebar: TitlebarAttendance,
   } satisfies OverlayRegistrations,
 };

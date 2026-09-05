@@ -11,6 +11,9 @@ services:
         # `MANIFOLD_BUILD=$(git rev-parse --short HEAD) docker compose up -d --build`
         # stamps /healthz with the deployed tree; defaults to "dev" when unset.
         MANIFOLD_BUILD: ${MANIFOLD_BUILD:-dev}
+        # Optional build-time browser identity; unset inputs preserve production branding.
+        VITE_MANIFOLD_SITE_TITLE: ${VITE_MANIFOLD_SITE_TITLE:-manifold}
+        VITE_MANIFOLD_ICON_BACKGROUND: ${VITE_MANIFOLD_ICON_BACKGROUND:-}
     restart: unless-stopped
     environment:
       - MANIFOLD_PUBLIC_URL=https://${MANIFOLD_DOMAIN:?set MANIFOLD_DOMAIN in .env}

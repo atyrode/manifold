@@ -1,0 +1,57 @@
+{
+  "modified": "2026-09-05",
+  "family": "Manifold Terminal Mono",
+  "style": "Regular (400); browser synthesizes bold and italic",
+  "source": {
+    "release": "Nerd Fonts v3.4.0",
+    "fontVersion": "Fira Code 6.002",
+    "repositoryCommit": "fa7b859994228a9c8759f99c55a8d31ee92a1b5e",
+    "url": "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/FiraCode.tar.xz",
+    "archiveSha256": "d83fb093e0e05a531cd6f19886a6ceb884a4fa5ea3b53cf099fc1f30c5b3e47d",
+    "member": "FiraCodeNerdFontMono-Regular.ttf",
+    "memberSha256": "ad88c69cb6a497db9f2714e4b414817aabbee621484a1560bfdb3fd73abdd564"
+  },
+  "output": {
+    "file": "manifold-terminal-mono.woff2",
+    "bytes": 833059,
+    "sha256": "d02ced77185cd23a3fdaaeba0bdc47c59fc8d03059dad2802742e6962c11dcc6"
+  },
+  "licensing": {
+    "derivative": "OFL-1.1",
+    "notices": "LICENSE.txt (also embedded in WOFF2 metadata)",
+    "retainedSources": [
+      "Fira Code",
+      "Nerd Fonts standard-Unicode extras and progress indicators",
+      "Pomicons",
+      "Powerline Symbols",
+      "Powerline Extra Symbols",
+      "Font Awesome",
+      "Octicons",
+      "Microsoft Codicons",
+      "Material Design Icons"
+    ],
+    "excludedSources": {
+      "Font Logos": "Nerd Fonts v3.4.0 license-audit.md marks Unlicensed.",
+      "Weather Icons": "Supplied OFL copyright notice has unfilled template placeholders.",
+      "Seti/Custom, Devicons, Font Awesome Extension": "Outside this explicitly licensed subset; no coverage claim."
+    },
+    "audit": "https://github.com/ryanoasis/nerd-fonts/blob/v3.4.0/license-audit.md",
+    "mapping": "https://github.com/ryanoasis/nerd-fonts/blob/v3.4.0/font-patcher"
+  },
+  "conversion": {
+    "tool": "fontTools 4.63.0, Brotli 1.2.0; offline authoring tools, not runtime dependencies",
+    "subsetCommand": "pyftsubset FiraCodeNerdFontMono-Regular.ttf --unicodes='U+0000-DFFF,U+F900-EFFFF,U+E000-E00A,U+E0A0-E0A3,U+E0B0-E0C8,U+E0CA,U+E0CC-E0D7,U+EA60-EC1E,U+ED00-F2FF,U+F400-F533,U+F0001-F1AF0' --name-IDs='*' --name-legacy --name-languages='*' --output-file=subset.ttf",
+    "steps": [
+      "Load archive member with TTFont.",
+      "Retain existing cmap entries below U+E000 or in U+F900-EFFFF; retain PUA entries only in U+E000-E00A, E0A0-E0A3, E0B0-E0C8, E0CA, E0CC-E0D7, EA60-EC1E, ED00-F2FF, F400-F533, F0001-F1AF0.",
+      "Use fontTools.subset defaults except name_IDs=[\"*\"], name_legacy=True and name_languages=[\"*\"]. Retain layout closure; remove excluded glyph outlines via subsetting.",
+      "Rename name IDs 1, 3, 4, 6, 16, 18 and 21 to Manifold family/full/PostScript names; use Regular for 2, 17 and 22.",
+      "Set name ID 3 to ManifoldTerminalMono-Regular-6.002-NF3.4.0-subset-20260905.",
+      "Set flavor=woff2 and embed LICENSE.txt in WOFF2 metadata license/text plus modification description.",
+      "Set recalcTimestamp=False and head.modified=3871411200 (2026-09-05T00:00:00Z), then save."
+    ]
+  },
+  "coverage": "coverage.json is the exact retained cmap, not an assertion of complete Unicode or Nerd Fonts support.",
+  "smokeText": "ASCII 0123456789 |   |   |  |  | 󰀄 | ┌─┐│└─┘",
+  "smokeShell": "printf 'ASCII 0123456789 | \\uE0A0 \\uE0B0 | \\uF120 \\uF013 | \\uF418 | \\uEB99 | \\U000F0004 | \\u250C\\u2500\\u2510\\u2502\\u2514\\u2500\\u2518\\n'"
+}

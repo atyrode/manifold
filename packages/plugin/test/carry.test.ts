@@ -255,20 +255,20 @@ describe("carry", () => {
     const lookups = {
       terminalName: (terminalId: string) => (terminalId === "s1" ? "build" : null),
       containerName: (containerId: string) => (containerId === "p1" ? "Sketches" : null),
-      textElement: (elementId: string) => borne[elementId] ?? null,
+      elementContent: (elementId: string) => borne[elementId] ?? null,
       roster: ROSTER,
     };
     expect(refDisplayLabel({ kind: "terminal", terminalId: "s1" }, lookups)).toBe("build");
     expect(refDisplayLabel({ kind: "container", containerId: "p1" }, lookups)).toBe("Sketches");
     // A text-bearing element borrows its FIRST line: the only handle its own content gives it.
-    expect(refDisplayLabel({ kind: "text", elementId: "e1" }, lookups)).toBe("Groceries");
+    expect(refDisplayLabel({ kind: "element", elementId: "e1" }, lookups)).toBe("Groceries");
     // Nothing to borrow is not namelessness: the noun is the DECLARING plugin's manifest
     // title, which is what stops each renderer from carrying its own copy of "note".
-    expect(refDisplayLabel({ kind: "text", elementId: "e-empty" }, lookups)).toBe("note");
+    expect(refDisplayLabel({ kind: "element", elementId: "e-empty" }, lookups)).toBe("note");
     // A kind no composed plugin declares gets the truthful generic, never a borrowed species.
-    expect(refDisplayLabel({ kind: "text", elementId: "e-absent" }, lookups)).toBe("item");
+    expect(refDisplayLabel({ kind: "element", elementId: "e-absent" }, lookups)).toBe("item");
     // No element at that id at all: there is nothing to name yet, which is not a name.
-    expect(refDisplayLabel({ kind: "text", elementId: "gone" }, lookups)).toBeNull();
+    expect(refDisplayLabel({ kind: "element", elementId: "gone" }, lookups)).toBeNull();
     expect(refDisplayLabel(null, lookups)).toBeNull();
   });
 });

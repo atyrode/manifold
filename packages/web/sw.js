@@ -24,9 +24,9 @@
  * THE UPDATE FLOW, which is the part a cache gets WRONG by default:
  *
  *   1. Every build gets its own cache name (`manifold-shell-<build>`), where `<build>` folds in
- *      a digest of the shipped asset names — and those names carry vite's content hashes. So a
- *      deploy cannot leave a browser pinned to an old lens: the new worker precaches into a new
- *      cache, and `activate` deletes every older `manifold-shell-*`.
+ *      a digest of the shipped asset names and bytes, including HTML and generated identity.
+ *      A deploy cannot leave a browser pinned to an old lens: the new worker precaches into a
+ *      new cache, and `activate` deletes every older `manifold-shell-*`.
  *   2. A live page is NEVER swapped underneath itself. The new generation installs and WAITS;
  *      the page sees it waiting and OFFERS the update (`lens.tsx`). Accepting it tells this
  *      worker to stop waiting and reloads when control changes, so the page comes back on one

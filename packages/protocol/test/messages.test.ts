@@ -12,6 +12,8 @@ import {
   MintTokenRequestSchema,
   PROTOCOL_VERSION,
   PresencePayloadSchema,
+  LocationPathSchema,
+  MAX_LOCATION_PATH_LENGTH,
   ContainerSchema,
   ROOT_TILE_ID,
   ServerMessageSchema,
@@ -28,6 +30,7 @@ import {
   hasCap,
   soloLeaf,
   validateTileLayout,
+  type LocationPath,
   type Tile,
   type TileRef,
 } from "@manifold/protocol";
@@ -293,6 +296,31 @@ describe("session channel schemas", () => {
     expect(
       ClientMessageSchema.safeParse({ type: "cursor", ch: "c1", connId: "spoof", x: 12, y: 34 })
         .success,
+    ).toBe(false);
+  });
+
+  test("mounted location paths use bounded canonical refs and explicit clearing", () => {
+    const ref: LocationPath[number] = { kind: "container", containerId: "root" };
+    const path: LocationPath = [ref, { kind: "element", containerId: "root", elementId: "portal" }];
+    expect(
+      PresencePayloadSchema.parse({ vantage: { locationPath: path } }).vantage?.locationPath,
+    ).toEqual(path);
+    expect(
+      PresencePayloadSchema.parse({ vantage: { locationPath: null } }).vantage?.locationPath,
+    ).toBeNull();
+    expect(PresencePayloadSchema.parse({ vantage: {} }).vantage?.locationPath).toBeUndefined();
+    expect(LocationPathSchema.safeParse([]).success).toBe(false);
+    expect(LocationPathSchema.safeParse(Array(MAX_LOCATION_PATH_LENGTH).fill(ref)).success).toBe(
+      true,
+    );
+    expect(
+      LocationPathSchema.safeParse(Array(MAX_LOCATION_PATH_LENGTH + 1).fill(ref)).success,
+    ).toBe(false);
+    expect(
+      LocationPathSchema.safeParse([{ containerId: "root", placementId: "portal" }]).success,
+    ).toBe(false);
+    expect(
+      LocationPathSchema.safeParse([{ kind: "container", containerId: "x".repeat(129) }]).success,
     ).toBe(false);
   });
 
@@ -704,6 +732,27 @@ describe("tile layout schemas", () => {
     ).toBe(false);
   });
 
+  test("element refs name contributed payloads and reject the old note-only wire form", () => {
+    expect(TileRefSchema.parse({ kind: "element", elementId: "ink" })).toEqual({
+      kind: "element",
+      elementId: "ink",
+    });
+    expect(TileRefSchema.safeParse({ kind: "element", elementId: "" }).success).toBe(false);
+    expect(TileRefSchema.safeParse({ kind: "text", elementId: "note" }).success).toBe(false);
+    expect(
+      TileRefSchema.safeParse({
+        kind: "element",
+        containerId: "elsewhere",
+        elementId: "ink",
+      }).success,
+    ).toBe(false);
+    expect(
+      TileLayoutSchema.safeParse({
+        root: { ...leaf(ROOT_TILE_ID), ref: { kind: "text", elementId: "note" } },
+      }).success,
+    ).toBe(false);
+  });
+
   test("nodes accept both shapes and reject malformed geometry", () => {
     expect(TileSchema.parse(leaf(ROOT_TILE_ID))).toEqual(leaf(ROOT_TILE_ID));
     expect(TileSchema.parse(split("s", ["a", "b"]))).toEqual(split("s", ["a", "b"]));
@@ -896,7 +945,7 @@ describe("json schema export", () => {
 });
 
 describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
-  test("v22 ADDS to the acceptance set: the agent wire grew, but only where an old agent never looks", () => {
+  test("every machine version since v16 remains accepted; older and future versions are refused", () => {
     /*
       The verdict a bump owes. v15 -> v16 was the lexicon cut and RESET the set: it renamed
       the MACHINE wire — `sessionId` became `terminalId` on every agent frame,
@@ -920,20 +969,17 @@ describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
       across this deploy instead of being locked out by a version check for a field it will
       never be sent.
 
+      v22 -> v23 adds browser presence location paths and connection snapshots only, leaving
+      both machine directions unchanged, so the acceptance floor remains v16.
+
       Both halves are asserted: the running version must be accepted (or every agent is
       refused), and every version since the last reset must STILL be accepted (or this is a
       reset wearing an additive bump's clothes, and somebody owes the fleet a restart).
     */
-    expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
-    expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION - 1)).toBe(true);
-    expect([...MACHINE_PROTOCOL_COMPAT_VERSIONS]).toEqual([
-      PROTOCOL_VERSION - 6,
-      PROTOCOL_VERSION - 5,
-      PROTOCOL_VERSION - 4,
-      PROTOCOL_VERSION - 3,
-      PROTOCOL_VERSION - 2,
-      PROTOCOL_VERSION - 1,
-      PROTOCOL_VERSION,
-    ]);
+    for (let version = 0; version <= PROTOCOL_VERSION + 1; version++) {
+      expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(version)).toBe(
+        version >= 16 && version <= PROTOCOL_VERSION,
+      );
+    }
   });
 });

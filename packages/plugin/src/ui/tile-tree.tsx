@@ -1,16 +1,18 @@
 import { ROOT_TILE_ID, type TileLayout, type Tile } from "@manifold/protocol";
 import {
+  Component,
   Fragment,
-  useLayoutEffect,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
 
 import { refKey } from "../tile-geometry.ts";
 import { dividerRatios, type DividerDrag } from "../tile-snap.ts";
+import { FLIP_EPSILON, prefersReducedMotion } from "./flip.ts";
 
 /**
  * THE tile tree. A composition's layout is one recursive structure, so there is one
@@ -75,8 +77,8 @@ export const PORTAL_TREE_CLASSES: TileTreeClasses = {
   split: "portal-split",
   pane: "portal__slot",
   divider: "portal-divider",
-  /** `.portal-divider` is `flex: 0 0 0.7rem` = 11.2px at the root font size. */
-  dividerPx: 11.2,
+  /** `.portal-divider` shares the route's native `0.35rem` geometry. */
+  dividerPx: 5.6,
 };
 
 /**
@@ -146,6 +148,241 @@ function vacantTiles(layout: TileLayout): ReadonlySet<string> {
   return vacant;
 }
 
+interface TileVisual {
+  readonly rect: DOMRect;
+  readonly opacity: string;
+}
+
+const tileAnimations = new WeakMap<HTMLElement, Animation>();
+let timingStyle: CSSStyleDeclaration | null = null;
+
+/** Parse the public CSS shorthand with the browser, not a second timing vocabulary. */
+function tileTiming(element: HTMLElement, fading = false): KeyframeAnimationOptions {
+  const value = getComputedStyle(element)
+    .getPropertyValue(fading ? "--carry-fade-transition" : "--preview-pane-transition")
+    .trim();
+  timingStyle ??= element.ownerDocument.createElement("div").style;
+  timingStyle.transition = "";
+  timingStyle.transition = fading ? value : `transform ${value}`;
+  const duration = timingStyle.transitionDuration;
+  const delay = timingStyle.transitionDelay;
+  return {
+    duration: (Number.parseFloat(duration) || 0) * (duration.endsWith("ms") ? 1 : 1000),
+    delay: (Number.parseFloat(delay) || 0) * (delay.endsWith("ms") ? 1 : 1000),
+    easing: timingStyle.transitionTimingFunction || "linear",
+  };
+}
+
+function tileVisual(element: HTMLElement): TileVisual {
+  return { rect: element.getBoundingClientRect(), opacity: getComputedStyle(element).opacity };
+}
+
+/** One owner for preview, cancellation and committed settlement; never stack transforms. */
+export function resetTileMotion(element: HTMLElement): void {
+  tileAnimations.get(element)?.cancel();
+  tileAnimations.delete(element);
+  element.style.transform = "";
+  element.style.transformOrigin = "";
+  element.style.opacity = "";
+}
+
+function playTileMotion(
+  element: HTMLElement,
+  first: TileVisual,
+  transform: string,
+  opacity: string,
+): void {
+  resetTileMotion(element);
+  const last = element.getBoundingClientRect();
+  element.style.transformOrigin = "0 0";
+  element.style.transform = transform;
+  element.style.opacity = opacity;
+  if (
+    prefersReducedMotion() ||
+    last.width <= 0 ||
+    last.height <= 0 ||
+    typeof element.animate !== "function"
+  )
+    return;
+  const dx = (first.rect.x - last.x) / last.width;
+  const dy = (first.rect.y - last.y) / last.height;
+  const sx = first.rect.width / last.width;
+  const sy = first.rect.height / last.height;
+  const from = `translate(${String(dx * 100)}%, ${String(dy * 100)}%) scale(${String(sx)}, ${String(sy)})`;
+  const stationary =
+    Math.abs(first.rect.x - last.x) < FLIP_EPSILON &&
+    Math.abs(first.rect.y - last.y) < FLIP_EPSILON &&
+    Math.abs(first.rect.width - last.width) < FLIP_EPSILON &&
+    Math.abs(first.rect.height - last.height) < FLIP_EPSILON;
+  if (transform === "" && stationary && first.opacity === (opacity || "1")) return;
+  const animation = element.animate(
+    [
+      { transform: from, opacity: first.opacity },
+      { transform: transform || "none", opacity: opacity || "1" },
+    ],
+    tileTiming(element, transform === "" && stationary),
+  );
+  tileAnimations.set(element, animation);
+  animation.onfinish = () => {
+    if (tileAnimations.get(element) === animation) tileAnimations.delete(element);
+  };
+}
+
+/** Internal bridge used by the single live preview, on the same stable boxes as settlement. */
+export function projectTileMotion(element: HTMLElement, transform: string, faded: boolean): void {
+  const opacity = faded ? "var(--carry-fade-opacity)" : "";
+  if (element.style.transform === transform && element.style.opacity === opacity) return;
+  playTileMotion(element, tileVisual(element), transform, opacity);
+}
+
+interface KeyedTile {
+  readonly node: Tile;
+  readonly key: string;
+}
+
+interface TileMotionProps {
+  readonly layout: TileLayout;
+  readonly rootRef: RefObject<HTMLElement | null>;
+  readonly hosts: Map<string, HTMLDivElement>;
+  readonly keyed: readonly KeyedTile[];
+  readonly children: ReactNode;
+}
+
+interface TileSnapshot {
+  readonly area: HTMLElement;
+  readonly areaRect: DOMRect;
+  readonly tiles: ReadonlyMap<string, TileVisual>;
+}
+
+/**
+ * React's pre-mutation snapshot is essential here: a layout-effect cleanup is too late
+ * after a split removed its old boxes. Only geometry survives; live content stays in its
+ * original stable host and is seated by the existing portal mechanism exactly once.
+ */
+class TileMotionBoundary extends Component<
+  TileMotionProps,
+  Record<string, never>,
+  TileSnapshot | null
+> {
+  private readonly shells = new Map<HTMLElement, Animation>();
+  private reduced: MediaQueryList | null = null;
+
+  private readonly finishMotion = (): void => {
+    if (!this.reduced?.matches) return;
+    for (const host of this.props.hosts.values()) {
+      tileAnimations.get(host)?.cancel();
+      tileAnimations.delete(host);
+    }
+    for (const [shell, animation] of this.shells) {
+      animation.cancel();
+      shell.remove();
+    }
+    this.shells.clear();
+  };
+
+  private seat(): void {
+    const { rootRef, hosts, keyed } = this.props;
+    const root = rootRef.current;
+    const live = new Set(keyed.map((entry) => entry.key));
+    for (const [key, host] of hosts) {
+      if (live.has(key)) continue;
+      resetTileMotion(host);
+      host.remove();
+      hosts.delete(key);
+    }
+    if (root === null) return;
+    for (const { node, key } of keyed) {
+      const host = hosts.get(key);
+      if (host === undefined) continue;
+      const box =
+        root.getAttribute("data-tile-id") === node.id
+          ? root
+          : root.querySelector<HTMLElement>(`[data-tile-id="${CSS.escape(node.id)}"]`);
+      if (box !== null && host.parentElement !== box) box.appendChild(host);
+    }
+  }
+
+  override componentDidMount(): void {
+    this.seat();
+    this.reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+    this.reduced.addEventListener("change", this.finishMotion);
+  }
+
+  override getSnapshotBeforeUpdate(previous: TileMotionProps): TileSnapshot | null {
+    if (previous.layout === this.props.layout) return null;
+    const area = previous.rootRef.current?.parentElement;
+    if (area === null || area === undefined) return null;
+    const tiles = new Map<string, TileVisual>();
+    for (const { key } of previous.keyed) {
+      const host = previous.hosts.get(key);
+      if (host?.isConnected) tiles.set(key, tileVisual(host));
+    }
+    return { area, areaRect: area.getBoundingClientRect(), tiles };
+  }
+
+  override componentDidUpdate(
+    _previous: TileMotionProps,
+    _state: Record<string, never>,
+    first: TileSnapshot | null,
+  ): void {
+    this.seat();
+    if (first === null) return;
+    // Clear all projections before Last, never measure a pane through a preview ancestor.
+    for (const host of this.props.hosts.values()) resetTileMotion(host);
+    for (const { key } of this.props.keyed) {
+      const host = this.props.hosts.get(key);
+      const before = first.tiles.get(key);
+      if (host !== undefined && before !== undefined) playTileMotion(host, before, "", "");
+    }
+    if (
+      prefersReducedMotion() ||
+      !first.area.isConnected ||
+      first.areaRect.width <= 0 ||
+      first.areaRect.height <= 0 ||
+      typeof first.area.animate !== "function"
+    )
+      return;
+    for (const [key, before] of first.tiles) {
+      if (this.props.hosts.has(key)) continue;
+      // A bounded empty shell, never a clone of a live terminal/canvas or its descendants.
+      const shell = document.createElement("div");
+      shell.className = "tile-departure-shell";
+      shell.setAttribute("aria-hidden", "true");
+      shell.style.left = `${String(((before.rect.x - first.areaRect.x) / first.areaRect.width) * 100)}%`;
+      shell.style.top = `${String(((before.rect.y - first.areaRect.y) / first.areaRect.height) * 100)}%`;
+      shell.style.width = `${String((before.rect.width / first.areaRect.width) * 100)}%`;
+      shell.style.height = `${String((before.rect.height / first.areaRect.height) * 100)}%`;
+      first.area.appendChild(shell);
+      const animation = shell.animate(
+        [
+          { opacity: before.opacity, transform: "scale(1)" },
+          { opacity: 0, transform: "scale(0.96)" },
+        ],
+        tileTiming(shell),
+      );
+      this.shells.set(shell, animation);
+      animation.onfinish = () => {
+        shell.remove();
+        this.shells.delete(shell);
+      };
+    }
+  }
+
+  override componentWillUnmount(): void {
+    this.reduced?.removeEventListener("change", this.finishMotion);
+    for (const host of this.props.hosts.values()) resetTileMotion(host);
+    for (const [shell, animation] of this.shells) {
+      animation.cancel();
+      shell.remove();
+    }
+    this.shells.clear();
+  }
+
+  override render(): ReactNode {
+    return this.props.children;
+  }
+}
+
 export function TileTree({
   layout,
   classes,
@@ -178,29 +415,6 @@ export function TileTree({
     return host;
   };
 
-  // Seat every content host in the box the CURRENT tree drew for its leaf, and drop
-  // hosts whose content React already unmounted (their key left the portal list).
-  useLayoutEffect(() => {
-    const root = rootRef.current;
-    if (root === null) return;
-    const live = new Set(keyed.map((entry) => entry.key));
-    for (const [key, host] of hosts) {
-      if (!live.has(key)) {
-        host.remove();
-        hosts.delete(key);
-      }
-    }
-    for (const { node, key } of keyed) {
-      const host = hosts.get(key);
-      if (host === undefined) continue;
-      const box =
-        root.getAttribute("data-tile-id") === node.id
-          ? root
-          : root.querySelector<HTMLElement>(`[data-tile-id="${CSS.escape(node.id)}"]`);
-      if (box !== null && host.parentElement !== box) box.appendChild(host);
-    }
-  });
-
   const attachRoot = (element: HTMLElement | null): void => {
     rootRef.current = element;
   };
@@ -225,10 +439,9 @@ export function TileTree({
   };
 
   const root = layout[ROOT_TILE_ID];
-  if (root === undefined) return null;
   return (
-    <>
-      {root.dir === null ? (
+    <TileMotionBoundary layout={layout} rootRef={rootRef} hosts={hosts} keyed={keyed}>
+      {root === undefined ? null : root.dir === null ? (
         // A single-leaf tree draws one full-size pane box for the root itself.
         <div
           className={classes.pane}
@@ -248,7 +461,7 @@ export function TileTree({
         />
       )}
       {keyed.map(({ node, key }) => createPortal(renderLeaf(node), hostFor(key), key))}
-    </>
+    </TileMotionBoundary>
   );
 }
 

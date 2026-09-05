@@ -213,26 +213,24 @@ describe("the instance channel handshake", () => {
     expect(DIAL_LIVENESS_TIMEOUT_MS).toBe(DIAL_PING_INTERVAL_MS * 2 + 15_000);
   });
 
-  test("the instance wire has its OWN acceptance set", () => {
+  test("every instance version since v18 remains accepted; older and future versions are refused", () => {
     /*
       Two wires, two sets, one discipline (invariant 10 applied per wire): sharing the machine
       set would mean an agent-wire reset locking out federated instances that never spoke that
       wire, and an instance-frame change restarting a fleet of PTY agents that never spoke this
       one. The set GROWS by the same first clause the machine set grows by — v19 moved a
       session frame pair, v20 bounded a token row's life, v21 opened the container
-      discipline roster and added two optional fields to a gesture frame, and v22 let a
-      terminal be born running a program — none of which a guest instance sees (a share
-      secret is not a token row, carries no expiry, names no container and creates no PTY) —
-      so a v18 dial survives all four deploys.
+      discipline roster and added two optional fields to a gesture frame, v22 let a
+      terminal be born running a program, and v23 added browser presence location paths
+      and connection snapshots — none of which a guest instance sees (a share secret
+      is not a token row, carries no expiry, names no container and creates no PTY) —
+      so the acceptance floor remains v18.
     */
-    expect(INSTANCE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
-    expect([...INSTANCE_PROTOCOL_COMPAT_VERSIONS]).toEqual([
-      PROTOCOL_VERSION - 4,
-      PROTOCOL_VERSION - 3,
-      PROTOCOL_VERSION - 2,
-      PROTOCOL_VERSION - 1,
-      PROTOCOL_VERSION,
-    ]);
+    for (let version = 0; version <= PROTOCOL_VERSION + 1; version++) {
+      expect(INSTANCE_PROTOCOL_COMPAT_VERSIONS.has(version)).toBe(
+        version >= 18 && version <= PROTOCOL_VERSION,
+      );
+    }
   });
 });
 

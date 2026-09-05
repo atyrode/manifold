@@ -127,11 +127,9 @@ function NoteNodeImpl({ id, data }: ElementProps): ReactElement {
     host.doc.transact((tx) => {
       tx.patch(id, { height: noteHeightFor(measureContentHeight(editor) + EDITOR_BORDER_INSET) });
     });
-    // Once per editing session, deliberately not on every render: `host` is a fresh object
-    // whenever this view's context recomputes (a scene mutation included), and re-running
-    // this effect off THAT would patch on every render this patch itself causes — `editing`
-    // is the only transition this effect exists to answer.
-  }, [editing]);
+    // Document and element identity are stable within an editing session. The whole host
+    // is rebuilt after scene changes, including this patch, so it is not a dependency.
+  }, [editing, host.doc, id]);
 
   const finishEditing = (): void => {
     host.endEditing(id);

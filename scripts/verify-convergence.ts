@@ -1567,8 +1567,15 @@ try {
         );
         const handle = await browserA.evaluate<{ readonly x: number; readonly y: number }>(
           `(() => {
-            const rect = document.querySelector(${inkHandle}).getBoundingClientRect();
-            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+            const control = document.querySelector(${inkHandle});
+            const rect = control.getBoundingClientRect();
+            const point = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+            const hit = document.elementFromPoint(point.x, point.y);
+            if (hit === null || !control.contains(hit)) {
+              throw new Error("selected stroke resize handle is covered by " +
+                (hit === null ? "no hit target" : hit.tagName + "." + hit.getAttribute("class")));
+            }
+            return point;
           })()`,
         );
         await browserA.send("Input.dispatchMouseEvent", {

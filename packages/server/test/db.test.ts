@@ -376,7 +376,6 @@ describe("migration 9: solo compositions", () => {
         db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'").get()
           ?.value,
       ).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(18);
 
       // The state the pool and the bubble needed is gone from the schema, not merely unread:
       // a column nobody may write is a column that cannot drift back into meaning something.
@@ -1043,12 +1042,13 @@ describe("pre-migration snapshot retention", () => {
       seedPreV9(path);
       openDatabase(path).close();
 
-      // Four backed-up migrations replayed, four images, no fifth file: `VACUUM INTO` cannot
+      // Five backed-up migrations replayed, five images, no sixth file: `VACUUM INTO` cannot
       // overwrite, so the staging name has to be gone by the time the runner returns.
       expect(backupsIn(dir)).toEqual([
         "manifold.db.pre-v11.bak",
         "manifold.db.pre-v13.bak",
         "manifold.db.pre-v16.bak",
+        "manifold.db.pre-v19.bak",
         "manifold.db.pre-v9.bak",
       ]);
 
@@ -1058,6 +1058,7 @@ describe("pre-migration snapshot retention", () => {
       expect(snapshotVersion(`${path}.pre-v11.bak`)).toBe("10");
       expect(snapshotVersion(`${path}.pre-v13.bak`)).toBe("12");
       expect(snapshotVersion(`${path}.pre-v16.bak`)).toBe("15");
+      expect(snapshotVersion(`${path}.pre-v19.bak`)).toBe("18");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1096,12 +1097,13 @@ describe("pre-migration snapshot retention", () => {
 
       // Still one image for version 11, not two: a retried version replaces its predecessor
       // rather than leaving a full copy of the database per attempt. The retry also carries on
-      // past the migration that failed, so 13's and 16's images are written by it and not by
+      // past the migration that failed, so 13's, 16's and 17's images are written by it, not
       // the attempt.
       expect(backupsIn(dir)).toEqual([
         "manifold.db.pre-v11.bak",
         "manifold.db.pre-v13.bak",
         "manifold.db.pre-v16.bak",
+        "manifold.db.pre-v19.bak",
         "manifold.db.pre-v9.bak",
       ]);
       // And the survivor is the RETRY's image, not the failed attempt's — the stray table the
@@ -1122,12 +1124,15 @@ describe("migration 18: an install row's published doors", () => {
     const dir = mkdtempSync(join(tmpdir(), "manifold-db-installs-"));
     const path = join(dir, "manifold.db");
     try {
-      // The v17 shape of the one table this migration touches — nothing else replays — plus
-      // the `events` columns the store's constructor indexes on open.
+      // The historical install row, plus the persistence tables later migrations and the
+      // store's constructor touch while upgrading to the current schema.
       const seed = new Database(path, { create: true, strict: true });
       seed.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER);
+CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INTEGER NOT NULL,
+  ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
+  PRIMARY KEY (container_id, epoch, rev));
 CREATE TABLE plugin_installs(
   plugin_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, source TEXT NOT NULL,
   granted_caps TEXT NOT NULL, installed_by TEXT NOT NULL, installed_at INTEGER NOT NULL,
@@ -1147,6 +1152,371 @@ INSERT INTO plugin_installs VALUES ('vendor.elder', '${"0".repeat(64)}', '/uploa
       const rows = new ServerStore(db).pluginInstalls();
       expect(rows.map((row) => [row.pluginId, row.actions])).toEqual([["vendor.elder", []]]);
       db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Schema-18 persistence tables consumed by 19. Layouts are raw historical data, never passed
+ * through today's strict TileSchema; fixed Yjs client ids make every revision reproducible.
+ */
+function seedPreV19(path: string): {
+  readonly rows: DocRow[];
+  readonly metadata: { key: string; value: string }[];
+} {
+  const db = new Database(path, { create: true, strict: true });
+  db.exec(`
+CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INTEGER NOT NULL,
+  ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
+  PRIMARY KEY (container_id, epoch, rev));
+CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+INSERT INTO meta(key, value) VALUES ('schema_version', '18');
+`);
+  const doc = createSceneDoc();
+  doc.clientID = 1601;
+  const refs = [
+    { kind: "text", elementId: "el-note" },
+    { kind: "text", elementId: "el-draw" },
+    { kind: "terminal", terminalId: "terminal-16" },
+    { kind: "container", containerId: "canvas-16" },
+    { kind: "spacer" },
+    null,
+  ];
+  const layout = doc.getMap<Y.Map<unknown>>(LAYOUT_KEY);
+  doc.transact(() => {
+    const root = new Y.Map<unknown>();
+    for (const [key, value] of Object.entries({
+      id: ROOT_TILE_ID,
+      dir: "row",
+      ratios: [0.3, 0.7],
+      children: ["left", "right"],
+      ref: null,
+    }))
+      root.set(key, value);
+    layout.set(ROOT_TILE_ID, root);
+    for (const [index, id] of ["left", "right"].entries()) {
+      const split = new Y.Map<unknown>();
+      for (const [key, value] of Object.entries({
+        id,
+        dir: "column",
+        ratios: [0.2, 0.3, 0.5],
+        children: [0, 1, 2].map((offset) => `leaf-${index * 3 + offset}`),
+        ref: null,
+      }))
+        split.set(key, value);
+      layout.set(id, split);
+    }
+    for (const [index, ref] of refs.entries()) {
+      const id = `leaf-${index}`;
+      const tile = new Y.Map<unknown>();
+      for (const [key, value] of Object.entries({
+        id,
+        dir: null,
+        ratios: [],
+        children: [],
+        ref,
+      }))
+        tile.set(key, value);
+      layout.set(id, tile);
+    }
+    const note = new Y.Map<unknown>();
+    for (const [key, value] of Object.entries(NOTE_ELEMENT)) {
+      if (key !== "text") note.set(key, value);
+    }
+    const text = new Y.Text();
+    note.set("text", text);
+    doc.getMap<Y.Map<unknown>>(ELEMENTS_KEY).set("el-note", note);
+    text.applyDelta([{ insert: "note α\n\u0000終", attributes: { bold: true } }]);
+    note.set("caption", new Y.Text("a second collaborative field"));
+    rawElement(doc, "el-draw", {
+      id: "el-draw",
+      type: "draw",
+      x: 40,
+      y: 50,
+      width: 120,
+      height: 80,
+      zIndex: 4,
+      strokes: [
+        {
+          points: [
+            [0, 1],
+            [2, 3],
+          ],
+          color: "#112233",
+          width: 2,
+        },
+      ],
+    });
+    doc.getMap("plugin-state").set("kind", "text");
+    doc.getMap("plugin-state").set("payload", { kind: "text", elementId: "not-a-ref" });
+    doc.getText("shared-journal").insert(0, "outside the element map\n");
+  });
+  const first = Y.encodeStateAsUpdate(doc);
+  layout.get(ROOT_TILE_ID)?.set("ratios", [0.4, 0.6]);
+  const noteText = doc.getMap<Y.Map<unknown>>(ELEMENTS_KEY).get("el-note")?.get("text");
+  if (!(noteText instanceof Y.Text)) throw new Error("fixture note has no shared text");
+  noteText.insert(noteText.length, "\nnewest revision");
+  const second = Y.encodeStateAsUpdate(doc);
+  const workspace = layout.toJSON();
+  workspace["leaf-2"].ref = { kind: "panel", panelId: "core.shell.sidebar" };
+  workspace["leaf-2"].sections = ["containers", "terminals"];
+  const metadata = [
+    { key: "layout:principal-16", value: JSON.stringify(workspace) },
+    { key: "layout:other-principal", value: JSON.stringify(workspace, null, 2) },
+    { key: "layout:broken", value: '{"root":' },
+    { key: "layout:unrelated", value: ' { "payload": "text", "type": "text" } ' },
+    { key: "layout:malformed-ref", value: '{"root":{"ref":{"kind":"text","elementId":42}}}' },
+    { key: "settings:principal-16", value: JSON.stringify(workspace) },
+  ];
+  doc.destroy();
+  const canvas = createSceneDoc();
+  canvas.clientID = 1602;
+  canvas.getText("untouched").insert(0, "a canvas with no layout");
+  const unchanged = Y.encodeStateAsUpdate(canvas);
+  canvas.destroy();
+  const rows = [
+    { container_id: "composition-16", epoch: "epoch-16", rev: 1, doc: first },
+    { container_id: "composition-16", epoch: "epoch-16", rev: 2, doc: second },
+    { container_id: "composition-16", epoch: "older-epoch", rev: 1, doc: first },
+    { container_id: "composition-16", epoch: "epoch-16", rev: 3, doc: new Uint8Array([255]) },
+    { container_id: "canvas-16", epoch: "canvas-epoch", rev: 1, doc: unchanged },
+  ].map((row) => ({ ...row, hash: sha256Hex(row.doc) }));
+  const insert = db.query<void, [string, string, number, number, string, Uint8Array]>(
+    "INSERT INTO scene_docs(container_id, epoch, rev, ts, hash, doc) VALUES (?, ?, ?, ?, ?, ?)",
+  );
+  for (const row of rows) {
+    insert.run(row.container_id, row.epoch, row.rev, row.rev * 1000, row.hash, row.doc);
+  }
+  const setMeta = db.query<void, [string, string]>("INSERT INTO meta(key, value) VALUES (?, ?)");
+  for (const row of metadata) setMeta.run(row.key, row.value);
+  db.close();
+  return { rows, metadata };
+}
+
+describe("migration 19: contributed element refs", () => {
+  test("upgrades every recovery revision and principal layout without changing contributed content", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-db-elements-"));
+    const path = join(dir, "manifold.db");
+    try {
+      const seeded = seedPreV19(path);
+      const db = openDatabase(path);
+      const getDoc = db.query<DocRow, [string, string, number]>(
+        "SELECT container_id, epoch, rev, hash, doc FROM scene_docs WHERE container_id = ? AND epoch = ? AND rev = ?",
+      );
+      const upgraded: DocRow[] = [];
+      for (const before of seeded.rows) {
+        const after = getDoc.get(before.container_id, before.epoch, before.rev);
+        if (after === null) throw new Error("migration lost a recovery revision");
+        upgraded.push(after);
+        expect(after.hash).toBe(sha256Hex(after.doc));
+        if (before.container_id === "canvas-16" || before.rev === 3) {
+          expect(after).toEqual(before);
+          continue;
+        }
+        const original = decoded(before);
+        const migrated = decoded(after);
+        const expected = original.getMap<Y.Map<unknown>>(LAYOUT_KEY).toJSON();
+        expected["leaf-0"].ref = { kind: "element", elementId: "el-note" };
+        expected["leaf-1"].ref = { kind: "element", elementId: "el-draw" };
+        expect(readTileLayout(migrated, before.container_id)).toEqual(expected);
+        expect(migrated.getMap(ELEMENTS_KEY).toJSON()).toEqual(
+          original.getMap(ELEMENTS_KEY).toJSON(),
+        );
+        expect(migrated.getMap("plugin-state").toJSON()).toEqual(
+          original.getMap("plugin-state").toJSON(),
+        );
+        expect(migrated.getText("shared-journal").toDelta()).toEqual(
+          original.getText("shared-journal").toDelta(),
+        );
+        const noteBefore = original.getMap<Y.Map<unknown>>(ELEMENTS_KEY).get("el-note");
+        const noteAfter = migrated.getMap<Y.Map<unknown>>(ELEMENTS_KEY).get("el-note");
+        for (const field of ["text", "caption"]) {
+          const textBefore = noteBefore?.get(field);
+          const textAfter = noteAfter?.get(field);
+          if (!(textBefore instanceof Y.Text) || !(textAfter instanceof Y.Text)) {
+            throw new Error("migration replaced collaborative text");
+          }
+          expect(textAfter.toDelta()).toEqual(textBefore.toDelta());
+          // An offline collaborator still holds the original text identities, not a copy.
+          const state = Y.encodeStateVector(original);
+          textBefore.insert(0, "offline ");
+          Y.applyUpdate(migrated, Y.encodeStateAsUpdate(original, state));
+          expect(textAfter.toDelta()).toEqual(textBefore.toDelta());
+        }
+        original.destroy();
+        migrated.destroy();
+      }
+      const getMeta = db.query<{ value: string }, [string]>("SELECT value FROM meta WHERE key = ?");
+      for (const before of seeded.metadata) {
+        const after = getMeta.get(before.key)?.value;
+        if (before.key === "layout:principal-16" || before.key === "layout:other-principal") {
+          const expected = JSON.parse(before.value);
+          expected["leaf-0"].ref = { kind: "element", elementId: "el-note" };
+          expected["leaf-1"].ref = { kind: "element", elementId: "el-draw" };
+          expect(JSON.parse(after ?? "null")).toEqual(expected);
+        } else {
+          expect(after).toBe(before.value);
+        }
+      }
+      expect(getMeta.get("schema_version")?.value).toBe("19");
+      const upgradedMetadata = db
+        .query<{ key: string; value: string }, []>("SELECT key, value FROM meta ORDER BY key")
+        .all();
+      // A direct retry must be a no-op even when the converted bytes are already present.
+      db.exec("UPDATE meta SET value = '18' WHERE key = 'schema_version'");
+      db.close();
+      const backup = new Database(`${path}.pre-v19.bak`, { strict: true });
+      expect(
+        backup
+          .query<DocRow, []>(
+            "SELECT container_id, epoch, rev, hash, doc FROM scene_docs ORDER BY container_id, epoch, rev",
+          )
+          .all(),
+      ).toEqual(
+        [...seeded.rows].sort(
+          (a, b) =>
+            a.container_id.localeCompare(b.container_id) ||
+            a.epoch.localeCompare(b.epoch) ||
+            a.rev - b.rev,
+        ),
+      );
+      for (const row of seeded.metadata) {
+        expect(
+          backup
+            .query<{ value: string }, [string]>("SELECT value FROM meta WHERE key = ?")
+            .get(row.key)?.value,
+        ).toBe(row.value);
+      }
+      backup.close();
+      expect(snapshotVersion(`${path}.pre-v19.bak`)).toBe("18");
+      const retried = openDatabase(path);
+      for (const row of upgraded) {
+        expect(
+          retried
+            .query<DocRow, [string, string, number]>(
+              "SELECT container_id, epoch, rev, hash, doc FROM scene_docs WHERE container_id = ? AND epoch = ? AND rev = ?",
+            )
+            .get(row.container_id, row.epoch, row.rev),
+        ).toEqual(row);
+      }
+      expect(
+        retried
+          .query<{ key: string; value: string }, []>("SELECT key, value FROM meta ORDER BY key")
+          .all(),
+      ).toEqual(upgradedMetadata);
+      retried.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a decodable hash-mismatched newest snapshot stays corrupt while valid fallback migrates", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-db-elements-integrity-"));
+    const path = join(dir, "manifold.db");
+    try {
+      const seeded = seedPreV19(path);
+      const valid = seeded.rows.find(
+        (row) => row.container_id === "composition-16" && row.epoch === "epoch-16" && row.rev === 2,
+      );
+      if (valid === undefined) throw new Error("fixture lacks valid fallback");
+      const corruptDoc = decoded(valid);
+      corruptDoc.getMap<Y.Map<unknown>>(LAYOUT_KEY).get(ROOT_TILE_ID)?.set("ratios", [0.9, 0.1]);
+      const corrupt = { ...valid, rev: 4, doc: Y.encodeStateAsUpdate(corruptDoc) };
+      corruptDoc.destroy();
+      expect(sha256Hex(corrupt.doc)).not.toBe(corrupt.hash);
+      const before = new Database(path, { strict: true });
+      before.exec("CREATE TABLE events(id INTEGER PRIMARY KEY, container_id TEXT, ts INTEGER)");
+      before
+        .query<void, [string, string, number, number, string, Uint8Array]>(
+          "INSERT INTO scene_docs(container_id, epoch, rev, ts, hash, doc) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .run(corrupt.container_id, corrupt.epoch, corrupt.rev, 4_000, corrupt.hash, corrupt.doc);
+      before.close();
+
+      const db = openDatabase(path);
+      expect(
+        db
+          .query<DocRow, []>(
+            "SELECT container_id, epoch, rev, hash, doc FROM scene_docs WHERE rev = 4",
+          )
+          .get(),
+      ).toEqual(corrupt);
+      const store = new ServerStore(db);
+      const recovered = store.latestDoc("composition-16");
+      expect(recovered?.rev).toBe(2);
+      if (recovered === null) throw new Error("migration lost valid fallback");
+      expect(recovered.hash).toBe(sha256Hex(recovered.doc));
+      const loaded = createSceneDoc();
+      Y.applyUpdate(loaded, recovered.doc);
+      const layout = readTileLayout(loaded, "composition-16");
+      expect(layout?.["leaf-0"]?.ref).toEqual({ kind: "element", elementId: "el-note" });
+      expect(layout?.[ROOT_TILE_ID]?.ratios).toEqual([0.4, 0.6]);
+      loaded.destroy();
+      store.close();
+
+      const backup = new Database(`${path}.pre-v19.bak`, { strict: true });
+      const getBackup = backup.query<DocRow, [number]>(
+        "SELECT container_id, epoch, rev, hash, doc FROM scene_docs WHERE container_id = 'composition-16' AND epoch = 'epoch-16' AND rev = ?",
+      );
+      expect(getBackup.get(4)).toEqual(corrupt);
+      expect(getBackup.get(2)).toEqual(valid);
+      backup.close();
+      expect(snapshotVersion(`${path}.pre-v19.bak`)).toBe("18");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a failed metadata write rolls snapshots and the version back before retry", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-db-elements-retry-"));
+    const path = join(dir, "manifold.db");
+    try {
+      const seeded = seedPreV19(path);
+      const blocked = new Database(path, { strict: true });
+      blocked.exec(`
+CREATE TRIGGER reject_layout BEFORE UPDATE ON meta WHEN OLD.key = 'layout:other-principal'
+BEGIN SELECT RAISE(ABORT, 'fixture layout write failure'); END;
+`);
+      blocked.close();
+      expect(() => openDatabase(path)).toThrow("fixture layout write failure");
+      const failed = new Database(path, { strict: true });
+      expect(snapshotVersion(path)).toBe("18");
+      expect(snapshotVersion(`${path}.pre-v19.bak`)).toBe("18");
+      for (const row of seeded.rows) {
+        expect(
+          failed
+            .query<DocRow, [string, string, number]>(
+              "SELECT container_id, epoch, rev, hash, doc FROM scene_docs WHERE container_id = ? AND epoch = ? AND rev = ?",
+            )
+            .get(row.container_id, row.epoch, row.rev),
+        ).toEqual(row);
+      }
+      for (const row of seeded.metadata) {
+        expect(
+          failed
+            .query<{ value: string }, [string]>("SELECT value FROM meta WHERE key = ?")
+            .get(row.key)?.value,
+        ).toBe(row.value);
+      }
+      failed.exec("DROP TRIGGER reject_layout");
+      failed.close();
+      const retried = openDatabase(path);
+      const recovered = retried
+        .query<DocRow, []>(
+          "SELECT container_id, epoch, rev, hash, doc FROM scene_docs WHERE container_id = 'composition-16' AND epoch = 'epoch-16' AND rev = 2",
+        )
+        .get();
+      if (recovered === null) throw new Error("retry lost the newest decodable revision");
+      const recoveredDoc = decoded(recovered);
+      expect(readTileLayout(recoveredDoc, "composition-16")?.["leaf-0"]?.ref).toEqual({
+        kind: "element",
+        elementId: "el-note",
+      });
+      recoveredDoc.destroy();
+      retried.close();
+      expect(snapshotVersion(path)).toBe("19");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

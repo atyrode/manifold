@@ -1,8 +1,10 @@
-import { ROOT_TILE_ID, type TileRef } from "@manifold/protocol";
+import { ROOT_TILE_ID, type CarryAim, type PlacementRef, type TileRef } from "@manifold/protocol";
+import { withoutTileLeaf } from "@manifold/scene";
 import {
   useEffect,
+  useLayoutEffect,
+  useMemo,
   useReducer,
-  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -10,7 +12,11 @@ import {
 
 import { ControlIcon, ItemIcon } from "./icons.tsx";
 import type { TileDropSignal, TileDropStore } from "../tile-drop-store.ts";
-import type { TileDropPipeline, TileDropState } from "../use-tile-drop.ts";
+import { areaUnits, type TileDropPipeline, type TileDropState } from "../use-tile-drop.ts";
+import { paneShifts, type PaneShift } from "../tile-geometry.ts";
+import { projectTileMotion, resetTileMotion } from "./tile-tree.tsx";
+import { carriedSnapshot, subscribeCarry } from "../item-envelope.ts";
+import type { GestureOverride } from "../presence/remote-gestures.ts";
 
 /**
  * The live split preview. Subscribes to the host's drop store — the ONLY consumer of
@@ -38,33 +44,47 @@ import type { TileDropPipeline, TileDropState } from "../use-tile-drop.ts";
  * which is the `from` rect, so the numbers are scale-invariant: correct under the
  * portal's `scale(0.5)` and any canvas zoom without knowing either.
  */
+/** The already-arbitrated source carry; no transport or producer identity enters motion. */
+export interface TileDeparture {
+  readonly ref: PlacementRef;
+  readonly aim?: CarryAim | undefined;
+  /** A known refusal restores the source just like cancellation. */
+  readonly denied?: boolean | undefined;
+}
+
+/** Source arbitration is independent of target arbitration: an absent aim still departs. */
+export function useTileDeparture(
+  containerId: string,
+  overrides: Iterable<GestureOverride>,
+): TileDeparture | null {
+  const local = useSyncExternalStore(subscribeCarry, carriedSnapshot, carriedSnapshot);
+  if (local?.ref.kind === "tile" && local.ref.containerId === containerId) return local;
+  let freshest: GestureOverride | null = null;
+  for (const override of overrides) {
+    const source = override.carry?.ref;
+    if (override.kind !== "carry" || source?.kind !== "tile" || source.containerId !== containerId)
+      continue;
+    if (freshest === null || override.updatedAt > freshest.updatedAt) freshest = override;
+  }
+  return freshest?.carry ?? null;
+}
+
 export interface TilePreviewOverlayProps {
   /** The host's one pipeline: aim resolution, the shared builder, its memo. */
   readonly drop: TileDropPipeline;
   readonly store: TileDropStore;
   /** Names the displaced occupant in a replace caption; the host answers from its doc. */
   readonly refLabel: (ref: TileRef) => string | null;
+  /** Active source carry, including while its aim is elsewhere or absent. Clear on end/expiry. */
+  readonly departure?: TileDeparture | null | undefined;
 }
 
-/** The class a carried item wears while its carry has an armed target (see styles.css). */
 const CARRIED_AWAY_CLASS = "is-carried-away";
+const NO_SHIFTS: readonly PaneShift[] = [];
 
-/** Everything this overlay wrote onto the tree, so disarm can undo it exactly. */
 interface PreviewMotion {
-  /** Boxes carrying a FLIP transform. */
-  readonly shifted: HTMLElement[];
-  /** Boxes wearing the ease-away class. */
-  readonly faded: HTMLElement[];
-}
-
-function clearMotion(motion: PreviewMotion): void {
-  for (const element of motion.shifted) {
-    element.style.transform = "";
-    element.style.transformOrigin = "";
-  }
-  motion.shifted.length = 0;
-  for (const element of motion.faded) element.classList.remove(CARRIED_AWAY_CLASS);
-  motion.faded.length = 0;
+  readonly transform: string;
+  readonly faded: boolean;
 }
 
 /** The DOM box a shift moves: the pane the CURRENT tree drew for that tile. */
@@ -74,17 +94,26 @@ function paneElement(
   singleLeaf: boolean,
 ): HTMLElement | null {
   const match = area.querySelector<HTMLElement>(`[data-tile-id="${CSS.escape(fromTileId)}"]`);
-  if (match !== null) return match;
-  // A single-leaf tree renders no pane box; the tree's root element stands in for it.
-  if (!singleLeaf) return null;
-  const first = area.firstElementChild;
-  return first instanceof HTMLElement ? first : null;
+  const pane = match ?? (singleLeaf ? area.firstElementChild : null);
+  if (!(pane instanceof HTMLElement)) return null;
+  // Only leaves move. A nested split and its descendants must never both transform.
+  for (let index = 0; index < pane.children.length; index += 1) {
+    const child = pane.children[index];
+    if (child instanceof HTMLElement && child.classList.contains("tile-content-host")) return child;
+  }
+  // A host may draw a contentless card before it has a tree; preserve that root prospect.
+  return singleLeaf && match === null ? pane : null;
 }
 
-export function TilePreviewOverlay({ drop, store, refLabel }: TilePreviewOverlayProps): ReactNode {
+export function TilePreviewOverlay({
+  drop,
+  store,
+  refLabel,
+  departure,
+}: TilePreviewOverlayProps): ReactNode {
   const signal: TileDropSignal = useSyncExternalStore(store.subscribe, store.get, store.get);
   const host = drop.host;
-  const motionRef = useRef<PreviewMotion>({ shifted: [], faded: [] });
+  const [motion] = useState(() => new Map<HTMLElement, PreviewMotion>());
   /** The last real state, so a gap (divider, own leaf) fades instead of popping. */
   const [held, setHeld] = useState<TileDropState | null>(null);
   /** Re-renders this overlay alone when the pointer's freshness window elapses. */
@@ -134,6 +163,25 @@ export function TilePreviewOverlay({ drop, store, refLabel }: TilePreviewOverlay
   const stale = shown !== null && shown !== live;
   /** Arbitration's outcome as a style-free marker on the slot, and nothing more. */
   const isRemote = shown !== null && shown === remoteState;
+  const departingTileId =
+    live === null &&
+    departure?.denied !== true &&
+    departure?.ref.kind === "tile" &&
+    departure.ref.containerId === host.containerId &&
+    departure.aim?.containerId !== host.containerId
+      ? departure.ref.tileId
+      : null;
+  const swapsSource = departure?.aim?.action === "swap";
+  const departureShifts = useMemo(() => {
+    const area = host.areaRef.current;
+    if (departingTileId === null || swapsSource || host.layout === null || area === null)
+      return NO_SHIFTS;
+    const units = areaUnits(area, host.dividerPx);
+    const next = withoutTileLeaf(host.layout, departingTileId);
+    return units === null || next === null
+      ? NO_SHIFTS
+      : paneShifts(host.layout, next, units.dividers);
+  }, [departingTileId, swapsSource, host.layout, host.areaRef, host.dividerPx]);
 
   /*
     Publish the resolved aim back to the store: the SINGLE source of both what a release
@@ -171,53 +219,58 @@ export function TilePreviewOverlay({ drop, store, refLabel }: TilePreviewOverlay
     };
   }, [armed, remaining]);
 
-  // The FLIP itself: written imperatively so the tree never re-renders. Nothing moves
-  // when the drop is denied, because nothing will move on release — and that guard now
-  // serves a peer's refused aim too, since a viewer judges the peer's own ref.
-  useEffect(() => {
+  // Arbitration is finished. Incoming and departing projections use exactly the same
+  // leaf geometry and motion owner; neither moves layout boxes or fits a live PTY.
+  useLayoutEffect(() => {
     const area = host.areaRef.current;
-    const motion = motionRef.current;
-    clearMotion(motion);
     if (area === null) return;
-    area.classList.toggle("is-previewing", shown !== null);
-    if (live === null) return;
+    const denied = live?.assessment?.denial != null;
+    const carriedTileId = denied ? null : (live?.carriedTileId ?? departingTileId);
+    const shifts = denied ? NO_SHIFTS : (live?.shifts ?? departureShifts);
     const singleLeaf = host.layout === null || host.layout[ROOT_TILE_ID]?.dir === null;
-    /*
-      The item IN HAND eases away while its carry holds an armed target, exactly as the
-      canvas fades the node a dragger is holding — the fade belongs to the carry, not to
-      being the dragger, so one rule serves your own tile drag and a peer's alike. Armed
-      is armed: a denied target still fades, because the canvas door does the same.
-    */
-    if (live.carriedTileId !== null) {
-      const carried = paneElement(area, live.carriedTileId, singleLeaf);
-      if (carried !== null) {
-        carried.classList.add(CARRIED_AWAY_CLASS);
-        motion.faded.push(carried);
-      }
-    }
-    if (live.assessment?.denial != null) return;
-    for (const shift of live.shifts) {
+    const next = new Map<HTMLElement, PreviewMotion>();
+    area.classList.toggle("is-previewing", shown !== null || carriedTileId !== null);
+    for (const shift of shifts) {
       const element = paneElement(area, shift.fromTileId, singleLeaf);
       if (element === null) continue;
       const dx = ((shift.to.x - shift.from.x) / shift.from.width) * 100;
       const dy = ((shift.to.y - shift.from.y) / shift.from.height) * 100;
       const sx = shift.to.width / shift.from.width;
       const sy = shift.to.height / shift.from.height;
-      element.style.transformOrigin = "0 0";
-      element.style.transform = `translate(${String(dx)}%, ${String(dy)}%) scale(${String(sx)}, ${String(sy)})`;
-      motion.shifted.push(element);
+      next.set(element, {
+        transform: `translate(${String(dx)}%, ${String(dy)}%) scale(${String(sx)}, ${String(sy)})`,
+        faded: false,
+      });
     }
-  }, [host.areaRef, host.layout, shown, live]);
+    if (carriedTileId !== null) {
+      const carried = paneElement(area, carriedTileId, singleLeaf);
+      if (carried !== null) next.set(carried, { transform: "", faded: true });
+    }
+    for (const element of motion.keys()) {
+      if (next.has(element)) continue;
+      element.parentElement?.classList.remove(CARRIED_AWAY_CLASS);
+      if (element.isConnected) projectTileMotion(element, "", false);
+      else resetTileMotion(element);
+    }
+    motion.clear();
+    for (const [element, projection] of next) {
+      projectTileMotion(element, projection.transform, projection.faded);
+      element.parentElement?.classList.toggle(CARRIED_AWAY_CLASS, projection.faded);
+      motion.set(element, projection);
+    }
+  }, [host.areaRef, host.layout, shown, live, departingTileId, departureShifts, motion]);
 
-  // Disarm and unmount both leave the tree exactly as the doc says it is.
-  useEffect(() => {
-    const motion = motionRef.current;
+  useLayoutEffect(() => {
     const area = host.areaRef.current;
     return () => {
-      clearMotion(motion);
+      for (const element of motion.keys()) {
+        resetTileMotion(element);
+        element.parentElement?.classList.remove(CARRIED_AWAY_CLASS);
+      }
+      motion.clear();
       area?.classList.remove("is-previewing");
     };
-  }, [host.areaRef]);
+  }, [host.areaRef, motion]);
 
   if (shown === null) return null;
 
