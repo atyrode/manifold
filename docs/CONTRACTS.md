@@ -1246,6 +1246,42 @@ every kind into one CSS family it owns (`mf-vocab`); no plugin CSS ever crosses.
 with `Content-Type: text/javascript`, `Cache-Control: no-store` and `ETag` equal to the install's
 `sha256`; 404 otherwise (not installed, disabled, or no web half). Same auth as `GET /api/plugins`.
 
+**The proof (ADR 0016 §8 stage 1).** Every claim above is held by two subjects, both driving the
+kit's reference plugin (`packages/plugin-kit/test/fixtures/sample`, `acme.counter`) as a
+stranger's code. `packages/testkit/e2e/isolated-plugin.test.ts` runs REAL server processes: the
+sample is packed by the kit's own `pack` command, admitted through `engine.plugins.install` from
+a path (`MANIFOLD_PLUGIN_DEV_PATHS=1`), published on the roster with its `install` block and
+enabled, dispatched from its own child with storage persisting across dispatches and both
+child-graded rungs (`invalid_args`, `refused`) arriving through the ladder; `web.js` is served with
+the pin as its `ETag`; a tampered artifact is `hash_mismatch` with nothing written; uninstall
+is `still_enabled` until the row is off, then removes row and files and keeps storage; an
+install survives a restart with its count; and a stored bundle tampered with between boots
+comes up `lifecycle: "enable_failed"`, `install.refusal: "hash_mismatch"`, DOORLESS — so its
+door answers `unknown_action`, not `plugin_disabled` (the row is not off) and not `unavailable`
+(no isolate was asked). `bun run verify:axioms` R11 is the browser half: the same bundle
+installed from the drop box (`<data>/plugin-uploads/`), its panel seated through
+`core.space.setLayout` in the viewer's own tree, a real Chromium painting every one of the
+thirteen kinds under its `mf-vocab-<kind>` anchor from the Worker, and one press on the
+`data-action="acme.counter.bump"` button becoming exactly one dispatch at the same door the HTTP
+call before it used. One behaviour the proof records rather than endorses: uninstall keeps the
+plugin's ENABLEMENT beside its storage (the disabled set is keyed by id), so a reinstall of an
+id that was switched off in order to be uninstalled comes back off.
+
+**Why no first-party plugin runs isolated yet (ADR 0016 §8.1).** Stage 1 owes one first-party
+plugin running both ways, and none qualifies against `ISOLATE_CTX_METHODS` today. Every
+first-party server half reaches at least one slice the runner does not serve: `core.keys`,
+`core.events`, `core.shell` (`setLayout`), `core.index`, `core.machines` and `core.terminals` read
+or write `ctx.store` directly; `core.presence` and `core.terminals` use `ctx.rooms`;
+`core.terminals` drives `ctx.broker`; `core.machines` and `core.access` mint and revoke through
+`ctx.identity`, and `core.access` dials through `ctx.dials`; `core.shell` removes tiles through
+`ctx.placement.removeTile` and `core.index` deletes containers through
+`ctx.placement.deleteContainer`, where only `placement.place` crosses. Every first-party web half
+is React over `@manifold/plugin` (panels, sections, element renderers, tools, overlays), and a
+Worker serves panels of the closed vocabulary and nothing else. What would unlock the proof is
+a plugin whose server half is storage plus the served slices and whose web half is one panel —
+the shape `acme.counter` has and no shipped plugin does — or the runner serving a store-backed
+slice, which is a stage-2 decision, not something this proof may quietly widen.
+
 ## WS /ws/session — session channel (JSON text frames)
 
 **Frame grammar (v19).** One socket per tab, many rooms. Every frame is either

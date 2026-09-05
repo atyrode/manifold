@@ -24,7 +24,7 @@
  *   S16 the floor's own size: `packages/plugin/src` stays inside its declared line budget
  *   S17 hosting neutrality: no shipped file names a hosting provider (ADR 0022)
  *
- * The browser half (R1-R8) runs a real server and a real Chromium against the built bundle,
+ * The browser half (R1-R11) runs a real server and a real Chromium against the built bundle,
  * because the axioms are claims about a LIVE workspace: parity between the two doors, hot
  * enable/disable with no reload, the shell as a composition, observable view presence, and
  * the denial ladder end to end.
@@ -33,7 +33,14 @@
  * server + agent on an ephemeral port, restores every plugin it toggled, cleans up.
  * Env: MANIFOLD_CHROMIUM (else system chromium), MANIFOLD_GATE_DIST (shared bundle).
  */
-import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import ts from "typescript";
@@ -43,8 +50,10 @@ import {
   FLOOR_ELEMENT_PAYLOADS,
   ITEM_NOUNS,
   composeDefaultLayout,
+  ENGINE_INSTALL_ACTION,
   ENGINE_PLUGINS_ID,
   ENGINE_SET_ENABLED_ACTION,
+  ENGINE_UNINSTALL_ACTION,
   enginePluginsActions,
   enginePluginsManifest,
   panelRefId,
@@ -61,16 +70,20 @@ import {
   MachinesResponseSchema,
   ContainerResponseSchema,
   IndexResponseSchema,
+  MAX_TILE_CHILDREN,
   PluginRosterSchema,
   PluginsResponseSchema,
+  ROOT_TILE_ID,
   ResolveResponseSchema,
   SceneElementSchema,
   TokenGrantSchema,
+  UI_NODE_TYPES,
   formatManifoldUri,
   validateTileLayout,
   type LogEvent,
   type ManifoldRef,
   type ServerEvent,
+  type Tile,
   type TileLayout,
   type TokenGrant,
 } from "../packages/protocol/src/index.ts";
@@ -5143,6 +5156,239 @@ try {
     releaseIntruder();
     peer.close();
     intruder.close();
+  }
+
+  // ─────────────────────────────────────────── R11: a stranger's plugin, both halves
+
+  /**
+   * AN INSTALLED PLUGIN, END TO END (ADR 0016 §8 stage 1). Every other rung of this gate drives
+   * plugins compiled into the build and handed the engine's real objects. This one takes the
+   * kit's reference plugin the way an operator would — packed into one artifact, dropped into
+   * `<data>/plugin-uploads/`, admitted at `engine.plugins.install` — and asks the two questions
+   * only a real server and a real browser can answer together: does the server half answer its
+   * door from its OWN process, and does the web half, in a Worker that never touches the DOM,
+   * paint the closed vocabulary on screen and dispatch through the host's door when its button
+   * is pressed?
+   *
+   * The panel is seated the way any panel is — one more leaf of the viewer's own tree, written
+   * through `core.space.setLayout` — and the page is reloaded onto it, because a tree is fetched
+   * at mount. Every one of the vocabulary's kinds is looked for by its `mf-vocab-<kind>` anchor
+   * across the two states the fixture paints (a spinner before the first bump, a badge after),
+   * so a kind the renderer silently dropped fails here rather than in a stranger's bug report.
+   * The click is counted at the server's own action log: one press, one `acme.counter.bump`
+   * graded by the ladder, answered from the child, painted by the worker — the same door the
+   * HTTP dispatch before it went through (A2, parity).
+   *
+   * The screenshot is written OUTSIDE the data dir on purpose: invariant 9 says a UI-touching
+   * change is verified by inspecting real pixels, and the gate's temp dir is gone by the time a
+   * reader looks. Its path is printed as an INFO line.
+   */
+  {
+    const PLUGIN_ID = "acme.counter";
+    const BUMP_ACTION = `${PLUGIN_ID}.bump`;
+    const COUNTER_PANEL = panelRefId(PLUGIN_ID, "counter");
+    const COUNTER_LEAF = "r11-counter";
+    const kit = join(repoRoot, "packages/plugin-kit");
+    const uploads = join(dataDir, "plugin-uploads");
+    mkdirSync(uploads, { recursive: true });
+    const bundlePath = join(uploads, `${PLUGIN_ID}.manifold-plugin.json`);
+
+    /* Packed by the kit's own command, as an author packs: a real second process. */
+    const pack = Bun.spawn(
+      ["bun", join(kit, "src/pack.ts"), join(kit, "test/fixtures/sample"), "--out", bundlePath],
+      { cwd: kit, stdout: "pipe", stderr: "pipe" },
+    );
+    const [packOut, packErr, packCode] = await Promise.all([
+      new Response(pack.stdout).text(),
+      new Response(pack.stderr).text(),
+      pack.exited,
+    ]);
+    if (packCode !== 0) throw new Error(`R11 pack exited ${String(packCode)}: ${packErr}`);
+    const sha256 = String(Reflect.get(JSON.parse(packOut) as object, "sha256"));
+
+    const admitted = ActionOutcomeSchema.parse(
+      await dispatch(ENGINE_INSTALL_ACTION, { source: bundlePath, sha256 }),
+    );
+    const installedRow = PluginsResponseSchema.parse(await getJson("/api/plugins")).plugins.find(
+      (entry) => entry.manifest.id === PLUGIN_ID,
+    );
+    const seatedOnRoster =
+      admitted.ok &&
+      installedRow !== undefined &&
+      installedRow.enabled &&
+      installedRow.lifecycle === undefined &&
+      installedRow.install?.sha256 === sha256 &&
+      installedRow.actions.some((action) => action.name === BUMP_ACTION);
+    check(
+      "R11 an out-of-tree bundle is admitted from the drop box",
+      seatedOnRoster,
+      !admitted.ok
+        ? admitted.denial.message
+        : seatedOnRoster
+          ? `${PLUGIN_ID} on the roster with install.sha256 pinned, enabled, ${BUMP_ACTION} published`
+          : `the row reads ${JSON.stringify({ enabled: installedRow?.enabled, lifecycle: installedRow?.lifecycle, refusal: installedRow?.install?.refusal })}`,
+    );
+
+    /* The server half, through the HTTP door: the count lives in host-served storage. */
+    const bumpedByHttp = ActionOutcomeSchema.parse(await dispatch(BUMP_ACTION, { by: 1 }));
+    const httpCount = bumpedByHttp.ok
+      ? Number(Reflect.get(bumpedByHttp.result as object, "count"))
+      : Number.NaN;
+    check(
+      "R11 the server half answers from its own process",
+      httpCount === 1,
+      bumpedByHttp.ok
+        ? `one dispatch, count ${String(httpCount)}`
+        : `${BUMP_ACTION} refused: ${bumpedByHttp.denial.message}`,
+    );
+
+    /*
+      Seat the panel: one more leaf beside whatever the viewer's root already holds. The tree
+      is PER PRINCIPAL and the browser is not the owner, so it is read and written with a token
+      bound to the browser's principal, exactly as R4 does.
+    */
+    const viewer = await mint({ principalId: viewerPrincipalId, caps: ["containers:read"] });
+    const before = LayoutResponseSchema.parse(await getJson("/api/layout", viewer.token)).layout;
+    const root = before[ROOT_TILE_ID];
+    const counterLeaf: Tile = {
+      id: COUNTER_LEAF,
+      dir: null,
+      ratios: [],
+      children: [],
+      ref: { kind: "panel", panelId: COUNTER_PANEL },
+    };
+    const seated: TileLayout =
+      root !== undefined && root.dir !== null && root.children.length < MAX_TILE_CHILDREN
+        ? {
+            ...before,
+            [ROOT_TILE_ID]: {
+              ...root,
+              children: [...root.children, COUNTER_LEAF],
+              ratios: [...root.ratios, 1],
+            },
+            [COUNTER_LEAF]: counterLeaf,
+          }
+        : {
+            [ROOT_TILE_ID]: {
+              id: ROOT_TILE_ID,
+              dir: "row",
+              ratios: [1, 1],
+              children: ["r11-shell", COUNTER_LEAF],
+              ref: null,
+            },
+            "r11-shell": { ...(root ?? counterLeaf), id: "r11-shell" },
+            [COUNTER_LEAF]: counterLeaf,
+          };
+    if (!validateTileLayout(seated)) throw new Error("R11 composed an invalid workspace tree");
+    const seatedOutcome = ActionOutcomeSchema.parse(
+      await dispatch("core.space.setLayout", { layout: seated }, viewer.token),
+    );
+    if (!seatedOutcome.ok)
+      throw new Error(`R11 setLayout refused: ${seatedOutcome.denial.message}`);
+
+    await browser.goto(`${origin}/p/${canvasContainerId}`);
+    const panelSelector = `[data-tile-id="${COUNTER_LEAF}"]`;
+    const vocabIn = (selector: string): string =>
+      `(() => { const leaf = document.querySelector(${JSON.stringify(panelSelector)});
+        return leaf === null ? null : leaf.querySelector(${JSON.stringify(selector)}); })()`;
+    const kindsPainted = (): Promise<readonly string[]> =>
+      browser!.evaluate<readonly string[]>(
+        `(() => { const leaf = document.querySelector(${JSON.stringify(panelSelector)});
+          if (leaf === null) return [];
+          const seen = new Set();
+          for (const node of leaf.querySelectorAll('[class^="mf-vocab-"], [class*=" mf-vocab-"]')) {
+            for (const name of node.classList) {
+              const kind = /^mf-vocab-([a-z]+)$/.exec(name);
+              if (kind !== null) seen.add(kind[1]);
+            }
+          }
+          return [...seen]; })()`,
+      );
+    const headingText = (): Promise<string | null> =>
+      browser!.evaluate<string | null>(`${vocabIn(".mf-vocab-heading")}?.textContent ?? null`);
+    const badgeText = (): Promise<string | null> =>
+      browser!.evaluate<string | null>(`${vocabIn(".mf-vocab-badge")}?.textContent ?? null`);
+
+    const painted = await settles(async () => (await headingText()) === "Counter", 20_000);
+    const viewerName = await browser.evaluate<string>(
+      `JSON.parse(localStorage.getItem('manifold.identity')).principal.name`,
+    );
+    const greeting = await browser.evaluate<string | null>(
+      `${vocabIn(".mf-vocab-text")}?.textContent ?? null`,
+    );
+    const kindsBefore = await kindsPainted();
+    const bumpButton = `${panelSelector} button[data-action="${BUMP_ACTION}"]`;
+    const buttonNamesDoor = await browser.evaluate<boolean>(
+      `document.querySelector(${JSON.stringify(bumpButton)}) !== null`,
+    );
+    check(
+      "R11 the web half paints the vocabulary from a Worker",
+      painted && greeting === `Hello, ${viewerName}.` && buttonNamesDoor,
+      !painted
+        ? `no mf-vocab-heading reading "Counter" inside the seated leaf (heading: ${JSON.stringify(await headingText())}, kinds: ${kindsBefore.join(", ") || "none"})`
+        : greeting !== `Hello, ${viewerName}.`
+          ? `the guest's init did not carry the viewer as data: text reads ${JSON.stringify(greeting)}`
+          : buttonNamesDoor
+            ? `heading, greeting for "${viewerName}", and a button carrying data-action="${BUMP_ACTION}" — ${String(kindsBefore.length)} kinds on screen before any press`
+            : `no button under the leaf carries data-action="${BUMP_ACTION}"`,
+    );
+
+    /* One press, one dispatch, one repaint: the count the HTTP dispatch left, plus one. */
+    const bumpsBefore = actionLog.filter((entry) => entry.name === BUMP_ACTION).length;
+    const pressed = await browser.evaluate<boolean>(
+      `(() => { const hit = document.querySelector(${JSON.stringify(bumpButton)});
+        if (!(hit instanceof HTMLElement)) return false; hit.click(); return true; })()`,
+    );
+    const repainted =
+      pressed && (await settles(async () => (await badgeText()) === "count 2", 10_000));
+    const kindsAfter = await kindsPainted();
+    const bumps = actionLog.filter((entry) => entry.name === BUMP_ACTION).length - bumpsBefore;
+    check(
+      "R11 a press in the Worker's panel is one dispatch at the same door",
+      repainted && bumps === 1,
+      !pressed
+        ? "the bump button could not be pressed"
+        : repainted
+          ? `the badge reads "count 2" after ${String(bumps)} ${BUMP_ACTION} dispatch(es) for one press`
+          : `the badge reads ${JSON.stringify(await badgeText())} after ${String(bumps)} dispatch(es); "count 2" was owed`,
+    );
+
+    const kindsSeen = new Set([...kindsBefore, ...kindsAfter]);
+    const kindsMissing = UI_NODE_TYPES.filter((kind) => !kindsSeen.has(kind));
+    check(
+      "R11 every vocabulary kind reaches the DOM under its own anchor",
+      kindsMissing.length === 0,
+      kindsMissing.length === 0
+        ? `all ${String(UI_NODE_TYPES.length)} kinds painted across the spinner and badge states`
+        : `never painted: ${list(kindsMissing)}`,
+    );
+
+    const shot = await browser.send("Page.captureScreenshot", { format: "png" });
+    const shotPath = join(tmpdir(), "manifold-axi-r11-isolated-plugin.png");
+    writeFileSync(shotPath, Buffer.from(String(shot.result?.["data"] ?? ""), "base64"));
+    console.log(`INFO  R11 screenshot: ${shotPath}`);
+
+    /*
+      Put the workspace back: the viewer's tree as it was, and the stranger's code gone — the
+      row must be OFF to be uninstalled, and once it is gone it is nothing the finally should
+      try to switch back on.
+    */
+    await dispatch("core.space.setLayout", { layout: before }, viewer.token);
+    await setEnabled(PLUGIN_ID, false);
+    const removed = ActionOutcomeSchema.parse(
+      await dispatch(ENGINE_UNINSTALL_ACTION, { id: PLUGIN_ID }),
+    );
+    disabledHere.delete(PLUGIN_ID);
+    const rosterAfter = PluginRosterSchema.parse(
+      PluginsResponseSchema.parse(await getJson("/api/plugins")).plugins,
+    );
+    check(
+      "R11 uninstall takes the row and the doors away",
+      removed.ok && !rosterAfter.some((entry) => entry.manifest.id === PLUGIN_ID),
+      removed.ok
+        ? `${PLUGIN_ID} off the roster; ${ENGINE_PLUGINS_ID} keeps ${String(rosterAfter.length)} rows`
+        : removed.denial.message,
+    );
   }
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
