@@ -36,6 +36,11 @@ export const LOG_EVENTS = [
   "plugin_migration",
   "plugin_purge",
 
+  // Server: the install doors (ADR 0016 §8 stage 2) — a bundle admitted, or removed. A stored
+  // bundle refused at boot is a `plugin_lifecycle` line: it is why the row cannot serve.
+  "plugin_installed",
+  "plugin_uninstalled",
+
   // Server: supervision of the co-located agent daemon.
   "local_agent_reused",
   "local_agent_spawn_locked",
