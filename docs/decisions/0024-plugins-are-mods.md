@@ -208,13 +208,24 @@ Nothing new: the authoring guide IS the contract. The manifest (`docs/PLUGINS.md
 (§3), disable semantics and dormant modes (§4, D4′: retain, never destroy), `data-action` on every
 mutating affordance (S4, `REGISTRY.md:2145`), the web registration channels and the
 tile-geometry/projection contracts (§7), the layout algebra (§7b), §7's stylesheet rule, §8's gate
-checks, and the design system: `@manifold/plugin/ui` is "the plugin-facing standard library"
-(`packages/plugin/src/ui/index.ts:1-31`) — Raycast's phrase for its React component set is "Think
-of it as a design system" (<https://developers.raycast.com/api-reference/user-interface>), and
-ADR 0016's "closed, host-owned component vocabulary" was that library seen from a Worker. A plugin
-that paints with it looks like manifold; one that draws raw DOM may, and owns the result. The
-roster: `install: { mode: "bundle" | "unpacked", hardened: boolean, sha256, source, grantedCaps,
-installedBy, installedAt, refusal? }`, `mode` and `hardened` additive; one trust per row.
+checks, and the design system. Today that system is scattered: components live at
+`@manifold/plugin/ui` ("the plugin-facing standard library", `packages/plugin/src/ui/index.ts:1-31`)
+inside the ENGINE-API package, the tokens and CSS families in the shell, and stage 1's vocabulary
+renderer is a serialized subset of the same set. The operator ratified the extraction (#240): a
+new package `@manifold/ui` — components, tokens, motion and layout rules — dogfooded by the shell
+and every `core.*` panel and imported by every mod; three named layers then hold (SDK:
+`@manifold/protocol` + `@manifold/sdk`; engine API: `@manifold/plugin`; design system:
+`@manifold/ui`). Raycast's phrase for its React component set is "Think of it as a design system"
+(<https://developers.raycast.com/api-reference/user-interface>), and ADR 0016's "closed,
+host-owned component vocabulary" was that library seen from a Worker: with the extraction,
+`ui.box` IS `<Stack>`, the hardened mode's renderer serializes the same components, and the kit's
+`ui.*` builders are retired. Rules: tokens are the theming seam; a mod owns its own ink, never the
+shell's (§7); components are optional, the contracts above are not. A plugin that paints with
+`@manifold/ui` looks like manifold; one that draws raw DOM may, and owns the result. The extraction
+is also the S16 relief the WARN line has asked for since 9,000: design-system code leaving
+`packages/plugin/src`. The roster: `install: { mode: "bundle" | "unpacked", hardened: boolean,
+sha256, source, grantedCaps, installedBy, installedAt, refusal? }`, `mode` and `hardened`
+additive; one trust per row.
 
 ## Alternatives rejected
 
@@ -272,6 +283,10 @@ Flagged, not resolved.
 4. The S13-at-load check, shared with the gate.
 5. `docs/PLUGINS.md` §10 "Authoring a plugin on your instance"; §9 re-scoped to hardened rows.
 6. The React-over-frames reconciler and the `ui.*` deprecation, with its dependency verdict.
+
+7. `@manifold/ui`: the design-system extraction (#240) — components and tokens out of
+   `packages/plugin/src`, dogfooded by the shell and every `core.*` panel; the hardened renderer and
+   the kit consume the same components.
 
 ## Revisit when
 
