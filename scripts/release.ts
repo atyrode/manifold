@@ -34,35 +34,6 @@ async function watchRelease(tag: string): Promise<void> {
   throw new Error(`GitHub release workflow did not start for ${tag}`);
 }
 
-/** Waits for every workflow this release triggered downstream (`workflow_run`), whatever they are. */
-async function watchDownstream(since: string): Promise<void> {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const result =
-      await $`gh run list --event workflow_run --limit 10 --json databaseId,name,createdAt`
-        .quiet()
-        .nothrow();
-    if (result.exitCode === 0) {
-      const runs = (
-        JSON.parse(result.text()) as readonly {
-          readonly databaseId: number;
-          readonly name: string;
-          readonly createdAt: string;
-        }[]
-      ).filter((run) => run.createdAt >= since);
-      if (runs.length > 0) {
-        for (const run of runs) {
-          console.log(`Waiting for ${run.name}…`);
-          const watched = await $`gh run watch ${run.databaseId} --exit-status`.nothrow();
-          if (watched.exitCode !== 0) throw new Error(`${run.name} failed for ${since}`);
-        }
-        return;
-      }
-    }
-    await Bun.sleep(15_000);
-  }
-  console.log("No workflow subscribed to this release.");
-}
-
 const requested = process.argv[2];
 if (requested === undefined) {
   console.error("Usage: bun run release -- <major|minor|patch|x.y.z>");
@@ -112,8 +83,7 @@ await $`git commit -m ${`release: v${version}`}`;
 const tag = `v${version}`;
 await $`git tag ${tag}`;
 const sha = await gitText(["rev-parse", "HEAD"]);
-const since = new Date(Date.now() - 60_000).toISOString();
 await $`git push --atomic origin refs/heads/main:refs/heads/main ${`${sha}:refs/tags/${tag}`}`;
 await watchRelease(tag);
-await watchDownstream(since);
 console.log(`Released ${tag}`);
+console.log("Deployment is a separate operator action.");

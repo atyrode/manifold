@@ -246,6 +246,28 @@ Two things follow from installing, and both are deliberate:
   reconnect. Nothing on the server needs doing for any of this — no cache headers to set, and no
   step in the upgrade above.
 
+### Choose the browser identity at build time
+
+The browser title and installed-app name are independent of the deployment hostname.
+`VITE_MANIFOLD_SITE_TITLE` defaults to `manifold`; `VITE_MANIFOLD_ICON_BACKGROUND` accepts
+a six-digit hex color (`#rrggbb`) for both app icons. Leave the color unset to retain the
+production gradient. For a visibly distinct development deployment:
+
+```sh
+VITE_MANIFOLD_SITE_TITLE='dev - manifold' VITE_MANIFOLD_ICON_BACKGROUND='#c2410c' docker compose up -d --build
+```
+
+The same inputs work with `bun run dev:web` and `bun run build:web`. They can also be set in
+the Compose project's `.env` before rebuilding. They are build inputs, not instance selection
+or runtime server settings: changing a running container's environment or pulling an already
+built published image does not rebrand its browser bundle. Defaults apply only when no shell,
+Compose, or Vite dotenv configuration supplies the corresponding input.
+
+Generated manifest and icon URLs are content-addressed, and emitted filenames **and bytes**
+participate in the service-worker cache generation. A branding-only rebuild therefore gets
+new identity assets even when its source commit is unchanged; the ordinary update/reload flow
+still applies. There is no provider-specific or hostname-specific branding path.
+
 ## Point one client at another instance
 
 A client is a lens, not a part of the server it came from, so an installed app can look at a
@@ -285,6 +307,22 @@ natively as a spoke per `docs/ENROLL.md`; do not mount the docker socket or host
 paths into the hub container for this. `MANIFOLD_SPAWN_AGENT=0` in `.env` turns the
 in-container agent off — sensible where the container's disk is ephemeral, since its
 shells would die at every redeploy.
+
+## Release publication and promotion
+
+`bun run release -- <major|minor|patch|x.y.z>` publishes versioned artifacts from green `main`;
+it does not deploy an instance. Development and production can intentionally run different
+released versions. Deploy the selected version to development using its own checkout and
+compose project, retaining its build-time identity settings.
+
+Production promotion is a separate operator decision: manually dispatch `deploy-hub.yml`
+with an explicit published `tag`. The workflow validates the release, deploys that tag and
+verifies the reported build before dispatching fleet pins. Do not invoke it as a side effect
+of a release or a request to update development.
+
+Before installing a newer agent binary, its target hub must support that protocol version.
+The operator's automated fleet pins hold newer-protocol candidates until production is ready;
+publishing an artifact does not waive that ordering constraint.
 
 ## Verify a deployment
 

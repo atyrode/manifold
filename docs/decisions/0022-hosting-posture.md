@@ -43,17 +43,21 @@ rather than a nightly `tar`), and the only acceptable form of it is one every se
    `bun packages/server/src/main.ts`; a self-hoster who never reads about replication pays nothing
    for it.
 3. **The operator's instance is exactly one file, and it is the only file allowed to name a
-   provider.** `.github/workflows/deploy-hub.yml` subscribes to the Release workflow through
-   `workflow_run`, is inert unless the repository variable `CLEVER_HUB_APP_ID` exists (a fork
+   provider.** `.github/workflows/deploy-hub.yml` is explicitly dispatched with a published
+   release tag, is inert unless the repository variable `CLEVER_HUB_APP_ID` exists (a fork
    never runs it), and holds every provider-specific verb. The provider's own configuration —
    its `CC_*` variables, the bucket, the DNS record — lives on the provider, never in the tree.
    `verify:axioms` S17 fails the gate on a provider noun or its env prefix anywhere else that a
    self-hoster ships or runs: `Dockerfile`, `compose.yaml`, `flake.nix`, `infra/**`, `packages/**`,
    `scripts/**`, `.github/workflows/**`. The exemption list is that one path and does not grow;
    a hit is reworded, never allow-listed.
-4. **`scripts/release.ts` stays one command and stays neutral.** It waits for whatever workflows
-   the release triggered downstream, by event kind rather than by name, so "release, then the
-   hub is deployed" holds for the operator without the script knowing there is a hub.
+4. **`scripts/release.ts` stays one command and stays neutral.** It publishes versioned artifacts
+   and waits for that publication, not for deployments. Development deployment and production
+   promotion are separate operations; production requires an explicit operator decision.
+
+Amended 2026-09-05 by operator direction (#244): releasing or deploying development does not
+authorize production deployment. The former automatic `workflow_run` subscription is removed.
+Explicit production promotion still verifies hub health before dispatching the fleet pin.
 
 ## Alternatives rejected
 
