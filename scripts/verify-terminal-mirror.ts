@@ -52,12 +52,20 @@ import {
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser } from "./cdp.ts";
-import { checkInto, ownerKeyOf, settles, sleep, teardownServer, until } from "./gate-lib.ts";
+import {
+  checkInto,
+  ownerKeyOf,
+  reserveLoopbackPort,
+  settles,
+  sleep,
+  teardownServer,
+  until,
+} from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-mir-");
 const dataDir = mkdtempSync(join(tmpdir(), "manifold-mir-data-"));
-const port = 41000 + Math.floor(Math.random() * 2000);
+const port = reserveLoopbackPort();
 const origin = `http://127.0.0.1:${String(port)}`;
 
 const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
@@ -300,7 +308,7 @@ try {
   const containerId = await createContainer("terminal-mirror-gate");
 
   browser = new Browser();
-  await browser.launch(9345);
+  await browser.launch();
   await browser.goto(`${origin}/#key=${ownerKey}`);
   if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
     await browser.typeInto("input", "mirror-gate");
@@ -660,7 +668,7 @@ try {
     JSON.stringify(`.sidebar-row [aria-label="Open composition ${name}"]`);
 
   watcher = new Browser();
-  await watcher.launch(9346);
+  await watcher.launch();
   await enterWorkspace(watcher, "mirror-gate-watcher");
   await sleep(1200);
 

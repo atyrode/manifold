@@ -5,7 +5,7 @@
  * Timing lives in `gate-lib.ts` with the rest of the gate bootstrap; this file is the driver
  * and nothing else.
  */
-import { sleep } from "./gate-lib.ts";
+import { reserveLoopbackPort, sleep } from "./gate-lib.ts";
 
 interface CdpFrame {
   id?: number;
@@ -91,8 +91,15 @@ export class Browser {
     throw new Error("no chromium binary found (set MANIFOLD_CHROMIUM)");
   }
 
-  async launch(port = 9333): Promise<void> {
+  /**
+   * Spawns a headless Chromium on a devtools port the kernel just confirmed free
+   * ({@link reserveLoopbackPort}). No caller picks the port: the fixed per-gate bands and
+   * the random picks that preceded this collided the moment two checkouts ran the gate at
+   * once, and the driver is the one place that turns a port into a Chromium flag (#198).
+   */
+  async launch(): Promise<void> {
     const binary = Browser.detect();
+    const port = reserveLoopbackPort();
     // GitHub's ubuntu-24.04 image 20260823.283 exports a malformed
     // DBUS_TERMINAL_BUS_ADDRESS; chromium retries the bus for tens of seconds
     // before its devtools endpoint accepts connections (issue #44). Strip the

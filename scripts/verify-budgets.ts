@@ -37,7 +37,7 @@ import { ActionOutcomeSchema, type SceneElement } from "../packages/protocol/src
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser } from "./cdp.ts";
-import { checkInto, sleep, teardownServer, until } from "./gate-lib.ts";
+import { checkInto, reserveLoopbackPort, sleep, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 
@@ -90,7 +90,7 @@ function readBudgets(): Budgets {
 const budgets = readBudgets();
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-budget-");
 const dataDir = mkdtempSync(join(tmpdir(), "manifold-budget-data-"));
-const port = 45200 + Math.floor(Math.random() * 2000);
+const port = reserveLoopbackPort();
 const origin = `http://127.0.0.1:${String(port)}`;
 const ownerKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -256,7 +256,7 @@ try {
   const containerId = await seedCanvas();
 
   browser = new Browser();
-  await browser.launch(9366 + Math.floor(Math.random() * 200));
+  await browser.launch();
 
   /*
     Instrumentation is installed BEFORE any application script runs: React commits are counted

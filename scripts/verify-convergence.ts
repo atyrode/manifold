@@ -47,33 +47,9 @@ import { resolveWebDist } from "./gate-dist.ts";
 import { Browser } from "./cdp.ts";
 import { ownerKeyOf, sleep, teardownServer, until } from "./gate-lib.ts";
 
-function debugPortIsAvailable(port: number): boolean {
-  try {
-    const probe = Bun.listen({
-      hostname: "127.0.0.1",
-      port,
-      socket: { data() {} },
-    });
-    probe.stop(true);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function availableDebugPorts(): readonly [number, number] {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const first = 9400 + Math.floor(Math.random() * 200);
-    const second = first + 200 + Math.floor(Math.random() * 200);
-    if (debugPortIsAvailable(first) && debugPortIsAvailable(second)) return [first, second];
-  }
-  throw new Error("could not find two available Chromium debug ports");
-}
-
 const repoRoot = join(import.meta.dir, "..");
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-conv-");
 const dataDir = mkdtempSync(join(tmpdir(), "manifold-conv-data-"));
-const [debugPortA, debugPortB] = availableDebugPorts();
 let origin = "";
 
 const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
@@ -196,13 +172,8 @@ try {
 
   // ---------------------------------------------------------------- clients
 
-  async function openContainer(
-    browser: Browser,
-    debugPort: number,
-    name: string,
-    color?: string,
-  ): Promise<void> {
-    await browser.launch(debugPort);
+  async function openContainer(browser: Browser, name: string, color?: string): Promise<void> {
+    await browser.launch();
     await browser.goto(`${origin}/#key=${ownerKey}`);
     await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
     if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
@@ -233,8 +204,8 @@ try {
   }
 
   const cursorColor = "#e03131";
-  await openContainer(browserA, debugPortA, "convA", cursorColor);
-  await openContainer(browserB, debugPortB, "convB");
+  await openContainer(browserA, "convA", cursorColor);
+  await openContainer(browserB, "convB");
 
   // ------------------------------------------------ presence & status chrome
 

@@ -100,7 +100,7 @@ async function shot(name: string): Promise<void> {
 }
 
 try {
-  await browser.launch(9426 + 1);
+  await browser.launch();
   await browser.send("Emulation.setDeviceMetricsOverride", {
     width: 2790,
     height: 640,

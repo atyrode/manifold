@@ -21,12 +21,12 @@ import { join } from "node:path";
 import { ActionOutcomeSchema, ContainerResponseSchema } from "../packages/protocol/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser } from "./cdp.ts";
-import { ownerKeyOf, sleep, teardownServer, until } from "./gate-lib.ts";
+import { ownerKeyOf, reserveLoopbackPort, sleep, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-sel-");
 const dataDir = mkdtempSync(join(tmpdir(), "manifold-sel-data-"));
-const port = 39000 + Math.floor(Math.random() * 2000);
+const port = reserveLoopbackPort();
 const origin = `http://127.0.0.1:${String(port)}`;
 
 const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
@@ -72,7 +72,7 @@ try {
   const containerId = ContainerResponseSchema.parse(outcome.result).container.id;
 
   browser = new Browser();
-  await browser.launch(9340);
+  await browser.launch();
   await browser.goto(`${origin}/#key=${ownerKey}`);
   await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
   if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
