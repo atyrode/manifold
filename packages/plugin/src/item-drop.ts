@@ -176,7 +176,8 @@ const DENIAL_PROSE: Record<PlacementDenialRule, (subject: string, container: str
   not_displaceable: () =>
     "The note in that tile has nowhere else to live, so it cannot be displaced.",
   unknown_ref: () => "That item no longer exists.",
-  unknown_container: (_subject, container) => `${container.charAt(0).toUpperCase() + container.slice(1)} is not known to this workspace.`,
+  unknown_container: (_subject, container) =>
+    `${container.charAt(0).toUpperCase() + container.slice(1)} is not known to this workspace.`,
   /*
     The container is there and its renderer is not (#110). The sentence names the RENDERER
     rather than the container, because the container is fine — this build simply has no

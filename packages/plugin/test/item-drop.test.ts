@@ -322,7 +322,11 @@ describe("denial prose", () => {
 
   test("an unknown unplaced destination still names the index", () => {
     const message = denialMessage(
-      { rule: "unknown_container", ref: { kind: "terminal", terminalId: "s1" }, container: { kind: "unplaced" } },
+      {
+        rule: "unknown_container",
+        ref: { kind: "terminal", terminalId: "s1" },
+        container: { kind: "unplaced" },
+      },
       lookup,
     );
     expect(message).toStartWith("The index ");
