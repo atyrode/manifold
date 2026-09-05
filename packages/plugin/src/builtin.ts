@@ -1,4 +1,6 @@
 import {
+  CAPS,
+  CapSchema,
   ENGINE_NAMESPACE_PREFIX,
   LocalNameSchema,
   PluginIdSchema,
@@ -42,6 +44,8 @@ export const ENGINE_PLUGINS_ID = `${ENGINE_NAMESPACE_PREFIX}plugins`;
 export const ENGINE_SET_ENABLED_ACTION = `${ENGINE_PLUGINS_ID}.setEnabled`;
 export const ENGINE_PURGE_ACTION = `${ENGINE_PLUGINS_ID}.purge`;
 export const ENGINE_SET_SETTING_ACTION = `${ENGINE_PLUGINS_ID}.setSetting`;
+export const ENGINE_INSTALL_ACTION = `${ENGINE_PLUGINS_ID}.install`;
+export const ENGINE_UNINSTALL_ACTION = `${ENGINE_PLUGINS_ID}.uninstall`;
 
 /**
  * THE ENGINE DOOR'S EVENT KINDS (ADR 0012). The enablement door is the one door the engine
@@ -58,14 +62,41 @@ export const ENGINE_SET_SETTING_ACTION = `${ENGINE_PLUGINS_ID}.setSetting`;
 export const ENGINE_ENABLED_EVENT = "plugin_enabled";
 export const ENGINE_DISABLED_EVENT = "plugin_disabled";
 export const ENGINE_PURGED_EVENT = "plugin_purged";
+export const ENGINE_INSTALLED_EVENT = "plugin_installed";
+export const ENGINE_UNINSTALLED_EVENT = "plugin_uninstalled";
+
+/**
+ * What an INSTALL door asks for (ADR 0016 §8 stage 2): the artifact by location and by the
+ * hash of its exact bytes, optionally a wider grant than the default, and consent to replace
+ * an id already installed at another hash. Root only (`caps: ["*"]`), because a bundle is a
+ * stranger's code and `plugins:manage` was granted to switch rows on and off, not to admit
+ * new ones.
+ */
+export const PluginInstallRequestSchema = z.strictObject({
+  /** An `https://` URL, or an absolute path the server permits (docs/CONTRACTS.md). */
+  source: z.string().min(1).max(2048),
+  sha256: z.string().regex(/^[0-9a-fA-F]{64}$/),
+  /** Widens the default grant; every member must be within the manifest's declared caps. */
+  grant: CapSchema.array().max(CAPS.length).optional(),
+  /** Consent to upgrade an id already installed at a different hash; it must be disabled. */
+  replace: z.boolean().optional(),
+});
+export type PluginInstallRequest = z.infer<typeof PluginInstallRequestSchema>;
+
+export const PluginInstallResultSchema = z.strictObject({
+  id: PluginIdSchema,
+  version: z.string(),
+  grantedCaps: CapSchema.array(),
+});
+export type PluginInstallResult = z.infer<typeof PluginInstallResultSchema>;
 
 export const enginePluginsManifest: PluginManifest = {
   id: ENGINE_PLUGINS_ID,
   version: "1.0.0",
   title: "Plugin engine",
   description:
-    "The engine's own administration doors: workspace-global enablement, and the purge verb that destroys a disabled plugin's data.",
-  capabilities: ["plugins:manage"],
+    "The engine's own administration doors: workspace-global enablement, the purge verb that destroys a disabled plugin's data, and the install and uninstall doors that admit or remove a stranger's bundle.",
+  capabilities: ["plugins:manage", "*"],
   contributes: {
     panels: [],
     sections: [],
@@ -75,6 +106,8 @@ export const enginePluginsManifest: PluginManifest = {
       { id: ENGINE_ENABLED_EVENT, title: "Plugin enabled" },
       { id: ENGINE_DISABLED_EVENT, title: "Plugin disabled" },
       { id: ENGINE_PURGED_EVENT, title: "Plugin data purged" },
+      { id: ENGINE_INSTALLED_EVENT, title: "Plugin installed" },
+      { id: ENGINE_UNINSTALLED_EVENT, title: "Plugin uninstalled" },
     ],
   },
 };
@@ -122,6 +155,15 @@ export const enginePluginsManifest: PluginManifest = {
  * is anybody else's business. A preference is stored against the caller's own principal, so
  * there is no authority to grade beyond being someone, and broadcasting it would tell every
  * peer in the workspace which rows a reader keeps in their rail.
+ *
+ * `install` and `uninstall` (ADR 0016 §8 stage 2) are ROOT-ONLY, and the asymmetry with the
+ * three doors above is the point: `plugins:manage` lets a principal decide which of the
+ * plugins THIS BUILD SHIPS are on, while installing admits code nobody in this build wrote. A
+ * manager token that could install would be a manager token that could run anything, which is
+ * `*` by another name — so the door says `*` and nothing narrower. Both answer refusals as
+ * `{ refused: "<PLUGIN_INSTALL_REFUSALS member>: detail" }`, class first, so a client switches
+ * on the prefix exactly as it does for the toggle refusals. Uninstall requires the row
+ * disabled (`still_enabled`) and leaves the plugin's storage alone: destruction is `purge`.
  */
 export const enginePluginsActions: readonly AnyActionDef[] = [
   defineAction({
@@ -147,6 +189,20 @@ export const enginePluginsActions: readonly AnyActionDef[] = [
       setting: LocalNameSchema,
       value: z.boolean().nullable(),
     }),
+    result: z.strictObject({}),
+  }),
+  defineAction({
+    name: "install",
+    title: "Install a plugin from a bundle",
+    caps: ["*"],
+    input: PluginInstallRequestSchema,
+    result: PluginInstallResultSchema,
+  }),
+  defineAction({
+    name: "uninstall",
+    title: "Uninstall a disabled plugin's bundle",
+    caps: ["*"],
+    input: z.strictObject({ id: PluginIdSchema }),
     result: z.strictObject({}),
   }),
 ];

@@ -10,6 +10,7 @@ import {
   type PlacementTraits,
   type PluginDataVersion,
   type PluginDependency,
+  type PluginInstall,
   type PluginLifecycleState,
   type PluginManifest,
   type PluginRefusalReason,
@@ -237,6 +238,12 @@ export interface AssemblyEnv {
   readonly lifecycle?: ReadonlyMap<string, PluginLifecycleState>;
   /** Enablement attribution per plugin, written at the door. */
   readonly attribution?: ReadonlyMap<string, PluginAttribution>;
+  /**
+   * The install block per INSTALLED plugin (ADR 0016 §8 stage 2): what an installer consented
+   * to, published on the row verbatim. Presence is what marks a row as isolated; a first-party
+   * def never has one.
+   */
+  readonly installs?: ReadonlyMap<string, PluginInstall>;
 }
 
 /**
@@ -885,6 +892,7 @@ export function assembleRoster(
     const lifecycle = env.lifecycle?.get(id);
     const refusal = rosterRefusal(manifest);
     const attribution = env.attribution?.get(id);
+    const install = env.installs?.get(id);
     return {
       manifest,
       enabled: isEnabled(id),
@@ -895,6 +903,7 @@ export function assembleRoster(
       ...(attribution === undefined
         ? {}
         : { changedBy: attribution.by, changedAt: attribution.at }),
+      ...(install === undefined ? {} : { install }),
     };
   });
 
