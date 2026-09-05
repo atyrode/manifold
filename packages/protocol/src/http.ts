@@ -5,6 +5,7 @@ import { ContainerDisciplineSchema, TileLayoutSchema } from "./layout.ts";
 import { BindingOverridesSchema, PluginRosterSchema, PluginSettingValuesSchema } from "./plugin.ts";
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
+import { InstanceOriginSchema } from "./origin.ts";
 
 /** REST door schemas. Auth: `Authorization: Bearer <token-or-owner-key>`. */
 
@@ -101,6 +102,53 @@ export const TokenGrantSchema = z.strictObject({
   expiresAt: z.number().int().positive().optional(),
 });
 export type TokenGrant = z.infer<typeof TokenGrantSchema>;
+
+/**
+ * A short-lived, audience-bound statement from one manifold instance that another may exchange
+ * for a local browser credential. The reusable source credential never crosses the origin.
+ */
+const PreviewIdentityNonceSchema = z.string().regex(/^[A-Za-z0-9_-]{43,128}$/);
+
+export const PreviewIdentityClaimsSchema = z.strictObject({
+  version: z.literal(1),
+  id: z.string().min(1).max(128),
+  issuer: InstanceOriginSchema,
+  audience: InstanceOriginSchema,
+  issuedAt: z.number().int().nonnegative(),
+  expiresAt: z.number().int().positive(),
+  nonce: PreviewIdentityNonceSchema,
+  principal: PrincipalSchema,
+  caps: z.array(CapSchema).min(1),
+  containerId: z.null(),
+});
+export type PreviewIdentityClaims = z.infer<typeof PreviewIdentityClaimsSchema>;
+
+export const IssuePreviewIdentityRequestSchema = z.strictObject({
+  audience: InstanceOriginSchema,
+  nonce: PreviewIdentityNonceSchema,
+});
+export type IssuePreviewIdentityRequest = z.infer<typeof IssuePreviewIdentityRequestSchema>;
+
+export const PreviewIdentityAssertionSchema = z.strictObject({
+  assertion: z.string().min(1).max(16_384),
+});
+export type PreviewIdentityAssertion = z.infer<typeof PreviewIdentityAssertionSchema>;
+
+export const PreviewIdentityNonceResponseSchema = z.strictObject({
+  nonce: PreviewIdentityNonceSchema,
+});
+export type PreviewIdentityNonceResponse = z.infer<typeof PreviewIdentityNonceResponseSchema>;
+
+export const PreviewIdentityKeySchema = z.strictObject({
+  algorithm: z.literal("Ed25519"),
+  publicKey: z.string().min(1).max(4_096),
+});
+export type PreviewIdentityKey = z.infer<typeof PreviewIdentityKeySchema>;
+
+export const PreviewIdentityConfigSchema = z.strictObject({
+  authority: InstanceOriginSchema.nullable(),
+});
+export type PreviewIdentityConfig = z.infer<typeof PreviewIdentityConfigSchema>;
 
 /**
  * WHY A CREDENTIAL WAS REFUSED, as a closed set of CLASSES rather than prose.

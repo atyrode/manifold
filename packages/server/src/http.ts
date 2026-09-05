@@ -1,7 +1,15 @@
+import {
+  createPrivateKey,
+  createPublicKey,
+  randomBytes,
+  sign as signBytes,
+  verify as verifyBytes,
+} from "node:crypto";
 import { statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import {
   ActionOutcomeSchema,
+  CAPS,
   AttendanceResponseSchema,
   ContainerCensusResponseSchema,
   HealthResponseSchema,
@@ -15,9 +23,21 @@ import {
   buildProtocolJsonSchema,
   formatManifoldUri,
   parseManifoldUri,
+  IssuePreviewIdentityRequestSchema,
+  MANIFOLD_ROOT_URI,
+  PreviewIdentityAssertionSchema,
+  PreviewIdentityClaimsSchema,
+  PreviewIdentityConfigSchema,
+  PreviewIdentityNonceResponseSchema,
+  PreviewIdentityKeySchema,
+  defaultRuntime,
+  normalizeInstanceOrigin,
   type Cap,
   type HttpError,
   type ManifoldRef,
+  type PreviewIdentityClaims,
+  type TokenGrant,
+  type RuntimeDeps,
 } from "@manifold/protocol";
 import { composeDefaultLayout } from "@manifold/plugin";
 import { ServiceError, type AuthContext, type AuthService } from "./auth.ts";
@@ -124,6 +144,145 @@ function decodePathSegment(encoded: string | undefined, label: string): string {
   }
 }
 
+const PREVIEW_ASSERTION_TTL_MS = 60_000;
+
+function base64UrlJson(value: unknown): string {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
+function issuePreviewAssertion(config: ServerConfig, claims: PreviewIdentityClaims): string {
+  const header = base64UrlJson({ alg: "EdDSA", typ: "manifold-preview-identity+jwt" });
+  const payload = base64UrlJson(claims);
+  const signed = `${header}.${payload}`;
+  const signature = signBytes(
+    null,
+    Buffer.from(signed),
+    createPrivateKey(config.previewIdentityPrivateKey),
+  );
+  return `${signed}.${signature.toString("base64url")}`;
+}
+
+function previewAudienceAllowed(audience: string, domain: string | null): boolean {
+  if (domain === null) return false;
+  const url = new URL(audience);
+  const localHttp =
+    url.protocol === "http:" &&
+    (url.hostname === "localhost" || url.hostname.endsWith(".localhost"));
+  return (
+    ((url.protocol === "https:" && url.port === "") || localHttp) &&
+    (url.hostname === `preview.${domain}` ||
+      new RegExp(`^[1-9][0-9]*\\.${domain.replace(/\./g, "\\.")}$`).test(url.hostname))
+  );
+}
+
+const PREVIEW_NONCE_COOKIE = "manifold-preview-nonce";
+const PREVIEW_CALLBACK_COOKIE = "manifold-preview-callback";
+
+function previewNonceCookie(
+  nonce: string,
+  secure: boolean,
+  name: string = PREVIEW_NONCE_COOKIE,
+): string {
+  return `${name}=${nonce}; HttpOnly; SameSite=Lax; Path=/auth/preview; Max-Age=120${secure ? "; Secure" : ""}`;
+}
+
+function callbackNonce(request: Request, name: string = PREVIEW_NONCE_COOKIE): string {
+  const nonce = request.headers
+    .get("cookie")
+    ?.split(";")
+    .map((part) => part.trim())
+    ?.find((part) => part.startsWith(`${name}=`))
+    ?.slice(name.length + 1);
+  const parsed = PreviewIdentityNonceResponseSchema.safeParse({ nonce });
+  if (!parsed.success)
+    throw new RequestError("forbidden", "preview sign-in was not initiated here");
+  return parsed.data.nonce;
+}
+
+function callbackHtml(grant: TokenGrant, now: number): Response {
+  const identity = JSON.stringify({
+    token: grant.token,
+    principal: grant.principal,
+    ...(grant.expiresAt === undefined
+      ? {}
+      : { expiresAt: grant.expiresAt, expiresInMs: Math.max(0, grant.expiresAt - now) }),
+  }).replace(
+    /[<\u2028\u2029]/g,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+  const response = new Response(
+    `<!doctype html><meta charset="utf-8"><title>Opening preview</title><body>Opening preview…</body><script>
+const identity=${identity};
+identity.receivedAt=Date.now();
+sessionStorage.removeItem("manifold.previewNonce");
+localStorage.setItem("manifold.identity", JSON.stringify(identity));
+location.replace("/");
+</script>`,
+    {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "content-security-policy":
+          "default-src 'none'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        "referrer-policy": "no-referrer",
+        "x-frame-options": "DENY",
+        "set-cookie": `${PREVIEW_NONCE_COOKIE}=; HttpOnly; SameSite=Lax; Path=/auth/preview; Max-Age=0`,
+      },
+    },
+  );
+  response.headers.append(
+    "set-cookie",
+    `${PREVIEW_CALLBACK_COOKIE}=; HttpOnly; SameSite=Lax; Path=/auth/preview; Max-Age=0`,
+  );
+  return response;
+}
+
+function callbackPendingHtml(ticket: string, secure: boolean): Response {
+  return new Response(
+    `<!doctype html><meta charset="utf-8"><title>Opening preview</title><body>Opening preview…</body><script>location.replace("/auth/preview/finalize")</script>`,
+    {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "content-security-policy":
+          "default-src 'none'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        "referrer-policy": "no-referrer",
+        "x-frame-options": "DENY",
+        "set-cookie": previewNonceCookie(ticket, secure, PREVIEW_CALLBACK_COOKIE),
+      },
+    },
+  );
+}
+
+function callbackErrorHtml(error: RequestError): Response {
+  const message = error.message.replace(/[&<>"]/g, (character) => {
+    if (character === "&") return "&amp;";
+    if (character === "<") return "&lt;";
+    if (character === ">") return "&gt;";
+    return "&quot;";
+  });
+  const response = new Response(
+    `<!doctype html><meta charset="utf-8"><title>Preview sign-in failed</title><h1>Preview sign-in failed</h1><p>${message}</p><p><a href="/">Return to the preview and try again</a>.</p>`,
+    {
+      status: STATUS_BY_CODE[error.code],
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "content-security-policy":
+          "default-src 'none'; style-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        "referrer-policy": "no-referrer",
+        "x-frame-options": "DENY",
+        "set-cookie": `${PREVIEW_NONCE_COOKIE}=; HttpOnly; SameSite=Lax; Path=/auth/preview; Max-Age=0`,
+      },
+    },
+  );
+  response.headers.append(
+    "set-cookie",
+    `${PREVIEW_CALLBACK_COOKIE}=; HttpOnly; SameSite=Lax; Path=/auth/preview; Max-Age=0`,
+  );
+  return response;
+}
+
 /** Bun fetch handler implementing the complete JSON API and SPA fallback contract. */
 export class HttpApp {
   constructor(
@@ -135,7 +294,15 @@ export class HttpApp {
     private readonly machines: MachineGateway,
     private readonly plugins: PluginHost,
     private readonly logger: Logger,
+    private readonly runtime: RuntimeDeps = defaultRuntime,
   ) {}
+  private readonly consumedPreviewAssertions = new Map<string, number>();
+  private readonly pendingPreviewClaims = new Map<string, PreviewIdentityClaims>();
+  private readonly previewNonceStates = new Map<
+    string,
+    { readonly nonce: string; readonly expiresAt: number }
+  >();
+  private previewIdentityPublicKeyPromise: Promise<string> | null = null;
 
   /**
    * Handles a request without allowing auth secrets to enter logs or errors.
@@ -144,9 +311,9 @@ export class HttpApp {
    * (`AXIOMS.md` §The portable lens), so an app installed from one instance may be pointed at
    * another, and a browser will not let it knock on a door that does not answer the preflight.
    * The doors therefore answer any origin — and are safe to, because a token is the ONLY
-   * authority here: this API has no cookies and no ambient session, so there is nothing a
-   * stranger's page could ride. `credentials` is never allowed for exactly that reason, so the
-   * permission stays "anyone holding a valid bearer token", which is what it already was.
+   * authority here: no API door consumes cookies or ambient session. Preview start emits one
+   * host-only, callback-path nonce cookie, but it carries no authority and no API request sends
+   * credentials. The permission therefore stays "anyone holding a valid bearer token".
    *
    * The SHELL is deliberately excluded. Static files answer same-origin only, because a page
    * that wants manifold's bundle should be served it by an instance rather than hotlink one.
@@ -175,6 +342,59 @@ export class HttpApp {
             protocolVersion: PROTOCOL_VERSION,
           }),
         );
+      }
+      if (request.method === "POST" && url.pathname === "/auth/preview/callback") {
+        try {
+          const contentType = request.headers.get("content-type") ?? "";
+          if (!contentType.startsWith("application/x-www-form-urlencoded")) {
+            throw new RequestError("invalid", "preview callback must be form encoded");
+          }
+          const form = await request.formData();
+          const parsed = PreviewIdentityAssertionSchema.safeParse({
+            assertion: form.get("assertion"),
+          });
+          if (!parsed.success) throw new RequestError("invalid", "preview assertion is invalid");
+          const claims = await this.verifyPreviewAssertion(parsed.data.assertion);
+          const now = this.runtime.now();
+          for (const [ticket, pending] of this.pendingPreviewClaims) {
+            if (pending.expiresAt <= now) this.pendingPreviewClaims.delete(ticket);
+          }
+          // This secret reaches only the browser receiving production's POST. The public
+          // nonce alone must not let another browser complete that user's sign-in.
+          const ticket = randomBytes(32).toString("base64url");
+          this.pendingPreviewClaims.set(ticket, claims);
+          return callbackPendingHtml(ticket, new URL(this.config.publicUrl).protocol === "https:");
+        } catch (error) {
+          if (error instanceof RequestError) return callbackErrorHtml(error);
+          if (error instanceof ServiceError) {
+            return callbackErrorHtml(new RequestError(error.code, error.message));
+          }
+          throw error;
+        }
+      }
+      if (request.method === "GET" && url.pathname === "/auth/preview/finalize") {
+        try {
+          const stateId = callbackNonce(request);
+          const ticket = callbackNonce(request, PREVIEW_CALLBACK_COOKIE);
+          const state = this.previewNonceStates.get(stateId);
+          if (state === undefined || state.expiresAt <= this.runtime.now()) {
+            throw new RequestError("forbidden", "preview sign-in was not initiated here");
+          }
+          const claims = this.pendingPreviewClaims.get(ticket);
+          if (claims === undefined || claims.nonce !== state.nonce) {
+            throw new RequestError("forbidden", "preview sign-in is not pending");
+          }
+          this.previewNonceStates.delete(stateId);
+          this.pendingPreviewClaims.delete(ticket);
+          const grant = this.acceptPreviewClaims(claims);
+          return callbackHtml(grant, this.runtime.now());
+        } catch (error) {
+          if (error instanceof RequestError) return callbackErrorHtml(error);
+          if (error instanceof ServiceError) {
+            return callbackErrorHtml(new RequestError(error.code, error.message));
+          }
+          throw error;
+        }
       }
       if (request.method === "GET" && url.pathname === "/api/protocol") {
         // The description publishes the LIVE vocabulary: every action the assembly holds with
@@ -226,6 +446,101 @@ export class HttpApp {
   }
 
   private async api(request: Request, pathname: string): Promise<Response> {
+    if (request.method === "GET" && pathname === "/api/identity/preview-key") {
+      return jsonResponse(
+        PreviewIdentityKeySchema.parse({
+          algorithm: "Ed25519",
+          publicKey: this.config.previewIdentityPublicKey,
+        }),
+      );
+    }
+
+    if (request.method === "GET" && pathname === "/api/identity/preview-config") {
+      return jsonResponse(
+        PreviewIdentityConfigSchema.parse({
+          authority: this.config.previewIdentityAuthority,
+        }),
+      );
+    }
+
+    if (request.method === "POST" && pathname === "/api/identity/preview-start") {
+      if (this.config.previewIdentityAuthority === null) {
+        throw new RequestError("not_found", "production preview identity is not configured");
+      }
+      const now = this.runtime.now();
+      for (const [stateId, state] of this.previewNonceStates) {
+        if (state.expiresAt <= now) this.previewNonceStates.delete(stateId);
+      }
+      const nonce = randomBytes(32).toString("base64url");
+      const stateId = randomBytes(32).toString("base64url");
+      this.previewNonceStates.set(stateId, { nonce, expiresAt: now + 120_000 });
+      const response = jsonResponse(PreviewIdentityNonceResponseSchema.parse({ nonce }));
+      response.headers.set(
+        "set-cookie",
+        previewNonceCookie(stateId, new URL(this.config.publicUrl).protocol === "https:"),
+      );
+      return response;
+    }
+
+    if (request.method === "POST" && pathname === "/api/identity/preview-assertion") {
+      const context = this.authenticate(request);
+      const body = IssuePreviewIdentityRequestSchema.safeParse(await parseJsonBody(request));
+      if (!body.success) throw new RequestError("invalid", "preview identity request is invalid");
+      const audience = normalizeInstanceOrigin(body.data.audience);
+      const issuer = normalizeInstanceOrigin(this.config.publicUrl);
+      if (
+        audience === null ||
+        issuer === null ||
+        !previewAudienceAllowed(audience, this.config.previewDomain)
+      ) {
+        throw new RequestError("forbidden", "preview audience is not authorized");
+      }
+      if (context.containerScope !== null) {
+        throw new RequestError(
+          "forbidden",
+          "container-scoped credentials cannot open a whole preview workspace",
+        );
+      }
+      if (context.principal.kind !== "human" || context.principal.origin !== undefined) {
+        throw new RequestError(
+          "forbidden",
+          "only local human identities may open browser previews",
+        );
+      }
+      const effectiveCaps = this.auth.effectiveCaps(context, MANIFOLD_ROOT_URI);
+      const concreteCaps = CAPS.filter(
+        (cap): cap is Exclude<Cap, "*"> => cap !== "*" && effectiveCaps.has(cap),
+      );
+      const caps =
+        context.isRoot && concreteCaps.length === CAPS.length - 1 ? (["*"] as const) : concreteCaps;
+      if (caps.length === 0) {
+        throw new RequestError("forbidden", "credential has no workspace authority");
+      }
+      const issuedAt = this.runtime.now();
+      const claims = PreviewIdentityClaimsSchema.parse({
+        version: 1,
+        id: this.runtime.newId(),
+        issuer,
+        audience,
+        issuedAt,
+        expiresAt: issuedAt + PREVIEW_ASSERTION_TTL_MS,
+        nonce: body.data.nonce,
+        principal: context.principal,
+        caps,
+        containerId: null,
+      });
+      this.store.addEvent(null, issuedAt, context.principal.id, "preview_identity_issued", {
+        assertionId: claims.id,
+        audience,
+        expiresAt: claims.expiresAt,
+      });
+      return jsonResponse(
+        PreviewIdentityAssertionSchema.parse({
+          assertion: issuePreviewAssertion(this.config, claims),
+        }),
+      );
+    }
+
     if (request.method === "GET" && pathname === "/api/attendance") {
       const context = this.authenticate(request);
       this.requireCap(context, "containers:read");
@@ -406,6 +721,103 @@ export class HttpApp {
     throw new RequestError("not_found", "route not found");
   }
 
+  private async verifyPreviewAssertion(assertion: string): Promise<PreviewIdentityClaims> {
+    const authority = this.config.previewIdentityAuthority;
+    const audience = normalizeInstanceOrigin(this.config.publicUrl);
+    if (authority === null || audience === null) {
+      throw new RequestError("not_found", "production preview identity is not configured");
+    }
+    const parts = assertion.split(".");
+    if (parts.length !== 3) throw new RequestError("invalid", "preview assertion is invalid");
+    const [headerPart, payloadPart, signaturePart] = parts;
+    if (headerPart === undefined || payloadPart === undefined || signaturePart === undefined) {
+      throw new RequestError("invalid", "preview assertion is invalid");
+    }
+    let header: unknown;
+    let claimsResult: ReturnType<typeof PreviewIdentityClaimsSchema.safeParse>;
+    try {
+      header = JSON.parse(Buffer.from(headerPart, "base64url").toString("utf8"));
+      claimsResult = PreviewIdentityClaimsSchema.safeParse(
+        JSON.parse(Buffer.from(payloadPart, "base64url").toString("utf8")),
+      );
+    } catch {
+      throw new RequestError("invalid", "preview assertion is invalid");
+    }
+    if (
+      header === null ||
+      typeof header !== "object" ||
+      Reflect.get(header, "alg") !== "EdDSA" ||
+      Reflect.get(header, "typ") !== "manifold-preview-identity+jwt" ||
+      !claimsResult.success
+    ) {
+      throw new RequestError("invalid", "preview assertion is invalid");
+    }
+    const claims = claimsResult.data;
+    const now = this.runtime.now();
+    if (
+      claims.issuer !== authority ||
+      claims.audience !== audience ||
+      claims.issuedAt > now + 30_000 ||
+      claims.expiresAt <= now ||
+      claims.expiresAt <= claims.issuedAt ||
+      claims.expiresAt - claims.issuedAt > PREVIEW_ASSERTION_TTL_MS
+    ) {
+      throw new RequestError("forbidden", "preview assertion is not valid for this instance");
+    }
+
+    const key = await this.productionIdentityPublicKey();
+    const signed = `${headerPart}.${payloadPart}`;
+    let verified = false;
+    try {
+      verified = verifyBytes(
+        null,
+        Buffer.from(signed),
+        createPublicKey(key),
+        Buffer.from(signaturePart, "base64url"),
+      );
+    } catch {
+      verified = false;
+    }
+    if (!verified) throw new RequestError("forbidden", "preview assertion signature is invalid");
+    return claims;
+  }
+
+  private acceptPreviewClaims(claims: PreviewIdentityClaims): TokenGrant {
+    const now = this.runtime.now();
+    if (claims.expiresAt <= now) {
+      throw new RequestError("forbidden", "preview assertion is not valid for this instance");
+    }
+    for (const [id, expiresAt] of this.consumedPreviewAssertions) {
+      if (expiresAt <= now) this.consumedPreviewAssertions.delete(id);
+    }
+    if (this.consumedPreviewAssertions.has(claims.id)) {
+      throw new RequestError("forbidden", "preview assertion was already used");
+    }
+    this.consumedPreviewAssertions.set(claims.id, claims.expiresAt);
+    return this.auth.acceptPreviewIdentity(claims);
+  }
+
+  private async productionIdentityPublicKey(): Promise<string> {
+    const authority = this.config.previewIdentityAuthority;
+    if (authority === null) {
+      throw new RequestError("not_found", "production preview identity is not configured");
+    }
+    this.previewIdentityPublicKeyPromise ??= (async () => {
+      const response = await fetch(`${authority}/api/identity/preview-key`, {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(3_000),
+      });
+      if (!response.ok) throw new Error(`identity authority returned ${response.status}`);
+      return PreviewIdentityKeySchema.parse(await response.json()).publicKey;
+    })();
+    try {
+      return await this.previewIdentityPublicKeyPromise;
+    } catch {
+      this.previewIdentityPublicKeyPromise = null;
+      throw new RequestError("conflict", "production identity authority is unavailable");
+    }
+  }
+
   /**
    * Existence and display title for one parsed address, asked of whichever side owns that
    * kind of node. Container-addressed forms re-check `containers:read` FOR THAT CONTAINER, so
@@ -474,14 +886,24 @@ export class HttpApp {
     const distPrefix = `${resolve(this.config.webDist)}${sep}`;
     if (candidate.startsWith(distPrefix)) {
       try {
-        if (statSync(candidate).isFile()) return new Response(Bun.file(candidate));
+        if (statSync(candidate).isFile()) {
+          const response = new Response(Bun.file(candidate));
+          response.headers.set("content-security-policy", "frame-ancestors 'none'");
+          response.headers.set("x-frame-options", "DENY");
+          return response;
+        }
       } catch (error) {
         if (!(error instanceof Error) || Reflect.get(error, "code") !== "ENOENT") throw error;
       }
     }
     const index = resolve(this.config.webDist, "index.html");
     try {
-      if (statSync(index).isFile()) return new Response(Bun.file(index));
+      if (statSync(index).isFile()) {
+        const response = new Response(Bun.file(index));
+        response.headers.set("content-security-policy", "frame-ancestors 'none'");
+        response.headers.set("x-frame-options", "DENY");
+        return response;
+      }
     } catch (error) {
       if (!(error instanceof Error) || Reflect.get(error, "code") !== "ENOENT") throw error;
     }

@@ -1,12 +1,17 @@
 services:
   manifold:
     image: manifold-pr-${PREVIEW_MACHINE}:local
+    build:
+      args:
+        VITE_MANIFOLD_SITE_TITLE: "${PREVIEW_MACHINE} - manifold"
+        VITE_MANIFOLD_ICON_BACKGROUND: "#0f766e"
     ports:
       - "127.0.0.1:${PREVIEW_PORT}:7777"
     environment:
       MANIFOLD_MACHINE_NAME: ${PREVIEW_MACHINE}
       MANIFOLD_PLUGIN_DEV_PATHS: "1"
       MANIFOLD_ANNOUNCE_KEY: "0"
+      MANIFOLD_IDENTITY_AUTHORITY: https://${PREVIEW_DOMAIN}
       MANIFOLD_OWNER_KEY: null
       MANIFOLD_REPLICA_BUCKET: ""
       MANIFOLD_REPLICA_ENDPOINT: ""

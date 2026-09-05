@@ -22,6 +22,7 @@ import {
   type Share,
   type ShareGrant,
   type PrincipalCredentials,
+  type PreviewIdentityClaims,
   type TokenGrant,
 } from "@manifold/protocol";
 import type {
@@ -67,6 +68,8 @@ const CONCRETE_CAPS: readonly Exclude<Cap, "*">[] = CAPS.filter(
  * fire hardest on exactly the careful operator who keeps one tab open and touches it rarely.
  */
 export const INTERACTIVE_TOKEN_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+/** Preview-local browser credentials are renewed through production and bound revocation drift. */
+export const PREVIEW_IDENTITY_TOKEN_TTL_MS = 15 * 60 * 1000;
 
 /**
  * HOW OFTEN THE OWNER PATH LEAVES A ROW — once an hour, at most (ADR 0019 §4).
@@ -95,7 +98,7 @@ export const OWNER_AUDIT_WINDOW_MS = 60 * 60 * 1000;
  * unexpiring credential, because an exemption a caller can select is not an exemption, it is
  * an opt-out.
  */
-type TokenExpiry = "interactive" | "never";
+type TokenExpiry = "interactive" | "preview" | "never";
 
 /**
  * ADR 0019 §2's exemption as code rather than as a comment.
@@ -129,6 +132,8 @@ export interface AuthContext {
   isRoot: boolean;
   tokenId: string | null;
   grantId: string | null;
+  /** Absolute expiry for browser credentials; absent for owner and machine paths. */
+  expiresAt?: number;
 }
 
 /** Stable service-layer error codes mapped to HTTP and socket policy at boundaries. */
@@ -423,6 +428,7 @@ export class AuthService {
       isRoot: token.caps.includes("*"),
       tokenId: token.id,
       grantId: token.grantId,
+      ...(token.expiresAt === null ? {} : { expiresAt: token.expiresAt }),
     };
   }
 
@@ -645,7 +651,11 @@ export class AuthService {
       second clock read, so a token's life is exactly the declared span and not the span plus
       whatever happened between two calls to `now()`.
     */
-    const expiresAt = expiry === "never" ? null : createdAt + INTERACTIVE_TOKEN_TTL_MS;
+    const expiresAt =
+      expiry === "never"
+        ? null
+        : createdAt +
+          (expiry === "preview" ? PREVIEW_IDENTITY_TOKEN_TTL_MS : INTERACTIVE_TOKEN_TTL_MS);
     const grant: Grant | null =
       caps.length === 0
         ? null
@@ -716,6 +726,42 @@ export class AuthService {
       token: minted.raw,
       principal,
       caps: ["*"],
+      containerId: null,
+      ...(minted.record.expiresAt === null ? {} : { expiresAt: minted.record.expiresAt }),
+    };
+  }
+
+  /**
+   * Materializes a verified production identity as a short-lived local browser credential.
+   * Signature, issuer, audience and freshness checks belong to the HTTP admission boundary;
+   * this method owns only the ordinary principal/grant/token mutation after that proof.
+   */
+  acceptPreviewIdentity(claims: PreviewIdentityClaims): TokenGrant {
+    if (claims.principal.kind !== "human" || claims.containerId !== null) {
+      throw new ServiceError("forbidden", "preview identity must be an unscoped human");
+    }
+    const principalId = `preview-${sha256Hex(`${claims.issuer}\0${claims.principal.id}`).slice(0, 48)}`;
+    let principal = this.store.getPrincipal(principalId);
+    if (principal === null) {
+      principal = {
+        id: principalId,
+        kind: claims.principal.kind,
+        name: claims.principal.name,
+        color: claims.principal.color,
+        origin: claims.issuer,
+      };
+      this.store.createPrincipal(principal, this.runtime.now());
+    }
+    const minted = this.persistToken(principal.id, claims.caps, null, principal.id, "preview");
+    this.store.addEvent(null, this.runtime.now(), principal.id, "preview_identity_accepted", {
+      issuer: claims.issuer,
+      sourcePrincipalId: claims.principal.id,
+      expiresAt: minted.record.expiresAt,
+    });
+    return {
+      token: minted.raw,
+      principal,
+      caps: [...claims.caps],
       containerId: null,
       ...(minted.record.expiresAt === null ? {} : { expiresAt: minted.record.expiresAt }),
     };

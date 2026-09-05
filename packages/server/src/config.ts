@@ -1,6 +1,8 @@
+import { createPrivateKey, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { resolveBuildIdentity, type BuildIdentity } from "../../../scripts/build-identity.ts";
+import { normalizeInstanceOrigin } from "@manifold/protocol";
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
@@ -28,6 +30,13 @@ export interface ServerConfig {
    * (`scripts/build-identity.ts`).
    */
   identity: BuildIdentity;
+  /** Optional production instance trusted to admit browser identities into this instance. */
+  previewIdentityAuthority: string | null;
+  /** Optional DNS suffix whose integrated and numbered previews this instance may authorize. */
+  previewDomain: string | null;
+  /** Instance-local Ed25519 issuer key; the private half never leaves this process. */
+  previewIdentityPrivateKey: string;
+  previewIdentityPublicKey: string;
 }
 
 function randomHex(bytes: number): string {
@@ -88,6 +97,65 @@ function normalizePublicUrl(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
+function normalizePreviewDomain(value: string | undefined): string | null {
+  if (value === undefined || value.trim() === "") return null;
+  const domain = value.trim().toLowerCase().replace(/\.$/, "");
+  if (
+    domain.length === 0 ||
+    domain.includes("/") ||
+    domain.includes(":") ||
+    !/^[a-z0-9.-]+$/.test(domain)
+  ) {
+    throw new Error("MANIFOLD_PREVIEW_DOMAIN must be a DNS name without a scheme or path");
+  }
+  return domain;
+}
+
+function normalizeIdentityAuthority(value: string): string {
+  const authority = normalizeInstanceOrigin(value);
+  if (authority === null) {
+    throw new Error("MANIFOLD_IDENTITY_AUTHORITY must be an absolute instance origin");
+  }
+  const url = new URL(authority);
+  const localHttp =
+    url.protocol === "http:" &&
+    (url.hostname === "localhost" || url.hostname.endsWith(".localhost"));
+  if (url.protocol !== "https:" && !localHttp) {
+    throw new Error("MANIFOLD_IDENTITY_AUTHORITY must use https outside localhost");
+  }
+  return authority;
+}
+
+function loadPreviewIdentityKey(dataDir: string): {
+  privateKey: string;
+  publicKey: string;
+} {
+  const path = resolve(dataDir, "preview-identity.key");
+  let privateKey: string;
+  try {
+    privateKey = readFileSync(path, "utf8");
+    chmodSync(path, 0o600);
+    createPrivateKey(privateKey);
+  } catch (error) {
+    if (error instanceof Error && Reflect.get(error, "code") !== "ENOENT") throw error;
+    const generated = generateKeyPairSync("ed25519");
+    privateKey = generated.privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+    try {
+      writeFileSync(path, privateKey, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    } catch (writeError) {
+      if (!(writeError instanceof Error) || Reflect.get(writeError, "code") !== "EEXIST") {
+        throw writeError;
+      }
+      privateKey = readFileSync(path, "utf8");
+    }
+    chmodSync(path, 0o600);
+  }
+  const publicKey = createPublicKey(createPrivateKey(privateKey))
+    .export({ format: "pem", type: "spki" })
+    .toString();
+  return { privateKey, publicKey };
+}
+
 /** Loads runtime env, creates the data directory, and materializes the 0600 owner key. */
 export function loadConfig(
   env: Readonly<Record<string, string | undefined>> = process.env,
@@ -103,6 +171,13 @@ export function loadConfig(
   const publicUrl = normalizePublicUrl(env.MANIFOLD_PUBLIC_URL ?? `http://localhost:${port}`);
   const localMachineName = (env.MANIFOLD_MACHINE_NAME ?? "local").trim();
   if (localMachineName.length === 0) throw new Error("MANIFOLD_MACHINE_NAME must not be empty");
+  const configuredIdentityAuthority = env.MANIFOLD_IDENTITY_AUTHORITY?.trim();
+  const previewIdentityAuthority =
+    configuredIdentityAuthority === undefined || configuredIdentityAuthority === ""
+      ? null
+      : normalizeIdentityAuthority(configuredIdentityAuthority);
+  const previewDomain = normalizePreviewDomain(env.MANIFOLD_PREVIEW_DOMAIN);
+  const previewIdentityKey = loadPreviewIdentityKey(dataDir);
   return {
     port,
     hostname,
@@ -115,6 +190,10 @@ export function loadConfig(
     localMachineName,
     announceKey: env.MANIFOLD_ANNOUNCE_KEY === "1",
     pluginDevPaths: env.MANIFOLD_PLUGIN_DEV_PATHS === "1",
+    previewIdentityAuthority,
+    previewDomain,
+    previewIdentityPrivateKey: previewIdentityKey.privateKey,
+    previewIdentityPublicKey: previewIdentityKey.publicKey,
     identity: resolveBuildIdentity(env),
   };
 }

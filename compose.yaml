@@ -27,6 +27,10 @@ services:
       - MANIFOLD_OWNER_KEY
       # Passthrough only when set in .env: "0" retires the in-container agent.
       - MANIFOLD_SPAWN_AGENT
+      # Human preview admission: previews name their production authority; production names
+      # the preview DNS namespace it is willing to issue short-lived assertions for.
+      - MANIFOLD_IDENTITY_AUTHORITY
+      - MANIFOLD_PREVIEW_DOMAIN
       # Passthrough only when set in .env: optional replication of manifold.db to
       # any S3-compatible store (docs/SELF-HOST.md §Replicate the database).
       - MANIFOLD_REPLICA_BUCKET

@@ -170,6 +170,8 @@ interface SessionConnection {
    * before then would be a second answer to a question one timer already settles.
    */
   cancelPing: (() => void) | null;
+  /** Credential expiry fence, armed once with the first successful join. */
+  cancelExpiry: (() => void) | null;
   /** A ping is outstanding; the next tick reaps rather than asking again. */
   awaitingPong: boolean;
   closed: boolean;
@@ -240,6 +242,7 @@ export class SessionGateway {
       eventSender: null,
       cancelJoinTimeout: null,
       cancelPing: null,
+      cancelExpiry: null,
       awaitingPong: false,
       closed: false,
     };
@@ -438,6 +441,15 @@ export class SessionGateway {
     // one that holds them (issue #55). Armed once — a second room on this socket is not a
     // second transport.
     if (connection.cancelPing === null) this.schedulePing(connection);
+    if (connection.cancelExpiry === null && context.expiresAt !== undefined) {
+      connection.cancelExpiry = this.timers.schedule(
+        () => {
+          connection.cancelExpiry = null;
+          if (!connection.closed) connection.socket.close(4403, "expired");
+        },
+        Math.max(0, context.expiresAt - this.runtime.now()),
+      );
+    }
     // THE EVENT-PLANE SEAT, taken once per socket at the first join that survives every
     // refusal above. `context` is what the hub discharges every subscribe and every delivery
     // against; the closure is the only thing the hub ever learns about a WebSocket.
@@ -884,6 +896,8 @@ export class SessionGateway {
     connection.cancelJoinTimeout = null;
     connection.cancelPing?.();
     connection.cancelPing = null;
+    connection.cancelExpiry?.();
+    connection.cancelExpiry = null;
     for (const ch of [...connection.channels.keys()]) this.releaseChannel(connection, ch);
     connection.subscriber = null;
     this.events.release(id);

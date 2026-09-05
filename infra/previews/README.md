@@ -15,6 +15,10 @@ The router and live user units are generated, enabled at boot, and survive logou
 `deploy-preview.yml` skips `up` for a head whose whole diff is Markdown outside `changes/`
 (nothing to show); `down` on a PR that never came up is a no-op, so teardown is unconditional.
 
+Numbered previews build with the title `pr-N - manifold` and a teal favicon (`#0f766e`),
+distinct from production and the integrated preview. Both use the existing shell-identity
+build inputs; the PR number comes from the deployment's `PREVIEW_MACHINE`.
+
 ## Configuration
 
 Write `$PREVIEW_HOME/env` before using the SSH receiver. It is literal `KEY=VALUE`,
@@ -24,12 +28,27 @@ The CLI also reads this file; file values override inherited environment values.
 - `PREVIEW_DOMAIN`: required base domain (without `preview.`).
 - `PREVIEW_DEV_CHECKOUT`: existing dev checkout; default `$HOME/manifold-dev`.
 - `PREVIEW_DEV_URL`: dev health URL; default `https://preview.<domain>`.
-- `PREVIEW_SEED`: optional absolute path to a `/data` backup `.tgz`; new PR volumes only.
+- `PREVIEW_SEED`: optional absolute path to a `/data` backup `.tgz`; new PR volumes only. The
+  production assertion signing key is always excluded so every preview generates its own.
 - `PREVIEW_PORT_RANGE`: default `7920-7999`; live servers use routed port + 1000.
 - `PREVIEW_ROUTER_PORT`: default `7900`; change the public proxy and ask URL to match.
 - `MANIFOLD_DEV_SPOKE_UNIT`: optional user unit; unset skips the dev spoke rebuild.
 - `MANIFOLD_DEV_SPOKE_BINARY`: default `$HOME/.local/share/manifold-dev-agent/manifold-agent`.
 - `MANIFOLD_DEV_SPOKE_ENV`: build stamp file; default `$HOME/.config/manifold/dev/agent.env`.
+
+Production browser identity is the normal preview admission path. Set
+`MANIFOLD_PREVIEW_DOMAIN=<domain>` on the production manifold instance whose public URL is
+`https://<domain>`; the preview tooling automatically gives integrated and numbered preview
+processes `MANIFOLD_IDENTITY_AUTHORITY=https://<domain>`. Production issues only for those hosts;
+a live worktree keeps its own key and does not advertise the production authority. No production
+owner key, bearer, signing private key or per-preview secret belongs on the preview host.
+
+Rollout has two independent inputs: deploy the issuer support and namespace configuration on
+production, then update the stable tooling checkout used by the SSH receiver before redeploying
+previews. `compose.preview.yaml` is loaded from that stable checkout, not from the PR being
+built. A successful app build does not prove admission is configured: check each preview's
+`GET /api/identity/preview-config` names the production origin, then exercise the browser
+handoff through its ordinary public URL.
 
 Set `PREVIEW_HOME` in the invoking environment, not inside its own env file. The dev
 checkout keeps its existing Compose configuration; no preview verb changes that stack.
@@ -72,10 +91,11 @@ Run `infra/previews/preview.sh` with: `router`; `up 123 <sha>`; `down 123`; `ls`
 The receiver accepts `dev <sha>`, `preview up 123 <sha>`, `preview down 123`, or a
 bare `<sha>` (legacy dev deployment). Other commands are refused.
 
-Seeded previews accept the dev owner key. `url 123` prints the normal and pre-auth
-`/#key=…` URLs **only in the operator's local terminal**; never capture or share its
-output. Automated deployment never announces keys. Live keys stay in
-`$PREVIEW_HOME/live/<name>/data/owner.key`; journals contain no pre-auth URL.
+Integrated and numbered previews normally admit an existing production browser identity through
+the POST handoff in ADR 0027. The ordinary public URL carries no credential. A fresh seeded
+preview still accepts the development owner key as break-glass; `url 123` prints its pre-auth
+`/#key=…` URL **only in the operator's local terminal**, and automated deployment never announces
+it. Live keys stay in `$PREVIEW_HOME/live/<name>/data/owner.key`; journals contain no pre-auth URL.
 Observe live processes with `journalctl --user -u manifold-live-feature` and restart
 with `systemctl --user restart manifold-live-feature`. Install worktree dependencies
 with `bun install --frozen-lockfile` before `live`; source changes update without redeploy.

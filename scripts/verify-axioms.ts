@@ -936,6 +936,10 @@ check(
 const ROUTE_ALLOWLIST: readonly string[] = [
   "/api",
   "/api/actions/:name",
+  "/api/identity/preview-assertion",
+  "/api/identity/preview-config",
+  "/api/identity/preview-key",
+  "/api/identity/preview-start",
   "/api/containers",
   "/api/introspect",
   "/api/layout",
@@ -946,6 +950,8 @@ const ROUTE_ALLOWLIST: readonly string[] = [
   "/api/plugins/:id/web.js",
   "/api/protocol",
   "/api/resolve",
+  "/auth/preview/callback",
+  "/auth/preview/finalize",
   "/healthz",
   "/ws",
 ];

@@ -26,6 +26,10 @@ function fixture(readCmdline: AgentSpawnDeps["readCmdline"], localMachineName = 
     announceKey: false,
     pluginDevPaths: false,
     identity: { version: "0.0.0", build: "0.0.0", channel: "development" },
+    previewIdentityAuthority: null,
+    previewDomain: null,
+    previewIdentityPrivateKey: "",
+    previewIdentityPublicKey: "",
   };
   const store = testStore();
   const auth = new AuthService(store, config.ownerKey, new FakeRuntime());
