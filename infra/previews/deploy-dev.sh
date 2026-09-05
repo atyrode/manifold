@@ -12,8 +12,10 @@ flock 9
 checkout=$PREVIEW_DEV_CHECKOUT
 public_url=${PREVIEW_DEV_URL:-https://preview.$PREVIEW_DOMAIN}
 echo "deploy-dev: converging on $1"
-git -C "$checkout" fetch -q --tags origin "$1"
-git -C "$checkout" checkout -q --detach FETCH_HEAD
+# Fetch everything and resolve locally: a remote serves want-lists by full object id only,
+# and an operator at a terminal types the abbreviation.
+git -C "$checkout" fetch -q --tags origin
+git -C "$checkout" checkout -q --detach "$1"
 identity "$checkout"
 echo "deploy-dev: version=$MANIFOLD_VERSION build=$MANIFOLD_BUILD channel=$MANIFOLD_CHANNEL"
 (cd "$checkout" && MANIFOLD_DOMAIN="preview.$PREVIEW_DOMAIN" docker compose up -d --build manifold)

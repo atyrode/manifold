@@ -64,8 +64,8 @@ up() {
     git clone -q --no-hardlinks "$PREVIEW_DEV_CHECKOUT" "$checkout"
     git -C "$checkout" remote set-url origin "$(git -C "$PREVIEW_DEV_CHECKOUT" remote get-url origin)"
   fi
-  git -C "$checkout" fetch -q --tags origin "$sha"
-  git -C "$checkout" checkout -q --detach FETCH_HEAD
+  git -C "$checkout" fetch -q --tags origin
+  git -C "$checkout" checkout -q --detach "$sha"
   if ! docker volume inspect "$volume" >/dev/null 2>&1; then
     log "creating data volume for PR $number"
     docker volume create "$volume" >/dev/null
