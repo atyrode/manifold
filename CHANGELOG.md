@@ -9,6 +9,7 @@
 ### Fixed
 
 - The plugin authoring guide and the action's own doc comment now say plainly that `core.terminals.open` only authorizes a terminal — the terminal itself is born by `terminal_open` on the session socket, and no action creates one. (#186, #193)
+- The plugin authoring guide now says up front that today's only authoring channel is a package inside this repository registered by a maintainer, cross-referenced to the issues that make out-of-tree plugins possible, and labels its two pointers into engine source as maintainer-only exceptions instead of leaving them to contradict the guide's opening promise. (#188, #195)
 
 ## [0.6.2] - 2026-09-02
 
