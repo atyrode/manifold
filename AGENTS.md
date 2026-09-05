@@ -146,12 +146,17 @@ brief may not widen its own scope — `docs/audits/README.md` is the run protoco
   `origin/main`; state the rev, run the Method, file the issues, append the ledger row. The row is
   part of the run.
 - **Labels.** `process` — repository process: CI/CD, releases, coordination, audits.
-  `needs-operator` — held for an operator decision; agents never merge it. `audit` — a finding
-  from a hand-run brief in `docs/audits/`. `prerequisite` — blocks other tracked work. `design` —
-  needs a design or decision before implementation. `tracking` — umbrella issue with a checklist.
-  `code-plugin` — found making `atyrode/code` the second non-core plugin. `babel-plugin` —
-  prerequisite for Babel, the first non-core plugin. `bug` — something is not working.
-  `documentation` — docs only. `enhancement` — a new capability or request.
+  `needs-operator` — held for an operator decision; agents never merge it. `agent-ready` — scoped
+  and settled: an agent may pick it up and open a PR without asking. `blocked` — waits on another
+  issue or PR named in the body. Every open issue carries exactly one of those three. `audit` — a
+  finding from a hand-run brief in `docs/audits/`. `prerequisite` — blocks other tracked work.
+  `design` — needs a design or decision before implementation. `tracking` — umbrella issue with a
+  checklist. `code-plugin` — found making `atyrode/code` the second non-core plugin.
+  `babel-plugin` — prerequisite for Babel, the first non-core plugin. `bug` — something is not
+  working. `documentation` — docs only. `enhancement` — a new capability or request.
+  `area:protocol` / `area:server` / `area:web` / `area:agent` / `area:sdk` / `area:plugins` /
+  `area:infra` — the package or surface a code change lands in, in the commit-prefix vocabulary;
+  docs and process issues keep `documentation` and `process` instead of an area.
 
 ## Map
 
