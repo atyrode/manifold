@@ -217,7 +217,11 @@ export function itemDenialMessage(
 export function denialMessage(denial: PlacementDenial, lookup: ItemLookup): string {
   const item = placementItemFor(denial.ref, lookup);
   const subject = item === null ? "That item" : lookup.noun(item.kind);
-  return DENIAL_PROSE[denial.rule](subject, containerNoun(denial.container, lookup), denial.container);
+  return DENIAL_PROSE[denial.rule](
+    subject,
+    containerNoun(denial.container, lookup),
+    denial.container,
+  );
 }
 
 /** What a carry would do at one destination: nothing to say, allowed, or refused. */

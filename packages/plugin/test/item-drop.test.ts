@@ -313,9 +313,9 @@ describe("denial prose", () => {
     if (resolution.ok) throw new Error("refusal expected");
     expect(resolution.denial.rule).toBe("unknown_container");
     const message = denialMessage(resolution.denial, lookup);
-    expect(itemDenialMessage(resolution.denial, { kind: "terminal", containerId: null }, lookup)).toBe(
-      message,
-    );
+    expect(
+      itemDenialMessage(resolution.denial, { kind: "terminal", containerId: null }, lookup),
+    ).toBe(message);
     expect(message).toContain("gone");
     expect(message).toContain("not known to this workspace");
     expect(message).not.toContain("composition");
