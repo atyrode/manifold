@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 22;
+export const PROTOCOL_VERSION = 23;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -232,11 +232,20 @@ export const PROTOCOL_VERSION = 22;
  *
  * The hub-ahead-of-fleet coupling holds with more force than usual here: a v22 AGENT in
  * front of a v21 hub is refused 4409 on every dial (the hub was built before 22 existed), so
- * the release carrying this bump deploys the hub at or ahead of the agent binaries the pin
- * cron ships.
+ * the target hub must be upgraded before those binaries are installed. Publishing the
+ * release alone does not authorize production promotion.
+ *
+ * v22 -> v23: TITLEBAR PRESENCE (issue #216). Session presence publishes the active
+ * projection's canonical reference path and per-connection location snapshots, so every
+ * ancestor titlebar can show the same participant without conflating sibling tabs. Element
+ * contributions also declare per-discipline body/titlebar presentation (issue #222), and
+ * contributed on-claim elements use the existing tile address regardless of their type.
+ * Old browser decoders are strict: optional fields still require a session version bump.
+ * Machine and instance frames are unchanged; both compatibility sets ADD 23.
+ * Upgrade a hub before installing newer agent binaries; publication does not promote a hub.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  16, 17, 18, 19, 20, 21, 22,
+  16, 17, 18, 19, 20, 21, 22, 23,
 ]);
 
 /**
@@ -276,8 +285,11 @@ export const TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION = 22;
  * `instance.ts` mentions no terminal, no PTY and no `create`, and a guest holds a share
  * secret rather than a machine token, so the instance wire is byte-identical a fourth time
  * and the version is ADDED.
+ * v23: session presence and element presentation (issues #216/#222); instance wire unchanged.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([18, 19, 20, 21, 22]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
+  18, 19, 20, 21, 22, 23,
+]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the
