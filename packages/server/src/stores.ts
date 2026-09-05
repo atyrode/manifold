@@ -12,6 +12,7 @@ import {
   type PluginStorageAdmin,
 } from "@manifold/plugin";
 import {
+  ActionSummarySchema,
   BindingOverridesSchema,
   CapSchema,
   ContainerDisciplineSchema,
@@ -22,6 +23,7 @@ import {
   PrincipalSchema,
   TileLayoutSchema,
   validateTileLayout,
+  type ActionSummary,
   type BindingOverrides,
   type Cap,
   type Container,
@@ -188,6 +190,7 @@ interface PluginInstallDbRow {
   installed_by: string;
   installed_at: number;
   bundle_path: string;
+  actions: string;
 }
 
 interface MachineAuthRow extends MachineRow {
@@ -320,10 +323,13 @@ export interface MachineAuthRecord extends MachineRecord {
 
 /**
  * One INSTALLED plugin (ADR 0016 §8 stage 2): the artifact a root principal pinned by hash,
- * where they said it came from, the capability set they granted, and where the bytes landed.
- * The manifest is NOT here — it is read from `bundlePath` after the file re-hashes to
- * `sha256`, so nothing about a stranger's plugin is ever described from a copy the engine
- * would then have to trust (R8, fail-closed).
+ * where they said it came from, the capability set they granted, where the bytes landed, and
+ * the doors the assembly published for it when it was admitted. The manifest is NOT here — it
+ * is read from `bundlePath` after the file re-hashes to `sha256`, so nothing about a
+ * stranger's plugin is ever described from a copy the engine would then have to trust (R8,
+ * fail-closed). `actions` is the one thing kept from the admitted load, and it is kept for the
+ * boot that fails that re-hash: the row still publishes its doors, from this record rather
+ * than from the file, so a dispatch to one is a traced refusal naming why.
  */
 export interface PluginInstallRow {
   readonly pluginId: string;
@@ -333,6 +339,7 @@ export interface PluginInstallRow {
   readonly installedBy: string;
   readonly installedAt: number;
   readonly bundlePath: string;
+  readonly actions: readonly ActionSummary[];
 }
 
 /**
@@ -520,6 +527,11 @@ function parseCaps(raw: string): readonly Cap[] {
   return CapSchema.array().parse(parsed);
 }
 
+function parseActions(raw: string): readonly ActionSummary[] {
+  const parsed: unknown = JSON.parse(raw);
+  return ActionSummarySchema.array().parse(parsed);
+}
+
 /**
  * A NULL `origin` column means "this instance", and the wire says that by OMITTING the key
  * rather than by carrying a null: `PrincipalSchema` is strict and there is one
@@ -620,11 +632,12 @@ function toPluginInstall(row: PluginInstallDbRow): PluginInstallRow {
     installedBy: row.installed_by,
     installedAt: row.installed_at,
     bundlePath: row.bundle_path,
+    actions: parseActions(row.actions),
   };
 }
 
 const PLUGIN_INSTALL_SELECT = `SELECT plugin_id, sha256, source, granted_caps, installed_by,
-   installed_at, bundle_path FROM plugin_installs`;
+   installed_at, bundle_path, actions FROM plugin_installs`;
 
 /**
  * A container row is the whole object: `discipline` names which renderer it asks for.
@@ -743,6 +756,27 @@ export class ServerStore {
     );
   }
 
+  /**
+   * Forgets everything the enablement meta knows about one id: its place in the disabled
+   * set and its attribution. The uninstall door's hands — the row the switch belonged to is
+   * gone, and a later install of the same id is a fresh row, on by default and flipped by
+   * nobody, exactly like a first install. Without this an id switched off to be uninstalled
+   * came back off, its child spawned for a door that answered `plugin_disabled`.
+   */
+  clearPluginEnablement(id: string): void {
+    const disabled = new Set(this.disabledPlugins());
+    const attribution = new Map(this.pluginAttribution());
+    const forgotten = disabled.delete(id);
+    if (!attribution.delete(id) && !forgotten) return;
+    this.setMeta(PLUGINS_DISABLED_META, JSON.stringify([...disabled].sort()));
+    this.setMeta(
+      PLUGINS_ATTRIBUTION_META,
+      JSON.stringify(
+        Object.fromEntries([...attribution].sort(([left], [right]) => (left < right ? -1 : 1))),
+      ),
+    );
+  }
+
   /** Who last flipped each plugin, and when. A corrupt row reads as "nobody knows". */
   pluginAttribution(): ReadonlyMap<string, PluginAttribution> {
     const parsed = AttributionSchema.safeParse(
@@ -838,6 +872,12 @@ export class ServerStore {
         )
         .all(pluginId, prefix)
         .map((row) => row.key);
+    const total = (): number =>
+      this.db
+        .query<PluginKvCountRow, [string]>(
+          "SELECT count(*) AS total FROM plugin_kv WHERE plugin_id = ?",
+        )
+        .get(pluginId)?.total ?? 0;
     return {
       pluginId,
       get: async (key) => read(key),
@@ -866,14 +906,11 @@ export class ServerStore {
       recordMigration: async (name, applied) => {
         write(`${MIGRATION_KEY_PREFIX}${name}`, String(applied));
       },
+      count: async () => total(),
       clear: async () => {
-        const removed = this.db
-          .query<PluginKvCountRow, [string]>(
-            "SELECT count(*) AS total FROM plugin_kv WHERE plugin_id = ?",
-          )
-          .get(pluginId)?.total;
+        const removed = total();
         this.db.query<void, [string]>("DELETE FROM plugin_kv WHERE plugin_id = ?").run(pluginId);
-        return removed ?? 0;
+        return removed;
       },
     };
   }
@@ -892,10 +929,11 @@ export class ServerStore {
    */
   putPluginInstall(row: PluginInstallRow): void {
     this.db
-      .query<void, [string, string, string, string, string, number, string]>(
+      .query<void, [string, string, string, string, string, number, string, string]>(
         `INSERT OR REPLACE INTO plugin_installs(
-           plugin_id, sha256, source, granted_caps, installed_by, installed_at, bundle_path
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           plugin_id, sha256, source, granted_caps, installed_by, installed_at, bundle_path,
+           actions
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.pluginId,
@@ -905,6 +943,7 @@ export class ServerStore {
         row.installedBy,
         row.installedAt,
         row.bundlePath,
+        JSON.stringify(row.actions),
       );
   }
 

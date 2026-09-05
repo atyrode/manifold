@@ -3,6 +3,7 @@ import {
   CapSchema,
   LocalNameSchema,
   PlaceRequestSchema,
+  type ActionSummary,
   type IsolateChildFrame,
   type IsolateCtxMethod,
   type IsolateHook,
@@ -34,43 +35,55 @@ export interface IsolateTransport {
 }
 
 /**
+ * One reported door as the host assembles it. Names arrive fully qualified (`ActionSummary`)
+ * and are made local here; a name outside the plugin's own namespace fails the load rather
+ * than the roster. `input` and `result` are `z.unknown()` carrying the child's JSON Schema as
+ * metadata, so `assembleRoster`'s `z.toJSONSchema` publishes exactly what the child said.
+ *
+ * Exported because a refused install builds its roster doors from the SAME summaries, kept on
+ * its row since the load that admitted them (`plugin-host.ts` `unverifiedDef`): one reading of
+ * a summary, whether the handler behind it is a round trip or a standing refusal.
+ */
+export function localActionDef(pluginId: string, summary: ActionSummary): AnyActionDef {
+  const prefix = `${pluginId}.`;
+  const local = summary.name.startsWith(prefix)
+    ? LocalNameSchema.safeParse(summary.name.slice(prefix.length))
+    : null;
+  if (local === null || !local.success) {
+    throw new IsolateLoadError(
+      `action "${summary.name}" is not a local name under plugin "${pluginId}"`,
+    );
+  }
+  return {
+    name: local.data,
+    title: summary.title,
+    caps: summary.caps,
+    scope: summary.scope,
+    ...(summary.cleanup === true ? { cleanup: true } : {}),
+    input: z.unknown().meta({ ...summary.input }),
+    result: z.unknown().meta({ ...summary.result }),
+  };
+}
+
+/**
  * The def the host assembles for an installed row, built from what the child reported.
  *
- * `input` and `result` are `z.unknown()`: the arguments are graded in the child against the
- * action's own zod (the schema lives where the code lives, and an `invalid_args` from there
- * is thrown back through {@link IsolateDenial} for the ladder to trace). The child's JSON
- * Schema rides on as zod metadata, so `assembleRoster`'s `z.toJSONSchema` publishes exactly
- * what the child said and a reader of `GET /api/plugins` sees the same shape it would for an
- * in-realm door. Names arrive fully qualified (`ActionSummary`) and are made local here; a
- * name outside the plugin's own namespace fails the load rather than the roster.
+ * The arguments are graded in the child against the action's own zod (the schema lives where
+ * the code lives, and an `invalid_args` from there is thrown back through {@link IsolateDenial}
+ * for the ladder to trace); a reader of `GET /api/plugins` sees the same shape it would for
+ * an in-realm door.
  */
 export function buildIsolateDef(
   manifest: PluginManifest,
   loaded: LoadedFrame,
   transport: IsolateTransport,
 ): IsolateLoadResult {
-  const prefix = `${manifest.id}.`;
   const actions: AnyActionDef[] = [];
   const handlers: Record<string, ActionHandler> = {};
   for (const summary of loaded.actions) {
-    const local = summary.name.startsWith(prefix)
-      ? LocalNameSchema.safeParse(summary.name.slice(prefix.length))
-      : null;
-    if (local === null || !local.success) {
-      throw new IsolateLoadError(
-        `action "${summary.name}" is not a local name under plugin "${manifest.id}"`,
-      );
-    }
-    const name = local.data;
-    actions.push({
-      name,
-      title: summary.title,
-      caps: summary.caps,
-      scope: summary.scope,
-      ...(summary.cleanup === true ? { cleanup: true } : {}),
-      input: z.unknown().meta({ ...summary.input }),
-      result: z.unknown().meta({ ...summary.result }),
-    });
+    const action = localActionDef(manifest.id, summary);
+    const { name } = action;
+    actions.push(action);
     handlers[name] = async (ctx: ActionCtx, args: unknown): Promise<unknown> => {
       const outcome = await transport.dispatch(name, args, ctx);
       if (!outcome.ok) {

@@ -74,6 +74,7 @@ import {
   type IsolateRunner,
   type IsolateState,
 } from "./isolate/contract.ts";
+import { localActionDef } from "./isolate/proxy-def.ts";
 import { redactFields, type Logger } from "./log.ts";
 import type { PlaceExecutor } from "./placement.ts";
 import {
@@ -278,22 +279,40 @@ function grantFor(declared: readonly Cap[], widen: readonly Cap[] | undefined): 
 /**
  * The roster row of an install whose bundle failed boot verification: NOTHING from the file is
  * trusted — not its title, not its contributions, not its capability ceiling — so the row is
- * the id the installer consented to and a description that names the refusal. It composes
- * doorless, which is the only shape a refused bundle may take on a roster it must still
- * appear on (a vanished row would hide the failure; R8 wants it seen).
+ * the id the installer consented to, a description that names the refusal, and the DOORS THE
+ * ROW REMEMBERS: the summaries the assembly published when the install was admitted, kept on
+ * the row since (`PluginInstallRow.actions`). They are published so a dispatch to one is a
+ * traced `unavailable` naming the refusal, rather than `unknown_action` — the one rung the
+ * ledger does not keep — for a door the roster showed yesterday. The ceiling is the union of
+ * what those doors declare, which is a fact from the row, not from the file, and is what lets
+ * them compose; the installer's grant still narrows it at rung 4 as it always did.
+ *
+ * A row admitted before its doors were recorded has `[]` here and composes doorless, which is
+ * the shape it always had. Either way a refused row appears (R8 wants the failure seen).
  */
-function unverifiedDef(pluginId: string, refusal: PluginInstallRefusal): ServerPluginDef {
+function unverifiedDef(row: PluginInstallRow, refusal: PluginInstallRefusal): ServerPluginDef {
+  // The rung is `unavailable` — the runner's own — and the message is the boot verdict.
+  const message = `bundle failed verification at boot: ${refusal}`;
+  const handlers: Record<string, ActionHandler> = {};
+  const actions = row.actions.map((summary) => {
+    const action = localActionDef(row.pluginId, summary);
+    handlers[action.name] = async () => {
+      throw new IsolateDenial("unavailable", message);
+    };
+    return action;
+  });
+  const capabilities = [...new Set(actions.flatMap((action) => action.caps))].sort();
   return {
     manifest: {
-      id: pluginId,
+      id: row.pluginId,
       version: "unverified",
-      title: pluginId,
+      title: row.pluginId,
       description: `Installed bundle refused at boot (${refusal}); nothing from it was loaded.`,
-      capabilities: [],
+      capabilities,
       contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
     },
-    actions: [],
-    handlers: {},
+    actions,
+    handlers,
   };
 }
 
@@ -323,7 +342,7 @@ export interface HostControl {
     request: PluginInstallRequest,
     installedBy: string,
   ): Promise<ActionRefused | PluginInstallResult>;
-  uninstall(id: string, removedBy: string): Promise<ActionRefused | { ok: true }>;
+  uninstall(id: string, removedBy: string, purge: boolean): Promise<ActionRefused | { ok: true }>;
   roster(): PluginRoster;
   enabled(id: string): boolean;
 }
@@ -551,9 +570,9 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
       },
       async uninstall(
         ctx: EngineDoorCtx,
-        args: { id: string },
+        args: { id: string; purge?: boolean },
       ): Promise<ActionRefused | Record<string, never>> {
-        const outcome = await ctx.host.uninstall(args.id, ctx.principal.id);
+        const outcome = await ctx.host.uninstall(args.id, ctx.principal.id, args.purge === true);
         if ("refused" in outcome) return outcome;
         return {};
       },
@@ -826,8 +845,10 @@ export class PluginHost {
   /**
    * BOOT RE-VERIFICATION (R8, fail-closed). Every install row's bundle is re-hashed against
    * its pin and re-extracted; one that no longer matches — or cannot be read, or no longer
-   * parses — is put on the roster as a doorless row in `enable_failed` with the refusal on its
-   * `install` block, and NOTHING from the file is loaded. The rest are handed to the runner.
+   * parses — is put on the roster in `enable_failed` with the refusal on its `install` block,
+   * its doors published from the row's own record (`unverifiedDef`) and every one of them
+   * answering a traced `unavailable`; NOTHING from the file is loaded. The rest are handed to
+   * the runner.
    */
   private async loadInstalled(): Promise<void> {
     if (this.isolates === null) return;
@@ -840,7 +861,7 @@ export class PluginHost {
           web: null,
           refusal: verdict.refusal,
         });
-        this.installedDefs.set(row.pluginId, unverifiedDef(row.pluginId, verdict.refusal));
+        this.installedDefs.set(row.pluginId, unverifiedDef(row, verdict.refusal));
         this.lifecycleStates.set(row.pluginId, "enable_failed");
         this.logger.warn("plugin_lifecycle", {
           plugin: row.pluginId,
@@ -1217,12 +1238,14 @@ export class PluginHost {
    *     file behind;
    *  2. admission is the host's verdict — `namespace_reserved` for `engine.` / `core.`,
    *     `already_installed` unless `replace`, `still_enabled` for a replace of a running row;
-   *  3. the row is persisted with the grant (`grantFor`: declared minus the high-risk set,
-   *     widened by `grant`), the runner spawns the child, and the assembly is rebuilt with the
-   *     new def. A load failure or an `AssemblyError` (a duplicate id, a colliding action name)
-   *     ROLLS BACK — files, row, child — and answers `artifact_invalid` naming the problem, so
+   *  3. the runner spawns the child and the assembly is rebuilt with the new def. A load
+   *     failure or an `AssemblyError` (a duplicate id, a colliding action name) ROLLS BACK —
+   *     files, child, the host's index — and answers `artifact_invalid` naming the problem, so
    *     a stranger's bundle is refused at the door rather than surfacing as a boot that will
-   *     not come up.
+   *     not come up;
+   *  4. the row is persisted, once, with the grant (`grantFor`: declared minus the high-risk
+   *     set, widened by `grant`) and the doors the assembly just published — the record a boot
+   *     that cannot re-verify the bundle puts on the roster in the file's place.
    *
    * Then the transition is announced exactly as a toggle is: hooks fan out (an install of an
    * enabled row IS an enable), the roster is published, one log line, one event.
@@ -1273,7 +1296,7 @@ export class PluginHost {
     const id = bundle.manifest.id;
     const previous = this.installed.get(id);
     const previousDef = this.installedDefs.get(id);
-    const row: PluginInstallRow = {
+    const consent: PluginInstallRow = {
       pluginId: id,
       sha256,
       source: request.source,
@@ -1281,14 +1304,15 @@ export class PluginHost {
       installedBy,
       installedAt: this.runtime.now(),
       bundlePath: artifact.bundlePath,
+      actions: [],
     };
+    const web = webModuleOf(bundle);
     const wasEnabled = new Set(
       this.assembled.roster.filter((entry) => entry.enabled).map((entry) => entry.manifest.id),
     );
     // A replace retires the running child first: two children for one id is two doors.
     if (previous !== undefined) await isolates.runner.unload(id);
-    this.store.putPluginInstall(row);
-    this.installed.set(id, { row, bundle, web: webModuleOf(bundle) });
+    this.installed.set(id, { row: consent, bundle, web });
     this.lifecycleStates.delete(id);
     try {
       this.installedDefs.set(id, await this.loadIsolated(bundle, artifact.dir));
@@ -1303,6 +1327,12 @@ export class PluginHost {
       }
       throw error;
     }
+    const row: PluginInstallRow = {
+      ...consent,
+      actions: this.assembled.roster.find((entry) => entry.manifest.id === id)?.actions ?? [],
+    };
+    this.store.putPluginInstall(row);
+    this.installed.set(id, { row, bundle, web });
     if (previous !== undefined && previous.row.sha256 !== sha256) removeInstall(previous.row);
     const types = bundle.manifest.contributes.elements.map((element) => element.type);
     if (types.length > 0) this.store.claimElementTypes(id, types);
@@ -1334,8 +1364,9 @@ export class PluginHost {
 
   /**
    * Undoes everything `install` did before the failure: the child, the files of THIS artifact
-   * (never a replaced install's, which are still the row of record), and the row — restored to
-   * the previous install when this was a replace, deleted when it was not.
+   * (never a replaced install's, which are still the row of record), and the host's index —
+   * restored to the previous install when this was a replace, dropped when it was not. The
+   * store needs no undoing: the row lands only after the assembly has taken the def.
    */
   private async rollbackInstall(
     id: string,
@@ -1358,11 +1389,9 @@ export class PluginHost {
       removeInstall(artifact);
     }
     if (previous === undefined || previousDef === undefined) {
-      this.store.deletePluginInstall(id);
       this.installed.delete(id);
       this.installedDefs.delete(id);
     } else {
-      this.store.putPluginInstall(previous.row);
       this.installed.set(id, previous);
       this.installedDefs.set(id, previousDef);
     }
@@ -1372,11 +1401,25 @@ export class PluginHost {
   /**
    * THE UNINSTALL DOOR. Refused unless the row is off (`still_enabled`, the rule `purge` has
    * and for the same reason: removing running code is not a state anybody asked for). It
-   * retires the child, deletes the files and the row, and reassembles. The plugin's storage
-   * is NOT touched — an uninstall is a disable that also forgets the code, and destruction is
-   * `purge`, a different verb that a reinstall of the same id will find its data waiting for.
+   * retires the child, deletes the files and the row, forgets the row's switch, and
+   * reassembles.
+   *
+   * The plugin's storage is never destroyed by this door on its own, and never stranded by it
+   * either (#233): while the namespace holds rows the door refuses `storage_retained` naming
+   * the count, and `purge: true` is consent to run the purge verb FIRST — the same path and
+   * the same `plugin_purged` event `engine.plugins.purge` gives — and uninstall second. There
+   * is no order in which data becomes unreachable: the row an uninstalled id's purge would
+   * resolve against is gone, so the purge has to come before.
+   *
+   * The switch goes with the row. Disabling was the precondition, and a set that remembered it
+   * would hand the next install of the same id a row that is off — its child spawned for a
+   * door answering `plugin_disabled`. A fresh install is a fresh row, on by default.
    */
-  async uninstall(id: string, removedBy: string): Promise<ActionRefused | { ok: true }> {
+  async uninstall(
+    id: string,
+    removedBy: string,
+    purge: boolean,
+  ): Promise<ActionRefused | { ok: true }> {
     const entry = this.installed.get(id);
     if (entry === undefined || this.isolates === null) {
       return installRefused("not_installed", `"${id}" was not installed here`);
@@ -1384,9 +1427,22 @@ export class PluginHost {
     if (this.assembled.enabled(id)) {
       return installRefused("still_enabled", `disable "${id}" before uninstalling it`);
     }
+    if (purge) {
+      const purged = await this.purge(id, removedBy);
+      if ("refused" in purged) return purged;
+    } else {
+      const retained = await this.storage(id).count();
+      if (retained > 0) {
+        return installRefused(
+          "storage_retained",
+          `${String(retained)} keys; purge first or pass purge: true`,
+        );
+      }
+    }
     await this.isolates.runner.unload(id);
     removeInstall(entry.row);
     this.store.deletePluginInstall(id);
+    this.store.clearPluginEnablement(id);
     this.installed.delete(id);
     this.installedDefs.delete(id);
     this.lifecycleStates.delete(id);

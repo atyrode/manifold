@@ -240,6 +240,7 @@ describe("verifyInstalledBundle", () => {
       installedBy: "p-owner",
       installedAt: 1,
       bundlePath: installLayout(dataDir, "vendor.sample", sha256).bundlePath,
+      actions: [],
     };
   }
 

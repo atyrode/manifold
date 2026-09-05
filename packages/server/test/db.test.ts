@@ -13,7 +13,7 @@ import {
   readTileLayout,
 } from "@manifold/scene";
 import { openDatabase, SCHEMA_VERSION } from "../src/db.ts";
-import { sha256Hex } from "../src/stores.ts";
+import { ServerStore, sha256Hex } from "../src/stores.ts";
 
 interface DocRow {
   container_id: string;
@@ -376,7 +376,7 @@ describe("migration 9: solo compositions", () => {
         db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'").get()
           ?.value,
       ).toBe(String(SCHEMA_VERSION));
-      expect(SCHEMA_VERSION).toBe(17);
+      expect(SCHEMA_VERSION).toBe(18);
 
       // The state the pool and the bubble needed is gone from the schema, not merely unread:
       // a column nobody may write is a column that cannot drift back into meaning something.
@@ -1111,6 +1111,42 @@ describe("pre-migration snapshot retention", () => {
       // An elder version's image is the operator's recovery inventory: byte for byte untouched
       // by a later migration, a failure, or a retry.
       expect(readFileSync(`${path}.pre-v9.bak`)).toEqual(elder);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("migration 18: an install row's published doors", () => {
+  test("a row admitted before the column reads doorless rather than failing to load", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-db-installs-"));
+    const path = join(dir, "manifold.db");
+    try {
+      // The v17 shape of the one table this migration touches — nothing else replays — plus
+      // the `events` columns the store's constructor indexes on open.
+      const seed = new Database(path, { create: true, strict: true });
+      seed.exec(`
+CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER);
+CREATE TABLE plugin_installs(
+  plugin_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, source TEXT NOT NULL,
+  granted_caps TEXT NOT NULL, installed_by TEXT NOT NULL, installed_at INTEGER NOT NULL,
+  bundle_path TEXT NOT NULL
+) WITHOUT ROWID;
+INSERT INTO meta(key, value) VALUES ('schema_version', '17');
+INSERT INTO plugin_installs VALUES ('vendor.elder', '${"0".repeat(64)}', '/uploads/elder',
+  '["containers:read"]', 'p-owner', 1, '/data/plugins/vendor.elder/bundle.json');
+`);
+      seed.close();
+
+      const db = openDatabase(path);
+      expect(
+        db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'").get()
+          ?.value,
+      ).toBe(String(SCHEMA_VERSION));
+      const rows = new ServerStore(db).pluginInstalls();
+      expect(rows.map((row) => [row.pluginId, row.actions])).toEqual([["vendor.elder", []]]);
+      db.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

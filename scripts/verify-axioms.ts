@@ -5370,13 +5370,22 @@ try {
 
     /*
       Put the workspace back: the viewer's tree as it was, and the stranger's code gone — the
-      row must be OFF to be uninstalled, and once it is gone it is nothing the finally should
-      try to switch back on.
+      row must be OFF to be uninstalled, its storage is non-empty (the bumps), so the first
+      uninstall must refuse by name and the second consents to the purge (#233); once it is gone
+      it is nothing the finally should try to switch back on.
     */
     await dispatch("core.space.setLayout", { layout: before }, viewer.token);
     await setEnabled(PLUGIN_ID, false);
-    const removed = ActionOutcomeSchema.parse(
+    const retained = ActionOutcomeSchema.parse(
       await dispatch(ENGINE_UNINSTALL_ACTION, { id: PLUGIN_ID }),
+    );
+    check(
+      "R11 uninstall refuses while the mod's storage is retained",
+      !retained.ok && retained.denial.message.startsWith("storage_retained:"),
+      retained.ok ? "uninstall succeeded with storage retained" : retained.denial.message,
+    );
+    const removed = ActionOutcomeSchema.parse(
+      await dispatch(ENGINE_UNINSTALL_ACTION, { id: PLUGIN_ID, purge: true }),
     );
     disabledHere.delete(PLUGIN_ID);
     const rosterAfter = PluginRosterSchema.parse(

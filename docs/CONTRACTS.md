@@ -1138,7 +1138,16 @@ Values are base64 of the file's bytes. **`sha256` is over the artifact's exact b
 the parsed form: the install door hashes what it read and refuses `hash_mismatch` unless it equals
 the pin the installer gave; at every boot the stored file is re-hashed and a mismatch puts the row
 in `lifecycle: "enable_failed"` with `install.refusal: "hash_mismatch"`, never loaded (R8,
-fail-closed). The bundle is self-contained — the kit's `pack` inlines both guest runtimes — so the
+fail-closed). **A refused row is the triple** `enabled: true` (the switch is honestly what the
+administrator left it — the row does not serve because of the lifecycle, not the toggle),
+`lifecycle: "enable_failed"`, `install.refusal: <class>`; a manager derives "Refused" from
+`lifecycle === "enable_failed" && install?.refusal !== undefined`, and nothing else on the row
+means it. The row still PUBLISHES its doors — from the `actions` its install row recorded when the
+assembly admitted it, never from the file — under a manifest whose `version` is `"unverified"`
+and whose `capabilities` is the union of what those doors declare; a dispatch to one answers the
+runner's rung, `unavailable`, with message `bundle failed verification at boot: <class>`, traced
+like every other rung (a row admitted before its doors were recorded composes doorless, as it
+always did). The bundle is self-contained — the kit's `pack` inlines both guest runtimes — so the
 loader is one `Bun.spawn(["bun", "--smol", "<dir>/server.js"], { ipc, serialization: "json" })`
 and one `new Worker("/api/plugins/<id>/web.js", { type: "module" })`.
 
@@ -1159,9 +1168,15 @@ client switches on the prefix): `artifact_unreadable`, `artifact_invalid` (wrong
 manifest that fails the schema, or an assembly refusal such as a duplicate id caught at install
 time and rolled back rather than raised at boot), `hash_mismatch`, `already_installed` (same id,
 different hash, no `replace: true`), `not_installed`, `namespace_reserved` (`engine.` / `core.`),
-`still_enabled` (uninstall and replace both require the row disabled first), `no_entry`.
-Uninstall removes the row and the files and does NOT touch plugin storage — that is `purge`, a
-different verb.
+`still_enabled` (uninstall and replace both require the row disabled first), `storage_retained`,
+`no_entry`. **Uninstall** (`{ id, purge? }`) removes the row and the files and never destroys
+plugin storage on its own: while the plugin's namespace holds rows — reserved ones included, the
+same count `purge` reports — it refuses `storage_retained: <n> keys; purge first or pass purge:
+true`, and `purge: true` runs the purge verb first (the same path and the same `plugin_purged`
+event as `engine.plugins.purge`) and the uninstall second, so no uninstalled id ever leaves data
+behind that no door can reach (#233). Uninstall also forgets the row's switch and attribution: a
+later install of the same id is a fresh row, on by default and flipped by nobody, exactly like a
+first install.
 
 **Server isolate — supervisor ↔ child (`IsolateHostFrameSchema` / `IsolateChildFrameSchema`).**
 JSON frames over `Bun.spawn` ipc, discriminated on `t`:
@@ -1906,12 +1921,16 @@ plugin_kv(plugin_id TEXT, key TEXT, value TEXT, PRIMARY KEY (plugin_id, key))
                             -- WITHOUT ROWID; per-plugin storage, `$`-prefixed keys are
                             -- engine-reserved ($version stamp, $migration:<name> ledger)
 plugin_installs(plugin_id TEXT PK, sha256 TEXT, source TEXT, granted_caps TEXT,
-                installed_by TEXT, installed_at INTEGER, bundle_path TEXT)
+                installed_by TEXT, installed_at INTEGER, bundle_path TEXT,
+                actions TEXT)
                             -- WITHOUT ROWID; one row per INSTALLED plugin (ADR 0016 stage 2):
                             -- the pin, the source as given, the grant (JSON caps), who and
-                            -- when, and where the bundle sits under <data>/plugins/<id>/.
-                            -- No manifest column: it is read from the bundle after the
-                            -- file re-hashes to the pin, never from a stored copy
+                            -- when, where the bundle sits under <data>/plugins/<id>/, and the
+                            -- doors the assembly published on admission (JSON
+                            -- ActionSummary[]; '[]' for a row admitted before schema 18) —
+                            -- what a boot that cannot re-verify the bundle puts on the
+                            -- roster. No manifest column: it is read from the bundle after
+                            -- the file re-hashes to the pin, never from a stored copy
 shares(id TEXT PK, hash TEXT UNIQUE, container_id TEXT, caps TEXT, origin TEXT,
        minted_by TEXT, created_at INTEGER, revoked_at INTEGER)  -- HASH only, never raw
 share_tickets(share_id TEXT, guest_principal_id TEXT, principal_id TEXT, created_at INTEGER,
@@ -1936,15 +1955,17 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- layout:<principalId>
 ```
 
-Schema version 17 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
+Schema version 18 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
 — `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
 `grants` substrate; 14 is the trace ledger — five nullable columns on `events`; 15 is credential
 expiry — `tokens.expires_at`; 16 retires the grant rows of already-revoked tokens, the same rule
 `revokeTokensWhere` now applies at revocation, applied to history; 17 adds `plugin_installs`, one
-new table and nothing rewritten). Migrations 12, 14, 15 and 17 are
-plain SQL for the same reason: none touches a stored document and existing rows need no
-backfill, since absence already means the right thing — a NULL origin means "this instance", a
-NULL `door` means "this row is an event, not a trace", and a NULL `expires_at` means "never".
+new table and nothing rewritten; 18 adds `plugin_installs.actions`, defaulted to `'[]'`).
+Migrations 12, 14, 15, 17 and 18 are plain SQL for the same reason: none touches a stored
+document and existing rows need no backfill, since absence already means the right thing — a
+NULL origin means "this instance", a NULL `door` means "this row is an event, not a trace", a
+NULL `expires_at` means "never", and an empty `actions` list is the doorless row an elder install
+already composed.
 None takes a pre-migration snapshot, and that is the house rule rather than an exception to it:
 the snapshot belongs to a one-way DATA move (9, 11, 13, and 16 — SQL, but a DELETE nothing can
 run backwards), and adding nullable columns is reversible by a later migration that drops

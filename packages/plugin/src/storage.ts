@@ -52,11 +52,14 @@ export interface PluginStorage {
 /**
  * The engine's half of the same ref. `set`/`delete` on a `PluginStorage` refuse reserved
  * keys, so a plugin cannot forge its own data version or ledger entry; the engine writes
- * those through here instead. `clear` is the purge verb's hands.
+ * those through here instead. `clear` is the purge verb's hands, and `count` is what it would
+ * take — the number an uninstall refuses over while it is not zero.
  */
 export interface PluginStorageAdmin extends PluginStorage {
   stampDataVersion(version: PluginDataVersion): Promise<void>;
   recordMigration(name: string, applied: number): Promise<void>;
+  /** Every row of this plugin, reserved keys included: exactly what `clear` would remove. */
+  count(): Promise<number>;
   /** Erases every row of this plugin, reserved keys included, and reports how many went. */
   clear(): Promise<number>;
 }

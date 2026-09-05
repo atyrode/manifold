@@ -570,6 +570,19 @@ export const PluginManifestSchema = z.strictObject({
    * files, not by this field. `PluginBundleSchema` requires it.
    */
   entry: PluginEntrySchema.optional(),
+  /**
+   * Where this plugin comes from, for a reader who wants to look: the repository its code
+   * lives in (the manager shows it), a homepage, and a changelog — which the update flow
+   * (#238) reads to say what a newer version changes. Absent ≡ the author said nothing, which
+   * is every in-tree manifest.
+   */
+  links: z
+    .strictObject({
+      repository: z.string().url().max(512).optional(),
+      homepage: z.string().url().max(512).optional(),
+      changelog: z.string().url().max(512).optional(),
+    })
+    .optional(),
 });
 export type PluginManifest = z.infer<typeof PluginManifestSchema>;
 
@@ -710,6 +723,9 @@ export type PluginRefusalReason = (typeof PLUGIN_REFUSAL_REASONS)[number];
  *   `not_installed`        an uninstall or replace of an id nobody installed.
  *   `namespace_reserved`   the manifest claims `engine.` or `core.`, which only the build may.
  *   `still_enabled`        an uninstall or replace of a plugin that is still on: disable first.
+ *   `storage_retained`     an uninstall of a plugin whose storage still holds rows (#233): purge
+ *                          first, or pass `purge: true` and the door purges before it uninstalls.
+ *                          Uninstall never destroys data on its own, and it never strands any.
  *   `no_entry`             the manifest names no half to run — nothing to install.
  */
 export const PLUGIN_INSTALL_REFUSALS = [
@@ -720,6 +736,7 @@ export const PLUGIN_INSTALL_REFUSALS = [
   "not_installed",
   "namespace_reserved",
   "still_enabled",
+  "storage_retained",
   "no_entry",
 ] as const;
 export const PluginInstallRefusalSchema = z.enum(PLUGIN_INSTALL_REFUSALS);

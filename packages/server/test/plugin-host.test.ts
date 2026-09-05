@@ -1733,6 +1733,9 @@ describe("PluginHost install doors", () => {
     ]);
     expect(fixture.runner.loads).toEqual([SAMPLE_ID]);
     expect(fixture.store.pluginInstalls().map((stored) => stored.pluginId)).toEqual([SAMPLE_ID]);
+    // The doors the assembly published are the row's record of them, for the boot that cannot
+    // re-verify the bundle (below): what is stored is exactly what the roster says.
+    expect(fixture.store.pluginInstalls()[0]?.actions).toEqual(row.actions);
     // An install of an enabled row IS an enable: the hook fires and the roster is pushed.
     expect(hooks.calls).toEqual([`enable:${SAMPLE_ID}`]);
     expect(published).toHaveLength(1);
@@ -1781,7 +1784,7 @@ describe("PluginHost install doors", () => {
     fixture.store.close();
   });
 
-  test("uninstall refuses a running row, then removes row and files and keeps its storage", async () => {
+  test("uninstall refuses a running row, then a row with data; purge: true purges first and removes everything", async () => {
     const fixture = await installFixture();
     const host = await customHost(fixture, [], { isolates: fixture.isolates });
     const { source, sha256 } = fixture.drop();
@@ -1796,21 +1799,62 @@ describe("PluginHost install doors", () => {
     expect(denial(running).rule).toBe("refused");
     expect(denial(running).message).toMatch(/^still_enabled: /);
 
+    // Off, with data: the door names the count and the two ways out (#233). Nothing moved.
     expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
-    expect(await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID })).toEqual({
-      ok: true,
-      result: {},
+    const retained = await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID });
+    expect(denial(retained)).toEqual({
+      rule: "refused",
+      message: "storage_retained: 1 keys; purge first or pass purge: true",
     });
+    expect(fixture.store.pluginInstalls().map((row) => row.pluginId)).toEqual([SAMPLE_ID]);
+    expect(existsSync(stored.bundlePath)).toBe(true);
+    expect(await fixture.store.pluginStorage(SAMPLE_ID).get("kept")).toBe("yes");
+
+    // Consent to destroy: the purge verb runs first — its own event, on the engine's node —
+    // and the uninstall follows, so no row is ever left with data no door can reach.
+    expect(
+      await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID, purge: true }),
+    ).toEqual({ ok: true, result: {} });
+    expect(fixture.store.listEvents({ type: "plugin_purged", limit: 10 })).toHaveLength(1);
+    expect(fixture.store.listEvents({ type: "plugin_uninstalled", limit: 10 })).toHaveLength(1);
+    expect(await fixture.store.pluginStorage(SAMPLE_ID).count()).toBe(0);
     expect(host.roster().some((entry) => entry.manifest.id === SAMPLE_ID)).toBe(false);
     expect(fixture.store.pluginInstalls()).toEqual([]);
     expect(existsSync(stored.bundlePath)).toBe(false);
     expect(fixture.runner.unloads).toEqual([SAMPLE_ID]);
-    // Disable RETAINS, and so does uninstall: destruction is `purge`, a different verb.
-    expect(await fixture.store.pluginStorage(SAMPLE_ID).get("kept")).toBe("yes");
     expect(
       denial(await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID }))
         .message,
     ).toMatch(/^not_installed: /);
+    fixture.store.close();
+  });
+
+  test("uninstall forgets the switch: a reinstall of the same id is on, like a first install", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    const { source, sha256 } = fixture.drop();
+    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
+      true,
+    );
+    expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+    expect(installedRow(host, SAMPLE_ID).changedBy).toBe("admin");
+    // Nothing stored, so the plain door goes through — and takes the OFF with it.
+    expect(await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID })).toEqual({
+      ok: true,
+      result: {},
+    });
+    expect(fixture.store.disabledPlugins().has(SAMPLE_ID)).toBe(false);
+
+    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
+      true,
+    );
+    const row = installedRow(host, SAMPLE_ID);
+    expect(row.enabled).toBe(true);
+    expect(row.changedBy).toBeUndefined();
+    expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+      ok: true,
+      result: { pong: true },
+    });
     fixture.store.close();
   });
 
@@ -1906,6 +1950,7 @@ describe("PluginHost install doors", () => {
     );
     const stored = fixture.store.pluginInstalls()[0];
     if (stored === undefined) throw new Error("no install row");
+    const published = installedRow(host, SAMPLE_ID).actions;
     // The file on disk changes under the pin: a manifest now claiming everything.
     writeFileSync(
       stored.bundlePath,
@@ -1921,20 +1966,37 @@ describe("PluginHost install doors", () => {
       isolates: { runner: rebooted, dataDir: fixture.dataDir },
     });
     const row = installedRow(second, SAMPLE_ID);
+    // The triple a manager reads as "refused": the switch is honestly ON, the lifecycle says
+    // the row does not serve, and the install block says why.
+    expect(row.enabled).toBe(true);
     expect(row.lifecycle).toBe("enable_failed");
     expect(row.install?.refusal).toBe("hash_mismatch");
     expect(row.install?.sha256).toBe(sha256);
-    // Nothing from the file: no doors, no declared capabilities, no child.
-    expect(row.actions).toEqual([]);
-    expect(row.manifest.capabilities).toEqual([]);
+    // Nothing from the file — no child, no module, not the `*` it now claims — but the doors
+    // the row remembers from its admission are published, under the ceiling they need.
+    expect(row.actions).toEqual(published);
+    expect(row.manifest.capabilities).toEqual(["containers:read", "tokens:mint"]);
     expect(rebooted.loads).toEqual([]);
     expect(second.webModule(SAMPLE_ID)).toBeNull();
-    expect(denial(await second.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe(
-      "unknown_action",
+    // A dispatch to one is the runner's rung, traced, naming the verdict — never the untraced
+    // `unknown_action` for a door the roster showed yesterday.
+    expect(await second.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+      ok: false,
+      denial: {
+        rule: "unavailable",
+        message: "bundle failed verification at boot: hash_mismatch",
+      },
+    });
+    const trace = fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0];
+    expect(trace?.door).toBe(`${SAMPLE_ID}.ping`);
+    expect(trace?.outcome).toBe("unavailable");
+    // The installer's grant still narrows the remembered doors at rung 4, before the refusal.
+    expect(denial(await second.dispatch(fixture.owner, `${SAMPLE_ID}.mint`, {})).message).toBe(
+      `tokens:mint not granted to plugin ${SAMPLE_ID}`,
     );
     // The remedy is the ordinary one: disable, uninstall.
     expect(await second.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
-    expect(await second.uninstall(SAMPLE_ID, "admin")).toEqual({ ok: true });
+    expect(await second.uninstall(SAMPLE_ID, "admin", false)).toEqual({ ok: true });
     expect(fixture.store.pluginInstalls()).toEqual([]);
     fixture.store.close();
   });
