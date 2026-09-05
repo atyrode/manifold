@@ -63,6 +63,17 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
     protocolVersion: z.number().int().positive(),
     /** PTYs that survived a server restart; the new server re-adopts them. */
     terminals: z.array(AdvertisedTerminalSchema),
+    /**
+     * OPTIONAL and v24+: the identity of the PROCESS that owns this agent's PTYs (issue
+     * #278). A terminal host mints one per process and keeps it for its whole life, so two
+     * hellos naming the same id are two transports in front of ONE set of live PTYs, and a
+     * hello naming a different id is a different owner — whatever token it holds. The server
+     * admits a same-token newcomer on this identity (or on an intact inventory) and never on
+     * token possession alone, and it sends `drain` only to an agent that named one. Absent
+     * reproduces the pre-v24 semantics exactly: the agent is its own owner and its PTYs die
+     * with it.
+     */
+    terminalHostId: z.string().min(1).optional(),
   }),
   z.strictObject({ type: z.literal("created"), terminalId }),
   z.strictObject({ type: z.literal("create_error"), terminalId, message: z.string() }),
@@ -84,6 +95,20 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
     exitCode: z.number().int().nullable(),
   }),
   z.strictObject({ type: z.literal("pong") }),
+  /**
+   * The owner's acknowledgement of ONE `drain` request, echoing its `requestId`. It is the
+   * only frame that says what the owner holds RIGHT NOW: `terminalIds` is every live PTY
+   * after the owner has applied the admission state it was told, ordered behind every
+   * `create` the server sent before the request — so an id missing here was never created,
+   * and an id present here is the operator's to account for before replacing the owner.
+   */
+  z.strictObject({
+    type: z.literal("drain_status"),
+    requestId: z.string().min(1),
+    terminalHostId: z.string().min(1),
+    draining: z.boolean(),
+    terminalIds: z.array(terminalId),
+  }),
 ]);
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 
@@ -118,6 +143,20 @@ export const ServerToAgentMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("kill"), terminalId }),
   z.strictObject({ type: z.literal("snapshot_request"), terminalId }),
   z.strictObject({ type: z.literal("ping") }),
+  /**
+   * v24+, and sent ONLY to an agent whose hello named a `terminalHostId`: a pre-v24 agent
+   * parses server frames strictly and would drop the socket on an unknown type, so a legacy
+   * agent's wire stays byte-identical and the version is ADDED to the compat set. Sets the
+   * owner's admission latch — `draining: true` refuses every later `create` until a
+   * `draining: false` arrives — and is answered by exactly one `drain_status` per request.
+   * The server also sends one on every capable hello, carrying its persisted state, so the
+   * owner's latch converges to the hub's across transport and hub restarts.
+   */
+  z.strictObject({
+    type: z.literal("drain"),
+    requestId: z.string().min(1),
+    draining: z.boolean(),
+  }),
 ]);
 export type ServerToAgentMessage = z.infer<typeof ServerToAgentMessageSchema>;
 
@@ -136,6 +175,7 @@ export const AGENT_MESSAGE_TYPES = [
   "snapshot",
   "exited",
   "pong",
+  "drain_status",
 ] as const satisfies readonly AgentMessage["type"][];
 
 export const SERVER_TO_AGENT_MESSAGE_TYPES = [
@@ -146,6 +186,7 @@ export const SERVER_TO_AGENT_MESSAGE_TYPES = [
   "kill",
   "snapshot_request",
   "ping",
+  "drain",
 ] as const satisfies readonly ServerToAgentMessage["type"][];
 
 type MissingAgentType = Exclude<AgentMessage["type"], (typeof AGENT_MESSAGE_TYPES)[number]>;

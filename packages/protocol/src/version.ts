@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 23;
+export const PROTOCOL_VERSION = 24;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -243,9 +243,20 @@ export const PROTOCOL_VERSION = 23;
  * Old browser decoders are strict: optional fields still require a session version bump.
  * Machine and instance frames are unchanged; both compatibility sets ADD 23.
  * Upgrade a hub before installing newer agent binaries; publication does not promote a hub.
+ *
+ * v23 -> v24: TERMINAL CONTINUITY (issue #278). A capable agent names its
+ * independently supervised terminalHostId in hello and answers the new drain
+ * request with its latched admission state. Both the hello field and HTTP
+ * draining roster field are optional. The hub sends drain frames only to an
+ * owner-naming agent; legacy machine frames remain byte-identical and keep
+ * reconnecting with their retained inventories. Unsafe duplicate/incomplete
+ * inventories are refused rather than interpreted as terminal destruction.
+ * Machine compatibility ADDS 24; instance frames are unchanged and ADD 24.
+ * Publish first, promote the target hub deliberately, then install the new
+ * two-process agent topology. Publication never authorizes fleet activation.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  16, 17, 18, 19, 20, 21, 22, 23,
+  16, 17, 18, 19, 20, 21, 22, 23, 24,
 ]);
 
 /**
@@ -286,9 +297,10 @@ export const TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION = 22;
  * secret rather than a machine token, so the instance wire is byte-identical a fourth time
  * and the version is ADDED.
  * v23: session presence and element presentation (issues #216/#222); instance wire unchanged.
+ * v24: terminal-host identity and drain on the machine channel; instance wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  18, 19, 20, 21, 22, 23,
+  18, 19, 20, 21, 22, 23, 24,
 ]);
 
 /**

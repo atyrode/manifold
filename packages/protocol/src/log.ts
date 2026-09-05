@@ -53,7 +53,11 @@ export const LOG_EVENTS = [
   "local_agent_spawn_locked",
   "local_agent_spawned",
 
-  // Server: machine transport — enrolment, version negotiation, supersession, liveness.
+  // Server: machine transport — enrolment, version negotiation, supersession, liveness, and
+  // (#278) admission: a claimant refused for unproven continuity, and the drain round trip.
+  "machine_admission_refused",
+  "machine_drain_status",
+  "machine_drain_timeout",
   "machine_hello_timeout",
   "machine_liveness_timeout",
   "machine_malformed_frame",
@@ -142,6 +146,32 @@ export const LOG_EVENTS = [
   "exited",
   "snapshot",
   "snapshot_abandoned",
+
+  // Terminal host (issue #278): the PTY owner's own seam — serving its socket, the single
+  // transport seat, the admission latch, and the maintenance stop it refuses by name.
+  "terminal_host_listening",
+  "terminal_host_socket_reclaimed",
+  "terminal_host_socket_error",
+  "terminal_host_start_failed",
+  "terminal_host_backpressure",
+  "terminal_host_refused_frame",
+  "terminal_host_shutdown_refused",
+  "terminal_host_shutdown_accepted",
+  "transport_attached",
+  "transport_detached",
+  "transport_refused",
+  "drain",
+
+  // Transport (issue #278): taking and losing the seat on the terminal host.
+  "terminal_host_dialing",
+  "terminal_host_attached",
+  "terminal_host_refused",
+  "terminal_host_unreachable",
+  "terminal_host_lost",
+
+  // Server: supervision of the co-located terminal host (the local machine's PTY owner).
+  "local_terminal_host_reused",
+  "local_terminal_host_spawned",
 ] as const;
 
 /** One name from the operational log vocabulary; the `evt` field of every JSONL record. */

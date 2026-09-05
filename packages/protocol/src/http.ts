@@ -348,6 +348,13 @@ export const MachineSummarySchema = z.strictObject({
    * liveness interval, because its socket is severed by the same fence a principal's is.
    */
   revoked: z.boolean().optional(),
+  /**
+   * Whether this machine's terminal ADMISSION is closed (`core.machines.drain`, issue #278):
+   * the hub refuses every new terminal on it until `core.machines.drain { draining: false }`.
+   * ABSENT means open, which is every pre-v24 row, so a v23 reader sees the roster it always
+   * saw. Persisted, so a hub restart cannot reopen a drained machine by forgetting.
+   */
+  draining: z.boolean().optional(),
 });
 export type MachineSummary = z.infer<typeof MachineSummarySchema>;
 export const MachinesResponseSchema = z.strictObject({
@@ -364,6 +371,34 @@ export const RevokeMachineRequestSchema = z.strictObject({
   machineId: z.string().min(1),
 });
 export type RevokeMachineRequest = z.infer<typeof RevokeMachineRequestSchema>;
+
+/**
+ * `core.machines.drain` — the ATOMIC admission contract a host activation needs before it
+ * replaces a machine's agent (issue #278). `draining: true` closes new-terminal admission on
+ * the hub FIRST (persisted, so a hub restart cannot forget it), then asks the machine's
+ * terminal owner to latch the same and report every PTY it still holds. `draining: false` is
+ * the explicit cancellation, and the only thing that reopens admission.
+ */
+export const DrainMachineRequestSchema = z.strictObject({
+  machineId: z.string().min(1),
+  draining: z.boolean(),
+});
+export type DrainMachineRequest = z.infer<typeof DrainMachineRequestSchema>;
+
+/**
+ * What the OWNER answered, and nothing the hub inferred: `terminalHostId` is the identity of
+ * the process holding the PTYs and `terminalIds` is every live PTY it holds after applying
+ * `draining`, ordered behind every create the hub had already sent. An owner that could not
+ * answer — offline, a pre-v24 agent with no owner identity, a timeout, a mismatched
+ * identity — is a REFUSAL of the action rather than an empty list: an unknown machine is not
+ * a safe one, and the admission the hub closed stays closed until cancelled.
+ */
+export const MachineDrainStatusSchema = z.strictObject({
+  terminalHostId: z.string().min(1),
+  draining: z.boolean(),
+  terminalIds: z.array(z.string().min(1)),
+});
+export type MachineDrainStatus = z.infer<typeof MachineDrainStatusSchema>;
 
 export const EnrollMachineRequestSchema = z.strictObject({
   name: z.string().min(1).max(120),
