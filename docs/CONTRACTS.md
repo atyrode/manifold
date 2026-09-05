@@ -1195,10 +1195,17 @@ which the answer is the ladder's last rung, `unavailable` — "isolate deadline 
 like every other rung. `ISOLATE_CRASH_BUDGET` is `{ count: 3, windowMs: 300_000 }`: three exits in
 five minutes and the supervisor stops respawning, the row reads `lifecycle: "isolate_crashed"`
 and every dispatch answers `unavailable` until an operator toggles it (`isolate_starting` is the
-row while a child is being spawned). After `ISOLATE_IDLE_EVICT_MS` (10 min) without a dispatch
-the child is sent `shutdown` and the next dispatch respawns it (`isolate_evicted`). Log events:
-`isolate_spawned`, `isolate_exited`, `isolate_crashed`, `isolate_evicted`, `isolate_call_failed`,
-`plugin_installed`, `plugin_uninstalled`, `web_isolate_fault`.
+row while a child is being spawned). A child that dies or hangs before answering `load` fails
+the load the same way, and on a respawn that failure counts against the budget. After
+`ISOLATE_IDLE_EVICT_MS` (10 min) without a dispatch or hook the child is sent `shutdown` and the
+next dispatch respawns it (`isolate_evicted`). A `call` names the request it belongs to by
+prefix: its `id` is `<request id>:<n>`, where `<request id>` is the `dispatch`/`hook` frame's
+own `id` (host-chosen, never containing `:`) — that is how the host finds the ctx that grades
+it. The child runs under the server's own `bun` with an environment of exactly `PATH`, `HOME`
+and `MANIFOLD_PLUGIN_ID` (invariant 6); its stdout and stderr reach the server log line by line
+as `isolate_output`, capped. Log events: `isolate_spawned`, `isolate_exited`, `isolate_crashed`,
+`isolate_evicted`, `isolate_call_failed`, `isolate_output`, `plugin_installed`,
+`plugin_uninstalled`, `web_isolate_fault`.
 
 **Web isolate — page ↔ Worker (`WebIsolateHostFrameSchema` / `WebIsolateWorkerFrameSchema`).**
 `postMessage` frames, discriminated on `t`:

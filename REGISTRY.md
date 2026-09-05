@@ -70,6 +70,7 @@ must never be taught one.
       "globs": [
         "packages/plugin/src/**",
         "packages/server/src/plugin-host.ts",
+        "packages/server/src/isolate/**",
         "packages/server/src/assembly.ts",
         "packages/server/src/main.ts",
         "packages/server/src/http.ts",
@@ -77,7 +78,7 @@ must never be taught one.
         "packages/server/src/index.ts"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the registry itself plus the doors it dispatches through, including the engine-owned enablement door (engine.plugins, a builtin roster row). Plugins presuppose the loader; it refuses collisions, resolves dependencies and order, and intersects capabilities — arbitration by definition. It ASSEMBLES the roster; it never renders a composition.",
+      "verdict": "the registry itself plus the doors it dispatches through, including the engine-owned enablement door (engine.plugins, a builtin roster row) and the isolation runner (ADR 0016 §9, R7: joined here rather than seated as its own pillar — the thing that loads a plugin's code is the same loader, one process boundary further out). Plugins presuppose the loader; it refuses collisions, resolves dependencies and order, and intersects capabilities — arbitration by definition. It ASSEMBLES the roster; it never renders a composition.",
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {
