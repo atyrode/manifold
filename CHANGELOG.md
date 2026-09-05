@@ -5,6 +5,7 @@
 ### Added
 
 - A terminal can be born running a program: `terminal_open` (and `SessionClient.openTerminal`) take an optional `program { argv }` the PTY execs in place of the login shell, plus an optional `env` allowlist merged under the fixed `MANIFOLD_*` keys, so a plugin can launch a named program on a machine and see its output first — no prompt, nothing typed. Both go through the `core.terminals.open` policy door before any machine hears of them — the door's input carries the program and env, a denial refuses the program before anything is created, and the trace ledger records what was authorized. A machine whose agent predates the field (protocol 22) refuses by name instead of dropping its connection, and a program the machine cannot run is a named creation error rather than a garbled shell. Existing agents keep their terminals across this deploy. (#192, #200)
+- The protocol now speaks isolation (ADR 0016 stage 1+2): the two frame pairs an installed plugin's server process and browser Worker talk to the engine over, the closed component vocabulary its panels render with instead of touching the DOM, the install artifact (`<id>.manifold-plugin.json`, pinned by hash), the `install` block a roster row carries with the capabilities its installer granted, the `unavailable` refusal for an isolate that crashed or did not answer, and the isolate lifecycle states — all published under `isolateContract` at `GET /api/protocol`, so an out-of-tree plugin author reads the whole target from one document. (#151, #152)
 
 ### Changed
 

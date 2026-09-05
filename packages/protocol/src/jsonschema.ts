@@ -3,6 +3,14 @@ import { AUTH_REFUSALS, CredentialSchema } from "./http.ts";
 import { AgentMessageSchema, ServerToAgentMessageSchema } from "./machine.ts";
 import { GuestMessageSchema, HostToGuestMessageSchema, instanceVocabulary } from "./instance.ts";
 import { eventVocabulary } from "./events.ts";
+import {
+  IsolateChildFrameSchema,
+  IsolateHostFrameSchema,
+  UiNodeSchema,
+  WebIsolateHostFrameSchema,
+  WebIsolateWorkerFrameSchema,
+  isolateVocabulary,
+} from "./isolate.ts";
 import { grantVocabulary } from "./grants.ts";
 import {
   DisciplineDefSchema,
@@ -119,6 +127,21 @@ export function buildProtocolJsonSchema(extras?: ProtocolExtras): Record<string,
     pluginContract: pluginVocabulary(),
     eventContract: eventVocabulary(),
     grantContract: grantVocabulary(),
+    /**
+     * The isolation vocabulary (ADR 0016): the closed component set an installed plugin's
+     * panel renders with, the ctx slices and host methods a guest may call, the runner's
+     * deadlines, the artifact `pack` emits, and the two frame pairs — supervisor ↔ child
+     * process, page ↔ Worker — published so an out-of-tree author reads the whole authoring
+     * target from one document, never from this tree (#151).
+     */
+    isolateContract: {
+      ...isolateVocabulary(),
+      uiNode: z.toJSONSchema(UiNodeSchema),
+      serverHost: z.toJSONSchema(IsolateHostFrameSchema),
+      serverChild: z.toJSONSchema(IsolateChildFrameSchema),
+      webHost: z.toJSONSchema(WebIsolateHostFrameSchema),
+      webWorker: z.toJSONSchema(WebIsolateWorkerFrameSchema),
+    },
     /**
      * The CREDENTIAL vocabulary (ADR 0019): the closed set of words a refused credential
      * can be refused with, and what one live credential looks like when the list door

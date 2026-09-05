@@ -545,10 +545,11 @@ the packages promise each other about that. Assembly happens twice from the same
 `packages/server/src/assembly.ts` registers server halves, `packages/web/src/assembly.ts`
 web halves — and both run `assembleRoster` from `@manifold/plugin`, which refuses duplicate
 plugin ids, action names, panel ids, element types and tool ids by NAMING every offender.
-Manifests are inert DATA: no executable fields, with `entry` reserved for the later
-dynamic-distribution wave. Plugins are trusted in-process code today (ADR 0010); the wire is the
-security boundary and every authority decision happens at a door. What happens to a plugin's data,
-contributions and neighbours across an enable/disable is the **behavioral contract**
+Manifests are inert DATA: no executable fields; `entry` names which halves an INSTALLED bundle
+runs and is absent on every in-tree manifest (§Isolated plugins). Plugins are trusted in-process
+code when they ship in the tree (ADR 0010) and isolated when they are installed (ADR 0016); the
+wire is the security boundary and every authority decision happens at a door. What happens to a
+plugin's data, contributions and neighbours across an enable/disable is the **behavioral contract**
 (`docs/decisions/0013-plugin-behavioral-contract.md`, per-kind table in `REGISTRY.md`
 §Disable semantics).
 
@@ -559,17 +560,20 @@ contributions and neighbours across an enable/disable is the **behavioral contra
   manifest, enabled,
   source: "builtin" | "plugin",              // "builtin" = an ENGINE door, not a package
   actions: ActionSummary[],                   // { name, title, caps, input, result } — JSON Schemas
-  lifecycle?: "ok" | "enable_failed" | "disable_failed",   // absent ≡ ok
+  lifecycle?: "ok" | "enable_failed" | "disable_failed"
+           | "isolate_starting" | "isolate_crashed",   // absent ≡ ok; the isolate_ pair is the runner's
   refusal?: PluginRefusalReason,              // why this row cannot be toggled right now
-  changedBy?: string | null, changedAt?: number | null     // who last flipped it, and when
+  changedBy?: string | null, changedAt?: number | null,    // who last flipped it, and when
+  install?: { sha256, source, grantedCaps, installedBy, installedAt, refusal? }  // present iff INSTALLED (§Isolated plugins)
 }
 ```
 
 `GET /api/protocol` embeds the same vocabulary beside the wire schemas, plus a `pluginContract`
 block — `engineNamespace`, `sources`, `dependencyTypes`, `dormantModes`, `defaultDormantMode`,
-`residualMechanisms`, `purgeTargets`, `lifecycleStates`, `refusalReasons`, `denialRules`,
-`defaultElementPlacement`, and JSON Schemas for the manifest, actions, outcomes, roster entries and
-purge results — so an agent learns every door AND every closed enum from one read.
+`residualMechanisms`, `purgeTargets`, `lifecycleStates`, `refusalReasons`, `installRefusals`,
+`denialRules`, `defaultElementPlacement`, and JSON Schemas for the manifest, actions, outcomes,
+roster entries, the install block and purge results — so an agent learns every door AND every
+closed enum from one read.
 
 **Manifest fields the behavioral contract adds** (all optional; absence reproduces the previous
 semantics exactly): `dependencies` (a `Record<PluginId, { type: "required"|"optional"|"incompatible", reason? }>`),
@@ -593,6 +597,7 @@ stops at the first rule that fires:
 | 4     | `forbidden`       | the caller lacks one of the action's DECLARED caps (intersection at the door, not inside the handler)                                                                                                                                                                                   |
 | 5     | `invalid_args`    | the body fails the action's `input` schema                                                                                                                                                                                                                                              |
 | 6     | `refused`         | the handler refused on domain grounds, or the engine refused by CLASS — the message is a refusal class, optionally naming offenders (below)                                                                                                                                             |
+| 7     | `unavailable`     | the isolate that holds the handler is not running (crashed past `ISOLATE_CRASH_BUDGET`) or did not answer within `ISOLATE_DISPATCH_DEADLINE_MS` (ADR 0016 §6, §Isolated plugins below). Only a row carrying `install` can answer it; an in-realm door never does                        |
 
 Order matters: a caller must not learn that an action exists and is forbidden before the cheaper
 facts (existence, enablement) are settled, and a handler never sees unvalidated arguments. A
@@ -1098,6 +1103,138 @@ An unknown scheme or shape parses to `null` — nothing guesses. `GET /api/resol
 `ResolveResponse { uri, ref, exists, title }`, the round trip that turns a reference into
 something an agent can name; `/uri/<encoded>` is the browser deep link onto the same grammar.
 Grants, spotlights, and (from wave 2) event topics all name nodes this way.
+
+## Isolated plugins
+
+An INSTALLED plugin (ADR 0016, stage 1+2) is a stranger's code: its roster row carries `install`,
+its server half runs in its own OS process and its web half in its own dedicated `Worker`. Every
+first-party row — `builtin` and every `packages/plugins/*` package — keeps running in-realm; the
+runner is selected by the presence of `install` on the row, never by a third `source` value. Both
+boundaries are message boundaries, so both frame sets are `@manifold/protocol` schemas
+(`packages/protocol/src/isolate.ts`) and both are published under `isolateContract` at
+`GET /api/protocol` beside the closed component vocabulary, the served ctx methods, the runner's
+numbers and the artifact shape — an out-of-tree author reads the whole target from one document.
+
+**The artifact (`PluginBundleSchema`).** One JSON file, `<id>.manifold-plugin.json`, at most
+`ISOLATE_MAX_ARTIFACT_BYTES` (16 MiB):
+
+```json
+{ "format": 1,
+  "manifest": { ...PluginManifest, "entry": { "server": true, "web": "web.js" } },
+  "files": { "server.js": "<base64>", "web.js": "<base64>" } }
+```
+
+`format` is the literal `1` and nothing else parses. `manifest.entry` is REQUIRED here (optional
+on an in-tree manifest, which has no code to point at) and must name at least one half:
+`entry.server === true` means `files["server.js"]` is the server guest module (the name is fixed,
+`PLUGIN_BUNDLE_SERVER_FILE`), `entry.web` names the key of the worker module. Every half named
+must be a member of `files`, refused at the schema naming the half. Member names are FLAT
+(`PLUGIN_BUNDLE_FILE_PATTERN`: one segment, no leading dot, no slash) because the files are
+extracted beside the artifact; a name that could climb is refused before any extractor sees it.
+Values are base64 of the file's bytes. **`sha256` is over the artifact's exact bytes**, never over
+the parsed form: the install door hashes what it read and refuses `hash_mismatch` unless it equals
+the pin the installer gave; at every boot the stored file is re-hashed and a mismatch puts the row
+in `lifecycle: "enable_failed"` with `install.refusal: "hash_mismatch"`, never loaded (R8,
+fail-closed). The bundle is self-contained — the kit's `pack` inlines both guest runtimes — so the
+loader is one `Bun.spawn(["bun", "--smol", "<dir>/server.js"], { ipc, serialization: "json" })`
+and one `new Worker("/api/plugins/<id>/web.js", { type: "module" })`.
+
+**The install grant (ADR 0016 §5, R4 = option B).** `install.grantedCaps` is what the installer
+consented to. It defaults to the manifest's declared `capabilities` minus the high-risk set
+`{ "*", "tokens:mint", "plugins:manage" }`, restricted to caps that exist in `CAPS`; the install
+door's `grant` argument may widen it explicitly, and only root may install at all. Enforcement is
+one extra intersection at rung 4: for a row carrying `install`, every cap the action declares must
+be in `grantedCaps` or the dispatch is `forbidden` with message `"<cap> not granted to plugin"` —
+checked BEFORE the caller's own caps, so the message names the plugin's grant, not the caller.
+Narrowing a grant later is allowed; its consequence is that same `forbidden`, already a named,
+displayable outcome. `install` also carries `sha256`, `source` (the url or path as given),
+`installedBy` and `installedAt`, so an installed row is attributed exactly as a toggle is.
+
+**Install refusals** are a closed class list, `PLUGIN_INSTALL_REFUSALS`, answered as
+`{ refused: "<class>: detail" }` from `engine.plugins.install` / `uninstall` (class first, so a
+client switches on the prefix): `artifact_unreadable`, `artifact_invalid` (wrong format, a
+manifest that fails the schema, or an assembly refusal such as a duplicate id caught at install
+time and rolled back rather than raised at boot), `hash_mismatch`, `already_installed` (same id,
+different hash, no `replace: true`), `not_installed`, `namespace_reserved` (`engine.` / `core.`),
+`still_enabled` (uninstall and replace both require the row disabled first), `no_entry`.
+Uninstall removes the row and the files and does NOT touch plugin storage — that is `purge`, a
+different verb.
+
+**Server isolate — supervisor ↔ child (`IsolateHostFrameSchema` / `IsolateChildFrameSchema`).**
+JSON frames over `Bun.spawn` ipc, discriminated on `t`:
+
+| Direction  | `t`           | Carries                                                                                                                                                                    |
+| ---------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| host→child | `load`        | `pluginId`, `manifest`, `dir` — the first frame; the child already runs from `dir`                                                                                         |
+| host→child | `dispatch`    | `id`, `action` (LOCAL name), `args`, `ctx: { principal, caps, isRoot, containerScope, now }` — the caller's authority captured per id                                      |
+| host→child | `hook`        | `id`, `hook: "onEnable" \| "onDisable" \| "onAssemblyChanged"`, `delta?: { enabled, disabled }`                                                                            |
+| host→child | `reply`       | `id`, `ok: true, result` or `ok: false, error` — the answer to a child's `call`                                                                                            |
+| host→child | `shutdown`    | orderly exit; also what idle eviction sends                                                                                                                                |
+| child→host | `loaded`      | `actions: ActionSummary[]` (input/result as JSON Schema from the child's own zod), `hooks: { onEnable, onDisable, onAssemblyChanged }` booleans                            |
+| child→host | `load_failed` | `error`                                                                                                                                                                    |
+| child→host | `dispatched`  | `id`, `outcome: { ok: true, result, emits: { ref, kind, payload }[] } \| { ok: false, rule: "invalid_args" \| "refused", message }` — the only two rungs a child may grade |
+| child→host | `hooked`      | `id`, `ok`, `error?`                                                                                                                                                       |
+| child→host | `call`        | `id`, `method: IsolateCtxMethod`, `args: unknown[]`                                                                                                                        |
+
+The ctx slices served over `call` are exactly `ISOLATE_CTX_METHODS`: `storage.get` / `set` /
+`delete` / `keys` (namespaced by plugin id), `auth.allows` (graded as the dispatching principal,
+found by the dispatch id), `outsideScope`, `newId`, `machines.isOnline`, `placement.place`,
+`host.roster`, `host.enabled`. Every other `ActionCtx` member is NOT served in stage 1; the guest
+runtime raises `IsolateSliceUnavailable(method)` and answers `{ ok: false, rule: "refused" }`, so
+the absence is a named refusal at the door. Arguments are validated in the child against the
+action's own zod `input` (the schema lives where the code lives; the roster still publishes the
+JSON Schema the child reported), which is why the supervisor's `ServerPluginDef` carries
+`z.unknown()` inputs and a proxy handler that throws `IsolateDenial { rule: "invalid_args" |
+"unavailable" }` for the ladder to trace through the ordinary `refuse` path. Emissions a handler
+stages in the child ride back in `dispatched.emits` and are re-staged through the host's own
+`ctx.emit`, so the ledger settles before any subscriber hears.
+
+**Deadlines, the crash budget, eviction (ADR 0016 §6).** A lifecycle hook is bounded at the
+engine's `LIFECYCLE_TIMEOUT_MS` (2 s); a dispatch at `ISOLATE_DISPATCH_DEADLINE_MS` (10 s), past
+which the answer is the ladder's last rung, `unavailable` — "isolate deadline expired" — traced
+like every other rung. `ISOLATE_CRASH_BUDGET` is `{ count: 3, windowMs: 300_000 }`: three exits in
+five minutes and the supervisor stops respawning, the row reads `lifecycle: "isolate_crashed"`
+and every dispatch answers `unavailable` until an operator toggles it (`isolate_starting` is the
+row while a child is being spawned). After `ISOLATE_IDLE_EVICT_MS` (10 min) without a dispatch
+the child is sent `shutdown` and the next dispatch respawns it (`isolate_evicted`). Log events:
+`isolate_spawned`, `isolate_exited`, `isolate_crashed`, `isolate_evicted`, `isolate_call_failed`,
+`plugin_installed`, `plugin_uninstalled`, `web_isolate_fault`.
+
+**Web isolate — page ↔ Worker (`WebIsolateHostFrameSchema` / `WebIsolateWorkerFrameSchema`).**
+`postMessage` frames, discriminated on `t`:
+
+| Direction   | `t`       | Carries                                                                                                                             |
+| ----------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| page→worker | `init`    | `pluginId`, `principal`, `caps`, `containerId` — the viewer as data; never the token                                                |
+| page→worker | `mount`   | `instance`, `panel` (local panel id) — one tile of one panel                                                                        |
+| page→worker | `unmount` | `instance`                                                                                                                          |
+| page→worker | `event`   | `instance`, `event`, `payload?` — a named callback firing (`UiEventSchema`)                                                         |
+| page→worker | `reply`   | `id`, `ok: true, result` or `ok: false, error`                                                                                      |
+| worker→page | `ready`   | `panels: string[]` — the local panel ids the guest serves                                                                           |
+| worker→page | `render`  | `instance`, `tree: UiNode` — the whole tree, replaced wholesale; the host diffs                                                     |
+| worker→page | `call`    | `id`, `method: WebHostMethod`, `args: unknown[]`                                                                                    |
+| worker→page | `fault`   | `instance?`, `error` — the panel shows `empty` with tone `danger`; per-session, the roster is untouched, logged `web_isolate_fault` |
+
+`WEB_HOST_METHODS` — `action`, `place`, `selfCaps`, `machines`, `resolve`, `navigate`,
+`openTerminal`, `sendTerminalInput`, `terminalsByContainer` — have the semantics of
+`SessionHandle`'s methods of those names and are served from the panel's REAL `HostServices`,
+which is how the worker calls the door with the caller's authority without ever holding
+`HostServices.token` (ADR 0016 §3). The worker is terminated on disable.
+
+**The component vocabulary (`UiNodeSchema`, ADR 0016 §3, R2).** An isolated web half never touches
+the DOM by any route; it renders by sending a tree of `UI_NODE_TYPES` — `box`, `heading`, `text`,
+`code`, `badge`, `divider`, `spinner`, `button`, `select`, `input`, `toggle`, `list`, `empty` —
+with tones from `UI_TONES` (`neutral`, `accent`, `muted`, `danger`, `success`; meaning, never
+colour). Every node is a strict object (a stray `style`, `className` or `onClick` is a refusal),
+a kind the host does not know is refused rather than rendered as "unknown", and a tree is refused
+past `MAX_UI_DEPTH` (32) or `MAX_UI_NODES` (2000) rather than clipped. `button.action` is the
+FULL action name the button ultimately dispatches and is painted verbatim as `data-action`, so a
+stranger's affordance names its door exactly as a first-party one does (S4). The engine renders
+every kind into one CSS family it owns (`mf-vocab`); no plugin CSS ever crosses.
+
+**`GET /api/plugins/:id/web.js`.** Serves `files[entry.web]` of an INSTALLED, ENABLED plugin
+with `Content-Type: text/javascript`, `Cache-Control: no-store` and `ETag` equal to the install's
+`sha256`; 404 otherwise (not installed, disabled, or no web half). Same auth as `GET /api/plugins`.
 
 ## WS /ws/session — session channel (JSON text frames)
 
