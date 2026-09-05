@@ -504,8 +504,9 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.gateway.open("tab", socket);
     for (let index = 0; index < MAX_SESSION_CHANNELS_PER_CONNECTION; index += 1) {
       joinChannel(fixture, "tab", socket, { ch: `c${index}` });
+      // This join's frames have been validated; do not re-decode their growing history.
+      socket.clear();
     }
-    socket.clear();
 
     send(fixture.gateway, "tab", "overflow", {
       type: "join",
