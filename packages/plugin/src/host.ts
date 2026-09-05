@@ -15,6 +15,10 @@ import type {
   PluginRoster,
   ResolveResponse,
   ServerEvent,
+  ServerMessageBody,
+  TerminalEnv,
+  TerminalInfo,
+  TerminalProgram,
   TerminalSummary,
   TileLayout,
 } from "@manifold/protocol";
@@ -41,6 +45,13 @@ export type PlaceOutcome =
  * its timer for one has to know when the trade is off (ADR 0012 §5: catch-up is reading state).
  */
 export type SessionStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed";
+
+/**
+ * One server frame body, by type — the shape the SDK hands its own listeners, restated over the
+ * protocol union so a terminal subscription on {@link SessionHandle} is typed without the
+ * engine importing the SDK.
+ */
+type ServerMessageOf<T extends ServerMessageBody["type"]> = Extract<ServerMessageBody, { type: T }>;
 
 /**
  * The terminal ref a plugin is handed. It is deliberately the SDK's own ref described
@@ -112,6 +123,91 @@ export interface SessionHandle {
   readonly status: SessionStatus;
   /** Transitions of {@link SessionHandle.status}; returns the release. */
   on(event: "status", fn: (status: SessionStatus) => void): () => void;
+  // terminals
+  /*
+    THE TERMINAL VERBS (issue #196). A terminal is channel traffic — its birth is a round trip
+    to a machine, its bytes are a stream — so these are the session frames the SDK sends,
+    restated here so a plugin reaches a terminal through the handle it was given and never by
+    minting a client from a bearer (ADR 0016 §3 withdraws the bearer from an isolated plugin;
+    what is on this interface is what its RPC carries).
+
+    Which ROOM a verb rides is the host's to answer, not the caller's. A terminal is born in
+    the room the frame goes out on, and its input, geometry and lease are judged in its HOME
+    room — so the shell routes every MUTATION below through the occupant pipe of the container
+    it names: `openTerminal` through the mounted view of `HostServices.containerId`, the
+    terminal-keyed verbs through the mounted view whose terminal table holds the id. No such
+    view mounted is a thrown `Error` naming the container or the terminal, never a frame the
+    server refuses later. The reads — the table, attach/detach and the subscriptions — are
+    served by whichever channel the handle already watches the routed room on.
+   */
+  /**
+   * The routed room's terminal table, live: every terminal whose HOME is that room, keyed by
+   * id. `init` carries it and `terminals_changed` announces a change; a plugin reads a
+   * terminal's geometry, its controller and whether it has exited from here.
+   */
+  readonly terminals: ReadonlyMap<string, TerminalInfo>;
+  /**
+   * Opens a terminal and resolves with its record once the server confirms.
+   *
+   * A terminal is born into a COMPOSITION of its own, and `terminal.containerId` names it.
+   * Under the default placement the caller is a canvas, so `elementId` is both the correlation
+   * token and the id the caller authors its own element under — a `portal` onto
+   * `terminal.containerId`. `placement: "tile"` is how a TILED container births one: the
+   * server writes the tile leaf itself and the caller authors nothing.
+   *
+   * `program` names what the PTY execs instead of the machine's shell, and `env` is merged
+   * under the fixed `MANIFOLD_*` keys (issue #192). Both are judged at `core.terminals.open`
+   * before any create: a policy denial rejects with the door's message, a machine whose agent
+   * predates programs rejects with `unsupported`, and a program the machine cannot exec is a
+   * `conflict`. `timeoutMs` bounds the wait for the confirmation (default 15 s).
+   */
+  openTerminal(opts: {
+    readonly elementId: string;
+    readonly cols: number;
+    readonly rows: number;
+    readonly cwd?: string;
+    readonly machineId?: string;
+    readonly placement?: "tile";
+    readonly program?: TerminalProgram;
+    readonly env?: TerminalEnv;
+    readonly timeoutMs?: number;
+  }): Promise<TerminalInfo>;
+  /**
+   * Declares a view on a terminal: the server answers with a fresh `terminal_snapshot` and
+   * every `terminal_output` after it, gap-free (CONTRACTS.md §attach). Refcounted per handle,
+   * so two views of one terminal share one wire subscription and the last `detachTerminal`
+   * is the one that releases it; the handle re-attaches by itself after a reconnect.
+   */
+  attachTerminal(terminalId: string): void;
+  /** Releases one view; the wire subscription ends with the last one. */
+  detachTerminal(terminalId: string): void;
+  /**
+   * Types into a terminal. Only the controller principal's input is forwarded; anyone else
+   * hears an `error` frame with code `not_controller` and `ref` naming the terminal.
+   */
+  sendTerminalInput(terminalId: string, data: string | Uint8Array): void;
+  /** Resizes a terminal (controller only); the new geometry reaches every viewer as a `resized` event. */
+  resizeTerminal(terminalId: string, cols: number, rows: number): void;
+  /** Takes the controller lease (`core.terminals.take` decides); announced as `controller_changed`. */
+  takeTerminal(terminalId: string): void;
+  /** Kills the PTY (`core.terminals.kill` decides); its exit reaches every viewer as an `exited` event. */
+  killTerminal(terminalId: string): void;
+  /** The terminal table changed: a birth, an exit, a rename, a lease transfer. */
+  on(event: "terminals_changed", fn: () => void): () => void;
+  /** A complete screen for an attached terminal, seq-anchored: outputs with `seq` above it follow. */
+  on(
+    event: "terminal_snapshot",
+    fn: (message: ServerMessageOf<"terminal_snapshot">) => void,
+  ): () => void;
+  /** One chunk of an attached terminal's output, base64, in `seq` order. */
+  on(
+    event: "terminal_output",
+    fn: (message: ServerMessageOf<"terminal_output">) => void,
+  ): () => void;
+  /** A terminal's lifecycle: `opened`, `exited`, `controller_changed`, `resized`, `parked`, `renamed`. */
+  on(event: "terminal_event", fn: (message: ServerMessageOf<"terminal_event">) => void): () => void;
+  /** A refused frame, with `ref` naming the terminal or the open it answers. */
+  on(event: "error", fn: (message: ServerMessageOf<"error">) => void): () => void;
 }
 
 /**
@@ -362,6 +458,12 @@ export interface HostServices {
    * opens with. Plugins are trusted in-process code (ADR 0010 D1), so handing them the same
    * bearer the engine dials with is a contract rather than a leak; what it may do with it is
    * decided at the doors, per request, exactly as for any other principal.
+   *
+   * THAT IS ITS ONLY USE. A panel, a section, an overlay or an element renderer never builds
+   * a client from it: a terminal is reached through {@link SessionHandle}'s terminal verbs
+   * on `client` (issue #196), and everything else through the doors on `client` too. ADR
+   * 0016 §3 withdraws this member from an isolated plugin altogether, so code that mints a
+   * client from it is code that stops working the day the isolation runner lands.
    */
   readonly token: string;
   /**

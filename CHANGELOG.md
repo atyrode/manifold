@@ -12,6 +12,7 @@
 
 - The plugin storage docs now give advance notice that `ctx.storage` becomes promise-returning for every plugin with ADR 0016 stage 1, and state the authoring idiom that makes that migration a type change. (#187, #194)
 - `ctx.storage` is promise-returning for every plugin, first-party included, as ADR 0016 §4 ratified: every read and write is awaited, a refused key or value rejects instead of throwing, migrations may be `async`, and the server binds its socket only after the plugin host has booted and run every pending migration. (#187)
+- A plugin reaches terminals through the handle it is given: `host.client` now carries `openTerminal` (program and env included), `attachTerminal`/`detachTerminal`, `sendTerminalInput`, `resizeTerminal`, `takeTerminal`, `killTerminal`, the live terminal table and the snapshot/output/event/error subscriptions, so a panel can open a terminal in the container it is looking at and type into it without minting a client from `host.token`. The host routes each mutation through the mounted container view's own room pipe — a spectator may not send one — and refuses by name when no view of that container is on screen. The plugin authoring guide documents the surface. (#196)
 
 ### Fixed
 
