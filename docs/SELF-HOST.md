@@ -119,6 +119,15 @@ Everything durable is in the `manifold-data` named volume, mounted at `/data`:
 - `owner.key` (mode 600) — the root bootstrap secret, generated on first boot unless
   `MANIFOLD_OWNER_KEY` pins it.
 - `agent.token` / `agent.pid` / `agent.lock` — respawn handles of the in-container agent.
+- `plugins/<id>/<sha256>.manifold-plugin.json` — the bundle an installed plugin was admitted
+  from, beside `plugins/<id>/<sha256>/`, its extracted files (the child process runs
+  `server.js` from there). The bundle is the artifact of record: every boot re-hashes it against
+  the pin in `manifold.db` and re-extracts it, so an edited file beside it is overwritten, and a
+  bundle that no longer matches is refused on the roster rather than loaded (ADR 0016, R8).
+  Uninstalling deletes both; the plugin's stored data stays in `manifold.db` until it is purged.
+- `plugin-uploads/` — the drop box: the only place `engine.plugins.install` accepts a bare path
+  from (`MANIFOLD_PLUGIN_DEV_PATHS=1` lifts that to any path on the host, for development
+  only). Create it yourself; copy a bundle in, then install it by path and hash.
 
 Presence, cursor traffic, and terminal bytes are never persisted (by design).
 

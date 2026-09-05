@@ -396,6 +396,7 @@ argue an earlier denial back to allow:
 | 4   | `forbidden`       | The caller lacks one of the action's declared caps **at the node it is asking about** — its own container for a scoped token, the workspace root for an unscoped one (ADR 0011).                                                                        |
 | 5   | `invalid_args`    | The payload fails the action's `input` schema.                                                                                                                                                                                                          |
 | 6   | `refused`         | The handler returned `{ refused }`, or the engine refused by class — e.g. `essential`, `builtin`, `still_enabled`.                                                                                                                                      |
+| 7   | `unavailable`     | The door's plugin is INSTALLED (ADR 0016) and the child process holding its handler is not running — crashed past `ISOLATE_CRASH_BUDGET`, or silent past `ISOLATE_DISPATCH_DEADLINE_MS`. An in-realm door never answers it.                           |
 
 Rule 3 is the same precedent as every workspace route, and the permission waterfall
 (`docs/decisions/0011-permission-waterfall.md`) left it exactly where it was: a scoped token
@@ -1098,6 +1099,52 @@ Read the rows the other way round and each one names a squat it refuses:
 
 `GET /api/protocol` publishes both prefixes (`engineNamespace`, `coreNamespace`), so an author
 choosing an id learns which two are taken without reading this file.
+
+### Installing a plugin
+
+Everything above is the in-tree channel: a package in this repository, registered by a maintainer.
+A plugin that is NOT compiled into the build is INSTALLED instead (ADR 0016 §8 stage 2), from a
+bundle — one JSON file, `<id>.manifold-plugin.json`, whose shape and authoring kit §Isolated
+target describes. Its roster row is `source: "plugin"` like any assembled row, and carries one
+block no first-party row has: `install`, what the installer consented to.
+
+Two doors on the engine's own row, and both are **root only** (`caps: ["*"]`): `plugins:manage`
+lets a principal decide which of the shipped plugins are on; installing admits code nobody in this
+build wrote, and a manager token that could do that would be `*` by another name.
+
+```
+engine.plugins.install   { source, sha256, grant?, replace? }  → { id, version, grantedCaps }
+engine.plugins.uninstall { id }                                → {}
+```
+
+- **`source`** is an `https://` URL (fetched with a 30 s bound, at most
+  `ISOLATE_MAX_ARTIFACT_BYTES`), or an absolute path under `<data>/plugin-uploads/` — the
+  operator's drop box. `MANIFOLD_PLUGIN_DEV_PATHS=1` accepts a path anywhere on the host, for
+  development only.
+- **`sha256`** is the hash of the bundle's EXACT bytes, and it is what you are consenting to:
+  nothing is written unless the bytes read hash to it (`hash_mismatch`), and every boot re-hashes
+  the stored bundle — a bundle that no longer matches is refused by name on its row
+  (`lifecycle: "enable_failed"`, `install.refusal: "hash_mismatch"`) and nothing from it is loaded.
+- **`grant`** widens the DEFAULT grant, which is the manifest's declared `capabilities` minus
+  `*`, `tokens:mint` and `plugins:manage` — a stranger's plugin never holds those unless an
+  installer names them. The grant is published on the row (`install.grantedCaps`) and enforced at
+  rung 4 BEFORE the caller's own caps: a door needing a cap the installer withheld is `forbidden`
+  with `<cap> not granted to plugin <id>`, whoever asked.
+- **`replace: true`** upgrades an id already installed at another hash; like `uninstall`, it needs
+  the row switched OFF first (`still_enabled`).
+
+Refusals answer `{ refused: "<class>: detail" }` with a class from `PLUGIN_INSTALL_REFUSALS`
+(`artifact_unreadable`, `artifact_invalid`, `hash_mismatch`, `already_installed`,
+`not_installed`, `namespace_reserved`, `still_enabled`, `no_entry`), class first so a client
+switches on the prefix. An assembly refusal — a duplicate id or action name, a `core.` squat — is
+caught at the door as `artifact_invalid` naming the problem and rolled back (files, row, child), so
+an install can never be the reason a server does not boot. Uninstall removes the row and the files
+and leaves the plugin's storage exactly where it was: that is `purge`, a different verb, and a
+reinstall of the same id finds its data waiting.
+
+The plugin manager's **Installed** tab is one UI over these two doors — a form carrying
+`data-action="engine.plugins.install"`, one row per installed bundle with its hash, grant and
+lifecycle, and an uninstall lever offered only on a row that is off.
 
 ### The web registration channels
 
