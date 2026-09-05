@@ -1,14 +1,19 @@
 import "./styles.css";
 import {
+  ENGINE_INSTALL_ACTION,
   ENGINE_PURGE_ACTION,
   ENGINE_SET_ENABLED_ACTION,
   ENGINE_SET_SETTING_ACTION,
+  ENGINE_UNINSTALL_ACTION,
+  PluginInstallResultSchema,
   type ComposedSetting,
   type SectionProps,
 } from "@manifold/plugin";
 import {
+  CapSchema,
   PLUGIN_PURGE_TARGETS,
   PluginPurgeResultSchema,
+  type Cap,
   type PluginPurgeResult,
   type PluginPurgeTarget,
   type PluginRefusalReason,
@@ -61,10 +66,17 @@ const LOCK_HINTS: Partial<Record<PluginRefusalReason, string>> = {
   incompatible_dependency: "Shares the workspace with a plugin that declares it incompatible",
 };
 
-/** A failed lifecycle hook is reported, never hidden: the transition happened regardless. */
+/**
+ * A failed lifecycle hook is reported, never hidden: the transition happened regardless. The
+ * two `isolate_` states are an INSTALLED plugin's child process as the runner sees it (ADR
+ * 0016 §6) — a degraded row every principal reads, rather than a log line somebody greps.
+ */
 const LIFECYCLE_LABELS: Record<string, string> = {
   enable_failed: "Its startup hook failed — the plugin is on, but it may not be ready",
   disable_failed: "Its shutdown hook failed — the plugin is off regardless",
+  isolate_starting: "Its process is starting — its doors answer once it reports in",
+  isolate_crashed:
+    "Its process crashed past the restart budget — its doors answer unavailable until it is switched off and on",
 };
 
 /**
@@ -97,13 +109,24 @@ function lockHint(entry: PluginRosterEntry): string | null {
   return LOCK_HINTS[reason] ?? reason;
 }
 
-/** The two views the modal holds. `installed` is the ledger; `browse` is the deferral. */
-const MANAGER_TABS = ["installed", "browse"] as const;
+/**
+ * The two views the modal holds. `composed` is the ledger of everything this workspace
+ * assembled — engine doors, core seats, installed plugins alike — with its toggles; `installed`
+ * is the door onto a stranger's code and the bundles that walked through it (ADR 0016 §8).
+ */
+const MANAGER_TABS = ["composed", "installed"] as const;
 type ManagerTab = (typeof MANAGER_TABS)[number];
 const TAB_LABELS: Readonly<Record<ManagerTab, string>> = {
+  composed: "Composed",
   installed: "Installed",
-  browse: "Browse",
 };
+
+/** What the install form hands the door, before the door grades it. */
+interface InstallDraft {
+  readonly source: string;
+  readonly sha256: string;
+  readonly grant: readonly Cap[];
+}
 
 /**
  * WHAT DEPENDS ON WHAT, in both directions and in words rather than a graph.
@@ -249,43 +272,215 @@ function SettingsPane({
 }
 
 /**
- * THE BROWSE TAB, which is a named absence rather than an empty panel.
+ * THE INSTALLED TAB (ADR 0016 §8 stage 2): a form onto `engine.plugins.install`, and one row
+ * per bundle that walked through it, with its uninstall lever.
  *
- * Installing a plugin that is not compiled into this build is a RATIFIED roadmap wave —
- * "Marketplace and dynamic plugin distribution" (AXIOMS.md §Roadmap) — gated behind a dated
- * isolation ADR that must ratify a runner first, because a marketplace is the moment code
- * manifold did not author runs in-process. That ordering is a hard prerequisite, not a
- * preference, so this tab cannot ship a store and must not pretend the question was never
- * asked: a deferral has to be visible IN THE PRODUCT, as a placeholder that says what is
- * missing, never only in prose an operator would have to go and find (AGENTS.md
- * §Conventions). A reader who opens a plugin manager and finds a blank second tab learns
- * that the product is broken; a reader who finds this learns what manifold has decided.
+ * The form asks for exactly what the door asks for — where the artifact is, and the hash of its
+ * bytes — because consent to run a stranger's code is consent to THESE bytes, and a form that
+ * fetched first and asked later would have already decided. The grant is optional and explicit:
+ * the door's default withholds the high-risk caps, so a reader who types nothing gets the safe
+ * answer and a reader who widens it has said so in writing.
  *
- * It names the seams too, because they are the reason this is a wave rather than a wish: the
- * manifest's `entry { web?, server? }` and the roster's `source` field are already reserved
- * for it, and the roster already distinguishes a builtin door from an assembled plugin.
+ * The rows are the roster's own `install` blocks — the hash, the source as the installer spelled
+ * it, the granted caps, who and when — never a second list: what this tab shows is what every
+ * principal and every agent reads at `GET /api/plugins`. Uninstall is offered only on a row
+ * that is OFF, for the reason purge is (the door refuses `still_enabled`, and §5 forbids a
+ * lever that always fails), and it says out loud that stored data is kept.
  */
-function BrowsePanel(): ReactElement {
+function InstalledPanel({
+  roster,
+  canInstall,
+  busy,
+  failure,
+  notice,
+  onInstall,
+  onUninstall,
+}: {
+  readonly roster: readonly PluginRosterEntry[];
+  readonly canInstall: boolean;
+  /** The id an uninstall is in flight for, or the install action while an install is. */
+  readonly busy: string | null;
+  readonly failure: string | null;
+  readonly notice: string | null;
+  readonly onInstall: (draft: InstallDraft) => void;
+  readonly onUninstall: (id: string) => void;
+}): ReactElement {
+  const [source, setSource] = useState("");
+  const [sha256, setSha256] = useState("");
+  const [grant, setGrant] = useState("");
+  const [grantProblem, setGrantProblem] = useState<string | null>(null);
+  const installed = roster.filter((entry) => entry.install !== undefined);
+  const installing = busy === ENGINE_INSTALL_ACTION;
+
+  const submit = (): void => {
+    const words = grant
+      .split(",")
+      .map((word) => word.trim())
+      .filter((word) => word.length > 0);
+    const caps = CapSchema.array().safeParse(words);
+    if (!caps.success) {
+      setGrantProblem(
+        `Not a capability: ${words.filter((word) => !CapSchema.safeParse(word).success).join(", ")}`,
+      );
+      return;
+    }
+    setGrantProblem(null);
+    onInstall({ source: source.trim(), sha256: sha256.trim().toLowerCase(), grant: caps.data });
+  };
+
   return (
-    <Stack className="plugin-manager-browse" gap="0.6rem" data-testid="plugin-manager-browse">
-      <h3 className="plugin-manager-browse-title">Marketplace and dynamic plugin distribution</h3>
-      <p>
-        Not built yet, and named rather than hidden: installing plugin code that is not compiled
-        into this build is a ratified roadmap wave (<code>AXIOMS.md</code> §Roadmap), not an
-        oversight in this screen.
-      </p>
-      <p>
-        What is missing is the isolation verdict it waits on. Every plugin in this workspace is
-        first-party code compiled into the build, so a store is the moment code manifold did not
-        author starts running in-process; a dated ADR has to ratify a runner for it first, and that
-        ordering is a hard prerequisite. The seams are already reserved — a manifest may declare{" "}
-        <code>entry</code>, and every row in the Installed tab already publishes the{" "}
-        <code>source</code> a downloaded plugin would arrive under.
-      </p>
-      <p className="plugin-manager-browse-meanwhile">
-        Until that wave lands, the Installed tab is the whole list: what this workspace composed,
-        and every door you can open on it.
-      </p>
+    <Stack className="plugin-manager-installs" gap="0.6rem" data-testid="plugin-manager-installs">
+      <form
+        className="plugin-manager-install"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        <label className="plugin-manager-install-field">
+          <span>Source — an https:// URL, or a path under the server's plugin-uploads box</span>
+          <input
+            className="plugin-manager-search"
+            type="text"
+            value={source}
+            placeholder="https://example.org/vendor.sample.manifold-plugin.json"
+            spellCheck={false}
+            disabled={!canInstall || installing}
+            data-testid="plugin-manager-install-source"
+            onChange={(event) => setSource(event.target.value)}
+          />
+        </label>
+        <label className="plugin-manager-install-field">
+          <span>SHA-256 of the bundle's exact bytes — what you are consenting to run</span>
+          <input
+            className="plugin-manager-search"
+            type="text"
+            value={sha256}
+            placeholder="64 hex characters"
+            spellCheck={false}
+            disabled={!canInstall || installing}
+            data-testid="plugin-manager-install-sha256"
+            onChange={(event) => setSha256(event.target.value)}
+          />
+        </label>
+        <label className="plugin-manager-install-field">
+          <span>
+            Grant — optional, comma-separated capabilities to add to the default (which withholds *,
+            tokens:mint and plugins:manage)
+          </span>
+          <input
+            className="plugin-manager-search"
+            type="text"
+            value={grant}
+            placeholder="containers:write, terminals:spawn"
+            spellCheck={false}
+            disabled={!canInstall || installing}
+            data-testid="plugin-manager-install-grant"
+            onChange={(event) => setGrant(event.target.value)}
+          />
+        </label>
+        {grantProblem === null ? null : (
+          <p className="plugin-manager-error" role="alert">
+            {grantProblem}
+          </p>
+        )}
+        <button
+          className="plugin-manager-filter"
+          type="submit"
+          data-action={ENGINE_INSTALL_ACTION}
+          data-testid="plugin-manager-install"
+          title={
+            canInstall
+              ? "Install this bundle for everyone in the workspace"
+              : "Installing a plugin needs the root capability"
+          }
+          disabled={
+            !canInstall || installing || source.trim().length === 0 || sha256.trim().length === 0
+          }
+        >
+          {installing ? "Installing…" : "Install"}
+        </button>
+      </form>
+      {canInstall ? null : (
+        <p className="sidebar-muted">
+          Read-only: installing and uninstalling a plugin needs the root capability, because a
+          bundle is code nobody in this build wrote.
+        </p>
+      )}
+      {failure === null ? null : (
+        <p className="plugin-manager-error" role="alert">
+          {failure}
+        </p>
+      )}
+      {notice === null ? null : (
+        <p
+          className="plugin-manager-notice"
+          data-testid="plugin-manager-install-notice"
+          role="status"
+        >
+          {notice}
+        </p>
+      )}
+      {installed.length === 0 ? (
+        <span className="sidebar-section-empty">Nothing installed</span>
+      ) : (
+        installed.map((entry) => {
+          const { manifest } = entry;
+          const install = entry.install;
+          if (install === undefined) return null;
+          const lifecycle =
+            entry.lifecycle === undefined ? null : LIFECYCLE_LABELS[entry.lifecycle];
+          const removable = canInstall && !entry.enabled;
+          return (
+            <div
+              className={`plugin-manager-row${entry.enabled ? "" : " is-disabled"}`}
+              data-plugin={manifest.id}
+              data-source={entry.source}
+              key={manifest.id}
+            >
+              <div className="plugin-manager-row-main">
+                <span className="plugin-manager-label">
+                  <strong title={manifest.description}>{manifest.title}</strong>
+                  <small title={install.sha256}>
+                    {manifest.id} · {manifest.version} · {install.sha256.slice(0, 12)}
+                  </small>
+                  <small title={install.source}>
+                    Granted{" "}
+                    {install.grantedCaps.length === 0 ? "nothing" : install.grantedCaps.join(", ")}{" "}
+                    · installed by {install.installedBy}
+                  </small>
+                  {lifecycle === null ? null : (
+                    <small className="plugin-manager-lifecycle" role="status">
+                      {lifecycle}
+                    </small>
+                  )}
+                  {install.refusal === undefined ? null : (
+                    <small className="plugin-manager-purges" role="status">
+                      Refused at boot: {install.refusal} — nothing from its bundle was loaded
+                    </small>
+                  )}
+                </span>
+                <button
+                  className="plugin-manager-purge"
+                  type="button"
+                  aria-label={`Uninstall ${manifest.title}`}
+                  title={
+                    entry.enabled
+                      ? "Switch it off first: uninstall is refused while a plugin is on"
+                      : `Uninstall ${manifest.title} — its stored data is kept; purge destroys it`
+                  }
+                  data-action={ENGINE_UNINSTALL_ACTION}
+                  data-testid="plugin-manager-uninstall"
+                  disabled={!removable || busy === manifest.id}
+                  onClick={() => onUninstall(manifest.id)}
+                >
+                  Uninstall
+                </button>
+              </div>
+            </div>
+          );
+        })
+      )}
     </Stack>
   );
 }
@@ -302,13 +497,20 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
   const settings = assembly.settings;
   const caps = host.client.selfCaps();
   const canManage = caps.includes("*") || caps.includes("plugins:manage");
+  /** Installing admits a stranger's code: root only, the door's own rule (`caps: ["*"]`). */
+  const canInstall = caps.includes("*");
   const { sidebarOpen } = useWorkspaceShell();
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<ManagerTab>("installed");
+  const [tab, setTab] = useState<ManagerTab>("composed");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<PluginFilter>("all");
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  /**
+   * The last install or uninstall's own record, in words — kept at section level for the
+   * reason `removed` is: an uninstalled row is gone from the roster by the time it renders.
+   */
+  const [installNotice, setInstallNotice] = useState<string | null>(null);
   /**
    * Which row's purge is ARMED. A purge is destructive and workspace-global, so it is a
    * two-press act by construction: the first press says what will happen, the second does it.
@@ -388,7 +590,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
     setAnswered(requested);
     if (requested !== null && requested.kind === "plugin") {
       setOpen(true);
-      setTab("installed");
+      setTab("composed");
       jumpTo(requested.pluginId);
       setSettingsId(requested.pluginId);
     }
@@ -486,9 +688,61 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
     }
   };
 
+  /**
+   * THE INSTALL DOOR, and its inverse. Both are the engine's (`engine.plugins.install` /
+   * `uninstall`), both refuse by a named class the message carries first, and neither is
+   * followed by a local flip: an installed row arrives on the next `plugins` frame exactly as a
+   * toggled one does, because the roster is server-owned. The result is parsed rather than
+   * trusted, for the reason purge's is — a row that says "installed" but whose grant this tab
+   * could not read would be a consent nobody can audit.
+   */
+  const install = async (draft: InstallDraft): Promise<void> => {
+    setPendingId(ENGINE_INSTALL_ACTION);
+    setFailure(null);
+    setInstallNotice(null);
+    try {
+      const outcome = await host.client.action(ENGINE_INSTALL_ACTION, {
+        source: draft.source,
+        sha256: draft.sha256,
+        ...(draft.grant.length === 0 ? {} : { grant: [...draft.grant] }),
+      });
+      if (!outcome.ok) {
+        setFailure(outcome.denial.message);
+        return;
+      }
+      const record = PluginInstallResultSchema.safeParse(outcome.result);
+      if (record.success) {
+        const granted =
+          record.data.grantedCaps.length === 0 ? "nothing" : record.data.grantedCaps.join(", ");
+        setInstallNotice(`Installed ${record.data.id} ${record.data.version} — granted ${granted}`);
+      } else {
+        setFailure("The bundle was installed, but its install record could not be read");
+      }
+    } catch (reason: unknown) {
+      setFailure(reason instanceof Error ? reason.message : "Could not install the plugin");
+    } finally {
+      setPendingId(null);
+    }
+  };
+
+  const uninstall = async (id: string): Promise<void> => {
+    setPendingId(id);
+    setFailure(null);
+    setInstallNotice(null);
+    try {
+      const outcome = await host.client.action(ENGINE_UNINSTALL_ACTION, { id });
+      if (!outcome.ok) setFailure(outcome.denial.message);
+      else setInstallNotice(`Uninstalled ${id} — its stored data is kept; purge destroys it`);
+    } catch (reason: unknown) {
+      setFailure(reason instanceof Error ? reason.message : "Could not uninstall the plugin");
+    } finally {
+      setPendingId(null);
+    }
+  };
+
   const categories = pluginCatalog(roster, query, filter);
 
-  const installed = (
+  const composed = (
     <Stack className="plugin-manager" gap="0.35rem" data-testid="plugin-manager">
       <Cluster className="plugin-manager-controls" justify="space-between" gap="0.5rem">
         <input
@@ -763,7 +1017,19 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
                     role="tabpanel"
                     aria-labelledby={`plugin-manager-tab-${tab}`}
                   >
-                    {tab === "installed" ? installed : <BrowsePanel />}
+                    {tab === "composed" ? (
+                      composed
+                    ) : (
+                      <InstalledPanel
+                        roster={roster}
+                        canInstall={canInstall}
+                        busy={pendingId}
+                        failure={failure}
+                        notice={installNotice}
+                        onInstall={(draft) => void install(draft)}
+                        onUninstall={(id) => void uninstall(id)}
+                      />
+                    )}
                   </div>
                 </ScrollRegion>
               </section>

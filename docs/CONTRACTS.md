@@ -38,11 +38,11 @@ viewer uses. There is no relay and no second sync path (ADR 0014).
 
 ## Runtime contracts
 
-| Process | Entry                             | Env (defaults)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| server  | `bun packages/server/src/main.ts` | `MANIFOLD_PORT` (7777), `MANIFOLD_BIND` (127.0.0.1), `MANIFOLD_DATA_DIR` (./data), `MANIFOLD_OWNER_KEY` (generated → `<data>/owner.key`), `MANIFOLD_PUBLIC_URL` (http://localhost:PORT), `MANIFOLD_WEB_DIST` (packages/web/dist), `MANIFOLD_SPAWN_AGENT` ("1": auto-spawn local agent, "0" in tests), `MANIFOLD_MACHINE_NAME` ("local": name the auto-spawned agent enrolls under), `MANIFOLD_ANNOUNCE_KEY` ("0"; "1" embeds `#key=` in the boot announce — dev/test only), `MANIFOLD_REPLICA_BUCKET` (unset: no replication; set: the image's `infra/entrypoint.sh` restores `<data>/manifold.db` from the replica when absent and runs the command under `litestream replicate` — ADR 0022), `MANIFOLD_REPLICA_ENDPOINT` (S3 endpoint URL, required with the bucket; credentials are Litestream's own `LITESTREAM_ACCESS_KEY_ID`/`LITESTREAM_SECRET_ACCESS_KEY`) |
-| agent   | `bun packages/agent/src/main.ts`  | `MANIFOLD_SERVER_URL` (required), exactly one of `MANIFOLD_MACHINE_TOKEN` or `MANIFOLD_MACHINE_TOKEN_FILE` (file mode 0600; contents trimmed; the file form keeps the token out of unit files and process environment listings), `MANIFOLD_MACHINE_NAME` (hostname)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| web dev | `bun run --cwd packages/web dev`  | vite :5173, proxies `/api` + `/ws` → :7777                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Process | Entry                             | Env (defaults)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| server  | `bun packages/server/src/main.ts` | `MANIFOLD_PORT` (7777), `MANIFOLD_BIND` (127.0.0.1), `MANIFOLD_DATA_DIR` (./data), `MANIFOLD_OWNER_KEY` (generated → `<data>/owner.key`), `MANIFOLD_PUBLIC_URL` (http://localhost:PORT), `MANIFOLD_WEB_DIST` (packages/web/dist), `MANIFOLD_SPAWN_AGENT` ("1": auto-spawn local agent, "0" in tests), `MANIFOLD_MACHINE_NAME` ("local": name the auto-spawned agent enrolls under), `MANIFOLD_ANNOUNCE_KEY` ("0"; "1" embeds `#key=` in the boot announce — dev/test only), `MANIFOLD_PLUGIN_DEV_PATHS` ("0"; "1" lets `engine.plugins.install` read a bundle from any absolute path instead of only `<data>/plugin-uploads/` — development only), `MANIFOLD_REPLICA_BUCKET` (unset: no replication; set: the image's `infra/entrypoint.sh` restores `<data>/manifold.db` from the replica when absent and runs the command under `litestream replicate` — ADR 0022), `MANIFOLD_REPLICA_ENDPOINT` (S3 endpoint URL, required with the bucket; credentials are Litestream's own `LITESTREAM_ACCESS_KEY_ID`/`LITESTREAM_SECRET_ACCESS_KEY`) |
+| agent   | `bun packages/agent/src/main.ts`  | `MANIFOLD_SERVER_URL` (required), exactly one of `MANIFOLD_MACHINE_TOKEN` or `MANIFOLD_MACHINE_TOKEN_FILE` (file mode 0600; contents trimmed; the file form keeps the token out of unit files and process environment listings), `MANIFOLD_MACHINE_NAME` (hostname)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| web dev | `bun run --cwd packages/web dev`  | vite :5173, proxies `/api` + `/ws` → :7777                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 Server startup log MUST include a single line `manifold ready url=<URL>`. With
 `MANIFOLD_ANNOUNCE_KEY=1` (dev/test opt-in: `dev:server`, testkit) the URL embeds the owner
@@ -121,7 +121,9 @@ and produces negative geometry that the commit path then rejects.
   `terminals:write`, `tokens:mint`, `machines:mint`, `plugins:manage`. Reads of scene and
   presence come with `containers:read`. `terminals:write` covers input+resize+kill+take on
   terminals in scope. `plugins:manage` authorizes plugin administration only — the engine
-  doors `engine.plugins.setEnabled` and `engine.plugins.purge`.
+  doors `engine.plugins.setEnabled` and `engine.plugins.purge`. Installing a plugin is NOT
+  administration of the shipped set but admission of a stranger's code, so
+  `engine.plugins.install` / `uninstall` are root only (`*`; §Isolated plugins).
 - Token scope: optional `containerId` restricts everything to one container. It is a subtree
   grant at `manifold://container/<id>`, which is what it always meant; the field did not move.
 - Revocation: durable; server closes live sockets of revoked tokens with code 4403 and
@@ -259,19 +261,20 @@ pool entry and no new client (`AXIOMS.md` §The portable lens).
 
 ## HTTP API (JSON; `Authorization: Bearer <token-or-owner-key>`)
 
-| Method+Path             | Auth cap              | Req → Res                                                                                                                                                                 |
-| ----------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET /healthz            | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                                                 |
-| GET /api/protocol       | none                  | → generated JSON-Schema of all wire messages, plus the published placement, plugin/action, event and grant vocabularies                                                   |
-| GET /api/attendance     | containers:read       | → `{ attendance: [{containerId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their container                                                 |
-| POST /api/actions/:name | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door                            |
-| GET /api/plugins        | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Container-scoped tokens included: the roster is vocabulary                                           |
-| GET /api/layout         | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the default composed from the roster's seats when unset. Self-scoped by construction                             |
-| GET /api/bindings       | containers:read       | → `{ overrides }` — the CALLER's key rebindings as binding id → key, self-scoped exactly as the layout read is. `core.keys.setBinding` is the only writer                 |
-| GET /api/settings       | containers:read       | → `{ values }` — the CALLER's plugin setting values as setting ref → boolean, self-scoped exactly as the bindings read is. `engine.plugins.setSetting` is the only writer |
-| GET /api/resolve?uri=   | containers:read       | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                                                 |
-| GET /api/containers     | containers:read       | → `{ containers: ContainerCensus[] }` (`ContainerCensusResponseSchema`) — what every container holds and points at; the index's whole input                               |
-| GET /api/introspect     | `*`                   | → live rooms/terminals/machines/principals snapshot                                                                                                                       |
+| Method+Path                 | Auth cap              | Req → Res                                                                                                                                                                 |
+| --------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET /healthz                | none                  | → `{ ok, version, protocolVersion, build? }` (`build` is the git SHA baked at build time)                                                                                 |
+| GET /api/protocol           | none                  | → generated JSON-Schema of all wire messages, plus the published placement, plugin/action, event and grant vocabularies                                                   |
+| GET /api/attendance         | containers:read       | → `{ attendance: [{containerId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their container                                                 |
+| POST /api/actions/:name     | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door                            |
+| GET /api/plugins            | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Container-scoped tokens included: the roster is vocabulary                                           |
+| GET /api/plugins/:id/web.js | any token             | → the worker module of an installed, ENABLED plugin (`text/javascript`, `cache-control: no-store`, `etag: "<sha256>"`); 404 otherwise. §Isolated plugins                  |
+| GET /api/layout             | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the default composed from the roster's seats when unset. Self-scoped by construction                             |
+| GET /api/bindings           | containers:read       | → `{ overrides }` — the CALLER's key rebindings as binding id → key, self-scoped exactly as the layout read is. `core.keys.setBinding` is the only writer                 |
+| GET /api/settings           | containers:read       | → `{ values }` — the CALLER's plugin setting values as setting ref → boolean, self-scoped exactly as the bindings read is. `engine.plugins.setSetting` is the only writer |
+| GET /api/resolve?uri=       | containers:read       | → `ResolveResponse { uri, ref, exists, title }`; an unparseable or non-`manifold://` uri is 400 `invalid`                                                                 |
+| GET /api/containers         | containers:read       | → `{ containers: ContainerCensus[] }` (`ContainerCensusResponseSchema`) — what every container holds and points at; the index's whole input                               |
+| GET /api/introspect         | `*`                   | → live rooms/terminals/machines/principals snapshot                                                                                                                       |
 
 `IndexEntry` is either `{ kind:"container", container:{ id, name, createdAt, discipline },
 parentId: string|null, sortOrder: nonnegative integer }` or `{ kind:"folder", id, name,
@@ -1195,10 +1198,17 @@ which the answer is the ladder's last rung, `unavailable` — "isolate deadline 
 like every other rung. `ISOLATE_CRASH_BUDGET` is `{ count: 3, windowMs: 300_000 }`: three exits in
 five minutes and the supervisor stops respawning, the row reads `lifecycle: "isolate_crashed"`
 and every dispatch answers `unavailable` until an operator toggles it (`isolate_starting` is the
-row while a child is being spawned). After `ISOLATE_IDLE_EVICT_MS` (10 min) without a dispatch
-the child is sent `shutdown` and the next dispatch respawns it (`isolate_evicted`). Log events:
-`isolate_spawned`, `isolate_exited`, `isolate_crashed`, `isolate_evicted`, `isolate_call_failed`,
-`plugin_installed`, `plugin_uninstalled`, `web_isolate_fault`.
+row while a child is being spawned). A child that dies or hangs before answering `load` fails
+the load the same way, and on a respawn that failure counts against the budget. After
+`ISOLATE_IDLE_EVICT_MS` (10 min) without a dispatch or hook the child is sent `shutdown` and the
+next dispatch respawns it (`isolate_evicted`). A `call` names the request it belongs to by
+prefix: its `id` is `<request id>:<n>`, where `<request id>` is the `dispatch`/`hook` frame's
+own `id` (host-chosen, never containing `:`) — that is how the host finds the ctx that grades
+it. The child runs under the server's own `bun` with an environment of exactly `PATH`, `HOME`
+and `MANIFOLD_PLUGIN_ID` (invariant 6); its stdout and stderr reach the server log line by line
+as `isolate_output`, capped. Log events: `isolate_spawned`, `isolate_exited`, `isolate_crashed`,
+`isolate_evicted`, `isolate_call_failed`, `isolate_output`, `plugin_installed`,
+`plugin_uninstalled`, `web_isolate_fault`.
 
 **Web isolate — page ↔ Worker (`WebIsolateHostFrameSchema` / `WebIsolateWorkerFrameSchema`).**
 `postMessage` frames, discriminated on `t`:
@@ -1859,6 +1869,13 @@ terminals(id TEXT PK, machine_id TEXT, container_id TEXT, created_by TEXT, statu
 plugin_kv(plugin_id TEXT, key TEXT, value TEXT, PRIMARY KEY (plugin_id, key))
                             -- WITHOUT ROWID; per-plugin storage, `$`-prefixed keys are
                             -- engine-reserved ($version stamp, $migration:<name> ledger)
+plugin_installs(plugin_id TEXT PK, sha256 TEXT, source TEXT, granted_caps TEXT,
+                installed_by TEXT, installed_at INTEGER, bundle_path TEXT)
+                            -- WITHOUT ROWID; one row per INSTALLED plugin (ADR 0016 stage 2):
+                            -- the pin, the source as given, the grant (JSON caps), who and
+                            -- when, and where the bundle sits under <data>/plugins/<id>/.
+                            -- No manifest column: it is read from the bundle after the
+                            -- file re-hashes to the pin, never from a stored copy
 shares(id TEXT PK, hash TEXT UNIQUE, container_id TEXT, caps TEXT, origin TEXT,
        minted_by TEXT, created_at INTEGER, revoked_at INTEGER)  -- HASH only, never raw
 share_tickets(share_id TEXT, guest_principal_id TEXT, principal_id TEXT, created_at INTEGER,
@@ -1883,11 +1900,12 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- layout:<principalId>
 ```
 
-Schema version 16 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
+Schema version 17 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
 — `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
 `grants` substrate; 14 is the trace ledger — five nullable columns on `events`; 15 is credential
 expiry — `tokens.expires_at`; 16 retires the grant rows of already-revoked tokens, the same rule
-`revokeTokensWhere` now applies at revocation, applied to history). Migrations 12, 14 and 15 are
+`revokeTokensWhere` now applies at revocation, applied to history; 17 adds `plugin_installs`, one
+new table and nothing rewritten). Migrations 12, 14, 15 and 17 are
 plain SQL for the same reason: none touches a stored document and existing rows need no
 backfill, since absence already means the right thing — a NULL origin means "this instance", a
 NULL `door` means "this row is an event, not a trace", and a NULL `expires_at` means "never".
