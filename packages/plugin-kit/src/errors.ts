@@ -9,7 +9,7 @@
 
 /**
  * A slice of the engine's context that stage 1 does not serve across the boundary
- * (`docs/CONTRACTS.md` §Isolated plugins): the runner raises this the moment a guest reaches
+ * (`docs/CONTRACTS.md` §Hardened plugins): the runner raises this the moment a guest reaches
  * for one, naming the member, instead of handing back `undefined` and letting a `TypeError`
  * happen three lines later.
  */

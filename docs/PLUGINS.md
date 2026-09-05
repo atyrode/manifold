@@ -1632,16 +1632,21 @@ are the checks that will fail _your_ plugin:
   claim: every network row is ZERO at idle, so a plugin that opens a timer onto a door shows up as
   a rate with its own name on it.
 
-## 9. Writing an isolated (out-of-tree) plugin
+## 9. Writing a hardened (out-of-tree) plugin
 
-Everything above describes the IN-REALM target: a package in this repository, compiled into the
-build, handed the engine's real objects. This section is the second target (ADR 0016, stage 1+2):
-an ISOLATED plugin, authored anywhere, packed into one artifact, installed at a door, and run as a
-stranger's code — its server half in its own Bun process, its web half in its own dedicated
-`Worker`. The manifest decides which target you are writing for: an in-tree manifest has no
-`entry`; an installed one must, and `entry` names the halves the bundle runs (`{ "server": true,
-"web": "web.js" }`). Nothing else about the manifest changes — same id grammar, same capability
-ceiling, same `contributes`, same assembly refusals, same denial ladder at the door.
+Everything above describes the IN-REALM target: a plugin handed the engine's real objects —
+React, `@manifold/plugin`, `HostServices`, the full `ActionCtx`. That is the ratified default for
+EVERY row, installed ones included (ADR 0025, operator-ratified 2026-09-05); the loader that runs
+an installed bundle in-realm is owed (#256), and until it lands every installed row runs the way
+this section describes. This section is the HARDENED target (ADR 0016, stage 1+2): a row its
+installer chose to isolate — `install.hardened: true` once #256 lands, every installed row
+today — authored anywhere, packed into one artifact, installed at a door, and run as a stranger's
+code: its server half in its own Bun process, its web half in its own dedicated `Worker`, against
+the narrower interface below. The manifest decides which target you are writing for: an in-tree
+manifest has no `entry`; an installed one must, and `entry` names the halves the bundle runs
+(`{ "server": true, "web": "web.js" }`). Nothing else about the manifest changes — same id
+grammar, same capability ceiling, same `contributes`, same assembly refusals, same denial ladder
+at the door. Authoring an in-realm plugin on a running instance is §10, owed with the loader (#260).
 
 The kit is `@manifold/plugin-kit` (`packages/plugin-kit`; the reference plugin it ships is
 `packages/plugin-kit/test/fixtures/sample/`, quoted below). It depends on `@manifold/protocol` and
@@ -1687,7 +1692,7 @@ defineServerPlugin({
 `defineServerPlugin` is inert when the module is merely imported and wires the ipc channel when
 the module is the entry of a spawned isolate, so the same file is the plugin AND its own test
 subject. A handler is written against `GuestCtx`, which is the engine's `ActionCtx` as it can be
-served across a process boundary (`docs/CONTRACTS.md` §Isolated plugins, `ISOLATE_CTX_METHODS`):
+served across a process boundary (`docs/CONTRACTS.md` §Hardened plugins, `ISOLATE_CTX_METHODS`):
 
 - **Data the dispatch carries** — `ctx.principal`, `ctx.auth.{caps, isRoot, containerScope}`,
   `ctx.containerScope`, `ctx.now()`, `ctx.pluginId`.
@@ -1799,7 +1804,7 @@ the engine's loader never resolves a package — and writes one JSON document (`
 `format: 1`, the manifest with its `entry`, the members as base64). The printed `sha256` is over
 the file's exact bytes and is the pin `engine.plugins.install` demands; the door itself — where a
 source may come from, the default grant, the refusal classes, where the bundle lives afterwards —
-is §7 Installing a plugin, and the artifact's shape is `docs/CONTRACTS.md` §Isolated plugins.
+is §7 Installing a plugin, and the artifact's shape is `docs/CONTRACTS.md` §Hardened plugins.
 
 ### What an isolated plugin does NOT get (ADR 0016 §3)
 

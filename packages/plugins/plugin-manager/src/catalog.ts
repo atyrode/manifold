@@ -22,7 +22,7 @@ import { needsAttention, permissionCount, pluginStatus } from "./status.ts";
  * A SECTION is the answer to "where did this row come from" (#239), and the sections are ONE
  * ARRAY: each entry carries its words, its behaviour flags and the PREDICATE that claims a
  * row. The first entry whose predicate holds wins, and the array's order is the display
- * order — so a new section (ADR 0024's "Mine", the plugins authored on this instance, once
+ * order — so a new section (ADR 0025's "Mine", the plugins authored on this instance, once
  * the roster's `install.mode` can say `"unpacked"`) is one entry placed before the band it
  * would otherwise fall into, and nothing else in this file or the component changes.
  *
