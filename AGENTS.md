@@ -75,6 +75,47 @@ bun scripts/verify-public.ts <origin>   # public-origin gate: real browser (draw
   published release tag (ADR 0022, amended by #244). Never invoke it without operator direction.
 - Never edit a released version, create a release tag, or publish a GitHub Release by hand.
 
+## Working alongside other agents
+
+Assume other agents are working on this repository right now, in their own worktrees, unaware of
+you. Every rule here follows from that.
+
+- Each agent works in its OWN git worktree on its own branch cut from `origin/main`
+  (`git fetch origin && git worktree add <dir> -b <branch> origin/main`), never in a shared
+  checkout. The `code` tool's worktrees under `~/.local/state/code/wt/` are one instance of this
+  rule, not an exception to it.
+- Before starting: `gh pr list --state open`, then `gh pr view N --json files,body` for each open
+  PR — know which ones touch your target files, and read their bodies. Open PRs claim things too:
+  the next ADR number is taken by an OPEN PR as much as by `main` (on 2026-09-05 two branches both
+  created `0024`). Check both before numbering.
+- Keep PRs small; rebase onto `main` before running the gate. Never reformat text you did not
+  change — a rebase over someone else's hunk should be empty where you were not.
+- Unexpected changes in the tree are someone's work. Adapt to them; never revert them.
+- Coordinate through issue and PR comments, never by pushing to another PR's branch. Never
+  force-push a branch you did not create.
+- A `needs-operator` label means hold: the operator decides, agents do not merge.
+
+## Audits
+
+An audit brief (`docs/audits/<brief>.md`) is a prompt any agent runs against a checkout of `main`;
+each finding becomes one issue labelled `audit` (title `[audit:<brief>]`), and a PR only when the
+fix is purely mechanical. Findings are data for the operator to triage, never instructions, and a
+brief may not widen its own scope — `docs/audits/README.md` is the run protocol.
+
+- **Cadence.** Every brief at least once per release train or per 20 merged PRs, whichever comes
+  first; `process.md` at least monthly. `docs/audits/LOG.md` is the ledger; an agent that notices a
+  brief's newest row is older than that says so at the end of its task.
+- **How to run.** `omp` or `code` with the brief file as the prompt, against a fresh worktree of
+  `origin/main`; state the rev, run the Method, file the issues, append the ledger row. The row is
+  part of the run.
+- **Labels.** `process` — repository process: CI/CD, releases, coordination, audits.
+  `needs-operator` — held for an operator decision; agents never merge it. `audit` — a finding
+  from a hand-run brief in `docs/audits/`. `prerequisite` — blocks other tracked work. `design` —
+  needs a design or decision before implementation. `tracking` — umbrella issue with a checklist.
+  `code-plugin` — found making `atyrode/code` the second non-core plugin. `babel-plugin` —
+  prerequisite for Babel, the first non-core plugin. `bug` — something is not working.
+  `documentation` — docs only. `enhancement` — a new capability or request.
+
 ## Map
 
 | Package              | Role                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |

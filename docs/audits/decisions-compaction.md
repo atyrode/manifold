@@ -1,0 +1,106 @@
+# Audit brief: decisions-compaction
+
+Label: `audit`. Issue title prefix: `[audit:decisions-compaction]`. Run protocol:
+[`README.md`](README.md).
+
+## Purpose
+
+A record in `docs/decisions/` is immutable reasoning: why a verdict was reached, with the evidence
+of its date. The living spec — `AXIOMS.md`, `REGISTRY.md`, `docs/CONTRACTS.md`, `docs/PLUGINS.md` —
+is the normative form of what was decided, and ratification IS the spec edit (`AGENTS.md` §Map,
+`AXIOMS.md` §Change control). The failure this brief exists for is a claim that lives ONLY in a
+record: a per-kind table, an enum of refusal names, a numbered rule list that the spec points at
+instead of carrying. Such a claim is law nobody can find from the spec, cannot be gate-checked, and
+goes stale the first time the code moves without anyone reopening a 1,000-line record. The fix is
+never to edit the record's reasoning; it is to relocate the claim into the spec and leave a pointer.
+
+## Scope
+
+In: every record listed as `accepted` in `docs/decisions/README.md` (the generated index; its
+`Status:` lines are the source), its "decision" section — whatever the record calls it: Decision,
+Verdict, Ruling, Resolution, the R1…Rn list — and the four spec files above. Out: records with
+`Status: proposed`, `rejected` or `superseded` (nothing in them is law yet or any more); a record's
+Context, Options, Evidence and Consequences sections (reasoning, never normative); `docs/PLAN.md`.
+Records over ~400 lines are checked FIRST because that is where lists hide:
+`0013-plugin-behavioral-contract.md` (1,045), `0020-desktop-shell.md` (948),
+`0011-permission-waterfall.md` (540), `0016-plugin-isolation.md` (464),
+`0021-dockview-evaluation.md` (451, a "change nothing" evaluation — check its §8 reopen trigger only),
+`0015-social-layer.md` (421).
+
+## Method
+
+1. `git fetch origin && git rev-parse --short origin/main`; check out that revision. Read
+   `docs/decisions/README.md`; if it is missing or its statuses disagree with the records'
+   `Status:` lines, that is one finding and the S19 check is red — stop and file it.
+2. For each `accepted` record, longest first: open its decision section and write down every
+   NORMATIVE claim as one line — a sentence a gate could fail or a reviewer could cite, containing
+   MUST/never/only/exactly/every, a table row, an enum member, a numbered rule. Skip sentences about
+   why. Expect 5–40 claims per record; 0013 will have the most.
+3. For each claim, locate its spec home: `grep -n` a distinctive noun from the claim across
+   `AXIOMS.md REGISTRY.md docs/CONTRACTS.md docs/PLUGINS.md`. Record `path:line` of the spec sentence
+   or row that carries it. Also follow every pointer the spec makes back to the record ("ADR 0013
+   §9") and confirm the pointed-at section says what the spec claims.
+4. Classify each claim:
+   - **Carried**: the spec states it in its own words and the record agrees. Nothing to do.
+   - **Pointer-only**: the spec says "see ADR NNNN §M" and the normative content — the table, the
+     enum, the list — exists only in the record. Finding; fix is relocation: the table moves into
+     the spec section that owns the concept (`REGISTRY.md` for anything a gate reads or could read,
+     `CONTRACTS.md` for integration behavior, `PLUGINS.md` for author-facing rules), and the record
+     keeps its copy untouched — the record is history; the spec is now the reader's source.
+   - **Homeless**: no spec sentence carries it and nothing points at it. Finding; fix is either a
+     spec sentence (if the tree obeys the claim) or an escalation (if the tree does not — the
+     record may be stale, and spec-vs-record disagreements resolve for the spec).
+   - **Contradicted**: the spec says otherwise. Finding; the spec wins and the record is stale.
+     Fix is a `Ratified:` status-block amendment on the record naming the spec section that
+     supersedes the claim — status-block lines only, body untouched.
+5. Check the status blocks themselves: `Date:`, `Status:`, `Superseded-by:` (only when
+   superseded), `Ratified:` (optional), in that order, directly under the title line. A prose
+   `Status:` sentence, a missing `Superseded-by:` on a superseded record, or a `Superseded-by:`
+   naming a file that does not exist is a finding with a mechanical fix.
+6. Check `REGISTRY.md` §Decisions awaiting ratification: every `proposed` record must have a row;
+   every row must name a `proposed` record; the "Nothing is waiting as of" sentence must be dated
+   after the newest `proposed` record's `Date:` or be removed.
+7. Write each finding as its own issue (Output contract). Append the ledger row. A record with
+   many homeless claims still gets ONE issue per claim group that shares a spec destination — a
+   whole table is one finding; two unrelated rules in one record are two.
+
+## Evidence standard
+
+A finding quotes the claim from the record (`path:line`), names the searches run against the spec
+(the grep and its result), and names the spec section that SHOULD carry it. "This record is long"
+is not a finding; "this table exists only here" is. A claim the spec carries in different words is
+carried — do not file rewording. A claim whose only spec presence is a pointer INTO the record is
+the exact finding this brief exists for.
+
+## Output contract
+
+```
+Title: [audit:decisions-compaction] ADR <NNNN> §<M>: <claim summary> has no spec home
+Labels: audit
+Body:
+- main rev: <sha7>
+- Record: docs/decisions/<file>:<line> — "<quoted claim or table caption>"
+- Spec searched: <files, terms> — result: <pointer-only at path:line | none | contradicts path:line>
+- Classification: pointer-only | homeless | contradicted | status-block
+- Proposed home: <AXIOMS.md §… | REGISTRY.md §… | CONTRACTS.md §… | PLUGINS.md §…>
+- Proposed fix: relocate <table/list> with a pointer back | add sentence | amend Ratified: line
+- Mechanical PR appropriate: yes (status-block line, verbatim table relocation with a pointer) |
+  no (any wording of a normative sentence — the operator ratifies spec text)
+```
+
+## Not a finding
+
+- Reasoning, options, evidence or consequences that the spec does not repeat — that is what a
+  record is for.
+- An evaluation whose verdict is "change nothing" (0021, `REGISTRY.md` §Decisions awaiting
+  ratification's rule that only yeses that OBLIGE are ratified): only its reopen trigger is
+  checked, and only for whether the spec or the roadmap names it.
+- A `proposed` record's claims: nothing in it is law until ratified.
+- Length, prose style, section naming inside a record; a record body is never edited for style.
+- A spec sentence that is MORE specific than the record — refinement downward is allowed
+  (`AXIOMS.md` §Change control, precedence).
+
+## Revisit this brief when
+
+The generated index gains a machine-readable claims list, `docs/decisions/` moves or is split, or
+the status-block contract changes (then update step 5 verbatim from the new contract).
