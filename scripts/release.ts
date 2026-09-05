@@ -176,9 +176,7 @@ if (withoutPr.length > 0) {
     `No pull request number for ${withoutPr.map((fragment) => `changes/${fragment.file}`).join(", ")}: the commit that added it carries no "(#N)" squash suffix`,
   );
 }
-const released = resolved.filter(
-  (fragment): fragment is ReleasedFragment => fragment.pr !== null,
-);
+const released = resolved.filter((fragment): fragment is ReleasedFragment => fragment.pr !== null);
 
 const date = new Date().toISOString().slice(0, 10);
 const changelog = assembleChangelog(await Bun.file("CHANGELOG.md").text(), version, date, released);

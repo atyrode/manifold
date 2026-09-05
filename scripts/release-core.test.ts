@@ -47,7 +47,13 @@ test("the fragments derive the level: before 1.0 anything added or broken is a m
 test("a fragment is front matter over one paragraph, and each refusal names the file", () => {
   expect(
     parseFragment("12-thing.md", "---\nsection: Fixed\nissue: 12\n---\nOne line\nwrapped.\n"),
-  ).toEqual({ file: "12-thing.md", section: "Fixed", issue: 12, pr: null, body: "One line wrapped." });
+  ).toEqual({
+    file: "12-thing.md",
+    section: "Fixed",
+    issue: 12,
+    pr: null,
+    body: "One line wrapped.",
+  });
   expect(() => parseFragment("thing.md", "---\nsection: Fixed\nissue: 12\n---\nx\n")).toThrow(
     "thing.md: fragment files are named <issue>-<slug>.md",
   );
@@ -100,21 +106,29 @@ test("assembling a release places the fragments above the newest release in cano
 });
 
 test("CHANGELOG.md holds released sections only", () => {
-  expect(() => parseReleasedChangelog("# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-01-01\n"))
-    .toThrow("pending changes are changes/*.md");
-  expect(() => parseReleasedChangelog("# Changelog\n\n## [1.0.0] - 2026-01-01\n\n- Loose. (#1)\n"))
-    .toThrow("no category");
+  expect(() =>
+    parseReleasedChangelog("# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-01-01\n"),
+  ).toThrow("pending changes are changes/*.md");
+  expect(() =>
+    parseReleasedChangelog("# Changelog\n\n## [1.0.0] - 2026-01-01\n\n- Loose. (#1)\n"),
+  ).toThrow("no category");
 });
 
 test("released sections are immutable beneath a newer release", () => {
-  const tagged = "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-01-01\n\n### Fixed\n\n- Old fix. (#1, #2)\n";
-  const grown = "# Changelog\n\n## [1.0.1] - 2026-02-01\n\n### Added\n\n- New. (#3, #4)\n\n## [1.0.0] - 2026-01-01\n\n### Fixed\n\n- Old fix. (#1, #2)\n";
+  const tagged =
+    "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-01-01\n\n### Fixed\n\n- Old fix. (#1, #2)\n";
+  const grown =
+    "# Changelog\n\n## [1.0.1] - 2026-02-01\n\n### Added\n\n- New. (#3, #4)\n\n## [1.0.0] - 2026-01-01\n\n### Fixed\n\n- Old fix. (#1, #2)\n";
   expect(() => assertReleasedSectionsIntact(grown, tagged, "v1.0.0")).not.toThrow();
   expect(() =>
     assertReleasedSectionsIntact(grown.replace("Old fix.", "Old fix, reworded."), tagged, "v1.0.0"),
   ).toThrow("edits a released section");
   expect(() =>
-    assertReleasedSectionsIntact(grown.replace("## [1.0.0] - 2026-01-01", "## [1.0.0] - 2026-01-02"), tagged, "v1.0.0"),
+    assertReleasedSectionsIntact(
+      grown.replace("## [1.0.0] - 2026-01-01", "## [1.0.0] - 2026-01-02"),
+      tagged,
+      "v1.0.0",
+    ),
   ).toThrow("lost the newest release of v1.0.0");
 });
 
@@ -128,7 +142,10 @@ test("the in-app history leads with an unreleased entry only while fragments exi
     { version: "1.0.0", date: "2026-01-01", changes: ["Old fix. (#1, #2)"] },
   ]);
   expect(
-    generated(source, [fragment("Fixed", 5, "Fixed drag."), fragment("Added", 3, "Added a thing.", 4)]),
+    generated(source, [
+      fragment("Fixed", 5, "Fixed drag."),
+      fragment("Added", 3, "Added a thing.", 4),
+    ]),
   ).toEqual([
     {
       version: "unreleased",

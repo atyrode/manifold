@@ -130,7 +130,8 @@ export function parseFragment(file: string, text: string): ChangeFragment {
   const body = parts[2]!.trim();
   if (body === "") throw new Error(`${file}: fragment body is empty`);
   if (/\n\s*\n/.test(body)) throw new Error(`${file}: fragment body must be one paragraph`);
-  if (/^[-*#]/.test(body)) throw new Error(`${file}: fragment body is prose, not a list or heading`);
+  if (/^[-*#]/.test(body))
+    throw new Error(`${file}: fragment body is prose, not a list or heading`);
   return { file, section, issue, pr, body: body.replace(/\s*\n\s*/g, " ") };
 }
 

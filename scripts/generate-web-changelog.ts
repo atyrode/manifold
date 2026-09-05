@@ -28,7 +28,9 @@ const releases = parseReleasedChangelog(markdown);
 if (process.argv.includes("--check")) {
   const described = await $`git describe --tags --abbrev=0`.quiet().nothrow();
   if (described.exitCode !== 0) {
-    throw new Error("No release tag is reachable from HEAD (git fetch --tags); cannot check released sections");
+    throw new Error(
+      "No release tag is reachable from HEAD (git fetch --tags); cannot check released sections",
+    );
   }
   const tag = described.text().trim();
   const tagged = await $`git show ${`${tag}:${sourcePath}`}`.quiet().text();
