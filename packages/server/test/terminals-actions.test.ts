@@ -42,6 +42,7 @@ const OWNER_KEY = "c".repeat(64);
 
 class FakeMachine implements MachineChannel {
   readonly sent: ServerToAgentMessage[] = [];
+  readonly protocolVersion = PROTOCOL_VERSION;
 
   constructor(readonly machineId: string) {}
 

@@ -51,7 +51,7 @@ class CaptureLogger implements Logger {
 describe("machine channel send status", () => {
   test("-1 is accepted as enqueued backpressure", () => {
     const socket = new StatusSocket(-1);
-    const channel = new LiveMachineChannel("machine", "principal", socket);
+    const channel = new LiveMachineChannel("machine", "principal", socket, PROTOCOL_VERSION);
 
     expect(channel.send({ type: "kill", terminalId: "terminal" })).toBe(true);
     expect(socket.closed).toBeNull();
@@ -59,7 +59,7 @@ describe("machine channel send status", () => {
 
   test("0 is reported as a dropped frame", () => {
     const socket = new StatusSocket(0);
-    const channel = new LiveMachineChannel("machine", "principal", socket);
+    const channel = new LiveMachineChannel("machine", "principal", socket, PROTOCOL_VERSION);
 
     expect(channel.send({ type: "kill", terminalId: "terminal" })).toBe(false);
   });

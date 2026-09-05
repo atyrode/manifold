@@ -41,6 +41,7 @@ export class LiveMachineChannel implements MachineChannel {
     readonly machineId: string,
     readonly tokenPrincipalId: string,
     readonly socket: RawSocket,
+    readonly protocolVersion: number,
   ) {}
 
   send(message: ServerToAgentMessage): boolean {
@@ -212,6 +213,7 @@ export class MachineGateway {
       authenticated.id,
       authenticated.tokenPrincipalId,
       connection.socket,
+      message.protocolVersion,
     );
     const older = this.activeByMachine.get(authenticated.id);
     const lastSupersededAt = this.lastSupersededAtByToken.get(authenticated.tokenPrincipalId);
