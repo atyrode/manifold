@@ -1,0 +1,580 @@
+{
+  "a_machines": {
+    "count": 1,
+    "rowKeys": [
+      "color",
+      "id",
+      "name",
+      "online"
+    ],
+    "sample": {
+      "id": "<uuid>",
+      "name": "local",
+      "online": true,
+      "color": "#0c8599"
+    }
+  },
+  "b_env_cwd": {
+    "openRoundTripMs": 24,
+    "terminalStatus": "running",
+    "terminalHomeIsThisContainer": true,
+    "serverAuthoredTileId": "root",
+    "attachedFirstFrame": true,
+    "commandCompleted": true,
+    "pwd": "/tmp",
+    "cwdHonoured": true,
+    "manifoldEnvKeys": [
+      "MANIFOLD_CONTAINER",
+      "MANIFOLD_TOKEN",
+      "MANIFOLD_URL"
+    ],
+    "shell": "/run/current-system/sw/bin/zsh",
+    "term": "xterm-256color",
+    "terminalInfoKeys": [
+      "cols",
+      "containerId",
+      "controllerId",
+      "createdBy",
+      "exitCode",
+      "id",
+      "machineId",
+      "name",
+      "rows",
+      "status"
+    ]
+  },
+  "b_http_open_action": {
+    "outcome": {
+      "ok": true,
+      "result": {}
+    },
+    "terminalsBefore": 1,
+    "terminalsAfter": 1,
+    "createdATerminal": false
+  },
+  "c_keystroke_race": {
+    "immediate": {
+      "trials": 10,
+      "resultSeen": 10,
+      "lost": 0,
+      "echoBeforePrompt": 10,
+      "doubleEcho": 10,
+      "firstFrameMs": {
+        "min": 16,
+        "max": 50,
+        "median": 33
+      },
+      "lineEditorReadyMs": null,
+      "inputSentMs": {
+        "min": 12,
+        "max": 36,
+        "median": 20
+      },
+      "resultMs": {
+        "min": 359,
+        "max": 428,
+        "median": 387
+      }
+    },
+    "afterFirstFrame": {
+      "trials": 10,
+      "resultSeen": 10,
+      "lost": 0,
+      "echoBeforePrompt": 10,
+      "doubleEcho": 10,
+      "firstFrameMs": {
+        "min": 275,
+        "max": 334,
+        "median": 306
+      },
+      "lineEditorReadyMs": null,
+      "inputSentMs": {
+        "min": 280,
+        "max": 335,
+        "median": 306
+      },
+      "resultMs": {
+        "min": 330,
+        "max": 403,
+        "median": 373
+      }
+    },
+    "afterLineEditor": {
+      "trials": 10,
+      "resultSeen": 10,
+      "lost": 0,
+      "echoBeforePrompt": 0,
+      "doubleEcho": 0,
+      "firstFrameMs": {
+        "min": 260,
+        "max": 339,
+        "median": 305
+      },
+      "lineEditorReadyMs": {
+        "min": 292,
+        "max": 376,
+        "median": 345
+      },
+      "inputSentMs": {
+        "min": 292,
+        "max": 377,
+        "median": 345
+      },
+      "resultMs": {
+        "min": 323,
+        "max": 407,
+        "median": 377
+      }
+    },
+    "trials": [
+      {
+        "mode": "immediate",
+        "msToFirstFrame": 40,
+        "msToLineEditor": null,
+        "msInputSent": 22,
+        "resultSeen": true,
+        "msToResult": 409,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "immediate",
+        "msToFirstFrame": 35,
+        "msToLineEditor": null,
+        "msInputSent": 20,
+        "resultSeen": true,
+        "msToResult": 418,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "immediate",
+        "msToFirstFrame": 33,
+        "msToLineEditor": null,
+        "msInputSent": 22,
+        "resultSeen": true,
+        "msToResult": 428,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "immediate",
+        "msToFirstFrame": 50,
+        "msToLineEditor": null,
+        "msInputSent": 36,
+        "resultSeen": true,
+        "msToResult": 427,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "immediate",
+        "msToFirstFrame": 17,
+        "msToLineEditor": null,
+        "msInputSent": 12,
+        "resultSeen": true,
+        "msToResult": 371,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "immediate",
+        "msToFirstFrame": 16,
+        "msToLineEditor": null,
+        "msInputSent": 12,
+        "resultSeen": true,
+        "msToResult": 374,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "immediate",
+        "msToFirstFrame": 48,
+        "msToLineEditor": null,
+        "msInputSent": 36,
+        "resultSeen": true,
+        "msToResult": 387,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "immediate",
+        "msToFirstFrame": 22,
+        "msToLineEditor": null,
+        "msInputSent": 15,
+        "resultSeen": true,
+        "msToResult": 362,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "immediate",
+        "msToFirstFrame": 28,
+        "msToLineEditor": null,
+        "msInputSent": 15,
+        "resultSeen": true,
+        "msToResult": 359,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "immediate",
+        "msToFirstFrame": 16,
+        "msToLineEditor": null,
+        "msInputSent": 12,
+        "resultSeen": true,
+        "msToResult": 384,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "after_first_frame",
+        "msToFirstFrame": 318,
+        "msToLineEditor": null,
+        "msInputSent": 323,
+        "resultSeen": true,
+        "msToResult": 386,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "after_first_frame",
+        "msToFirstFrame": 334,
+        "msToLineEditor": null,
+        "msInputSent": 335,
+        "resultSeen": true,
+        "msToResult": 403,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "after_first_frame",
+        "msToFirstFrame": 308,
+        "msToLineEditor": null,
+        "msInputSent": 310,
+        "resultSeen": true,
+        "msToResult": 376,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "after_first_frame",
+        "msToFirstFrame": 306,
+        "msToLineEditor": null,
+        "msInputSent": 306,
+        "resultSeen": true,
+        "msToResult": 373,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "after_first_frame",
+        "msToFirstFrame": 304,
+        "msToLineEditor": null,
+        "msInputSent": 306,
+        "resultSeen": true,
+        "msToResult": 372,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "after_first_frame",
+        "msToFirstFrame": 318,
+        "msToLineEditor": null,
+        "msInputSent": 321,
+        "resultSeen": true,
+        "msToResult": 386,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "after_first_frame",
+        "msToFirstFrame": 275,
+        "msToLineEditor": null,
+        "msInputSent": 280,
+        "resultSeen": true,
+        "msToResult": 330,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "after_first_frame",
+        "msToFirstFrame": 288,
+        "msToLineEditor": null,
+        "msInputSent": 288,
+        "resultSeen": true,
+        "msToResult": 341,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "after_first_frame",
+        "msToFirstFrame": 304,
+        "msToLineEditor": null,
+        "msInputSent": 305,
+        "resultSeen": true,
+        "msToResult": 361,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "after_first_frame",
+        "msToFirstFrame": 289,
+        "msToLineEditor": null,
+        "msInputSent": 293,
+        "resultSeen": true,
+        "msToResult": 357,
+        "echoBeforePrompt": true,
+        "doubleEcho": true
+      },
+      {
+        "mode": "after_line_editor",
+        "msToFirstFrame": 281,
+        "msToLineEditor": 323,
+        "msInputSent": 323,
+        "resultSeen": true,
+        "msToResult": 355,
+        "echoBeforePrompt": false,
+        "doubleEcho": false
+      },
+      {
+        "mode": "after_line_editor",
+        "msToFirstFrame": 305,
+        "msToLineEditor": 347,
+        "msInputSent": 348,
+        "resultSeen": true,
+        "msToResult": 377,
+        "echoBeforePrompt": false,
+        "doubleEcho": false
+      },
+      {
+        "mode": "after_line_editor",
+        "msToFirstFrame": 339,
+        "msToLineEditor": 376,
+        "msInputSent": 377,
+        "resultSeen": true,
+        "msToResult": 407,
+        "echoBeforePrompt": false,
+        "doubleEcho": false
+      },
+      {
+        "mode": "after_line_editor",
+        "msToFirstFrame": 309,
+        "msToLineEditor": 351,
+        "msInputSent": 352,
+        "resultSeen": true,
+        "msToResult": 382,
+        "echoBeforePrompt": false,
+        "doubleEcho": false
+      },
+      {
+        "mode": "after_line_editor",
+        "msToFirstFrame": 314,
+        "msToLineEditor": 351,
+        "msInputSent": 352,
+        "resultSeen": true,
+        "msToResult": 381,
+        "echoBeforePrompt": false,
+        "doubleEcho": false
+      },
+      {
+        "mode": "after_line_editor",
+        "msToFirstFrame": 309,
+        "msToLineEditor": 345,
+        "msInputSent": 345,
+        "resultSeen": true,
+        "msToResult": 377,
+        "echoBeforePrompt": false,
+        "doubleEcho": false
+      },
+      {
+        "mode": "after_line_editor",
+        "msToFirstFrame": 275,
+        "msToLineEditor": 311,
+        "msInputSent": 311,
+        "resultSeen": true,
+        "msToResult": 345,
+        "echoBeforePrompt": false,
+        "doubleEcho": false
+      },
+      {
+        "mode": "after_line_editor",
+        "msToFirstFrame": 260,
+        "msToLineEditor": 292,
+        "msInputSent": 292,
+        "resultSeen": true,
+        "msToResult": 323,
+        "echoBeforePrompt": false,
+        "doubleEcho": false
+      },
+      {
+        "mode": "after_line_editor",
+        "msToFirstFrame": 286,
+        "msToLineEditor": 326,
+        "msInputSent": 326,
+        "resultSeen": true,
+        "msToResult": 359,
+        "echoBeforePrompt": false,
+        "doubleEcho": false
+      },
+      {
+        "mode": "after_line_editor",
+        "msToFirstFrame": 292,
+        "msToLineEditor": 328,
+        "msInputSent": 328,
+        "resultSeen": true,
+        "msToResult": 360,
+        "echoBeforePrompt": false,
+        "doubleEcho": false
+      }
+    ]
+  },
+  "d_canvas_open_then_place": {
+    "openMs": 18,
+    "bornInto": "a fresh solo composition",
+    "afterOpen": {
+      "home": "its solo composition",
+      "unplaced": true,
+      "leavesInComposition": 0,
+      "canvasElements": 0
+    },
+    "steps": [
+      {
+        "step": "place → tile in composition",
+        "ms": 19,
+        "outcome": {
+          "ok": true,
+          "result": {
+            "op": "add_tile",
+            "tileId": "root"
+          }
+        },
+        "after": {
+          "home": "spike-d-composition",
+          "unplaced": true,
+          "leavesInComposition": 1,
+          "canvasElements": 0
+        }
+      },
+      {
+        "step": "place again, same destination",
+        "ms": 5,
+        "outcome": {
+          "ok": true,
+          "result": {
+            "op": "add_tile",
+            "tileId": "t1"
+          }
+        },
+        "after": {
+          "home": "spike-d-composition",
+          "unplaced": true,
+          "leavesInComposition": 2,
+          "canvasElements": 0
+        }
+      },
+      {
+        "step": "place → canvas portal",
+        "ms": 8,
+        "outcome": {
+          "ok": true,
+          "result": {
+            "op": "portal",
+            "elementId": "c9afa652-01af-432a-8a95-56e7c02ef2e5"
+          }
+        },
+        "after": {
+          "home": "spike-d-composition",
+          "unplaced": false,
+          "leavesInComposition": 2,
+          "canvasElements": 1
+        }
+      },
+      {
+        "step": "place → unknown container",
+        "ms": 5,
+        "outcome": {
+          "ok": false,
+          "denial": {
+            "rule": "refused",
+            "message": "unknown_container: terminal -> composition"
+          }
+        },
+        "after": {
+          "home": "spike-d-composition",
+          "unplaced": false,
+          "leavesInComposition": 2,
+          "canvasElements": 1
+        }
+      },
+      {
+        "step": "place unknown terminal",
+        "ms": 3,
+        "outcome": {
+          "ok": false,
+          "denial": {
+            "rule": "refused",
+            "message": "unknown_ref: terminal -> composition"
+          }
+        },
+        "after": {
+          "home": "spike-d-composition",
+          "unplaced": false,
+          "leavesInComposition": 2,
+          "canvasElements": 1
+        }
+      },
+      {
+        "step": "place → unplaced",
+        "ms": 8,
+        "outcome": {
+          "ok": true,
+          "result": {
+            "op": "unplace",
+            "removed": 1
+          }
+        },
+        "after": {
+          "home": "spike-d-composition",
+          "unplaced": true,
+          "leavesInComposition": 2,
+          "canvasElements": 0
+        }
+      }
+    ]
+  },
+  "e_workspace_tree": {
+    "terminalLeaf": {
+      "ok": false,
+      "denial": {
+        "rule": "refused",
+        "message": "workspace leaves hold panels, not \"terminal\""
+      }
+    },
+    "containerLeaf": {
+      "ok": false,
+      "denial": {
+        "rule": "refused",
+        "message": "workspace leaves hold panels, not \"container\""
+      }
+    },
+    "textLeaf": {
+      "ok": false,
+      "denial": {
+        "rule": "refused",
+        "message": "workspace leaves hold panels, not \"text\""
+      }
+    },
+    "unknownPanelLeafAccepted": {
+      "ok": true,
+      "result": {}
+    },
+    "restored": true
+  },
+  "meta": {
+    "measuredAt": "2026-09-05T04:34:19.355Z",
+    "bun": "1.3.13",
+    "server": "http://127.0.0.1:7799",
+    "trials": 10
+  }
+}
