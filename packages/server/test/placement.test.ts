@@ -1865,6 +1865,22 @@ describe("core.space.place", () => {
     expect(rebuilt).toEqual(predicted.denial);
   });
 
+  test("an unknown destination names its missing container, not an inferred kind", async () => {
+    const fixture = await placementFixture();
+    const outcome = await dispatch(fixture, OWNER_KEY, {
+      ref: { kind: "terminal", terminalId: fixture.loose },
+      destination: { kind: "tile", containerId: "ghost", targetTileId: null, edge: null },
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.denial.rule).toBe("refused");
+    expect(placementRefusalRule(outcome.denial.message)).toBe("unknown_container");
+    expect(outcome.denial.message).toBe(
+      "unknown_container: container ghost is not known to this workspace",
+    );
+  });
+
   test("every refusal the algebra can name reaches the caller by name", async () => {
     const fixture = await placementFixture();
     const cases: readonly { readonly args: unknown; readonly rule: string }[] = [

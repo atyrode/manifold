@@ -164,7 +164,10 @@ export function createPlacementLookup(inputs: PlacementLookupInputs): ItemLookup
  * vocabulary of items or containers never grows this function. The table is keyed by the
  * exported rule union, so a rule added to the algebra cannot ship without a sentence.
  */
-const DENIAL_PROSE: Record<PlacementDenialRule, (subject: string, container: string) => string> = {
+const DENIAL_PROSE: Record<
+  PlacementDenialRule,
+  (subject: string, container: string, destination: PlacementContainer) => string
+> = {
   not_accepted: (subject, container) => `${subject} does not go in ${container}.`,
   self_embed: (subject) => `${subject} cannot be placed inside itself.`,
   discipline: (subject, container) => `${subject} cannot be placed that way in ${container}.`,
@@ -174,13 +177,13 @@ const DENIAL_PROSE: Record<PlacementDenialRule, (subject: string, container: str
   not_displaceable: () =>
     "The note in that tile has nowhere else to live, so it cannot be displaced.",
   unknown_ref: () => "That item no longer exists.",
-  unknown_container: () => "That container no longer exists.",
+  unknown_container: (_subject, _container, destination) =>
+    `Container${destination.kind === "unplaced" ? "" : ` ${destination.containerId}`} is not known to this workspace.`,
   /*
     The container is there and its renderer is not (#110). The sentence names the RENDERER
     rather than the container, because the container is fine — this build simply has no
-    plugin that reads its discipline, and "no longer exists" (the `unknown_container`
-    sentence) would be a lie a principal would act on by recreating something they already
-    have.
+    plugin that reads its discipline, and the `unknown_container` sentence would be a lie
+    a principal would act on by recreating something they already have.
   */
   unknown_discipline: (subject, container) =>
     `${subject} cannot go in ${container}: nothing here knows how to render it.`,
@@ -198,7 +201,11 @@ export function itemDenialMessage(
   item: PlacementItem,
   lookup: ItemLookup,
 ): string {
-  return DENIAL_PROSE[denial.rule](lookup.noun(item.kind), containerNoun(denial.container, lookup));
+  return DENIAL_PROSE[denial.rule](
+    lookup.noun(item.kind),
+    containerNoun(denial.container, lookup),
+    denial.container,
+  );
 }
 
 /**
@@ -210,7 +217,7 @@ export function itemDenialMessage(
 export function denialMessage(denial: PlacementDenial, lookup: ItemLookup): string {
   const item = placementItemFor(denial.ref, lookup);
   const subject = item === null ? "That item" : lookup.noun(item.kind);
-  return DENIAL_PROSE[denial.rule](subject, containerNoun(denial.container, lookup));
+  return DENIAL_PROSE[denial.rule](subject, containerNoun(denial.container, lookup), denial.container);
 }
 
 /** What a carry would do at one destination: nothing to say, allowed, or refused. */
