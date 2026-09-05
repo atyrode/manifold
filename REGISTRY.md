@@ -394,7 +394,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/web/src/generated-changelog.ts",
-      "why": "generated from CHANGELOG.md's released sections by the release path; never hand-edited, which is why §Lexicon allows its frozen vocabulary"
+      "why": "generated at build (scripts/generate-web-changelog.ts) from CHANGELOG.md's released sections and the pending changes/*.md fragments; untracked and never hand-edited, which is why §Lexicon allows its frozen vocabulary"
     },
     {
       "glob": "packages/web/src/isolate/**",
