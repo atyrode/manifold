@@ -9,9 +9,16 @@ import type { PluginDataVersion } from "@manifold/protocol";
  * without knowing anything about its shape, and "which plugin owns this row" is answered by
  * the key's namespace rather than by a comment.
  *
- * The API is SYNCHRONOUS on purpose. The substrate underneath is Bun's SQLite, which is
+ * The API is SYNCHRONOUS today. The substrate underneath is Bun's SQLite, which is
  * synchronous; an async facade over it would add a promise per read for no concurrency, and
  * would make a data migration — which must be all-or-nothing — interleavable with dispatch.
+ *
+ * That ruling is already reversed on paper: ADR 0016 §4 (ratified, R3) migrates this
+ * interface to a promise-returning one for EVERY plugin, first-party included, and the
+ * migration ships with stage 1 of the isolation runner (#151) — one storage contract for
+ * in-realm and isolated plugins alike, no dual-contract period, no shim. Until it lands,
+ * write call sites so the change is a type change rather than a rewrite: one storage call
+ * per statement, never a chain of synchronous reads inside a single expression.
  *
  * Values are strings. A plugin that wants structure serializes it (its own schema, its own
  * versioning) exactly as the server's `meta` rows already do: the engine has no business
