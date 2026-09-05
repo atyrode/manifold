@@ -145,6 +145,52 @@ describe("buildBrowserAssembly", () => {
     expect(assembly.pluginTitle("core.draw")).toBe("Drawing");
   });
 
+  /**
+   * THE SECOND SOURCE (ADR 0016 §1): a row that arrived through `install` with a web half
+   * resolves every declared panel to the engine's isolated panel without anything in the tree
+   * naming it — and the same component on every rebuild, or every roster change would remount
+   * the tile and re-init the guest.
+   */
+  test("an installed plugin's declared panels resolve to the isolated panel, stably", () => {
+    const installed = (web: boolean, install: boolean): PluginRosterEntry => {
+      const row = entry({
+        id: "acme.notes",
+        title: "Notes",
+        contributes: { panels: [{ id: "main", title: "Notes" }] },
+      });
+      return {
+        ...row,
+        source: "plugin",
+        manifest: web ? { ...row.manifest, entry: { web: "web.js" } } : row.manifest,
+        ...(install
+          ? {
+              install: {
+                sha256: "a".repeat(64),
+                source: "/uploads/acme.notes.manifold-plugin.json",
+                grantedCaps: [],
+                installedBy: "p1",
+                installedAt: 1,
+              },
+            }
+          : {}),
+      };
+    };
+    const panelOf = (roster: PluginRoster, defs: readonly WebPluginDef[] = []) =>
+      buildBrowserAssembly(roster, 1, defs).panels.get("acme.notes.main");
+
+    const resolved = panelOf([installed(true, true)]);
+    expect(resolved?.Component).not.toBeNull();
+    expect(resolved?.enabled).toBe(true);
+    expect(panelOf([installed(true, true)])?.Component).toBe(resolved?.Component ?? null);
+
+    // Installed with no web half, or a web half that is not installed (first-party): no runner.
+    expect(panelOf([installed(false, true)])?.Component).toBeNull();
+    expect(panelOf([installed(true, false)])?.Component).toBeNull();
+    // An in-tree registration for the same id still wins the slot.
+    const inTree: WebPluginDef = { id: "acme.notes", panels: { main: Sidebar } };
+    expect(panelOf([installed(true, true)], [inTree])?.Component).toBe(Sidebar);
+  });
+
   test("a disabled plugin keeps every contribution, tagged enabled:false", () => {
     const assembly = buildBrowserAssembly(
       [entry(SHELL), entry(MACHINES, false), entry(DRAW, false), entry(URI, false)],
