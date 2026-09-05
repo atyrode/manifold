@@ -123,7 +123,7 @@ and produces negative geometry that the commit path then rejects.
   terminals in scope. `plugins:manage` authorizes plugin administration only — the engine
   doors `engine.plugins.setEnabled` and `engine.plugins.purge`. Installing a plugin is NOT
   administration of the shipped set but admission of a stranger's code, so
-  `engine.plugins.install` / `uninstall` are root only (`*`; §Isolated plugins).
+  `engine.plugins.install` / `uninstall` are root only (`*`; §Hardened plugins).
 - Token scope: optional `containerId` restricts everything to one container. It is a subtree
   grant at `manifold://container/<id>`, which is what it always meant; the field did not move.
 - Revocation: durable; server closes live sockets of revoked tokens with code 4403 and
@@ -268,7 +268,7 @@ pool entry and no new client (`AXIOMS.md` §The portable lens).
 | GET /api/attendance         | containers:read       | → `{ attendance: [{containerId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their container                                                 |
 | POST /api/actions/:name     | per action (declared) | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door                            |
 | GET /api/plugins            | any token             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Container-scoped tokens included: the roster is vocabulary                                           |
-| GET /api/plugins/:id/web.js | any token             | → the worker module of an installed, ENABLED plugin (`text/javascript`, `cache-control: no-store`, `etag: "<sha256>"`); 404 otherwise. §Isolated plugins                  |
+| GET /api/plugins/:id/web.js | any token             | → the worker module of an installed, ENABLED plugin (`text/javascript`, `cache-control: no-store`, `etag: "<sha256>"`); 404 otherwise. §Hardened plugins                  |
 | GET /api/layout             | any token             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the default composed from the roster's seats when unset. Self-scoped by construction                             |
 | GET /api/bindings           | containers:read       | → `{ overrides }` — the CALLER's key rebindings as binding id → key, self-scoped exactly as the layout read is. `core.keys.setBinding` is the only writer                 |
 | GET /api/settings           | containers:read       | → `{ values }` — the CALLER's plugin setting values as setting ref → boolean, self-scoped exactly as the bindings read is. `engine.plugins.setSetting` is the only writer |
@@ -550,8 +550,9 @@ the packages promise each other about that. Assembly happens twice from the same
 web halves — and both run `assembleRoster` from `@manifold/plugin`, which refuses duplicate
 plugin ids, action names, panel ids, element types and tool ids by NAMING every offender.
 Manifests are inert DATA: no executable fields; `entry` names which halves an INSTALLED bundle
-runs and is absent on every in-tree manifest (§Isolated plugins). Plugins are trusted in-process
-code when they ship in the tree (ADR 0010) and isolated when they are installed (ADR 0016); the
+runs and is absent on every in-tree manifest (§Hardened plugins). Plugins are trusted in-process
+code (ADR 0010, ADR 0025) and hardened only when their installer chose it (ADR 0016; today every
+installed row, until the in-realm loader lands — §Hardened plugins); the
 wire is the security boundary and every authority decision happens at a door. What happens to a
 plugin's data, contributions and neighbours across an enable/disable is the **behavioral contract**
 (`docs/decisions/0013-plugin-behavioral-contract.md`, per-kind table in `REGISTRY.md`
@@ -568,7 +569,7 @@ plugin's data, contributions and neighbours across an enable/disable is the **be
            | "isolate_starting" | "isolate_crashed",   // absent ≡ ok; the isolate_ pair is the runner's
   refusal?: PluginRefusalReason,              // why this row cannot be toggled right now
   changedBy?: string | null, changedAt?: number | null,    // who last flipped it, and when
-  install?: { sha256, source, grantedCaps, installedBy, installedAt, refusal? }  // present iff INSTALLED (§Isolated plugins)
+  install?: { sha256, source, grantedCaps, installedBy, installedAt, refusal? }  // present iff INSTALLED (§Hardened plugins)
 }
 ```
 
@@ -593,15 +594,15 @@ fan-out order.
 object; the answer is always HTTP 200 carrying `ActionOutcome`. The ladder is MONOTONIC and
 stops at the first rule that fires:
 
-| Order | `rule`            | Fires when                                                                                                                                                                                                                                                                              |
-| ----- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | `unknown_action`  | no assembled action carries that name                                                                                                                                                                                                                                                   |
-| 2     | `plugin_disabled` | the owning plugin is disabled in this workspace — SKIPPED for actions declared `cleanup: true` (D12: removal survives a disable; `core.terminals.kill` is the wave-1 occupant)                                                                                                          |
-| 3     | `forbidden`       | the caller is container-scoped (`containerScope !== null`) AND the action declares `scope: "workspace"` (the default) — message "scoped tokens cannot invoke workspace actions". An action declaring `scope: "container"` skips this rung; its handler MUST honour `ctx.containerScope` |
-| 4     | `forbidden`       | the caller lacks one of the action's DECLARED caps (intersection at the door, not inside the handler)                                                                                                                                                                                   |
-| 5     | `invalid_args`    | the body fails the action's `input` schema                                                                                                                                                                                                                                              |
-| 6     | `refused`         | the handler refused on domain grounds, or the engine refused by CLASS — the message is a refusal class, optionally naming offenders (below)                                                                                                                                             |
-| 7     | `unavailable`     | the isolate that holds the handler is not running (crashed past `ISOLATE_CRASH_BUDGET`) or did not answer within `ISOLATE_DISPATCH_DEADLINE_MS` (ADR 0016 §6, §Isolated plugins below). Only a row carrying `install` can answer it; an in-realm door never does                        |
+| Order | `rule`            | Fires when                                                                                                                                                                                                                                                                                    |
+| ----- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | `unknown_action`  | no assembled action carries that name                                                                                                                                                                                                                                                         |
+| 2     | `plugin_disabled` | the owning plugin is disabled in this workspace — SKIPPED for actions declared `cleanup: true` (D12: removal survives a disable; `core.terminals.kill` is the wave-1 occupant)                                                                                                                |
+| 3     | `forbidden`       | the caller is container-scoped (`containerScope !== null`) AND the action declares `scope: "workspace"` (the default) — message "scoped tokens cannot invoke workspace actions". An action declaring `scope: "container"` skips this rung; its handler MUST honour `ctx.containerScope`       |
+| 4     | `forbidden`       | the caller lacks one of the action's DECLARED caps (intersection at the door, not inside the handler)                                                                                                                                                                                         |
+| 5     | `invalid_args`    | the body fails the action's `input` schema                                                                                                                                                                                                                                                    |
+| 6     | `refused`         | the handler refused on domain grounds, or the engine refused by CLASS — the message is a refusal class, optionally naming offenders (below)                                                                                                                                                   |
+| 7     | `unavailable`     | the isolate that holds the handler is not running (crashed past `ISOLATE_CRASH_BUDGET`) or did not answer within `ISOLATE_DISPATCH_DEADLINE_MS` (ADR 0016 §6, §Hardened plugins below). Only a hardened row — today every row carrying `install` — can answer it; an in-realm door never does |
 
 Order matters: a caller must not learn that an action exists and is forbidden before the cheaper
 facts (existence, enablement) are settled, and a handler never sees unvalidated arguments. A
@@ -1142,16 +1143,40 @@ An unknown scheme or shape parses to `null` — nothing guesses. `GET /api/resol
 something an agent can name; `/uri/<encoded>` is the browser deep link onto the same grammar.
 Grants, spotlights, and (from wave 2) event topics all name nodes this way.
 
-## Isolated plugins
+## Hardened plugins
 
-An INSTALLED plugin (ADR 0016, stage 1+2) is a stranger's code: its roster row carries `install`,
-its server half runs in its own OS process and its web half in its own dedicated `Worker`. Every
-first-party row — `builtin` and every `packages/plugins/*` package — keeps running in-realm; the
-runner is selected by the presence of `install` on the row, never by a third `source` value. Both
-boundaries are message boundaries, so both frame sets are `@manifold/protocol` schemas
-(`packages/protocol/src/isolate.ts`) and both are published under `isolateContract` at
-`GET /api/protocol` beside the closed component vocabulary, the served ctx methods, the runner's
-numbers and the artifact shape — an out-of-tree author reads the whole target from one document.
+Every plugin runs in-realm with the full engine API — `core.*`, installed from a bundle, unpacked
+from a directory alike — and isolation is HARDENING an installer may choose for one row, never
+the default (ADR 0025, operator-ratified 2026-09-05, reversing ADR 0016 §1's "an installed row
+runs isolated"). A HARDENED row runs on ADR 0016's runner: its server half in its own OS process
+and its web half in its own dedicated `Worker`, against the narrower interface this section
+describes. The selector is `install.hardened === true` once the in-realm loader lands (#256);
+**today it is `install !== undefined`**, because the loader that would run an installed row in
+the page and the hub process is not yet built, so TODAY every installed row still runs hardened
+and every "installed" below means exactly that. That deferral must be visible in-product
+(`AXIOMS.md` §Change control): no roster field or refusal carries it yet — `install.hardened` is
+the field that will, and until it exists #256 owes the plugin manager's Installed band the
+sentence that installed rows run hardened. Every first-party row — `builtin` and every
+`packages/plugins/*` package — runs in-realm; the runner is selected by the row's `install`
+block, never by a third `source` value. Both boundaries are message boundaries, so both frame
+sets are `@manifold/protocol` schemas (`packages/protocol/src/isolate.ts`) and both are published
+under `isolateContract` at `GET /api/protocol` beside the closed component vocabulary, the served
+ctx methods, the runner's numbers and the artifact shape — an out-of-tree author reads the whole
+target from one document.
+
+**In-realm rows (ADR 0025 §1, §6).** An in-realm plugin holds the process: the web half gets
+React, all three `@manifold/plugin` entries, the real `HostServices` (token included) and the
+DOM; the server half gets the full `ActionCtx`. The capability ceiling governs DOORS, never code —
+`grantedCaps` decides which of the row's doors anyone can dispatch (below), and the installer is
+expected to read what they install. Failure is the row's own: a panel that throws is caught at
+the outlet by the shell's error boundary and painted as the engine's placeholder naming the
+plugin; a web module that fails to load degrades the row on that browser only; a hook that throws
+is `enable_failed` / `disable_failed` on the roster and the disable always completes; a server
+half that corrupts the process or loops forever takes the hub down, the trace ledger names every
+door it opened (ADR 0018), and the remedy is `uninstall` or reinstalling with `hardened: true`. A
+dialled guest's browser runs the host's in-realm plugins with the guest's token for THAT hub —
+no authority beyond what the hub already holds for that principal, and nothing that reaches the
+guest's own instance (ADR 0016 T5/T6, ADR 0025 §Consequences).
 
 **The artifact (`PluginBundleSchema`).** One JSON file, `<id>.manifold-plugin.json`, at most
 `ISOLATE_MAX_ARTIFACT_BYTES` (16 MiB):
@@ -1281,7 +1306,7 @@ as `isolate_output`, capped. Log events: `isolate_spawned`, `isolate_exited`, `i
 which is how the worker calls the door with the caller's authority without ever holding
 `HostServices.token` (ADR 0016 §3). The worker is terminated on disable.
 
-**The component vocabulary (`UiNodeSchema`, ADR 0016 §3, R2).** An isolated web half never touches
+**The component vocabulary (`UiNodeSchema`, ADR 0016 §3, R2).** A hardened web half never touches
 the DOM by any route; it renders by sending a tree of `UI_NODE_TYPES` — `box`, `heading`, `text`,
 `code`, `badge`, `divider`, `spinner`, `button`, `select`, `input`, `toggle`, `list`, `empty` —
 with tones from `UI_TONES` (`neutral`, `accent`, `muted`, `danger`, `success`; meaning, never
@@ -1317,7 +1342,7 @@ call before it used. One behaviour the proof records rather than endorses: unins
 plugin's ENABLEMENT beside its storage (the disabled set is keyed by id), so a reinstall of an
 id that was switched off in order to be uninstalled comes back off.
 
-**Why no first-party plugin runs isolated yet (ADR 0016 §8.1).** Stage 1 owes one first-party
+**Why no first-party plugin runs hardened yet (ADR 0016 §8.1).** Stage 1 owes one first-party
 plugin running both ways, and none qualifies against `ISOLATE_CTX_METHODS` today. Every
 first-party server half reaches at least one slice the runner does not serve: `core.keys`,
 `core.events`, `core.shell` (`setLayout`), `core.index`, `core.machines` and `core.terminals` read

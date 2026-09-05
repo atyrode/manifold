@@ -249,8 +249,12 @@ conversion work list — which floor surface becomes which plugin, and the rulin
     roster's `source` field. This wave also carries the explicit **core-plugin override**
     mechanism: replacing a core plugin is disable-then-enable-a-substitute by id, never a silent
     collision (A1 has no shadowing).
-    **It does not land before a dated isolation ADR ratifies a runner, and that is a hard
-    ordering rather than a preference.** Everything in the tree today is first-party code
+    **Distribution is gated on the install door, the hash pin and the installer's reading, not
+    on a boundary; isolation is `install.hardened`, the installer's choice per row, and ADR
+    0016's runner stands for hardened rows (ADR 0025, operator-ratified 2026-09-05).** That
+    reverses the ordering this bullet carried until then — "it does not land before a dated
+    isolation ADR ratifies a runner, and that is a hard ordering rather than a preference" —
+    whose reasoning stands as history: everything in the tree was first-party code
     compiled into the build, which is the entire reason ADR 0010 could reject WASM and Worker
     isolation and reserve the seam instead: contracts are sandbox-shaped (declared capabilities,
     schema'd JSON arguments, no host internals in a plugin signature) precisely so an isolated
@@ -261,10 +265,10 @@ conversion work list — which floor surface becomes which plugin, and the rulin
     stranger's plugin and the store, the broker and the room map. So the isolation ADR is the
     PREREQUISITE deliverable: it judges a runner (wasmtime-class, Worker-class, or a separate
     process) against the serialization cost ADR 0010 measured, and the marketplace wave
-    implements distribution on top of whatever it ratifies. **That prerequisite is discharged:**
-    ADR 0016 was ratified 2026-09-01 and judges the runner as one OS process per isolated plugin
-    on the server and one dedicated worker per isolated plugin in the browser, staged engine →
-    protocol → distribution, with this wave hard-gated on its stage 1.
+    implements distribution on top of whatever it ratifies. ADR 0016 was ratified 2026-09-01
+    and judges the runner as one OS process per isolated plugin on the server and one dedicated
+    worker per isolated plugin in the browser; ADR 0025 keeps that runner as the installer's
+    option and makes in-realm, with the full engine API, the default for every row.
   - **Settings** — a `core.settings` plugin over per-principal preferences. The mechanism is
     already floor and already neutral: `ctx.storage` is a namespaced per-plugin key-value store,
     so a preference is a plugin's own row and there is nothing for the engine to centralize. What
@@ -306,12 +310,12 @@ conversion work list — which floor surface becomes which plugin, and the rulin
     authoring half is unproven, and it is the harder and more interesting claim: writing a
     plugin currently means editing a workspace package, adding a row to two `assembly.ts` files
     and rebuilding, all of which an agent can do to a checkout and none of which it can do to a
-    RUNNING workspace. That makes this wave a consumer of the marketplace's runner rather than a
-    peer of it — the distribution seam is what turns "an agent wrote a plugin" into "an agent
-    installed the plugin it wrote", and the isolation ADR above is what makes running it
-    defensible. What this wave owes on its own is the authoring CONTRACT: a manifest an agent can
-    generate, doors it can verify its own plugin through, and the failure modes stated as data
-    rather than as a build log.
+    RUNNING workspace. ADR 0025 (operator-ratified 2026-09-05) makes this wave a peer of
+    distribution rather than a consumer of an isolation runner: an agent writes a plugin into an
+    unpacked directory on the instance and the hub loads it live, in-realm, behind developer
+    mode — the work is #257. What this wave owes on its own is the authoring CONTRACT: a
+    manifest an agent can generate, doors it can verify its own plugin through, and the failure
+    modes stated as data rather than as a build log.
   - **App shells** — packaging manifold's client for hosts that are not a plain browser tab, and
     ADR-gated when it is built rather than sketched now. A **PWA pass is the near milestone**:
     installability, offline shell, and the origin-configurability the portable-lens rule already
