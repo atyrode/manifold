@@ -5,7 +5,7 @@ import { migrateToCanonLexicon } from "./migrate-lexicon.ts";
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -457,6 +457,21 @@ CREATE TABLE plugin_installs(
   bundle_path TEXT NOT NULL
 ) WITHOUT ROWID;
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '17');
+`,
+  /**
+   * The doors an install published (ADR 0016 R8, the boot-refusal fix): the `ActionSummary[]`
+   * the assembly published for the row when it was admitted, as JSON. A bundle that fails
+   * re-verification at boot still puts its doors on the roster from this column — never from
+   * the file — so a dispatch to one answers a traced `unavailable` naming the refusal instead
+   * of `unknown_action`, the one rung the ledger does not keep. Existing rows read `[]`: an
+   * install admitted before this column has no record of its doors until it is replaced, and
+   * an empty list is exactly the doorless row those installs already composed.
+   *
+   * Plain SQL, no snapshot: one added column with a default, reversible by a DROP COLUMN.
+   */
+  18: `
+ALTER TABLE plugin_installs ADD COLUMN actions TEXT NOT NULL DEFAULT '[]';
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '18');
 `,
 };
 

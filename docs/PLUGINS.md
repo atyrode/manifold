@@ -216,6 +216,9 @@ Rules worth knowing before you write one:
 - **`dataVersion` governs your stored rows** (§4). Bump `minor` freely; bumping `major` without a
   migration refuses to assemble your plugin, and data written by a newer `major` than your code
   refuses too — the engine never guesses at your schema.
+- **`links` says where you come from**: `repository`, `homepage` and `changelog`, each an
+  `https://` URL, all optional. The plugin manager shows `repository`; the update flow (#238)
+  reads `changelog` to say what a newer version changes. Absent ≡ you said nothing.
 - **`dormant` is how your contributions look while you are disabled**: `ghost` (the engine's inert
   placeholder, naming you — the default) or `hide` (record kept, nothing painted), plus an optional
   `label`. It is **data, not a component**: the engine draws the placeholder, because a plugin that
@@ -397,7 +400,7 @@ argue an earlier denial back to allow:
 | 4   | `forbidden`       | The caller lacks one of the action's declared caps **at the node it is asking about** — its own container for a scoped token, the workspace root for an unscoped one (ADR 0011).                                                                        |
 | 5   | `invalid_args`    | The payload fails the action's `input` schema.                                                                                                                                                                                                          |
 | 6   | `refused`         | The handler returned `{ refused }`, or the engine refused by class — e.g. `essential`, `builtin`, `still_enabled`.                                                                                                                                      |
-| 7   | `unavailable`     | The door's plugin is INSTALLED (ADR 0016) and the child process holding its handler is not running — crashed past `ISOLATE_CRASH_BUDGET`, or silent past `ISOLATE_DISPATCH_DEADLINE_MS`. An in-realm door never answers it.                             |
+| 7   | `unavailable`     | The door's plugin is INSTALLED (ADR 0016) and nothing is there to answer: its child crashed past `ISOLATE_CRASH_BUDGET`, sat silent past `ISOLATE_DISPATCH_DEADLINE_MS`, or its bundle failed re-verification at boot (`bundle failed verification at boot: <class>`). An in-realm door never answers it. |
 
 Rule 3 is the same precedent as every workspace route, and the permission waterfall
 (`docs/decisions/0011-permission-waterfall.md`) left it exactly where it was: a scoped token
@@ -1187,7 +1190,7 @@ build wrote, and a manager token that could do that would be `*` by another name
 
 ```
 engine.plugins.install   { source, sha256, grant?, replace? }  → { id, version, grantedCaps }
-engine.plugins.uninstall { id }                                → {}
+engine.plugins.uninstall { id, purge? }                        → {}
 ```
 
 - **`source`** is an `https://` URL (fetched with a 30 s bound, at most
@@ -1197,7 +1200,11 @@ engine.plugins.uninstall { id }                                → {}
 - **`sha256`** is the hash of the bundle's EXACT bytes, and it is what you are consenting to:
   nothing is written unless the bytes read hash to it (`hash_mismatch`), and every boot re-hashes
   the stored bundle — a bundle that no longer matches is refused by name on its row
-  (`lifecycle: "enable_failed"`, `install.refusal: "hash_mismatch"`) and nothing from it is loaded.
+  (`enabled: true`, `lifecycle: "enable_failed"`, `install.refusal: "hash_mismatch"` — the triple
+  a manager reads as "Refused") and nothing from it is loaded. The row still publishes the doors
+  it had when it was admitted (the engine recorded them on the install row, never the file), and
+  each one answers `unavailable` with `bundle failed verification at boot: hash_mismatch`, traced
+  like any refusal, rather than vanishing into `unknown_action`.
 - **`grant`** widens the DEFAULT grant, which is the manifest's declared `capabilities` minus
   `*`, `tokens:mint` and `plugins:manage` — a stranger's plugin never holds those unless an
   installer names them. The grant is published on the row (`install.grantedCaps`) and enforced at
@@ -1208,12 +1215,18 @@ engine.plugins.uninstall { id }                                → {}
 
 Refusals answer `{ refused: "<class>: detail" }` with a class from `PLUGIN_INSTALL_REFUSALS`
 (`artifact_unreadable`, `artifact_invalid`, `hash_mismatch`, `already_installed`,
-`not_installed`, `namespace_reserved`, `still_enabled`, `no_entry`), class first so a client
-switches on the prefix. An assembly refusal — a duplicate id or action name, a `core.` squat — is
-caught at the door as `artifact_invalid` naming the problem and rolled back (files, row, child), so
-an install can never be the reason a server does not boot. Uninstall removes the row and the files
-and leaves the plugin's storage exactly where it was: that is `purge`, a different verb, and a
-reinstall of the same id finds its data waiting.
+`not_installed`, `namespace_reserved`, `still_enabled`, `storage_retained`, `no_entry`), class
+first so a client switches on the prefix. An assembly refusal — a duplicate id or action name, a
+`core.` squat — is caught at the door as `artifact_invalid` naming the problem and rolled back
+(files, child), so an install can never be the reason a server does not boot. Uninstall removes
+the row and the files and never destroys the plugin's storage on its own: while that storage
+holds anything it refuses `storage_retained: <n> keys; purge first or pass purge: true`, and
+`purge: true` runs the purge verb first — the same path, the same `plugin_purged` event — and the
+uninstall second, so no uninstalled id ever leaves data where no door reaches it (#233). Data
+outlives a DISABLE, never an uninstall: destruction is `purge`, and an uninstall is only ever
+reached through it or with nothing to destroy. Uninstall also takes the row's switch with it: a
+fresh install of the same id is a fresh row, on by default and attributed to nobody, whatever the
+toggle said before — exactly like the first install.
 
 The plugin manager's **Installed** tab is one UI over these two doors — a form carrying
 `data-action="engine.plugins.install"`, one row per installed bundle with its hash, grant and
