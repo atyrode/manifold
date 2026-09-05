@@ -1562,7 +1562,7 @@ refused past 32 levels or 2000 nodes, and a node with a key the kind does not ha
 posts one, so a bad tree becomes a `fault` naming the panel and the engine paints the panel as
 `empty` with tone `danger`. There is no plugin CSS. Ink has one owner (S13).
 
-### Packing and installing
+### Packing
 
 ```sh
 bun run --cwd packages/plugin-kit pack <plugin-dir> --out acme.counter.manifold-plugin.json
@@ -1573,25 +1573,9 @@ bun run --cwd packages/plugin-kit pack <plugin-dir> --out acme.counter.manifold-
 (target `browser`) with the kit, the protocol and zod INLINED — the artifact is self-contained and
 the engine's loader never resolves a package — and writes one JSON document (`PluginBundleSchema`:
 `format: 1`, the manifest with its `entry`, the members as base64). The printed `sha256` is over
-the file's exact bytes and is the pin the install door demands:
-
-```
-POST /api/actions/engine.plugins.install    { "source": "<https URL or path>", "sha256": "e984…", "grant": [...]? }
-POST /api/actions/engine.plugins.uninstall  { "id": "acme.counter" }
-```
-
-Both are root-only doors on the engine's own roster row. A path source is accepted under
-`${MANIFOLD_DATA_DIR}/plugin-uploads/` (or anywhere with `MANIFOLD_PLUGIN_DEV_PATHS=1` for
-development); a URL source is https only, capped at 16 MiB, 30 s. The installed row carries
-`install: { sha256, source, grantedCaps, installedBy, installedAt }` on `GET /api/plugins`, and
-`grantedCaps` defaults to your declared `capabilities` minus `*`, `tokens:mint` and
-`plugins:manage` — a door whose caps the grant does not cover answers `forbidden` naming the grant
-(ADR 0016 §5). Refusals are the closed `PLUGIN_INSTALL_REFUSALS` classes, class first:
-`hash_mismatch` when the bytes do not hash to the pin, `already_installed` for an upgrade without
-`replace: true`, `still_enabled` for an uninstall or a replace while the row is on, `no_entry`,
-`namespace_reserved` (`engine.`, `core.`), `artifact_invalid` for anything assembly would refuse.
-The bundle is re-hashed at every boot and a mismatch is never loaded (R8, fail-closed). Uninstall
-removes the row and the files and leaves your storage alone — that is `purge`, a different verb.
+the file's exact bytes and is the pin `engine.plugins.install` demands; the door itself — where a
+source may come from, the default grant, the refusal classes, where the bundle lives afterwards —
+is §7 Installing a plugin, and the artifact's shape is `docs/CONTRACTS.md` §Isolated plugins.
 
 ### What an isolated plugin does NOT get (ADR 0016 §3)
 
