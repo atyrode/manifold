@@ -84,8 +84,6 @@ import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
  * sections, the drawing tool, the terminal actions — is a plugin.
  */
 
-/** One committed layout write per gesture, not per frame (D6). */
-const LAYOUT_COMMIT_MS = 300;
 
 /**
  * The FALLBACK cadence of the workspace index (ADR 0012, wave 2).
@@ -154,64 +152,43 @@ export function WorkspaceHost({
    * frame and must not read a `layout` captured by a stale closure; the ref is that read.
    */
   const layoutRef = useRef<TileLayout | null>(null);
-  const commitTimerRef = useRef<number | null>(null);
-  const pendingCommitRef = useRef<TileLayout | null>(null);
   /**
    * The CURRENT roster, readable from the boot fetch without being a reason to re-run it. The
    * fallback below needs whatever is enabled at the moment the fetch fails; putting `assembly`
    * in that effect's dependencies would instead re-fetch the stored tree on every enablement
-   * change and discard a gesture the debounce had not committed yet.
+   * change and discard a gesture that has not reached its commit point.
    */
   const assemblyRef = useRef(assembly);
   useEffect(() => {
     assemblyRef.current = assembly;
   }, [assembly]);
 
-  /**
-   * ONE `core.space.setLayout` per gesture. A divider drag paints optimistically per frame and
-   * commits once, on a trailing debounce after the last frame — the plane rule's commit
-   * point (D6). An action per frame would put a hundred authority-checked writes on the wire
-   * for one drag.
-   */
-  const scheduleCommit = useCallback(
+  /** Discrete gestures dispatch here; divider frames only update the local tree. */
+  const commitLayout = useCallback(
     (next: TileLayout): void => {
-      pendingCommitRef.current = next;
-      if (commitTimerRef.current !== null) window.clearTimeout(commitTimerRef.current);
-      commitTimerRef.current = window.setTimeout(() => {
-        commitTimerRef.current = null;
-        const committed = pendingCommitRef.current;
-        pendingCommitRef.current = null;
-        if (committed === null) return;
-        void host.client
-          .action(SPACE_SET_LAYOUT_ACTION, { layout: committed })
-          .then((outcome) => {
-            if (outcome.ok) return;
-            notify(outcome.denial.message, { key: "layout-set" });
-          })
-          .catch((reason: unknown) => {
-            notify(reason instanceof Error ? reason.message : "Could not save the layout", {
-              key: "layout-set",
-            });
+      void host.client
+        .action(SPACE_SET_LAYOUT_ACTION, { layout: next })
+        .then((outcome) => {
+          if (outcome.ok) return;
+          notify(outcome.denial.message, { key: "layout-set" });
+        })
+        .catch((reason: unknown) => {
+          notify(reason instanceof Error ? reason.message : "Could not save the layout", {
+            key: "layout-set",
           });
-      }, LAYOUT_COMMIT_MS);
+        });
     },
     [host.client, notify],
   );
 
-  useEffect(
-    () => () => {
-      if (commitTimerRef.current !== null) window.clearTimeout(commitTimerRef.current);
-    },
-    [],
-  );
 
   const applyLayout = useCallback(
     (next: TileLayout, commit: boolean): void => {
       layoutRef.current = next;
       setLayout(next);
-      if (commit) scheduleCommit(next);
+      if (commit) commitLayout(next);
     },
-    [scheduleCommit],
+    [commitLayout],
   );
 
   useEffect(() => {
@@ -254,10 +231,15 @@ export function WorkspaceHost({
       if (current === null) return;
       const next = withTileRatios(current, splitId, ratios);
       if (next === null) return;
-      applyLayout(next, true);
+      applyLayout(next, false);
     },
     [applyLayout],
   );
+
+  const commitRatios = useCallback((): void => {
+    const current = layoutRef.current;
+    if (current !== null) commitLayout(current);
+  }, [commitLayout]);
 
   /**
    * A placeholder's own remove control. A disabled or unknown panel must never be able to
@@ -373,9 +355,8 @@ export function WorkspaceHost({
   /**
    * The write half of {@link TileGeometryHandle}: a stable wrapper over the floor's own
    * `applyLayout`, always committing (every plugin-driven change is a discrete gesture, never
-   * a per-frame paint) — so a toolbar click or a grip release gets the identical local echo
-   * and debounced `core.space.setLayout` a divider drag already has, through one function
-   * rather than two write paths that could drift apart.
+   * a per-frame paint). Divider release, toolbar clicks and grip releases share the same
+   * commit path, while divider frames stay local.
    */
   const applyLayoutFromHost = useCallback(
     (next: TileLayout): void => {
@@ -856,6 +837,7 @@ export function WorkspaceHost({
               // Always: this is the caller's OWN layout, so its seams are always live.
               interactive={true}
               onRatios={onRatios}
+              onRatiosCommit={commitRatios}
               renderLeaf={renderLeaf}
             />
           )}
