@@ -6,5 +6,10 @@ the run protocol ([`README.md`](README.md)). `main rev` is the short sha the bri
 `see <brief>` for anything noticed out of scope. An agent that finds the newest row for a brief
 older than the cadence in `AGENTS.md` §Audits says so at the end of its task.
 
-| date | brief | main rev | agent | issues |
-| ---- | ----- | -------- | ----- | ------ |
+| date       | brief                | main rev | agent                    | issues                                                                                                             |
+| ---------- | -------------------- | -------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| 2026-09-05 | process              | 7921f5b  | omp scout (orchestrated) | #265 #266 #267 #268; settings applied without a PR: ruleset on `main`, squash-only, secret scanning                |
+| 2026-09-05 | dead-code            | 7921f5b  | omp scout (orchestrated) | #269; `SERVER_VERSION` → #251                                                                                      |
+| 2026-09-05 | spec-drift           | 7921f5b  | omp scout (orchestrated) | none new: the `ADR 0023`/`ADR 0024` citations with no record on `main` are landed by #252 / #253 (renumbered 0025) |
+| 2026-09-05 | decisions-compaction | 7921f5b  | omp scout (orchestrated) | #270 #271 #272 #273                                                                                                |
+| 2026-09-05 | docs-consistency     | —        | —                        | not yet run; first run owed after #250/#251 rewrite the docs they touch                                            |

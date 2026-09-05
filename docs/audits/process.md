@@ -32,11 +32,11 @@ repositories (name them as context, never audit them from here).
 2. **The gate runs where the contract says.** `ci.yml` must trigger on `pull_request` into `main`
    and `push` to `main` and run `bun run gate` — nothing less, nothing repeated in `release.yml`.
    `scripts/release.ts` must refuse a `main` commit with no green run (`gh run list --workflow
-   ci.yml --commit`) and must be the ONLY writer of `release:` commits and `v*` tags:
+ci.yml --commit`) and must be the ONLY writer of `release:` commits and `v*` tags:
    `git log --format='%s' origin/main | grep -c '^release:'` against `git tag -l 'v*' | wc -l`, and
    `git log --merges` for any release commit that is not a squash from a PR.
 3. **PR practice against the contract.** `gh pr list --state merged --limit 30 --json
-   number,title,body,labels,files`: every body links an issue with `Closes #N`; every title uses a
+number,title,body,labels,files`: every body links an issue with `Closes #N`; every title uses a
    contract prefix; every user-visible change carries a fragment (`changes/`) or a changelog
    bullet; no PR touched `CHANGELOG.md` released sections or `generated-changelog.ts` by hand.
    Count violations; a pattern (three or more PRs doing the same undocumented thing) is a

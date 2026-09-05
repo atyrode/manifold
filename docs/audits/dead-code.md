@@ -41,11 +41,11 @@ string is live even when no import names it (S4, S15 are the readers there).
    text changes, is a candidate — the fix is deleting the test WITH its subject, never keeping
    the test so the subject "has coverage".
 4. **Stale comments and names.** For every identifier a comment mentions in backticks
-   (`grep -rn '\`[A-Za-z_][A-Za-z0-9_.]*\`' packages scripts --include='*.ts' --include='*.tsx'`),
-   confirm the identifier still exists; for a comment that says "removed", "no longer", "used to",
-   "legacy", "old", "temporary", "for now", or "until", run `git log -S'<phrase>' --oneline` and
-   check whether the thing it describes is still true at this revision. Same for file names: a file
-   whose name is a retired lexicon word survives only through an `allow` row.
+   (`grep -rn '\`[A-Za-z_][A-Za-z0-9_.]_\`' packages scripts --include='_.ts' --include='*.tsx'`),
+confirm the identifier still exists; for a comment that says "removed", "no longer", "used to",
+"legacy", "old", "temporary", "for now", or "until", run `git log -S'<phrase>' --oneline`and
+check whether the thing it describes is still true at this revision. Same for file names: a file
+whose name is a retired lexicon word survives only through an`allow` row.
 5. **Latent branches.** Find conditions that can no longer be true. Known shapes:
    `scripts/generate-web-changelog.ts:12`'s `-dev` path (`webVersion.includes("-dev")`) — check
    whether any `package.json` version, `bun run release` step, or workflow ever produces a

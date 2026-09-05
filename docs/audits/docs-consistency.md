@@ -33,12 +33,12 @@ Out: code, tests, workflow YAML (that is `spec-drift.md` or `process.md`); `docs
    that was renamed is a finding with a mechanical fix.
 3. **Commands exist.** Every `bun run <name>` and `bun scripts/<file>` in the in-scope files must
    match a `package.json` `scripts` key or a file under `scripts/`. Every `gh`, `git`, `docker
-   compose` invocation in a runbook must be syntactically runnable as written (run it with
+compose` invocation in a runbook must be syntactically runnable as written (run it with
    `--help`/`--dry-run` where one exists; otherwise read it).
 4. **Paths exist.** Every backticked path (`packages/…`, `scripts/…`, `.github/…`, `docs/…`,
    `infra/…`) must exist at this revision: extract with
-   `grep -rho '\`\(packages\|scripts\|docs\|infra\|\.github\)/[^\` ]*\`' <files> | sort -u` and
-   test each with `test -e`. Glob-shaped paths (`packages/plugins/*`) must match at least one file.
+   `grep -rho '\`\(packages\|scripts\|docs\|infra\|\.github\)/[^\` ]_\`' <files> | sort -u`and
+test each with`test -e`. Glob-shaped paths (`packages/plugins/_`) must match at least one file.
 5. **One statement per rule.** For each of these rules, find every place it is stated and check
    the statements agree in substance (not wording): the issue → PR → `Closes #N` flow; the changelog
    bullet format and where fragments live; the release path and what it refuses; the commit prefix

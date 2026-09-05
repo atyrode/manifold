@@ -10,13 +10,13 @@ Not-a-finding, and a "Revisit this brief when" line. The Method is numbered and 
 files to read against which, which commands to run — because a brief that says "look for problems"
 produces opinions, and the ledger records findings.
 
-| Brief                                                | Label   | Asks                                                                    |
-| ---------------------------------------------------- | ------- | ----------------------------------------------------------------------- |
-| [`spec-drift.md`](spec-drift.md)                     | `audit` | Does the code still do what `AXIOMS.md`/`REGISTRY.md`/`CONTRACTS.md` say? |
-| [`dead-code.md`](dead-code.md)                       | `audit` | What is exported, tested or commented that nothing reaches?              |
-| [`decisions-compaction.md`](decisions-compaction.md) | `audit` | Does every accepted decision's normative claim live in the spec?         |
-| [`docs-consistency.md`](docs-consistency.md)         | `audit` | Do the prose docs agree with each other and with the tree?               |
-| [`process.md`](process.md)                           | `process` | Does the repository process match what the operator has been told?     |
+| Brief                                                | Label     | Asks                                                                      |
+| ---------------------------------------------------- | --------- | ------------------------------------------------------------------------- |
+| [`spec-drift.md`](spec-drift.md)                     | `audit`   | Does the code still do what `AXIOMS.md`/`REGISTRY.md`/`CONTRACTS.md` say? |
+| [`dead-code.md`](dead-code.md)                       | `audit`   | What is exported, tested or commented that nothing reaches?               |
+| [`decisions-compaction.md`](decisions-compaction.md) | `audit`   | Does every accepted decision's normative claim live in the spec?          |
+| [`docs-consistency.md`](docs-consistency.md)         | `audit`   | Do the prose docs agree with each other and with the tree?                |
+| [`process.md`](process.md)                           | `process` | Does the repository process match what the operator has been told?        |
 
 ## Run protocol
 
