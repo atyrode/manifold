@@ -319,7 +319,9 @@ function InstalledPanel({
       .filter((word) => word.length > 0);
     const caps = CapSchema.array().safeParse(words);
     if (!caps.success) {
-      setGrantProblem(`Not a capability: ${words.filter((word) => !CapSchema.safeParse(word).success).join(", ")}`);
+      setGrantProblem(
+        `Not a capability: ${words.filter((word) => !CapSchema.safeParse(word).success).join(", ")}`,
+      );
       return;
     }
     setGrantProblem(null);
@@ -363,8 +365,8 @@ function InstalledPanel({
         </label>
         <label className="plugin-manager-install-field">
           <span>
-            Grant — optional, comma-separated capabilities to add to the default (which withholds
-            *, tokens:mint and plugins:manage)
+            Grant — optional, comma-separated capabilities to add to the default (which withholds *,
+            tokens:mint and plugins:manage)
           </span>
           <input
             className="plugin-manager-search"
@@ -411,7 +413,11 @@ function InstalledPanel({
         </p>
       )}
       {notice === null ? null : (
-        <p className="plugin-manager-notice" data-testid="plugin-manager-install-notice" role="status">
+        <p
+          className="plugin-manager-notice"
+          data-testid="plugin-manager-install-notice"
+          role="status"
+        >
           {notice}
         </p>
       )}
@@ -439,7 +445,8 @@ function InstalledPanel({
                     {manifest.id} · {manifest.version} · {install.sha256.slice(0, 12)}
                   </small>
                   <small title={install.source}>
-                    Granted {install.grantedCaps.length === 0 ? "nothing" : install.grantedCaps.join(", ")}{" "}
+                    Granted{" "}
+                    {install.grantedCaps.length === 0 ? "nothing" : install.grantedCaps.join(", ")}{" "}
                     · installed by {install.installedBy}
                   </small>
                   {lifecycle === null ? null : (

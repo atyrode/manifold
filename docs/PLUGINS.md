@@ -397,7 +397,7 @@ argue an earlier denial back to allow:
 | 4   | `forbidden`       | The caller lacks one of the action's declared caps **at the node it is asking about** — its own container for a scoped token, the workspace root for an unscoped one (ADR 0011).                                                                        |
 | 5   | `invalid_args`    | The payload fails the action's `input` schema.                                                                                                                                                                                                          |
 | 6   | `refused`         | The handler returned `{ refused }`, or the engine refused by class — e.g. `essential`, `builtin`, `still_enabled`.                                                                                                                                      |
-| 7   | `unavailable`     | The door's plugin is INSTALLED (ADR 0016) and the child process holding its handler is not running — crashed past `ISOLATE_CRASH_BUDGET`, or silent past `ISOLATE_DISPATCH_DEADLINE_MS`. An in-realm door never answers it.                           |
+| 7   | `unavailable`     | The door's plugin is INSTALLED (ADR 0016) and the child process holding its handler is not running — crashed past `ISOLATE_CRASH_BUDGET`, or silent past `ISOLATE_DISPATCH_DEADLINE_MS`. An in-realm door never answers it.                             |
 
 Rule 3 is the same precedent as every workspace route, and the permission waterfall
 (`docs/decisions/0011-permission-waterfall.md`) left it exactly where it was: a scoped token

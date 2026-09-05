@@ -137,7 +137,12 @@ describe("installArtifact", () => {
     );
     expect(relative.reason).toBe("artifact_unreadable");
 
-    const admitted = await installArtifact({ source, sha256, dataDir: drop.dataDir, devPaths: true });
+    const admitted = await installArtifact({
+      source,
+      sha256,
+      dataDir: drop.dataDir,
+      devPaths: true,
+    });
     expect(admitted.bundle.manifest.id).toBe("vendor.sample");
   });
 
@@ -154,7 +159,9 @@ describe("installArtifact", () => {
     // The stored artifact is the EXACT bytes read, so it still hashes to the pin.
     expect(sha256Hex(readFileSync(layout.bundlePath))).toBe(sha256);
     expect(readdirSync(layout.dir).sort()).toEqual(["server.js", "web.js"]);
-    expect(readFileSync(join(layout.dir, "server.js"), "utf8")).toBe("export const half = 'server';");
+    expect(readFileSync(join(layout.dir, "server.js"), "utf8")).toBe(
+      "export const half = 'server';",
+    );
   });
 
   test("admission is asked once the bundle is parsed and before anything is written", async () => {
@@ -279,7 +286,10 @@ describe("verifyInstalledBundle", () => {
       sha256,
       dataDir: drop.dataDir,
     });
-    const row: PluginInstallRow = { ...rowFor(drop.dataDir, sha256), bundlePath: admitted.bundlePath };
+    const row: PluginInstallRow = {
+      ...rowFor(drop.dataDir, sha256),
+      bundlePath: admitted.bundlePath,
+    };
     expect(verifyInstalledBundle(row)).toMatchObject({ ok: false, refusal: "artifact_invalid" });
   });
 

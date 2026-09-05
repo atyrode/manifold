@@ -1637,7 +1637,10 @@ interface InstallFixture extends HostFixture {
   readonly runner: FakeRunner;
   readonly isolates: IsolateDeps;
   /** Writes a bundle into the uploads box; answers the door's two arguments. */
-  drop(manifest?: PluginManifest, files?: Record<string, string>): { source: string; sha256: string };
+  drop(
+    manifest?: PluginManifest,
+    files?: Record<string, string>,
+  ): { source: string; sha256: string };
 }
 
 async function installFixture(
@@ -1653,18 +1656,28 @@ async function installFixture(
     dataDir,
     runner,
     isolates: { runner, dataDir },
-    drop(manifest = SAMPLE_MANIFEST, files = { "server.js": "export {};", "web.js": "export const web = 1;" }) {
+    drop(
+      manifest = SAMPLE_MANIFEST,
+      files = { "server.js": "export {};", "web.js": "export const web = 1;" },
+    ) {
       const bytes = Buffer.from(
         JSON.stringify({
           format: 1,
           manifest,
           files: Object.fromEntries(
-            Object.entries(files).map(([name, text]) => [name, Buffer.from(text).toString("base64")]),
+            Object.entries(files).map(([name, text]) => [
+              name,
+              Buffer.from(text).toString("base64"),
+            ]),
           ),
         }),
       );
       dropped += 1;
-      const source = join(dataDir, PLUGIN_UPLOADS_DIR, `drop-${String(dropped)}.manifold-plugin.json`);
+      const source = join(
+        dataDir,
+        PLUGIN_UPLOADS_DIR,
+        `drop-${String(dropped)}.manifold-plugin.json`,
+      );
       writeFileSync(source, bytes);
       return { source, sha256: sha256Hex(bytes) };
     },
@@ -1693,10 +1706,12 @@ describe("PluginHost install doors", () => {
 
     // Root only: a manager token switches shipped rows, it does not admit a stranger's code.
     const manager = context(fixture, ["plugins:manage"]);
-    expect(denial(await host.dispatch(manager, ENGINE_INSTALL_ACTION, { source, sha256 }))).toEqual({
-      rule: "forbidden",
-      message: "* capability required",
-    });
+    expect(denial(await host.dispatch(manager, ENGINE_INSTALL_ACTION, { source, sha256 }))).toEqual(
+      {
+        rule: "forbidden",
+        message: "* capability required",
+      },
+    );
 
     expect(await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).toEqual({
       ok: true,
@@ -1793,7 +1808,8 @@ describe("PluginHost install doors", () => {
     // Disable RETAINS, and so does uninstall: destruction is `purge`, a different verb.
     expect(await fixture.store.pluginStorage(SAMPLE_ID).get("kept")).toBe("yes");
     expect(
-      denial(await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID })).message,
+      denial(await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID }))
+        .message,
     ).toMatch(/^not_installed: /);
     fixture.store.close();
   });
@@ -1821,12 +1837,13 @@ describe("PluginHost install doors", () => {
     const firstRow = fixture.store.pluginInstalls()[0];
     const second = fixture.drop({ ...SAMPLE_MANIFEST, version: "2.0.0" });
 
-    expect(denial(await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, second)).message).toMatch(
-      /^already_installed: /,
-    );
     expect(
-      denial(await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { ...second, replace: true }))
-        .message,
+      denial(await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, second)).message,
+    ).toMatch(/^already_installed: /);
+    expect(
+      denial(
+        await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { ...second, replace: true }),
+      ).message,
     ).toMatch(/^still_enabled: /);
 
     expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
@@ -1851,7 +1868,9 @@ describe("PluginHost install doors", () => {
     const fixture = await installFixture();
     const log: HookLog = { calls: [] };
     // The same id already composes in-realm: a duplicate the assembly refuses by name.
-    const host = await customHost(fixture, [recorder(SAMPLE_ID, log)], { isolates: fixture.isolates });
+    const host = await customHost(fixture, [recorder(SAMPLE_ID, log)], {
+      isolates: fixture.isolates,
+    });
     const { source, sha256 } = fixture.drop();
     const outcome = await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 });
     expect(denial(outcome).message).toMatch(/^artifact_invalid: duplicate plugin id/);
@@ -1969,7 +1988,9 @@ describe("PluginHost install doors", () => {
     );
     pushed = nextRoster();
     fixture.runner.report(SAMPLE_ID, "running");
-    expect((await pushed).find((entry) => entry.manifest.id === SAMPLE_ID)?.lifecycle).toBeUndefined();
+    expect(
+      (await pushed).find((entry) => entry.manifest.id === SAMPLE_ID)?.lifecycle,
+    ).toBeUndefined();
     pushed = nextRoster();
     fixture.runner.report(SAMPLE_ID, "crashed");
     expect(installedRow(host, SAMPLE_ID).lifecycle).toBeUndefined();

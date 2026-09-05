@@ -84,12 +84,7 @@ import {
   type InstalledArtifact,
 } from "./plugin-installs.ts";
 import type { RoomManager } from "./room.ts";
-import type {
-  MachineRecord,
-  PluginInstallRow,
-  ServerStore,
-  TraceAttribution,
-} from "./stores.ts";
+import type { MachineRecord, PluginInstallRow, ServerStore, TraceAttribution } from "./stores.ts";
 import type { TerminalBroker } from "./terminal-broker.ts";
 
 /**
@@ -1301,7 +1296,8 @@ export class PluginHost {
       this.assembled = await this.reassemble();
     } catch (error) {
       await this.rollbackInstall(id, artifact, previous, previousDef);
-      if (error instanceof IsolateLoadError) return installRefused("artifact_invalid", error.message);
+      if (error instanceof IsolateLoadError)
+        return installRefused("artifact_invalid", error.message);
       if (error instanceof AssemblyError) {
         return installRefused("artifact_invalid", error.problems.join("; "));
       }
