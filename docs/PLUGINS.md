@@ -1228,9 +1228,21 @@ reached through it or with nothing to destroy. Uninstall also takes the row's sw
 fresh install of the same id is a fresh row, on by default and attributed to nobody, whatever the
 toggle said before — exactly like the first install.
 
-The plugin manager's **Installed** tab is one UI over these two doors — a form carrying
-`data-action="engine.plugins.install"`, one row per installed bundle with its hash, grant and
-lifecycle, and an uninstall lever offered only on a row that is off.
+The plugin manager (`core.plugins`, issue #239) is one UI over these two doors and the three
+beside them. Its list is three collapsible bands — **Installed** (rows carrying `install`, grouped
+by publisher), **Built-in** (`core.*`) and **Engine** (builtin rows, not toggleable) — and a plugin
+FAMILY (ADR 0023: a three-segment id whose parent is composed and declared `required`) is one row
+with a chevron, its parts nested under it, the parent's switch being the family's. Every row wears
+a STATUS chip in plain words (On / Off / Starting / Crashed / Refused / Not ready, with the reason on
+hover — never a refusal class) and a PERMISSIONS chip counting what the row holds (for an installed
+row, its grant; the sheet greys what the installer withheld). Pressing a row opens a detail sheet:
+status, permissions with each cap's meaning, doors, contributions, family, relations (as links),
+settings, and a danger zone holding purge and — for an installed row that is off — uninstall. The
+Installed band's heading carries "Install from bundle", the form (`data-action="engine.plugins.install"`)
+showing the default subtraction as three chips an installer may press to grant. Sort (name / status /
+recently changed / permissions), filter chips (On, Off, Needs attention, Installed, Built-in) and a
+search over title, id, description and door names narrow one list; which bands are folded is
+device-local (`manifold:plugin-manager-collapsed`).
 
 ### The web registration channels
 
