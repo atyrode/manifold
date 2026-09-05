@@ -55,7 +55,7 @@ interface IndexFixture {
   readonly host: PluginHost;
 }
 
-function fixture(): IndexFixture {
+async function fixture(): Promise<IndexFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -74,7 +74,7 @@ function fixture(): IndexFixture {
   );
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
-  const host = testPluginHost(store, auth, rooms, broker, runtime);
+  const host = await testPluginHost(store, auth, rooms, broker, runtime);
   return { runtime, store, auth, owner, rooms, broker, host };
 }
 
@@ -142,7 +142,7 @@ function siblingIds(items: readonly IndexEntry[], parentId: string | null): stri
 
 describe("the ladder every core.index door answers", () => {
   test("rung 1: a name the assembly does not know is unknown_action", async () => {
-    const base = fixture();
+    const base = await fixture();
 
     expect(denial(await base.host.dispatch(base.owner, "core.index.rename", {}))).toEqual({
       rule: "unknown_action",
@@ -151,7 +151,7 @@ describe("the ladder every core.index door answers", () => {
   });
 
   test("rung 2: an index that is off closes its reads and its writes, never its removals", async () => {
-    const base = fixture();
+    const base = await fixture();
     const container = await createContainer(base, "doomed");
     const folder = await createFolder(base, "doomed folder");
 
@@ -165,7 +165,7 @@ describe("the ladder every core.index door answers", () => {
     expect(await base.host.setEnabled("core.index", false, base.owner.principal.id)).toEqual({
       refused: "essential",
     });
-    const host = hostWithSeatOff(base, "core.index");
+    const host = await hostWithSeatOff(base, "core.index");
 
     for (const [name, args] of [
       ["core.index.read", {}],
@@ -200,7 +200,7 @@ describe("the ladder every core.index door answers", () => {
   });
 
   test("rung 3: organizing the index is workspace-grade, reading it is not", async () => {
-    const base = fixture();
+    const base = await fixture();
     const container = await createContainer(base, "scoped");
     const folder = await createFolder(base, "shelf");
     const scoped = context(base, ["containers:read", "containers:write"], container.id);
@@ -244,7 +244,7 @@ describe("the ladder every core.index door answers", () => {
   });
 
   test("rung 3, the handler's half: a scope can never reach past its own container", async () => {
-    const base = fixture();
+    const base = await fixture();
     const mine = await createContainer(base, "mine");
     const yours = await createContainer(base, "yours");
     const scoped = context(base, ["containers:read", "containers:write"], mine.id);
@@ -280,7 +280,7 @@ describe("the ladder every core.index door answers", () => {
   });
 
   test("rung 4: every door names the cap it needs, and retiring a container needs root", async () => {
-    const base = fixture();
+    const base = await fixture();
     const container = await createContainer(base, "capped");
     const reader = context(base, ["containers:read"]);
 
@@ -313,7 +313,7 @@ describe("the ladder every core.index door answers", () => {
   });
 
   test("rung 5: a payload that fails the published schema is invalid_args", async () => {
-    const base = fixture();
+    const base = await fixture();
 
     expect(
       denial(await base.host.dispatch(base.owner, "core.index.createContainer", { name: "" })).rule,
@@ -336,7 +336,7 @@ describe("the ladder every core.index door answers", () => {
   });
 
   test("rung 6: a row that is not there refuses with the sentence its route used", async () => {
-    const base = fixture();
+    const base = await fixture();
 
     expect(
       denial(
@@ -394,7 +394,7 @@ describe("the ladder every core.index door answers", () => {
 
 describe("the index's own semantics, carried over intact", () => {
   test("the tree a scoped token reads includes the folders its container hangs under", async () => {
-    const base = fixture();
+    const base = await fixture();
     const outer = await createFolder(base, "outer");
     const inner = await createFolder(base, "inner", outer.id);
     const container = await createContainer(base, "buried");
@@ -423,7 +423,7 @@ describe("the index's own semantics, carried over intact", () => {
   });
 
   test("deleting a folder moves its children up into its place instead of cascading", async () => {
-    const base = fixture();
+    const base = await fixture();
     const alpha = await createContainer(base, "alpha");
     const shelf = await createFolder(base, "shelf");
     const nested = await createFolder(base, "nested", shelf.id);
@@ -448,7 +448,7 @@ describe("the index's own semantics, carried over intact", () => {
   });
 
   test("a folder cannot be moved inside itself or into its own descendant", async () => {
-    const base = fixture();
+    const base = await fixture();
     const outer = await createFolder(base, "outer");
     const inner = await createFolder(base, "inner", outer.id);
 
@@ -468,7 +468,7 @@ describe("the index's own semantics, carried over intact", () => {
   });
 
   test("retiring a container goes through placement, so nothing is left pointing at it", async () => {
-    const base = fixture();
+    const base = await fixture();
     const canvas = await createContainer(base, "canvas");
     const doomed = await createContainer(base, "doomed", "composition");
 
@@ -484,7 +484,7 @@ describe("the index's own semantics, carried over intact", () => {
   });
 
   test("every mutation answers the whole new index, so one round trip redraws the sidebar", async () => {
-    const base = fixture();
+    const base = await fixture();
     const container = await createContainer(base, "one");
     const folder = await createFolder(base, "shelf");
 

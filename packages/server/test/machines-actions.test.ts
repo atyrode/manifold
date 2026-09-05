@@ -41,7 +41,7 @@ function liveness(online: ReadonlySet<string>): MachineLiveness {
   return { isOnline: (machineId) => online.has(machineId) };
 }
 
-function fixture(online: ReadonlySet<string> = new Set()): Fixture {
+async function fixture(online: ReadonlySet<string> = new Set()): Promise<Fixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -64,7 +64,7 @@ function fixture(online: ReadonlySet<string> = new Set()): Fixture {
     store,
     auth,
     owner,
-    host: testPluginHost(store, auth, rooms, broker, runtime, { machines: liveness(online) }),
+    host: await testPluginHost(store, auth, rooms, broker, runtime, { machines: liveness(online) }),
     runtime,
   };
 }
@@ -109,7 +109,7 @@ function enrolled(outcome: ActionOutcome): MachineEnrollResponse {
 
 describe("core.machines.enroll", () => {
   test("mints a machine and its one-time token", async () => {
-    const fix = fixture();
+    const fix = await fixture();
 
     const outcome = await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "alpha" });
 
@@ -124,7 +124,7 @@ describe("core.machines.enroll", () => {
   });
 
   test("re-enrolling a name is IDEMPOTENT: same row, no new token", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const first = enrolled(
       await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "alpha" }),
     );
@@ -142,7 +142,7 @@ describe("core.machines.enroll", () => {
   });
 
   test("rotateToken recovers a lost token file: same row, fresh secret, old one dead", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const first = enrolled(
       await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "alpha" }),
     );
@@ -164,7 +164,7 @@ describe("core.machines.enroll", () => {
   });
 
   test("a container-scoped token is refused for its SCOPE, above the capability it holds", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const scoped = context(fix, ["machines:mint"], container(fix));
 
     const outcome = await fix.host.dispatch(scoped, "core.machines.enroll", { name: "alpha" });
@@ -180,7 +180,7 @@ describe("core.machines.enroll", () => {
   });
 
   test("without machines:mint it is forbidden, and the argument shape stays unlearnable", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const reader = context(fix, ["containers:read"]);
 
     const outcome = await fix.host.dispatch(reader, "core.machines.enroll", {});
@@ -195,7 +195,7 @@ describe("core.machines.enroll", () => {
   });
 
   test("a nameless enrolment is invalid_args, not a machine called nothing", async () => {
-    const fix = fixture();
+    const fix = await fixture();
 
     const outcome = await fix.host.dispatch(fix.owner, "core.machines.enroll", {});
 
@@ -205,7 +205,7 @@ describe("core.machines.enroll", () => {
   });
 
   test("a disabled fleet plugin refuses enrolment — creation dies with the plugin", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     await fix.host.setEnabled("core.machines", false, "admin");
 
     const outcome = await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "alpha" });
@@ -221,7 +221,7 @@ describe("core.machines.enroll", () => {
 describe("core.machines.list", () => {
   test("reports every row with live connectedness and a derived color", async () => {
     const online = new Set<string>();
-    const fix = fixture(online);
+    const fix = await fixture(online);
     const alpha = enrolled(
       await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "alpha" }),
     ).machine.id;
@@ -242,7 +242,7 @@ describe("core.machines.list", () => {
   });
 
   test('a container-scoped reader still sees the whole fleet — the read is scope:"container"', async () => {
-    const fix = fixture();
+    const fix = await fixture();
     await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "alpha" });
     const scoped = context(fix, ["containers:read"], container(fix));
 
@@ -257,7 +257,7 @@ describe("core.machines.list", () => {
   });
 
   test("without containers:read it is forbidden, scoped or not", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const scoped = context(fix, ["terminals:write"], container(fix));
 
     const outcome = await fix.host.dispatch(scoped, "core.machines.list", {});
@@ -271,7 +271,7 @@ describe("core.machines.list", () => {
   });
 
   test("an argument the door does not publish is invalid_args", async () => {
-    const fix = fixture();
+    const fix = await fixture();
 
     const outcome = await fix.host.dispatch(fix.owner, "core.machines.list", {
       containerId: "container-1",
@@ -284,7 +284,7 @@ describe("core.machines.list", () => {
   });
 
   test("a disabled fleet plugin refuses the inventory: a list is not cleanup", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     await fix.host.setEnabled("core.machines", false, "admin");
 
     const outcome = await fix.host.dispatch(fix.owner, "core.machines.list", {});
@@ -297,7 +297,7 @@ describe("core.machines.list", () => {
   });
 
   test("an unknown fleet verb is unknown_action, never a hint that one exists", async () => {
-    const fix = fixture();
+    const fix = await fixture();
 
     const outcome = await fix.host.dispatch(fix.owner, "core.machines.forget", { id: "m1" });
 

@@ -43,7 +43,7 @@ interface GatewayFixture {
   readonly events: EventHub;
 }
 
-function gatewayFixture(): GatewayFixture {
+async function gatewayFixture(): Promise<GatewayFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -85,7 +85,7 @@ function gatewayFixture(): GatewayFixture {
     },
     runtime,
   );
-  plugins = testPluginHost(store, auth, rooms, broker, runtime, { events });
+  plugins = await testPluginHost(store, auth, rooms, broker, runtime, { events });
   broker.setEvents(events);
   rooms.setEvents(events);
   const gateway = new SessionGateway(
@@ -221,8 +221,8 @@ function docUpdateFor(elementId: string): string {
 }
 
 describe("SessionGateway high-rate request cadence", () => {
-  test("resync floods produce at most one authoritative frame per second", () => {
-    const fixture = gatewayFixture();
+  test("resync floods produce at most one authoritative frame per second", async () => {
+    const fixture = await gatewayFixture();
     const socket = new FakeSocket();
     join(fixture.gateway, "peer", socket, fixture.container.id, fixture.ownerKey);
 
@@ -241,8 +241,8 @@ describe("SessionGateway high-rate request cadence", () => {
     fixture.store.close();
   });
 
-  test("a rapid second resync request is served once at the cadence boundary", () => {
-    const fixture = gatewayFixture();
+  test("a rapid second resync request is served once at the cadence boundary", async () => {
+    const fixture = await gatewayFixture();
     const socket = new FakeSocket();
     join(fixture.gateway, "peer", socket, fixture.container.id, fixture.ownerKey);
     /*
@@ -268,8 +268,8 @@ describe("SessionGateway high-rate request cadence", () => {
     fixture.store.close();
   });
 
-  test("rapid cursors coalesce to one trailing frame with the latest coordinates", () => {
-    const fixture = gatewayFixture();
+  test("rapid cursors coalesce to one trailing frame with the latest coordinates", async () => {
+    const fixture = await gatewayFixture();
     const first = new FakeSocket();
     const second = new FakeSocket();
     join(fixture.gateway, "first", first, fixture.container.id, fixture.ownerKey);
@@ -298,8 +298,8 @@ describe("SessionGateway high-rate request cadence", () => {
     fixture.store.close();
   });
 
-  test("closing a connection cancels its pending cursor flush", () => {
-    const fixture = gatewayFixture();
+  test("closing a connection cancels its pending cursor flush", async () => {
+    const fixture = await gatewayFixture();
     const first = new FakeSocket();
     const second = new FakeSocket();
     join(fixture.gateway, "first", first, fixture.container.id, fixture.ownerKey);
@@ -322,8 +322,8 @@ describe("SessionGateway high-rate request cadence", () => {
 });
 
 describe("SessionGateway connection identity", () => {
-  test("same-principal peers receive distinct init ids and each other's stamped cursors", () => {
-    const fixture = gatewayFixture();
+  test("same-principal peers receive distinct init ids and each other's stamped cursors", async () => {
+    const fixture = await gatewayFixture();
     const first = new FakeSocket();
     const second = new FakeSocket();
 
@@ -371,8 +371,8 @@ describe("SessionGateway connection identity", () => {
 });
 
 describe("SessionGateway channel multiplexing", () => {
-  test("two channels on one socket carry two rooms' documents independently", () => {
-    const fixture = gatewayFixture();
+  test("two channels on one socket carry two rooms' documents independently", async () => {
+    const fixture = await gatewayFixture();
     const other = fixture.secondContainer("other container");
     const socket = new FakeSocket();
     fixture.gateway.open("tab", socket);
@@ -400,8 +400,8 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.store.close();
   });
 
-  test("presence and attendance stay per channel: one socket, two memberships", () => {
-    const fixture = gatewayFixture();
+  test("presence and attendance stay per channel: one socket, two memberships", async () => {
+    const fixture = await gatewayFixture();
     const other = fixture.secondContainer("other container");
     const socket = new FakeSocket();
     const witnessA = new FakeSocket();
@@ -426,8 +426,8 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.store.close();
   });
 
-  test("role is per channel: one socket occupies one room and only watches another", () => {
-    const fixture = gatewayFixture();
+  test("role is per channel: one socket occupies one room and only watches another", async () => {
+    const fixture = await gatewayFixture();
     const other = fixture.secondContainer("watched container");
     const socket = new FakeSocket();
     fixture.gateway.open("tab", socket);
@@ -459,8 +459,8 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.store.close();
   });
 
-  test("one channel leaving never disturbs the other, and an empty socket must rejoin", () => {
-    const fixture = gatewayFixture();
+  test("one channel leaving never disturbs the other, and an empty socket must rejoin", async () => {
+    const fixture = await gatewayFixture();
     const other = fixture.secondContainer("other container");
     const socket = new FakeSocket();
     const witness = new FakeSocket();
@@ -498,8 +498,8 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.store.close();
   });
 
-  test("the channel cap refuses one channel, never the connection", () => {
-    const fixture = gatewayFixture();
+  test("the channel cap refuses one channel, never the connection", async () => {
+    const fixture = await gatewayFixture();
     const socket = new FakeSocket();
     fixture.gateway.open("tab", socket);
     for (let index = 0; index < MAX_SESSION_CHANNELS_PER_CONNECTION; index += 1) {
@@ -531,8 +531,8 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.store.close();
   });
 
-  test("a duplicate channel id is a client bug and closes the socket", () => {
-    const fixture = gatewayFixture();
+  test("a duplicate channel id is a client bug and closes the socket", async () => {
+    const fixture = await gatewayFixture();
     const socket = new FakeSocket();
     fixture.gateway.open("tab", socket);
     joinChannel(fixture, "tab", socket, { ch: "a" });
@@ -548,8 +548,8 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.store.close();
   });
 
-  test("an unknown container refuses its channel; the socket keeps its other rooms", () => {
-    const fixture = gatewayFixture();
+  test("an unknown container refuses its channel; the socket keeps its other rooms", async () => {
+    const fixture = await gatewayFixture();
     const socket = new FakeSocket();
     fixture.gateway.open("tab", socket);
     joinChannel(fixture, "tab", socket, { ch: "a" });
@@ -574,8 +574,8 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.store.close();
   });
 
-  test("a stale protocol version still closes the whole socket", () => {
-    const fixture = gatewayFixture();
+  test("a stale protocol version still closes the whole socket", async () => {
+    const fixture = await gatewayFixture();
     const socket = new FakeSocket();
     fixture.gateway.open("tab", socket);
     send(fixture.gateway, "tab", "a", {
@@ -590,8 +590,8 @@ describe("SessionGateway channel multiplexing", () => {
     fixture.store.close();
   });
 
-  test("liveness is a socket property: the pair carries no channel", () => {
-    const fixture = gatewayFixture();
+  test("liveness is a socket property: the pair carries no channel", async () => {
+    const fixture = await gatewayFixture();
     const socket = new FakeSocket();
     fixture.gateway.open("tab", socket);
     joinChannel(fixture, "tab", socket, { ch: "a" });
@@ -614,8 +614,8 @@ describe("SessionGateway channel multiplexing", () => {
 });
 
 describe("SessionGateway liveness", () => {
-  test("a tab that answers stays open across many intervals", () => {
-    const fixture = gatewayFixture();
+  test("a tab that answers stays open across many intervals", async () => {
+    const fixture = await gatewayFixture();
     const socket = new FakeSocket();
     fixture.gateway.open("tab", socket);
     joinChannel(fixture, "tab", socket);
@@ -632,13 +632,13 @@ describe("SessionGateway liveness", () => {
     fixture.store.close();
   });
 
-  test("an unanswered ping reaps the socket and the room stops counting it", () => {
+  test("an unanswered ping reaps the socket and the room stops counting it", async () => {
     /*
       The defect this closes (issue #55): a half-open socket — laptop asleep, wifi handoff,
       a tab the browser discarded — is a connection nothing will ever arrive on, and the room
       went on counting it in every presence payload for the life of the process.
      */
-    const fixture = gatewayFixture();
+    const fixture = await gatewayFixture();
     const liveSocket = new FakeSocket();
     const ghostSocket = new FakeSocket();
     const ghostToken = fixture.auth.mintToken(
@@ -675,8 +675,8 @@ describe("SessionGateway liveness", () => {
     fixture.store.close();
   });
 
-  test("the watchdog dies with the connection rather than outliving it", () => {
-    const fixture = gatewayFixture();
+  test("the watchdog dies with the connection rather than outliving it", async () => {
+    const fixture = await gatewayFixture();
     const socket = new FakeSocket();
     fixture.gateway.open("tab", socket);
     joinChannel(fixture, "tab", socket);
@@ -691,8 +691,8 @@ describe("SessionGateway liveness", () => {
 });
 
 describe("SessionGateway gesture cadence", () => {
-  test("active gestures coalesce while end bypasses the cadence immediately", () => {
-    const fixture = gatewayFixture();
+  test("active gestures coalesce while end bypasses the cadence immediately", async () => {
+    const fixture = await gatewayFixture();
     const first = new FakeSocket();
     const second = new FakeSocket();
     join(fixture.gateway, "first", first, fixture.container.id, fixture.ownerKey);
@@ -740,8 +740,8 @@ describe("SessionGateway gesture cadence", () => {
     fixture.store.close();
   });
 
-  test("a trailing active gesture sends only the newest coordinates", () => {
-    const fixture = gatewayFixture();
+  test("a trailing active gesture sends only the newest coordinates", async () => {
+    const fixture = await gatewayFixture();
     const first = new FakeSocket();
     const second = new FakeSocket();
     join(fixture.gateway, "first", first, fixture.container.id, fixture.ownerKey);
@@ -812,8 +812,8 @@ describe("SessionGateway gesture cadence", () => {
     },
   });
 
-  test("a carry aimed at another container reaches that container's own room", () => {
-    const fixture = gatewayFixture();
+  test("a carry aimed at another container reaches that container's own room", async () => {
+    const fixture = await gatewayFixture();
     const aimed = fixture.secondContainer("the aimed composition");
     const dragger = new FakeSocket();
     const watcher = new FakeSocket();
@@ -850,8 +850,8 @@ describe("SessionGateway gesture cadence", () => {
     fixture.store.close();
   });
 
-  test("an aim moving to a third container retracts from the one it left", () => {
-    const fixture = gatewayFixture();
+  test("an aim moving to a third container retracts from the one it left", async () => {
+    const fixture = await gatewayFixture();
     const first = fixture.secondContainer("first aimed");
     const second = fixture.secondContainer("second aimed");
     const dragger = new FakeSocket();
@@ -879,8 +879,8 @@ describe("SessionGateway gesture cadence", () => {
     fixture.store.close();
   });
 
-  test("read authority on the aimed container is the bar, so a forged aim reaches nobody", () => {
-    const fixture = gatewayFixture();
+  test("read authority on the aimed container is the bar, so a forged aim reaches nobody", async () => {
+    const fixture = await gatewayFixture();
     const aimed = fixture.secondContainer("a container the dragger cannot read");
     /*
       A credential scoped to the dragger's OWN room only. Projecting an aim into a room is
@@ -910,8 +910,8 @@ describe("SessionGateway gesture cadence", () => {
 });
 
 describe("SessionGateway spectator sockets", () => {
-  test("a watching socket is absent from the attendance and from container presence", () => {
-    const fixture = gatewayFixture();
+  test("a watching socket is absent from the attendance and from container presence", async () => {
+    const fixture = await gatewayFixture();
     const occupantSocket = new FakeSocket();
     const watcherSocket = new FakeSocket();
     const watcherToken = fixture.auth.mintToken(
@@ -945,8 +945,8 @@ describe("SessionGateway spectator sockets", () => {
     fixture.store.close();
   });
 
-  test("every write a watching socket attempts is refused while its reads are served", () => {
-    const fixture = gatewayFixture();
+  test("every write a watching socket attempts is refused while its reads are served", async () => {
+    const fixture = await gatewayFixture();
     const occupantSocket = new FakeSocket();
     const watcherSocket = new FakeSocket();
     join(fixture.gateway, "occupant", occupantSocket, fixture.container.id, fixture.ownerKey);
@@ -999,7 +999,7 @@ describe("SessionGateway spectator sockets", () => {
 });
 
 describe("SessionGateway scene writes", () => {
-  test("a reader in the room is refused both scene writes and nothing else it sends", () => {
+  test("a reader in the room is refused both scene writes and nothing else it sends", async () => {
     /*
       `doc_update` and `gesture` are ONE authorization question — may this principal change what
       this container looks like — and they are asked at one gate. Asserted for both frames
@@ -1007,7 +1007,7 @@ describe("SessionGateway scene writes", () => {
       later edit to answer the same question differently, and only one of the two answers is a
       bug anybody would notice.
      */
-    const fixture = gatewayFixture();
+    const fixture = await gatewayFixture();
     const writerSocket = new FakeSocket();
     const readerSocket = new FakeSocket();
     const readerToken = fixture.auth.mintToken(

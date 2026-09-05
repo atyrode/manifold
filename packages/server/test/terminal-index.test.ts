@@ -110,7 +110,7 @@ interface IndexFixture {
   app: HttpApp;
 }
 
-function indexFixture(): IndexFixture {
+async function indexFixture(): Promise<IndexFixture> {
   const cwd = mkdtempSync(join(tmpdir(), "manifold-terminal-index-test-"));
   temporaryDirectories.push(cwd);
   const config = loadConfig(
@@ -149,7 +149,7 @@ function indexFixture(): IndexFixture {
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
   // The assembly first: the executor resolves contributed element traits against it
   // (ADR 0013 §12), and the roster arrives as a thunk exactly as production wires it.
-  const plugins = testPluginHost(store, auth, rooms, broker, runtime);
+  const plugins = await testPluginHost(store, auth, rooms, broker, runtime);
   const placement = new PlaceExecutor(
     store,
     rooms,
@@ -329,7 +329,7 @@ afterEach(() => {
 
 describe("core.terminals.listAll", () => {
   test("the index lists every terminal with the composition it lives in", async () => {
-    const fixture = indexFixture();
+    const fixture = await indexFixture();
     const running = openTerminal(fixture);
     const exited = openTerminal(fixture);
     fixture.broker.onExited(fixture.machine.machineId, exited.terminalId, 3);
@@ -364,7 +364,7 @@ describe("core.terminals.listAll", () => {
   });
 
   test("unplaced round-trips off the containment graph, leaving no state behind", async () => {
-    const fixture = indexFixture();
+    const fixture = await indexFixture();
     const born = openTerminal(fixture);
     const unplacedOf = async (): Promise<boolean[]> =>
       (await indexRows(fixture)).map((terminal) => terminal.unplaced);
@@ -386,7 +386,7 @@ describe("core.terminals.listAll", () => {
   });
 
   test("a terminal merged into a referenced composition is placed through that composition", async () => {
-    const fixture = indexFixture();
+    const fixture = await indexFixture();
     const born = openTerminal(fixture);
     const composition = compositionContainer(fixture, "composition");
     writeElement(
@@ -417,7 +417,7 @@ describe("core.terminals.listAll", () => {
   });
 
   test("a container-scoped token cannot read the terminal index", async () => {
-    const fixture = indexFixture();
+    const fixture = await indexFixture();
 
     const response = await call(
       fixture,
@@ -440,7 +440,7 @@ describe("core.terminals.listAll", () => {
 
 describe("core.terminals.rename", () => {
   test("a rename is published into the terminal's home, not the canvas showing it", async () => {
-    const fixture = indexFixture();
+    const fixture = await indexFixture();
     const born = openTerminal(fixture);
     writeElement(
       room(fixture, fixture.canvas.id).doc,
@@ -467,7 +467,7 @@ describe("core.terminals.rename", () => {
   });
 
   test("a blank name and an unknown terminal are refusals, not transport failures", async () => {
-    const fixture = indexFixture();
+    const fixture = await indexFixture();
     const born = openTerminal(fixture);
 
     const blank = await call(fixture, "POST", "/api/actions/core.terminals.rename", OWNER_KEY, {
@@ -493,8 +493,8 @@ describe("core.terminals.rename", () => {
     expect(fixture.broker.rename("missing-terminal", "build")).toBe("not_found");
   });
 
-  test("a rename survives into the advert a merge publishes", () => {
-    const fixture = indexFixture();
+  test("a rename survives into the advert a merge publishes", async () => {
+    const fixture = await indexFixture();
     const born = openTerminal(fixture);
     expect(fixture.broker.rename(born.terminalId, "build")).toBe("ok");
     const composition = compositionContainer(fixture, "composition");
@@ -516,7 +516,7 @@ describe("core.terminals.rename", () => {
   });
 
   test("a container-scoped token can rename only inside its own container", async () => {
-    const fixture = indexFixture();
+    const fixture = await indexFixture();
     const born = openTerminal(fixture);
     const token = containerScopedToken(fixture);
 
@@ -552,7 +552,7 @@ describe("core.terminals.rename", () => {
 
 describe("core.terminals.kill", () => {
   test("killing a terminal drops its row and its home from the index at once", async () => {
-    const fixture = indexFixture();
+    const fixture = await indexFixture();
     const born = openTerminal(fixture);
     // Nothing on any canvas points at this terminal, and it is still reachable: the index
     // addresses a terminal by identity, never through a placement of it.
@@ -589,7 +589,7 @@ describe("core.terminals.kill", () => {
   });
 
   test("a container-scoped token cannot kill a terminal in another container", async () => {
-    const fixture = indexFixture();
+    const fixture = await indexFixture();
     const born = openTerminal(fixture);
 
     const response = await call(
@@ -612,7 +612,7 @@ describe("core.terminals.kill", () => {
 
 describe("core.index.moveEntry is how an unplaced terminal is reordered", () => {
   test("a solo composition moves into a folder and reads back under it", async () => {
-    const fixture = indexFixture();
+    const fixture = await indexFixture();
     const born = openTerminal(fixture);
     const created = await call(fixture, "POST", "/api/actions/core.index.createFolder", OWNER_KEY, {
       name: "machines",
@@ -654,7 +654,7 @@ describe("core.index.moveEntry is how an unplaced terminal is reordered", () => 
 
 describe("core.terminals.listByContainer", () => {
   test("the per-container listing reports each terminal under its home", async () => {
-    const fixture = indexFixture();
+    const fixture = await indexFixture();
     const solo = openTerminal(fixture);
     const merged = openTerminal(fixture);
     const composition = compositionContainer(fixture, "composition");

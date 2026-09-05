@@ -26,7 +26,7 @@ class FaultRuntime implements RuntimeDeps {
   }
 }
 
-function startFixture(runtime: RuntimeDeps, logger: Logger): RunningServer {
+async function startFixture(runtime: RuntimeDeps, logger: Logger): Promise<RunningServer> {
   const cwd = mkdtempSync(join(tmpdir(), "manifold-http-errors-test-"));
   temporaryDirectories.push(cwd);
   const config = loadConfig(
@@ -38,7 +38,7 @@ function startFixture(runtime: RuntimeDeps, logger: Logger): RunningServer {
     },
     cwd,
   );
-  const running = startServer({ config, runtime, logger, announce: false });
+  const running = await startServer({ config, runtime, logger, announce: false });
   runningServers.push(running);
   return running;
 }
@@ -76,7 +76,7 @@ describe("HTTP error mapping", () => {
         errors.push({ evt, ...(fields === undefined ? {} : { fields }) });
       },
     };
-    const running = startFixture(runtime, logger);
+    const running = await startFixture(runtime, logger);
     runtime.failNewId = true;
 
     const response = await fetch(createContainerRequest(running, { name: "container" }));
@@ -108,7 +108,7 @@ describe("HTTP error mapping", () => {
 
   test("a body that fails an action's schema is a denial, not an HTTP error", async () => {
     const logger: Logger = { info(): void {}, warn(): void {}, error(): void {} };
-    const running = startFixture(new FaultRuntime(), logger);
+    const running = await startFixture(new FaultRuntime(), logger);
 
     const response = await fetch(createContainerRequest(running, { name: "" }));
 
@@ -123,7 +123,7 @@ describe("HTTP error mapping", () => {
 
   test("a malformed JSON body returns a 400 invalid response", async () => {
     const logger: Logger = { info(): void {}, warn(): void {}, error(): void {} };
-    const running = startFixture(new FaultRuntime(), logger);
+    const running = await startFixture(new FaultRuntime(), logger);
 
     // Not a schema question: a body that is not JSON never reaches a door, so this is the
     // one remaining shape of `invalid` the request layer itself still answers.

@@ -315,7 +315,8 @@ export interface ActionCtx {
    */
   readonly dials: DialDoor;
   /**
-   * This plugin's OWN durable storage: namespaced, versioned, migration-ledgered. It is the
+   * This plugin's OWN durable storage: namespaced, versioned, migration-ledgered, and
+   * promise-returning whether the plugin runs in-realm or isolated (ADR 0016 §4). It is the
    * only place a plugin may keep data of its own — the bespoke tables floor code still owns
    * (terminal names, machine rows) move onto this storage in the conversion batch.
    */
@@ -549,7 +550,11 @@ function traceTargets(staged: readonly { readonly ref: ManifoldRef }[]): readonl
  * a named `refused` class. The ladder a client learned still holds.
  */
 export class PluginHost {
-  private assembled: Assembly;
+  /*
+    Assigned by `boot`, which is the only way to obtain a host: the constructor is private
+    and wires nothing that reads storage, so no instance exists that has not assembled.
+  */
+  private assembled!: Assembly;
   private readonly defs: readonly ServerPluginDef[];
   private readonly handlers = new Map<string, Readonly<Record<string, ActionHandler>>>();
   private readonly storages = new Map<string, PluginStorageAdmin>();
@@ -570,7 +575,7 @@ export class PluginHost {
   private readonly lifecycleStates = new Map<string, PluginLifecycleState>();
   private readonly lifecycleTimeoutMs: number;
 
-  constructor(
+  private constructor(
     defs: readonly ServerPluginDef[],
     private readonly store: ServerStore,
     private readonly authService: AuthService,
@@ -585,39 +590,79 @@ export class PluginHost {
     options: {
       readonly lifecycleTimeoutMs?: number;
       readonly distribution?: ReadonlySet<string>;
-    } = {},
+    },
   ) {
     this.defs = [...ENGINE_BUILTIN_DEFS, ...defs];
     this.builtins = new Set(ENGINE_BUILTIN_DEFS.map((def) => def.manifest.id));
     this.distribution = options.distribution;
     this.lifecycleTimeoutMs = options.lifecycleTimeoutMs ?? LIFECYCLE_TIMEOUT_MS;
     for (const def of this.defs) this.handlers.set(def.manifest.id, def.handlers);
-    this.assembled = assembleRoster(this.defs, store.disabledPlugins(), this.env());
-    /*
-      Boot, in one pass and no promises: run the migrations assembly found owing, stamp
-      the declared data version of everything serving, and claim element types for everything
-      assembled. All three are synchronous because the substrate is — which is what keeps
-      process start free of a lifecycle fan-out (`onEnable` is a TRANSITION hook: at boot
-      everything enabled is simply live) and keeps the server from answering a request over
-      data a pending migration has not touched yet.
-    */
-    const migrated = this.runPendingMigrations();
-    this.stampDeclaredVersions();
-    for (const def of this.defs) {
+  }
+
+  /**
+   * THE ONE WAY TO A HOST. Boot, in one pass: assemble, run the migrations assembly found
+   * owing, stamp the declared data version of everything serving, and claim element types
+   * for everything assembled. Awaited because storage is promise-returning (ADR 0016 §4) —
+   * and awaited to completion BEFORE this resolves, which is what keeps process start free
+   * of a lifecycle fan-out (`onEnable` is a TRANSITION hook: at boot everything enabled is
+   * simply live) and keeps the server from answering a request over data a pending
+   * migration has not touched yet: the socket is bound after this returns, never before.
+   */
+  static async boot(
+    defs: readonly ServerPluginDef[],
+    store: ServerStore,
+    authService: AuthService,
+    rooms: RoomManager,
+    broker: TerminalBroker,
+    placement: PlaceExecutor,
+    machines: MachineLiveness,
+    dialer: InstanceDialer,
+    runtime: RuntimeDeps,
+    logger: Logger,
+    events: EventHub,
+    options: {
+      readonly lifecycleTimeoutMs?: number;
+      readonly distribution?: ReadonlySet<string>;
+    } = {},
+  ): Promise<PluginHost> {
+    const host = new PluginHost(
+      defs,
+      store,
+      authService,
+      rooms,
+      broker,
+      placement,
+      machines,
+      dialer,
+      runtime,
+      logger,
+      events,
+      options,
+    );
+    host.assembled = await host.reassemble();
+    const migrated = await host.runPendingMigrations();
+    await host.stampDeclaredVersions();
+    for (const def of host.defs) {
       const types = def.manifest.contributes.elements.map((element) => element.type);
       if (types.length > 0) store.claimElementTypes(def.manifest.id, types);
     }
-    if (migrated) this.assembled = assembleRoster(this.defs, store.disabledPlugins(), this.env());
+    if (migrated) host.assembled = await host.reassemble();
+    return host;
+  }
+
+  /** One composition over the store's current enablement and the facts `env` reads fresh. */
+  private async reassemble(): Promise<Assembly> {
+    return assembleRoster(this.defs, this.store.disabledPlugins(), await this.env());
   }
 
   /** The durable and runtime facts an assembly needs, read fresh on every reassembly. */
-  private env(): AssemblyEnv {
+  private async env(): Promise<AssemblyEnv> {
     const dataState = new Map<string, PluginStoredData>();
     for (const def of this.defs) {
       const storage = this.storage(def.manifest.id);
       dataState.set(def.manifest.id, {
-        version: storage.dataVersion(),
-        applied: storage.appliedMigrations(),
+        version: await storage.dataVersion(),
+        applied: await storage.appliedMigrations(),
       });
     }
     return {
@@ -639,15 +684,15 @@ export class PluginHost {
    * be the engine writing into a store whose owner is not running. A major difference is
    * skipped too — that is migration territory, already planned or already refused.
    */
-  private stampDeclaredVersions(): void {
+  private async stampDeclaredVersions(): Promise<void> {
     for (const def of this.defs) {
       const declared = def.manifest.dataVersion;
       if (declared === undefined || !this.assembled.enabled(def.manifest.id)) continue;
       const storage = this.storage(def.manifest.id);
-      const stored = storage.dataVersion();
+      const stored = await storage.dataVersion();
       if (stored !== null && stored.major !== declared.major) continue;
       if (stored !== null && compareDataVersion(stored, declared) === 0) continue;
-      storage.stampDataVersion(declared);
+      await storage.stampDataVersion(declared);
     }
   }
 
@@ -660,10 +705,10 @@ export class PluginHost {
   }
 
   /** Applies every migration the current assembly found owing. True if any ran. */
-  private runPendingMigrations(): boolean {
+  private async runPendingMigrations(): Promise<boolean> {
     let ran = false;
     for (const [pluginId, migrations] of this.assembled.pendingMigrations) {
-      ran = this.applyMigrations(pluginId, migrations) || ran;
+      ran = (await this.applyMigrations(pluginId, migrations)) || ran;
     }
     return ran;
   }
@@ -675,18 +720,22 @@ export class PluginHost {
    *
    * A throwing migration is fatal by design: the alternative is serving requests over data
    * a plugin declared it cannot read. There is no half-migrated state to reason about
-   * because there is no catch here.
+   * because there is no catch here — and no interleaving to reason about either, because the
+   * storage every await here resolves against settles synchronously (`PluginMigration`).
    */
-  private applyMigrations(pluginId: string, migrations: readonly PluginMigration[]): boolean {
+  private async applyMigrations(
+    pluginId: string,
+    migrations: readonly PluginMigration[],
+  ): Promise<boolean> {
     if (migrations.length === 0) return false;
     const storage = this.storage(pluginId);
     for (const migration of migrations) {
-      migration.migrate(storage);
-      storage.recordMigration(migration.name, this.runtime.now());
+      await migration.migrate(storage);
+      await storage.recordMigration(migration.name, this.runtime.now());
       this.logger.info("plugin_migration", { plugin: pluginId, migration: migration.name });
     }
     const declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.dataVersion;
-    if (declared !== undefined) storage.stampDataVersion(declared);
+    if (declared !== undefined) await storage.stampDataVersion(declared);
     return true;
   }
 
@@ -756,14 +805,14 @@ export class PluginHost {
       const plan = planDataMigration({
         pluginId: id,
         declared: entry.manifest.dataVersion,
-        stored: storage.dataVersion(),
-        applied: new Set(storage.appliedMigrations()),
+        stored: await storage.dataVersion(),
+        applied: new Set(await storage.appliedMigrations()),
         migrations: this.defs.find((def) => def.manifest.id === id)?.migrations ?? [],
       });
       if (plan.kind === "refused") return { refused: `${plan.reason}: ${plan.detail}` };
       // `migrate` stamps the declared version itself, once its chain has actually run.
-      if (plan.kind === "migrate") this.applyMigrations(id, plan.run);
-      else if (plan.stamp !== null) storage.stampDataVersion(plan.stamp);
+      if (plan.kind === "migrate") await this.applyMigrations(id, plan.run);
+      else if (plan.stamp !== null) await storage.stampDataVersion(plan.stamp);
     }
 
     const wasEnabled = new Set(
@@ -772,7 +821,7 @@ export class PluginHost {
     this.store.setPluginEnabled(id, enabled, changedBy, this.runtime.now());
     // COMMIT FIRST, then tell people. A lifecycle hook has no vote (ADR 0013 §2): the roster
     // every client will render is already the truth by the time any plugin hears about it.
-    this.assembled = assembleRoster(this.defs, this.store.disabledPlugins(), this.env());
+    this.assembled = await this.reassemble();
     const delta: AssemblyDelta = {
       enabled: this.assembled.order.filter(
         (row) => this.assembled.enabled(row) && !wasEnabled.has(row),
@@ -839,7 +888,7 @@ export class PluginHost {
     }
 
     const storage = this.storage(id);
-    const removedRows = storage.clear();
+    const removedRows = await storage.clear();
     const releasedTypes = this.store.releaseElementTypes(id);
     this.logger.info("plugin_purge", {
       plugin: id,
@@ -924,7 +973,7 @@ export class PluginHost {
     }
     // The states just recorded belong on the roster clients are about to receive, so the
     // assembly is rebuilt once here rather than published stale and corrected later.
-    this.assembled = assembleRoster(this.defs, this.store.disabledPlugins(), this.env());
+    this.assembled = await this.reassemble();
   }
 
   private async hook(

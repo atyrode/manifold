@@ -146,7 +146,7 @@ interface LifecycleFixture {
   app: HttpApp;
 }
 
-function lifecycleFixture(): LifecycleFixture {
+async function lifecycleFixture(): Promise<LifecycleFixture> {
   const cwd = mkdtempSync(join(tmpdir(), "manifold-container-test-"));
   temporaryDirectories.push(cwd);
   const config = loadConfig(
@@ -185,7 +185,7 @@ function lifecycleFixture(): LifecycleFixture {
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
   // The assembly first: the executor resolves contributed element traits against it
   // (ADR 0013 §12), and the roster arrives as a thunk exactly as production wires it.
-  const plugins = testPluginHost(store, auth, rooms, broker, runtime);
+  const plugins = await testPluginHost(store, auth, rooms, broker, runtime);
   const placement = new PlaceExecutor(
     store,
     rooms,
@@ -454,8 +454,8 @@ afterEach(() => {
 });
 
 describe("L1 birth: a terminal and its home are created together", () => {
-  test("a canvas opener births a solo composition and the server authors no element", () => {
-    const fixture = lifecycleFixture();
+  test("a canvas opener births a solo composition and the server authors no element", async () => {
+    const fixture = await lifecycleFixture();
 
     const born = bornOnCanvas(fixture, "ref-1");
 
@@ -483,8 +483,8 @@ describe("L1 birth: a terminal and its home are created together", () => {
     expect(create.env.MANIFOLD_ELEMENT).toBe("ref-1");
   });
 
-  test("the canvas opener's reply names the element it authored, not the home's leaf", () => {
-    const fixture = lifecycleFixture();
+  test("the canvas opener's reply names the element it authored, not the home's leaf", async () => {
+    const fixture = await lifecycleFixture();
 
     const born = bornOnCanvas(fixture, "ref-1");
 
@@ -506,8 +506,8 @@ describe("L1 birth: a terminal and its home are created together", () => {
     expect(compositionOpened?.terminal.containerId).toBe(composition.id);
   });
 
-  test("a terminal's lifecycle is published in its home, never in the canvas that opened it", () => {
-    const fixture = lifecycleFixture();
+  test("a terminal's lifecycle is published in its home, never in the canvas that opened it", async () => {
+    const fixture = await lifecycleFixture();
     const onCanvas = joinPeer(fixture, fixture.canvas.id);
 
     const born = bornOnCanvas(fixture, "ref-1");
@@ -523,8 +523,8 @@ describe("L1 birth: a terminal and its home are created together", () => {
     ]);
   });
 
-  test("a composition opener IS the home: one leaf is written and no second composition is born", () => {
-    const fixture = lifecycleFixture();
+  test("a composition opener IS the home: one leaf is written and no second composition is born", async () => {
+    const fixture = await lifecycleFixture();
     const composition = compositionContainer(fixture, "composition");
     const inside = joinPeer(fixture, composition.id);
     const containersBefore = fixture.store.listContainers().map((container) => container.id);
@@ -547,8 +547,8 @@ describe("L1 birth: a terminal and its home are created together", () => {
 });
 
 describe("L2 exit: an exited terminal keeps its leaf and its home", () => {
-  test("a natural exit deletes nothing, so the real code stays visible where the terminal lives", () => {
-    const fixture = lifecycleFixture();
+  test("a natural exit deletes nothing, so the real code stays visible where the terminal lives", async () => {
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     // Two canvases point at the home, because "an exit deletes nothing" has to hold for
     // EVERY reference and not merely for the one the opener happened to author.
@@ -577,8 +577,8 @@ describe("L2 exit: an exited terminal keeps its leaf and its home", () => {
     expect(room(fixture, other.id).portalIdsTo(born.homeId)).toEqual(["portal-b"]);
   });
 
-  test("an agent-disconnected exit keeps a null code internally and still deletes nothing", () => {
-    const fixture = lifecycleFixture();
+  test("an agent-disconnected exit keeps a null code internally and still deletes nothing", async () => {
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
 
     // No code was observed, so none is reported. Null is the honest answer and it is not a
@@ -593,8 +593,8 @@ describe("L2 exit: an exited terminal keeps its leaf and its home", () => {
     expect(fixture.store.getContainer(born.homeId)).not.toBeNull();
   });
 
-  test("the prune that collects unhomed exits never fires on a natural exit", () => {
-    const fixture = lifecycleFixture();
+  test("the prune that collects unhomed exits never fires on a natural exit", async () => {
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 40, 40), LOCAL_ORIGIN);
 
@@ -613,7 +613,7 @@ describe("L2 exit: an exited terminal keeps its leaf and its home", () => {
 
 describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
   test("removing a running terminal's only leaf kills the PTY and forgets the terminal", async () => {
-    const fixture = lifecycleFixture();
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     fixture.machine.clear();
 
@@ -629,7 +629,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
   });
 
   test("removing one of two leaves for the same terminal keeps it alive", async () => {
-    const fixture = lifecycleFixture();
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     const second = room(fixture, born.homeId).placeTerminalTile(born.terminalId, null, null);
     if (second === null) throw new Error("second leaf refused");
@@ -643,7 +643,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
   });
 
   test("killing a terminal by identity removes its home and every portal onto it at once", async () => {
-    const fixture = lifecycleFixture();
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     // Three mirrors across two canvases, one of which is not resident when the kill lands:
     // "kill means poof" is a claim about the whole workspace, not about the open tab.
@@ -676,7 +676,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
   });
 
   test("an exit frame arriving after a kill finds nothing, so no exited row comes back", async () => {
-    const fixture = lifecycleFixture();
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
 
     await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {
@@ -693,7 +693,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
   });
 
   test("killing a terminal that already exited on its own sweeps it the same way", async () => {
-    const fixture = lifecycleFixture();
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 10, 10), LOCAL_ORIGIN);
     fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 5);
@@ -721,7 +721,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
   });
 
   test("killing one occupant of a composition takes its tile and leaves the composition", async () => {
-    const fixture = lifecycleFixture();
+    const fixture = await lifecycleFixture();
     const composition = compositionContainer(fixture, "composition");
     const inside = joinPeer(fixture, composition.id);
     const first = bornInComposition(fixture, inside, "ref-1");
@@ -753,7 +753,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
   });
 
   test("closing a terminal's last tile and killing it by identity are the same write", async () => {
-    const byTile = lifecycleFixture();
+    const byTile = await lifecycleFixture();
     const tileBorn = bornOnCanvas(byTile, "ref-1");
     writeElement(
       canvasDoc(byTile),
@@ -761,7 +761,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
       LOCAL_ORIGIN,
     );
     byTile.machine.clear();
-    const byIdentity = lifecycleFixture();
+    const byIdentity = await lifecycleFixture();
     const identityBorn = bornOnCanvas(byIdentity, "ref-1");
     writeElement(
       canvasDoc(byIdentity),
@@ -803,7 +803,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
 
 describe("L4 emptied: departure retires a composition, emptiness never does", () => {
   test("the home a reaped terminal left behind is deleted with it", async () => {
-    const fixture = lifecycleFixture();
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
 
     await removeTile(fixture, born.homeId, born.leafId);
@@ -815,7 +815,7 @@ describe("L4 emptied: departure retires a composition, emptiness never does", ()
   });
 
   test("a composition that never held anything survives having its empty root removed", async () => {
-    const fixture = lifecycleFixture();
+    const fixture = await lifecycleFixture();
     const created = await call(
       fixture,
       "POST",
@@ -852,8 +852,8 @@ describe("L4 emptied: departure retires a composition, emptiness never does", ()
 });
 
 describe("L5 merge: a terminal joining a composition takes its references with it", () => {
-  test("a tile drop moves the terminal, retires its old home, and repoints references in place", () => {
-    const fixture = lifecycleFixture();
+  test("a tile drop moves the terminal, retires its old home, and repoints references in place", async () => {
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     // The canvas shows the terminal the way a canvas always does: a portal onto its home,
     // with whatever geometry the operator gave it.
@@ -896,8 +896,8 @@ describe("L5 merge: a terminal joining a composition takes its references with i
     ]);
   });
 
-  test("composing two canvas references births one composition named after both", () => {
-    const fixture = lifecycleFixture();
+  test("composing two canvas references births one composition named after both", async () => {
+    const fixture = await lifecycleFixture();
     const alpha = bornOnCanvas(fixture, "ref-1");
     const beta = bornOnCanvas(fixture, "ref-2");
     fixture.broker.rename(alpha.terminalId, "alpha");
@@ -945,8 +945,8 @@ describe("L5 merge: a terminal joining a composition takes its references with i
     expect(homeOf(fixture, beta.terminalId)).toBe(composed.containerId);
   });
 
-  test("composing onto a reference to a MULTI composition joins it instead of nesting", () => {
-    const fixture = lifecycleFixture();
+  test("composing onto a reference to a MULTI composition joins it instead of nesting", async () => {
+    const fixture = await lifecycleFixture();
     const composition = compositionContainer(fixture, "composition");
     const inside = joinPeer(fixture, composition.id);
     bornInComposition(fixture, inside, "ref-1");
@@ -986,8 +986,8 @@ describe("L5 merge: a terminal joining a composition takes its references with i
 });
 
 describe("L6 extract: leaving a composition re-homes, unless it was already alone", () => {
-  test("extracting from a multi-tile composition re-homes the terminal into a fresh solo one", () => {
-    const fixture = lifecycleFixture();
+  test("extracting from a multi-tile composition re-homes the terminal into a fresh solo one", async () => {
+    const fixture = await lifecycleFixture();
     const composition = compositionContainer(fixture, "composition");
     const inside = joinPeer(fixture, composition.id);
     const stays = bornInComposition(fixture, inside, "ref-1");
@@ -1033,8 +1033,8 @@ describe("L6 extract: leaving a composition re-homes, unless it was already alon
     });
   });
 
-  test("extracting the only leaf of a solo composition portals onto that same composition", () => {
-    const fixture = lifecycleFixture();
+  test("extracting the only leaf of a solo composition portals onto that same composition", async () => {
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     const containersBefore = [
       ...fixture.store.listContainers().map((container) => container.id),
@@ -1068,8 +1068,8 @@ describe("L6 extract: leaving a composition re-homes, unless it was already alon
     });
   });
 
-  test("a composition emptied by an extraction is deleted", () => {
-    const fixture = lifecycleFixture();
+  test("a composition emptied by an extraction is deleted", async () => {
+    const fixture = await lifecycleFixture();
     const embedded = canvasContainer(fixture, "embedded canvas");
     const composition = compositionContainer(fixture, "composition");
     const inside = joinPeer(fixture, composition.id);
@@ -1119,8 +1119,8 @@ describe("L6 extract: leaving a composition re-homes, unless it was already alon
 });
 
 describe("L7 unplace: references go, the item stays", () => {
-  test("unplacing one element removes that reference only and leaves the terminal homed", () => {
-    const fixture = lifecycleFixture();
+  test("unplacing one element removes that reference only and leaves the terminal homed", async () => {
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 10, 10), LOCAL_ORIGIN);
     writeElement(canvasDoc(fixture), portalElement("portal-b", born.homeId, 20, 20), LOCAL_ORIGIN);
@@ -1137,8 +1137,8 @@ describe("L7 unplace: references go, the item stays", () => {
     });
   });
 
-  test("unplacing a terminal by identity removes its references from every canvas at once", () => {
-    const fixture = lifecycleFixture();
+  test("unplacing a terminal by identity removes its references from every canvas at once", async () => {
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     const elsewhere = canvasContainer(fixture, "second canvas");
     writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 10, 10), LOCAL_ORIGIN);
@@ -1160,8 +1160,8 @@ describe("L7 unplace: references go, the item stays", () => {
     });
   });
 
-  test("unplacing an already-unplaced terminal removes nothing and is not an error", () => {
-    const fixture = lifecycleFixture();
+  test("unplacing an already-unplaced terminal removes nothing and is not an error", async () => {
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 10, 10), LOCAL_ORIGIN);
 
@@ -1175,7 +1175,7 @@ describe("L7 unplace: references go, the item stays", () => {
 
 describe("L8 delete container: reaps what lives there, removes what points at it", () => {
   test("deleting a composition kills its terminals and deletes the portals onto it", async () => {
-    const fixture = lifecycleFixture();
+    const fixture = await lifecycleFixture();
     const composition = compositionContainer(fixture, "composition");
     const inside = joinPeer(fixture, composition.id);
     const first = bornInComposition(fixture, inside, "ref-1");
@@ -1215,7 +1215,7 @@ describe("L8 delete container: reaps what lives there, removes what points at it
 
 describe("the container index reads the same containment graph placement does", () => {
   test("a census names what a container holds and what it points at", async () => {
-    const fixture = lifecycleFixture();
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     writeElement(canvasDoc(fixture), portalElement("portal-1", born.homeId, 10, 20), LOCAL_ORIGIN);
 
@@ -1241,7 +1241,7 @@ describe("the container index reads the same containment graph placement does", 
   });
 
   test("the terminal index reports each home and derives whether anything references it", async () => {
-    const fixture = lifecycleFixture();
+    const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
 
     expect(await indexRows(fixture)).toEqual([
