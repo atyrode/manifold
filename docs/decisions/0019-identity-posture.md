@@ -1,9 +1,8 @@
 # 0019 — Identity is layered: the owner key is the bootstrap, and one layer may sit above it
 
 Date: 2026-09-01
-Status: **ACCEPTED — ratified by the operator, 2026-09-01.** This is the dated record #58's first
-acceptance criterion asks for. The posture below is normative; the NOW items in §2–§4 are the work
-it obliges, and #58 stays open until they land.
+Status: accepted
+Ratified: ratified by the operator, 2026-09-01. This is the dated record #58's first acceptance criterion asks for. The posture below is normative; the NOW items in §2–§4 are the work it obliges, and #58 stays open until they land.
 
 ## Context
 

@@ -1,8 +1,8 @@
 # 0018 — The trace ledger: traceability as a constitutional property of the dispatch ladder
 
 Date: 2026-09-01
-Status: ratification-ready — the mechanism is landed and gated (#93); axiom A6's TEXT awaits the
-operator's final wording approval, which is the one thing this file does not decide.
+Status: accepted
+Ratified: ratification-ready — the mechanism is landed and gated (#93); axiom A6's TEXT awaits the operator's final wording approval, which is the one thing this file does not decide.
 
 ## Context
 

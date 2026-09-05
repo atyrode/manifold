@@ -1,7 +1,8 @@
 # 0014 — Cross-instance sharing: the instance channel, shares, and remote principals
 
 Date: 2026-08-31
-Status: ratified 2026-08-31 (axiom A4), **landing in wave 3** (#74)
+Status: accepted
+Ratified: ratified 2026-08-31 (axiom A4), **landing in wave 3** (#74)
 
 ## Context
 

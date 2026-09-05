@@ -1,7 +1,7 @@
 # Use Radix headless primitives under the ui stdlib's behavior chrome
 
-**Date:** 2026-08-31  
-**Status:** Accepted
+Date: 2026-08-31
+Status: accepted
 
 ## Context
 

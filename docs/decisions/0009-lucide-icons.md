@@ -1,7 +1,7 @@
 # Use lucide-react as the one icon vocabulary
 
-**Date:** 2026-08-29
-**Status:** Accepted
+Date: 2026-08-29
+Status: accepted
 
 Addendum 2026-09-01 (#116): the CONTROL half is narrowed the same way, and in the opposite
 direction from where the pressure came. `ControlKind` stays closed, but "closed" is closed to

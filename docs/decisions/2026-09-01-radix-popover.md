@@ -1,7 +1,8 @@
 # Admit Radix Popover as the behavior engine of the ui stdlib's one popover
 
-**Date:** 2026-09-01  
-**Status:** Accepted — extends 2026-08-31-radix-behavior-primitives.md
+Date: 2026-09-01
+Status: accepted
+Ratified: extends 2026-08-31-radix-behavior-primitives.md
 
 ## Context
 

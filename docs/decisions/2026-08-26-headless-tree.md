@@ -1,7 +1,8 @@
 # Use Headless Tree for recursive sidebar organization
 
-**Date:** 2026-08-26  
-**Status:** Accepted; supersedes `2026-08-26-dnd-kit-react.md`
+Date: 2026-08-26
+Status: accepted
+Ratified: supersedes `2026-08-26-dnd-kit-react.md`
 
 **Lexicon addendum 2026-08-31 (#69):** this record is history and is not rewritten; the names it
 cites moved in the lexicon cut. The sidebar tree it decides is the workspace **index**, its rows

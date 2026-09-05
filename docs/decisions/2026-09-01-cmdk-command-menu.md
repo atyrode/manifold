@@ -1,7 +1,7 @@
 # Use cmdk for the command menu's list
 
-**Date:** 2026-09-01  
-**Status:** Accepted
+Date: 2026-09-01
+Status: accepted
 
 ## Context
 

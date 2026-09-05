@@ -1,7 +1,8 @@
 # 0012 — The event plane: declared notifications emitted at the doors
 
 Date: 2026-08-31
-Status: designed 2026-08-31, **landed 2026-08-31** (wave 2, #72 / #73)
+Status: accepted
+Ratified: designed 2026-08-31, **landed 2026-08-31** (wave 2, #72 / #73)
 
 Lexicon addendum 2026-08-31 (#69): this record is history and is not rewritten; the names it
 cites moved in the lexicon cut. The sidebar section it names "Views" is the **Index** section

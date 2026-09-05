@@ -1,7 +1,9 @@
 # 0006 — manifold owns the canvas chrome (UI layer on Excalidraw slots)
 
 Date: 2026-08-25
-Status: superseded by the React Flow and native scene-record cutover (#15)
+Status: superseded
+Superseded-by: 0007-react-flow-renderer.md
+Ratified: superseded by the React Flow and native scene-record cutover (#15)
 
 ## Context
 

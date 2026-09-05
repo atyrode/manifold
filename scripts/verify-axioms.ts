@@ -9,9 +9,10 @@
  * those registries and holds the tree to them — in BOTH directions, so an unrecorded crossing
  * fails here rather than in review.
  *
- * The static half (S1-S17) runs against the source tree with the TypeScript parser, never a
- * regex over source (D14): imports, storage keys, action markers and route literals are AST
- * facts, and a regex that "mostly works" on them is a gate that mostly holds.
+ * The static half (S1-S19; S18 is reserved for ADR 0023's import-direction check) runs against
+ * the source tree with the TypeScript parser, never a regex over source (D14): imports, storage
+ * keys, action markers and route literals are AST facts, and a regex that "mostly works" on
+ * them is a gate that mostly holds.
  *
  *   S1 both assembly files assemble, and the default workspace names panels that exist
  *   S2 import boundary: floor imports no plugin; a plugin imports only the four engine packages
@@ -23,6 +24,8 @@
  *   S8 every scene element type is a floor kind or a composed contribution
  *   S16 the floor's own size: `packages/plugin/src` stays inside its declared line budget
  *   S17 hosting neutrality: no shipped file names a hosting provider (ADR 0022)
+ *   S19 decision records: every record's status block parses, successors exist, numbers are
+ *       unique, and `docs/decisions/README.md` is the generated index byte for byte
  *
  * The browser half (R1-R11) runs a real server and a real Chromium against the built bundle,
  * because the axioms are claims about a LIVE workspace: parity between the two doors, hot
@@ -92,6 +95,7 @@ import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser } from "./cdp.ts";
 import { checkInto, ownerKeyOf, settles, sleep, teardownServer, until } from "./gate-lib.ts";
+import { DECISIONS_INDEX, readDecisionRecords, renderDecisionsIndex } from "./decisions-index.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const failures: string[] = [];
@@ -2261,6 +2265,48 @@ const OPERATOR_DEPLOYMENT_FILE = ".github/workflows/deploy-hub.yml";
     tainted.length === 0
       ? `${String(subjects.length)} shipped files name no hosting provider; only ${OPERATOR_DEPLOYMENT_FILE} may`
       : `a hosting provider is named outside the operator's deployment workflow (ADR 0022): ${list(tainted)}`,
+  );
+}
+
+// ────────────────────────────────────────── S19: decision records
+
+/**
+ * A DECISION RECORD IS REASONING, NOT LAW (`AXIOMS.md` §Change control): the living spec is the
+ * normative form of every ratified decision, and what the directory owes a reader is only each
+ * record's status, in one machine-readable block under its title. The parser lives beside the
+ * generator in `decisions-index.ts` so the gate can never accept a block the index cannot
+ * render: fields in contract order, `Status` from the closed set, `Superseded-by` present
+ * exactly when the status is `superseded` and naming a file that exists, and — because two
+ * branches once each minted the same `00NN` — every record number taken once. The index is
+ * compared byte for byte, with the first differing line named, so a hand edit or a stale
+ * regeneration fails here instead of drifting.
+ */
+{
+  const { records, problems } = readDecisionRecords(repoRoot);
+  check(
+    "S19 decision records",
+    problems.length === 0,
+    problems.length === 0
+      ? `${String(records.length)} records carry a well-formed status block`
+      : `a record's status block is not the contract's: ${list(problems)}`,
+  );
+  const expected = await renderDecisionsIndex(repoRoot, records);
+  let actual = "";
+  try {
+    actual = readFileSync(join(repoRoot, DECISIONS_INDEX), "utf8");
+  } catch {
+    // Missing is reported as drift from the first line, below.
+  }
+  const expectedLines = expected.split("\n");
+  const actualLines = actual.split("\n");
+  const firstDrift = expectedLines.findIndex((line, at) => line !== actualLines[at]);
+  const drift = firstDrift === -1 ? actualLines.length : firstDrift + 1;
+  check(
+    "S19 decisions index",
+    problems.length === 0 && expected === actual,
+    expected === actual
+      ? `${DECISIONS_INDEX} is the generated index (${String(records.length)} rows)`
+      : `${DECISIONS_INDEX} drifts from the records at line ${String(drift)} (expected ${JSON.stringify(expectedLines[drift - 1] ?? "<end of file>")}); run bun scripts/decisions-index.ts`,
   );
 }
 

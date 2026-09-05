@@ -1,7 +1,8 @@
 # 0024 — Mounted projection and tile motion
 
-Date: 2026-09-05  
-Status: Accepted implementation decision for #216, #219 and #222; reviewable with the change.
+Date: 2026-09-05
+Status: accepted
+Ratified: implementation decision for #216, #219 and #222; reviewable with the change.
 
 ## Problem
 
