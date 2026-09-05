@@ -517,6 +517,13 @@ and no concurrency) and **string-valued**: serialize your own structures. Keys m
 you can read but not forge. If you have more than 64 KiB of a thing, it is a document, and documents
 have a plane (§5).
 
+**Synchronous today, promise-returning next.** ADR 0016 §4 (ratified, R3) migrates `PluginStorage`
+to a promise-returning interface for every plugin, first-party included, and that migration ships
+with stage 1 of the isolation runner (#151): every method on the interface returns a promise from
+then on, with no dual-contract period and no shim. Write your call sites so the change is a type
+change rather than a rewrite — one storage call per statement, never a chain of synchronous reads
+inside a single expression (`storage.get(storage.get("ptr") ?? "")` is the shape that breaks).
+
 When your stored shape changes incompatibly, bump `dataVersion.major` and ship a **named**
 migration:
 
