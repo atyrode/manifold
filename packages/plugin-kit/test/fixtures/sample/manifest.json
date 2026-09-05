@@ -1,0 +1,15 @@
+{
+  "id": "acme.counter",
+  "version": "1.0.0",
+  "title": "Counter",
+  "description": "A counter kept in plugin storage, bumped through one door and shown in one panel.",
+  "capabilities": ["containers:read"],
+  "contributes": {
+    "panels": [{ "id": "counter", "title": "Counter" }],
+    "sections": [],
+    "elements": [],
+    "tools": [],
+    "events": [{ "id": "counter_bumped", "title": "Counter bumped" }]
+  },
+  "entry": { "server": true, "web": "web.js" }
+}
