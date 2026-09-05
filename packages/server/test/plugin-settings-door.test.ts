@@ -30,7 +30,7 @@ interface Fixture {
   readonly auth: AuthService;
 }
 
-function fixture(): Fixture {
+async function fixture(): Promise<Fixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -49,7 +49,7 @@ function fixture(): Fixture {
   );
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
-  return { store, owner, auth, host: testPluginHost(store, auth, rooms, broker, runtime) };
+  return { store, owner, auth, host: await testPluginHost(store, auth, rooms, broker, runtime) };
 }
 /**
  * The least-authority token the mint will issue — `containers:read` is its floor, so this is a
@@ -79,7 +79,7 @@ const CANVAS_REF = "core.canvas.new-canvas";
 
 describe("engine.plugins.setSetting", () => {
   test("stores the value against the CALLER, keyed by the setting's published ref", async () => {
-    const target = fixture();
+    const target = await fixture();
 
     const outcome = await target.host.dispatch(target.owner, ENGINE_SET_SETTING_ACTION, {
       ...CANVAS_ROW,
@@ -93,7 +93,7 @@ describe("engine.plugins.setSetting", () => {
   });
 
   test("needs no capability: it writes the caller, never the workspace", async () => {
-    const target = fixture();
+    const target = await fixture();
     const visitor = guest(target);
 
     const outcome = await target.host.dispatch(visitor, ENGINE_SET_SETTING_ACTION, {
@@ -108,7 +108,7 @@ describe("engine.plugins.setSetting", () => {
   });
 
   test("null RETRACTS the opinion, leaving the map as empty as it began", async () => {
-    const target = fixture();
+    const target = await fixture();
     await target.host.dispatch(target.owner, ENGINE_SET_SETTING_ACTION, {
       ...CANVAS_ROW,
       value: false,
@@ -126,7 +126,7 @@ describe("engine.plugins.setSetting", () => {
     // `new-canvas` ships true. Writing true explicitly must survive the plugin later shipping
     // false: "I picked this" and "I have no opinion" are different sentences, and only the
     // second one should follow a manifest when it changes its mind.
-    const target = fixture();
+    const target = await fixture();
 
     await target.host.dispatch(target.owner, ENGINE_SET_SETTING_ACTION, {
       ...CANVAS_ROW,
@@ -137,7 +137,7 @@ describe("engine.plugins.setSetting", () => {
   });
 
   test("writes accumulate as a DELTA rather than replacing the map", async () => {
-    const target = fixture();
+    const target = await fixture();
 
     await target.host.dispatch(target.owner, ENGINE_SET_SETTING_ACTION, {
       ...CANVAS_ROW,
@@ -156,7 +156,7 @@ describe("engine.plugins.setSetting", () => {
   });
 
   test("refuses a setting the named plugin does not declare, and stores nothing", async () => {
-    const target = fixture();
+    const target = await fixture();
 
     const outcome = await target.host.dispatch(target.owner, ENGINE_SET_SETTING_ACTION, {
       plugin: "core.canvas",
@@ -170,7 +170,7 @@ describe("engine.plugins.setSetting", () => {
   });
 
   test("refuses a plugin the roster does not carry", async () => {
-    const target = fixture();
+    const target = await fixture();
 
     const outcome = await target.host.dispatch(target.owner, ENGINE_SET_SETTING_ACTION, {
       plugin: "core.ghost",
@@ -183,7 +183,7 @@ describe("engine.plugins.setSetting", () => {
   });
 
   test("refuses a non-boolean value at the door's schema, before any handler runs", async () => {
-    const target = fixture();
+    const target = await fixture();
 
     const outcome = await target.host.dispatch(target.owner, ENGINE_SET_SETTING_ACTION, {
       ...CANVAS_ROW,

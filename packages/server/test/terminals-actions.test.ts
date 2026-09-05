@@ -75,7 +75,7 @@ interface TerminalsFixture {
  * container the opener is already looking at, which keeps the containment questions these
  * cases are about readable.
  */
-function fixture(): TerminalsFixture {
+async function fixture(): Promise<TerminalsFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -127,7 +127,7 @@ function fixture(): TerminalsFixture {
     },
     runtime,
   );
-  host = testPluginHost(store, auth, rooms, broker, runtime, {
+  host = await testPluginHost(store, auth, rooms, broker, runtime, {
     machines: { isOnline: () => true },
     events,
   });
@@ -192,7 +192,7 @@ function denial(outcome: ActionOutcome): { rule: string; message: string } {
 
 describe("core.terminals doors", () => {
   test("creation carries terminals:spawn, and an agent's own container-scoped token holds it", async () => {
-    const base = fixture();
+    const base = await fixture();
     const args = { containerId: base.container.id, elementId: "el-1", cols: 80, rows: 24 };
 
     // The cap the broker used to demand for itself is now DECLARED, so the message a caller
@@ -214,7 +214,7 @@ describe("core.terminals doors", () => {
   });
 
   test("a container-scoped opener cannot have a terminal born in another container", async () => {
-    const base = fixture();
+    const base = await fixture();
     const elsewhere = base.runtime.newId();
     base.store.createContainer({
       id: elsewhere,
@@ -240,7 +240,7 @@ describe("core.terminals doors", () => {
   });
 
   test("a live terminal is killable by its controller, not by another writer", async () => {
-    const base = fixture();
+    const base = await fixture();
     const terminalId = liveTerminal(base);
     const other = context(base, ["containers:read", "terminals:write"], base.container.id);
 
@@ -267,7 +267,7 @@ describe("core.terminals doors", () => {
   });
 
   test("taking the lease is a door: caps, scope, and an exited terminal has nothing to take", async () => {
-    const base = fixture();
+    const base = await fixture();
     const terminalId = liveTerminal(base);
     const opener = base.owner.principal.id;
 
@@ -318,7 +318,7 @@ describe("core.terminals doors", () => {
   });
 
   test("a container-scoped token cannot reach a terminal in another container", async () => {
-    const base = fixture();
+    const base = await fixture();
     const terminalId = liveTerminal(base);
     const elsewhere = base.runtime.newId();
     base.store.createContainer({
@@ -342,7 +342,7 @@ describe("core.terminals doors", () => {
   });
 
   test("renaming trims, refuses an invisible name, and refuses a name for nothing", async () => {
-    const base = fixture();
+    const base = await fixture();
     const terminalId = liveTerminal(base);
 
     expect(
@@ -369,7 +369,7 @@ describe("core.terminals doors", () => {
   });
 
   test("the index is a workspace read; the per-container listing is a container read", async () => {
-    const base = fixture();
+    const base = await fixture();
     const terminalId = liveTerminal(base);
     const scoped = context(base, ["containers:read"], base.container.id);
 
@@ -435,7 +435,7 @@ describe("core.terminals doors", () => {
   });
 
   test("a disabled plugin refuses creation, naming and taking, and still allows a kill", async () => {
-    const base = fixture();
+    const base = await fixture();
     const terminalId = liveTerminal(base);
     expect(await base.host.setEnabled("core.terminals", false, base.owner.principal.id)).toEqual({
       ok: true,
@@ -523,7 +523,7 @@ function newestOpenTrace(base: TerminalsFixture): StoredEvent {
 
 describe("session channel terminal verbs speak the ladder", () => {
   test("a refused creation answers with the ladder's own denial, on the same frame shape", async () => {
-    const base = fixture();
+    const base = await fixture();
     const guest = base.auth.mintToken(
       { principal: { name: "no spawner", kind: "human" }, caps: ["containers:read"] },
       base.owner,
@@ -551,7 +551,7 @@ describe("session channel terminal verbs speak the ladder", () => {
   });
 
   test("disabling terminals refuses new ones on the wire and still kills existing ones", async () => {
-    const base = fixture();
+    const base = await fixture();
     const terminalId = liveTerminal(base);
     const { id, socket } = joinedSocket(base, OWNER_KEY);
     expect(await base.host.setEnabled("core.terminals", false, base.owner.principal.id)).toEqual({
@@ -584,7 +584,7 @@ describe("session channel terminal verbs speak the ladder", () => {
   });
 
   test("an allowed creation still reaches the PTY, and a kill still destroys it", async () => {
-    const base = fixture();
+    const base = await fixture();
     const { id, socket } = joinedSocket(base, OWNER_KEY);
 
     // `placement: "tile"` because the container is a composition: placement DISCIPLINE is
@@ -699,7 +699,7 @@ describe("session channel terminal verbs speak the ladder", () => {
   });
 
   test("a kill of somebody else's live terminal is refused with the door's reason", async () => {
-    const base = fixture();
+    const base = await fixture();
     const terminalId = liveTerminal(base);
     const guest = base.auth.mintToken(
       {
@@ -725,7 +725,7 @@ describe("session channel terminal verbs speak the ladder", () => {
   });
 
   test("a take asks the door first, and the lease moves only once it allows", async () => {
-    const base = fixture();
+    const base = await fixture();
     const terminalId = liveTerminal(base);
     const opener = base.owner.principal.id;
     expect(base.broker.liveTerminal(terminalId)?.controllerId).toBe(opener);

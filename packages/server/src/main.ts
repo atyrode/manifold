@@ -68,8 +68,12 @@ export interface RunningServer {
   stop(): Promise<void>;
 }
 
-/** Wires SQLite, rooms, brokers, HTTP, and both WebSockets into one Bun process. */
-export function startServer(options: StartServerOptions = {}): RunningServer {
+/**
+ * Wires SQLite, rooms, brokers, HTTP, and both WebSockets into one Bun process. Resolves
+ * once the socket is bound — and the socket is bound only after the plugin host has booted,
+ * because boot is where pending data migrations run (ADR 0016 §4 made them awaited).
+ */
+export async function startServer(options: StartServerOptions = {}): Promise<RunningServer> {
   const runtime = options.runtime ?? defaultRuntime;
   const config = options.config ?? loadConfig();
   const timers = options.timers ?? defaultRoomTimers;
@@ -166,7 +170,7 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
     that consult it: the session gateway pushes the roster and refuses terminal
     creation for a disabled terminals plugin, and the HTTP app serves the action door.
    */
-  const plugins: PluginHost = new PluginHost(
+  const plugins: PluginHost = await PluginHost.boot(
     SERVER_PLUGIN_DEFS,
     store,
     auth,
@@ -303,7 +307,7 @@ export function startServer(options: StartServerOptions = {}): RunningServer {
 }
 
 if (import.meta.main) {
-  const running = startServer();
+  const running = await startServer();
   let stopping = false;
   const stop = (): void => {
     if (stopping) return;

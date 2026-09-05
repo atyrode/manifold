@@ -83,7 +83,7 @@ function newContainer(runtime: FakeRuntime, name: string): Container {
   return { id: runtime.newId(), name, createdAt: runtime.now(), discipline: "canvas" };
 }
 
-function planeFixture(): PlaneFixture {
+async function planeFixture(): Promise<PlaneFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -130,7 +130,7 @@ function planeFixture(): PlaneFixture {
     runtime,
     logger,
   );
-  host = testPluginHost(store, auth, rooms, broker, runtime, { events, logger });
+  host = await testPluginHost(store, auth, rooms, broker, runtime, { events, logger });
   broker.setEvents(events);
   rooms.setEvents(events);
   const gateway = new SessionGateway(
@@ -219,7 +219,7 @@ const SPACE_TOPIC: ManifoldRef = { kind: "plugin", pluginId: "core.space" };
 
 describe("event plane subscription authority", () => {
   test("an owner subscribes to a container and hears it; the OTHER container stays silent", async () => {
-    const fixture = planeFixture();
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
     subscribe(fixture, "tab", [{ kind: "container", containerId: fixture.container.id }]);
     expect(fixture.events.held("tab")).toBe(1);
@@ -239,7 +239,7 @@ describe("event plane subscription authority", () => {
   });
 
   test("leaf removal announces on the container that held it, once, at the commit", async () => {
-    const fixture = planeFixture();
+    const fixture = await planeFixture();
     /*
       `core.space.removeTile` was a bespoke DELETE route until issue #114, so it had no
       commit point a socket could hear. Now it does, and the property worth pinning is the
@@ -282,8 +282,8 @@ describe("event plane subscription authority", () => {
     fixture.store.close();
   });
 
-  test("a container-scoped token is CONFINED: its own container yes, another no, a collection no", () => {
-    const fixture = planeFixture();
+  test("a container-scoped token is CONFINED: its own container yes, another no, a collection no", async () => {
+    const fixture = await planeFixture();
     const token = context(fixture, ["containers:read"], fixture.container.id);
     connect(fixture, "scoped", { token, containerId: fixture.container.id });
 
@@ -306,8 +306,8 @@ describe("event plane subscription authority", () => {
     fixture.store.close();
   });
 
-  test("a token without containers:read subscribes to nothing at all", () => {
-    const fixture = planeFixture();
+  test("a token without containers:read subscribes to nothing at all", async () => {
+    const fixture = await planeFixture();
     // `scenes:write` is a real cap and deliberately not the one a subscription needs: the plane
     // reuses the resolve door's `containers:read` and invents no second vocabulary.
     const token = context(fixture, ["scenes:write"], fixture.container.id);
@@ -320,8 +320,8 @@ describe("event plane subscription authority", () => {
     fixture.store.close();
   });
 
-  test("a subscribe before any join is refused by the handshake rule, not by the hub", () => {
-    const fixture = planeFixture();
+  test("a subscribe before any join is refused by the handshake rule, not by the hub", async () => {
+    const fixture = await planeFixture();
     const socket = new FakeSocket();
     fixture.gateway.open("cold", socket);
 
@@ -336,8 +336,8 @@ describe("event plane subscription authority", () => {
 });
 
 describe("event plane matching", () => {
-  test("a container subscription hears its OWN elements: the grammar's one hop", () => {
-    const fixture = planeFixture();
+  test("a container subscription hears its OWN elements: the grammar's one hop", async () => {
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
     subscribe(fixture, "tab", [{ kind: "container", containerId: fixture.container.id }]);
 
@@ -403,8 +403,8 @@ describe("event plane matching", () => {
     }
   });
 
-  test("a terminal is a ROOT: a container subscription does not hear its terminals", () => {
-    const fixture = planeFixture();
+  test("a terminal is a ROOT: a container subscription does not hear its terminals", async () => {
+    const fixture = await planeFixture();
     // Documented deliberately, because it is the one place the plane declines a hop it could
     // have made: a terminal keeps its identity across a rehome, so its container is state
     // rather than address, and a rule needing the store could only be evaluated server-side.
@@ -421,7 +421,7 @@ describe("event plane matching", () => {
 
 describe("event plane fan-out", () => {
   test("two live sockets on one topic each hear it exactly once", async () => {
-    const fixture = planeFixture();
+    const fixture = await planeFixture();
     const first = connect(fixture, "tab-a");
     const second = connect(fixture, "tab-b");
     // The second socket subscribes to the container AND to an element inside it: two matching
@@ -437,8 +437,8 @@ describe("event plane fan-out", () => {
     fixture.store.close();
   });
 
-  test("one socket holding two matching subscriptions still hears one frame", () => {
-    const fixture = planeFixture();
+  test("one socket holding two matching subscriptions still hears one frame", async () => {
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
     subscribe(fixture, "tab", [
       { kind: "container", containerId: fixture.container.id },
@@ -461,7 +461,7 @@ describe("event plane fan-out", () => {
   });
 
   test("a node-addressed commit also reaches its door's COLLECTION, once and with one row", async () => {
-    const fixture = planeFixture();
+    const fixture = await planeFixture();
     const room = connect(fixture, "room");
     const workspace = connect(fixture, "workspace");
     subscribe(fixture, "room", [{ kind: "container", containerId: fixture.container.id }]);
@@ -499,7 +499,7 @@ describe("event plane fan-out", () => {
   });
 
   test("holding a node AND its door's collection is still one frame, at the node", async () => {
-    const fixture = planeFixture();
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
     subscribe(fixture, "tab", [
       { kind: "container", containerId: fixture.container.id },
@@ -522,7 +522,7 @@ describe("event plane fan-out", () => {
   });
 
   test("a refused action publishes NOTHING, however much its handler staged", async () => {
-    const fixture = planeFixture();
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
     subscribe(fixture, "tab", [INDEX_TOPIC]);
 
@@ -543,7 +543,7 @@ describe("event plane fan-out", () => {
   });
 
   test("ONE COMMIT, ONE EVENT: a drag that commits once produces exactly one row and one frame", async () => {
-    const fixture = planeFixture();
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
     subscribe(fixture, "tab", [{ kind: "container", containerId: fixture.container.id }]);
 
@@ -564,8 +564,8 @@ describe("event plane fan-out", () => {
     fixture.store.close();
   });
 
-  test("an emission whose kind its emitter never declared is refused, loudly and totally", () => {
-    const fixture = planeFixture();
+  test("an emission whose kind its emitter never declared is refused, loudly and totally", async () => {
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
     subscribe(fixture, "tab", [INDEX_TOPIC]);
 
@@ -578,8 +578,8 @@ describe("event plane fan-out", () => {
     fixture.store.close();
   });
 
-  test("a plugin may not emit on another plugin's node", () => {
-    const fixture = planeFixture();
+  test("a plugin may not emit on another plugin's node", async () => {
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
     subscribe(fixture, "tab", [{ kind: "plugin", pluginId: FLOOR_EVENT_OWNERS.machines }]);
 
@@ -601,7 +601,7 @@ describe("event plane fan-out", () => {
 
 describe("event plane lifetime", () => {
   test("unsubscribe stops delivery and leaves the socket alive", async () => {
-    const fixture = planeFixture();
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
     subscribe(fixture, "tab", [INDEX_TOPIC]);
     unsubscribe(fixture, "tab", [INDEX_TOPIC]);
@@ -615,8 +615,8 @@ describe("event plane lifetime", () => {
     fixture.store.close();
   });
 
-  test("unsubscribing from a topic never held is a no-op, not an error", () => {
-    const fixture = planeFixture();
+  test("unsubscribing from a topic never held is a no-op, not an error", async () => {
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
 
     unsubscribe(fixture, "tab", [INDEX_TOPIC]);
@@ -630,7 +630,7 @@ describe("event plane lifetime", () => {
   });
 
   test("SOCKET DEATH takes every subscription with it: nothing is persisted, nothing resumes", async () => {
-    const fixture = planeFixture();
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
     subscribe(fixture, "tab", [INDEX_TOPIC]);
     expect(fixture.events.held("tab")).toBe(1);
@@ -647,8 +647,8 @@ describe("event plane lifetime", () => {
     fixture.store.close();
   });
 
-  test("past the per-connection bound the excess is dropped and named, and the socket lives", () => {
-    const fixture = planeFixture();
+  test("past the per-connection bound the excess is dropped and named, and the socket lives", async () => {
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
 
     // 64 topics per frame is the wire's bound, so filling 256 takes four frames plus one more
@@ -673,7 +673,7 @@ describe("event plane lifetime", () => {
 
 describe("event frame shape", () => {
   test("the frame validates as the published connection-level body, with no channel tag", async () => {
-    const fixture = planeFixture();
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
     subscribe(fixture, "tab", [INDEX_TOPIC]);
 
@@ -697,8 +697,8 @@ describe("event frame shape", () => {
 });
 
 describe("floor doors emit at their commit points", () => {
-  test("attendance: a principal joining a room reaches a collection subscriber once per arrival", () => {
-    const fixture = planeFixture();
+  test("attendance: a principal joining a room reaches a collection subscriber once per arrival", async () => {
+    const fixture = await planeFixture();
     const watcher = connect(fixture, "watcher");
     subscribe(fixture, "watcher", [{ kind: "plugin", pluginId: FLOOR_EVENT_OWNERS.attendance }]);
     watcher.clear();
@@ -718,8 +718,8 @@ describe("floor doors emit at their commit points", () => {
     fixture.store.close();
   });
 
-  test("machines: an online transition fires once, and a superseded socket is not a new arrival", () => {
-    const fixture = planeFixture();
+  test("machines: an online transition fires once, and a superseded socket is not a new arrival", async () => {
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
     subscribe(fixture, "tab", [{ kind: "plugin", pluginId: FLOOR_EVENT_OWNERS.machines }]);
     const enrollment = fixture.auth.enrollMachine("builder", fixture.owner);
@@ -747,8 +747,8 @@ describe("floor doors emit at their commit points", () => {
     fixture.store.close();
   });
 
-  test("terminal lifecycle keeps its audit trail scoped to the container it happened in", () => {
-    const fixture = planeFixture();
+  test("terminal lifecycle keeps its audit trail scoped to the container it happened in", async () => {
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
     subscribe(fixture, "tab", [{ kind: "plugin", pluginId: FLOOR_EVENT_OWNERS.terminals }]);
     fixture.store.createTerminal({
@@ -790,7 +790,7 @@ describe("floor doors emit at their commit points", () => {
   });
 
   test("plugin enablement announces on the engine's own ledger node", async () => {
-    const fixture = planeFixture();
+    const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
     subscribe(fixture, "tab", [{ kind: "plugin", pluginId: "engine.plugins" }]);
 

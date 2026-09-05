@@ -55,7 +55,7 @@ interface Fixture {
   readonly runtime: FakeRuntime;
 }
 
-function fixture(logger: Logger = silentLogger): Fixture {
+async function fixture(logger: Logger = silentLogger): Promise<Fixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -79,7 +79,7 @@ function fixture(logger: Logger = silentLogger): Fixture {
     owner: auth.authenticate(OWNER_KEY),
     rooms,
     broker,
-    host: testPluginHost(store, auth, rooms, broker, runtime, { logger }),
+    host: await testPluginHost(store, auth, rooms, broker, runtime, { logger }),
     runtime,
   };
 }
@@ -127,7 +127,7 @@ function accessContainer(fix: Fixture): string {
 
 describe("core.access ladder", () => {
   test("an unknown door in an assembled namespace is unknown, never forbidden", async () => {
-    const fix = fixture();
+    const fix = await fixture();
 
     const outcome = await fix.host.dispatch(fix.owner, "core.access.listTokens", {});
 
@@ -138,7 +138,7 @@ describe("core.access ladder", () => {
   });
 
   test("an access seat that is off closes creation and minting but never revocation", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const victim = grant(fix, ["containers:read"]);
     /*
       THE DOOR REFUSES NOW. `core.access` is `essential` (issue #113): `createPrincipal` is the
@@ -149,7 +149,7 @@ describe("core.access ladder", () => {
     expect(await fix.host.setEnabled("core.access", false, "admin")).toEqual({
       refused: "essential",
     });
-    const host = hostWithSeatOff(fix, "core.access");
+    const host = await hostWithSeatOff(fix, "core.access");
 
     const created = await host.dispatch(fix.owner, "core.access.createPrincipal", {
       name: "blocked",
@@ -172,7 +172,7 @@ describe("core.access ladder", () => {
   });
 
   test("a container-scoped token is refused the workspace door and admitted to the scoped ones", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const scoped = context(fix, ["tokens:mint", "scenes:write"], container);
 
@@ -202,7 +202,7 @@ describe("core.access ladder", () => {
   });
 
   test("a scoped minter cannot reach another container, which is the scope obligation", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const home = accessContainer(fix);
     const elsewhere = accessContainer(fix);
     const scoped = context(fix, ["tokens:mint", "scenes:write"], home);
@@ -221,7 +221,7 @@ describe("core.access ladder", () => {
   });
 
   test("declared caps mirror the routes: root for a bootstrap, tokens:mint for the rest", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const minter = context(fix, ["tokens:mint"]);
     const bystander = context(fix, ["containers:read"]);
 
@@ -251,7 +251,7 @@ describe("core.access ladder", () => {
   });
 
   test("authority is checked before shape, so a bad request from a bad caller says forbidden", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const bystander = context(fix, ["containers:read"]);
 
     const outcome = await fix.host.dispatch(bystander, "core.access.mint", { caps: [] });
@@ -263,7 +263,7 @@ describe("core.access ladder", () => {
   });
 
   test("a malformed mint is invalid_args, including the either-or the schema refines", async () => {
-    const fix = fixture();
+    const fix = await fixture();
 
     const noPrincipal = await fix.host.dispatch(fix.owner, "core.access.mint", {
       caps: ["containers:read"],
@@ -285,7 +285,7 @@ describe("core.access ladder", () => {
   });
 
   test("the mechanism's refusals arrive as refusals, with their wording intact", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const minter = context(fix, ["tokens:mint", "scenes:write"]);
 
     const tooWide = await fix.host.dispatch(minter, "core.access.mint", {
@@ -323,7 +323,7 @@ describe("core.access ladder", () => {
   });
 
   test("the bootstrap door issues a usable root identity", async () => {
-    const fix = fixture();
+    const fix = await fixture();
 
     const outcome = await fix.host.dispatch(fix.owner, "core.access.createPrincipal", {
       name: "second owner",
@@ -342,7 +342,7 @@ describe("core.access ladder", () => {
   });
 
   test("revocation reports how many tokens died, and zero is a success", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const victim = grant(fix, ["containers:read"]);
     fix.auth.mintToken({ principalId: victim.principal.id, caps: ["containers:read"] }, fix.owner);
 
@@ -365,7 +365,7 @@ describe("core.access ladder", () => {
     const capture = (evt: string, fields?: Readonly<Record<string, unknown>>): void => {
       recorded.push(JSON.stringify({ evt, ...(fields ?? {}) }));
     };
-    const fix = fixture({ info: capture, warn: capture, error: capture });
+    const fix = await fixture({ info: capture, warn: capture, error: capture });
 
     const outcome = await fix.host.dispatch(fix.owner, "core.access.mint", {
       principal: { name: "logged", kind: "agent" },
@@ -404,7 +404,7 @@ describe("core.access share ladder", () => {
   }
 
   test("a container-scoped minter may share its own container and no other", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const home = accessContainer(fix);
     const elsewhere = accessContainer(fix);
     const scoped = context(fix, ["tokens:mint", "containers:read"], home);
@@ -434,7 +434,7 @@ describe("core.access share ladder", () => {
   });
 
   test("minting a share is `tokens:mint`, and it attenuates in the mechanism's words", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const bystander = context(fix, ["containers:read"]);
     const minter = context(fix, ["tokens:mint", "containers:read"]);
@@ -465,7 +465,7 @@ describe("core.access share ladder", () => {
   });
 
   test("only a container can be shared, and a bad origin is refused rather than normalized", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
 
     const terminal = await fix.host.dispatch(fix.owner, "core.access.mintShare", {
@@ -494,7 +494,7 @@ describe("core.access share ladder", () => {
   });
 
   test("the guest doors are workspace-grade, because a dial is not in any local container", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const scoped = context(fix, ["containers:read", "containers:write"], container);
 
@@ -517,7 +517,7 @@ describe("core.access share ladder", () => {
   });
 
   test("opening a dial reads containers; accepting one writes them", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const reader = context(fix, ["containers:read"]);
 
     const acceptedByReader = await fix.host.dispatch(reader, "core.access.dialShare", {
@@ -543,7 +543,7 @@ describe("core.access share ladder", () => {
   });
 
   test("an access seat that is off stops sharing and dialling, but never revocation", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const minted = result(
       await fix.host.dispatch(fix.owner, "core.access.mintShare", {
@@ -554,7 +554,7 @@ describe("core.access share ladder", () => {
     );
     const shareId = Reflect.get(Reflect.get(minted as object, "share") as object, "id");
     if (typeof shareId !== "string") throw new Error("no share id");
-    const host = hostWithSeatOff(fix, "core.access");
+    const host = await hostWithSeatOff(fix, "core.access");
 
     const blocked = await host.dispatch(fix.owner, "core.access.mintShare", {
       node: containerNode(container),
@@ -578,7 +578,7 @@ describe("core.access share ladder", () => {
   });
 
   test("the inventory publishes the share and never its secret", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const minted = result(
       await fix.host.dispatch(fix.owner, "core.access.mintShare", {
@@ -605,7 +605,7 @@ describe("core.access share ladder", () => {
     const capture = (evt: string, fields?: Readonly<Record<string, unknown>>): void => {
       recorded.push(JSON.stringify({ evt, ...(fields ?? {}) }));
     };
-    const fix = fixture({ info: capture, warn: capture, error: capture });
+    const fix = await fixture({ info: capture, warn: capture, error: capture });
     const container = accessContainer(fix);
 
     const minted = result(
@@ -668,7 +668,7 @@ describe("core.access grant ladder", () => {
   }
 
   test("the doors are root-only, and the scope rung answers a scoped caller first", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const minter = context(fix, ["tokens:mint"]);
     const scoped = context(fix, ["tokens:mint"], container);
@@ -700,7 +700,7 @@ describe("core.access grant ladder", () => {
   });
 
   test("a node grant widens a LIVE container-scoped credential the token never carried", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const reader = context(fix, ["containers:read"], container);
 
@@ -732,7 +732,7 @@ describe("core.access grant ladder", () => {
   });
 
   test("a deny at the container beats an allow at the root: deeper wins", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const reader = context(fix, ["containers:read"], container);
 
@@ -765,7 +765,7 @@ describe("core.access grant ladder", () => {
   });
 
   test("at equal depth and equal specificity, deny beats allow", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const reader = context(fix, ["containers:read"], container);
     const node = containerNodeUri(container);
@@ -796,7 +796,7 @@ describe("core.access grant ladder", () => {
   });
 
   test("a named principal's allow beats a class deny at the same node: specificity outranks effect", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const reader = context(fix, ["containers:read"], container);
     const node = containerNodeUri(container);
@@ -830,7 +830,7 @@ describe("core.access grant ladder", () => {
   });
 
   test("revoking a grant takes effect on the next dispatch, with no reconnect", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const reader = context(fix, ["containers:read"], container);
 
@@ -870,7 +870,7 @@ describe("core.access grant ladder", () => {
   });
 
   test("a token's own row is not revocable as a grant, and the owner cannot be denied", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const reader = context(fix, ["containers:read"], container);
 
@@ -915,7 +915,7 @@ describe("core.access grant ladder", () => {
   });
 
   test("listGrants narrows by node and by principal, and a malformed row never lands", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const elsewhere = accessContainer(fix);
     const subject = context(fix, ["containers:read"]);
@@ -967,7 +967,7 @@ describe("core.access grant ladder", () => {
   });
 
   test("revoking a grant outlives an access seat being off; writing and listing do not", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const reader = context(fix, ["containers:read"], container);
     const written = await write(fix, {
@@ -977,7 +977,7 @@ describe("core.access grant ladder", () => {
       effect: "allow",
       reach: "subtree",
     });
-    const host = hostWithSeatOff(fix, "core.access");
+    const host = await hostWithSeatOff(fix, "core.access");
 
     const blocked = await host.dispatch(fix.owner, "core.access.grant", {
       principal: { kind: "any-agent" },
@@ -1020,7 +1020,7 @@ describe("core.access shares are grant rows", () => {
   const GUEST_ORIGIN = "http://guest.localhost:7778";
 
   test("minting a share writes the instance grant on the shared node", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
 
     const minted = result(
@@ -1052,7 +1052,7 @@ describe("core.access shares are grant rows", () => {
   });
 
   test("revoking a share deletes its grant row, and the share stays auditable", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const node = `manifold://container/${container}`;
     const minted = result(
@@ -1103,7 +1103,7 @@ describe("core.access revocation retires a token's grant row", () => {
   }
 
   test("revoking a principal's last token empties its rows, and revoking again is a no-op", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const guest = grant(fix, ["containers:read", "scenes:write"]);
     const principalId = guest.principal.id;
 
@@ -1130,7 +1130,7 @@ describe("core.access revocation retires a token's grant row", () => {
   });
 
   test("a principal with two tokens keeps the survivor's row until the second dies", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const minter = context(fix, ["tokens:mint", "containers:read"], container);
 
@@ -1172,7 +1172,7 @@ describe("core.access revocation retires a token's grant row", () => {
   });
 
   test("a share's tickets lose their rows with the share, and the share row stays", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const container = accessContainer(fix);
     const node = `manifold://container/${container}`;
     const minted = ShareGrantSchema.parse(

@@ -9,16 +9,17 @@ import type { PluginDataVersion } from "@manifold/protocol";
  * without knowing anything about its shape, and "which plugin owns this row" is answered by
  * the key's namespace rather than by a comment.
  *
- * The API is SYNCHRONOUS today. The substrate underneath is Bun's SQLite, which is
- * synchronous; an async facade over it would add a promise per read for no concurrency, and
- * would make a data migration — which must be all-or-nothing — interleavable with dispatch.
- *
- * That ruling is already reversed on paper: ADR 0016 §4 (ratified, R3) migrates this
- * interface to a promise-returning one for EVERY plugin, first-party included, and the
- * migration ships with stage 1 of the isolation runner (#151) — one storage contract for
- * in-realm and isolated plugins alike, no dual-contract period, no shim. Until it lands,
- * write call sites so the change is a type change rather than a rewrite: one storage call
- * per statement, never a chain of synchronous reads inside a single expression.
+ * The API is PROMISE-RETURNING, for every plugin. Until ADR 0016 it was synchronous on
+ * purpose — Bun's SQLite is synchronous, and a promise per read over it bought no
+ * concurrency — and that ruling is reversed by ADR 0016 §4 (ratified, R3): an isolated
+ * plugin's storage calls cross a process boundary, so they are promises, and two storage
+ * contracts — sync in-realm, async isolated — would be two doors onto one concept (invariant
+ * 14) that every plugin author would have to tell apart. One contract, first-party plugins
+ * included, is the T2 cost the ADR states plainly: an in-realm plugin pays a promise per
+ * read over a synchronous SQLite call, and every handler that reads storage gains an
+ * `await`. The in-realm implementation stays synchronous inside and resolves immediately —
+ * no queue, no async driver — which is what keeps a chain of awaited storage calls free of
+ * interleaving with dispatch (see `PluginMigration`).
  *
  * Values are strings. A plugin that wants structure serializes it (its own schema, its own
  * versioning) exactly as the server's `meta` rows already do: the engine has no business
@@ -29,19 +30,23 @@ import type { PluginDataVersion } from "@manifold/protocol";
  * SQLite tables owned by floor code (terminal names, machine rows, view state) move onto
  * this ref in the conversion batch — that move is what the version/ledger machinery
  * below exists for, and why it ships before its first real occupant.
+ *
+ * A refused operation — a reserved or malformed key, an oversize value — REJECTS the
+ * returned promise with `PluginStorageError`; nothing here throws synchronously, so a caller
+ * has exactly one failure path whether its storage is in-realm or served over an RPC.
  */
 export interface PluginStorage {
   /** The manifest id this handle is bound to; every key below is namespaced by it. */
   readonly pluginId: string;
-  get(key: string): string | null;
-  set(key: string, value: string): void;
-  delete(key: string): void;
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<void>;
+  delete(key: string): Promise<void>;
   /** Every key this plugin holds, sorted, optionally narrowed to a prefix. */
-  keys(prefix?: string): readonly string[];
+  keys(prefix?: string): Promise<readonly string[]>;
   /** The data version last stamped by the engine; null when this plugin stored nothing yet. */
-  dataVersion(): PluginDataVersion | null;
+  dataVersion(): Promise<PluginDataVersion | null>;
   /** Names of the migrations already applied, sorted — the ledger. */
-  appliedMigrations(): readonly string[];
+  appliedMigrations(): Promise<readonly string[]>;
 }
 
 /**
@@ -50,10 +55,10 @@ export interface PluginStorage {
  * those through here instead. `clear` is the purge verb's hands.
  */
 export interface PluginStorageAdmin extends PluginStorage {
-  stampDataVersion(version: PluginDataVersion): void;
-  recordMigration(name: string, applied: number): void;
+  stampDataVersion(version: PluginDataVersion): Promise<void>;
+  recordMigration(name: string, applied: number): Promise<void>;
   /** Erases every row of this plugin, reserved keys included, and reports how many went. */
-  clear(): number;
+  clear(): Promise<number>;
 }
 
 /**
@@ -80,7 +85,11 @@ export const MIGRATION_KEY_PREFIX = `${RESERVED_KEY_PREFIX}migration:`;
  */
 export const MAX_STORAGE_VALUE_BYTES = 64 * 1024;
 
-/** A refused storage operation: an authoring bug, so it throws rather than returning null. */
+/**
+ * A refused storage operation: an authoring bug, so the promise rejects with it rather than
+ * resolving null. The assertions below throw; the storage implementation runs them inside
+ * the promise it returns, which is how a throw here becomes a rejection there.
+ */
 export class PluginStorageError extends Error {
   constructor(message: string) {
     super(message);
@@ -139,14 +148,17 @@ export function compareDataVersion(left: PluginDataVersion, right: PluginDataVer
  * running anything, and `assembleRoster` can refuse a migration claiming to reach past the
  * version its own code declares.
  *
- * Synchronous for the reason `PluginStorage` is: a migration is all-or-nothing over a
- * synchronous substrate, and an `await` inside one is an invitation to serve half-migrated
- * data.
+ * Promise-returning, because the storage it is handed is (ADR 0016 §4). All-or-nothing
+ * survives the change on one condition, which the in-realm implementation meets: a storage
+ * call resolves immediately — synchronous SQLite inside, no queue — so a chain of awaited
+ * storage calls runs to completion in one turn of the event loop, and a dispatch, which
+ * arrives as I/O, cannot interleave with it. A migration that awaits anything ELSE (a timer,
+ * a file, the network) opens exactly the window this rule closes, and must not.
  */
 export interface PluginMigration {
   readonly name: string;
   readonly to: PluginDataVersion;
-  migrate(storage: PluginStorage): void;
+  migrate(storage: PluginStorage): void | Promise<void>;
 }
 
 /**

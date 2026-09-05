@@ -327,7 +327,7 @@ export function testEventHub(
  * with a hand-written plugin list would let the action door pass here and refuse in the
  * server, which is exactly the divergence the registry exists to prevent.
  */
-export function testPluginHost(
+export async function testPluginHost(
   store: ServerStore,
   auth: AuthService,
   rooms: RoomManager,
@@ -352,7 +352,7 @@ export function testPluginHost(
      */
     readonly dialer?: InstanceDialer;
   } = {},
-): PluginHost {
+): Promise<PluginHost> {
   /*
     The executor and the host are mutually dependent — the executor resolves legality against
     the live assembly, and an assembled action drives the executor — which is exactly what
@@ -382,7 +382,7 @@ export function testPluginHost(
       runtime,
       options.logger ?? silentLogger,
     );
-  host = new PluginHost(
+  host = await PluginHost.boot(
     SERVER_PLUGIN_DEFS,
     store,
     auth,
@@ -427,7 +427,7 @@ export function testPluginHost(
  * at boot; the fixture's original host keeps the roster it was built with and the caller uses
  * the one returned here.
  */
-export function hostWithSeatOff(
+export async function hostWithSeatOff(
   parts: {
     readonly store: ServerStore;
     readonly auth: AuthService;
@@ -437,7 +437,7 @@ export function hostWithSeatOff(
   },
   id: string,
   changedBy = "out-of-band",
-): PluginHost {
+): Promise<PluginHost> {
   parts.store.setPluginEnabled(id, false, changedBy, parts.runtime.now());
   return testPluginHost(parts.store, parts.auth, parts.rooms, parts.broker, parts.runtime);
 }

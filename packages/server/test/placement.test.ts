@@ -155,7 +155,7 @@ function element(
   };
 }
 
-function placementFixture(): PlacementFixture {
+async function placementFixture(): Promise<PlacementFixture> {
   const cwd = mkdtempSync(join(tmpdir(), "manifold-placement-test-"));
   temporaryDirectories.push(cwd);
   const config = loadConfig(
@@ -206,7 +206,7 @@ function placementFixture(): PlacementFixture {
     that skipped this would judge a note by the engine's default instead of core.notes'
     declaration. The roster arrives as a thunk, exactly as production wires it.
    */
-  const plugins = testPluginHost(store, auth, rooms, broker, runtime);
+  const plugins = await testPluginHost(store, auth, rooms, broker, runtime);
   const placement = new PlaceExecutor(
     store,
     rooms,
@@ -491,14 +491,14 @@ afterEach(() => {
 });
 
 describe("the placement algebra, executed", () => {
-  test("every placeable kind x destination is executed or refused by a named rule", () => {
+  test("every placeable kind x destination is executed or refused by a named rule", async () => {
     /*
       The kinds come from BOTH halves of the vocabulary now: the floor's structural kinds and
       the element kinds the real assembly contributes (ADR 0013 §12). Deriving them rather
       than listing them is what keeps this matrix exhaustive as plugins take ownership of
       kinds — a contributed kind with no ref above fails here.
      */
-    const composed = placementFixture().plugins.roster();
+    const composed = (await placementFixture()).plugins.roster();
     const contributed = [...rosterElementTraits(composed).keys()];
     /*
       The DISCIPLINES the assembly composed, on the same footing as the element kinds it
@@ -515,7 +515,7 @@ describe("the placement algebra, executed", () => {
       for (const destinationKind of destinationKinds) {
         // A fresh world per pair: an executed placement mutates state, and the next pair
         // must be judged against the same starting position as the last.
-        const fixture = placementFixture();
+        const fixture = await placementFixture();
         const ref = refs(fixture)[itemKind];
         const destination = destinations(fixture)[destinationKind];
         if (ref === undefined) throw new Error(`no ref for ${itemKind}`);
@@ -610,8 +610,8 @@ describe("the placement algebra, executed", () => {
     );
   });
 
-  test("an element naming a portal onto a SOLO composition places the TERMINAL inside it", () => {
-    const fixture = placementFixture();
+  test("an element naming a portal onto a SOLO composition places the TERMINAL inside it", async () => {
+    const fixture = await placementFixture();
     const ref: PlacementRef = {
       kind: "element",
       containerId: fixture.canvas.id,
@@ -645,8 +645,8 @@ describe("the placement algebra, executed", () => {
     expect(roomFor(fixture, fixture.canvas.id).element("el-portal-solo")).toBeNull();
   });
 
-  test("an element naming a portal onto a MULTI composition is denied not_solo at a tile", () => {
-    const fixture = placementFixture();
+  test("an element naming a portal onto a MULTI composition is denied not_solo at a tile", async () => {
+    const fixture = await placementFixture();
     const ref: PlacementRef = {
       kind: "element",
       containerId: fixture.canvas.id,
@@ -685,8 +685,8 @@ describe("the placement algebra, executed", () => {
     expect(roomFor(fixture, fixture.canvas.id).element("el-portal-composition")).not.toBeNull();
   });
 
-  test("the current location comes from identity, never from the caller", () => {
-    const fixture = placementFixture();
+  test("the current location comes from identity, never from the caller", async () => {
+    const fixture = await placementFixture();
 
     // The occupant lives in `composition`. Nothing in this request says so, and no request
     // could: the only container id it carries is the destination.
@@ -710,8 +710,8 @@ describe("the placement algebra, executed", () => {
     expect(fixture.store.getContainer(fixture.composition.id)).not.toBeNull();
   });
 
-  test("placing an addressed reference again MOVES it instead of authoring a second one", () => {
-    const fixture = placementFixture();
+  test("placing an addressed reference again MOVES it instead of authoring a second one", async () => {
+    const fixture = await placementFixture();
     const canvas = roomFor(fixture, fixture.canvas.id);
 
     const repositioned = fixture.placement.place({
@@ -744,8 +744,8 @@ describe("the placement algebra, executed", () => {
     });
   });
 
-  test("an id that names nothing is refused by rule or fails, never a silent no-op", () => {
-    const fixture = placementFixture();
+  test("an id that names nothing is refused by rule or fails, never a silent no-op", async () => {
+    const fixture = await placementFixture();
     const unknownTerminal = fixture.placement.place({
       ref: { kind: "terminal", terminalId: "ghost" },
       destination: { kind: "canvas", containerId: fixture.canvas.id, x: 0, y: 0 },
@@ -789,8 +789,8 @@ function occupants(fixture: PlacementFixture, containerId: string): Record<strin
 }
 
 describe("center means this exact spot", () => {
-  test("center on an EMPTY leaf still fills it, and says so", () => {
-    const fixture = placementFixture();
+  test("center on an EMPTY leaf still fills it, and says so", async () => {
+    const fixture = await placementFixture();
     const empty: Container = {
       id: fixture.runtime.newId(),
       name: "empty",
@@ -814,8 +814,8 @@ describe("center means this exact spot", () => {
     });
   });
 
-  test("two leaves of ONE composition exchange occupants, keeping their seats", () => {
-    const fixture = placementFixture();
+  test("two leaves of ONE composition exchange occupants, keeping their seats", async () => {
+    const fixture = await placementFixture();
     const terminalTile = terminalLeafId(fixture, fixture.composition.id, fixture.occupant);
     const canvasTile = containerLeafId(fixture, fixture.composition.id, fixture.spare.id);
 
@@ -845,8 +845,8 @@ describe("center means this exact spot", () => {
     expect(homeOf(fixture, fixture.occupant)).toBe(fixture.composition.id);
   });
 
-  test("leaves of two DIFFERENT compositions exchange, and the terminal's home follows", () => {
-    const fixture = placementFixture();
+  test("leaves of two DIFFERENT compositions exchange, and the terminal's home follows", async () => {
+    const fixture = await placementFixture();
     const terminalTile = terminalLeafId(fixture, fixture.composition.id, fixture.occupant);
     const foreignTile = containerLeafId(fixture, fixture.otherComposition.id, fixture.other.id);
 
@@ -890,8 +890,8 @@ describe("center means this exact spot", () => {
     });
   });
 
-  test("two canvas elements exchange rectangles and nothing else about them", () => {
-    const fixture = placementFixture();
+  test("two canvas elements exchange rectangles and nothing else about them", async () => {
+    const fixture = await placementFixture();
     const canvas = roomFor(fixture, fixture.canvas.id);
     writeElement(
       canvas.doc,
@@ -955,8 +955,8 @@ describe("center means this exact spot", () => {
     expect(readElements(canvas.doc).size).toBe(5);
   });
 
-  test("a carry with no CANVAS seat of its own is refused by name, not coerced", () => {
-    const fixture = placementFixture();
+  test("a carry with no CANVAS seat of its own is refused by name, not coerced", async () => {
+    const fixture = await placementFixture();
     const canvas = roomFor(fixture, fixture.canvas.id);
 
     // A sidebar row names an ITEM. On a canvas an element IS its rectangle, so there is no
@@ -985,8 +985,8 @@ describe("center means this exact spot", () => {
     expect(homeOf(fixture, fixture.loose)).not.toBe(fixture.residentHome);
   });
 
-  test("an EDGE release moves the leaf instead of trading it", () => {
-    const fixture = placementFixture();
+  test("an EDGE release moves the leaf instead of trading it", async () => {
+    const fixture = await placementFixture();
     const terminalTile = terminalLeafId(fixture, fixture.composition.id, fixture.occupant);
     const foreignTile = containerLeafId(fixture, fixture.otherComposition.id, fixture.other.id);
 
@@ -1012,8 +1012,8 @@ describe("center means this exact spot", () => {
     ).toHaveLength(3);
   });
 
-  test("a leaf released on a canvas portal merges through the same move", () => {
-    const fixture = placementFixture();
+  test("a leaf released on a canvas portal merges through the same move", async () => {
+    const fixture = await placementFixture();
     const terminalTile = terminalLeafId(fixture, fixture.composition.id, fixture.occupant);
     const canvas = roomFor(fixture, fixture.canvas.id);
 
@@ -1061,8 +1061,8 @@ function noteLeafId(fixture: PlacementFixture, containerId: string): string {
 }
 
 describe("the seam distinguishes wedging between from splitting one pane (#60)", () => {
-  test("`between` takes thirds from both neighbors; its absence splits the target alone", () => {
-    const fixture = placementFixture();
+  test("`between` takes thirds from both neighbors; its absence splits the target alone", async () => {
+    const fixture = await placementFixture();
     const container: Container = {
       id: fixture.runtime.newId(),
       name: "seam",
@@ -1131,8 +1131,8 @@ describe("the seam distinguishes wedging between from splitting one pane (#60)",
 });
 
 describe("a center drop with nothing to trade displaces instead", () => {
-  test("the occupant is re-homed into a fresh solo composition and keeps running", () => {
-    const fixture = placementFixture();
+  test("the occupant is re-homed into a fresh solo composition and keeps running", async () => {
+    const fixture = await placementFixture();
     const occupied = terminalLeafId(fixture, fixture.composition.id, fixture.occupant);
     const composition = roomFor(fixture, fixture.composition.id);
     const itemsBefore = composition.census().items.length;
@@ -1175,8 +1175,8 @@ describe("a center drop with nothing to trade displaces instead", () => {
     expect(fixture.store.getContainer(looseHome)).toBeNull();
   });
 
-  test("displacing an EMBEDDED CANVAS needs no new home, and says so with a null", () => {
-    const fixture = placementFixture();
+  test("displacing an EMBEDDED CANVAS needs no new home, and says so with a null", async () => {
+    const fixture = await placementFixture();
     const embedded = containerLeafId(fixture, fixture.composition.id, fixture.spare.id);
 
     const outcome = fixture.placement.place({
@@ -1203,8 +1203,8 @@ describe("a center drop with nothing to trade displaces instead", () => {
     });
   });
 
-  test("a CANVAS TERMINAL carry trades instead: its portal starts showing the occupant (#62)", () => {
-    const fixture = placementFixture();
+  test("a CANVAS TERMINAL carry trades instead: its portal starts showing the occupant (#62)", async () => {
+    const fixture = await placementFixture();
     const occupied = terminalLeafId(fixture, fixture.composition.id, fixture.occupant);
     const composition = roomFor(fixture, fixture.composition.id);
     const itemsBefore = composition.census().items.length;
@@ -1247,8 +1247,8 @@ describe("a center drop with nothing to trade displaces instead", () => {
     expect(composition.census().items.length).toBe(itemsBefore);
   });
 
-  test("a NOTE cannot be displaced, and the refusal moves nothing", () => {
-    const fixture = placementFixture();
+  test("a NOTE cannot be displaced, and the refusal moves nothing", async () => {
+    const fixture = await placementFixture();
     const noteTile = noteLeafId(fixture, fixture.composition.id);
     const before = occupants(fixture, fixture.composition.id);
     const containersBefore = fixture.store.listContainers().length;
@@ -1279,8 +1279,8 @@ describe("a center drop with nothing to trade displaces instead", () => {
     expect(homeOf(fixture, fixture.loose)).not.toBe(fixture.composition.id);
   });
 
-  test("a carry that DOES hold a leaf still trades, so nothing is displaced", () => {
-    const fixture = placementFixture();
+  test("a carry that DOES hold a leaf still trades, so nothing is displaced", async () => {
+    const fixture = await placementFixture();
     const occupied = terminalLeafId(fixture, fixture.composition.id, fixture.occupant);
     const foreignTile = containerLeafId(fixture, fixture.otherComposition.id, fixture.other.id);
     const containersBefore = fixture.store.listContainers().length;
@@ -1313,8 +1313,8 @@ describe("a center drop with nothing to trade displaces instead", () => {
  * is tree, nothing is consumed to make it, and nothing seated is disturbed by it.
  */
 describe("a dropped structure is new tree, and costs the occupants nothing", () => {
-  test("a split lands as a split of two VACANT leaves, occupants untouched", () => {
-    const fixture = placementFixture();
+  test("a split lands as a split of two VACANT leaves, occupants untouched", async () => {
+    const fixture = await placementFixture();
     const before = occupants(fixture, fixture.composition.id);
     const containersBefore = fixture.store.listContainers().length;
 
@@ -1357,8 +1357,8 @@ describe("a dropped structure is new tree, and costs the occupants nothing", () 
     expect(fixture.store.listContainers()).toHaveLength(containersBefore);
   });
 
-  test("the seats it opens are aims: two existing leaves seat into them (scenario 2)", () => {
-    const fixture = placementFixture();
+  test("the seats it opens are aims: two existing leaves seat into them (scenario 2)", async () => {
+    const fixture = await placementFixture();
     const composition = fixture.composition.id;
 
     const dropped = fixture.placement.place({
@@ -1408,8 +1408,8 @@ describe("a dropped structure is new tree, and costs the occupants nothing", () 
     expect(homeOf(fixture, fixture.occupant)).toBe(composition);
   });
 
-  test("a spacer lands as a spacer leaf, through the very same door", () => {
-    const fixture = placementFixture();
+  test("a spacer lands as a spacer leaf, through the very same door", async () => {
+    const fixture = await placementFixture();
 
     const outcome = fixture.placement.place({
       ref: { kind: "structure", structure: { kind: "spacer" } },
@@ -1431,8 +1431,8 @@ describe("a dropped structure is new tree, and costs the occupants nothing", () 
     expect(layout[outcome.result.tileId]).toMatchObject({ dir: null, ref: { kind: "spacer" } });
   });
 
-  test("a CENTER release onto an occupied leaf is refused, and displaces nobody", () => {
-    const fixture = placementFixture();
+  test("a CENTER release onto an occupied leaf is refused, and displaces nobody", async () => {
+    const fixture = await placementFixture();
     const occupied = terminalLeafId(fixture, fixture.composition.id, fixture.occupant);
     const before = occupants(fixture, fixture.composition.id);
     const containersBefore = fixture.store.listContainers().length;
@@ -1463,8 +1463,8 @@ describe("a dropped structure is new tree, and costs the occupants nothing", () 
     expect(homeOf(fixture, fixture.occupant)).toBe(fixture.composition.id);
   });
 
-  test("the compose door refuses structure by name: there is no tree in a merge", () => {
-    const fixture = placementFixture();
+  test("the compose door refuses structure by name: there is no tree in a merge", async () => {
+    const fixture = await placementFixture();
     const ref: PlacementRef = { kind: "structure", structure: { kind: "split", dir: "column" } };
     const containersBefore = fixture.store.listContainers().length;
 
@@ -1491,8 +1491,8 @@ describe("a dropped structure is new tree, and costs the occupants nothing", () 
 });
 
 describe("releasing a leaf re-homes its occupant", () => {
-  test("a terminal leaf of a MULTI composition survives being unplaced", () => {
-    const fixture = placementFixture();
+  test("a terminal leaf of a MULTI composition survives being unplaced", async () => {
+    const fixture = await placementFixture();
     const occupied = terminalLeafId(fixture, fixture.composition.id, fixture.occupant);
 
     // The fullscreen route's tile-minimize, on the wire. It was refused `not_accepted`
@@ -1518,8 +1518,8 @@ describe("releasing a leaf re-homes its occupant", () => {
     expect(fixture.store.getContainer(fixture.composition.id)).not.toBeNull();
   });
 
-  test("a leaf holding an embedded canvas releases the leaf and keeps the container", () => {
-    const fixture = placementFixture();
+  test("a leaf holding an embedded canvas releases the leaf and keeps the container", async () => {
+    const fixture = await placementFixture();
     const embedded = containerLeafId(fixture, fixture.composition.id, fixture.spare.id);
     const containersBefore = fixture.store.listContainers().length;
 
@@ -1537,8 +1537,8 @@ describe("releasing a leaf re-homes its occupant", () => {
     expect(Object.keys(occupants(fixture, fixture.composition.id))).toHaveLength(1);
   });
 
-  test("the ONLY leaf of a solo composition releases the composition, re-homing nothing", () => {
-    const fixture = placementFixture();
+  test("the ONLY leaf of a solo composition releases the composition, re-homing nothing", async () => {
+    const fixture = await placementFixture();
     const leafId = terminalLeafId(fixture, fixture.residentHome, fixture.resident);
     const containersBefore = fixture.store.listContainers().length;
 
@@ -1557,8 +1557,8 @@ describe("releasing a leaf re-homes its occupant", () => {
     expect(roomFor(fixture, fixture.canvas.id).element("el-portal-solo")).toBeNull();
   });
 
-  test("a NOTE leaf is refused by the same rule a displacement is", () => {
-    const fixture = placementFixture();
+  test("a NOTE leaf is refused by the same rule a displacement is", async () => {
+    const fixture = await placementFixture();
     const noteTile = noteLeafId(fixture, fixture.composition.id);
     const before = occupants(fixture, fixture.composition.id);
 
@@ -1596,7 +1596,7 @@ describe("core.space.place", () => {
   };
 
   test("serves the op-tagged result for every executed placement", async () => {
-    const fixture = placementFixture();
+    const fixture = await placementFixture();
     const portaled = await dispatch(fixture, OWNER_KEY, {
       ref: { kind: "terminal", terminalId: fixture.loose },
       destination: { kind: "canvas", containerId: fixture.canvas.id, x: 44, y: 55 },
@@ -1629,7 +1629,7 @@ describe("core.space.place", () => {
   });
 
   test("an unplace that removes nothing is a success carrying zero, not a refusal", async () => {
-    const fixture = placementFixture();
+    const fixture = await placementFixture();
 
     const outcome = await dispatch(fixture, OWNER_KEY, {
       ref: { kind: "terminal", terminalId: fixture.loose },
@@ -1642,7 +1642,7 @@ describe("core.space.place", () => {
   });
 
   test("the palette's structure passes the door's args and is announced on the destination", async () => {
-    const fixture = placementFixture();
+    const fixture = await placementFixture();
 
     const outcome = await dispatch(fixture, OWNER_KEY, {
       ref: { kind: "structure", structure: { kind: "split", dir: "row" } },
@@ -1683,7 +1683,7 @@ describe("core.space.place", () => {
    * `client.place()` does, which is why `not_accepted` has one wording on the wire.
    */
   test("a refused placement carries the algebra's rule, and rebuilds into the same denial", async () => {
-    const fixture = placementFixture();
+    const fixture = await placementFixture();
     const ref: PlacementRef = { kind: "container", containerId: fixture.otherComposition.id };
     const destination: PlacementDestination = {
       kind: "tile",
@@ -1713,7 +1713,7 @@ describe("core.space.place", () => {
   });
 
   test("every refusal the algebra can name reaches the caller by name", async () => {
-    const fixture = placementFixture();
+    const fixture = await placementFixture();
     const cases: readonly { readonly args: unknown; readonly rule: string }[] = [
       {
         args: {
@@ -1755,7 +1755,7 @@ describe("core.space.place", () => {
   });
 
   test("a legal placement that cannot be carried out refuses by the failure's name", async () => {
-    const fixture = placementFixture();
+    const fixture = await placementFixture();
 
     const outcome = await dispatch(fixture, OWNER_KEY, {
       ref: { kind: "tile", containerId: fixture.composition.id, tileId: "t99" },
@@ -1780,7 +1780,7 @@ describe("core.space.place", () => {
    * default for a contribution that declares none (`draw` is canvas furniture).
    */
   test("a contributed element kind places by the traits its manifest declared", async () => {
-    const fixture = placementFixture();
+    const fixture = await placementFixture();
     const contributed = rosterElementTraits(fixture.plugins.roster());
     expect(Object.keys(ITEM_KINDS)).not.toContain("text");
     expect(Object.keys(ITEM_KINDS)).not.toContain("draw");
@@ -1817,7 +1817,7 @@ describe("core.space.place", () => {
   });
 
   test("the whole ladder, in order: unknown, disabled, scope, caps, args, then the handler", async () => {
-    const fixture = placementFixture();
+    const fixture = await placementFixture();
     const legal = {
       ref: { kind: "terminal", terminalId: fixture.loose },
       destination: { kind: "canvas", containerId: fixture.canvas.id, x: 0, y: 0 },
@@ -1897,11 +1897,8 @@ describe("core.space.place", () => {
       expect(refusedToggle.denial.rule).toBe("refused");
       expect(refusedToggle.denial.message).toBe("essential");
     }
-    const afterDisable = await hostWithSeatOff(fixture, "core.space").dispatch(
-      fixture.root,
-      "core.space.place",
-      legal,
-    );
+    const offSpace = await hostWithSeatOff(fixture, "core.space");
+    const afterDisable = await offSpace.dispatch(fixture.root, "core.space.place", legal);
     expect(afterDisable.ok).toBe(false);
     if (!afterDisable.ok) expect(afterDisable.denial.rule).toBe("plugin_disabled");
   });
@@ -1972,23 +1969,23 @@ describe("placement rules read the DECLARATION, never the kind's name", () => {
     return fixture.store.getContainer(outcome.result.containerId)?.name ?? "";
   }
 
-  test("the shipped assembly names a composed note after core.notes' own title", () => {
-    const fixture = placementFixture();
+  test("the shipped assembly names a composed note after core.notes' own title", async () => {
+    const fixture = await placementFixture();
     // The behavior the deleted literal produced, preserved exactly — reached now through
     // `homed: "on_claim"` and `itemNoun`, so this is the regression guard for the rewrite.
     expect(composedName(fixture, fixture.placement)).toContain(" + note");
   });
 
-  test("a second on_claim kind is named by ITS declaration, through the same branch", () => {
-    const fixture = placementFixture();
+  test("a second on_claim kind is named by ITS declaration, through the same branch", async () => {
+    const fixture = await placementFixture();
     // Same element, same drop, same rule: the only thing that differs from the case above is
     // the vocabulary the assembly published. A kind the executor has never heard of takes its
     // own word, which is the whole point of the noun table being a table.
     expect(composedName(fixture, executorWith(fixture, ON_CLAIM, "memo"))).toContain(" + memo");
   });
 
-  test("declaring that kind `inline` withdraws it from the rule entirely", () => {
-    const fixture = placementFixture();
+  test("declaring that kind `inline` withdraws it from the rule entirely", async () => {
+    const fixture = await placementFixture();
     // The proof the literal is gone rather than merely moved: identical element, identical
     // gesture, and the one field changed is `homed`. An `inline` item is at home wherever it
     // already is, so the merge has no species to borrow a name from and says so instead of

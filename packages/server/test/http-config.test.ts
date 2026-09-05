@@ -89,7 +89,7 @@ describe("server bind policy", () => {
       },
       cwd,
     );
-    const running = startServer({ config, announce: false });
+    const running = await startServer({ config, announce: false });
     try {
       const result = Bun.spawnSync(["ss", "-tlnp"]);
       expect(result.exitCode).toBe(0);

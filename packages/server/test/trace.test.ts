@@ -64,7 +64,7 @@ interface Fixture {
   readonly host: PluginHost;
 }
 
-function fixture(): Fixture {
+async function fixture(): Promise<Fixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -89,7 +89,7 @@ function fixture(): Fixture {
     runtime,
     rooms,
     broker,
-    host: testPluginHost(store, auth, rooms, broker, runtime),
+    host: await testPluginHost(store, auth, rooms, broker, runtime),
   };
 }
 
@@ -222,7 +222,7 @@ function probeDefs(): readonly ServerPluginDef[] {
   ];
 }
 
-function probeHost(base: Fixture): PluginHost {
+async function probeHost(base: Fixture): Promise<PluginHost> {
   let host: PluginHost | null = null;
   const events = testEventHub(
     base.store,
@@ -234,7 +234,7 @@ function probeHost(base: Fixture): PluginHost {
     },
     base.runtime,
   );
-  host = new PluginHost(
+  host = await PluginHost.boot(
     probeDefs(),
     base.store,
     base.auth,
@@ -259,7 +259,7 @@ function probeHost(base: Fixture): PluginHost {
 
 describe("the trace ledger records every exercise of authority", () => {
   test("an ok dispatch leaves ONE settled row naming door, actor, authority and targets", async () => {
-    const base = fixture();
+    const base = await fixture();
 
     const outcome = await base.host.dispatch(
       base.owner,
@@ -296,7 +296,7 @@ describe("the trace ledger records every exercise of authority", () => {
       case pins is the half a refused knock cannot see — that the row for a removal which
       actually HAPPENED says so.
      */
-    const base = fixture();
+    const base = await fixture();
     const created = await base.host.dispatch(base.owner, "core.index.createContainer", {
       name: "traced composition",
       discipline: "composition",
@@ -362,7 +362,7 @@ describe("the trace ledger records every exercise of authority", () => {
   });
 
   test("a dispatch over the HTTP door records no session, and the absence is the datum", async () => {
-    const base = fixture();
+    const base = await fixture();
 
     await base.host.dispatch(base.owner, "core.index.createContainer", { name: "api" });
 
@@ -371,7 +371,7 @@ describe("the trace ledger records every exercise of authority", () => {
   });
 
   test("a container-scoped token's authority and container land on the row", async () => {
-    const base = fixture();
+    const base = await fixture();
     const created = await base.host.dispatch(base.owner, "core.index.createContainer", {
       name: "scoped",
     });
@@ -390,7 +390,7 @@ describe("the trace ledger records every exercise of authority", () => {
   });
 
   test("EVERY refusal rung above the handler leaves a settled row naming its rung", async () => {
-    const base = fixture();
+    const base = await fixture();
     const created = await base.host.dispatch(base.owner, "core.index.createContainer", {
       name: "rungs",
     });
@@ -430,7 +430,7 @@ describe("the trace ledger records every exercise of authority", () => {
       be — out of band, before an assembly composes — and the ledger it writes to is the same
       store, which is what `newestTrace` reads.
     */
-    const offIndex = hostWithSeatOff(base, "core.index");
+    const offIndex = await hostWithSeatOff(base, "core.index");
     const disabledRefusal = await offIndex.dispatch(base.owner, "core.index.createContainer", {
       name: "nope",
     });
@@ -447,8 +447,8 @@ describe("the trace ledger records every exercise of authority", () => {
   });
 
   test("a handler's own refusal settles `refused`, keeping the nodes it named", async () => {
-    const base = fixture();
-    const host = probeHost(base);
+    const base = await fixture();
+    const host = await probeHost(base);
 
     const outcome = await host.dispatch(base.owner, "test.probe.refuseLoudly", {});
     expect(outcome.ok).toBeFalse();
@@ -462,7 +462,7 @@ describe("the trace ledger records every exercise of authority", () => {
   });
 
   test("the ONE untraced name is an unregistered one, and it is still logged", async () => {
-    const base = fixture();
+    const base = await fixture();
 
     const outcome = await base.host.dispatch(base.owner, "core.nothing.here", {});
     expect(outcome.ok).toBeFalse();
@@ -476,8 +476,8 @@ describe("the trace ledger records every exercise of authority", () => {
   });
 
   test("a door that throws is traced `failed`, and its mutation stands", async () => {
-    const base = fixture();
-    const host = probeHost(base);
+    const base = await fixture();
+    const host = await probeHost(base);
 
     await expect(
       host.dispatch(base.owner, "test.probe.explodeAfterWrite", { containerId: "kept" }),
@@ -493,8 +493,8 @@ describe("the trace ledger records every exercise of authority", () => {
   });
 
   test("a mutation ROLLED BACK by its own transaction still leaves its trace", async () => {
-    const base = fixture();
-    const host = probeHost(base);
+    const base = await fixture();
+    const host = await probeHost(base);
 
     await expect(
       host.dispatch(base.owner, "test.probe.rollbackWrite", { containerId: "gone" }),
@@ -514,8 +514,8 @@ describe("the trace ledger records every exercise of authority", () => {
   });
 
   test("the attribution is DURABLE BEFORE the handler runs, unsettled while it does", async () => {
-    const base = fixture();
-    const host = probeHost(base);
+    const base = await fixture();
+    const host = await probeHost(base);
 
     const outcome = await host.dispatch(base.owner, "test.probe.peekLedger", {});
     expect(outcome.ok).toBeTrue();
@@ -530,8 +530,8 @@ describe("the trace ledger records every exercise of authority", () => {
   });
 
   test("secrets and terminal bytes never reach the ledger", async () => {
-    const base = fixture();
-    const host = probeHost(base);
+    const base = await fixture();
+    const host = await probeHost(base);
     // A non-root caller, so the door's EMPTY cap list is what the row reports: `open` says
     // authority was never the question here, which a blank column would say far less clearly.
     const guest = tokenContext(base, ["containers:read"]);
@@ -553,7 +553,7 @@ describe("the trace ledger records every exercise of authority", () => {
   });
 
   test("an oversize argument list is recorded as a shape, not as bytes", async () => {
-    const base = fixture();
+    const base = await fixture();
 
     await base.host.dispatch(base.owner, "core.index.createContainer", { name: "x".repeat(8_000) });
 
@@ -566,7 +566,7 @@ describe("the trace ledger records every exercise of authority", () => {
   });
 
   test("the trail's ONE read door publishes the ledger", async () => {
-    const base = fixture();
+    const base = await fixture();
     await base.host.dispatch(base.owner, "core.index.createContainer", { name: "readable" });
 
     // No second audit API: the ledger is read by the door that already reads the trail.
@@ -587,7 +587,7 @@ describe("the trace ledger records every exercise of authority", () => {
   });
 
   test("an event row is not a trace row: the two families share one table and one reader", async () => {
-    const base = fixture();
+    const base = await fixture();
     base.store.addEvent("container-1", 1, "principal-1", "terminal_opened", { terminalId: "t1" });
 
     const rows = base.store.listEvents({ limit: 10 });

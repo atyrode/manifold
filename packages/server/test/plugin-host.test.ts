@@ -3,6 +3,8 @@ import {
   ENGINE_PLUGINS_ID,
   ENGINE_PURGE_ACTION,
   ENGINE_SET_ENABLED_ACTION,
+  MAX_STORAGE_VALUE_BYTES,
+  PluginStorageError,
   assembleRoster,
   composeDefaultLayout,
   defineAction,
@@ -92,7 +94,7 @@ interface HostFixture {
   readonly broker: TerminalBroker;
 }
 
-function hostFixture(): HostFixture {
+async function hostFixture(): Promise<HostFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -115,7 +117,7 @@ function hostFixture(): HostFixture {
     store,
     auth,
     owner,
-    host: testPluginHost(store, auth, rooms, broker, runtime),
+    host: await testPluginHost(store, auth, rooms, broker, runtime),
     runtime,
     rooms,
     broker,
@@ -147,7 +149,7 @@ function layoutWith(ref: TileRef): TileLayout {
 
 describe("PluginHost denial ladder", () => {
   test("a name nothing composed is unknown, never forbidden", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
 
     const outcome = await fixture.host.dispatch(fixture.owner, "core.nope.doIt", {});
 
@@ -159,7 +161,7 @@ describe("PluginHost denial ladder", () => {
   });
 
   test("a disabled plugin's action is disabled, not unknown", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     expect(await fixture.host.setEnabled("core.terminals", false, "admin")).toEqual({ ok: true });
 
     const outcome = await fixture.host.dispatch(fixture.owner, "core.terminals.rename", {
@@ -177,7 +179,7 @@ describe("PluginHost denial ladder", () => {
   });
 
   test("a cleanup action survives its plugin's disable (D12): kill works, rename does not", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     expect(await fixture.host.setEnabled("core.terminals", false, "admin")).toEqual({ ok: true });
 
     const outcome = await fixture.host.dispatch(fixture.owner, "core.terminals.kill", {
@@ -193,7 +195,7 @@ describe("PluginHost denial ladder", () => {
   });
 
   test("a container-scoped token is refused for its scope even when it holds the capability", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     const container = fixture.runtime.newId();
     fixture.store.createContainer({
       id: container,
@@ -222,7 +224,7 @@ describe("PluginHost denial ladder", () => {
   });
 
   test("a missing declared capability is forbidden before arguments are looked at", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     const reader = context(fixture, ["containers:read"]);
 
     // Deliberately malformed args: if the ladder checked shape first, the caller would learn
@@ -240,7 +242,7 @@ describe("PluginHost denial ladder", () => {
   });
 
   test("arguments that do not fit the published schema are invalid_args", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
 
     const outcome = await fixture.host.dispatch(fixture.owner, "core.terminals.rename", {
       terminalId: "s1",
@@ -252,7 +254,7 @@ describe("PluginHost denial ladder", () => {
   });
 
   test("a handler's own refusal is the last rung and carries its message", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
 
     const outcome = await fixture.host.dispatch(fixture.owner, "core.terminals.rename", {
       terminalId: "missing",
@@ -264,7 +266,7 @@ describe("PluginHost denial ladder", () => {
   });
 
   test("an unparseable name refuses before an all-whitespace one, both as refusals", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
 
     const blank = await fixture.host.dispatch(fixture.owner, "core.terminals.rename", {
       terminalId: "missing",
@@ -280,7 +282,7 @@ describe("PluginHost denial ladder", () => {
 
 describe("PluginHost enablement", () => {
   test("setEnabled persists, recomposes, and publishes the new roster", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     const seen: PluginRoster[] = [];
     const remove = fixture.host.onRosterChange((roster) => {
       seen.push(roster);
@@ -306,7 +308,7 @@ describe("PluginHost enablement", () => {
   });
 
   test("a no-op toggle publishes NOTHING, so a socket is not woken for a non-change", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     const seen: PluginRoster[] = [];
     const remove = fixture.host.onRosterChange((roster) => {
       seen.push(roster);
@@ -329,7 +331,7 @@ describe("PluginHost enablement", () => {
   });
 
   test("a removed listener stops hearing rosters, and does not disturb the others", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     const staying: PluginRoster[] = [];
     const leaving: PluginRoster[] = [];
     fixture.host.onRosterChange((roster) => {
@@ -351,7 +353,7 @@ describe("PluginHost enablement", () => {
   });
 
   test("the assembly is REPLACED on a toggle, so a held reference is a stale snapshot", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     const before = fixture.host.assembly();
 
     expect(await fixture.host.setEnabled("core.draw", false, "admin")).toEqual({ ok: true });
@@ -369,7 +371,7 @@ describe("PluginHost enablement", () => {
   });
 
   test("an essential plugin refuses to be disabled, and an unknown id refuses too", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
 
     expect(await fixture.host.setEnabled("core.shell", false, "admin")).toEqual({
       refused: "essential",
@@ -385,7 +387,7 @@ describe("PluginHost enablement", () => {
   });
 
   test("the engine's builtin door refuses to be switched off, through its own door", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
 
     // BOTH doors, because enablement has two: the in-process host method the server's own
     // wiring calls, and the dispatched action any `plugins:manage` holder can reach. A
@@ -412,7 +414,7 @@ describe("PluginHost enablement", () => {
   });
 
   test("the manager's SEAT is essential while the door stays outside the assembly", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
 
     /*
       TWO CLAIMS THAT USED TO LOOK LIKE ONE, and separating them is what issue #91 changed.
@@ -453,7 +455,7 @@ describe("PluginHost enablement", () => {
   });
 
   test("the roster records WHO changed a plugin and WHEN", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     fixture.runtime.time = 1_700_000_000_000;
 
     await fixture.host.setEnabled("core.draw", false, "principal-7");
@@ -467,7 +469,7 @@ describe("PluginHost enablement", () => {
   });
 
   test("setEnabled needs plugins:manage, which the roster publishes as the action's cap", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     const writer = context(fixture, ["containers:read", "containers:write"]);
 
     const outcome = await fixture.host.dispatch(writer, ENGINE_SET_ENABLED_ACTION, {
@@ -486,7 +488,7 @@ describe("PluginHost enablement", () => {
 
 describe("core.space.setLayout", () => {
   test("a valid workspace tree is stored for the caller and nobody else", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     const other = context(fixture, ["containers:read", "containers:write"]);
 
     const outcome = await fixture.host.dispatch(fixture.owner, "core.space.setLayout", {
@@ -501,7 +503,7 @@ describe("core.space.setLayout", () => {
   });
 
   test("an unknown or disabled panel id is ACCEPTED, so a disable can never brick a layout", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     expect(await fixture.host.setEnabled("core.terminals", false, "admin")).toEqual({ ok: true });
     const layout = layoutWith({ kind: "panel", panelId: "core.ghost.panel" });
 
@@ -516,7 +518,7 @@ describe("core.space.setLayout", () => {
   });
 
   test("a split of two VACANT leaves is stored as written: that is the palette's drop", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     /*
       What dropping "Stack column" from `core.arrange`'s palette onto the workspace tree
       commits (issue #104): a split whose two seats are still EMPTY. Structural validation
@@ -546,7 +548,7 @@ describe("core.space.setLayout", () => {
   });
 
   test("a leaf that is not a panel is refused", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
 
     const outcome = await fixture.host.dispatch(fixture.owner, "core.space.setLayout", {
       layout: layoutWith({ kind: "terminal", terminalId: "s1" }),
@@ -563,7 +565,7 @@ describe("core.space.setLayout", () => {
   });
 
   test("a tree that is not a tree is refused", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
 
     const outcome = await fixture.host.dispatch(fixture.owner, "core.space.setLayout", {
       layout: {
@@ -579,7 +581,7 @@ describe("core.space.setLayout", () => {
   });
 
   test("a container-scoped token cannot write a workspace layout at all", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     const container = fixture.runtime.newId();
     fixture.store.createContainer({
       id: container,
@@ -647,13 +649,13 @@ describe("PluginHost contract failures", () => {
     },
   ];
 
-  function brokenHost(fixture: HostFixture): PluginHost {
+  async function brokenHost(fixture: HostFixture): Promise<PluginHost> {
     return customHost(fixture, BROKEN);
   }
 
   test("a result that fails its published schema THROWS instead of denying", async () => {
-    const fixture = hostFixture();
-    const host = brokenHost(fixture);
+    const fixture = await hostFixture();
+    const host = await brokenHost(fixture);
 
     // Were this a `refused`, a caller would retry forever against a door that can never
     // succeed, and the published JSON Schema would be a lie nobody notices.
@@ -662,8 +664,8 @@ describe("PluginHost contract failures", () => {
   });
 
   test("a composed action with no handler THROWS: that is a wiring bug, not a refusal", async () => {
-    const fixture = hostFixture();
-    const host = brokenHost(fixture);
+    const fixture = await hostFixture();
+    const host = await brokenHost(fixture);
 
     // The action is real vocabulary — it is in the roster and `/api/protocol` — so
     // `unknown_action` would be false, and any denial would blame the caller for a
@@ -676,8 +678,8 @@ describe("PluginHost contract failures", () => {
   });
 
   test("the ladder still runs FIRST: a caller's own error is a denial even at a broken door", async () => {
-    const fixture = hostFixture();
-    const host = brokenHost(fixture);
+    const fixture = await hostFixture();
+    const host = await brokenHost(fixture);
 
     // Ordering matters for triage: a bad argument must not appear as a server failure just
     // because the handler behind it would have failed too.
@@ -735,14 +737,14 @@ function recorder(
   };
 }
 
-function customHost(
+async function customHost(
   fixture: HostFixture,
   defs: readonly ServerPluginDef[],
   options: {
     readonly lifecycleTimeoutMs?: number;
     readonly distribution?: ReadonlySet<string>;
   } = {},
-): PluginHost {
+): Promise<PluginHost> {
   // The hub reads the assembly of the host it is handed to, exactly as `main.ts` wires it.
   let host: PluginHost | null = null;
   const events = testEventHub(
@@ -755,7 +757,7 @@ function customHost(
     },
     fixture.runtime,
   );
-  host = new PluginHost(
+  host = await PluginHost.boot(
     defs,
     fixture.store,
     fixture.auth,
@@ -781,24 +783,24 @@ function customHost(
  * reads identically to a defended one until a stranger's `core.` plugin composes cleanly.
  */
 describe("PluginHost core namespace", () => {
-  test("a manifest under core. that the distribution never registered is refused by name", () => {
-    const fixture = hostFixture();
+  test("a manifest under core. that the distribution never registered is refused by name", async () => {
+    const fixture = await hostFixture();
     const log: HookLog = { calls: [] };
 
-    expect(() =>
+    await expect(
       customHost(fixture, [recorder("core.impostor", log)], { distribution: SHIPPED_PLUGIN_IDS }),
-    ).toThrow(/claims the reserved "core\." namespace/);
+    ).rejects.toThrow(/claims the reserved "core\." namespace/);
 
     // A stranger's own namespace is their business: the reservation defends authorship, not
     // membership of the roster.
-    expect(() =>
-      customHost(fixture, [recorder("vendor.impostor", log)], { distribution: SHIPPED_PLUGIN_IDS }),
-    ).not.toThrow();
+    await customHost(fixture, [recorder("vendor.impostor", log)], {
+      distribution: SHIPPED_PLUGIN_IDS,
+    });
     fixture.store.close();
   });
 
-  test("the distribution's own seats compose through the real wiring", () => {
-    const fixture = hostFixture();
+  test("the distribution's own seats compose through the real wiring", async () => {
+    const fixture = await hostFixture();
     // `testPluginHost` is the production wiring verbatim — `SERVER_PLUGIN_DEFS` plus the
     // derived distribution — so this asserts the reservation costs the shipped roster nothing.
     const ids = fixture.host.roster().map((entry) => entry.manifest.id);
@@ -812,9 +814,9 @@ describe("PluginHost core namespace", () => {
 
 describe("PluginHost lifecycle", () => {
   test("hooks fire on TRANSITIONS only, never at boot", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     const log: HookLog = { calls: [] };
-    const host = customHost(fixture, [recorder("test.alpha", log)]);
+    const host = await customHost(fixture, [recorder("test.alpha", log)]);
 
     // Boot is not a transition: everything enabled is simply live, so a process start owes
     // no fan-out and invents no failures for plugins that were already on.
@@ -828,9 +830,9 @@ describe("PluginHost lifecycle", () => {
   });
 
   test("survivors hear onAssemblyChanged once, in assembly order, with the delta", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     const log: HookLog = { calls: [] };
-    const host = customHost(fixture, [
+    const host = await customHost(fixture, [
       recorder("test.zulu", log, {}, { after: ["test.alpha"] }),
       recorder("test.alpha", log),
       recorder("test.mike", log),
@@ -853,9 +855,9 @@ describe("PluginHost lifecycle", () => {
   });
 
   test("a hook that throws is NAMED on the roster and does not undo the transition", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     const log: HookLog = { calls: [] };
-    const host = customHost(fixture, [
+    const host = await customHost(fixture, [
       recorder("test.alpha", log, {
         lifecycle: {
           onDisable: () => {
@@ -878,12 +880,12 @@ describe("PluginHost lifecycle", () => {
   });
 
   test("a hook that never settles cannot hold the workspace hostage", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     const log: HookLog = { calls: [] };
     // Never resolved, deliberately: the hook simply does not finish, which is the worst case
     // the bound exists for and the one a fixed sleep would only approximate.
     const stuck = Promise.withResolvers<void>();
-    const host = customHost(
+    const host = await customHost(
       fixture,
       [recorder("test.alpha", log, { lifecycle: { onEnable: () => stuck.promise } })],
       { lifecycleTimeoutMs: 5 },
@@ -903,9 +905,9 @@ describe("PluginHost lifecycle", () => {
   });
 
   test("a recovered hook clears the failure state on the next transition", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     let failing = true;
-    const host = customHost(fixture, [
+    const host = await customHost(fixture, [
       {
         manifest: {
           id: "test.flaky",
@@ -959,8 +961,8 @@ describe("PluginHost dependencies", () => {
   }
 
   test("disabling a dependency is REFUSED and names the dependents", async () => {
-    const fixture = hostFixture();
-    const host = customHost(fixture, pair());
+    const fixture = await hostFixture();
+    const host = await customHost(fixture, pair());
     await host.setEnabled("test.rival", false, "admin");
 
     const outcome = await host.setEnabled("test.base", false, "admin");
@@ -975,8 +977,8 @@ describe("PluginHost dependencies", () => {
   });
 
   test("a dependency freed of its dependents can then be disabled", async () => {
-    const fixture = hostFixture();
-    const host = customHost(fixture, pair());
+    const fixture = await hostFixture();
+    const host = await customHost(fixture, pair());
     await host.setEnabled("test.rival", false, "admin");
 
     expect(await host.setEnabled("test.leaf", false, "admin")).toEqual({ ok: true });
@@ -991,8 +993,8 @@ describe("PluginHost dependencies", () => {
   });
 
   test("an incompatible peer refuses the enable, in whichever direction it was declared", async () => {
-    const fixture = hostFixture();
-    const host = customHost(fixture, pair());
+    const fixture = await hostFixture();
+    const host = await customHost(fixture, pair());
 
     // Booted with both on (nothing structural forbids it), the refusal appears the moment
     // somebody tries to move a toggle — and the roster already says why.
@@ -1047,9 +1049,9 @@ describe("PluginHost storage, migrations and purge", () => {
                 {
                   name: "0002-widen-rows",
                   to: { major: options.major, minor: 0 },
-                  migrate: (storage) => {
-                    const held = storage.get("row");
-                    storage.set("row", `${held ?? ""}+migrated`);
+                  migrate: async (storage) => {
+                    const held = await storage.get("row");
+                    await storage.set("row", `${held ?? ""}+migrated`);
                   },
                 },
               ],
@@ -1059,94 +1061,107 @@ describe("PluginHost storage, migrations and purge", () => {
     ];
   }
 
-  test("a plugin's storage is namespaced, and the engine's own keys are unforgeable", () => {
-    const fixture = hostFixture();
+  test("a plugin's storage is namespaced, and the engine's own keys are unforgeable", async () => {
+    const fixture = await hostFixture();
     const mine = fixture.store.pluginStorage("test.alpha");
     const yours = fixture.store.pluginStorage("test.beta");
 
-    mine.set("shared-key", "mine");
-    yours.set("shared-key", "yours");
+    await mine.set("shared-key", "mine");
+    await yours.set("shared-key", "yours");
 
     // One substrate, two namespaces: a plugin cannot read another's rows even by guessing
     // its keys, which is what lets a purge erase exactly one plugin's data.
-    expect(mine.get("shared-key")).toBe("mine");
-    expect(yours.get("shared-key")).toBe("yours");
-    expect(mine.keys()).toEqual(["shared-key"]);
+    expect(await mine.get("shared-key")).toBe("mine");
+    expect(await yours.get("shared-key")).toBe("yours");
+    expect(await mine.keys()).toEqual(["shared-key"]);
 
     // Reserved keys are the engine's: a plugin that could write `$version` could claim its
     // data was already migrated and be believed.
-    expect(() => mine.set("$version", "9.9")).toThrow(/reserved/);
-    expect(() => mine.set("no spaces allowed", "x")).toThrow(/not a valid key/);
-    mine.stampDataVersion({ major: 3, minor: 1 });
-    expect(mine.dataVersion()).toEqual({ major: 3, minor: 1 });
+    await expect(mine.set("$version", "9.9")).rejects.toThrow(/reserved/);
+    await mine.stampDataVersion({ major: 3, minor: 1 });
+    expect(await mine.dataVersion()).toEqual({ major: 3, minor: 1 });
     // ...and the stamp is not part of the key set the plugin iterates.
-    expect(mine.keys()).toEqual(["shared-key"]);
+    expect(await mine.keys()).toEqual(["shared-key"]);
     fixture.store.close();
   });
 
-  test("a pending migration runs once, is ledgered by name, and stamps the version", () => {
-    const fixture = hostFixture();
+  test("a refused key or value REJECTS the promise; nothing throws before it exists", async () => {
+    const fixture = await hostFixture();
+    const mine = fixture.store.pluginStorage("test.alpha");
+
+    /*
+      ONE FAILURE PATH (ADR 0016 §4). A handler that awaits storage served over an RPC can
+      only ever see a rejection, so the in-realm handle must answer the same way: were these
+      to throw synchronously, the two assignments below would throw before `expect` ran, and
+      a `try`/`catch` written against one implementation would miss on the other.
+    */
+    const badKey = mine.set("no spaces allowed", "x");
+    const oversize = mine.set("blob", "x".repeat(MAX_STORAGE_VALUE_BYTES + 1));
+    await expect(badKey).rejects.toBeInstanceOf(PluginStorageError);
+    await expect(oversize).rejects.toThrow(/over the .*-byte limit/);
+    expect(await mine.keys()).toEqual([]);
+    fixture.store.close();
+  });
+
+  test("a pending migration runs once, is ledgered by name, and stamps the version", async () => {
+    const fixture = await hostFixture();
     const storage = fixture.store.pluginStorage(VERSIONED_ID);
-    storage.set("row", "original");
-    storage.stampDataVersion({ major: 1, minor: 0 });
+    await storage.set("row", "original");
+    await storage.stampDataVersion({ major: 1, minor: 0 });
 
-    const host = customHost(fixture, versioned({ major: 2, minor: 0, withMigration: true }));
+    const host = await customHost(fixture, versioned({ major: 2, minor: 0, withMigration: true }));
 
-    expect(storage.get("row")).toBe("original+migrated");
-    expect(storage.appliedMigrations()).toEqual(["0002-widen-rows"]);
-    expect(storage.dataVersion()).toEqual({ major: 2, minor: 0 });
+    expect(await storage.get("row")).toBe("original+migrated");
+    expect(await storage.appliedMigrations()).toEqual(["0002-widen-rows"]);
+    expect(await storage.dataVersion()).toEqual({ major: 2, minor: 0 });
     expect(host.assembly().pendingMigrations.size).toBe(0);
 
     // A second host over the same database is a restart: the ledger is what makes the
     // migration at-most-once, so the data must not be transformed twice.
-    customHost(fixture, versioned({ major: 2, minor: 0, withMigration: true }));
-    expect(storage.get("row")).toBe("original+migrated");
+    await customHost(fixture, versioned({ major: 2, minor: 0, withMigration: true }));
+    expect(await storage.get("row")).toBe("original+migrated");
     fixture.store.close();
   });
 
   test("stored data a plugin's code cannot read refuses the enable, and boot", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     const storage = fixture.store.pluginStorage(VERSIONED_ID);
-    storage.stampDataVersion({ major: 3, minor: 0 });
+    await storage.stampDataVersion({ major: 3, minor: 0 });
 
     // A DOWNGRADE. Old code cannot be trusted with newer data and no migration runs
     // backwards, so the honest answer is a refusal rather than a best-effort read.
-    expect(() =>
+    await expect(
       customHost(fixture, versioned({ major: 2, minor: 0, withMigration: true })),
-    ).toThrow(/data_downgrade|downgrade is refused/);
+    ).rejects.toThrow(/data_downgrade|downgrade is refused/);
 
     // Disabled, the same data is simply RETAINED: it cannot hurt anyone, so assembly
     // proceeds and the refusal moves to the door, where an actor is present to be told.
     fixture.store.setPluginEnabled(VERSIONED_ID, false, "admin", 0);
-    const host = customHost(fixture, versioned({ major: 2, minor: 0, withMigration: true }));
+    const host = await customHost(fixture, versioned({ major: 2, minor: 0, withMigration: true }));
     const outcome = await host.setEnabled(VERSIONED_ID, true, "admin");
     expect("refused" in outcome && outcome.refused.startsWith("data_downgrade")).toBe(true);
     expect(host.assembly().enabled(VERSIONED_ID)).toBe(false);
     fixture.store.close();
   });
 
-  test("a major bump with no migration to bridge it refuses too", () => {
-    const fixture = hostFixture();
-    fixture.store.pluginStorage(VERSIONED_ID).stampDataVersion({ major: 1, minor: 4 });
+  test("a major bump with no migration to bridge it refuses too", async () => {
+    const fixture = await hostFixture();
+    await fixture.store.pluginStorage(VERSIONED_ID).stampDataVersion({ major: 1, minor: 4 });
 
-    expect(() =>
+    await expect(
       customHost(fixture, versioned({ major: 2, minor: 0, withMigration: false })),
-    ).toThrow(/data_migration_missing|no unapplied migration/);
+    ).rejects.toThrow(/data_migration_missing|no unapplied migration/);
 
     // A MINOR difference is safe in both directions by the definition of minor, so the same
     // data at 1.4 composes cleanly against code declaring 1.9 — and against 1.0.
-    expect(() =>
-      customHost(fixture, versioned({ major: 1, minor: 9, withMigration: false })),
-    ).not.toThrow();
-    expect(() =>
-      customHost(fixture, versioned({ major: 1, minor: 0, withMigration: false })),
-    ).not.toThrow();
+    await customHost(fixture, versioned({ major: 1, minor: 9, withMigration: false }));
+    await customHost(fixture, versioned({ major: 1, minor: 0, withMigration: false }));
     fixture.store.close();
   });
 
   test("purge is refused while the plugin is enabled, and for a builtin door", async () => {
-    const fixture = hostFixture();
-    const host = customHost(fixture, versioned({ major: 1, minor: 0, withMigration: false }));
+    const fixture = await hostFixture();
+    const host = await customHost(fixture, versioned({ major: 1, minor: 0, withMigration: false }));
 
     expect(await host.purge(VERSIONED_ID, "admin")).toEqual({
       refused: `still_enabled: ${VERSIONED_ID}`,
@@ -1161,10 +1176,10 @@ describe("PluginHost storage, migrations and purge", () => {
   });
 
   test("purge erases the disabled plugin's data, releases its element type, and reports both", async () => {
-    const fixture = hostFixture();
+    const fixture = await hostFixture();
     const purged: string[] = [];
     const storage = fixture.store.pluginStorage(VERSIONED_ID);
-    const host = customHost(
+    const host = await customHost(
       fixture,
       versioned({
         major: 1,
@@ -1175,7 +1190,7 @@ describe("PluginHost storage, migrations and purge", () => {
         },
       }),
     );
-    storage.set("row", "keep me");
+    await storage.set("row", "keep me");
     expect(fixture.store.elementOwners().get("versioned-thing")).toBe(VERSIONED_ID);
 
     await host.setEnabled(VERSIONED_ID, false, "admin");
@@ -1188,8 +1203,8 @@ describe("PluginHost storage, migrations and purge", () => {
       id: VERSIONED_ID,
       removed: { storage: 2, elements: 1, ownership: 1 },
     });
-    expect(storage.get("row")).toBeNull();
-    expect(storage.dataVersion()).toBeNull();
+    expect(await storage.get("row")).toBeNull();
+    expect(await storage.dataVersion()).toBeNull();
     // The reservation is released, so a replacement may now claim the type DELIBERATELY —
     // which is exactly the squat that assembly refuses while the reservation stands.
     expect(fixture.store.elementOwners().has("versioned-thing")).toBe(false);
@@ -1197,8 +1212,8 @@ describe("PluginHost storage, migrations and purge", () => {
   });
 
   test("purge is reachable through the engine door, with plugins:manage", async () => {
-    const fixture = hostFixture();
-    const host = customHost(fixture, versioned({ major: 1, minor: 0, withMigration: false }));
+    const fixture = await hostFixture();
+    const host = await customHost(fixture, versioned({ major: 1, minor: 0, withMigration: false }));
     await host.setEnabled(VERSIONED_ID, false, "admin");
     const writer = context(fixture, ["containers:read", "containers:write"]);
 
@@ -1285,13 +1300,13 @@ describe("PluginHost action scope", () => {
     ];
   }
 
-  function scopedFixture(): {
+  async function scopedFixture(): Promise<{
     readonly fixture: HostFixture;
     readonly host: PluginHost;
     readonly container: string;
     readonly seen: { containerScope: string | null | undefined };
-  } {
-    const fixture = hostFixture();
+  }> {
+    const fixture = await hostFixture();
     const seen: { containerScope: string | null | undefined } = { containerScope: undefined };
     const container = fixture.runtime.newId();
     fixture.store.createContainer({
@@ -1300,11 +1315,11 @@ describe("PluginHost action scope", () => {
       createdAt: fixture.runtime.now(),
       discipline: "canvas",
     });
-    return { fixture, host: customHost(fixture, scopedDefs(seen)), container, seen };
+    return { fixture, host: await customHost(fixture, scopedDefs(seen)), container, seen };
   }
 
   test("a container-scoped token reaches a container-scoped action, and the handler is told which container", async () => {
-    const { fixture, host, container, seen } = scopedFixture();
+    const { fixture, host, container, seen } = await scopedFixture();
     const scoped = context(fixture, ["containers:read"], container);
 
     const outcome = await host.dispatch(scoped, `${SCOPED_ID}.read`, {});
@@ -1318,7 +1333,7 @@ describe("PluginHost action scope", () => {
   });
 
   test("the same token is still refused every action that did not declare itself confined", async () => {
-    const { fixture, host, container, seen } = scopedFixture();
+    const { fixture, host, container, seen } = await scopedFixture();
     const scoped = context(fixture, ["containers:read"], container);
 
     const outcome = await host.dispatch(scoped, `${SCOPED_ID}.sweep`, {});
@@ -1334,7 +1349,7 @@ describe("PluginHost action scope", () => {
   });
 
   test("a workspace-grade caller reaches the container-scoped action with no scope at all", async () => {
-    const { fixture, host, seen } = scopedFixture();
+    const { fixture, host, seen } = await scopedFixture();
 
     const outcome = await host.dispatch(fixture.owner, `${SCOPED_ID}.read`, {});
 
@@ -1347,7 +1362,7 @@ describe("PluginHost action scope", () => {
   });
 
   test("the cap rung still runs for a scoped caller, and runs AT its container", async () => {
-    const { fixture, host, container } = scopedFixture();
+    const { fixture, host, container } = await scopedFixture();
     const reader = context(fixture, ["containers:read"], container);
 
     // Holding `containers:read` at this container is not authority to write in it: the scope
@@ -1377,7 +1392,7 @@ describe("PluginHost action scope", () => {
   });
 
   test("the ladder order is unchanged: scope refuses before arguments are looked at", async () => {
-    const { fixture, host, container } = scopedFixture();
+    const { fixture, host, container } = await scopedFixture();
     const scoped = context(fixture, ["containers:read"], container);
 
     // Deliberately malformed args at a workspace-grade door. If the new rung had moved below
@@ -1431,8 +1446,8 @@ describe("ctx.outsideScope", () => {
   }
 
   test("a scoped caller reaching another container is refused with the one canonical wording", async () => {
-    const fixture = hostFixture();
-    const host = customHost(fixture, guardDefs());
+    const fixture = await hostFixture();
+    const host = await customHost(fixture, guardDefs());
     const mine = fixture.runtime.newId();
     const theirs = fixture.runtime.newId();
     for (const id of [mine, theirs]) {
@@ -1474,8 +1489,8 @@ describe("ctx.outsideScope", () => {
   });
 
   test("an unresolvable container is refused for a scoped caller and allowed for a workspace one", async () => {
-    const fixture = hostFixture();
-    const host = customHost(fixture, guardDefs());
+    const fixture = await hostFixture();
+    const host = await customHost(fixture, guardDefs());
     const container = fixture.runtime.newId();
     fixture.store.createContainer({
       id: container,

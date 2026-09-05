@@ -764,6 +764,11 @@ export class ServerStore {
    * Returned as the ADMIN handle. `PluginHost` keeps that and hands plugins the narrower
    * `PluginStorage` view, whose `set`/`delete` refuse the engine's reserved keys — a plugin
    * cannot forge its own data version or a ledger entry saying a migration already ran.
+   *
+   * Every method is promise-returning (ADR 0016 §4) and synchronous inside: the SQLite call
+   * runs before the promise is handed back, so the promise is already settled and a refused
+   * key or value is a rejection rather than a throw. No queue, no async driver — the ordering
+   * a caller reads off its own statements is the ordering the database saw.
    */
   pluginStorage(pluginId: string): PluginStorageAdmin {
     const read = (key: string): string | null =>
@@ -793,32 +798,33 @@ export class ServerStore {
         .map((row) => row.key);
     return {
       pluginId,
-      get: (key) => read(key),
-      set: (key, value) => {
+      get: async (key) => read(key),
+      set: async (key, value) => {
         assertStorageKey(key);
         assertStorageValue(key, value);
         write(key, value);
       },
-      delete: (key) => {
+      delete: async (key) => {
         assertStorageKey(key);
         drop(key);
       },
       // A plugin's own keys only: the engine's reserved rows are not part of the keyspace it
       // iterates, or every `keys()` consumer would have to learn to skip them.
-      keys: (prefix) => scan(prefix ?? "").filter((key) => !key.startsWith(RESERVED_KEY_PREFIX)),
-      dataVersion: () => {
+      keys: async (prefix) =>
+        scan(prefix ?? "").filter((key) => !key.startsWith(RESERVED_KEY_PREFIX)),
+      dataVersion: async () => {
         const raw = read(DATA_VERSION_KEY);
         return raw === null ? null : parseDataVersion(raw);
       },
-      appliedMigrations: () =>
+      appliedMigrations: async () =>
         scan(MIGRATION_KEY_PREFIX).map((key) => key.slice(MIGRATION_KEY_PREFIX.length)),
-      stampDataVersion: (version) => {
+      stampDataVersion: async (version) => {
         write(DATA_VERSION_KEY, formatDataVersion(version));
       },
-      recordMigration: (name, applied) => {
+      recordMigration: async (name, applied) => {
         write(`${MIGRATION_KEY_PREFIX}${name}`, String(applied));
       },
-      clear: () => {
+      clear: async () => {
         const removed = this.db
           .query<PluginKvCountRow, [string]>(
             "SELECT count(*) AS total FROM plugin_kv WHERE plugin_id = ?",

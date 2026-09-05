@@ -38,7 +38,7 @@ interface Fixture {
   readonly fenced: string[];
 }
 
-function fixture(options: { readonly online?: ReadonlySet<string> } = {}): Fixture {
+async function fixture(options: { readonly online?: ReadonlySet<string> } = {}): Promise<Fixture> {
   const runtime = new FakeRuntime();
   runtime.time = 1_700_000_000_000;
   const clock = new FakeClock(runtime);
@@ -64,7 +64,7 @@ function fixture(options: { readonly online?: ReadonlySet<string> } = {}): Fixtu
     store,
     auth,
     owner: auth.authenticate(OWNER_KEY),
-    host: testPluginHost(store, auth, rooms, broker, runtime, {
+    host: await testPluginHost(store, auth, rooms, broker, runtime, {
       machines: { isOnline: (machineId) => online.has(machineId) },
     }),
     runtime,
@@ -97,8 +97,8 @@ function denial(outcome: ActionOutcome): { rule: string; message: string } {
 }
 
 describe("session expiry (ADR 0019 §2)", () => {
-  test("an interactive credential authenticates up to its bound and is refused `expired` after", () => {
-    const fix = fixture();
+  test("an interactive credential authenticates up to its bound and is refused `expired` after", async () => {
+    const fix = await fixture();
     const granted = mint(fix, ["containers:read"]);
 
     // Published at the mint, so a lens knows when to come back rather than discovering it.
@@ -122,8 +122,8 @@ describe("session expiry (ADR 0019 §2)", () => {
     fix.store.close();
   });
 
-  test("revocation outranks expiry, so a revoked-and-expired credential still reads `revoked`", () => {
-    const fix = fixture();
+  test("revocation outranks expiry, so a revoked-and-expired credential still reads `revoked`", async () => {
+    const fix = await fixture();
     const granted = mint(fix, ["containers:read"]);
     fix.auth.revokePrincipal(granted.principal.id, fix.owner);
     fix.runtime.time += INTERACTIVE_TOKEN_TTL_MS + 1;
@@ -134,8 +134,8 @@ describe("session expiry (ADR 0019 §2)", () => {
     fix.store.close();
   });
 
-  test("a machine's credential outlives the interactive bound by a long way", () => {
-    const fix = fixture();
+  test("a machine's credential outlives the interactive bound by a long way", async () => {
+    const fix = await fixture();
     const enrolled = fix.auth.enrollMachine("spoke", fix.owner);
 
     // Ten times the human bound, which is the point: an agent's credential is long-lived by
@@ -149,8 +149,8 @@ describe("session expiry (ADR 0019 §2)", () => {
     fix.store.close();
   });
 
-  test("an agent principal's credential does not expire either", () => {
-    const fix = fixture();
+  test("an agent principal's credential does not expire either", async () => {
+    const fix = await fixture();
     const granted = mint(fix, ["scenes:write"], "agent");
 
     expect(granted.expiresAt).toBeUndefined();
@@ -159,8 +159,8 @@ describe("session expiry (ADR 0019 §2)", () => {
     fix.store.close();
   });
 
-  test("the owner key never expires: break-glass that can lock you out is not break-glass", () => {
-    const fix = fixture();
+  test("the owner key never expires: break-glass that can lock you out is not break-glass", async () => {
+    const fix = await fixture();
 
     fix.runtime.time += INTERACTIVE_TOKEN_TTL_MS * 100;
 
@@ -172,8 +172,8 @@ describe("session expiry (ADR 0019 §2)", () => {
 });
 
 describe("bootstrap audit (ADR 0019 §4)", () => {
-  test("the owner path leaves one row per window, never one per request", () => {
-    const fix = fixture();
+  test("the owner path leaves one row per window, never one per request", async () => {
+    const fix = await fixture();
     // The fixture already authenticated once; ninety-nine more inside the same window.
     for (let index = 0; index < 99; index += 1) fix.auth.authenticate(OWNER_KEY);
 
@@ -189,8 +189,8 @@ describe("bootstrap audit (ADR 0019 §4)", () => {
     fix.store.close();
   });
 
-  test("the audit row carries the de-duplication rule and no fragment of the key", () => {
-    const fix = fixture();
+  test("the audit row carries the de-duplication rule and no fragment of the key", async () => {
+    const fix = await fixture();
 
     const row = fix.store.listEvents({ type: "owner_authenticated", limit: 1 })[0];
     // The journal stores a payload as JSON text; the reader parses it, so the test does too.
@@ -204,7 +204,7 @@ describe("bootstrap audit (ADR 0019 §4)", () => {
   });
 
   test("a bootstrap through the owner key records the act, not only the credential", async () => {
-    const fix = fixture();
+    const fix = await fixture();
 
     const created = result(
       await fix.host.dispatch(fix.owner, "core.access.createPrincipal", { name: "laptop" }),
@@ -224,8 +224,8 @@ describe("bootstrap audit (ADR 0019 §4)", () => {
     fix.store.close();
   });
 
-  test("the audit is an EVENT row: ADR 0018's trace writer is untouched", () => {
-    const fix = fixture();
+  test("the audit is an EVENT row: ADR 0018's trace writer is untouched", async () => {
+    const fix = await fixture();
 
     const traces = fix.store.listEvents({ type: "trace", limit: 100 });
     const audits = fix.store.listEvents({ type: "owner_authenticated", limit: 100 });
@@ -241,7 +241,7 @@ describe("bootstrap audit (ADR 0019 §4)", () => {
 
 describe("the machine revocation door (ADR 0019 §3)", () => {
   test("withdrawal kills the credential, fences the socket, and keeps the row", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const enrolled = fix.auth.enrollMachine("spoke", fix.owner);
 
     const outcome = await fix.host.dispatch(fix.owner, "core.machines.revoke", {
@@ -263,7 +263,7 @@ describe("the machine revocation door (ADR 0019 §3)", () => {
   });
 
   test("the roster reports a withdrawn machine, and omits the field for a live one", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const live = fix.auth.enrollMachine("live", fix.owner);
     const cut = fix.auth.enrollMachine("cut", fix.owner);
     await fix.host.dispatch(fix.owner, "core.machines.revoke", { machineId: cut.machine.id });
@@ -279,7 +279,7 @@ describe("the machine revocation door (ADR 0019 §3)", () => {
   });
 
   test("withdrawing twice answers zero, which is a success and not a refusal", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const enrolled = fix.auth.enrollMachine("spoke", fix.owner);
     const machineId = enrolled.machine.id;
 
@@ -291,7 +291,7 @@ describe("the machine revocation door (ADR 0019 §3)", () => {
   });
 
   test("`machines:mint` is the ladder, and a container-scoped holder of it reaches nothing", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const enrolled = fix.auth.enrollMachine("spoke", fix.owner);
     const reader = fix.auth.authenticate(mint(fix, ["containers:read"]).token);
 
@@ -306,8 +306,8 @@ describe("the machine revocation door (ADR 0019 §3)", () => {
     fix.store.close();
   });
 
-  test("an unknown machine is not_found rather than a silent zero", () => {
-    const fix = fixture();
+  test("an unknown machine is not_found rather than a silent zero", async () => {
+    const fix = await fixture();
 
     expect(refusal(() => fix.auth.revokeMachine("no-such-machine", fix.owner))).toEqual({
       code: "not_found",
@@ -319,7 +319,7 @@ describe("the machine revocation door (ADR 0019 §3)", () => {
 
 describe("the credential list (ADR 0019 §3)", () => {
   test("root reads every principal with its live credentials, and no secret", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const granted = mint(fix, ["containers:read"]);
 
     const listed = result(
@@ -343,7 +343,7 @@ describe("the credential list (ADR 0019 §3)", () => {
   });
 
   test("a dead credential leaves the list: expired and revoked rows are not sessions", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const expiring = mint(fix, ["containers:read"]);
     const revoked = mint(fix, ["containers:read"]);
     fix.auth.revokePrincipal(revoked.principal.id, fix.owner);
@@ -364,7 +364,7 @@ describe("the credential list (ADR 0019 §3)", () => {
   });
 
   test("a non-root reader sees itself and what it minted, and nothing else", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const minter = mint(fix, ["tokens:mint", "containers:read"]);
     const minterContext = fix.auth.authenticate(minter.token);
     const delegate = fix.auth.mintToken(
@@ -392,7 +392,7 @@ describe("the credential list (ADR 0019 §3)", () => {
   });
 
   test("`tokens:mint` is the authority, so a plain reader is refused at the door", async () => {
-    const fix = fixture();
+    const fix = await fixture();
     const reader = fix.auth.authenticate(mint(fix, ["containers:read"]).token);
 
     expect(denial(await fix.host.dispatch(reader, "core.access.listCredentials", {})).rule).toBe(

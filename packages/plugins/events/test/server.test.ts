@@ -42,7 +42,7 @@ interface Fixture {
   readonly runtime: FakeRuntime;
 }
 
-function fixture(): Fixture {
+async function fixture(): Promise<Fixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -62,7 +62,7 @@ function fixture(): Fixture {
     store,
     auth,
     owner: auth.authenticate(OWNER_KEY),
-    host: testPluginHost(store, auth, rooms, broker, runtime),
+    host: await testPluginHost(store, auth, rooms, broker, runtime),
     runtime,
   };
 }
@@ -125,7 +125,7 @@ async function list(
 
 describe("core.events.list authority", () => {
   test("a caller without `*` is forbidden, however many other caps it holds", async () => {
-    const where = fixture();
+    const where = await fixture();
     const reader = context(where, ["containers:read", "containers:write", "tokens:mint"]);
 
     const outcome = await where.host.dispatch(reader, "core.events.list", {});
@@ -142,7 +142,7 @@ describe("core.events.list authority", () => {
   });
 
   test("a container-scoped token is refused for its SCOPE, above the cap rung", async () => {
-    const where = fixture();
+    const where = await fixture();
     const container = where.runtime.newId();
     where.store.createContainer({
       id: container,
@@ -171,7 +171,7 @@ describe("core.events.list authority", () => {
   });
 
   test("root reads it", async () => {
-    const where = fixture();
+    const where = await fixture();
     seed(where);
 
     const rows = await list(where, where.owner, {});
@@ -183,7 +183,7 @@ describe("core.events.list authority", () => {
 
 describe("core.events.list arguments", () => {
   test("a limit outside the declared bound is invalid_args, not a clamped success", async () => {
-    const where = fixture();
+    const where = await fixture();
     seed(where);
 
     /*
@@ -205,7 +205,7 @@ describe("core.events.list arguments", () => {
   });
 
   test("an unknown argument is invalid_args, because the input is strict", async () => {
-    const where = fixture();
+    const where = await fixture();
 
     const outcome = await where.host.dispatch(where.owner, "core.events.list", { type: "x" });
 
@@ -218,7 +218,7 @@ describe("core.events.list arguments", () => {
 
 describe("core.events.list rows", () => {
   test("newest first, by timestamp rather than by insertion", async () => {
-    const where = fixture();
+    const where = await fixture();
     seed(where);
 
     const rows = await list(where, where.owner, {});
@@ -228,7 +228,7 @@ describe("core.events.list rows", () => {
   });
 
   test("the kind filter selects on the event's own type", async () => {
-    const where = fixture();
+    const where = await fixture();
     seed(where);
 
     const rows = await list(where, where.owner, { kind: "terminal_opened" });
@@ -239,7 +239,7 @@ describe("core.events.list rows", () => {
   });
 
   test("the containerId filter narrows to one container and drops the container-less rows", async () => {
-    const where = fixture();
+    const where = await fixture();
     seed(where);
 
     const rows = await list(where, where.owner, { containerId: "c-alpha" });
@@ -252,7 +252,7 @@ describe("core.events.list rows", () => {
   });
 
   test("both filters compose", async () => {
-    const where = fixture();
+    const where = await fixture();
     seed(where);
 
     const rows = await list(where, where.owner, {
@@ -265,7 +265,7 @@ describe("core.events.list rows", () => {
   });
 
   test("limit truncates from the NEWEST end, and truncates after filtering", async () => {
-    const where = fixture();
+    const where = await fixture();
     seed(where);
 
     const newest = await list(where, where.owner, { limit: 2 });
@@ -279,7 +279,7 @@ describe("core.events.list rows", () => {
   });
 
   test("the payload arrives as the stored TEXT, not a parsed object", async () => {
-    const where = fixture();
+    const where = await fixture();
     where.store.addEvent("c-alpha", 5_000, "p-1", "token_revoked", { count: 2 });
 
     const outcome = await where.host.dispatch(where.owner, "core.events.list", {});
@@ -297,7 +297,7 @@ describe("core.events.list rows", () => {
   });
 
   test("an empty trail is an empty list, not a refusal", async () => {
-    const where = fixture();
+    const where = await fixture();
 
     const rows = await list(where, where.owner, {});
 
@@ -308,7 +308,7 @@ describe("core.events.list rows", () => {
   });
 
   test("ONE door reads both families: the ledger comes back through this action", async () => {
-    const where = fixture();
+    const where = await fixture();
     seed(where);
 
     const outcome = await where.host.dispatch(where.owner, "core.events.list", { kind: "trace" });
