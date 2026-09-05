@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.0] - 2026-09-05
+
+### Breaking Changes
+
+- Machine agents now use a separately supervised terminal host so transport updates, crashes and rejected duplicates leave running terminals intact. Machines can be drained for maintenance without ending existing work. Existing combined agents must finish their terminals before migrating. (#278, #288)
+
+### Added
+
+- Every build now knows what it is: `/healthz` answers `version`, `build` (`0.6.2` at a release, `0.6.2+21.gb7a07fe` past one) and `channel` (`release` or `development`), the sidebar's rev line prints the same `build`, and a development build says `development` in the sidebar and in the tab title — so a browser and the instance it looks at can be compared by eye, and two instances never look alike. (#251, #283)
+- Pull requests now have seeded preview environments that follow every push and disappear on close, alongside live worktree previews with hot reload. (#285, #289)
+
+### Fixed
+
+- The development web server now proxies API and WebSocket requests to `MANIFOLD_PORT` and supports live previews behind a TLS router through `MANIFOLD_DEV_HOST`. (#211, #289)
+
 ## [0.7.0] - 2026-09-05
 
 ### Breaking Changes
