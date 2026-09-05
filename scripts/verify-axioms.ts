@@ -2167,9 +2167,15 @@ function scanTree(dir: string, out: string[]): void {
  * the smallest amount that admits them; the WARN line does not move. Written by an agent on the
  * operator's direction while the operator slept: this raise is REVIEWABLE — reject it by
  * extracting plugin territory (tile-geometry.ts at 962 lines is the first candidate) instead.
+ *
+ * RED RAISED 12,700 → 12,800 the same night (ADR 0016 stage 2, #152): the install and uninstall
+ * doors are engine doors, so their action rows, request/result schemas and the roster row's
+ * `install` block land in `builtin.ts` and `assemble.ts` beside `setEnabled` and `purge` — the
+ * one place they can be (the enablement door "cannot be a plugin", §Foundation law), about
+ * 70 lines. Same defence, same reviewability, same unmoved WARN line.
  */
 const PLUGIN_SRC_WARN_LINES = 9_000;
-const PLUGIN_SRC_MAX_LINES = 12_700;
+const PLUGIN_SRC_MAX_LINES = 12_800;
 
 {
   const files = sourcesMatching("packages/plugin/src/**");
