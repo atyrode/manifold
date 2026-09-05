@@ -1,7 +1,8 @@
 # 0011 — Authority is a waterfall of grants on the node tree
 
 Date: 2026-08-31
-Status: designed 2026-08-31, **landed 2026-09-01** (wave 4, #77)
+Status: accepted
+Ratified: designed 2026-08-31, **landed 2026-09-01** (wave 4, #77)
 
 Lexicon addendum 2026-08-31 (#69): this record is history and is not rewritten; the names it
 cites moved in the lexicon cut. `padScope` is `containerScope`, `padId` is `containerId`, and

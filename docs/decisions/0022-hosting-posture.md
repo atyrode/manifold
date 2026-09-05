@@ -1,8 +1,8 @@
 # 0022 — Hosting posture: self-hosted software, and the operator's instance is one deployment of it
 
 Date: 2026-09-02
-Status: **ACCEPTED — operator-ratified constraint, 2026-09-02.** Issue #173 is the work this
-record obliges; `verify:axioms` S17 is its enforcement.
+Status: accepted
+Ratified: operator-ratified constraint, 2026-09-02. Issue #173 is the work this record obliges; `verify:axioms` S17 is its enforcement.
 
 ## Context
 

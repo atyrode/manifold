@@ -1,7 +1,7 @@
 # Where geometry two sibling plugins both need is allowed to live
 
-**Date:** 2026-09-01  
-**Status:** Accepted
+Date: 2026-09-01
+Status: accepted
 
 ## Context
 

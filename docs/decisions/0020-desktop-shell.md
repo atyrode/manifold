@@ -1,11 +1,8 @@
 # 0020 — The desktop shell: Electron as a host, the agent as the process it supervises
 
 Date: 2026-09-01
-Status: **ACCEPTED — ratified by the operator 2026-09-01, with one amendment: acceptance claim 5
-(§6.3), the in-shell performance budget.** The ratification round weighed GPUI (§1.4a) at the
-operator's ask before the yes. #82's own ruling still binds what a yes licenses: the ADR precedes
-**any shell code** — nothing in this file licenses a directory, and §Deferrals is the list of
-things this yes does **not** decide, each with the condition that reopens it.
+Status: accepted
+Ratified: ratified by the operator 2026-09-01, with one amendment: acceptance claim 5 (§6.3), the in-shell performance budget. The ratification round weighed GPUI (§1.4a) at the operator's ask before the yes. #82's own ruling still binds what a yes licenses: the ADR precedes **any shell code** — nothing in this file licenses a directory, and §Deferrals is the list of things this yes does **not** decide, each with the condition that reopens it.
 
 ## Context
 

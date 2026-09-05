@@ -97,8 +97,11 @@ as the code it indexes. Together they — not this file — decide which code is
 which is plugin territory, and which word names which concept, and `bun run verify:axioms`
 enforces that answer; never restate the boundary here. `docs/CONTRACTS.md` is the
 integration authority (endpoints, envs, state machines, persistence). `docs/PLUGINS.md` is
-the plugin authoring guide. `docs/PLAN.md` is the vision/roadmap. `docs/decisions/` records
-dated technology verdicts with evidence.
+the plugin authoring guide. `docs/PLAN.md` is the vision/roadmap. A `docs/decisions/` record
+is the reasoning behind a ruling — alternatives weighed, evidence cited — immutable once written,
+with its `Date`/`Status` block first. Normative content lives in the spec (`AXIOMS.md`,
+`REGISTRY.md`, `docs/CONTRACTS.md`, `docs/PLUGINS.md`), which wins wherever a record disagrees;
+the index is the generated `docs/decisions/README.md`.
 
 ## Invariants (violations are bugs, not style)
 
@@ -231,10 +234,11 @@ dated technology verdicts with evidence.
   roadmap or in a third-party plugin — never in the box by default. "Everything is a plugin"
   (A1) is a statement about MECHANISM, never a licence to ship more seats: every seat in the
   box is a thing a stranger's agent must read before it can tell what manifold is.
-- Contradictions escalate; they are never resolved quietly. Precedence is axioms > decisions >
-  scope notes (`AXIOMS.md` §Change control): the axioms and the foundation law outrank a dated
-  ADR, and an ADR outranks a plan bullet, a roadmap row or a task brief. If a brief, plan or ADR
-  cannot be executed without violating an axiom, STOP and escalate to the operator — never pick
+- Contradictions escalate; they are never resolved quietly. Precedence is axioms > spec >
+  decisions > scope notes (`AXIOMS.md` §Change control): the axioms and the foundation law
+  outrank the spec, the spec outranks a dated ADR, and an ADR outranks a plan bullet, a roadmap
+  row or a task brief. If a brief, plan or ADR cannot be executed without violating an axiom,
+  STOP and escalate to the operator — never pick
   the reading that looks obvious, because a silently resolved contradiction becomes precedent
   nobody ratified. Scope may defer work; it may never license an axiom-violating state, and a
   deferral must be visible in-product (a named refusal, a placeholder that says what is missing, a

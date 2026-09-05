@@ -1,5 +1,8 @@
 # 0001 — Runtime and dependency pins (2026-08-24)
 
+Date: 2026-08-24
+Status: accepted
+
 ## Decision
 
 TypeScript everywhere; **Bun 1.3.13** (nixpkgs) as runtime for server, agent, tooling,

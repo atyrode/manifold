@@ -1,7 +1,8 @@
 # Use `@dnd-kit/react` for pad ordering
 
-**Date:** 2026-08-26  
-**Status:** Accepted
+Date: 2026-08-26
+Status: superseded
+Superseded-by: 2026-08-26-headless-tree.md
 
 **Lexicon addendum 2026-08-31 (#69):** this record is history and is not rewritten, title
 included; superseded by `2026-08-26-headless-tree.md`. What it calls "pad ordering" is ordering

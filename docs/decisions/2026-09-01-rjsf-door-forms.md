@@ -1,7 +1,8 @@
 # Generate door-invocation forms with react-jsonschema-form (rjsf), not JSON Forms
 
-**Date:** 2026-09-01  
-**Status:** Accepted (#128, #131 item 6)
+Date: 2026-09-01
+Status: accepted
+Ratified: #128, #131 item 6
 
 ## Context
 

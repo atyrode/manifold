@@ -1,9 +1,8 @@
 # 0017 - Reference nodes: seats, cursors, and the workspace as an ordinary node
 
 Date: 2026-09-01
-Status: ACCEPTED - R1-R5 ratified in full by the operator, 2026-09-01, after detailed
-per-ask review (dependency order R3→R2→R4→R1→R5; R1's door convergence executes only
-after S17-C proves cursor-seats live). Deferred-doors ledger below remains live.
+Status: accepted
+Ratified: R1-R5 ratified in full by the operator, 2026-09-01, after detailed per-ask review (dependency order R3→R2→R4→R1→R5; R1's door convergence executes only after S17-C proves cursor-seats live). Deferred-doors ledger below remains live.
 
 ## Context
 

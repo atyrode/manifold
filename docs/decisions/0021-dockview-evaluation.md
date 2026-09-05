@@ -1,10 +1,9 @@
 # Dockview as the tile renderer: rejected, with a named trigger
 
-**Date:** 2026-09-01
-**Status:** RECORDED — an evaluation verdict, not a ratification (operator ruling, 2026-09-01: an
-evaluation that concludes "change nothing" changes no law and takes no dependency, so it is
-recorded for the next reader and never ratified; the ratification table is for yeses that oblige).
-Issue #126 closed by this ruling; §8's reopen trigger is the living part of this file.
+Date: 2026-09-01
+Status: accepted
+Ratified: an evaluation verdict, not a ratification — RECORDED (operator ruling, 2026-09-01: an evaluation that concludes "change nothing" changes no law and takes no dependency, so it is recorded for the next reader and never ratified; the ratification table is for yeses that oblige). Issue #126 closed by this ruling; §8's reopen trigger is the living part of this file.
+
 **Verdict:** **REJECT-with-reasons** for the renderer seat. §8 names a four-condition trigger
 that would reopen it — conditions about a library's published API and DOM, not about our
 appetite — and the trigger is scoped to the genre, not to Dockview.

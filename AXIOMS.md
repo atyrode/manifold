@@ -504,9 +504,21 @@ direction the axioms want.
   this file. Where a row is contested, the reasoning is a dated ADR in `docs/decisions/`; where
   the change would alter what the law SAYS, the amendment happens here first and names its
   ratification, and the row follows in the commit that implements it.
-- **Precedence: axioms > decisions > scope notes.** This file's axioms and its foundation law
-  outrank a dated ADR; an ADR outranks a scope note, a plan bullet, a roadmap row or a task
-  brief. A lower rank may refine a higher one and may never contradict it.
+- **The living spec is the normative form of every ratified decision.** `REGISTRY.md`,
+  `docs/CONTRACTS.md` and `docs/PLUGINS.md` — with this file above them — carry what a ruling
+  SAYS; a record in `docs/decisions/` carries why it was made, what was weighed and what the
+  evidence was, and its decision section summarizes and points at the spec section that carries
+  it. Where the two disagree the spec wins and the record is stale, never the other way round:
+  ratifying a record IS the spec edit, in the same PR, and a record no spec section carries has
+  decided nothing yet. Records are immutable once written and status-first — the block under
+  the title (`Date`, `Status`, `Superseded-by`, `Ratified`) is the one part that moves, and
+  `docs/decisions/README.md` is generated from it (`verify:axioms` S19). Operator-ratified
+  2026-09-05 (#248).
+- **Precedence: axioms > spec (`REGISTRY.md`, `docs/CONTRACTS.md`, `docs/PLUGINS.md`) >
+  decisions > scope notes.** This file's axioms and its foundation law outrank the spec; the
+  spec outranks a dated ADR; an ADR outranks a scope note, a plan bullet, a roadmap row or a
+  task brief. A lower rank may refine a higher one and may never contradict it — a record can
+  only refine the spec, never overrule it. Operator-ratified 2026-09-05 (#248).
   - **A contradiction discovered mid-implementation MUST escalate.** An implementer — human or
     agent — who finds a decision or a scope note that cannot be executed without violating an
     axiom stops and escalates to the operator. Choosing quietly is prohibited even when the
