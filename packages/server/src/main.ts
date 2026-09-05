@@ -16,6 +16,7 @@ import { EventHub } from "./event-hub.ts";
 import { HttpApp, MAX_HTTP_BODY_BYTES } from "./http.ts";
 import { InstanceDialer } from "./instance-dialer.ts";
 import { InstanceGateway } from "./instance-ws.ts";
+import { IsolateSupervisor } from "./isolate/supervisor.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { MachineGateway } from "./machine-ws.ts";
 import {
@@ -166,10 +167,16 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     logger,
   );
   /*
+    THE ISOLATE RUNNER (ADR 0016 §1): one child process per INSTALLED plugin, supervised. It
+    is built before the host because the host loads every installed bundle at boot, and it is
+    closed at shutdown after the sockets, so no dispatch in flight finds its child gone.
+  */
+  const isolates = new IsolateSupervisor({ logger, runtime });
+  /*
     The assembly, and the host that answers for it. It is built BEFORE the gateways
     that consult it: the session gateway pushes the roster and refuses terminal
     creation for a disabled terminals plugin, and the HTTP app serves the action door.
-   */
+  */
   const plugins: PluginHost = await PluginHost.boot(
     SERVER_PLUGIN_DEFS,
     store,
@@ -182,12 +189,15 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     runtime,
     logger,
     events,
-    /*
-      The `core.` reservation, made real: the ids this distribution registers, derived from
-      `assembly.ts` and handed to the host as data, because the host may not name a plugin.
-      Without this argument a manifest under `core.` composes unchecked (`AssemblyEnv`).
-    */
-    { distribution: SHIPPED_PLUGIN_IDS },
+    {
+      /*
+        The `core.` reservation, made real: the ids this distribution registers, derived from
+        `assembly.ts` and handed to the host as data, because the host may not name a plugin.
+        Without this argument a manifest under `core.` composes unchecked (`AssemblyEnv`).
+      */
+      distribution: SHIPPED_PLUGIN_IDS,
+      isolates: { runner: isolates, dataDir: config.dataDir, devPaths: config.pluginDevPaths },
+    },
   );
   /*
     THE element-payload boundary, installed rather than constructed for the same reason the
@@ -300,6 +310,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       instances.shutdown();
       dialer.shutdown();
       await server.stop(true);
+      await isolates.close();
       localAgent?.release();
       store.close();
     },

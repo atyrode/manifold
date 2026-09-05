@@ -70,6 +70,7 @@ must never be taught one.
       "globs": [
         "packages/plugin/src/**",
         "packages/server/src/plugin-host.ts",
+        "packages/server/src/plugin-installs.ts",
         "packages/server/src/assembly.ts",
         "packages/server/src/main.ts",
         "packages/server/src/http.ts",
@@ -279,6 +280,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/server/src/plugin-host.ts",
       "why": "action dispatch: the denial ladder, capability intersection, enablement, roster change fan-out"
+    },
+    {
+      "glob": "packages/server/src/plugin-installs.ts",
+      "why": "the install door's hands (ADR 0016 stage 2): an artifact fetched or read, pinned by hash before it is parsed, admitted before it is written, re-verified and re-extracted at every boot — the runner's input, which is why it sits beside the host"
     },
     {
       "glob": "packages/server/src/assembly.ts",

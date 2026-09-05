@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+  ENGINE_INSTALL_ACTION,
   ENGINE_PLUGINS_ID,
   ENGINE_PURGE_ACTION,
   ENGINE_SET_ENABLED_ACTION,
+  ENGINE_UNINSTALL_ACTION,
   MAX_STORAGE_VALUE_BYTES,
   PluginStorageError,
   assembleRoster,
@@ -21,16 +26,26 @@ import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../src/assembly.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
+import {
+  IsolateDenial,
+  IsolateLoadError,
+  type InstalledPluginRef,
+  type IsolateLoadResult,
+  type IsolateRunner,
+  type IsolateState,
+} from "../src/isolate/contract.ts";
 import { silentLogger } from "../src/log.ts";
 import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
+import { PLUGIN_UPLOADS_DIR } from "../src/plugin-installs.ts";
 import {
   OUTSIDE_SCOPE_REFUSAL,
   PluginHost,
+  type IsolateDeps,
   type MachineLiveness,
   type ServerPluginDef,
 } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
-import type { ServerStore } from "../src/stores.ts";
+import { TRACE_ROW_TYPE, sha256Hex, type ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import {
   FakeClock,
@@ -743,6 +758,7 @@ async function customHost(
   options: {
     readonly lifecycleTimeoutMs?: number;
     readonly distribution?: ReadonlySet<string>;
+    readonly isolates?: IsolateDeps;
   } = {},
 ): Promise<PluginHost> {
   // The hub reads the assembly of the host it is handed to, exactly as `main.ts` wires it.
@@ -1510,6 +1526,459 @@ describe("ctx.outsideScope", () => {
       ok: true,
       result: { touched: "" },
     });
+    fixture.store.close();
+  });
+});
+
+/**
+ * THE INSTALL DOORS (ADR 0016 §8 stage 2), against a runner with no process behind it: the
+ * host's verdicts — consent, grant, rollback, boot re-verification, the child's own rungs — are
+ * what these cases defend, and none of them needs a child to be true.
+ */
+
+/**
+ * A runner that answers `load` from a table and records every call, and lets a case push a
+ * state the way a supervisor would when a child spawns or crashes.
+ */
+class FakeRunner implements IsolateRunner {
+  readonly loads: string[] = [];
+  readonly unloads: string[] = [];
+  private readonly states = new Map<string, IsolateState>();
+  private readonly listeners = new Set<
+    (pluginId: string, state: IsolateState, detail?: string) => void
+  >();
+
+  constructor(private readonly serve: (ref: InstalledPluginRef) => IsolateLoadResult) {}
+
+  async load(ref: InstalledPluginRef): Promise<IsolateLoadResult> {
+    this.loads.push(ref.pluginId);
+    const result = this.serve(ref);
+    this.states.set(ref.pluginId, "running");
+    return result;
+  }
+
+  async unload(pluginId: string): Promise<void> {
+    this.unloads.push(pluginId);
+    this.states.set(pluginId, "stopped");
+  }
+
+  state(pluginId: string): IsolateState {
+    return this.states.get(pluginId) ?? "stopped";
+  }
+
+  onState(listener: (pluginId: string, state: IsolateState, detail?: string) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  report(pluginId: string, state: IsolateState): void {
+    this.states.set(pluginId, state);
+    for (const listener of this.listeners) listener(pluginId, state);
+  }
+
+  async close(): Promise<void> {}
+}
+
+const SAMPLE_ID = "vendor.sample";
+
+const SAMPLE_MANIFEST: PluginManifest = {
+  id: SAMPLE_ID,
+  version: "1.2.3",
+  title: "Sample",
+  description: "an installed sample",
+  capabilities: ["containers:read", "tokens:mint", "plugins:manage"],
+  contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+  entry: { server: true, web: "web.js" },
+};
+
+/** What the child would announce for the sample: one ordinary door, one needing a withheld cap. */
+function sampleLoad(
+  ref: InstalledPluginRef,
+  handlers: Readonly<Record<string, (ctx: unknown, args: unknown) => Promise<unknown>>> = {},
+  hooks: HookLog = { calls: [] },
+): IsolateLoadResult {
+  return {
+    def: {
+      manifest: ref.manifest,
+      actions: [
+        defineAction({
+          name: "ping",
+          title: "Ping",
+          caps: ["containers:read"],
+          input: z.unknown(),
+          result: z.unknown(),
+        }),
+        defineAction({
+          name: "mint",
+          title: "Mint",
+          caps: ["tokens:mint"],
+          input: z.unknown(),
+          result: z.unknown(),
+        }),
+      ],
+      handlers: {
+        ping: async () => ({ pong: true }),
+        mint: async () => ({ minted: true }),
+        ...handlers,
+      },
+    },
+    lifecycle: {
+      onEnable: (ctx) => {
+        hooks.calls.push(`enable:${ctx.pluginId}`);
+      },
+    },
+  };
+}
+
+interface InstallFixture extends HostFixture {
+  readonly dataDir: string;
+  readonly runner: FakeRunner;
+  readonly isolates: IsolateDeps;
+  /** Writes a bundle into the uploads box; answers the door's two arguments. */
+  drop(manifest?: PluginManifest, files?: Record<string, string>): { source: string; sha256: string };
+}
+
+async function installFixture(
+  serve: (ref: InstalledPluginRef) => IsolateLoadResult = (ref) => sampleLoad(ref),
+): Promise<InstallFixture> {
+  const base = await hostFixture();
+  const dataDir = mkdtempSync(join(tmpdir(), "manifold-install-door-"));
+  mkdirSync(join(dataDir, PLUGIN_UPLOADS_DIR), { recursive: true });
+  const runner = new FakeRunner(serve);
+  let dropped = 0;
+  return {
+    ...base,
+    dataDir,
+    runner,
+    isolates: { runner, dataDir },
+    drop(manifest = SAMPLE_MANIFEST, files = { "server.js": "export {};", "web.js": "export const web = 1;" }) {
+      const bytes = Buffer.from(
+        JSON.stringify({
+          format: 1,
+          manifest,
+          files: Object.fromEntries(
+            Object.entries(files).map(([name, text]) => [name, Buffer.from(text).toString("base64")]),
+          ),
+        }),
+      );
+      dropped += 1;
+      const source = join(dataDir, PLUGIN_UPLOADS_DIR, `drop-${String(dropped)}.manifold-plugin.json`);
+      writeFileSync(source, bytes);
+      return { source, sha256: sha256Hex(bytes) };
+    },
+  };
+}
+
+function installedRow(host: PluginHost, id: string): PluginRoster[number] {
+  const row = host.roster().find((entry) => entry.manifest.id === id);
+  if (row === undefined) throw new Error(`${id} is not on the roster`);
+  return row;
+}
+
+describe("PluginHost install doors", () => {
+  test("install lands a plugin row carrying the installer's consent, high-risk caps withheld", async () => {
+    const hooks: HookLog = { calls: [] };
+    const fixture = await installFixture((ref) => sampleLoad(ref, {}, hooks));
+    const host = await customHost(fixture, [], {
+      distribution: SHIPPED_PLUGIN_IDS,
+      isolates: fixture.isolates,
+    });
+    const published: PluginRoster[] = [];
+    host.onRosterChange((roster) => {
+      published.push(roster);
+    });
+    const { source, sha256 } = fixture.drop();
+
+    // Root only: a manager token switches shipped rows, it does not admit a stranger's code.
+    const manager = context(fixture, ["plugins:manage"]);
+    expect(denial(await host.dispatch(manager, ENGINE_INSTALL_ACTION, { source, sha256 }))).toEqual({
+      rule: "forbidden",
+      message: "* capability required",
+    });
+
+    expect(await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).toEqual({
+      ok: true,
+      result: { id: SAMPLE_ID, version: "1.2.3", grantedCaps: ["containers:read"] },
+    });
+    const row = installedRow(host, SAMPLE_ID);
+    expect(row.source).toBe("plugin");
+    expect(row.enabled).toBe(true);
+    expect(row.install).toEqual({
+      sha256,
+      source,
+      grantedCaps: ["containers:read"],
+      installedBy: fixture.owner.principal.id,
+      installedAt: fixture.runtime.now(),
+    });
+    expect(row.actions.map((action) => action.name)).toEqual([
+      `${SAMPLE_ID}.ping`,
+      `${SAMPLE_ID}.mint`,
+    ]);
+    expect(fixture.runner.loads).toEqual([SAMPLE_ID]);
+    expect(fixture.store.pluginInstalls().map((stored) => stored.pluginId)).toEqual([SAMPLE_ID]);
+    // An install of an enabled row IS an enable: the hook fires and the roster is pushed.
+    expect(hooks.calls).toEqual([`enable:${SAMPLE_ID}`]);
+    expect(published).toHaveLength(1);
+    expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+      ok: true,
+      result: { pong: true },
+    });
+    expect(host.webModule(SAMPLE_ID)).toEqual({
+      sha256,
+      bytes: Buffer.from("export const web = 1;"),
+    });
+    fixture.store.close();
+  });
+
+  test("grant widens the default explicitly, restricted to the manifest's own ceiling", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    const { source, sha256 } = fixture.drop();
+    const outcome = await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+      source,
+      sha256,
+      grant: ["tokens:mint", "scenes:write"],
+    });
+    expect(outcome).toEqual({
+      ok: true,
+      result: { id: SAMPLE_ID, version: "1.2.3", grantedCaps: ["containers:read", "tokens:mint"] },
+    });
+    fixture.store.close();
+  });
+
+  test("a door needing a cap the installer withheld is forbidden naming the plugin, before the caller", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    const { source, sha256 } = fixture.drop();
+    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
+      true,
+    );
+    // Root holds every cap; the refusal is the PLUGIN's grant, and the message says so.
+    expect(denial(await host.dispatch(fixture.owner, `${SAMPLE_ID}.mint`, {}))).toEqual({
+      rule: "forbidden",
+      message: `tokens:mint not granted to plugin ${SAMPLE_ID}`,
+    });
+    const trace = fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0];
+    expect(trace?.door).toBe(`${SAMPLE_ID}.mint`);
+    expect(trace?.outcome).toBe("forbidden");
+    fixture.store.close();
+  });
+
+  test("uninstall refuses a running row, then removes row and files and keeps its storage", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    const { source, sha256 } = fixture.drop();
+    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
+      true,
+    );
+    const stored = fixture.store.pluginInstalls()[0];
+    if (stored === undefined) throw new Error("no install row");
+    await fixture.store.pluginStorage(SAMPLE_ID).set("kept", "yes");
+
+    const running = await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID });
+    expect(denial(running).rule).toBe("refused");
+    expect(denial(running).message).toMatch(/^still_enabled: /);
+
+    expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+    expect(await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID })).toEqual({
+      ok: true,
+      result: {},
+    });
+    expect(host.roster().some((entry) => entry.manifest.id === SAMPLE_ID)).toBe(false);
+    expect(fixture.store.pluginInstalls()).toEqual([]);
+    expect(existsSync(stored.bundlePath)).toBe(false);
+    expect(fixture.runner.unloads).toEqual([SAMPLE_ID]);
+    // Disable RETAINS, and so does uninstall: destruction is `purge`, a different verb.
+    expect(await fixture.store.pluginStorage(SAMPLE_ID).get("kept")).toBe("yes");
+    expect(
+      denial(await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID })).message,
+    ).toMatch(/^not_installed: /);
+    fixture.store.close();
+  });
+
+  test("a bundle claiming engine. or core. is refused by namespace and writes nothing", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], {
+      distribution: SHIPPED_PLUGIN_IDS,
+      isolates: fixture.isolates,
+    });
+    const squat = fixture.drop({ ...SAMPLE_MANIFEST, id: "core.impostor" });
+    const outcome = await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, squat);
+    expect(denial(outcome).message).toMatch(/^namespace_reserved: "core\.impostor"/);
+    expect(fixture.runner.loads).toEqual([]);
+    expect(fixture.store.pluginInstalls()).toEqual([]);
+    expect(existsSync(join(fixture.dataDir, "plugins"))).toBe(false);
+    fixture.store.close();
+  });
+
+  test("a second install of an id is already_installed; replace needs the row off, then upgrades", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    const first = fixture.drop();
+    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, first)).ok).toBe(true);
+    const firstRow = fixture.store.pluginInstalls()[0];
+    const second = fixture.drop({ ...SAMPLE_MANIFEST, version: "2.0.0" });
+
+    expect(denial(await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, second)).message).toMatch(
+      /^already_installed: /,
+    );
+    expect(
+      denial(await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { ...second, replace: true }))
+        .message,
+    ).toMatch(/^still_enabled: /);
+
+    expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+    expect(
+      await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { ...second, replace: true }),
+    ).toEqual({
+      ok: true,
+      result: { id: SAMPLE_ID, version: "2.0.0", grantedCaps: ["containers:read"] },
+    });
+    const row = installedRow(host, SAMPLE_ID);
+    expect(row.manifest.version).toBe("2.0.0");
+    expect(row.install?.sha256).toBe(second.sha256);
+    // The row stays off — a replace is not an enable — and the old artifact is gone.
+    expect(row.enabled).toBe(false);
+    expect(existsSync(firstRow?.bundlePath ?? "")).toBe(false);
+    expect(fixture.runner.unloads).toEqual([SAMPLE_ID]);
+    expect(fixture.runner.loads).toEqual([SAMPLE_ID, SAMPLE_ID]);
+    fixture.store.close();
+  });
+
+  test("an assembly refusal at install time rolls back and answers artifact_invalid", async () => {
+    const fixture = await installFixture();
+    const log: HookLog = { calls: [] };
+    // The same id already composes in-realm: a duplicate the assembly refuses by name.
+    const host = await customHost(fixture, [recorder(SAMPLE_ID, log)], { isolates: fixture.isolates });
+    const { source, sha256 } = fixture.drop();
+    const outcome = await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 });
+    expect(denial(outcome).message).toMatch(/^artifact_invalid: duplicate plugin id/);
+    expect(fixture.store.pluginInstalls()).toEqual([]);
+    expect(existsSync(join(fixture.dataDir, "plugins", SAMPLE_ID))).toBe(false);
+    expect(fixture.runner.unloads).toEqual([SAMPLE_ID]);
+    // The in-realm row is untouched: still one row under that id, still the first-party one.
+    const rows = host.roster().filter((entry) => entry.manifest.id === SAMPLE_ID);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.install).toBeUndefined();
+    fixture.store.close();
+  });
+
+  test("a child that fails to load rolls back and answers artifact_invalid with its reason", async () => {
+    const fixture = await installFixture(() => {
+      throw new IsolateLoadError("server.js threw at import");
+    });
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    const { source, sha256 } = fixture.drop();
+    const outcome = await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 });
+    expect(denial(outcome).message).toBe("artifact_invalid: server.js threw at import");
+    expect(fixture.store.pluginInstalls()).toEqual([]);
+    expect(host.roster().some((entry) => entry.manifest.id === SAMPLE_ID)).toBe(false);
+    fixture.store.close();
+  });
+
+  test("boot re-verifies every stored bundle and refuses a tampered one by name, never loading it", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    const { source, sha256 } = fixture.drop();
+    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
+      true,
+    );
+    const stored = fixture.store.pluginInstalls()[0];
+    if (stored === undefined) throw new Error("no install row");
+    // The file on disk changes under the pin: a manifest now claiming everything.
+    writeFileSync(
+      stored.bundlePath,
+      JSON.stringify({
+        format: 1,
+        manifest: { ...SAMPLE_MANIFEST, capabilities: ["*"] },
+        files: { "server.js": Buffer.from("export {};").toString("base64") },
+      }),
+    );
+
+    const rebooted = new FakeRunner((ref) => sampleLoad(ref));
+    const second = await customHost(fixture, [], {
+      isolates: { runner: rebooted, dataDir: fixture.dataDir },
+    });
+    const row = installedRow(second, SAMPLE_ID);
+    expect(row.lifecycle).toBe("enable_failed");
+    expect(row.install?.refusal).toBe("hash_mismatch");
+    expect(row.install?.sha256).toBe(sha256);
+    // Nothing from the file: no doors, no declared capabilities, no child.
+    expect(row.actions).toEqual([]);
+    expect(row.manifest.capabilities).toEqual([]);
+    expect(rebooted.loads).toEqual([]);
+    expect(second.webModule(SAMPLE_ID)).toBeNull();
+    expect(denial(await second.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe(
+      "unknown_action",
+    );
+    // The remedy is the ordinary one: disable, uninstall.
+    expect(await second.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+    expect(await second.uninstall(SAMPLE_ID, "admin")).toEqual({ ok: true });
+    expect(fixture.store.pluginInstalls()).toEqual([]);
+    fixture.store.close();
+  });
+
+  test("a denial the child or supervisor grades is settled as that rung, traced, never a failure", async () => {
+    const fixture = await installFixture((ref) =>
+      sampleLoad(ref, {
+        ping: async (_ctx, args) => {
+          const asked = args as { rule: "invalid_args" | "unavailable" };
+          throw new IsolateDenial(asked.rule, `${asked.rule} from the child`);
+        },
+      }),
+    );
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    const { source, sha256 } = fixture.drop();
+    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
+      true,
+    );
+    for (const rule of ["invalid_args", "unavailable"] as const) {
+      expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, { rule })).toEqual({
+        ok: false,
+        denial: { rule, message: `${rule} from the child` },
+      });
+      const trace = fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0];
+      expect(trace?.door).toBe(`${SAMPLE_ID}.ping`);
+      expect(trace?.outcome).toBe(rule);
+    }
+    fixture.store.close();
+  });
+
+  test("the runner's state is a roster lifecycle every principal sees, and it is pushed", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    const { source, sha256 } = fixture.drop();
+    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
+      true,
+    );
+    const nextRoster = (): Promise<PluginRoster> => {
+      const { promise, resolve } = Promise.withResolvers<PluginRoster>();
+      const remove = host.onRosterChange((roster) => {
+        remove();
+        resolve(roster);
+      });
+      return promise;
+    };
+
+    let pushed = nextRoster();
+    fixture.runner.report(SAMPLE_ID, "starting");
+    expect((await pushed).find((entry) => entry.manifest.id === SAMPLE_ID)?.lifecycle).toBe(
+      "isolate_starting",
+    );
+    pushed = nextRoster();
+    fixture.runner.report(SAMPLE_ID, "running");
+    expect((await pushed).find((entry) => entry.manifest.id === SAMPLE_ID)?.lifecycle).toBeUndefined();
+    pushed = nextRoster();
+    fixture.runner.report(SAMPLE_ID, "crashed");
+    expect(installedRow(host, SAMPLE_ID).lifecycle).toBeUndefined();
+    expect((await pushed).find((entry) => entry.manifest.id === SAMPLE_ID)?.lifecycle).toBe(
+      "isolate_crashed",
+    );
+    // A disabled row's module is nobody's to fetch.
+    expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+    expect(host.webModule(SAMPLE_ID)).toBeNull();
     fixture.store.close();
   });
 });

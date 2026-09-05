@@ -1,4 +1,7 @@
 import {
+  AssemblyError,
+  ENGINE_INSTALLED_EVENT,
+  ENGINE_UNINSTALLED_EVENT,
   LIFECYCLE_TIMEOUT_MS,
   assembleRoster,
   compareDataVersion,
@@ -14,12 +17,21 @@ import {
   type EmitEvent,
   type LifecycleCtx,
   type PluginDef,
+  type PluginInstallRequest,
+  type PluginInstallResult,
   type PluginMigration,
   type PluginStorage,
   type PluginStorageAdmin,
   type PluginStoredData,
 } from "@manifold/plugin";
-import { formatManifoldUri, TRACE_AUTHORITY_OPEN, TRACE_AUTHORITY_ROOT } from "@manifold/protocol";
+import {
+  CAPS,
+  CORE_NAMESPACE_PREFIX,
+  ENGINE_NAMESPACE_PREFIX,
+  formatManifoldUri,
+  TRACE_AUTHORITY_OPEN,
+  TRACE_AUTHORITY_ROOT,
+} from "@manifold/protocol";
 import type {
   ActionDenialRule,
   ActionOutcome,
@@ -36,6 +48,9 @@ import type {
   ManifoldRef,
   MintShareRequest,
   MintTokenRequest,
+  PluginBundle,
+  PluginInstall,
+  PluginInstallRefusal,
   PluginLifecycleState,
   PluginPurgeResult,
   PluginRefusalReason,
@@ -52,10 +67,29 @@ import { ServiceError } from "./auth.ts";
 import type { AuthContext, AuthService, MachineEnrollment, ServiceErrorCode } from "./auth.ts";
 import type { EventHub } from "./event-hub.ts";
 import type { InstanceDialer } from "./instance-dialer.ts";
+import {
+  IsolateDenial,
+  IsolateLoadError,
+  isolateLifecycleState,
+  type IsolateRunner,
+  type IsolateState,
+} from "./isolate/contract.ts";
 import { redactFields, type Logger } from "./log.ts";
 import type { PlaceExecutor } from "./placement.ts";
+import {
+  InstallRefusal,
+  installArtifact,
+  removeInstall,
+  verifyInstalledBundle,
+  type InstalledArtifact,
+} from "./plugin-installs.ts";
 import type { RoomManager } from "./room.ts";
-import type { MachineRecord, ServerStore, TraceAttribution } from "./stores.ts";
+import type {
+  MachineRecord,
+  PluginInstallRow,
+  ServerStore,
+  TraceAttribution,
+} from "./stores.ts";
 import type { TerminalBroker } from "./terminal-broker.ts";
 
 /**
@@ -208,6 +242,74 @@ function refused(reason: PluginRefusalReason, names?: readonly string[]): Action
   return { refused: `${reason}: ${names.join(", ")}` };
 }
 
+/** An install door's refusal: class first, detail after, the same shape `refused` gives. */
+function installRefused(reason: PluginInstallRefusal, detail: string): ActionRefused {
+  return { refused: `${reason}: ${detail}` };
+}
+
+/**
+ * THE HIGH-RISK SET a default grant never includes (ADR 0016 §5, R4 = option B): root, the
+ * power to mint credentials, and the power to change the roster. A stranger's plugin that
+ * declares them gets them only when an installer names them in `grant`.
+ */
+const UNGRANTED_BY_DEFAULT: Partial<Record<Cap, true>> = {
+  "*": true,
+  "tokens:mint": true,
+  "plugins:manage": true,
+};
+
+/** A cap the manifest's ceiling covers: named, or anything but `*` when `*` is declared. */
+function withinCeiling(cap: Cap, declared: readonly Cap[]): boolean {
+  return declared.includes(cap) || (cap !== "*" && declared.includes("*"));
+}
+
+/**
+ * The capability set an install consents to: the manifest's declaration minus the high-risk
+ * set, widened by whatever the installer named — restricted in both halves to caps that exist
+ * and that the manifest actually declared, because a grant is `granted ∩ declared` at the door
+ * and publishing a cap the plugin could never exercise would misdescribe the row.
+ */
+function grantFor(declared: readonly Cap[], widen: readonly Cap[] | undefined): Cap[] {
+  const granted = new Set<Cap>();
+  for (const cap of declared) {
+    if (CAPS.includes(cap) && UNGRANTED_BY_DEFAULT[cap] !== true) granted.add(cap);
+  }
+  for (const cap of widen ?? []) {
+    if (CAPS.includes(cap) && withinCeiling(cap, declared)) granted.add(cap);
+  }
+  return CAPS.filter((cap) => granted.has(cap));
+}
+
+/**
+ * The roster row of an install whose bundle failed boot verification: NOTHING from the file is
+ * trusted — not its title, not its contributions, not its capability ceiling — so the row is
+ * the id the installer consented to and a description that names the refusal. It composes
+ * doorless, which is the only shape a refused bundle may take on a roster it must still
+ * appear on (a vanished row would hide the failure; R8 wants it seen).
+ */
+function unverifiedDef(pluginId: string, refusal: PluginInstallRefusal): ServerPluginDef {
+  return {
+    manifest: {
+      id: pluginId,
+      version: "unverified",
+      title: pluginId,
+      description: `Installed bundle refused at boot (${refusal}); nothing from it was loaded.`,
+      capabilities: [],
+      contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+    },
+    actions: [],
+    handlers: {},
+  };
+}
+
+/** The worker module's bytes, decoded once at load so the route serves without re-decoding. */
+function webModuleOf(bundle: PluginBundle): Uint8Array | null {
+  const name = bundle.manifest.entry.web;
+  if (name === undefined) return null;
+  const encoded = bundle.files[name];
+  return encoded === undefined ? null : Buffer.from(encoded, "base64");
+}
+
 /**
  * The ONE wording every scope violation gives, exported so a plugin's tests and a client's
  * switch both name it instead of retyping it.
@@ -222,8 +324,38 @@ export interface HostControl {
     changedBy: string,
   ): Promise<ActionRefused | { ok: true }>;
   purge(id: string, purgedBy: string): Promise<ActionRefused | PluginPurgeResult>;
+  install(
+    request: PluginInstallRequest,
+    installedBy: string,
+  ): Promise<ActionRefused | PluginInstallResult>;
+  uninstall(id: string, removedBy: string): Promise<ActionRefused | { ok: true }>;
   roster(): PluginRoster;
   enabled(id: string): boolean;
+}
+
+/**
+ * What the host needs to run INSTALLED plugins (ADR 0016 §8 stage 2): the runner that holds a
+ * child process per plugin, and the data dir the artifacts live under. Absent ≡ this host
+ * admits no bundles — the install door refuses, and a unit test composing first-party defs
+ * never spawns a process.
+ */
+export interface IsolateDeps {
+  readonly runner: IsolateRunner;
+  readonly dataDir: string;
+  /** `MANIFOLD_PLUGIN_DEV_PATHS=1`: path sources anywhere, not only under `plugin-uploads/`. */
+  readonly devPaths?: boolean;
+}
+
+/**
+ * One installed plugin as the host holds it: the row (the installer's consent), the bundle
+ * when the stored file re-hashed to the pin, the decoded web module the route serves, and the
+ * refusal when it did not.
+ */
+interface InstalledPlugin {
+  readonly row: PluginInstallRow;
+  readonly bundle: PluginBundle | null;
+  readonly web: Uint8Array | null;
+  readonly refusal?: PluginInstallRefusal;
 }
 
 /**
@@ -411,6 +543,26 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
         return ctx.host.purge(args.id, ctx.principal.id);
       },
       /**
+       * The two doors onto a stranger's code (ADR 0016 §8 stage 2). Thin on purpose: every
+       * verdict — the artifact, the namespace, the grant, the assembly — is the host's, because
+       * the host owns the roster the install changes, and a door that decided any of it here
+       * would be a second reading of the same rules.
+       */
+      async install(
+        ctx: EngineDoorCtx,
+        args: PluginInstallRequest,
+      ): Promise<ActionRefused | PluginInstallResult> {
+        return ctx.host.install(args, ctx.principal.id);
+      },
+      async uninstall(
+        ctx: EngineDoorCtx,
+        args: { id: string },
+      ): Promise<ActionRefused | Record<string, never>> {
+        const outcome = await ctx.host.uninstall(args.id, ctx.principal.id);
+        if ("refused" in outcome) return outcome;
+        return {};
+      },
+      /**
        * A PREFERENCE, written against the caller's own principal. Two rungs and no more:
        *
        *  1. the declaration must exist, which is the assembly's answer and not the caller's
@@ -548,6 +700,11 @@ function traceTargets(staged: readonly { readonly ref: ManifoldRef }[]): readonl
  * incompatibility, data downgrades, a purge of running code, a builtin row somebody tried
  * to switch off — is state only the handler can see, so all of it lands on the LAST rung as
  * a named `refused` class. The ladder a client learned still holds.
+ *
+ * Isolation (ADR 0016) adds one rung and one half-rung, both for INSTALLED rows only: the
+ * installer's grant is intersected at rung 4 before the caller's caps are, and a child that
+ * is not there to answer is `unavailable`, after `refused` — the runner's rung alone, an
+ * in-realm door never says it.
  */
 export class PluginHost {
   /*
@@ -555,8 +712,18 @@ export class PluginHost {
     and wires nothing that reads storage, so no instance exists that has not assembled.
   */
   private assembled!: Assembly;
-  private readonly defs: readonly ServerPluginDef[];
+  /**
+   * The live definition list: the engine's own rows, the first-party defs the composition root
+   * handed over, then every INSTALLED plugin's def appended after them (ADR 0016 §8 stage 2).
+   * Rebuilt by `syncDefs` whenever an install lands or leaves; the first two parts never move.
+   */
+  private defs: readonly ServerPluginDef[];
+  private readonly firstParty: readonly ServerPluginDef[];
   private readonly handlers = new Map<string, Readonly<Record<string, ActionHandler>>>();
+  /** Installed plugins by id: the row, the verified bundle, and the def the runner produced. */
+  private readonly installed = new Map<string, InstalledPlugin>();
+  private readonly installedDefs = new Map<string, ServerPluginDef>();
+  private readonly isolates: IsolateDeps | null;
   private readonly storages = new Map<string, PluginStorageAdmin>();
   private readonly rosterListeners = new Set<(roster: PluginRoster) => void>();
   private readonly builtins: ReadonlySet<string>;
@@ -590,23 +757,32 @@ export class PluginHost {
     options: {
       readonly lifecycleTimeoutMs?: number;
       readonly distribution?: ReadonlySet<string>;
+      readonly isolates?: IsolateDeps;
     },
   ) {
-    this.defs = [...ENGINE_BUILTIN_DEFS, ...defs];
+    this.firstParty = [...ENGINE_BUILTIN_DEFS, ...defs];
+    this.defs = this.firstParty;
     this.builtins = new Set(ENGINE_BUILTIN_DEFS.map((def) => def.manifest.id));
     this.distribution = options.distribution;
+    this.isolates = options.isolates ?? null;
     this.lifecycleTimeoutMs = options.lifecycleTimeoutMs ?? LIFECYCLE_TIMEOUT_MS;
     for (const def of this.defs) this.handlers.set(def.manifest.id, def.handlers);
   }
 
   /**
-   * THE ONE WAY TO A HOST. Boot, in one pass: assemble, run the migrations assembly found
-   * owing, stamp the declared data version of everything serving, and claim element types
-   * for everything assembled. Awaited because storage is promise-returning (ADR 0016 §4) —
-   * and awaited to completion BEFORE this resolves, which is what keeps process start free
-   * of a lifecycle fan-out (`onEnable` is a TRANSITION hook: at boot everything enabled is
-   * simply live) and keeps the server from answering a request over data a pending
-   * migration has not touched yet: the socket is bound after this returns, never before.
+   * THE ONE WAY TO A HOST. Boot, in one pass: re-verify and load every installed bundle,
+   * assemble, run the migrations assembly found owing, stamp the declared data version of
+   * everything serving, and claim element types for everything assembled. Awaited because
+   * storage is promise-returning (ADR 0016 §4) — and awaited to completion BEFORE this
+   * resolves, which is what keeps process start free of a lifecycle fan-out (`onEnable` is a
+   * TRANSITION hook: at boot everything enabled is simply live) and keeps the server from
+   * answering a request over data a pending migration has not touched yet: the socket is bound
+   * after this returns, never before.
+   *
+   * Installed plugins load BEFORE the first assembly, because their defs are members of it: a
+   * stranger's duplicate action name is an `AssemblyError` at install time (caught and rolled
+   * back there), never at boot, so nothing an install admitted can stop a server from
+   * starting — except by being what it was when it was admitted.
    */
   static async boot(
     defs: readonly ServerPluginDef[],
@@ -623,6 +799,7 @@ export class PluginHost {
     options: {
       readonly lifecycleTimeoutMs?: number;
       readonly distribution?: ReadonlySet<string>;
+      readonly isolates?: IsolateDeps;
     } = {},
   ): Promise<PluginHost> {
     const host = new PluginHost(
@@ -639,6 +816,7 @@ export class PluginHost {
       events,
       options,
     );
+    await host.loadInstalled();
     host.assembled = await host.reassemble();
     const migrated = await host.runPendingMigrations();
     await host.stampDeclaredVersions();
@@ -648,6 +826,116 @@ export class PluginHost {
     }
     if (migrated) host.assembled = await host.reassemble();
     return host;
+  }
+
+  /**
+   * BOOT RE-VERIFICATION (R8, fail-closed). Every install row's bundle is re-hashed against
+   * its pin and re-extracted; one that no longer matches — or cannot be read, or no longer
+   * parses — is put on the roster as a doorless row in `enable_failed` with the refusal on its
+   * `install` block, and NOTHING from the file is loaded. The rest are handed to the runner.
+   */
+  private async loadInstalled(): Promise<void> {
+    if (this.isolates === null) return;
+    for (const row of this.store.pluginInstalls()) {
+      const verdict = verifyInstalledBundle(row);
+      if (!verdict.ok) {
+        this.installed.set(row.pluginId, {
+          row,
+          bundle: null,
+          web: null,
+          refusal: verdict.refusal,
+        });
+        this.installedDefs.set(row.pluginId, unverifiedDef(row.pluginId, verdict.refusal));
+        this.lifecycleStates.set(row.pluginId, "enable_failed");
+        this.logger.warn("plugin_lifecycle", {
+          plugin: row.pluginId,
+          hook: "verify",
+          error: `${verdict.refusal}: ${verdict.detail}`,
+        });
+        continue;
+      }
+      this.installed.set(row.pluginId, {
+        row,
+        bundle: verdict.bundle,
+        web: webModuleOf(verdict.bundle),
+      });
+      try {
+        this.installedDefs.set(row.pluginId, await this.loadIsolated(verdict.bundle, verdict.dir));
+      } catch (error) {
+        // The bundle is what it was when admitted, so the row keeps its real manifest; only
+        // the doors are missing, and the roster says so rather than the boot failing.
+        this.installedDefs.set(row.pluginId, {
+          manifest: verdict.bundle.manifest,
+          actions: [],
+          handlers: {},
+        });
+        this.lifecycleStates.set(row.pluginId, "enable_failed");
+        this.logger.error("plugin_lifecycle", {
+          plugin: row.pluginId,
+          hook: "load",
+          error: error instanceof Error ? error.message : "load failed",
+        });
+      }
+    }
+    this.syncDefs();
+    this.isolates.runner.onState((pluginId, state) => {
+      this.onIsolateState(pluginId, state);
+    });
+  }
+
+  /**
+   * The def an installed bundle serves through. A server half is the runner's: it spawns the
+   * child and reports the doors the child announced. A web-only bundle has no child and no
+   * doors — its def is its manifest, so the row composes and the worker route can find it.
+   */
+  private async loadIsolated(bundle: PluginBundle, dir: string): Promise<ServerPluginDef> {
+    if (this.isolates === null) throw new Error("this host runs no isolates");
+    if (bundle.manifest.entry.server !== true) {
+      return { manifest: bundle.manifest, actions: [], handlers: {} };
+    }
+    const loaded = await this.isolates.runner.load({
+      pluginId: bundle.manifest.id,
+      manifest: bundle.manifest,
+      dir,
+    });
+    return { ...loaded.def, lifecycle: loaded.lifecycle };
+  }
+
+  /** Rebuilds the live def list and the handler index after an install lands or leaves. */
+  private syncDefs(): void {
+    this.defs = [...this.firstParty, ...this.installedDefs.values()];
+    this.handlers.clear();
+    for (const def of this.defs) this.handlers.set(def.manifest.id, def.handlers);
+  }
+
+  /**
+   * THE RUNNER'S STATE, MIRRORED ONTO THE ROSTER (ADR 0016 §6): a child being spawned or one
+   * that crashed past its budget is a lifecycle every principal reads, not a log line. A run
+   * state that maps to no lifecycle clears only an isolate state — a hook's own
+   * `enable_failed` is a different report and stands until the next transition.
+   */
+  private onIsolateState(pluginId: string, state: IsolateState): void {
+    const lifecycle = isolateLifecycleState(state);
+    if (lifecycle !== undefined) {
+      this.lifecycleStates.set(pluginId, lifecycle);
+    } else {
+      const current = this.lifecycleStates.get(pluginId);
+      if (current !== "isolate_starting" && current !== "isolate_crashed") return;
+      this.lifecycleStates.delete(pluginId);
+    }
+    this.reassemble().then(
+      (assembly) => {
+        this.assembled = assembly;
+        this.publish();
+      },
+      (error: unknown) => {
+        this.logger.error("plugin_lifecycle", {
+          plugin: pluginId,
+          hook: "state",
+          error: error instanceof Error ? error.message : "reassembly failed",
+        });
+      },
+    );
   }
 
   /** One composition over the store's current enablement and the facts `env` reads fresh. */
@@ -665,6 +953,17 @@ export class PluginHost {
         applied: await storage.appliedMigrations(),
       });
     }
+    const installs = new Map<string, PluginInstall>();
+    for (const [id, entry] of this.installed) {
+      installs.set(id, {
+        sha256: entry.row.sha256,
+        source: entry.row.source,
+        grantedCaps: [...entry.row.grantedCaps],
+        installedBy: entry.row.installedBy,
+        installedAt: entry.row.installedAt,
+        ...(entry.refusal === undefined ? {} : { refusal: entry.refusal }),
+      });
+    }
     return {
       builtins: this.builtins,
       ...(this.distribution === undefined ? {} : { distribution: this.distribution }),
@@ -672,6 +971,7 @@ export class PluginHost {
       dataState,
       lifecycle: this.lifecycleStates,
       attribution: this.store.pluginAttribution(),
+      installs,
     };
   }
 
@@ -914,6 +1214,216 @@ export class PluginHost {
     };
   }
 
+  /**
+   * THE INSTALL DOOR (ADR 0016 §8 stage 2). In order, and the order is the contract:
+   *
+   *  1. the artifact is read, pinned and parsed, and NOTHING is written until the bundle is
+   *     admitted (`plugin-installs.ts`): a `hash_mismatch` or a refused manifest leaves no
+   *     file behind;
+   *  2. admission is the host's verdict — `namespace_reserved` for `engine.` / `core.`,
+   *     `already_installed` unless `replace`, `still_enabled` for a replace of a running row;
+   *  3. the row is persisted with the grant (`grantFor`: declared minus the high-risk set,
+   *     widened by `grant`), the runner spawns the child, and the assembly is rebuilt with the
+   *     new def. A load failure or an `AssemblyError` (a duplicate id, a colliding action name)
+   *     ROLLS BACK — files, row, child — and answers `artifact_invalid` naming the problem, so
+   *     a stranger's bundle is refused at the door rather than surfacing as a boot that will
+   *     not come up.
+   *
+   * Then the transition is announced exactly as a toggle is: hooks fan out (an install of an
+   * enabled row IS an enable), the roster is published, one log line, one event.
+   */
+  async install(
+    request: PluginInstallRequest,
+    installedBy: string,
+  ): Promise<ActionRefused | PluginInstallResult> {
+    const isolates = this.isolates;
+    if (isolates === null) {
+      return installRefused("artifact_unreadable", "this server admits no bundles");
+    }
+    const sha256 = request.sha256.toLowerCase();
+    let artifact: InstalledArtifact;
+    try {
+      artifact = await installArtifact({
+        source: request.source,
+        sha256,
+        dataDir: isolates.dataDir,
+        ...(isolates.devPaths === undefined ? {} : { devPaths: isolates.devPaths }),
+        admit: (bundle) => {
+          const id = bundle.manifest.id;
+          if (id.startsWith(ENGINE_NAMESPACE_PREFIX) || id.startsWith(CORE_NAMESPACE_PREFIX)) {
+            return new InstallRefusal(
+              "namespace_reserved",
+              `"${id}" claims a namespace only this build may use`,
+            );
+          }
+          const existing = this.installed.get(id);
+          if (existing === undefined) return null;
+          if (request.replace !== true) {
+            return new InstallRefusal(
+              "already_installed",
+              `"${id}" is installed at ${existing.row.sha256}; pass replace to upgrade it`,
+            );
+          }
+          if (this.assembled.enabled(id)) {
+            return new InstallRefusal("still_enabled", `disable "${id}" before replacing it`);
+          }
+          return null;
+        },
+      });
+    } catch (error) {
+      if (error instanceof InstallRefusal) return { refused: error.message };
+      throw error;
+    }
+    const { bundle } = artifact;
+    const id = bundle.manifest.id;
+    const previous = this.installed.get(id);
+    const previousDef = this.installedDefs.get(id);
+    const row: PluginInstallRow = {
+      pluginId: id,
+      sha256,
+      source: request.source,
+      grantedCaps: grantFor(bundle.manifest.capabilities, request.grant),
+      installedBy,
+      installedAt: this.runtime.now(),
+      bundlePath: artifact.bundlePath,
+    };
+    const wasEnabled = new Set(
+      this.assembled.roster.filter((entry) => entry.enabled).map((entry) => entry.manifest.id),
+    );
+    // A replace retires the running child first: two children for one id is two doors.
+    if (previous !== undefined) await isolates.runner.unload(id);
+    this.store.putPluginInstall(row);
+    this.installed.set(id, { row, bundle, web: webModuleOf(bundle) });
+    this.lifecycleStates.delete(id);
+    try {
+      this.installedDefs.set(id, await this.loadIsolated(bundle, artifact.dir));
+      this.syncDefs();
+      this.assembled = await this.reassemble();
+    } catch (error) {
+      await this.rollbackInstall(id, artifact, previous, previousDef);
+      if (error instanceof IsolateLoadError) return installRefused("artifact_invalid", error.message);
+      if (error instanceof AssemblyError) {
+        return installRefused("artifact_invalid", error.problems.join("; "));
+      }
+      throw error;
+    }
+    if (previous !== undefined && previous.row.sha256 !== sha256) removeInstall(previous.row);
+    const types = bundle.manifest.contributes.elements.map((element) => element.type);
+    if (types.length > 0) this.store.claimElementTypes(id, types);
+    await this.stampDeclaredVersions();
+    const delta: AssemblyDelta = {
+      enabled: this.assembled.enabled(id) && !wasEnabled.has(id) ? [id] : [],
+      disabled: [],
+    };
+    if (delta.enabled.length > 0) await this.fanOut(delta, wasEnabled);
+    this.publish();
+    this.logger.info("plugin_installed", {
+      plugin: id,
+      version: bundle.manifest.version,
+      sha256,
+      principal: installedBy,
+      caps: row.grantedCaps,
+      replaced: previous !== undefined,
+    });
+    // The commit point, on the engine's own node, for the reason `setEnabled` gives.
+    this.events.emit(
+      enginePluginsManifest.id,
+      { kind: "plugin", pluginId: enginePluginsManifest.id },
+      ENGINE_INSTALLED_EVENT,
+      installedBy,
+      { plugin: id, version: bundle.manifest.version, sha256 },
+    );
+    return { id, version: bundle.manifest.version, grantedCaps: [...row.grantedCaps] };
+  }
+
+  /**
+   * Undoes everything `install` did before the failure: the child, the files of THIS artifact
+   * (never a replaced install's, which are still the row of record), and the row — restored to
+   * the previous install when this was a replace, deleted when it was not.
+   */
+  private async rollbackInstall(
+    id: string,
+    artifact: InstalledArtifact,
+    previous: InstalledPlugin | undefined,
+    previousDef: ServerPluginDef | undefined,
+  ): Promise<void> {
+    if (this.isolates !== null) {
+      try {
+        await this.isolates.runner.unload(id);
+      } catch (error) {
+        this.logger.error("plugin_lifecycle", {
+          plugin: id,
+          hook: "unload",
+          error: error instanceof Error ? error.message : "unload failed",
+        });
+      }
+    }
+    if (previous === undefined || previous.row.sha256 !== artifact.sha256) {
+      removeInstall(artifact);
+    }
+    if (previous === undefined || previousDef === undefined) {
+      this.store.deletePluginInstall(id);
+      this.installed.delete(id);
+      this.installedDefs.delete(id);
+    } else {
+      this.store.putPluginInstall(previous.row);
+      this.installed.set(id, previous);
+      this.installedDefs.set(id, previousDef);
+    }
+    this.syncDefs();
+  }
+
+  /**
+   * THE UNINSTALL DOOR. Refused unless the row is off (`still_enabled`, the rule `purge` has
+   * and for the same reason: removing running code is not a state anybody asked for). It
+   * retires the child, deletes the files and the row, and reassembles. The plugin's storage
+   * is NOT touched — an uninstall is a disable that also forgets the code, and destruction is
+   * `purge`, a different verb that a reinstall of the same id will find its data waiting for.
+   */
+  async uninstall(id: string, removedBy: string): Promise<ActionRefused | { ok: true }> {
+    const entry = this.installed.get(id);
+    if (entry === undefined || this.isolates === null) {
+      return installRefused("not_installed", `"${id}" was not installed here`);
+    }
+    if (this.assembled.enabled(id)) {
+      return installRefused("still_enabled", `disable "${id}" before uninstalling it`);
+    }
+    await this.isolates.runner.unload(id);
+    removeInstall(entry.row);
+    this.store.deletePluginInstall(id);
+    this.installed.delete(id);
+    this.installedDefs.delete(id);
+    this.lifecycleStates.delete(id);
+    this.syncDefs();
+    this.assembled = await this.reassemble();
+    this.publish();
+    this.logger.info("plugin_uninstalled", {
+      plugin: id,
+      sha256: entry.row.sha256,
+      principal: removedBy,
+    });
+    this.events.emit(
+      enginePluginsManifest.id,
+      { kind: "plugin", pluginId: enginePluginsManifest.id },
+      ENGINE_UNINSTALLED_EVENT,
+      removedBy,
+      { plugin: id, sha256: entry.row.sha256 },
+    );
+    return { ok: true };
+  }
+
+  /**
+   * The worker module `GET /api/plugins/:id/web.js` serves: the bytes of `files[entry.web]`
+   * for an installed, verified, ENABLED plugin, with the pin the response tags them with.
+   * Null for everything else, which the route answers as 404 — a disabled plugin's code is not
+   * fetched by anyone, and a refused bundle's never is.
+   */
+  webModule(id: string): { readonly sha256: string; readonly bytes: Uint8Array } | null {
+    const entry = this.installed.get(id);
+    if (entry === undefined || entry.web === null || !this.assembled.enabled(id)) return null;
+    return { sha256: entry.row.sha256, bytes: entry.web };
+  }
+
   private lifecycleCtx(pluginId: string): LifecycleCtx {
     return {
       pluginId,
@@ -1114,6 +1624,20 @@ export class PluginHost {
     if (auth.containerScope !== null && scope !== "container") {
       return refuse("forbidden", "scoped tokens cannot invoke workspace actions");
     }
+    /*
+      RUNG 4, FIRST HALF — THE INSTALLER'S GRANT (ADR 0016 §5). For a row somebody installed,
+      the plugin's effective caps are `granted ∩ declared`, and the intersection is asked
+      BEFORE the caller's own caps so the refusal names the plugin's grant: a caller holding
+      the cap is still refused when the installer withheld it, and the message says which. A
+      first-party row has no grant and skips this half unchanged.
+    */
+    const install = this.installed.get(pluginId);
+    if (install !== undefined) {
+      for (const cap of entry.def.caps) {
+        if (withinCeiling(cap, install.row.grantedCaps)) continue;
+        return refuse("forbidden", `${cap} not granted to plugin ${pluginId}`);
+      }
+    }
     for (const cap of entry.def.caps) {
       const held =
         cap === "*"
@@ -1224,6 +1748,17 @@ export class PluginHost {
     try {
       produced = await invoke(ctx, parsed.data);
     } catch (error) {
+      if (error instanceof IsolateDenial) {
+        /*
+          THE CHILD'S OWN RUNGS (ADR 0016 §6). An isolated handler grades `invalid_args`
+          itself — its zod schema lives where its code lives — and the supervisor answers
+          `unavailable` for a child that is not running or did not answer in time. Both arrive
+          as a throw from the proxy and are settled here as the rung they name, traced exactly
+          as an in-realm rung is; they are answers, never failures.
+        */
+        this.store.settleTrace(traceId, error.rule, traceTargets(staged));
+        return { ok: false, denial: { rule: error.rule, message: error.message } };
+      }
       // A broken door is still an exercise of authority: somebody opened it and it failed
       // half-way. The row settles `failed` and the throw continues to `dispatch`, which logs
       // it with the same word.

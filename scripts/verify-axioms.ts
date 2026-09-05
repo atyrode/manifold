@@ -926,6 +926,7 @@ const ROUTE_ALLOWLIST: readonly string[] = [
   "/api/settings",
   "/api/attendance",
   "/api/plugins",
+  "/api/plugins/:id/web.js",
   "/api/protocol",
   "/api/resolve",
   "/healthz",
@@ -966,6 +967,8 @@ const ROUTE_ALLOWLIST: readonly string[] = [
         .replace(/^\^/, "")
         .replace(/\$$/, "")
         .replace(/\\\//g, "/")
+        // `/api/plugins/:id/web.js` escapes its dot; the allowlist reads the route, not the regex.
+        .replace(/\\\./g, ".")
         .replace(/\(\[\^\/\]\+\)/g, ":id"),
     );
   });

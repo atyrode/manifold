@@ -285,6 +285,30 @@ export class HttpApp {
       return jsonResponse(PluginsResponseSchema.parse({ plugins: this.plugins.roster() }));
     }
 
+    /*
+      THE WORKER MODULE of an installed plugin (ADR 0016 §8 stage 2): the web half a
+      dedicated Worker runs, served from the VERIFIED bundle the host holds in memory rather
+      than from disk, so what a browser executes is exactly what re-hashed to the pin at boot.
+      Same authority as the roster read above, for the same reason: the code is vocabulary
+      once it is on the roster, and a scoped viewer still has to draw the panel. `no-store`
+      because an upgrade is a new hash under the same URL, and the ETag IS that hash.
+    */
+    const webModuleMatch = /^\/api\/plugins\/([^/]+)\/web\.js$/.exec(pathname);
+    if (webModuleMatch !== null && request.method === "GET") {
+      const id = decodePathSegment(webModuleMatch[1], "plugin id");
+      const context = this.authenticate(request);
+      this.requireCap(context, "containers:read");
+      const module = this.plugins.webModule(id);
+      if (module === null) throw new RequestError("not_found", "no installed web module");
+      return new Response(module.bytes, {
+        headers: {
+          "content-type": "text/javascript; charset=utf-8",
+          "cache-control": "no-store",
+          etag: `"${module.sha256}"`,
+        },
+      });
+    }
+
     if (request.method === "GET" && pathname === "/api/layout") {
       // Self-scoped by construction: a workspace tree belongs to one principal, so the door
       // takes no id and answers the caller's own — the default until they write one.
