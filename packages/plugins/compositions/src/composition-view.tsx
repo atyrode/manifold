@@ -63,6 +63,7 @@ import {
   useProjection,
   useRemoteCursors,
   useRemoteGestures,
+  useRoomPipeRegistration,
   useTerminalFacet,
   useTileDrop,
   useContainerRoute,
@@ -177,9 +178,16 @@ export function CompositionView({
   const terminals = useTerminalFacet();
   /** Stable per roster change, which is exactly when a placement answer may move. */
   const roster = host.assembly.roster();
+  /*
+    THIS ROOM'S OCCUPANT PIPE (A4): the composition dials the room it renders with the host's
+    grant. Its terminals are born on this channel and typed into through it, so it is also
+    what a panel's `host.client` terminal verbs ride once it is published below (issue #196).
+  */
   const [client] = useState(
     () => new SessionClient({ url: sessionUrl(), containerId, token: host.token }),
   );
+  const registerRoomPipe = useRoomPipeRegistration();
+  useEffect(() => registerRoomPipe(containerId, client), [registerRoomPipe, containerId, client]);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [layout, setLayout] = useState<TileLayout | null>(null);
   const [machines, setMachines] = useState<readonly MachineSummary[] | null>(null);

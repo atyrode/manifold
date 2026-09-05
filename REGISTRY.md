@@ -137,6 +137,7 @@ must never be taught one.
         "packages/web/src/main.tsx",
         "packages/web/src/app.tsx",
         "packages/web/src/plugin-host.tsx",
+        "packages/web/src/room-pipes.ts",
         "packages/web/src/assembly.ts",
         "packages/web/src/api.ts",
         "packages/web/src/error-boundary.tsx",
@@ -327,6 +328,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/web/src/plugin-host.tsx",
       "why": "the registry, web half: AssemblyProvider, PanelOutlet and its placeholder, HostServices"
+    },
+    {
+      "glob": "packages/web/src/room-pipes.ts",
+      "why": "the occupant room pipes the mounted container renderers publish, by container, and the SessionHandle the host hands plugin code: every read on the host's watching client, every terminal mutation routed through the pipe of the room that owns it (issue #196)"
     },
     {
       "glob": "packages/web/src/assembly.ts",
