@@ -180,6 +180,16 @@ interface MachineRow {
   last_seen: number;
 }
 
+interface PluginInstallDbRow {
+  plugin_id: string;
+  sha256: string;
+  source: string;
+  granted_caps: string;
+  installed_by: string;
+  installed_at: number;
+  bundle_path: string;
+}
+
 interface MachineAuthRow extends MachineRow {
   hash: string;
   principal_id: string;
@@ -306,6 +316,23 @@ export interface MachineRecord {
 export interface MachineAuthRecord extends MachineRecord {
   tokenPrincipalId: string;
   revokedAt: number | null;
+}
+
+/**
+ * One INSTALLED plugin (ADR 0016 §8 stage 2): the artifact a root principal pinned by hash,
+ * where they said it came from, the capability set they granted, and where the bytes landed.
+ * The manifest is NOT here — it is read from `bundlePath` after the file re-hashes to
+ * `sha256`, so nothing about a stranger's plugin is ever described from a copy the engine
+ * would then have to trust (R8, fail-closed).
+ */
+export interface PluginInstallRow {
+  readonly pluginId: string;
+  readonly sha256: string;
+  readonly source: string;
+  readonly grantedCaps: readonly Cap[];
+  readonly installedBy: string;
+  readonly installedAt: number;
+  readonly bundlePath: string;
 }
 
 /**
@@ -584,6 +611,21 @@ function toMachine(row: MachineRow): MachineRecord {
   return { id: row.id, name: row.name, tokenId: row.token_id, lastSeen: row.last_seen };
 }
 
+function toPluginInstall(row: PluginInstallDbRow): PluginInstallRow {
+  return {
+    pluginId: row.plugin_id,
+    sha256: row.sha256,
+    source: row.source,
+    grantedCaps: parseCaps(row.granted_caps),
+    installedBy: row.installed_by,
+    installedAt: row.installed_at,
+    bundlePath: row.bundle_path,
+  };
+}
+
+const PLUGIN_INSTALL_SELECT = `SELECT plugin_id, sha256, source, granted_caps, installed_by,
+   installed_at, bundle_path FROM plugin_installs`;
+
 /**
  * A container row is the whole object: `discipline` names which renderer it asks for.
  * There is no lifecycle flag beside it any more — nothing dissolves under anybody, so
@@ -834,6 +876,44 @@ export class ServerStore {
         return removed ?? 0;
       },
     };
+  }
+
+  /** Every installed plugin, in a stable order: what the host re-verifies and loads at boot. */
+  pluginInstalls(): PluginInstallRow[] {
+    return this.db
+      .query<PluginInstallDbRow, []>(`${PLUGIN_INSTALL_SELECT} ORDER BY plugin_id`)
+      .all()
+      .map(toPluginInstall);
+  }
+
+  /**
+   * Records an install, or REPLACES one: an upgrade is the same id at a new hash, and the row is
+   * that id's one description, so it is written whole rather than patched column by column.
+   */
+  putPluginInstall(row: PluginInstallRow): void {
+    this.db
+      .query<void, [string, string, string, string, string, number, string]>(
+        `INSERT OR REPLACE INTO plugin_installs(
+           plugin_id, sha256, source, granted_caps, installed_by, installed_at, bundle_path
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        row.pluginId,
+        row.sha256,
+        row.source,
+        JSON.stringify(row.grantedCaps),
+        row.installedBy,
+        row.installedAt,
+        row.bundlePath,
+      );
+  }
+
+  /** Forgets an install. The plugin's storage namespace is untouched: that is `purge`'s. */
+  deletePluginInstall(pluginId: string): boolean {
+    return (
+      this.db.query<void, [string]>("DELETE FROM plugin_installs WHERE plugin_id = ?").run(pluginId)
+        .changes > 0
+    );
   }
 
   /**
