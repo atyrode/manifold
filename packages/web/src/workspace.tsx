@@ -84,7 +84,6 @@ import { WEB_CHANGELOG, WEB_VERSION_LABEL } from "./web-version.ts";
  * sections, the drawing tool, the terminal actions — is a plugin.
  */
 
-
 /**
  * The FALLBACK cadence of the workspace index (ADR 0012, wave 2).
  *
@@ -180,7 +179,6 @@ export function WorkspaceHost({
     },
     [host.client, notify],
   );
-
 
   const applyLayout = useCallback(
     (next: TileLayout, commit: boolean): void => {
