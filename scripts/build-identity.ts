@@ -71,7 +71,9 @@ export function deriveBuildIdentity(repositoryRoot: string = REPOSITORY_ROOT): B
   const released = distance === "0" && dirty === undefined;
   return {
     version,
-    build: released ? version : `${version}+${distance}.g${sha}${dirty === undefined ? "" : ".dirty"}`,
+    build: released
+      ? version
+      : `${version}+${distance}.g${sha}${dirty === undefined ? "" : ".dirty"}`,
     channel: released ? "release" : "development",
   };
 }

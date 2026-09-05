@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { WEB_BUILD, WEB_CHANGELOG, WEB_CHANNEL, WEB_VERSION, WEB_VERSION_LABEL } from "./web-version.ts";
+import {
+  WEB_BUILD,
+  WEB_CHANGELOG,
+  WEB_CHANNEL,
+  WEB_VERSION,
+  WEB_VERSION_LABEL,
+} from "./web-version.ts";
 
 describe("web version metadata", () => {
   test("the displayed label is the build, and a development build says so", () => {

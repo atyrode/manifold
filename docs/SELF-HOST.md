@@ -323,11 +323,11 @@ are looking at.
 **Build.** Every build — the server, the web bundle, a container — carries the same three-word
 identity, derived once by `scripts/build-identity.ts` from `git describe --tags --match 'v*'`:
 
-| field     | meaning                                                                                                             |
-| --------- | ------------------------------------------------------------------------------------------------------------------- |
-| `version` | the last release tag reachable from the built commit, without its `v` (`0.6.2`)                                     |
+| field     | meaning                                                                                                                                        |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version` | the last release tag reachable from the built commit, without its `v` (`0.6.2`)                                                                |
 | `build`   | `version` when the commit IS that tag; `<version>+<distance>.g<sha7>` past it (`0.6.2+21.gb7a07fe`); `.dirty` appended for uncommitted changes |
-| `channel` | `release` when `build` equals `version`, `development` otherwise                                                    |
+| `channel` | `release` when `build` equals `version`, `development` otherwise                                                                               |
 
 A container ships no `.git`, so it is told: the Dockerfile ARGs `MANIFOLD_VERSION`,
 `MANIFOLD_BUILD` and `MANIFOLD_CHANNEL` become the runtime environment the server reads and the
