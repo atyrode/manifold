@@ -10,3 +10,6 @@ data/
 coverage/
 *.tsbuildinfo
 .types/
+
+# Generated at build from CHANGELOG.md and changes/*.md (scripts/generate-web-changelog.ts).
+packages/web/src/generated-changelog.ts

@@ -102,6 +102,14 @@ async function runLimited(
 }
 
 try {
+  // The in-app history is untracked and generated from CHANGELOG.md + changes/*.md: the web
+  // typecheck and the shared bundle both import it, so it is produced before either starts.
+  const generated = await run("changelog:generate", ["bun", "scripts/generate-web-changelog.ts"]);
+  if (!generated.ok) {
+    console.log("\ngate: RED\n - changelog:generate");
+    process.exit(1);
+  }
+
   const build = run(
     "build:web (shared dist)",
     ["bunx", "vite", "build", "--outDir", sharedDist, "--emptyOutDir"],
