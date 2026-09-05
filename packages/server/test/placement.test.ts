@@ -75,7 +75,7 @@ const temporaryDirectories: string[] = [];
 class FakeMachine implements MachineChannel {
   readonly sent: ServerToAgentMessage[] = [];
   readonly protocolVersion = PROTOCOL_VERSION;
-
+  readonly terminalHostId: string | null = null;
   constructor(readonly machineId: string) {}
 
   send(message: ServerToAgentMessage): boolean {

@@ -116,7 +116,7 @@ must never be taught one.
         "packages/agent/src/**"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the pipes: channel multiplexing and connection-level frames, machine enrolment and version negotiation, instance dialling in BOTH directions (the host gateway and the outbound dialer share the machine channel's one liveness discipline), the PTY broker's attach state machine and no-gap invariant, and the structured log that discharges the self-description obligation. Bytes are floor, POLICY is a plugin (ADR 0013 §14) — the transport moves bytes and stops knowing why.",
+      "verdict": "the pipes: channel multiplexing and connection-level frames, machine enrolment and version negotiation, instance dialling in BOTH directions (the host gateway and the outbound dialer share the machine channel's one liveness discipline), the PTY broker's attach state machine and no-gap invariant, terminal-host ownership and its private IPC seam with the replaceable transport, continuity admission and drain-latch enforcement, and the structured log that discharges the self-description obligation. Bytes are floor, POLICY is a plugin (ADR 0013 §14) — core.machines owns the drain action; the transport moves bytes and stops knowing why.",
       "adr": "docs/decisions/0013-plugin-behavioral-contract.md"
     },
     {
@@ -226,7 +226,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/agent/src/**",
-      "why": "the PTY plane's far end: the daemon that owns terminals, dials in, and survives server restarts"
+      "why": "the PTY plane's far end: the terminal host owns terminals and a separate replaceable transport dials in over its private IPC seam; both survive server restarts"
     },
     {
       "glob": "packages/server/src/main.ts",
@@ -314,7 +314,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/agent-spawn.ts",
-      "why": "the PTY plane's bootstrap: local agent lifecycle and token custody"
+      "why": "the PTY plane's bootstrap: independent local terminal-host and transport lifecycles, pidfile claims, private socket and token custody"
     },
     {
       "glob": "packages/server/src/migrate-solo.ts",
@@ -448,7 +448,7 @@ work list rather than a ledger of debt: every row lands in this change.
 | notes/text element renderer + its inline editor                          | `core.notes`                | moved; the text TOOL is canvas chrome (next row)                        |
 | canvas renderer, portal internals, canvas toolbar, viewport              | `core.canvas`               | moved; decomposed `core.shell.container-view`; absorbed stroke geometry |
 | composition-route internals, tile drop gestures, carry previews          | `core.compositions`         | decomposes `core.shell.container-view`                                  |
-| machine enrollment + machine presentation helpers                        | `core.machines`             | enrollment and inventory become actions; color moves to the wire        |
+| machine enrollment, admission administration + presentation helpers      | `core.machines`             | enrollment, inventory and drain are actions; color lives on the wire    |
 | container/folder CRUD, index moves, and the index reads (bespoke routes) | `core.index` actions        | routes deleted, callers migrated (D13); reads keep container scope      |
 | terminal pool/park rows, the terminal index, terminal rows               | `core.terminals` completion | policy is the plugin's, bytes stay floor (ADR 0013 §14)                 |
 | token and principal administration routes                                | `core.access`               | identity mechanism stays floor; administration converts now             |
@@ -1182,7 +1182,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "machine",
-      "means": "one enrolled host running an agent daemon that owns PTYs",
+      "means": "one enrolled host whose terminal host owns PTYs and whose separate agent transport dials the hub; a legacy agent combines these lifetimes",
       "banned": [],
       "allow": []
     },

@@ -248,7 +248,10 @@ async function probeHost(base: Fixture): Promise<PluginHost> {
       assemblyPlacementVocabulary(() => []),
       assemblyItemNouns(() => []),
     ),
-    { isOnline: () => false },
+    {
+      isOnline: () => false,
+      drain: () => Promise.resolve({ ok: false, reason: "fixture has no terminal owner" }),
+    },
     new InstanceDialer(base.store, base.runtime, silentLogger, () => TEST_ORIGIN),
     base.runtime,
     silentLogger,

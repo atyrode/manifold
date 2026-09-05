@@ -65,7 +65,10 @@ async function fixture(options: { readonly online?: ReadonlySet<string> } = {}):
     auth,
     owner: auth.authenticate(OWNER_KEY),
     host: await testPluginHost(store, auth, rooms, broker, runtime, {
-      machines: { isOnline: (machineId) => online.has(machineId) },
+      machines: {
+        isOnline: (machineId) => online.has(machineId),
+        drain: () => Promise.resolve({ ok: false, reason: "fixture has no terminal owner" }),
+      },
     }),
     runtime,
     fenced,

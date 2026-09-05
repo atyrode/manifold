@@ -1130,6 +1130,7 @@ describe("migration 18: an install row's published doors", () => {
       seed.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER);
+CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER);
 CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INTEGER NOT NULL,
   ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
   PRIMARY KEY (container_id, epoch, rev));
@@ -1172,6 +1173,7 @@ CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INT
   ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
   PRIMARY KEY (container_id, epoch, rev));
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER);
 INSERT INTO meta(key, value) VALUES ('schema_version', '18');
 `);
   const doc = createSceneDoc();
@@ -1360,12 +1362,16 @@ describe("migration 19: contributed element refs", () => {
           expect(after).toBe(before.value);
         }
       }
-      expect(getMeta.get("schema_version")?.value).toBe("19");
+      expect(getMeta.get("schema_version")?.value).toBe(String(SCHEMA_VERSION));
       const upgradedMetadata = db
         .query<{ key: string; value: string }, []>("SELECT key, value FROM meta ORDER BY key")
         .all();
       // A direct retry must be a no-op even when the converted bytes are already present.
+      // Rewinding past 19 also rewinds 20's two columns: `ADD COLUMN` is not re-runnable, and
+      // the retry under test is 19's, not a duplicate-column failure of its successor.
       db.exec("UPDATE meta SET value = '18' WHERE key = 'schema_version'");
+      db.exec("ALTER TABLE machines DROP COLUMN owner_host_id");
+      db.exec("ALTER TABLE machines DROP COLUMN draining");
       db.close();
       const backup = new Database(`${path}.pre-v19.bak`, { strict: true });
       expect(
@@ -1516,7 +1522,7 @@ BEGIN SELECT RAISE(ABORT, 'fixture layout write failure'); END;
       });
       recoveredDoc.destroy();
       retried.close();
-      expect(snapshotVersion(path)).toBe("19");
+      expect(snapshotVersion(path)).toBe(String(SCHEMA_VERSION));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -1,28 +1,69 @@
 import { expect, test } from "bun:test";
 import { AgentMessageSchema, type AgentMessage } from "@manifold/protocol";
-import { Agent, MAX_SOCKET_BUFFERED_AMOUNT_BYTES } from "../src/agent.ts";
+import {
+  Agent,
+  MAX_SOCKET_BUFFERED_AMOUNT_BYTES,
+  TERMINAL_HOST_LOST_CLOSE_CODE,
+} from "../src/agent.ts";
+import { TerminalHost } from "../src/terminal-host.ts";
+import type { TerminalHostDialer } from "../src/terminal-host-link.ts";
 import { PtyTerminal } from "../src/terminal.ts";
 
 /**
- * End-to-end machine-channel handshake against an in-process Bun.serve fake server. The
- * server drives the choreography (welcome → create → input → snapshot_request → drop) and the
- * test observes each milestone via resolvers — no fixed delays. It proves: the hello/welcome
- * handshake, PTY create + live output streaming, snapshot replies, and reconnect that
- * re-advertises the still-alive survivor with its seq watermark (server-restart adoption).
+ * The transport half of a machine, driven against a REAL {@link TerminalHost} through an
+ * in-memory seam (no socket, no second process) and against either an in-process Bun.serve
+ * fake hub or a scripted websocket. Each case proves a contract of the split (issue #278):
+ * what the transport advertises is the host's inventory, a transport that dies ends nothing,
+ * one seat at a time, the admission latch, and the hub socket following the seat.
  */
 
 const BASH = Bun.which("bash") ?? "/bin/sh";
 
-/** Reaches the concrete live terminal so this race test can control xterm's write queue. */
-function terminalForTest(agent: Agent, terminalId: string): PtyTerminal {
-  const target: unknown = agent;
+/** Pairs an agent with a host as a Unix socket would, one microtask of latency each way. */
+function inMemoryDialer(host: TerminalHost): TerminalHostDialer {
+  return (handlers) => {
+    let closed = false;
+    const session = host.open({
+      write(event) {
+        const copy: unknown = JSON.parse(JSON.stringify(event));
+        queueMicrotask(() => {
+          if (!closed) handlers.onEvent(copy as typeof event);
+        });
+        return true;
+      },
+      close() {
+        if (closed) return;
+        closed = true;
+        queueMicrotask(() => handlers.onClose("closed_by_host"));
+      },
+    });
+    return Promise.resolve({
+      send(command) {
+        const copy: unknown = JSON.parse(JSON.stringify(command));
+        queueMicrotask(() => {
+          if (!closed) session.deliver(copy);
+        });
+      },
+      close() {
+        if (closed) return;
+        closed = true;
+        session.detach();
+        handlers.onClose("closed_by_transport");
+      },
+    });
+  };
+}
+
+/** Reaches the concrete live terminal so a race test can control xterm's write queue. */
+function terminalForTest(host: TerminalHost, terminalId: string): PtyTerminal {
+  const target: unknown = host;
   if (
     typeof target !== "object" ||
     target === null ||
     !("terminals" in target) ||
     !(target.terminals instanceof Map)
   ) {
-    throw new Error("Agent terminal registry is unavailable");
+    throw new Error("TerminalHost terminal registry is unavailable");
   }
   const terminal: unknown = target.terminals.get(terminalId);
   if (!(terminal instanceof PtyTerminal)) throw new Error(`missing test terminal ${terminalId}`);
@@ -44,7 +85,7 @@ function injectPtyOutput(terminal: PtyTerminal, data: string): void {
 }
 
 test("handshake, create, stream, snapshot, then reconnect re-advertises the survivor", async () => {
-  const hellos: AgentMessage[] = [];
+  const hellos: Extract<AgentMessage, { type: "hello" }>[] = [];
   let outputText = "";
   let maxStreamedSeq = 0;
   let snapshotRequested = false;
@@ -52,7 +93,7 @@ test("handshake, create, stream, snapshot, then reconnect re-advertises the surv
   const createdSeen = Promise.withResolvers<void>();
   const outputSeen = Promise.withResolvers<void>();
   const snapshotSeen = Promise.withResolvers<{ seq: number; data: string }>();
-  const secondHelloSeen = Promise.withResolvers<AgentMessage>();
+  const secondHelloSeen = Promise.withResolvers<Extract<AgentMessage, { type: "hello" }>>();
 
   const server = Bun.serve({
     port: 0,
@@ -116,21 +157,23 @@ test("handshake, create, stream, snapshot, then reconnect re-advertises the surv
     },
   });
 
+  const host = new TerminalHost({ shellCommand: [BASH, "--norc", "-i"] });
   const agent = new Agent({
     serverUrl: `http://localhost:${server.port}`,
     machineToken: "machine-token",
     machineName: "test-machine",
     backoff: { baseMs: 20, capMs: 200 },
-    shellCommand: [BASH, "--norc", "-i"],
+    dialTerminalHost: inMemoryDialer(host),
   });
 
   try {
     await agent.connect(); // resolves on the first welcome
     expect(agent.id).toBe("machine-1");
     expect(agent.serverEpoch).toBe("epoch-1");
+    expect(hellos[0]?.terminalHostId).toBe(host.terminalHostId);
 
     await createdSeen.promise;
-    expect(agent.terminalCount).toBe(1);
+    expect(host.terminalCount).toBe(1);
 
     await outputSeen.promise;
 
@@ -143,7 +186,6 @@ test("handshake, create, stream, snapshot, then reconnect re-advertises the surv
 
     // The server dropped the socket after the snapshot; the agent reconnects and re-hellos.
     const secondHello = await secondHelloSeen.promise;
-    if (secondHello.type !== "hello") throw new Error("expected a hello frame");
     expect(hellos.length).toBe(2);
 
     const survivor = secondHello.terminals.find((s) => s.terminalId === "sess-1");
@@ -156,6 +198,7 @@ test("handshake, create, stream, snapshot, then reconnect re-advertises the surv
     expect(survivor?.seq ?? 0).toBeGreaterThanOrEqual(maxStreamedSeq);
   } finally {
     await agent.shutdown();
+    await host.shutdown();
     server.stop(true);
   }
 }, 20000);
@@ -227,21 +270,24 @@ test("abandoning an in-flight snapshot on PTY disposal sends no frame or rejecti
     },
   });
 
-  const agent = new Agent({
-    serverUrl: `http://localhost:${server.port}`,
-    machineToken: "machine-token",
-    machineName: "test-machine",
-    backoff: { baseMs: 20, capMs: 200 },
+  const host = new TerminalHost({
     shellCommand: [BASH, "--norc", "-i"],
     sink(record) {
       if (record.evt === "snapshot_abandoned") snapshotOutcome.resolve("abandoned");
     },
   });
+  const agent = new Agent({
+    serverUrl: `http://localhost:${server.port}`,
+    machineToken: "machine-token",
+    machineName: "test-machine",
+    backoff: { baseMs: 20, capMs: 200 },
+    dialTerminalHost: inMemoryDialer(host),
+  });
 
   try {
     await agent.connect();
     await createdSeen.promise;
-    const terminal = terminalForTest(agent, "dispose-race");
+    const terminal = terminalForTest(host, "dispose-race");
     const originalSnapshot = terminal.snapshot.bind(terminal);
     terminal.snapshot = () => {
       const pending = originalSnapshot();
@@ -250,7 +296,7 @@ test("abandoning an in-flight snapshot on PTY disposal sends no frame or rejecti
     };
 
     // Keep xterm parsing while the request queues its drain marker, then dispose only after
-    // snapshot() has actually returned its pending promise to Agent.onSnapshotRequest.
+    // snapshot() has actually returned its pending promise to the host's request handler.
     const row = `${"x".repeat(79)}\r\n`;
     injectPtyOutput(terminal, row.repeat(500));
     const sendServerFrame = await sendToAgentReady.promise;
@@ -266,12 +312,12 @@ test("abandoning an in-flight snapshot on PTY disposal sends no frame or rejecti
     // unhandled rejection that terminates Bun's process.
     sendServerFrame(JSON.stringify({ type: "ping" }));
     await pongSeen.promise;
-    expect(agent.terminalCount).toBe(0);
     expect(stderrMessages).toEqual([]);
   } finally {
     console.warn = originalWarn;
     console.error = originalError;
     await agent.shutdown();
+    await host.shutdown();
     server.stop(true);
   }
 }, 20000);
@@ -324,11 +370,31 @@ class ScriptedSocket {
   }
 }
 
+/** A hub that welcomes every hello on a scripted socket; `sockets` records each dial. */
+function scriptedHub(
+  sockets: ScriptedSocket[],
+  onSend?: (socket: ScriptedSocket, msg: AgentMessage) => void,
+) {
+  return (): WebSocket => {
+    const socket = new ScriptedSocket();
+    socket.onSend = (msg) => {
+      if (msg.type === "hello") {
+        socket.receive({ type: "welcome", machineId: "m-1", serverEpoch: `e-${sockets.length}` });
+      }
+      onSend?.(socket, msg);
+    };
+    sockets.push(socket);
+    queueMicrotask(() => socket.open());
+    return socket.asWebSocket();
+  };
+}
+
 test("phantom transport: silence past the liveness deadline forces close and re-dial", async () => {
   const sockets: ScriptedSocket[] = [];
   const secondDial = Promise.withResolvers<ScriptedSocket>();
   const records: Array<{ evt: string; [k: string]: unknown }> = [];
   const livenessFired = Promise.withResolvers<void>();
+  const host = new TerminalHost();
 
   const agent = new Agent({
     serverUrl: "http://fake.invalid",
@@ -336,6 +402,7 @@ test("phantom transport: silence past the liveness deadline forces close and re-
     machineName: "watchdog-machine",
     backoff: { baseMs: 1, capMs: 5 },
     livenessTimeoutMs: 20, // the watchdog's own real timer, kept tiny; no test-side sleeps
+    dialTerminalHost: inMemoryDialer(host),
     sink: (record) => {
       records.push(record);
       if (record.evt === "liveness_timeout") livenessFired.resolve();
@@ -367,6 +434,7 @@ test("phantom transport: silence past the liveness deadline forces close and re-
     expect(records.some((r) => r.evt === "disconnected")).toBe(true);
   } finally {
     await agent.shutdown();
+    await host.shutdown();
   }
 }, 20000);
 
@@ -374,12 +442,14 @@ test("server close code and reason ref in logs; 4409 gets the version-rejected m
   const records: Array<{ evt: string; [k: string]: unknown }> = [];
   const disconnectedSeen = Promise.withResolvers<void>();
   const socket = new ScriptedSocket();
+  const host = new TerminalHost();
 
   const agent = new Agent({
     serverUrl: "http://fake.invalid",
     machineToken: "machine-token",
     machineName: "rejected-machine",
     backoff: { baseMs: 5_000, capMs: 5_000 }, // park the retry loop out of test scope
+    dialTerminalHost: inMemoryDialer(host),
     sink: (record) => {
       records.push(record);
       if (record.evt === "disconnected") disconnectedSeen.resolve();
@@ -404,6 +474,7 @@ test("server close code and reason ref in logs; 4409 gets the version-rejected m
     expect(disconnected?.reason).toBe("protocol version mismatch");
   } finally {
     await agent.shutdown();
+    await host.shutdown();
     void connectAttempt;
   }
 }, 20000);
@@ -412,13 +483,14 @@ test("disconnected exit is advertised with its code and forgotten on welcome", a
   const sockets: ScriptedSocket[] = [];
   const created = Promise.withResolvers<void>();
   const secondHello = Promise.withResolvers<Extract<AgentMessage, { type: "hello" }>>();
+  const host = new TerminalHost({ shellCommand: [BASH, "--norc", "-c", "read -r _; exit 17"] });
 
   const agent = new Agent({
     serverUrl: "http://fake.invalid",
     machineToken: "machine-token",
     machineName: "exit-retention-machine",
     backoff: { baseMs: 5_000, capMs: 5_000 },
-    shellCommand: [BASH, "--norc", "-c", "read -r _; exit 17"],
+    dialTerminalHost: inMemoryDialer(host),
     createSocket: () => {
       const socket = new ScriptedSocket();
       socket.onSend = (msg) => {
@@ -452,11 +524,11 @@ test("disconnected exit is advertised with its code and forgotten on welcome", a
     await created.promise;
 
     first.serverClose(1006, "transport lost");
-    const terminal = terminalForTest(agent, "dead-while-away");
+    const terminal = terminalForTest(host, "dead-while-away");
     terminal.write("finish\n");
     const exit = await terminal.exited;
     expect(exit.exitCode).toBe(17);
-    expect(agent.terminalCount).toBe(1);
+    expect(host.terminalCount).toBe(1);
 
     const internals = agent as unknown as { reconnectTimer: Timer | null; dial: () => void };
     clearTimeout(internals.reconnectTimer ?? undefined);
@@ -472,25 +544,29 @@ test("disconnected exit is advertised with its code and forgotten on welcome", a
       seq: terminal.seq,
       exitCode: 17,
     });
-    expect(agent.terminalCount).toBe(1);
+    expect(host.terminalCount).toBe(1);
 
     const second = sockets[1];
     if (second === undefined) throw new Error("missing second socket");
     second.receive({ type: "welcome", machineId: "m-1", serverEpoch: "e-2" });
-    expect(agent.terminalCount).toBe(0);
+    await Promise.resolve(); // the acknowledgement crosses the in-memory seam in one microtask
+    expect(host.terminalCount).toBe(0);
   } finally {
     await agent.shutdown();
+    await host.shutdown();
   }
 }, 20000);
 
 test("socket output backpressure closes the transport for reconnect recovery", async () => {
   const socket = new ScriptedSocket();
   const records: Array<{ evt: string; [key: string]: unknown }> = [];
+  const host = new TerminalHost();
   const agent = new Agent({
     serverUrl: "http://fake.invalid",
     machineToken: "machine-token",
     machineName: "backpressure-machine",
     backoff: { baseMs: 5_000, capMs: 5_000 },
+    dialTerminalHost: inMemoryDialer(host),
     sink: (record) => records.push(record),
     createSocket: () => {
       socket.onSend = (msg) => {
@@ -507,9 +583,14 @@ test("socket output backpressure closes the transport for reconnect recovery", a
     await agent.connect();
     socket.bufferedAmount = MAX_SOCKET_BUFFERED_AMOUNT_BYTES + 1;
     const internals = agent as unknown as {
-      onOutput: (terminalId: string, output: { seq: number; bytes: Uint8Array }) => void;
+      bridgeToHub: (event: {
+        type: "output";
+        terminalId: string;
+        seq: number;
+        data: string;
+      }) => void;
     };
-    internals.onOutput("busy-terminal", { seq: 1, bytes: new Uint8Array([1]) });
+    internals.bridgeToHub({ type: "output", terminalId: "busy-terminal", seq: 1, data: "AQ==" });
 
     expect(socket.closedByAgent).toEqual({ code: 4009, reason: "outbound buffer exceeded" });
     expect(records).toContainEqual(
@@ -522,46 +603,9 @@ test("socket output backpressure closes the transport for reconnect recovery", a
     expect(socket.sent.some((msg) => msg.type === "output")).toBe(false);
   } finally {
     await agent.shutdown();
+    await host.shutdown();
   }
 });
-
-test("shutdown escalates a signal-trapping PTY after its grace window", async () => {
-  const socket = new ScriptedSocket();
-  const created = Promise.withResolvers<void>();
-  const agent = new Agent({
-    serverUrl: "http://fake.invalid",
-    machineToken: "machine-token",
-    machineName: "bounded-shutdown-machine",
-    shutdownGraceMs: 25,
-    shellCommand: [BASH, "--norc", "-c", "trap '' TERM HUP; while :; do sleep 1; done"],
-    createSocket: () => {
-      socket.onSend = (msg) => {
-        if (msg.type === "hello") {
-          socket.receive({ type: "welcome", machineId: "m-1", serverEpoch: "e-1" });
-        } else if (msg.type === "created") {
-          created.resolve();
-        }
-      };
-      queueMicrotask(() => socket.open());
-      return socket.asWebSocket();
-    },
-  });
-
-  await agent.connect();
-  socket.receive({
-    type: "create",
-    terminalId: "trap-signals",
-    cols: 80,
-    rows: 24,
-    env: {},
-  });
-  await created.promise;
-
-  const startedAt = performance.now();
-  await agent.shutdown();
-  expect(performance.now() - startedAt).toBeLessThan(1_000);
-  expect(agent.terminalCount).toBe(0);
-}, 5000);
 
 test("a create naming a program execs it in place of the shell; a missing program is a named create_error", async () => {
   /*
@@ -575,12 +619,13 @@ test("a create naming a program execs it in place of the shell; a missing progra
   const createError = Promise.withResolvers<Extract<AgentMessage, { type: "create_error" }>>();
   const printed = Promise.withResolvers<void>();
   let outputText = "";
+  const host = new TerminalHost({ shellCommand: [BASH, "--norc", "-i"] });
   const agent = new Agent({
     serverUrl: "http://fake.invalid",
     machineToken: "machine-token",
     machineName: "program-machine",
     backoff: { baseMs: 5_000, capMs: 5_000 },
-    shellCommand: [BASH, "--norc", "-i"],
+    dialTerminalHost: inMemoryDialer(host),
     createSocket: () => {
       socket.onSend = (msg) => {
         switch (msg.type) {
@@ -632,8 +677,310 @@ test("a create naming a program execs it in place of the shell; a missing progra
     const failure = await createError.promise;
     expect(failure.terminalId).toBe("no-such-program");
     expect(failure.message).toBe("program not found: /nonexistent/bin");
-    expect(agent.terminalCount).toBe(1);
+    expect(host.terminalCount).toBe(1);
   } finally {
     await agent.shutdown();
+    await host.shutdown();
+  }
+}, 20000);
+
+test("a transport shutdown ends nothing: the next transport advertises the same live PTY", async () => {
+  /*
+    Issue #278, the incident's shape inverted. SIGTERM on the transport (Agent.shutdown) is
+    the routine activation path, and it must leave the shell — same process, same seq
+    watermark — for whichever transport takes the seat next. The output produced while NO
+    transport held the seat is not lost either: it is in the host's ring and mirror, and the
+    successor's snapshot renders it.
+  */
+  const host = new TerminalHost({ shellCommand: [BASH, "--norc", "-i"] });
+  const firstSockets: ScriptedSocket[] = [];
+  const created = Promise.withResolvers<void>();
+  const pidPrinted = Promise.withResolvers<void>();
+  let firstOutput = "";
+  const first = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "continuity-machine",
+    backoff: { baseMs: 5_000, capMs: 5_000 },
+    dialTerminalHost: inMemoryDialer(host),
+    createSocket: scriptedHub(firstSockets, (_socket, msg) => {
+      if (msg.type === "created") created.resolve();
+      if (msg.type === "output") {
+        firstOutput += Buffer.from(msg.data, "base64").toString("utf8");
+        if (/PID_\d+_END/.test(firstOutput)) pidPrinted.resolve();
+      }
+    }),
+  });
+  await first.connect();
+  const socket = firstSockets[0];
+  if (socket === undefined) throw new Error("missing first socket");
+  socket.receive({ type: "create", terminalId: "survivor", cols: 80, rows: 24, env: {} });
+  await created.promise;
+  socket.receive({
+    type: "input",
+    terminalId: "survivor",
+    data: Buffer.from('printf "PID_%s_END\\n" "$$"\n').toString("base64"),
+  });
+  await pidPrinted.promise;
+  const pid = /PID_(\d+)_END/.exec(firstOutput)?.[1];
+  const terminal = terminalForTest(host, "survivor");
+
+  await first.shutdown();
+  expect(terminal.alive).toBe(true);
+  expect(host.terminalCount).toBe(1);
+  expect(host.transportAttached).toBe(false);
+
+  // Output with no seat: retained by the host, never streamed, never dropped.
+  const seqBefore = terminal.seq;
+  terminal.write('printf "WHILE_DOWN_%s\\n" "$$"\n');
+  await new Promise<void>((resolve) => {
+    const poll = (): void => {
+      if (terminal.seq > seqBefore) resolve();
+      else setTimeout(poll, 10);
+    };
+    poll();
+  });
+
+  const secondSockets: ScriptedSocket[] = [];
+  const secondHello = Promise.withResolvers<Extract<AgentMessage, { type: "hello" }>>();
+  const snapshotSeen = Promise.withResolvers<Extract<AgentMessage, { type: "snapshot" }>>();
+  const second = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "continuity-machine",
+    backoff: { baseMs: 5_000, capMs: 5_000 },
+    dialTerminalHost: inMemoryDialer(host),
+    createSocket: scriptedHub(secondSockets, (_socket, msg) => {
+      if (msg.type === "hello") secondHello.resolve(msg);
+      if (msg.type === "snapshot") snapshotSeen.resolve(msg);
+    }),
+  });
+  try {
+    await second.connect();
+    const hello = await secondHello.promise;
+    expect(hello.terminalHostId).toBe(host.terminalHostId);
+    expect(hello.terminals).toEqual([
+      { terminalId: "survivor", cols: 80, rows: 24, alive: true, seq: terminal.seq },
+    ]);
+    secondSockets[0]?.receive({ type: "snapshot_request", terminalId: "survivor" });
+    const snapshot = await snapshotSeen.promise;
+    const rendered = Buffer.from(snapshot.data, "base64").toString("utf8");
+    expect(rendered).toContain(`WHILE_DOWN_${pid}`);
+    expect(snapshot.seq).toBe(terminal.seq);
+  } finally {
+    await second.shutdown();
+    await host.shutdown();
+  }
+}, 20000);
+
+test("one seat: a second transport is refused without killing anything and takes over once released", async () => {
+  const host = new TerminalHost({ shellCommand: [BASH, "--norc", "-i"] });
+  const firstSockets: ScriptedSocket[] = [];
+  const created = Promise.withResolvers<void>();
+  const first = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "fenced-machine",
+    backoff: { baseMs: 5_000, capMs: 5_000 },
+    dialTerminalHost: inMemoryDialer(host),
+    createSocket: scriptedHub(firstSockets, (_socket, msg) => {
+      if (msg.type === "created") created.resolve();
+    }),
+  });
+  await first.connect();
+  firstSockets[0]?.receive({ type: "create", terminalId: "fenced", cols: 80, rows: 24, env: {} });
+  await created.promise;
+
+  const refused = Promise.withResolvers<void>();
+  const records: Array<{ evt: string; [key: string]: unknown }> = [];
+  const secondSockets: ScriptedSocket[] = [];
+  const second = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "fenced-machine",
+    backoff: { baseMs: 5, capMs: 20 },
+    dialTerminalHost: inMemoryDialer(host),
+    sink: (record) => {
+      records.push(record);
+      if (record.evt === "terminal_host_refused") refused.resolve();
+    },
+    createSocket: scriptedHub(secondSockets),
+  });
+  const secondConnect = second.connect();
+  try {
+    await refused.promise;
+    // The loser dialled no hub (it could vouch for nothing) and ended nothing.
+    expect(secondSockets).toHaveLength(0);
+    expect(terminalForTest(host, "fenced").alive).toBe(true);
+    expect(second.terminalHostId).toBeNull();
+
+    await first.shutdown();
+    // The retry loop (the same backoff as the hub dial) claims the released seat.
+    await secondConnect;
+    expect(second.terminalHostId).toBe(host.terminalHostId);
+    expect(secondSockets[0]?.sent.find((msg) => msg.type === "hello")).toMatchObject({
+      terminals: [expect.objectContaining({ terminalId: "fenced", alive: true })],
+    });
+    expect(terminalForTest(host, "fenced").alive).toBe(true);
+  } finally {
+    await second.shutdown();
+    await host.shutdown();
+  }
+}, 20000);
+
+test("shutdown during attachment releases the owner seat and ignores a late acknowledgement", async () => {
+  const host = new TerminalHost({ shellCommand: [BASH, "--norc", "-i"] });
+  const attached = Promise.withResolvers<void>();
+  let deliverAttached: (() => void) | undefined;
+  const dial = inMemoryDialer(host);
+  const first = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "attachment-race",
+    dialTerminalHost: (handlers) =>
+      dial({
+        ...handlers,
+        onEvent(event) {
+          if (event.type === "attached") {
+            deliverAttached = () => handlers.onEvent(event);
+            attached.resolve();
+          } else {
+            handlers.onEvent(event);
+          }
+        },
+      }),
+    createSocket: scriptedHub([]),
+  });
+  const successor = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "attachment-race",
+    dialTerminalHost: dial,
+    createSocket: scriptedHub([]),
+  });
+  try {
+    void first.connect();
+    await attached.promise;
+    await first.shutdown();
+    expect(host.transportAttached).toBe(false);
+    deliverAttached?.();
+    await successor.connect();
+    expect(successor.terminalHostId).toBe(host.terminalHostId);
+    expect(first.terminalHostId).toBeNull();
+  } finally {
+    await first.shutdown();
+    await successor.shutdown();
+    await host.shutdown();
+  }
+}, 20000);
+
+test("drain is answered from the host, latches across transports, and refuses new creates by name", async () => {
+  const host = new TerminalHost({ shellCommand: [BASH, "--norc", "-i"] });
+  const firstSockets: ScriptedSocket[] = [];
+  const created = Promise.withResolvers<void>();
+  const drainStatus = Promise.withResolvers<Extract<AgentMessage, { type: "drain_status" }>>();
+  const first = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "drain-machine",
+    backoff: { baseMs: 5_000, capMs: 5_000 },
+    dialTerminalHost: inMemoryDialer(host),
+    createSocket: scriptedHub(firstSockets, (_socket, msg) => {
+      if (msg.type === "created") created.resolve();
+      if (msg.type === "drain_status") drainStatus.resolve(msg);
+    }),
+  });
+  await first.connect();
+  const socket = firstSockets[0];
+  if (socket === undefined) throw new Error("missing first socket");
+  socket.receive({ type: "create", terminalId: "kept", cols: 80, rows: 24, env: {} });
+  await created.promise;
+
+  socket.receive({ type: "drain", requestId: "req-1", draining: true });
+  expect(await drainStatus.promise).toEqual({
+    type: "drain_status",
+    requestId: "req-1",
+    terminalHostId: host.terminalHostId,
+    draining: true,
+    terminalIds: ["kept"],
+  });
+  await first.shutdown();
+
+  const secondSockets: ScriptedSocket[] = [];
+  const createError = Promise.withResolvers<Extract<AgentMessage, { type: "create_error" }>>();
+  const second = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "drain-machine",
+    backoff: { baseMs: 5_000, capMs: 5_000 },
+    dialTerminalHost: inMemoryDialer(host),
+    createSocket: scriptedHub(secondSockets, (_socket, msg) => {
+      if (msg.type === "create_error") createError.resolve(msg);
+    }),
+  });
+  try {
+    await second.connect();
+    expect(host.isDraining).toBe(true); // the latch outlived the transport that set it
+    secondSockets[0]?.receive({ type: "create", terminalId: "late", cols: 80, rows: 24, env: {} });
+    expect(await createError.promise).toEqual({
+      type: "create_error",
+      terminalId: "late",
+      message: "terminal host draining",
+    });
+    expect(host.terminalCount).toBe(1);
+  } finally {
+    await second.shutdown();
+    await host.shutdown();
+  }
+}, 20000);
+
+test("losing the terminal host closes the hub socket and holds the dial until re-seated", async () => {
+  const host = new TerminalHost();
+  const sockets: ScriptedSocket[] = [];
+  const records: Array<{ evt: string; [key: string]: unknown }> = [];
+  let dials = 0;
+  const rehello = Promise.withResolvers<AgentMessage>();
+  const agent = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "lost-host-machine",
+    backoff: { baseMs: 5, capMs: 20 },
+    dialTerminalHost: (handlers) => {
+      dials += 1;
+      if (dials === 2) throw new Error("host down");
+      return inMemoryDialer(host)(handlers);
+    },
+    sink: (record) => {
+      records.push(record);
+    },
+    createSocket: scriptedHub(sockets, (_socket, msg) => {
+      if (msg.type === "hello" && sockets.length === 2) rehello.resolve(msg);
+    }),
+  });
+  try {
+    await agent.connect();
+    const firstSocket = sockets[0];
+    if (firstSocket === undefined) throw new Error("missing first socket");
+
+    // The host drops the seat (as a host crash would from the transport's point of view).
+    const internals = agent as unknown as { seat: { link: { close(): void } } | null };
+    const link = internals.seat?.link;
+    if (link === undefined) throw new Error("missing seat");
+    link.close();
+
+    expect(firstSocket.closedByAgent?.code).toBe(TERMINAL_HOST_LOST_CLOSE_CODE);
+    expect(records.some((record) => record.evt === "terminal_host_lost")).toBe(true);
+
+    await rehello.promise;
+    // The second dial attempt failed (host down) and was retried; only then was the hub
+    // dialled again — never a hello this process could not back.
+    expect(records.some((record) => record.evt === "terminal_host_unreachable")).toBe(true);
+    expect(sockets).toHaveLength(2);
+    expect(sockets[1]?.sent.find((msg) => msg.type === "hello")).toMatchObject({
+      terminalHostId: host.terminalHostId,
+    });
+  } finally {
+    await agent.shutdown();
+    await host.shutdown();
   }
 }, 20000);

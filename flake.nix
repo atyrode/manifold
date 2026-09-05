@@ -1,17 +1,20 @@
 {
   # Fleet packaging (issue #40): standalone binaries for dotfiles-managed nodes.
   #
-  #   nix build .#manifold-agent    -> result/bin/manifold-agent (dial-out PTY daemon)
+  #   nix build .#manifold-agent    -> result/bin/manifold-agent (transport or --terminal-host)
   #   nix build .#manifold-server   -> result/bin/manifold-server (hub + bundled web dist)
   #
   # Both are `bun build --compile` binaries: the Bun runtime plus the bundled
   # workspace sources, so nodes need no repo checkout and no bun install.
-  # Configuration is env-only (see docs/CONTRACTS.md): the agent takes
-  # MANIFOLD_SERVER_URL + MANIFOLD_MACHINE_TOKEN(_FILE) + MANIFOLD_MACHINE_NAME,
-  # the server its MANIFOLD_* set. The packaged server defaults
-  # MANIFOLD_SPAWN_AGENT=0 because the source-tree local-agent respawn
-  # (agent-spawn.ts) execs `bun` against a repo checkout that does not exist on
-  # a packaged node; a packaged hub's machine enrolls like any other node.
+  # Configuration (see docs/CONTRACTS.md): both agent modes require
+  # MANIFOLD_TERMINAL_HOST_SOCKET. Plain agent is the replaceable transport and
+  # also takes MANIFOLD_SERVER_URL + MANIFOLD_MACHINE_TOKEN(_FILE) +
+  # MANIFOLD_MACHINE_NAME; --terminal-host owns PTYs independently.
+  # The server takes its MANIFOLD_* set. The packaged server defaults
+  # MANIFOLD_SPAWN_AGENT=0 because source-tree host/transport respawn
+  # (agent-spawn.ts) execs `bun` against a repo checkout absent on packaged nodes;
+  # a packaged hub's machine enrolls like any other node. Packaging does not
+  # authorize stopping a terminal host during transport replacement.
   description = "manifold - agent-native shared spatial workspace";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

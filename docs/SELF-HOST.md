@@ -119,7 +119,12 @@ Everything durable is in the `manifold-data` named volume, mounted at `/data`:
 - `manifold.db` — SQLite store (scenes, principals, hashed tokens, session lifecycle).
 - `owner.key` (mode 600) — the root bootstrap secret, generated on first boot unless
   `MANIFOLD_OWNER_KEY` pins it.
-- `agent.token` / `agent.pid` / `agent.lock` — respawn handles of the in-container agent.
+- `agent.token` / `agent.lock` — machine credential and local boot lock.
+- `agent.pid` / `terminal-host.pid` — independent transport and terminal-host process handles.
+- `terminal-host/host.sock` — private NDJSON Unix socket (0600, directory 0700), not a
+  terminal checkpoint. Both processes use this path as `MANIFOLD_TERMINAL_HOST_SOCKET`;
+  both modes require it. The server starts the host before the transport and reuses each
+  verified pidfile independently across server-process restarts.
 - `plugins/<id>/<sha256>.manifold-plugin.json` — the bundle an installed plugin was admitted
   from, beside `plugins/<id>/<sha256>/`, its extracted files (the child process runs
   `server.js` from there). The bundle is the artifact of record: every boot re-hashes it against
@@ -289,6 +294,33 @@ for exactly this reason; a bearer token remains the only authority on them.
 
 ## Upgrade
 
+**Container replacement destroys in-container terminals.** The separate terminal host
+survives a hub-process or transport restart, not destruction of the container/cgroup that
+contains it. A persisted volume does not preserve PTYs. The commands below replace the
+container; they are not an unattended terminal-preserving upgrade procedure.
+
+Before replacing a container that serves terminals, dispatch
+`core.machines.drain { machineId, draining: true }` (workspace `machines:mint` authority).
+The hub persists closed admission before asking the terminal host to close its own admission.
+Success reports `{ terminalHostId, draining, terminalIds }`; refusal or timeout is a HOLD,
+never evidence of an idle host. Drain kills nothing. Let existing work finish; do not
+replace the container while terminals remain. Even an empty live-id report is not the final
+stop check: the host's private socket `shutdown_request` atomically requires draining and
+zero retained terminals, including exited terminals awaiting acknowledgement. It refuses
+`not_draining` or `terminals_retained`; there is no force option or signal fallback.
+After successful maintenance and replacement, explicitly reopen with
+`core.machines.drain { machineId, draining: false }`. See `CONTRACTS.md` for refusal and
+cancellation semantics.
+
+Released legacy agents combine transport and PTY ownership and cannot transfer running
+terminals to the split host. A capable hub still accepts their wire protocol, but their
+drain request is refused after closing hub admission. Keep their replacement held until
+their actual terminal inventory is safely empty; neither SSH-session count nor a healthy
+service/connected machine proves that. The protocol-24 split lifecycle described here is
+the source contract, not a claim that a release or production migration has occurred.
+
+Once the terminal-owning lifetime is safely stopped (or this container serves no terminals):
+
 ```sh
 git pull && eval "$(bun scripts/build-identity.ts --env)" && docker compose up -d --build
 ```
@@ -307,13 +339,18 @@ MIGRATIONS); the volume carries the data across image rebuilds.
 
 ## The hub is also a machine
 
-The container auto-spawns a terminal agent named `${MANIFOLD_MACHINE_NAME}`
-(default `hub`). Its shells run **inside the container** — the toolset is whatever
-the image ships. For real shells on the host (or any other box), enroll that box
-natively as a spoke per `docs/ENROLL.md`; do not mount the docker socket or host
-paths into the hub container for this. `MANIFOLD_SPAWN_AGENT=0` in `.env` turns the
-in-container agent off — sensible where the container's disk is ephemeral, since its
-shells would die at every redeploy.
+The container auto-spawns a terminal host and a separate network transport enrolled as
+`${MANIFOLD_MACHINE_NAME}` (default `hub`). Its shells run **inside the container** — the
+toolset is whatever the image ships. For real shells on the host (or any other box), enroll
+that box natively as a spoke per `docs/ENROLL.md`; do not mount the docker socket or host
+paths into the hub container for this. `MANIFOLD_SPAWN_AGENT=0` in `.env` disables both
+local processes on boot. Choose this before using the container for terminals when
+unattended container replacement is required; changing it is not a migration of live shells.
+
+Native transport-only updates can preserve terminals when supervision leaves the separate
+terminal host untouched. Host upgrades, reboots and service-group teardown remain destructive
+and must be held behind drain plus the atomic maintenance shutdown check. A host's SIGTERM
+still kills its shells; restarting a service group is not a transport-only update.
 
 ## Environments
 

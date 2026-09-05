@@ -16,7 +16,9 @@ tools/tests ─────┘                            ▲  ▲
                                              │  │   tickets. No scene, presence or PTY bytes.)
                                              │  └── another manifold server
                                              │ WS /ws/machine (outbound from machine)
-                              manifold-agent daemon ── Bun.Terminal PTYs
+                              manifold-agent transport
+                                             │ private NDJSON Unix socket
+                              manifold-agent --terminal-host ── Bun.Terminal PTYs
 ```
 
 A guest instance's USERS do not ride `/ws/instance`. They point their own lens at the host's
@@ -26,8 +28,10 @@ viewer uses. There is no relay and no second sync path (ADR 0014).
 
 - **server** (`packages/server`, entry `src/main.ts`): one Bun process. Serves web dist,
   HTTP API, all three WebSocket endpoints, owns rooms + SQLite.
-- **agent** (`packages/agent`, entry `src/main.ts`): separate long-lived process on any
-  machine. Owns PTYs. Dials the server. Survives server restarts.
+- **agent** (`packages/agent`, entry `src/main.ts`): two separate process lifetimes.
+  Plain `manifold-agent` is the replaceable network transport; `manifold-agent --terminal-host`
+  owns PTYs, sequence numbers, ring buffers and headless mirrors. Both survive server restarts;
+  replacing only the transport preserves the terminal host and its terminals.
 - **web** (`packages/web`): Vite/React client over `/ws/session` via `@manifold/sdk`.
 - **sdk** (`packages/sdk`): typed protocol client. The ONLY WebSocket state machine in the
   repo — web, tests, and tools all use it. No parallel implementations. It pools ONE socket
@@ -38,27 +42,28 @@ viewer uses. There is no relay and no second sync path (ADR 0014).
 
 ## Runtime contracts
 
-| Process | Entry                             | Env (defaults)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| server  | `bun packages/server/src/main.ts` | `MANIFOLD_PORT` (7777), `MANIFOLD_BIND` (127.0.0.1), `MANIFOLD_DATA_DIR` (./data), `MANIFOLD_OWNER_KEY` (generated → `<data>/owner.key`), `MANIFOLD_PUBLIC_URL` (http://localhost:PORT), `MANIFOLD_WEB_DIST` (packages/web/dist), `MANIFOLD_SPAWN_AGENT` ("1": auto-spawn local agent, "0" in tests), `MANIFOLD_MACHINE_NAME` ("local": name the auto-spawned agent enrolls under), `MANIFOLD_ANNOUNCE_KEY` ("0"; "1" embeds `#key=` in the boot announce — dev/test only), `MANIFOLD_PLUGIN_DEV_PATHS` ("0"; "1" lets `engine.plugins.install` read a bundle from any absolute path instead of only `<data>/plugin-uploads/` — development only), `MANIFOLD_REPLICA_BUCKET` (unset: no replication; set: the image's `infra/entrypoint.sh` restores `<data>/manifold.db` from the replica when absent and runs the command under `litestream replicate` — ADR 0022), `MANIFOLD_REPLICA_ENDPOINT` (S3 endpoint URL, required with the bucket; credentials are Litestream's own `LITESTREAM_ACCESS_KEY_ID`/`LITESTREAM_SECRET_ACCESS_KEY`) |
-| agent   | `bun packages/agent/src/main.ts`  | `MANIFOLD_SERVER_URL` (required), exactly one of `MANIFOLD_MACHINE_TOKEN` or `MANIFOLD_MACHINE_TOKEN_FILE` (file mode 0600; contents trimmed; the file form keeps the token out of unit files and process environment listings), `MANIFOLD_MACHINE_NAME` (hostname)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| web dev | `bun run --cwd packages/web dev`  | vite :5173 (CLI `--port` overrides), proxies `/api` + `/ws` → `MANIFOLD_PORT` (7777); `MANIFOLD_DEV_HOST` (unset: Vite defaults; set: allows that hostname and uses `wss` HMR on that host's port 443 behind a TLS router)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Process         | Entry                                            | Env (defaults)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| --------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| server          | `bun packages/server/src/main.ts`                | `MANIFOLD_PORT` (7777), `MANIFOLD_BIND` (127.0.0.1), `MANIFOLD_DATA_DIR` (./data), `MANIFOLD_OWNER_KEY` (generated → `<data>/owner.key`), `MANIFOLD_PUBLIC_URL` (http://localhost:PORT), `MANIFOLD_WEB_DIST` (packages/web/dist), `MANIFOLD_SPAWN_AGENT` ("1": auto-spawn local agent, "0" in tests), `MANIFOLD_MACHINE_NAME` ("local": name the auto-spawned agent enrolls under), `MANIFOLD_ANNOUNCE_KEY` ("0"; "1" embeds `#key=` in the boot announce — dev/test only), `MANIFOLD_PLUGIN_DEV_PATHS` ("0"; "1" lets `engine.plugins.install` read a bundle from any absolute path instead of only `<data>/plugin-uploads/` — development only), `MANIFOLD_REPLICA_BUCKET` (unset: no replication; set: the image's `infra/entrypoint.sh` restores `<data>/manifold.db` from the replica when absent and runs the command under `litestream replicate` — ADR 0022), `MANIFOLD_REPLICA_ENDPOINT` (S3 endpoint URL, required with the bucket; credentials are Litestream's own `LITESTREAM_ACCESS_KEY_ID`/`LITESTREAM_SECRET_ACCESS_KEY`) |
+| agent transport | `bun packages/agent/src/main.ts`                 | `MANIFOLD_TERMINAL_HOST_SOCKET` (required), `MANIFOLD_SERVER_URL` (required), exactly one of `MANIFOLD_MACHINE_TOKEN` or `MANIFOLD_MACHINE_TOKEN_FILE` (file mode 0600; contents trimmed; the file form keeps the token out of unit files and process environment listings), `MANIFOLD_MACHINE_NAME` (hostname)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| terminal host   | `bun packages/agent/src/main.ts --terminal-host` | `MANIFOLD_TERMINAL_HOST_SOCKET` (required; same private Unix socket path as the transport); no hub URL or machine credential required                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| web dev         | `bun run --cwd packages/web dev`                 | vite :5173 (CLI `--port` overrides), proxies `/api` + `/ws` → `MANIFOLD_PORT` (7777); `MANIFOLD_DEV_HOST` (unset: Vite defaults; set: allows that hostname and uses `wss` HMR on that host's port 443 behind a TLS router)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 Server startup log MUST include a single line `manifold ready url=<URL>`. With
 `MANIFOLD_ANNOUNCE_KEY=1` (dev/test opt-in: `dev:server`, testkit) the URL embeds the owner
 key as `#key=<hex>` (fragment, never query — fragments don't hit request logs). The default
 omits the fragment so the owner key never enters log streams (AGENTS invariant 6);
 operators read the key from `<data>/owner.key` instead.
-Auto-spawned local agent: server mints a machine token (raw copy kept at
-`<data>/agent.token`, mode 600, for respawns — DB stores only the hash), spawns
-`bun packages/agent/src/main.ts` **detached** (survives server exit), and writes
-`<data>/agent.pid`. If `agent.pid` is alive on boot, do not spawn a second one. Surviving the
-server is the production contract, which makes the pid file the OWNER'S handle: whoever
-booted a throwaway server with `MANIFOLD_SPAWN_AGENT=1` owns the agent too, and the gates'
-one teardown (`scripts/gate-lib.ts`, `teardownServer`) reaps the pid the file names — checked
-against `/proc/<pid>/cmdline` first, never by process name — before it removes the data dir.
-An agent left behind redials a dead origin forever; 453 of them held ~21 GiB on the
-development box before this was written down (2026-09-02).
+Auto-spawned local machine: server mints a machine token (raw copy kept at
+`<data>/agent.token`, mode 600, for transport respawns — DB stores only the hash).
+It starts the terminal host first, then the transport, both **detached**, using
+`<data>/terminal-host/host.sock`. The independent handles are `<data>/terminal-host.pid`
+and `<data>/agent.pid`; each live process is reused only after its command line proves the
+corresponding role (`--terminal-host` present or absent). `<data>/agent.lock` serializes boot.
+Server shutdown releases that lock; it does not stop either process. Whoever booted a
+throwaway server with `MANIFOLD_SPAWN_AGENT=1` owns BOTH processes, and the gates' one teardown
+(`scripts/gate-lib.ts`, `teardownServer`) reaps both verified pidfile claims before removing
+the data directory. This destructive teardown is for owned test processes, never production.
 
 **Cross-instance sharing adds NO variable, and that is a ruling rather than an omission.** An
 instance's ORIGIN — the identity a share is minted for, the string a `hello` declares and a
@@ -913,6 +918,30 @@ live socket at 4403, and mints once. `core.machines.list {}` carries `containers
 because `GET /api/machines` answered any authenticated token including a scoped one (a share-link
 viewer still has to paint the machine badge on the terminal in front of it); its containment
 obligation is vacuous, since nothing in a fleet-wide answer is addressed by container.
+
+`core.machines.drain { machineId, draining }` carries `machines:mint` at workspace scope.
+Its successful result is `{ terminalHostId, draining, terminalIds }`: the named terminal
+host's acknowledgement and its live terminal ids, not a hub estimate. It never kills a
+terminal and has no force flag. The hub persists the requested admission latch BEFORE
+contacting the host; a drained machine refuses new opens with `conflict` before minting
+terminal resources. Already-sent creates precede drain on the ordered channel and remain
+valid. The host applies its own latch synchronously before reporting its inventory.
+
+Unknown machines are refused. Offline machines, legacy agents without `terminalHostId`,
+send failure, disconnect or supersession mid-request, a later drain request, the 10s
+acknowledgement deadline, or a reply with the wrong host identity/state return `refused`,
+never an empty-inventory success. For a known machine those failures do NOT roll back the
+requested hub latch. `draining: false` is the only reopen; even a refused cancellation
+reopens the hub half, with the host half converging on its next hello. The hub reloads the
+latch after restart and sends it after every capable hello. The host latch survives
+transport replacement, not host replacement. `MachineSummary.draining?` publishes the
+hub state (absent means open). This action is not `cleanup: true`; a disabled machines
+plugin must be re-enabled to change the latch.
+
+An empty drain result is not authority to signal or replace a host: exited terminals may
+still be retained pending acknowledgement. Maintenance must use the host's atomic
+`shutdown_request` check (§Terminal host lifecycle), which also requires zero retained
+terminals. Drain is admission control, not an alternate destructive terminal door.
 
 `core.machines.revoke { machineId }` carries `machines:mint` at the default workspace scope and
 answers `{ revoked: 0 | 1 }`; it is **`cleanup: true`**. It is the door ADR 0019 §3 named as
@@ -1791,16 +1820,16 @@ not the socket or terminal lifecycle.
   (§Terminal administration) before anything is minted or sent, so a policy denial
   (`error { code:"forbidden" }`, the door's own message, on the opener's `ref`) refuses the
   program before any machine hears of it, and what the ledger records as authorized is what the
-  agent is then asked to exec — the socket has no second place to present a different program.
-  `cwd` stays the transport's: it is where the shell starts, never what runs. Two further
+  terminal host is then asked to exec through the agent — neither socket has a second place
+  to present a different program. `cwd` is the shell's starting directory, never what runs. Two further
   refusals are the opener's to handle: `error { code:"unsupported" }` when the target machine's
   agent spoke a protocol older than v22 (`TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION`) — the server
   never sends `create.program` to such an agent, whose strict parser would read it as a
   malformed frame and drop its socket; the remedy is another machine or an upgraded agent — and
-  `error { code:"conflict" }` "terminal creation failed" when the agent could not exec `argv[0]`,
+  `error { code:"conflict" }` "terminal creation failed" when the terminal host could not exec `argv[0]`,
   whose named reason (`program not found: <argv0>`, `program not executable: <argv0>`) travels
-  the machine channel as `create_error.message` and lands in the agent's log, never on the
-  session channel (agent diagnostics stay off the client wire, as for every create failure).
+  the machine channel as `create_error.message` and is logged on the machine, never on the
+  session channel (machine diagnostics stay off the client wire, as for every create failure).
 - **A terminal is born with a home** (`homed: "eager"`). The home id is minted BEFORE the
   PTY, because the terminal-scoped agent token and the `MANIFOLD_CONTAINER` a program inside the
   terminal reads must both name the container the terminal LIVES in — and a canvas is never
@@ -1808,8 +1837,7 @@ not the socket or terminal lifecycle.
   is created when the PTY lands, so a create that never lands leaves nothing behind to clean
   up. The server mints a **terminal-scoped agent token** (caps
   `[containers:read, scenes:write, terminals:spawn, terminals:write]`, scoped to the HOME), asks
-  the
-  agent to create the PTY with env `MANIFOLD_URL`, `MANIFOLD_CONTAINER` (the home),
+  the terminal host through the agent to create the PTY with env `MANIFOLD_URL`, `MANIFOLD_CONTAINER` (the home),
   `MANIFOLD_ELEMENT` (canvas openers only), `MANIFOLD_TOKEN` injected, then replies
   `terminal_opened { elementId, terminal, ref? }`. `elementId` is the PLACEMENT: the
   server-authored leaf id for a composition opener (whose `ref` echoes the opener's correlation
@@ -1829,8 +1857,8 @@ not the socket or terminal lifecycle.
 - **Attach state machine (no-gap invariant).** On `terminal_attach { terminalId }`:
   1. server registers the viewer as PENDING and starts queueing that terminal's live
      `output` frames for it (nothing is sent yet);
-  2. server sends the agent `snapshot_request`;
-  3. agent serializes its headless mirror at its current byte-sequence `S` (same ordered
+  2. server sends the agent `snapshot_request`, forwarded to the terminal host;
+  3. terminal host serializes its headless mirror at its current byte-sequence `S` (same ordered
      pipeline as output emission — an output emitted before the snapshot has seq ≤ S);
   4. server sends the viewer `terminal_snapshot { terminalId, seq: S, data }`, flushes
      queued outputs with `seq > S` in order, discards `seq ≤ S`, then marks the viewer LIVE.
@@ -1900,15 +1928,18 @@ not the socket or terminal lifecycle.
 
 ## WS /ws/machine — machine channel (JSON; `data` fields base64)
 
-Handshake: agent sends `hello { token, name, agentVersion, protocolVersion, terminals }`
-where `terminals` advertises retained PTYs
-`{ terminalId, cols, rows, alive, seq, exitCode? }` (server-restart adoption). An
+Handshake: agent sends `hello { token, name, agentVersion, protocolVersion, terminals,
+terminalHostId? }`, where `terminals` advertises retained PTYs
+`{ terminalId, cols, rows, alive, seq, exitCode? }` (server-restart adoption).
+`terminalHostId` identifies the terminal host PROCESS, stable across transport replacements
+and fresh on host restart; it is not the machine token or a durable terminal checkpoint. An
 `alive:false` advertisement reports a real `exitCode` when the PTY exited while
 disconnected; absence is equivalent to `null`. Such exited terminals are retained through
 the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` arrives).
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
-4403 revoked, 4409 version. Version acceptance is the
-`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18, 19, 20, 21, 22}` (protocol/version.ts), NOT
+4403 revoked, 4409 version, or 4003 admission refused (incumbent continuity mismatch or
+supersession damp). Version acceptance is the
+`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18, 19, 20, 21, 22, 23, 24}` (protocol/version.ts), NOT
 strict equality: agents are long-lived and survive server deploys, so every compatible agent
 version stays accepted (session/browser joins remain strictly current). An unchanged agent wire
 adds the new version to the set; a strictly additive-optional change also adds it when every old
@@ -1933,6 +1964,11 @@ rejection path emits a structured server log (`machine_version_rejected`,
 `machine_rejected`, `terminal_program_unsupported`, …) — silent closes are how a whole fleet goes
 dark undiagnosed.
 
+v23 changes only session references. v24 adds optional `hello.terminalHostId` and
+capability-gated `drain`/`drain_status`: the hub sends drain frames ONLY to an agent that
+named a terminal host. Legacy agents remain wire-compatible; compatibility does not move
+their PTYs into a separate host or make a legacy process restart safe.
+
 The unknown-NEWER direction is the one with no recovery, and it is the operator-facing failure
 mode. A hub cannot accept a protocol version that did not exist when it was built, so an agent
 whose `protocolVersion` falls outside `MACHINE_PROTOCOL_COMPAT_VERSIONS` is closed 4409 on every
@@ -1949,15 +1985,17 @@ The downstream pin cron independently holds candidates newer than the deployed p
 protocol, so a development-only release does not silently upgrade production or its agents.
 
 Server→agent: `create { terminalId, cols, rows, cwd?, env, program? }`, `input { terminalId,
-data }`, `resize`, `kill`, `snapshot_request { terminalId }`, `ping`. `create.env` is the
+data }`, `resize`, `kill`, `snapshot_request { terminalId }`, `ping`,
+`drain { requestId, draining }` (terminal-host-capable agents only). `create.env` is the
 opener's `terminal_open.env` (if any) with the four minted `MANIFOLD_*` keys written LAST, so
 those always win; `create.program { argv }` is the opener's `terminal_open.program` verbatim, and
-the agent execs `argv[0]` with `argv.slice(1)` in place of `$SHELL` → `bash` → `sh`. A missing
+the terminal host execs `argv[0]` with `argv.slice(1)` in place of `$SHELL` → `bash` → `sh`. A missing
 or unrunnable `argv[0]` is `create_error { message: "program not found: <argv0>" }` (or
 `program not executable`), never a shell standing in for it.
 Agent→server: `created { terminalId }` | `create_error { terminalId, message }`,
 `output { terminalId, seq, data }` (seq: monotonic per terminal, assigned at emission),
-`snapshot { terminalId, seq, data }`, `exited { terminalId, exitCode }`, `pong`.
+`snapshot { terminalId, seq, data }`, `exited { terminalId, exitCode }`, `pong`,
+`drain_status { requestId, terminalHostId, draining, terminalIds }`.
 
 Liveness, server half: after `welcome` the server sends `ping` every
 `DIAL_PING_INTERVAL_MS` (30s); a ping still unanswered when the next fires closes the
@@ -1972,18 +2010,62 @@ Reconnect: agent redials with jittered backoff (cap 15s), re-`hello`s with retai
 terminals; a new server epoch re-adopts them. On successful re-adoption of a running
 terminal, the server transitions every existing viewer back to PENDING and uses the normal
 attach machinery to request a fresh snapshot. This heals output dropped during the
-disconnect window, including ring-buffer overflow. Stale sockets are fenced: the server
-drops a machine's previous socket when a new `hello` for the same machine token arrives.
-PTY output while disconnected goes to the agent's per-terminal ring buffer (default 2MiB);
-the headless mirror keeps render state, so post-reconnect attaches snapshot correctly.
+disconnect window, including ring-buffer overflow. While durable running terminals exist,
+a same-token newcomer must prove ownership before welcome or reconciliation. A named
+`terminalHostId` must match the live incumbent's identity, or the persisted owner identity
+when no incumbent is connected. Legacy agents (neither side names an owner) must account
+for every durable running terminal, either alive or explicitly exited while disconnected.
+Mixed owners, different identities and incomplete legacy inventories are refused with
+4003, even when no agent is connected. An unproven process cannot occupy the seat, answer
+drain with someone else's empty inventory, or create work later disbelieved by the owner.
+
+When no durable running terminals remain, another owner may take the seat. Actual
+supersession closes the old socket with 4001 and remains subject to supersession damp.
+A refused claimant changes no terminal row. The real owner can return, or the operator
+can explicitly retire stale rows through `core.terminals.kill`; token possession alone
+never authorizes that destruction. **Healthy or connected does not mean preserved.**
+Preservation requires the expected terminal identities, same workloads and usable I/O,
+not merely a current connection or a new empty inventory.
+
+PTY output while disconnected goes to the terminal host's per-terminal ring buffer
+(default 2MiB); the headless mirror keeps render state for post-reconnect snapshots.
 If WebSocket `bufferedAmount` exceeds the 8MiB hard cap, the agent logs the structured
 backpressure event, closes the socket, and re-dials through this same ring/mirror and
 re-adoption path rather than allowing unbounded process memory growth.
 
-The agent daemon owns its PTYs. Agent↔server disconnects preserve them for re-adoption, but
-an agent process restart kills every PTY it owns; PTYs do not survive the daemon. Node
-upgrades and redeploys therefore MUST be operator-timed or idle-gated, never automatic on
-deploy.
+### Terminal host lifecycle
+
+The transport never spawns a fallback host or owns PTYs. Both modes require
+`MANIFOLD_TERMINAL_HOST_SOCKET`. It claims the host's single transport seat before dialing
+the hub and obtains a fresh inventory for every hello. An incumbent seat wins: a duplicate
+gets `attach_refused`, cannot mutate terminals, and retries without disturbing the owner.
+Transport shutdown releases the seat and network connection, killing nothing. Host loss
+closes the machine socket with **4010** and holds hub dialing until a seat is acquired again.
+
+The local protocol (`packages/protocol/src/terminal-host.ts`, version 1) is NDJSON on a
+0600 Unix socket in an owned 0700 directory. An existing non-private directory or live
+sibling listener is refused; only a stale socket with no accepting listener is reclaimed.
+Known malformed frames close the connection; unknown types are ignored for build skew.
+Frames are bounded to 1MiB and the write queue to 8MiB; overflow disconnects rather than
+growing memory without bound.
+
+An observer can send `status_request` and receives
+`status { terminalHostId, terminalHostProtocolVersion, build, pid, draining,
+transportAttached, terminals }`, including exited-but-retained terminals. Only the seated
+transport may send terminal mutations. An observer may request maintenance via
+`shutdown_request`; the host atomically accepts with `shutting_down` only if draining
+AND its retained inventory is empty. Otherwise it sends
+`shutdown_refused { reason: "not_draining" | "terminals_retained", terminalIds }`.
+There is no force option. A refused stop is a hold, never permission to escalate to a signal.
+
+Host SIGTERM is DESTRUCTIVE: it terminates shells, escalating after the grace period.
+Host restart, cgroup/container teardown and machine reboot do not preserve PTYs. Routine
+automation may replace the transport only while leaving the host's process and supervision
+lifetime intact. Host maintenance must drain and use the atomic shutdown door, never an
+SSH-session count, a hub-only inventory check, or a health check as an idle proxy.
+Released legacy combined-owner agents still lose their PTYs on replacement: they cannot
+transfer live terminals to this host. Their migration must remain held while work is live;
+this source contract neither claims deployment nor authorizes production changes.
 
 ## WS /ws/instance — instance channel (JSON text frames; ADR 0014)
 
@@ -2010,7 +2092,7 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{18, 19, 20, 21, 22}` — its own wire, its own set, the
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{18, 19, 20, 21, 22, 23, 24}` — its own wire, its own set, the
 same invariant-10 discipline the machine channel follows.
 
 Guest→host: `pong`, `ticket_request { requestId, principal }` — the guest's OWN principal
@@ -2067,7 +2149,9 @@ principals(id TEXT PK, kind TEXT, name TEXT, color TEXT, created_at INTEGER, ori
                             -- the guest origin its share was minted for
 tokens(id TEXT PK, hash TEXT UNIQUE, principal_id TEXT, caps TEXT, container_id TEXT,
        created_at INTEGER, revoked_at INTEGER, minted_by TEXT)  -- HASH only, never raw
-machines(id TEXT PK, name TEXT UNIQUE, token_id TEXT, last_seen INTEGER)
+machines(id TEXT PK, name TEXT UNIQUE, token_id TEXT, last_seen INTEGER,
+         owner_host_id TEXT, draining INTEGER NOT NULL DEFAULT 0)
+                            -- continuity identity and persistent admission latch, not PTY data
 terminals(id TEXT PK, machine_id TEXT, container_id TEXT, created_by TEXT, status TEXT,
          exit_code INTEGER, created_at INTEGER, agent_principal_id TEXT, name TEXT)
                             -- container_id IS the home composition; no element_id, no pool
@@ -2110,18 +2194,20 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- layout:<principalId>
 ```
 
-Schema version 19 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
+Schema version 20 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
 — `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
 `grants` substrate; 14 is the trace ledger — five nullable columns on `events`; 15 is credential
 expiry — `tokens.expires_at`; 16 retires the grant rows of already-revoked tokens, the same rule
 `revokeTokensWhere` now applies at revocation, applied to history; 17 adds `plugin_installs`, one
 new table and nothing rewritten; 18 adds `plugin_installs.actions`, defaulted to `'[]'`;
-19 renames contributed-element TileRef discriminants from `text` to `element`).
-Migrations 12, 14, 15, 17 and 18 are plain SQL for the same reason: none touches a stored
+19 renames contributed-element TileRef discriminants from `text` to `element`;
+20 adds `machines.owner_host_id` and `machines.draining`, default NULL and 0).
+Migrations 12, 14, 15, 17, 18 and 20 are plain SQL for the same reason: none touches a stored
 document and existing rows need no backfill, since absence already means the right thing — a
 NULL origin means "this instance", a NULL `door` means "this row is an event, not a trace", a
 NULL `expires_at` means "never", and an empty `actions` list is the doorless row an elder install
-already composed.
+already composed. A NULL machine owner means no persisted host identity; `draining=0`
+means admission is open. Migration 20 does not infer terminal loss or rewrite inventory.
 None takes a pre-migration snapshot, and that is the house rule rather than an exception to it:
 the snapshot belongs to a one-way DATA move (9, 11, 13, 16, and 19 — 16 is SQL, but a DELETE
 nothing can run backwards), and adding nullable columns is reversible by a later migration

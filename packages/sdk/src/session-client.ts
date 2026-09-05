@@ -3,8 +3,10 @@ import {
   BootstrapPrincipalRequestSchema,
   ClientMessageBodySchema,
   CredentialsResponseSchema,
+  DrainMachineRequestSchema,
   HttpErrorSchema,
   MAX_DOC_UPDATE_BYTES,
+  MachineDrainStatusSchema,
   MachinesResponseSchema,
   MintTokenRequestSchema,
   PROTOCOL_VERSION,
@@ -30,6 +32,7 @@ import {
   type ClientMessageBody,
   type CredentialsResponse,
   type Gesture,
+  type MachineDrainStatus,
   type MachineSummary,
   type MintTokenRequest,
   type Container,
@@ -1113,6 +1116,29 @@ export class SessionClient {
     const request = RevokeMachineRequestSchema.parse({ machineId });
     return this.accessDoor("core.machines.revoke", request, (result) =>
       RevokeResultSchema.parse(result),
+    );
+  }
+
+  /**
+   * Closes (`draining: true`) or reopens (`draining: false`) an enrolled machine's terminal
+   * admission (`core.machines.drain`, issue #278) and answers what its PTY OWNER holds after
+   * applying that state: the owner's identity and every live terminal id, complete behind
+   * every create the hub had sent. The hub closes admission before it asks, so once this
+   * resolves with `draining: true` no terminal can be born on the machine until it is
+   * reopened here — which is the only way it reopens.
+   *
+   * A denial means the owner could not answer — offline, an agent that names no owner, a
+   * timeout — and the admission the hub set is exactly what was asked for regardless: a
+   * refused drain is a machine whose state is unknown AND which admits nothing new, never a
+   * machine left open. Unknown is not safe; treat a denial as "do not replace".
+   */
+  async drainMachine(
+    machineId: string,
+    draining: boolean,
+  ): Promise<AccessOutcome<MachineDrainStatus>> {
+    const request = DrainMachineRequestSchema.parse({ machineId, draining });
+    return this.accessDoor("core.machines.drain", request, (result) =>
+      MachineDrainStatusSchema.parse(result),
     );
   }
 

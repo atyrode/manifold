@@ -112,7 +112,10 @@ function ctxWith(
     emit: (ref, kind, payload) => {
       emitted.push({ ref, kind, payload });
     },
-    machines: { isOnline: (machineId) => machineId === "m-online" },
+    machines: {
+      isOnline: (machineId) => machineId === "m-online",
+      drain: () => Promise.resolve({ ok: false, reason: "fixture has no terminal owner" }),
+    },
   };
   return { ctx: slice as ActionCtx, emitted, allowed };
 }

@@ -15,7 +15,7 @@ import type { Logger } from "./log.ts";
 import type { RoomTimers } from "./room.ts";
 import type { RawSocket } from "./session-channel.ts";
 import type { ServerStore } from "./stores.ts";
-import type { MachineChannel, TerminalBroker } from "./terminal-broker.ts";
+import type { DrainOutcome, MachineChannel, TerminalBroker } from "./terminal-broker.ts";
 
 type ClassifiedFrame =
   | { kind: "message"; message: AgentMessage }
@@ -42,6 +42,7 @@ export class LiveMachineChannel implements MachineChannel {
     readonly tokenPrincipalId: string,
     readonly socket: RawSocket,
     readonly protocolVersion: number,
+    readonly terminalHostId: string | null,
   ) {}
 
   send(message: ServerToAgentMessage): boolean {
@@ -82,6 +83,90 @@ function classifyAgentFrame(data: unknown): ClassifiedFrame {
   const parsed = AgentMessageSchema.safeParse(raw);
   if (!parsed.success) return { kind: "malformed", detail: `invalid ${frameType} frame` };
   return { kind: "message", message: parsed.data };
+}
+
+/**
+ * What the gateway knows when a hello arrives for a machine, reduced to the facts the
+ * admission verdict is a function of. Pure input, so the verdict can be proven in isolation.
+ */
+export interface AdmissionInput {
+  /** The live fenced channel for this machine, or null when nobody is connected. */
+  readonly incumbent: { readonly terminalHostId: string | null } | null;
+  /** `machines.owner_host_id`: the owner the last ADMITTED hello named. */
+  readonly persistedOwner: string | null;
+  /** The newcomer's `hello.terminalHostId`, or null for an agent that is its own owner. */
+  readonly newcomerOwner: string | null;
+  /** Every durable `running` terminal row bound to this machine. */
+  readonly durableRunning: readonly string[];
+  /** Every terminal the newcomer's hello ACCOUNTS FOR: advertised alive, or advertised exited. */
+  readonly advertised: ReadonlySet<string>;
+}
+
+export type Admission =
+  | { readonly verdict: "refuse"; readonly reason: string }
+  | {
+      readonly verdict: "admit";
+      /** A live incumbent is fenced out in favour of this newcomer. */
+      readonly supersedes: boolean;
+    };
+
+/**
+ * THE ADMISSION VERDICT (#278). A token authenticates a MACHINE; it does not prove that the
+ * process presenting it owns the machine's PTYs, and on 2026-09-05 acting as if it did is
+ * what turned an agent restart into six destroyed terminals. So a hello is admitted only
+ * when it PROVES continuity with the machine's running terminals, and token possession is
+ * never that proof. There are exactly three proofs:
+ *
+ *   NOTHING TO CONTINUE — the machine has no durable running terminal. Any owner may take
+ *     the seat: there is no work a wrong one could hijack.
+ *   OWNER — the newcomer names the same `terminalHostId` as the reference owner: the live
+ *     incumbent when there is one, else the last admitted hello. Two transports, one owner:
+ *     the PTYs never moved, and what its inventory says about them (alive, exited, absent) is
+ *     the owner's word.
+ *   INVENTORY, legacy only — neither side names an owner and the newcomer accounts for every
+ *     durable running terminal, alive or exited. This is what keeps a pre-v24 agent's
+ *     reconnect and hub restart working exactly as before. It is NOT accepted across an
+ *     ownership change: a process that names a different owner cannot hold another process's
+ *     PTYs, whatever it advertises, and a legacy agent cannot hold a terminal host's.
+ *
+ * Everything else is REFUSED before welcome, whether or not anybody is connected. Admitting
+ * an unproven claimant "to keep the machine reachable" was evaluated and rejected: it made
+ * the claimant the incumbent, so the returning owner was refused, drains reported the
+ * claimant's empty inventory as the machine's, and terminals born on the claimant were later
+ * disbelieved by the owner's reconciliation. The refused agent re-dials with backoff; the
+ * moment the owner is back, or an operator has killed the rows through the named door, the
+ * same hello is admitted. The invariant this buys is what every downstream path relies on:
+ * THE ADMITTED CHANNEL IS THE OWNER OF RECORD, so its inventory may be believed, its drain
+ * answer is the machine's, and a terminal born on it is born in the process that owns it.
+ */
+export function decideAdmission(input: AdmissionInput): Admission {
+  const supersedes = input.incumbent !== null;
+  if (input.durableRunning.length === 0) return { verdict: "admit", supersedes };
+  const reference =
+    input.incumbent === null ? input.persistedOwner : input.incumbent.terminalHostId;
+  if (input.newcomerOwner !== null) {
+    if (reference === input.newcomerOwner) return { verdict: "admit", supersedes };
+    return {
+      verdict: "refuse",
+      reason:
+        reference === null
+          ? "terminal continuity unproven: this machine's running terminals belong to an agent that named no owner"
+          : "terminal continuity unproven: terminal owner does not match the owner of record",
+    };
+  }
+  if (reference !== null) {
+    return {
+      verdict: "refuse",
+      reason:
+        "terminal continuity unproven: this machine's running terminals belong to a terminal owner",
+    };
+  }
+  const unaccounted = input.durableRunning.filter((id) => !input.advertised.has(id));
+  if (unaccounted.length === 0) return { verdict: "admit", supersedes };
+  return {
+    verdict: "refuse",
+    reason: `terminal continuity unproven: ${unaccounted.length} running terminal(s) unaccounted for`,
+  };
 }
 
 /** Authenticates, fences, and dispatches every `/ws/machine` connection. */
@@ -209,16 +294,45 @@ export class MachineGateway {
 
     const now = this.runtime.now();
     this.pruneExpiredSupersessionDamp(now);
+    const terminalHostId = message.terminalHostId ?? null;
     const channel = new LiveMachineChannel(
       authenticated.id,
       authenticated.tokenPrincipalId,
       connection.socket,
       message.protocolVersion,
+      terminalHostId,
     );
-    const older = this.activeByMachine.get(authenticated.id);
+    const older = this.activeByMachine.get(authenticated.id) ?? null;
+    const advertised = new Set<string>();
+    for (const terminal of message.terminals) advertised.add(terminal.terminalId);
+    const admission = decideAdmission({
+      incumbent: older,
+      persistedOwner: authenticated.ownerHostId,
+      newcomerOwner: terminalHostId,
+      durableRunning: this.store
+        .listRunningTerminalsForMachine(authenticated.id)
+        .map((terminal) => terminal.id),
+      advertised,
+    });
+    if (admission.verdict === "refuse") {
+      // Refused at NEGOTIATION, like a version mismatch: no welcome, no reconciliation, and
+      // an incumbent never learns a claimant knocked. The agent re-dials with backoff; the
+      // moment the owner is back or the rows are killed through the named door, the same
+      // hello is admitted below.
+      connection.cancelHelloTimeout?.();
+      connection.cancelHelloTimeout = null;
+      this.logger.warn("machine_admission_refused", {
+        machineId: authenticated.id,
+        reason: admission.reason,
+        terminalHostId,
+        ownerHostId: older === null ? authenticated.ownerHostId : older.terminalHostId,
+      });
+      connection.socket.close(4003, admission.reason);
+      return;
+    }
     const lastSupersededAt = this.lastSupersededAtByToken.get(authenticated.tokenPrincipalId);
     if (
-      older !== undefined &&
+      admission.supersedes &&
       lastSupersededAt !== undefined &&
       now - lastSupersededAt < SUPERSEDE_DAMP_MS
     ) {
@@ -231,7 +345,9 @@ export class MachineGateway {
     connection.channel = channel;
     connection.cancelHelloTimeout?.();
     connection.cancelHelloTimeout = null;
-    this.store.touchMachine(authenticated.id, message.name, now);
+    // Admission proved this hello is the owner of every running terminal (or that there is
+    // none), so its identity IS the owner of record from here on.
+    this.store.touchMachine(authenticated.id, message.name, now, terminalHostId);
     if (
       !channel.send({
         type: "welcome",
@@ -244,7 +360,7 @@ export class MachineGateway {
     }
     this.activeByMachine.set(authenticated.id, channel);
     this.broker.setMachineOnline(channel);
-    if (older !== undefined) {
+    if (older !== null) {
       this.lastSupersededAtByToken.set(authenticated.tokenPrincipalId, now);
       this.logger.info("machine_superseded", { machineId: authenticated.id });
       older.close(4001, "superseded");
@@ -295,6 +411,9 @@ export class MachineGateway {
         return;
       case "pong":
         return;
+      case "drain_status":
+        this.broker.onDrainStatus(channel.machineId, message);
+        return;
       default: {
         const exhaustive: never = message;
         void exhaustive;
@@ -332,6 +451,15 @@ export class MachineGateway {
   /** Reports persisted machine liveness for HTTP summaries. */
   isOnline(machineId: string): boolean {
     return this.activeByMachine.has(machineId);
+  }
+
+  /**
+   * `core.machines.drain`'s mechanism, through the same door the roster asks liveness of:
+   * the plugin declares `{ isOnline, drain }` and nothing about sockets. The broker owns the
+   * latch and the owner round trip; this is the door, not a second implementation.
+   */
+  drain(machineId: string, draining: boolean): Promise<DrainOutcome> {
+    return this.broker.drain(machineId, draining);
   }
 
   /** Closes every machine channel and unregisters auth fanout at shutdown. */

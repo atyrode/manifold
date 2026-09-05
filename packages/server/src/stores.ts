@@ -180,6 +180,8 @@ interface MachineRow {
   name: string;
   token_id: string;
   last_seen: number;
+  owner_host_id: string | null;
+  draining: number;
 }
 
 interface PluginInstallDbRow {
@@ -307,12 +309,21 @@ export interface InvalidDoc {
   rev: number;
 }
 
-/** Persisted machine identity and its last contact time. */
+/** Persisted machine identity, its last contact time, and its admission state (#278). */
 export interface MachineRecord {
   id: string;
   name: string;
   tokenId: string;
   lastSeen: number;
+  /**
+   * The `terminalHostId` the last ADMITTED hello named — the process that owns this
+   * machine's PTYs — or null when that agent was its own owner (pre-v24, or one that named
+   * none). Continuity for a newcomer is judged against this when no live socket is there
+   * to judge it against.
+   */
+  ownerHostId: string | null;
+  /** The admission latch `core.machines.drain` sets: while true, no new terminal is admitted. */
+  draining: boolean;
 }
 
 /** Machine identity resulting from a hashed-token lookup. */
@@ -620,8 +631,18 @@ const DIAL_SELECT = `SELECT id, origin, secret, ref, caps, title, dialed_at, rev
    FROM dials`;
 
 function toMachine(row: MachineRow): MachineRecord {
-  return { id: row.id, name: row.name, tokenId: row.token_id, lastSeen: row.last_seen };
+  return {
+    id: row.id,
+    name: row.name,
+    tokenId: row.token_id,
+    lastSeen: row.last_seen,
+    ownerHostId: row.owner_host_id,
+    draining: row.draining !== 0,
+  };
 }
+
+const MACHINE_SELECT =
+  "SELECT id, name, token_id, last_seen, owner_host_id, draining FROM machines";
 
 function toPluginInstall(row: PluginInstallDbRow): PluginInstallRow {
   return {
@@ -2077,10 +2098,17 @@ export class ServerStore {
 
   createMachine(machine: MachineRecord): void {
     this.db
-      .query<void, [string, string, string, number]>(
-        "INSERT INTO machines(id, name, token_id, last_seen) VALUES (?, ?, ?, ?)",
+      .query<void, [string, string, string, number, string | null, number]>(
+        "INSERT INTO machines(id, name, token_id, last_seen, owner_host_id, draining) VALUES (?, ?, ?, ?, ?, ?)",
       )
-      .run(machine.id, machine.name, machine.tokenId, machine.lastSeen);
+      .run(
+        machine.id,
+        machine.name,
+        machine.tokenId,
+        machine.lastSeen,
+        machine.ownerHostId,
+        machine.draining ? 1 : 0,
+      );
   }
 
   updateMachineToken(machineId: string, tokenId: string, at: number): void {
@@ -2092,28 +2120,30 @@ export class ServerStore {
   }
 
   getMachine(id: string): MachineRecord | null {
-    const row = this.db
-      .query<MachineRow, [string]>(
-        "SELECT id, name, token_id, last_seen FROM machines WHERE id = ?",
-      )
-      .get(id);
+    const row = this.db.query<MachineRow, [string]>(`${MACHINE_SELECT} WHERE id = ?`).get(id);
     return row === null ? null : toMachine(row);
   }
 
   getMachineByName(name: string): MachineRecord | null {
-    const row = this.db
-      .query<MachineRow, [string]>(
-        "SELECT id, name, token_id, last_seen FROM machines WHERE name = ?",
-      )
-      .get(name);
+    const row = this.db.query<MachineRow, [string]>(`${MACHINE_SELECT} WHERE name = ?`).get(name);
     return row === null ? null : toMachine(row);
   }
 
   listMachines(): MachineRecord[] {
     return this.db
-      .query<MachineRow, []>("SELECT id, name, token_id, last_seen FROM machines ORDER BY name, id")
+      .query<MachineRow, []>(`${MACHINE_SELECT} ORDER BY name, id`)
       .all()
       .map(toMachine);
+  }
+
+  /**
+   * Sets the admission latch (`core.machines.drain`). Persisted BEFORE the owner is asked,
+   * so a hub restart between the two cannot reopen admission by forgetting it was closed.
+   */
+  setMachineDraining(machineId: string, draining: boolean): void {
+    this.db
+      .query<void, [number, string]>("UPDATE machines SET draining = ? WHERE id = ?")
+      .run(draining ? 1 : 0, machineId);
   }
 
   /**
@@ -2144,7 +2174,7 @@ export class ServerStore {
   authenticateMachine(hash: string): MachineAuthRecord | null {
     const row = this.db
       .query<MachineAuthRow, [string]>(
-        `SELECT m.id, m.name, m.token_id, m.last_seen,
+        `SELECT m.id, m.name, m.token_id, m.last_seen, m.owner_host_id, m.draining,
                 t.hash, t.principal_id, t.revoked_at
          FROM machines m JOIN tokens t ON t.id = m.token_id
          WHERE t.hash = ?`,
@@ -2152,21 +2182,24 @@ export class ServerStore {
       .get(hash);
     if (row === null) return null;
     return {
-      id: row.id,
-      name: row.name,
-      tokenId: row.token_id,
-      lastSeen: row.last_seen,
+      ...toMachine(row),
       tokenPrincipalId: row.principal_id,
       revokedAt: row.revoked_at,
     };
   }
 
-  touchMachine(machineId: string, name: string, at: number): void {
+  /**
+   * The one write an ADMITTED hello makes: the name the agent reported, when, and WHO owns
+   * its PTYs (#278) — the hello's `terminalHostId`, or null for an agent that is its own
+   * owner. Written at admission and nowhere else, so `owner_host_id` always describes a
+   * connection the hub actually accepted, which is what a later newcomer is judged against.
+   */
+  touchMachine(machineId: string, name: string, at: number, ownerHostId: string | null): void {
     this.db
-      .query<void, [string, number, string]>(
-        "UPDATE machines SET name = ?, last_seen = ? WHERE id = ?",
+      .query<void, [string, number, string | null, string]>(
+        "UPDATE machines SET name = ?, last_seen = ?, owner_host_id = ? WHERE id = ?",
       )
-      .run(name, at, machineId);
+      .run(name, at, ownerHostId, machineId);
   }
 
   createTerminal(terminal: NewStoredTerminal): void {

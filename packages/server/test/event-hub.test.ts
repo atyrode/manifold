@@ -727,11 +727,13 @@ describe("floor doors emit at their commit points", () => {
     const first = {
       machineId: enrollment.machine.id,
       protocolVersion: PROTOCOL_VERSION,
+      terminalHostId: null,
       send: () => true,
     };
     const second = {
       machineId: enrollment.machine.id,
       protocolVersion: PROTOCOL_VERSION,
+      terminalHostId: null,
       send: () => true,
     };
     fixture.broker.setMachineOnline(first);

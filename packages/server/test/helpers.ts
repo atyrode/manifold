@@ -23,7 +23,7 @@ import {
   assemblyTileTrees,
   type PlaceOutcome,
 } from "../src/placement.ts";
-import { PluginHost, type MachineLiveness } from "../src/plugin-host.ts";
+import { PluginHost, type MachineAdmission } from "../src/plugin-host.ts";
 import type { RoomManager, RoomTimers, TileTreeDisciplines } from "../src/room.ts";
 import type { RawSocket } from "../src/session-channel.ts";
 import { ServerStore } from "../src/stores.ts";
@@ -335,8 +335,8 @@ export async function testPluginHost(
   runtime: RuntimeDeps,
   options: {
     readonly lifecycleTimeoutMs?: number;
-    /** Machine liveness, defaulting to "nothing is connected" — the honest state of a store. */
-    readonly machines?: MachineLiveness;
+    /** Machine liveness and admission, defaulting to "nothing is connected" — the honest state of a store. */
+    readonly machines?: MachineAdmission;
     /** A sink, for cases that assert what a dispatch DOES and does not record. */
     readonly logger?: Logger;
     /**
@@ -389,7 +389,11 @@ export async function testPluginHost(
     rooms,
     broker,
     placement,
-    options.machines ?? { isOnline: () => false },
+    options.machines ?? {
+      isOnline: () => false,
+      drain: () =>
+        Promise.resolve({ ok: false, reason: "machine is offline: its terminals are unknown" }),
+    },
     options.dialer ??
       new InstanceDialer(store, runtime, options.logger ?? silentLogger, () => TEST_ORIGIN),
     runtime,
