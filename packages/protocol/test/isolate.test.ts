@@ -290,7 +290,8 @@ describe("the install artifact", () => {
     expect(nothing.error?.issues[0]?.path).toEqual(["manifest", "entry"]);
 
     // The manifest schema leaves `entry` optional; the bundle does not.
-    const { entry: _entry, ...withoutEntry } = manifest;
+    const { entry, ...withoutEntry } = manifest;
+    void entry;
     expect(PluginBundleSchema.safeParse(bundle({ manifest: withoutEntry as never })).success).toBe(
       false,
     );
