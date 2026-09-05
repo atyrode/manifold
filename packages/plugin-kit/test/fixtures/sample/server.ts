@@ -4,7 +4,7 @@ import { z } from "zod";
 import manifestJson from "./manifest.json";
 
 /*
-  THE REFERENCE ISOLATED PLUGIN, server half. One door, `acme.counter.bump`: reads its own
+  THE REFERENCE ISOLATED PLUGIN, server half. One door, `example.counter.bump`: reads its own
   storage, refuses on domain grounds, writes, emits. Every engine-touching call is awaited —
   each one crosses the process boundary as a `call` frame the host answers.
  */

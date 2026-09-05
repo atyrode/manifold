@@ -27,7 +27,7 @@ import { e2eFailure, stopProcesses } from "./helpers.ts";
 const REPO_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const KIT = join(REPO_ROOT, "packages/plugin-kit");
 const SAMPLE = join(KIT, "test/fixtures/sample");
-const PLUGIN_ID = "acme.counter";
+const PLUGIN_ID = "example.counter";
 const BUMP = `${PLUGIN_ID}.bump`;
 const BUNDLE_NAME = `${PLUGIN_ID}.manifold-plugin.json`;
 /** The fixture's own domain limit: `bump` refuses once the count would pass one thousand. */

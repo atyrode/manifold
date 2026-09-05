@@ -1,11 +1,11 @@
 {
-  "id": "acme.counter",
+  "id": "example.counter",
   "version": "1.0.0",
-  "title": "Counter",
-  "description": "A counter kept in plugin storage, bumped through one door and shown in one panel.",
+  "title": "Example counter",
+  "description": "The plugin-kit's reference plugin, not a product: a counter kept in plugin storage, bumped through one door, shown in one panel that renders every vocabulary node. Exists to be packed by the kit's tests and read by plugin authors.",
   "capabilities": ["containers:read"],
   "contributes": {
-    "panels": [{ "id": "counter", "title": "Counter" }],
+    "panels": [{ "id": "counter", "title": "Example counter" }],
     "sections": [],
     "elements": [],
     "tools": [],

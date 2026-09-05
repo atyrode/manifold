@@ -1247,7 +1247,7 @@ with `Content-Type: text/javascript`, `Cache-Control: no-store` and `ETag` equal
 `sha256`; 404 otherwise (not installed, disabled, or no web half). Same auth as `GET /api/plugins`.
 
 **The proof (ADR 0016 §8 stage 1).** Every claim above is held by two subjects, both driving the
-kit's reference plugin (`packages/plugin-kit/test/fixtures/sample`, `acme.counter`) as a
+kit's reference plugin (`packages/plugin-kit/test/fixtures/sample`, `example.counter`) as a
 stranger's code. `packages/testkit/e2e/isolated-plugin.test.ts` runs REAL server processes: the
 sample is packed by the kit's own `pack` command, admitted through `engine.plugins.install` from
 a path (`MANIFOLD_PLUGIN_DEV_PATHS=1`), published on the roster with its `install` block and
@@ -1262,7 +1262,7 @@ door answers `unknown_action`, not `plugin_disabled` (the row is not off) and no
 installed from the drop box (`<data>/plugin-uploads/`), its panel seated through
 `core.space.setLayout` in the viewer's own tree, a real Chromium painting every one of the
 thirteen kinds under its `mf-vocab-<kind>` anchor from the Worker, and one press on the
-`data-action="acme.counter.bump"` button becoming exactly one dispatch at the same door the HTTP
+`data-action="example.counter.bump"` button becoming exactly one dispatch at the same door the HTTP
 call before it used. One behaviour the proof records rather than endorses: uninstall keeps the
 plugin's ENABLEMENT beside its storage (the disabled set is keyed by id), so a reinstall of an
 id that was switched off in order to be uninstalled comes back off.
@@ -1279,7 +1279,7 @@ or write `ctx.store` directly; `core.presence` and `core.terminals` use `ctx.roo
 is React over `@manifold/plugin` (panels, sections, element renderers, tools, overlays), and a
 Worker serves panels of the closed vocabulary and nothing else. What would unlock the proof is
 a plugin whose server half is storage plus the served slices and whose web half is one panel —
-the shape `acme.counter` has and no shipped plugin does — or the runner serving a store-backed
+the shape `example.counter` has and no shipped plugin does — or the runner serving a store-backed
 slice, which is a stage-2 decision, not something this proof may quietly widen.
 
 ## WS /ws/session — session channel (JSON text frames)

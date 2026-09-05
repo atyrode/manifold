@@ -20,7 +20,7 @@ const everything: UiNode = ui.box({ direction: "row", gap: 3, grow: true, wrap: 
     payload: { n: 1 },
     tone: "accent",
     disabled: false,
-    action: "acme.thing.go",
+    action: "example.thing.go",
   }),
   ui.select("pick", "a", [{ value: "a", label: "A" }], { label: "Pick", disabled: false }),
   ui.input("edit", "text", { label: "Edit", placeholder: "type", mono: true, disabled: false }),
@@ -61,11 +61,11 @@ describe("ui builders", () => {
       expect(UiNodeSchema.safeParse(node).success).toBe(true);
     }
     expect(ui.heading("h")).toEqual({ type: "heading", text: "h" });
-    expect(ui.button("Bump", "bump", { action: "acme.counter.bump" })).toEqual({
+    expect(ui.button("Bump", "bump", { action: "example.counter.bump" })).toEqual({
       type: "button",
       label: "Bump",
       event: "bump",
-      action: "acme.counter.bump",
+      action: "example.counter.bump",
     });
   });
 });
