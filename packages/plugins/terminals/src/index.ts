@@ -92,7 +92,10 @@ export const terminalsActions = [
       created here, now, by you", and `terminal_open` on the channel is the gesture that
       asks it and then moves the bytes. Everything a policy could want to judge is in the
       arguments, including the machine, so a future rule (fleet allowlists, geometry caps)
-      lands here and nowhere else.
+      lands here and nowhere else — the RULE, never the birth. Dispatching this door over
+      `POST /api/actions/…` creates nothing; the birth is `terminal_open` on the session
+      socket, which the gateway sends through here first (`docs/PLUGINS.md` §3, issue #185
+      for whether an action should ever create one).
      */
     name: "open",
     title: "Authorize a new terminal in a container",

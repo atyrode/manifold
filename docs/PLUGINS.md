@@ -319,6 +319,15 @@ and they are the only ones:
 
 Caps and schemas still apply in both cases: a carve-out skips one rung, never the intersection.
 
+One door in that list is easy to misread. **`core.terminals.open` never creates a terminal.** It
+is the authorization gate: it answers "may a terminal be created here, now, by you", and the
+session channel dispatches it before it honours a `terminal_open` frame. The PTY itself is born on
+the session socket (`SessionClient.openTerminal` in the SDK), because a create is a round trip to
+a machine whose reply — snapshot watermark, controller lease, the opener's correlation ref — is
+channel traffic the floor owns. Dispatching `core.terminals.open` over `POST /api/actions/…`
+returns the decision and nothing else, and there is no action that creates a terminal; whether
+there should be one is the open design question in #185.
+
 The server half supplies the handler:
 
 ```ts
