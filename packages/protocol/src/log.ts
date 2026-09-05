@@ -96,6 +96,7 @@ export const LOG_EVENTS = [
   "terminal_create_failed",
   "terminal_create_timeout",
   "terminal_home_failed",
+  "terminal_program_unsupported",
   "terminal_snapshot_timeout",
 
   // Agent: process lifecycle. `shutdown_failed` is shared with the server half above — one

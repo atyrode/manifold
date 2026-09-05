@@ -4,6 +4,7 @@ export {
   INSTANCE_PROTOCOL_COMPAT_VERSIONS,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
   PROTOCOL_VERSION,
+  TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION,
 } from "./version.ts";
 export { reconnectDelayMs } from "./backoff.ts";
 export { CAPS, CapSchema, hasCap, type Cap } from "./capabilities.ts";
@@ -299,10 +300,15 @@ export {
   GestureFields,
   GestureSchema,
   MAX_SESSION_CHANNELS_PER_CONNECTION,
+  MAX_TERMINAL_ENV_KEYS,
+  MAX_TERMINAL_ENV_VALUE_CHARS,
   SERVER_MESSAGE_TYPES,
   ErrorCodeSchema,
   ServerMessageBodySchema,
   ServerMessageSchema,
+  TERMINAL_ENV_KEY_PATTERN,
+  TERMINAL_ENV_RESERVED_PREFIX,
+  TerminalEnvSchema,
   TerminalInfoSchema,
   type ClientMessage,
   type ClientMessageBody,
@@ -312,17 +318,22 @@ export {
   type ServerGesture,
   type ServerMessage,
   type ServerMessageBody,
+  type TerminalEnv,
   type TerminalInfo,
 } from "./session.ts";
 export {
   AGENT_MESSAGE_TYPES,
   AdvertisedTerminalSchema,
   AgentMessageSchema,
+  MAX_TERMINAL_ARGV_ITEMS,
+  MAX_TERMINAL_ARG_CHARS,
   SERVER_TO_AGENT_MESSAGE_TYPES,
   ServerToAgentMessageSchema,
+  TerminalProgramSchema,
   type AdvertisedTerminal,
   type AgentMessage,
   type ServerToAgentMessage,
+  type TerminalProgram,
 } from "./machine.ts";
 export {
   InstanceOriginSchema,
