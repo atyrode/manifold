@@ -9,8 +9,19 @@ import { App } from "./app.tsx";
 import { captureOwnerKeyFromFragment, IdentityGate } from "./identity.tsx";
 import { LensGate } from "./lens.tsx";
 import { AssemblyProvider } from "./plugin-host.tsx";
+import { WEB_CHANNEL } from "./web-version.ts";
 
 captureOwnerKeyFromFragment();
+
+/*
+  A development build names itself in the tab, so two windows on two instances never look alike
+  (#221). Composed onto whatever title the build shipped, and only when the operator did not
+  already choose one (`VITE_MANIFOLD_SITE_TITLE`, docs/SELF-HOST.md): a title somebody picked is
+  theirs to have picked.
+*/
+if (WEB_CHANNEL === "development" && import.meta.env.VITE_MANIFOLD_SITE_TITLE === "") {
+  document.title = `${document.title} · development`;
+}
 
 const rootElement = document.getElementById("root");
 if (rootElement === null) throw new Error("Missing #root mount point");

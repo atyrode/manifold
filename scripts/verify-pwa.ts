@@ -244,10 +244,12 @@ try {
   });
   await driver.goto(`${originA}/`);
   await sleep(1500);
+  // The title is `manifold`, or `manifold · development` when the gate's own build is one (it is:
+  // a checkout past a tag is the development channel, `scripts/build-identity.ts`).
   assert(
     "the shell paints with no network",
     await driver.evaluate<boolean>(
-      "document.title === 'manifold' && document.getElementById('root').childElementCount > 0",
+      "/^manifold( · development)?$/.test(document.title) && document.getElementById('root').childElementCount > 0",
     ),
   );
   assert("the disconnected condition is named on screen", await seenTestId(driver, "lens-offline"));

@@ -498,6 +498,8 @@ export {
 } from "./trace.ts";
 export { buildProtocolJsonSchema, type ProtocolExtras } from "./jsonschema.ts";
 export {
+  BuildChannelSchema,
+  type BuildChannel,
   HealthResponseSchema,
   EnrollMachineRequestSchema,
   MachineEnrollResponseSchema,

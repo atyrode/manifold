@@ -189,13 +189,26 @@ export type RevokeResult = z.infer<typeof RevokeResultSchema>;
 
 // ---------------------------------------------------------------------------- responses
 
+/**
+ * Which kind of build answers: `release` when it is exactly a released tag, `development` for
+ * anything past one (`scripts/build-identity.ts`).
+ */
+export const BuildChannelSchema = z.enum(["release", "development"]);
+export type BuildChannel = z.infer<typeof BuildChannelSchema>;
+
 /** Exact response envelopes; servers MUST return these shapes, clients parse with them. */
 export const HealthResponseSchema = z.strictObject({
   ok: z.literal(true),
+  /** The last reachable release tag without its `v`. */
   version: z.string(),
   protocolVersion: z.number().int().positive(),
-  /** Image/tree provenance (git SHA) baked at build time; absent on ad-hoc dev runs. */
+  /**
+   * `version` at a release; `<version>+<distance>.g<sha7>` past one. Optional on the wire so a
+   * lens can read an instance that predates the field; a current server always sends it.
+   */
   build: z.string().min(1).optional(),
+  /** Same additive terms as `build`. */
+  channel: BuildChannelSchema.optional(),
 });
 
 export const ContainerResponseSchema = z.strictObject({ container: ContainerSchema });

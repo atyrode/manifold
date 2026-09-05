@@ -25,6 +25,7 @@
     "changelog:generate": "bun scripts/generate-web-changelog.ts",
     "changelog:check": "bun scripts/generate-web-changelog.ts --check",
     "release": "bun scripts/release.ts",
+    "promote": "bun scripts/promote.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

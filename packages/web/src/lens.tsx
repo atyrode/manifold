@@ -2,6 +2,7 @@ import { HealthResponseSchema, PROTOCOL_VERSION } from "@manifold/protocol";
 import { instanceOrigin, instanceUrl, isForeignInstance } from "@manifold/plugin/hooks";
 import { Cover } from "@manifold/plugin/ui";
 import { useCallback, useEffect, useState, type ReactElement, type ReactNode } from "react";
+import { WEB_BUILD } from "./web-version.ts";
 
 /**
  * WHAT THE LENS ITSELF IS DOING — the three facts about this window that no plugin can answer,
@@ -34,7 +35,13 @@ type LensCondition =
   | { readonly kind: "checking" }
   | { readonly kind: "ready" }
   | { readonly kind: "unreachable" }
-  | { readonly kind: "skew"; readonly protocol: number; readonly version: string };
+  | {
+      readonly kind: "skew";
+      readonly protocol: number;
+      readonly version: string;
+      /** The instance's exact build when it says one; an older instance names only its version. */
+      readonly build: string | undefined;
+    };
 
 /**
  * Asks the instance who it is. `/healthz` is the right door for this and the only one that is:
@@ -48,7 +55,12 @@ async function probeInstance(): Promise<LensCondition> {
     if (!response.ok) throw new Error(`healthz answered ${String(response.status)}`);
     const health = HealthResponseSchema.parse(await response.json());
     if (health.protocolVersion === PROTOCOL_VERSION) return { kind: "ready" };
-    return { kind: "skew", protocol: health.protocolVersion, version: health.version };
+    return {
+      kind: "skew",
+      protocol: health.protocolVersion,
+      version: health.version,
+      build: health.build,
+    };
   } catch {
     /*
       Unreachable covers every way the answer can fail to arrive — no network, DNS gone, the
@@ -188,8 +200,12 @@ function ProtocolRefusal({
             {appIsOlder ? "This app is out of date" : "This instance is out of date"}
           </h1>
           <p>
-            {instanceOrigin()} runs manifold {condition.version} and speaks protocol{" "}
-            {String(condition.protocol)}; this window speaks {String(PROTOCOL_VERSION)}.{" "}
+            {instanceOrigin()} runs manifold {condition.version}
+            {condition.build !== undefined && condition.build !== condition.version
+              ? ` (build ${condition.build})`
+              : ""}{" "}
+            and speaks protocol {String(condition.protocol)}; this window speaks{" "}
+            {String(PROTOCOL_VERSION)}, build {WEB_BUILD}.{" "}
             {appIsOlder
               ? "Reloading fetches the app this instance ships. Nothing was changed, and no work is lost."
               : "The instance has to be updated to this protocol; reloading this window cannot help. Nothing was changed, and no work is lost."}

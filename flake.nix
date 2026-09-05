@@ -170,6 +170,7 @@
                 install -Dm755 ${pname} "$out/libexec/${pname}"
                 ${extraInstall}
                 makeWrapper "$out/libexec/${pname}" "$out/bin/${pname}" \
+                  --set-default MANIFOLD_VERSION "${version}" \
                   --set-default MANIFOLD_BUILD "${self.rev or self.dirtyRev or "unknown"}" ${wrapperArgs}
                 runHook postInstall
               '';

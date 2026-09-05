@@ -8,9 +8,13 @@ services:
     build:
       context: .
       args:
-        # `MANIFOLD_BUILD=$(git rev-parse --short HEAD) docker compose up -d --build`
-        # stamps /healthz with the deployed tree; defaults to "dev" when unset.
-        MANIFOLD_BUILD: ${MANIFOLD_BUILD:-dev}
+        # What /healthz and the rev line will say (docs/SELF-HOST.md §Environments):
+        #   eval "$(bun scripts/build-identity.ts --env)" && docker compose up -d --build
+        # stamps the image with this checkout's identity; unset, it says "development" at
+        # the packaged version.
+        MANIFOLD_VERSION: ${MANIFOLD_VERSION:-}
+        MANIFOLD_BUILD: ${MANIFOLD_BUILD:-}
+        MANIFOLD_CHANNEL: ${MANIFOLD_CHANNEL:-}
         # Optional build-time browser identity; unset inputs preserve production branding.
         VITE_MANIFOLD_SITE_TITLE: ${VITE_MANIFOLD_SITE_TITLE:-manifold}
         VITE_MANIFOLD_ICON_BACKGROUND: ${VITE_MANIFOLD_ICON_BACKGROUND:-}

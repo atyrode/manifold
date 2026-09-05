@@ -1,34 +1,22 @@
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, relative, resolve, sep } from "node:path";
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+import { resolveBuildIdentity } from "../../scripts/build-identity.ts";
 
 const packageRoot = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(packageRoot, "../..");
-const packageMetadata = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8")) as {
-  readonly version: string;
-};
 
-function gitOutput(args: readonly string[]): string | null {
-  try {
-    const output = execFileSync("git", [...args], {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    return output === "" ? null : output;
-  } catch {
-    return null;
-  }
-}
-
-const commit = gitOutput(["rev-parse", "--short=8", "HEAD"]) ?? "unknown";
-const dirty = gitOutput(["status", "--porcelain"]) !== null;
-const webBuild =
-  process.env["VITE_MANIFOLD_WEB_BUILD"]?.trim() || `${commit}${dirty ? "-dirty" : ""}`;
+/*
+ * The bundle's identity is the SERVER's identity, by the one derivation both read
+ * (`scripts/build-identity.ts`): `MANIFOLD_VERSION`/`MANIFOLD_BUILD`/`MANIFOLD_CHANNEL` when the
+ * build was told (a Dockerfile ARG, a workflow), the checkout's git tags otherwise. A lens and
+ * the instance that served it therefore print the same `build`, which is the whole point of
+ * printing one.
+ */
+const identity = resolveBuildIdentity(process.env, repositoryRoot);
 
 function escapeMarkup(value: string): string {
   return value.replace(/[&<>"']/g, (character) => {
@@ -47,13 +35,15 @@ function escapeMarkup(value: string): string {
   });
 }
 
+/** The shipped `<title>` when nobody chose one; Docker and compose pass it back explicitly. */
+const DEFAULT_TITLE = "manifold";
+
 /**
  * Browser identity belongs to the build, never to the instance hostname. Public files are
  * production templates; one generation serves both Vite development and emitted builds.
  * Content-addressed URLs also bypass a previous worker's cache when only branding changes.
  */
-function shellIdentity(env: Record<string, string>): Plugin {
-  const title = env["VITE_MANIFOLD_SITE_TITLE"]?.trim() || "manifold";
+function shellIdentity(env: Record<string, string>, title: string): Plugin {
   const background = env["VITE_MANIFOLD_ICON_BACKGROUND"]?.trim();
   if (background && !/^#[\da-f]{6}$/i.test(background)) {
     throw new Error("VITE_MANIFOLD_ICON_BACKGROUND must be a six-digit hex color (#rrggbb)");
@@ -181,7 +171,7 @@ function shellWorker(): Plugin {
       if (!SHELL_MARKER.test(source)) {
         throw new Error("packages/web/sw.js is missing its MANIFOLD_SHELL line");
       }
-      const shell = { build: `${webBuild}-${digest.slice(0, 8)}`, assets: shipped };
+      const shell = { build: `${identity.build}-${digest.slice(0, 8)}`, assets: shipped };
       writeFileSync(
         resolve(outDir, "sw.js"),
         source.replace(SHELL_MARKER, `const SHELL = ${JSON.stringify(shell)}; // MANIFOLD_SHELL`),
@@ -192,23 +182,33 @@ function shellWorker(): Plugin {
 
 // Dev: vite on :5173 proxies API/WS to the manifold server on :7777.
 // Prod: `vite build` emits dist/, served directly by the manifold server.
-export default defineConfig(({ mode }) => ({
-  // These files are templates for shellIdentity, not a second set of unbranded public URLs.
-  publicDir: false,
-  plugins: [react(), shellIdentity(loadEnv(mode, packageRoot, "VITE_MANIFOLD_")), shellWorker()],
-  define: {
-    "import.meta.env.VITE_MANIFOLD_WEB_VERSION": JSON.stringify(packageMetadata.version),
-    "import.meta.env.VITE_MANIFOLD_WEB_BUILD": JSON.stringify(webBuild),
-  },
-  server: {
-    port: 5173,
-    proxy: {
-      "/api": { target: "http://127.0.0.1:7777", changeOrigin: false },
-      "/ws": { target: "http://127.0.0.1:7777", changeOrigin: true, ws: true },
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, packageRoot, "VITE_MANIFOLD_");
+  const title = env["VITE_MANIFOLD_SITE_TITLE"]?.trim() || DEFAULT_TITLE;
+  return {
+    // These files are templates for shellIdentity, not a second set of unbranded public URLs.
+    publicDir: false,
+    plugins: [react(), shellIdentity(env, title), shellWorker()],
+    define: {
+      "import.meta.env.VITE_MANIFOLD_WEB_VERSION": JSON.stringify(identity.version),
+      "import.meta.env.VITE_MANIFOLD_WEB_BUILD": JSON.stringify(identity.build),
+      "import.meta.env.VITE_MANIFOLD_WEB_CHANNEL": JSON.stringify(identity.channel),
+      // The title the operator CHOSE, or "": a development build marks its tab only when nobody
+      // has already named it (`main.tsx`). The default handed back explicitly is not a choice.
+      "import.meta.env.VITE_MANIFOLD_SITE_TITLE": JSON.stringify(
+        title === DEFAULT_TITLE ? "" : title,
+      ),
     },
-  },
-  build: {
-    outDir: "dist",
-    sourcemap: true,
-  },
-}));
+    server: {
+      port: 5173,
+      proxy: {
+        "/api": { target: "http://127.0.0.1:7777", changeOrigin: false },
+        "/ws": { target: "http://127.0.0.1:7777", changeOrigin: true, ws: true },
+      },
+    },
+    build: {
+      outDir: "dist",
+      sourcemap: true,
+    },
+  };
+});

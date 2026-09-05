@@ -1,8 +1,9 @@
-# THE OPERATOR'S INSTANCE (manifold.tyrode.dev on Clever Cloud) consuming a release.
-# One deployment, not THE deployment: this is the only file in the tree allowed to name a
-# hosting provider (verify:axioms S17, ADR 0022), and it is inert unless the repository
-# variable CLEVER_HUB_APP_ID exists - a fork never runs it. Self-hosting is docs/SELF-HOST.md;
-# replace this file with whatever consumes YOUR releases.
+# THE OPERATOR'S PRODUCTION INSTANCE (manifold.tyrode.dev on Clever Cloud), promoted to a
+# published release by an explicit dispatch — never by a release or a green main (ADR 0022,
+# amended by #244; docs/SELF-HOST.md §Environments). One deployment, not THE deployment: this is
+# the only file in the tree allowed to name a hosting provider (verify:axioms S17), and it is
+# inert unless the repository variable CLEVER_HUB_APP_ID exists - a fork never runs it.
+# Self-hosting is docs/SELF-HOST.md; replace this file with whatever consumes YOUR releases.
 name: Deploy production
 run-name: Deploy production ${{ inputs.tag }}
 
@@ -14,6 +15,8 @@ on:
         required: true
         type: string
 
+# The job token reads the repository and the release list; the Environment record is Actions'
+# own bookkeeping and needs no `deployments` grant.
 permissions:
   contents: read
 
@@ -26,6 +29,11 @@ jobs:
     name: manifold.tyrode.dev
     if: vars.CLEVER_HUB_APP_ID != ''
     runs-on: ubuntu-latest
+    # A GitHub Environment: its history is the ledger of what production ran, and any protection
+    # rule (required reviewers, a wait timer) attaches here rather than in this file.
+    environment:
+      name: production
+      url: https://manifold.tyrode.dev
     env:
       TAG: ${{ inputs.tag }}
       CLEVER_TOKEN: ${{ secrets.CLEVER_TOKEN }}
@@ -40,6 +48,8 @@ jobs:
           bun-version: "1.3.13"
 
       - name: Validate the published release
+        # A tag alone is not a release: it must be a PUBLISHED (non-draft) GitHub Release, which
+        # is what `bun run release` produces and the only thing production may run.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -47,14 +57,25 @@ jobs:
             echo "::error::Select an explicit vMAJOR.MINOR.PATCH release tag"
             exit 1
           fi
-          test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = false
+          if ! draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"; then
+            echo "::error::$TAG has no GitHub Release; publish it with bun run release first"
+            exit 1
+          fi
+          if [ "$draft" != false ]; then
+            echo "::error::$TAG is a draft release, not a published one"
+            exit 1
+          fi
           git rev-parse --verify "refs/tags/$TAG^{commit}"
 
       - name: Link the application
         run: bunx clever-tools@4.10.0 link "${{ vars.CLEVER_HUB_APP_ID }}" --org "${{ vars.CLEVER_ORG_ID }}"
 
       - name: Stamp the build
-        run: bunx clever-tools@4.10.0 env set MANIFOLD_BUILD "$TAG"
+        # What /healthz will answer (scripts/build-identity.ts): a release is its tag.
+        run: |
+          bunx clever-tools@4.10.0 env set MANIFOLD_VERSION "${TAG#v}"
+          bunx clever-tools@4.10.0 env set MANIFOLD_BUILD "${TAG#v}"
+          bunx clever-tools@4.10.0 env set MANIFOLD_CHANNEL release
 
       - name: Deploy the tag
         run: bunx clever-tools@4.10.0 deploy --tag "$TAG" --force
@@ -64,10 +85,10 @@ jobs:
           ORIGIN: ${{ vars.MANIFOLD_HUB_ORIGIN }}
         run: |
           for _ in $(seq 1 40); do
-            if [ "$(curl -fsS "$ORIGIN/healthz" | jq -r .build)" = "$TAG" ]; then exit 0; fi
+            if [ "$(curl -fsS "$ORIGIN/healthz" | jq -r .build)" = "${TAG#v}" ]; then exit 0; fi
             sleep 15
           done
-          echo "hub at $ORIGIN never reported build $TAG"; exit 1
+          echo "hub at $ORIGIN never reported build ${TAG#v}"; exit 1
 
       - name: Dispatch the fleet pin
         # Hub first, then the fleet (invariant 10), as a SEQUENCE rather than a cron racing a
@@ -77,3 +98,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.DOTFILES_DISPATCH_TOKEN }}
         run: gh workflow run update-pins.yml --repo atyrode/dotfiles
+
+      - name: Production now runs this release
+        run: echo "Production now runs $TAG; pin the fleet to $TAG (atyrode/dotfiles)"
