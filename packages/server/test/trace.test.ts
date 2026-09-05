@@ -154,7 +154,11 @@ function probeDefs(): readonly ServerPluginDef[] {
           title: "Reads the ledger from inside its own dispatch",
           caps: [],
           input: z.strictObject({}),
-          result: z.strictObject({ own: z.number(), outcome: z.string().nullable(), traceId: z.number() }),
+          result: z.strictObject({
+            own: z.number(),
+            outcome: z.string().nullable(),
+            traceId: z.number(),
+          }),
         }),
         defineAction({
           name: "keepSecrets",

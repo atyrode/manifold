@@ -1285,7 +1285,7 @@ JSON frames over `Bun.spawn` ipc, discriminated on `t`:
 | Direction  | `t`           | Carries                                                                                                                                                                    |
 | ---------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | host→child | `load`        | `pluginId`, `manifest`, `dir` — the first frame; the child already runs from `dir`                                                                                         |
-| host→child | `dispatch`    | `id`, `action` (LOCAL name), `args`, `ctx: { traceId, principal, caps, isRoot, containerScope, now }` — the caller's authority captured per id                                      |
+| host→child | `dispatch`    | `id`, `action` (LOCAL name), `args`, `ctx: { traceId, principal, caps, isRoot, containerScope, now }` — the caller's authority captured per id                             |
 | host→child | `hook`        | `id`, `hook: "onEnable" \| "onDisable" \| "onAssemblyChanged"`, `delta?: { enabled, disabled }`                                                                            |
 | host→child | `reply`       | `id`, `ok: true, result` or `ok: false, error` — the answer to a child's `call`                                                                                            |
 | host→child | `shutdown`    | orderly exit; also what idle eviction sends                                                                                                                                |
