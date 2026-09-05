@@ -333,11 +333,12 @@ Caps and schemas still apply in both cases: a carve-out skips one rung, never th
 One door in that list is easy to misread. **`core.terminals.open` never creates a terminal.** It
 is the authorization gate: it answers "may a terminal be created here, now, by you", and the
 session channel dispatches it before it honours a `terminal_open` frame. The PTY itself is born on
-the session socket (`SessionClient.openTerminal` in the SDK), because a create is a round trip to
-a machine whose reply — snapshot watermark, controller lease, the opener's correlation ref — is
-channel traffic the floor owns. Dispatching `core.terminals.open` over `POST /api/actions/…`
-returns the decision and nothing else, and there is no action that creates a terminal; whether
-there should be one is the open design question in #185.
+the session socket — `host.client.openTerminal` from plugin code, `SessionClient.openTerminal`
+from an agent or a tool (§Host services names the whole terminal surface) — because a create is a
+round trip to a machine whose reply — snapshot watermark, controller lease, the opener's
+correlation ref — is channel traffic the floor owns. Dispatching `core.terminals.open` over
+`POST /api/actions/…` returns the decision and nothing else, and there is no action that creates
+a terminal; whether there should be one is the open design question in #185.
 
 The server half supplies the handler:
 
@@ -800,8 +801,10 @@ interface HostServices {
   // spelling, its structured ref, whether the node exists, and its title. Parsing
   // an address is local (`parseManifoldUri`); whether it still names anything is
   // this door, and a plugin that PRODUCES an address should check the one it shows.
+  // And the terminal surface — see "Terminals through the handle" below.
   readonly principal: Principal; // who this device is — paint in this principal's colour
-  readonly token: string; // this device's bearer: the grant a renderer opens its own pipe with
+  readonly token: string; // this device's bearer: the grant a CONTAINER RENDERER opens its own
+  // room pipe with, and nothing else — never a client minted in a panel (#196)
   readonly containerId: string | null; // the container the route is showing, null at the root
   navigate(uri: string): void; // a manifold:// URI, or an app path
   readonly viewport: ViewportHandle | null; // null until a container renderer is mounted
@@ -846,6 +849,76 @@ for (const row of host.assembly.sections.filter((row) => row.enabled)) {
   <SectionOutlet id={row.id} host={host} />;
 }
 ```
+
+#### Terminals through the handle
+
+A terminal is channel traffic — its birth is a round trip to a machine and its bytes are a
+stream — and `host.client` carries the whole of it, so a plugin that opens, drives or watches a
+terminal does it through the handle it was given and never by building a `SessionClient` from
+`host.token` (issue #196; ADR 0016 §3 withdraws the token from an isolated plugin, and what is
+on the handle is what its RPC will carry):
+
+```ts
+interface SessionHandle {
+  // … the doors above …
+  readonly terminals: ReadonlyMap<string, TerminalInfo>; // the routed room's table, live
+  openTerminal(opts: {
+    elementId: string; // your correlation token; under `placement: "tile"` the server places
+    cols: number;
+    rows: number;
+    cwd?: string;
+    machineId?: string;
+    placement?: "tile";
+    program?: TerminalProgram; // exec this instead of the shell (#192)
+    env?: TerminalEnv; // merged under the fixed MANIFOLD_* keys
+    timeoutMs?: number;
+  }): Promise<TerminalInfo>;
+  attachTerminal(terminalId: string): void; // snapshot + gap-free outputs; refcounted
+  detachTerminal(terminalId: string): void;
+  sendTerminalInput(terminalId: string, data: string | Uint8Array): void; // controller only
+  resizeTerminal(terminalId: string, cols: number, rows: number): void; // controller only
+  takeTerminal(terminalId: string): void; // core.terminals.take decides
+  killTerminal(terminalId: string): void; // core.terminals.kill decides
+  on(event: "terminals_changed", fn: () => void): () => void;
+  on(event: "terminal_snapshot", fn: (message: TerminalSnapshot) => void): () => void;
+  on(event: "terminal_output", fn: (message: TerminalOutput) => void): () => void;
+  on(event: "terminal_event", fn: (message: TerminalEvent) => void): () => void;
+  on(event: "error", fn: (message: ErrorMessage) => void): () => void; // `not_controller` lands here
+}
+```
+
+Which ROOM a verb rides is the host's decision, not yours, and it is worth knowing because it
+decides when a call can succeed. The host's own channel only WATCHES the routed room (it is a
+spectator, so the renderer stays the one occupant avatar), and the server refuses every terminal
+mutation on a spectator. So the host routes each MUTATION through the occupant pipe of the
+container it concerns — the pipe the mounted container renderer dialed with `host.token` and
+published: `openTerminal` is born in `host.containerId`, the container the viewer is looking at,
+and a terminal-keyed verb (`sendTerminalInput`, `resizeTerminal`, `takeTerminal`, `killTerminal`)
+rides the pipe of the room whose table holds the terminal. When no such view is mounted the
+call throws an `Error` naming what is missing (`no occupant view of container <id> is mounted`,
+`no occupant view holds terminal <id>`, `no container is open` at the workspace root) instead
+of sending a frame the server would refuse: a panel offers "open a terminal here" exactly when
+`host.containerId` is non-null and a container view is on screen. The reads — `terminals`,
+`attachTerminal`/`detachTerminal` and the subscriptions — answer for the routed room. A panel
+that opens a terminal and types into it is therefore:
+
+```ts
+const born = await host.client.openTerminal({
+  elementId: crypto.randomUUID(),
+  placement: "tile",
+  cols: 80,
+  rows: 24,
+  machineId: machine.id,
+});
+host.client.sendTerminalInput(born.id, "code launch --selection ...\n");
+```
+
+The opener holds the controller lease, so the input is forwarded; anyone else's lands as an
+`error` frame with code `not_controller` and `ref` naming the terminal. A CONTAINER RENDERER is
+the one contribution that dials a room of its own (A4: resolve the reference, open a pipe with a
+grant, project it), and it publishes that pipe with `useRoomPipeRegistration` from
+`@manifold/plugin/hooks` on mount so the routing above has something to route through — the
+shipped canvas and composition renderers are the worked examples.
 
 That is the whole host contract, and it is deliberate: no store, no room map, no React context
 from `packages/web`, nothing that would have to be re-plumbed if plugin code were later moved
