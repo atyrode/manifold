@@ -21,6 +21,7 @@ import type {
   ElementProps,
   HostServices,
   SectionProps,
+  SessionHandle,
   ViewportHandle,
 } from "./host.ts";
 
@@ -352,6 +353,58 @@ export function useViewportRegistration(): (handle: ViewportHandle | null) => vo
 }
 
 const noViewportRegistration = (_handle: ViewportHandle | null): void => undefined;
+
+/**
+ * What the host routes through a published room pipe, and nothing more: the room's terminal
+ * table (which is how a terminal-keyed verb finds its home) and the five terminal mutations.
+ * A renderer publishes its whole room client and the type keeps the host to this slice.
+ */
+export type RoomPipe = Pick<
+  SessionHandle,
+  | "terminals"
+  | "openTerminal"
+  | "sendTerminalInput"
+  | "resizeTerminal"
+  | "takeTerminal"
+  | "killTerminal"
+>;
+
+/**
+ * THE ROOM PIPE, published (issue #196). A container renderer dials its own occupant pipe
+ * (A4), and that pipe is the only channel in the tab on which a terminal in its room may be
+ * born, typed into, resized or taken — the host's own handle only WATCHES the routed room. So
+ * the renderer registers the pipe under its container id on mount and releases it on unmount,
+ * and the host routes the terminal mutations a panel calls on `host.client` through it.
+ *
+ * The same shape as the viewport channel above, for the same reason: the publisher is a
+ * plugin renderer and the consumer is the floor host, and the renderer may not import the
+ * host. Keyed by container rather than a single slot because an embedded renderer is an
+ * occupant of ITS room, and a terminal-keyed verb rides its home room's pipe.
+ */
+export type RoomPipeRegistration = (containerId: string, pipe: RoomPipe) => () => void;
+
+const RoomPipeRegistrationContext = createContext<RoomPipeRegistration | null>(null);
+
+export function RoomPipeRegistrationProvider({
+  value,
+  children,
+}: {
+  readonly value: RoomPipeRegistration;
+  readonly children: ReactNode;
+}): ReactElement {
+  return createElement(RoomPipeRegistrationContext.Provider, { value }, children);
+}
+
+/**
+ * Never throws, like the viewport's: a renderer mounted outside a host still renders, it
+ * simply publishes to nobody, and the release it is handed back does nothing.
+ */
+export function useRoomPipeRegistration(): RoomPipeRegistration {
+  return useContext(RoomPipeRegistrationContext) ?? noRoomPipeRegistration;
+}
+
+/** One stable identity, so a hostless renderer's registering effect never re-runs. */
+const noRoomPipeRegistration: RoomPipeRegistration = () => () => undefined;
 
 /**
  * The terminal facet, or null when no plugin owns terminals right now (unregistered, or its
