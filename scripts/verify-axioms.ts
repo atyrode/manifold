@@ -2149,9 +2149,24 @@ function scanTree(dir: string, out: string[]): void {
  * new headroom: the next module to cross this line gets the same argument or it does not land.
  * The WARN line does NOT move — it has been a live signal since well before this wave, and
  * silencing it would trade the review this budget exists to provoke for a green run.
+ *
+ * RED RAISED 12,500 → 12,700 on 2026-09-05 (ADR 0016 stage 1, #187 and #196), and this is the
+ * defence. ADR 0016 T4 predicted it: "the runner's client half … lands in `packages/plugin/src`,
+ * which is already past the 9,000-line WARN … this ADR predicts the defence will be needed in
+ * stage 1 and does not pre-approve it." What crossed the line is not the runner (that lands in
+ * `packages/web/src/isolate` and `packages/plugin-kit`, outside this budget, on purpose) but two
+ * things the ADR itself obliges the engine to say: `storage.ts` records the reversal of its
+ * synchronous ruling (§4, R3, T2) instead of silently changing shape, and `SessionHandle` gains
+ * the terminal verbs plus the room-pipe registration a panel needs to open a terminal without
+ * ever holding `host.token` (#196; ADR 0016 §3 withdraws that token from isolated plugins, so the
+ * handle IS the arbitration boundary — neutrality: it names no plugin; bootstrap: the renderers
+ * publish the pipe before any panel draws). Together about 170 lines. The number again moves by
+ * the smallest amount that admits them; the WARN line does not move. Written by an agent on the
+ * operator's direction while the operator slept: this raise is REVIEWABLE — reject it by
+ * extracting plugin territory (tile-geometry.ts at 962 lines is the first candidate) instead.
  */
 const PLUGIN_SRC_WARN_LINES = 9_000;
-const PLUGIN_SRC_MAX_LINES = 12_500;
+const PLUGIN_SRC_MAX_LINES = 12_700;
 
 {
   const files = sourcesMatching("packages/plugin/src/**");
