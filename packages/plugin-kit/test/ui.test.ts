@@ -16,7 +16,12 @@ const everything: UiNode = ui.box({ direction: "row", gap: 3, grow: true, wrap: 
   ui.badge("new", "success"),
   ui.divider(),
   ui.spinner("loading"),
-  ui.button("Go", "go", { payload: { n: 1 }, tone: "accent", disabled: false, action: "acme.thing.go" }),
+  ui.button("Go", "go", {
+    payload: { n: 1 },
+    tone: "accent",
+    disabled: false,
+    action: "acme.thing.go",
+  }),
   ui.select("pick", "a", [{ value: "a", label: "A" }], { label: "Pick", disabled: false }),
   ui.input("edit", "text", { label: "Edit", placeholder: "type", mono: true, disabled: false }),
   ui.toggle("flip", true, "Flip", { disabled: false }),

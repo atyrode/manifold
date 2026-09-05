@@ -20,7 +20,10 @@ const bump = defineServerAction({
 });
 
 export const handlers = {
-  async bump(ctx: GuestCtx, args: { by: number }): Promise<{ count: number } | { refused: string }> {
+  async bump(
+    ctx: GuestCtx,
+    args: { by: number },
+  ): Promise<{ count: number } | { refused: string }> {
     const current = Number((await ctx.storage.get(COUNT_KEY)) ?? "0");
     const count = current + args.by;
     if (count > 1_000) return { refused: "the counter stops at one thousand" };

@@ -53,7 +53,9 @@ export const counter = definePanel<CounterState>({
       ui.input("note", state.note, { label: "Note", placeholder: "why this bump?" }),
       ui.toggle("loud", state.loud, "Loud"),
       ui.button("Bump", "bump", { tone: "accent", action: "acme.counter.bump" }),
-      state.denial === null ? ui.empty("No refusal yet.") : ui.text(state.denial, { tone: "danger" }),
+      state.denial === null
+        ? ui.empty("No refusal yet.")
+        : ui.text(state.denial, { tone: "danger" }),
       ui.code(JSON.stringify({ ticks: state.ticks }, null, 2)),
       ui.list([{ key: "ticks", primary: "Ticks", secondary: String(state.ticks) }]),
     ]),

@@ -1502,7 +1502,9 @@ const counter = definePanel<{ count: number | null; denial: string | null }>({
       ui.heading("Counter", 2),
       state.count === null ? ui.spinner("Waiting") : ui.badge(`count ${String(state.count)}`),
       ui.button("Bump", "bump", { tone: "accent", action: "acme.counter.bump" }),
-      state.denial === null ? ui.empty("No refusal yet.") : ui.text(state.denial, { tone: "danger" }),
+      state.denial === null
+        ? ui.empty("No refusal yet.")
+        : ui.text(state.denial, { tone: "danger" }),
     ]),
   update: async (state, event, host) => {
     if (event.event !== "bump") return state;
@@ -1538,21 +1540,21 @@ holding the viewer's token.
 Thirteen kinds, five tones, no escape hatch (`UiNodeSchema`; `GET /api/protocol` publishes it
 under `isolateContract`). `ui` has one builder per kind, typed against the protocol's union:
 
-| Builder                                          | Renders as                                                                                                 |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
-| `ui.box({ direction, gap, grow, wrap }, children)` | a flex box; `direction` defaults to `column`, `gap` (0–3) to 1                                            |
-| `ui.heading(text, level?)`                       | a heading; `level` defaults to 2                                                                           |
-| `ui.text(text, { tone, mono, wrap }?)`           | prose; ONE line truncated with an ellipsis unless `wrap: true`; `mono` is the shell's monospace family      |
-| `ui.code(text)`                                  | a preformatted block (up to 64 KiB)                                                                        |
-| `ui.badge(text, tone?)`                          | a small status chip                                                                                        |
-| `ui.divider()`                                   | a rule                                                                                                     |
-| `ui.spinner(label?)`                             | an in-progress marker                                                                                      |
-| `ui.button(label, event, { payload, tone, disabled, action }?)` | a button posting `event` with `payload`; `action` is painted as `data-action` (set it, §Marking your affordances) |
-| `ui.select(event, value, options, { label, disabled }?)` | a select posting `event` with the chosen value; `value: null` shows an empty placeholder option        |
-| `ui.input(event, value, { label, placeholder, mono, disabled }?)` | a text field posting `event` with the string on every change                                     |
-| `ui.toggle(event, value, label, { disabled }?)`  | a switch posting `event` with the new boolean                                                              |
-| `ui.list(items)`                                 | rows of `{ key, primary, secondary?, tone?, event?, payload? }`; a row with `event` is a button             |
-| `ui.empty(text)`                                 | the engine's own empty-state row                                                                           |
+| Builder                                                           | Renders as                                                                                                        |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `ui.box({ direction, gap, grow, wrap }, children)`                | a flex box; `direction` defaults to `column`, `gap` (0–3) to 1                                                    |
+| `ui.heading(text, level?)`                                        | a heading; `level` defaults to 2                                                                                  |
+| `ui.text(text, { tone, mono, wrap }?)`                            | prose; ONE line truncated with an ellipsis unless `wrap: true`; `mono` is the shell's monospace family            |
+| `ui.code(text)`                                                   | a preformatted block (up to 64 KiB)                                                                               |
+| `ui.badge(text, tone?)`                                           | a small status chip                                                                                               |
+| `ui.divider()`                                                    | a rule                                                                                                            |
+| `ui.spinner(label?)`                                              | an in-progress marker                                                                                             |
+| `ui.button(label, event, { payload, tone, disabled, action }?)`   | a button posting `event` with `payload`; `action` is painted as `data-action` (set it, §Marking your affordances) |
+| `ui.select(event, value, options, { label, disabled }?)`          | a select posting `event` with the chosen value; `value: null` shows an empty placeholder option                   |
+| `ui.input(event, value, { label, placeholder, mono, disabled }?)` | a text field posting `event` with the string on every change                                                      |
+| `ui.toggle(event, value, label, { disabled }?)`                   | a switch posting `event` with the new boolean                                                                     |
+| `ui.list(items)`                                                  | rows of `{ key, primary, secondary?, tone?, event?, payload? }`; a row with `event` is a button                   |
+| `ui.empty(text)`                                                  | the engine's own empty-state row                                                                                  |
 
 Tones are meanings — `neutral`, `accent`, `muted`, `danger`, `success` — never colours. A tree is
 refused past 32 levels or 2000 nodes, and a node with a key the kind does not have (`style`,

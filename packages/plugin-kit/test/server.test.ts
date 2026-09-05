@@ -198,8 +198,16 @@ describe("dispatch", () => {
     load(fake);
     await fake.next();
     fake.send({ t: "dispatch", id: "r7", action: "echo", args: { text: "hi" }, ctx: ctxOf() });
-    expect(await serve(fake, "old")).toMatchObject({ id: "r7:1", method: "storage.get", args: ["last"] });
-    expect(await serve(fake, null)).toMatchObject({ id: "r7:2", method: "storage.set", args: ["last", "hi"] });
+    expect(await serve(fake, "old")).toMatchObject({
+      id: "r7:1",
+      method: "storage.get",
+      args: ["last"],
+    });
+    expect(await serve(fake, null)).toMatchObject({
+      id: "r7:2",
+      method: "storage.set",
+      args: ["last", "hi"],
+    });
     expect(await serve(fake, "id-9")).toMatchObject({ id: "r7:3", method: "newId", args: [] });
     expect(await serve(fake, true)).toMatchObject({
       id: "r7:4",
@@ -246,20 +254,34 @@ describe("dispatch", () => {
     ]);
     // Answer the later one first: each outcome must follow its own reply, not arrival order.
     fake.send({ t: "reply", id: "b:1", ok: true, result: "2" });
-    expect(await fake.next()).toMatchObject({ id: "b", outcome: { ok: true, result: { text: "two=2" } } });
+    expect(await fake.next()).toMatchObject({
+      id: "b",
+      outcome: { ok: true, result: { text: "two=2" } },
+    });
     fake.send({ t: "reply", id: "a:1", ok: true, result: "1" });
-    expect(await fake.next()).toMatchObject({ id: "a", outcome: { ok: true, result: { text: "one=1" } } });
+    expect(await fake.next()).toMatchObject({
+      id: "a",
+      outcome: { ok: true, result: { text: "one=1" } },
+    });
   });
 
   test("grades invalid_args against the action's own schema, in the engine's wording", async () => {
-    const fake = host({ manifest, actions: [echo], handlers: { echo: async () => ({ text: "" }) } });
+    const fake = host({
+      manifest,
+      actions: [echo],
+      handlers: { echo: async () => ({ text: "" }) },
+    });
     load(fake);
     await fake.next();
     fake.send({ t: "dispatch", id: "r1", action: "echo", args: { text: "" }, ctx: ctxOf() });
     expect(await fake.next()).toEqual({
       t: "dispatched",
       id: "r1",
-      outcome: { ok: false, rule: "invalid_args", message: "text Too small: expected string to have >=1 characters" },
+      outcome: {
+        ok: false,
+        rule: "invalid_args",
+        message: "text Too small: expected string to have >=1 characters",
+      },
     });
   });
 
@@ -305,7 +327,8 @@ describe("dispatch", () => {
           try {
             await ctx.host.enabled("core.notes");
           } catch (error) {
-            if (error instanceof HostCallError) return { refused: `${error.method} said: ${error.detail}` };
+            if (error instanceof HostCallError)
+              return { refused: `${error.method} said: ${error.detail}` };
           }
           return { text: "unreachable" };
         },
@@ -318,7 +341,11 @@ describe("dispatch", () => {
     fake.send({ t: "reply", id: "r1:1", ok: false, error: "slice_unavailable: host.enabled" });
     expect(call).toMatchObject({ t: "call", method: "host.enabled" });
     expect(await fake.next()).toMatchObject({
-      outcome: { ok: false, rule: "refused", message: "host.enabled said: slice_unavailable: host.enabled" },
+      outcome: {
+        ok: false,
+        rule: "refused",
+        message: "host.enabled said: slice_unavailable: host.enabled",
+      },
     });
   });
 
@@ -355,7 +382,8 @@ describe("dispatch", () => {
       actions: [echo],
       handlers: {
         async echo(ctx: GuestCtx, args: { text: string }) {
-          if (args.text === "kind") ctx.emit({ kind: "plugin", pluginId: "acme.thing" }, "Not A Kind");
+          if (args.text === "kind")
+            ctx.emit({ kind: "plugin", pluginId: "acme.thing" }, "Not A Kind");
           else {
             for (let index = 0; index <= MAX_ISOLATE_EMITS; index++) {
               ctx.emit({ kind: "plugin", pluginId: "acme.thing" }, "thing_happened");
@@ -369,11 +397,19 @@ describe("dispatch", () => {
     await fake.next();
     fake.send({ t: "dispatch", id: "k", action: "echo", args: { text: "kind" }, ctx: ctxOf() });
     expect(await fake.next()).toMatchObject({
-      outcome: { ok: false, rule: "refused", message: expect.stringContaining("emit refused: kind") },
+      outcome: {
+        ok: false,
+        rule: "refused",
+        message: expect.stringContaining("emit refused: kind"),
+      },
     });
     fake.send({ t: "dispatch", id: "n", action: "echo", args: { text: "many" }, ctx: ctxOf() });
     expect(await fake.next()).toMatchObject({
-      outcome: { ok: false, rule: "refused", message: `a dispatch may stage at most ${String(MAX_ISOLATE_EMITS)} emissions` },
+      outcome: {
+        ok: false,
+        rule: "refused",
+        message: `a dispatch may stage at most ${String(MAX_ISOLATE_EMITS)} emissions`,
+      },
     });
   });
 
@@ -387,7 +423,11 @@ describe("dispatch", () => {
     await fake.next();
     fake.send({ t: "dispatch", id: "r1", action: "echo", args: { text: "x" }, ctx: ctxOf() });
     expect(await fake.next()).toMatchObject({
-      outcome: { ok: false, rule: "refused", message: expect.stringContaining("result outside its schema") },
+      outcome: {
+        ok: false,
+        rule: "refused",
+        message: expect.stringContaining("result outside its schema"),
+      },
     });
   });
 });
@@ -422,7 +462,12 @@ describe("hooks, shutdown and stray frames", () => {
       ok: false,
       error: "emit is not served to an isolated plugin",
     });
-    fake.send({ t: "hook", id: "h3", hook: "onAssemblyChanged", delta: { enabled: ["core.notes"], disabled: [] } });
+    fake.send({
+      t: "hook",
+      id: "h3",
+      hook: "onAssemblyChanged",
+      delta: { enabled: ["core.notes"], disabled: [] },
+    });
     expect(await fake.next()).toEqual({ t: "hooked", id: "h3", ok: true });
   });
 

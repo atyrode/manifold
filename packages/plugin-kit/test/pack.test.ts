@@ -24,7 +24,11 @@ import { packPlugin, type PackResult } from "../src/pack.ts";
 
 const KIT = `${import.meta.dir}/..`;
 const SAMPLE = `${import.meta.dir}/fixtures/sample`;
-const PackResultSchema = z.strictObject({ file: z.string(), sha256: z.string().length(64), bytes: z.number().int() });
+const PackResultSchema = z.strictObject({
+  file: z.string(),
+  sha256: z.string().length(64),
+  bytes: z.number().int(),
+});
 
 let dir = "";
 let packed: PackResult;
@@ -78,7 +82,9 @@ describe("the artifact", () => {
     try {
       const manifest = { ...bundle.manifest, entry: undefined };
       await Bun.write(`${bare}/manifest.json`, JSON.stringify(manifest));
-      await expect(packPlugin(bare, `${bare}/out.json`)).rejects.toThrow("manifest.entry must name");
+      await expect(packPlugin(bare, `${bare}/out.json`)).rejects.toThrow(
+        "manifest.entry must name",
+      );
     } finally {
       rmSync(bare, { recursive: true, force: true });
     }
@@ -88,7 +94,10 @@ describe("the artifact", () => {
 describe("the packed server half, as a real isolate", () => {
   test("answers load, dispatch and shutdown over Bun ipc", async () => {
     const serverFile = `${dir}/${PLUGIN_BUNDLE_SERVER_FILE}`;
-    await Bun.write(serverFile, Buffer.from(bundle.files[PLUGIN_BUNDLE_SERVER_FILE] ?? "", "base64"));
+    await Bun.write(
+      serverFile,
+      Buffer.from(bundle.files[PLUGIN_BUNDLE_SERVER_FILE] ?? "", "base64"),
+    );
     const queue: IsolateChildFrame[] = [];
     const waiting: ((frame: IsolateChildFrame) => void)[] = [];
     const child = Bun.spawn(["bun", "--smol", serverFile], {
@@ -137,7 +146,12 @@ describe("the packed server half, as a real isolate", () => {
       expect(read).toEqual({ t: "call", id: "r1:1", method: "storage.get", args: ["count"] });
       send({ t: "reply", id: "r1:1", ok: true, result: "37" });
       const write = await next();
-      expect(write).toEqual({ t: "call", id: "r1:2", method: "storage.set", args: ["count", "42"] });
+      expect(write).toEqual({
+        t: "call",
+        id: "r1:2",
+        method: "storage.set",
+        args: ["count", "42"],
+      });
       send({ t: "reply", id: "r1:2", ok: true, result: null });
       expect(await next()).toEqual({
         t: "dispatched",

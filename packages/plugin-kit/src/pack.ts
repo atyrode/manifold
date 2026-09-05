@@ -82,7 +82,13 @@ if (import.meta.main) {
   const outAt = argv.indexOf("--out");
   const pluginDir = outAt === 0 ? argv[2] : argv[0];
   const outFile = argv[outAt + 1];
-  if (argv.length !== 3 || outAt === -1 || outAt === 2 || pluginDir === undefined || outFile === undefined) {
+  if (
+    argv.length !== 3 ||
+    outAt === -1 ||
+    outAt === 2 ||
+    pluginDir === undefined ||
+    outFile === undefined
+  ) {
     usage();
   }
   console.log(JSON.stringify(await packPlugin(pluginDir, outFile)));

@@ -273,7 +273,8 @@ export function attachWebGuest(def: WebPluginDef, port: WebGuestPort): void {
     if (program.subscribe === undefined) return;
     try {
       instance.stop = program.subscribe(viewer, (event) => {
-        if (instances.get(frame.instance) === instance) fold(frame.instance, instance, event, viewer);
+        if (instances.get(frame.instance) === instance)
+          fold(frame.instance, instance, event, viewer);
       });
     } catch (error) {
       fault(frame.instance, `panel "${frame.panel}" failed to subscribe: ${errorText(error)}`);
@@ -331,7 +332,9 @@ export function attachWebGuest(def: WebPluginDef, port: WebGuestPort): void {
         fold(
           page.instance,
           instance,
-          page.payload === undefined ? { event: page.event } : { event: page.event, payload: page.payload },
+          page.payload === undefined
+            ? { event: page.event }
+            : { event: page.event, payload: page.payload },
           host,
         );
         return;

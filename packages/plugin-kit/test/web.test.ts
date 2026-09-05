@@ -62,7 +62,13 @@ function page(def: WebPluginDef): FakePage {
 }
 
 function init(fake: FakePage): void {
-  fake.send({ t: "init", pluginId: "acme.thing", principal, caps: ["containers:read"], containerId: "c1" });
+  fake.send({
+    t: "init",
+    pluginId: "acme.thing",
+    principal,
+    caps: ["containers:read"],
+    containerId: "c1",
+  });
 }
 
 const CountResult = z.object({ count: z.number() });
@@ -99,11 +105,19 @@ describe("init and mount", () => {
   test("a mount before init, or of a panel the guest does not serve, is a fault", async () => {
     const fake = page({ id: "acme.thing", panels: { counter } });
     fake.send({ t: "mount", instance: "early", panel: "counter" });
-    expect(await fake.next()).toEqual({ t: "fault", instance: "early", error: "mount before init" });
+    expect(await fake.next()).toEqual({
+      t: "fault",
+      instance: "early",
+      error: "mount before init",
+    });
     init(fake);
     await fake.next();
     fake.send({ t: "mount", instance: "i1", panel: "ghost" });
-    expect(await fake.next()).toEqual({ t: "fault", instance: "i1", error: 'no such panel "ghost"' });
+    expect(await fake.next()).toEqual({
+      t: "fault",
+      instance: "i1",
+      error: 'no such panel "ghost"',
+    });
   });
 
   test("panel ids outside the vocabulary fault at init instead of leaving as a bad frame", async () => {
@@ -151,10 +165,16 @@ describe("events and host calls", () => {
     expect(await fake.next()).toMatchObject({ t: "call", id: "c1" });
     expect(fake.posted.filter((frame) => frame.t === "call")).toHaveLength(1);
     fake.send({ t: "reply", id: "c1", ok: true, result: { ok: true, result: { count: 1 } } });
-    expect(await fake.next()).toMatchObject({ t: "render", tree: { children: [ui.text("Ada: 1"), ui.divider()] } });
+    expect(await fake.next()).toMatchObject({
+      t: "render",
+      tree: { children: [ui.text("Ada: 1"), ui.divider()] },
+    });
     expect(await fake.next()).toMatchObject({ t: "call", id: "c2" });
     fake.send({ t: "reply", id: "c2", ok: true, result: { ok: true, result: { count: 2 } } });
-    expect(await fake.next()).toMatchObject({ t: "render", tree: { children: [ui.text("Ada: 2"), ui.divider()] } });
+    expect(await fake.next()).toMatchObject({
+      t: "render",
+      tree: { children: [ui.text("Ada: 2"), ui.divider()] },
+    });
   });
 
   test("a host reply of ok:false reaches the program as HostCallError with the host's sentence", async () => {
@@ -169,7 +189,9 @@ describe("events and host calls", () => {
               await host.navigate("manifold://container/c9");
               return "went";
             } catch (error) {
-              return error instanceof HostCallError ? `${error.method}: ${error.detail}` : "wrong class";
+              return error instanceof HostCallError
+                ? `${error.method}: ${error.detail}`
+                : "wrong class";
             }
           },
         }),
@@ -211,7 +233,9 @@ describe("faults", () => {
           view: (state) => {
             if (state === "throw") throw new Error("view broke");
             // A stray DOM-shaped node: not a kind the vocabulary has.
-            return state === "tree" ? ({ type: "div", text: "x" } as unknown as UiNode) : ui.text("fine");
+            return state === "tree"
+              ? ({ type: "div", text: "x" } as unknown as UiNode)
+              : ui.text("fine");
           },
           update: (_state, event) => {
             if (event.event === "explode") throw new Error("update broke");

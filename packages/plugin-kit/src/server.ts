@@ -65,7 +65,9 @@ export interface ServerActionDef<In = unknown, Out = unknown> {
 }
 
 /** Identity helper so `In`/`Out` are inferred from the schemas at the definition site. */
-export function defineServerAction<In, Out>(def: ServerActionDef<In, Out>): ServerActionDef<In, Out> {
+export function defineServerAction<In, Out>(
+  def: ServerActionDef<In, Out>,
+): ServerActionDef<In, Out> {
   return def;
 }
 
@@ -310,11 +312,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       (await call("storage.keys", prefix === undefined ? [] : [prefix])) as readonly string[],
   });
 
-  const dispatchCtx = (
-    call: Call,
-    carried: IsolateDispatchCtx,
-    staged: Emission[],
-  ): GuestCtx => {
+  const dispatchCtx = (call: Call, carried: IsolateDispatchCtx, staged: Emission[]): GuestCtx => {
     const ctx: GuestCtx = {
       pluginId: def.manifest.id,
       principal: carried.principal,
@@ -324,7 +322,10 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         containerScope: carried.containerScope,
         isRoot: carried.isRoot,
         allows: async (cap, containerId) =>
-          (await call("auth.allows", containerId === undefined ? [cap] : [cap, containerId])) as boolean,
+          (await call(
+            "auth.allows",
+            containerId === undefined ? [cap] : [cap, containerId],
+          )) as boolean,
       },
       containerScope: carried.containerScope,
       outsideScope: async (containerId) =>
@@ -344,8 +345,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         isOnline: async (machineId) => (await call("machines.isOnline", [machineId])) as boolean,
       },
       placement: {
-        place: async (request) =>
-          (await call("placement.place", [request])) as GuestPlaceOutcome,
+        place: async (request) => (await call("placement.place", [request])) as GuestPlaceOutcome,
       },
       host: {
         roster: async () => (await call("host.roster", [])) as PluginRoster,
