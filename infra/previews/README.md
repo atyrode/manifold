@@ -12,6 +12,8 @@ checkout outside disposable preview checkouts. One hub uses approximately 140 Mi
 The registry (`name kind port` per line) and data live under `PREVIEW_HOME`, default
 `$HOME/manifold-previews`. Only this user may write it; lifecycle operations serialize.
 The router and live user units are generated, enabled at boot, and survive logout.
+`deploy-preview.yml` skips `up` for a head whose whole diff is Markdown outside `changes/`
+(nothing to show); `down` on a PR that never came up is a no-op, so teardown is unconditional.
 
 ## Configuration
 

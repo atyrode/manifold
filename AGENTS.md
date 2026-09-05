@@ -101,6 +101,8 @@ The pipeline, in order:
 - **A task starts by opening a DRAFT pull request** (`gh pr create --draft`) so its preview
   exists from the first push. Push at every checkpoint (a commit that builds): the preview
   follows every push, and the operator watches it. `deploy-preview.yml` posts its URL on the PR.
+  A head whose whole diff is Markdown outside `changes/` deploys nothing — there is nothing a
+  preview could show — and deploys on the first push that touches anything else.
 - **At the end of a task, and whenever asking the operator to look at something, name the
   preview URL and what to look at on it**: which panel, which action, and the expected result.
 - The operator's development owner key opens any seeded preview. `infra/previews/preview.sh
