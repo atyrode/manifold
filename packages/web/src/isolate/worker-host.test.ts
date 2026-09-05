@@ -191,8 +191,18 @@ describe("WorkerHost frames", () => {
   test("ready registers the served panels: mounted instances get `mount`, others fault", () => {
     const { worker, host } = bench();
     const faults: string[] = [];
-    host.mount("i1", "main", () => {}, (error) => faults.push(error));
-    host.mount("i2", "extra", () => {}, (error) => faults.push(error));
+    host.mount(
+      "i1",
+      "main",
+      () => {},
+      (error) => faults.push(error),
+    );
+    host.mount(
+      "i2",
+      "extra",
+      () => {},
+      (error) => faults.push(error),
+    );
     expect(worker.frames()).toHaveLength(1);
 
     worker.emit({ t: "ready", panels: ["main"] });
@@ -203,15 +213,30 @@ describe("WorkerHost frames", () => {
     ]);
 
     // A mount after ready is announced at once.
-    host.mount("i3", "main", () => {}, () => {});
+    host.mount(
+      "i3",
+      "main",
+      () => {},
+      () => {},
+    );
     expect(worker.frames().at(-1)).toEqual({ t: "mount", instance: "i3", panel: "main" });
   });
 
   test("render reaches the instance it names and nobody else", () => {
     const { worker, host } = bench();
     const seen: string[] = [];
-    host.mount("i1", "main", (tree) => seen.push(`i1:${JSON.stringify(tree)}`), () => {});
-    host.mount("i2", "main", (tree) => seen.push(`i2:${JSON.stringify(tree)}`), () => {});
+    host.mount(
+      "i1",
+      "main",
+      (tree) => seen.push(`i1:${JSON.stringify(tree)}`),
+      () => {},
+    );
+    host.mount(
+      "i2",
+      "main",
+      (tree) => seen.push(`i2:${JSON.stringify(tree)}`),
+      () => {},
+    );
     worker.emit({ t: "ready", panels: ["main"] });
 
     worker.emit({ t: "render", instance: "i2", tree: TREE });
@@ -222,7 +247,12 @@ describe("WorkerHost frames", () => {
 
   test("call is served from the host ref and replied, ok or refused, by id", async () => {
     const { worker, host, calls } = bench();
-    host.mount("i1", "main", () => {}, () => {});
+    host.mount(
+      "i1",
+      "main",
+      () => {},
+      () => {},
+    );
     worker.emit({ t: "ready", panels: ["main"] });
     const before = worker.frames().length;
 
@@ -295,8 +325,18 @@ describe("WorkerHost frames", () => {
   test("a scoped fault reaches its instance; an unscoped one is the whole worker's", () => {
     const { worker, host } = bench();
     const faults: string[] = [];
-    host.mount("i1", "main", () => {}, (error) => faults.push(`i1:${error}`));
-    host.mount("i2", "main", () => {}, (error) => faults.push(`i2:${error}`));
+    host.mount(
+      "i1",
+      "main",
+      () => {},
+      (error) => faults.push(`i1:${error}`),
+    );
+    host.mount(
+      "i2",
+      "main",
+      () => {},
+      (error) => faults.push(`i2:${error}`),
+    );
     worker.emit({ t: "ready", panels: ["main"] });
 
     worker.emit({ t: "fault", instance: "i1", error: "update threw" });
@@ -311,7 +351,12 @@ describe("WorkerHost frames", () => {
   test("a malformed frame faults the whole worker: every instance, later mounts, stopped", () => {
     const { worker, host } = bench();
     const faults: string[] = [];
-    host.mount("i1", "main", () => {}, (error) => faults.push(error));
+    host.mount(
+      "i1",
+      "main",
+      () => {},
+      (error) => faults.push(error),
+    );
     worker.emit({ t: "ready", panels: ["main"] });
 
     worker.emit({ t: "render", instance: "i1", tree: { type: "marquee", text: "no" } });
@@ -321,7 +366,12 @@ describe("WorkerHost frames", () => {
     expect(worker.terminated).toBe(true);
     expect(consoleError).toHaveBeenCalledTimes(1);
 
-    host.mount("i2", "main", () => {}, (error) => faults.push(error));
+    host.mount(
+      "i2",
+      "main",
+      () => {},
+      (error) => faults.push(error),
+    );
     expect(faults).toHaveLength(2);
     expect(faults[1]).toBe(faults[0]);
     // The worker is gone: nothing else goes out, and the fault stays the one report.
@@ -333,7 +383,12 @@ describe("WorkerHost frames", () => {
   test("an uncaught error in the worker is a worker-wide fault", () => {
     const { worker, host } = bench();
     const faults: string[] = [];
-    host.mount("i1", "main", () => {}, (error) => faults.push(error));
+    host.mount(
+      "i1",
+      "main",
+      () => {},
+      (error) => faults.push(error),
+    );
     worker.fail("boom");
     expect(faults).toEqual(["uncaught error in the worker: boom"]);
     expect(worker.terminated).toBe(true);
@@ -350,19 +405,34 @@ describe("WorkerHost frames", () => {
       workerFactory: () => Promise.reject(new Error("web half fetch failed (404)")),
     });
     host.start();
-    host.mount("i1", "main", () => {}, (error) => faults.push(error));
+    host.mount(
+      "i1",
+      "main",
+      () => {},
+      (error) => faults.push(error),
+    );
     await flush();
     expect(faults).toEqual(["web half failed to load: web half fetch failed (404)"]);
   });
 
   test("unmount sends `unmount` exactly when `mount` went out; event carries the payload", () => {
     const { worker, host } = bench();
-    const unmountEarly = host.mount("i0", "main", () => {}, () => {});
+    const unmountEarly = host.mount(
+      "i0",
+      "main",
+      () => {},
+      () => {},
+    );
     unmountEarly();
     worker.emit({ t: "ready", panels: ["main"] });
     expect(worker.frames().some((frame) => frame.t === "unmount")).toBe(false);
 
-    const unmount = host.mount("i1", "main", () => {}, () => {});
+    const unmount = host.mount(
+      "i1",
+      "main",
+      () => {},
+      () => {},
+    );
     host.event("i1", "save", { id: 7 });
     host.event("i1", "refresh");
     host.event("nobody", "save");
