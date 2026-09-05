@@ -176,6 +176,7 @@ export class SessionSender {
     private readonly prefixBytes: number,
     private readonly close: (code: number, reason: string) => void,
     private readonly closeConnection: (code: number, reason: string) => void,
+    private readonly overflow: "close" | "drop" = "close",
   ) {}
 
   /**
@@ -207,7 +208,7 @@ export class SessionSender {
       boundedBytes > CHANNEL_QUEUE_BYTES ||
       this.queuedBytes + boundedBytes > CHANNEL_QUEUE_BYTES
     ) {
-      this.close(1013, "outbound queue overflow");
+      if (this.overflow === "close") this.close(1013, "outbound queue overflow");
       return false;
     }
 

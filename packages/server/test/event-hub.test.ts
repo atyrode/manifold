@@ -428,7 +428,7 @@ describe("event plane matching", () => {
 });
 
 describe("event plane fan-out", () => {
-  test("a slow event subscriber closes at the session send bound without affecting others", async () => {
+  test("a slow event subscriber drops overflow without losing its socket or subscriptions", async () => {
     const fixture = await planeFixture();
     try {
       const slow = connect(fixture, "slow");
@@ -441,23 +441,36 @@ describe("event plane fan-out", () => {
         fixture.events.emit("core.space", SPACE_TOPIC, "item_placed", null, { index });
       }
 
-      expect(slow.closed).toEqual({ code: 1013, reason: "outbound queue overflow" });
+      expect(slow.closed).toBeNull();
       expect(eventsOn(slow)).toEqual([]);
-      expect(fixture.events.held("slow")).toBe(0);
-      expect(fixture.logs.filter((line) => line.evt === "socket_backpressure")).toEqual([
-        {
+      expect(fixture.events.held("slow")).toBe(1);
+      expect(fixture.logs.filter((line) => line.evt === "socket_backpressure")).toEqual(
+        Array.from({ length: 300 - 256 }, () => ({
           level: "warn",
           evt: "socket_backpressure",
           fields: { connectionId: "slow", topic: SPACE_TOPIC },
-        },
-      ]);
+        })),
+      );
       expect(eventsOn(healthy).map((event) => event.payload.index)).toEqual(
         Array.from({ length: 300 }, (_, index) => index),
       );
       expect(healthy.closed).toBeNull();
+      const roomFrame = { type: "saved", rev: 7, at: fixture.runtime.now() } as const;
+      fixture.rooms.get(fixture.container.id)!.broadcast(roomFrame);
       slow.bufferedAmount = 0;
       fixture.gateway.drain("slow");
-      expect(eventsOn(slow)).toEqual([]);
+      expect(eventsOn(slow).map((event) => event.payload.index)).toEqual(
+        Array.from({ length: 256 }, (_, index) => index),
+      );
+      expect(slow.frames().filter((frame) => frame.type === "saved")).toEqual([
+        { ch: CH, ...roomFrame },
+      ]);
+      slow.clear();
+      healthy.clear();
+      fixture.events.emit("core.space", SPACE_TOPIC, "item_placed", null, { index: 300 });
+      expect(eventsOn(slow).map((event) => event.payload.index)).toEqual([300]);
+      expect(eventsOn(healthy).map((event) => event.payload.index)).toEqual([300]);
+      expect(slow.closed).toBeNull();
     } finally {
       fixture.gateway.shutdown();
       fixture.store.close();
@@ -477,9 +490,26 @@ describe("event plane fan-out", () => {
           detail: "é".repeat(8_000),
         });
       }
-      expect(socket.closed).toEqual({ code: 1013, reason: "outbound queue overflow" });
+      expect(socket.closed).toBeNull();
       expect(eventsOn(socket)).toEqual([]);
-      expect(fixture.events.held("tab")).toBe(0);
+      expect(fixture.events.held("tab")).toBe(1);
+      socket.bufferedAmount = 0;
+      fixture.gateway.drain("tab");
+      const received = eventsOn(socket);
+      const queuedBytes = socket.sent.reduce((sum, frame) => sum + Buffer.byteLength(frame), 0);
+      expect(queuedBytes).toBeLessThanOrEqual(1_048_576);
+      expect(queuedBytes + Buffer.byteLength(socket.sent[0]!)).toBeGreaterThan(1_048_576);
+      expect(fixture.logs.filter((line) => line.evt === "socket_backpressure")).toEqual(
+        Array.from({ length: 80 - received.length }, () => ({
+          level: "warn",
+          evt: "socket_backpressure",
+          fields: { connectionId: "tab", topic: SPACE_TOPIC },
+        })),
+      );
+      socket.clear();
+      fixture.events.emit("core.space", SPACE_TOPIC, "item_placed", null, { resumed: true });
+      expect(eventsOn(socket).map((event) => event.payload)).toEqual([{ resumed: true }]);
+      expect(socket.closed).toBeNull();
     } finally {
       fixture.gateway.shutdown();
       fixture.store.close();

@@ -446,7 +446,7 @@ export class SessionGateway {
         connection.socket.close(code, reason);
         this.close(connection.id);
       };
-      const sender = new SessionSender(connection.socket, (body) => body, 0, close, close);
+      const sender = new SessionSender(connection.socket, (body) => body, 0, close, close, "drop");
       connection.eventSender = sender;
       connection.subscriber = {
         id: connection.id,

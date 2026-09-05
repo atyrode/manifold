@@ -3,4 +3,4 @@ section: Fixed
 issue: 167
 ---
 
-Event subscribers that cannot keep up now close with `outbound queue overflow` instead of letting the hub buffer notifications without bound. Event delivery shares the session channel's send limits; other subscribers continue receiving events normally.
+Event delivery shares the session channel's send bound of 256 queued frames or 1 MiB; events past it are dropped by name (`socket_backpressure`, with connection and topic) while the socket and its subscriptions stay live. Catch-up is a state read; room-channel traffic and other subscribers are unaffected.
