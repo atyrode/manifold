@@ -499,6 +499,8 @@ export interface ActionCtx {
    * fanned out: the declared vocabulary would be unfalsifiable at runtime otherwise.
    */
   readonly emit: EmitEvent;
+  /** Names a trace target when an act has no event-plane announcement. */
+  target(ref: ManifoldRef): void;
 }
 
 /**
@@ -686,20 +688,11 @@ function tracePayload(rawArgs: unknown): Readonly<Record<string, unknown>> {
   return { oversize: text.length, keys: Object.keys(redacted) };
 }
 
-/**
- * The nodes the door NAMED, which is exactly the set of nodes it addressed emissions to.
- *
- * Deriving targets from the staging buffer rather than from a new per-handler declaration is
- * the whole reason this weave needs no plugin cooperation: a door that changes a node already
- * has to say which node at its commit point (ADR 0012 §2), so the ledger reads the same
- * statement instead of asking for a second one. A door that names nothing has no targets, and
- * that is a true row rather than a gap — its subject is the workspace, or its answer was a
- * refusal.
- */
-function traceTargets(staged: readonly { readonly ref: ManifoldRef }[]): readonly string[] {
-  if (staged.length === 0) return [];
+/** Emissions and explicit targets share one canonical, deduplicated address set. */
+function traceTargets(targets: readonly ManifoldRef[]): readonly string[] {
+  if (targets.length === 0) return [];
   const uris = new Set<string>();
-  for (const event of staged) uris.add(formatManifoldUri(event.ref));
+  for (const ref of targets) uris.add(formatManifoldUri(ref));
   return [...uris];
 }
 
@@ -1743,6 +1736,7 @@ export class PluginHost {
       ledger complete; §7 of the ADR carries the per-door-class table.
      */
     const traceId = this.store.appendTrace({ ...attribution, outcome: null, targets: [] });
+    const targets: ManifoldRef[] = [];
     const ctx: ActionCtx = {
       traceId,
       principal: auth.principal,
@@ -1797,8 +1791,12 @@ export class PluginHost {
       storage: this.storage(pluginId),
       now: () => this.runtime.now(),
       newId: () => this.runtime.newId(),
+      target: (ref) => {
+        targets.push(ref);
+      },
       emit: (ref, kind, payload) => {
         staged.push({ ref, kind, payload: payload ?? {} });
+        targets.push(ref);
       },
     };
     const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
@@ -1814,19 +1812,19 @@ export class PluginHost {
           as a throw from the proxy and are settled here as the rung they name, traced exactly
           as an in-realm rung is; they are answers, never failures.
         */
-        this.store.settleTrace(traceId, error.rule, traceTargets(staged));
+        this.store.settleTrace(traceId, error.rule, traceTargets(targets));
         return { ok: false, denial: { rule: error.rule, message: error.message } };
       }
       // A broken door is still an exercise of authority: somebody opened it and it failed
       // half-way. The row settles `failed` and the throw continues to `dispatch`, which logs
       // it with the same word.
-      this.store.settleTrace(traceId, "failed", traceTargets(staged));
+      this.store.settleTrace(traceId, "failed", traceTargets(targets));
       throw error;
     }
     if (produced !== null && typeof produced === "object") {
       const denial = Reflect.get(produced, "refused");
       if (typeof denial === "string") {
-        this.store.settleTrace(traceId, "refused", traceTargets(staged));
+        this.store.settleTrace(traceId, "refused", traceTargets(targets));
         return { ok: false, denial: { rule: "refused", message: denial } };
       }
     }
@@ -1838,7 +1836,7 @@ export class PluginHost {
     try {
       result = entry.def.result.parse(produced);
     } catch (error) {
-      this.store.settleTrace(traceId, "failed", traceTargets(staged));
+      this.store.settleTrace(traceId, "failed", traceTargets(targets));
       throw error;
     }
     /*
@@ -1846,7 +1844,7 @@ export class PluginHost {
       emissions go out: no subscriber can observe news of a commit whose trace is still
       unsettled, and the flush cannot un-write what the ledger already says.
      */
-    this.store.settleTrace(traceId, "ok", traceTargets(staged));
+    this.store.settleTrace(traceId, "ok", traceTargets(targets));
     for (const event of staged) {
       this.events.emit(pluginId, event.ref, event.kind, auth.principal.id, event.payload);
     }

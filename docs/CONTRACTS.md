@@ -217,8 +217,8 @@ Agent and machine credentials never enter this browser flow.
 `{ id, principal, node, caps, effect, reach, createdBy, createdAt }`, persisted in `grants`
 (migration 13). `principal` is `{ kind: "principal", id }`, `{ kind: "any-human" }`,
 `{ kind: "any-agent" }` or `{ kind: "instance", origin }`. `node` is a `manifold://` URI
-STRING — the root is the bare scheme `manifold://` (`MANIFOLD_ROOT_URI`), and
-`ManifoldRefSchema`'s seven forms are UNCHANGED, so nothing on a wire grew a node kind.
+STRING — the root is the bare scheme `manifold://` (`MANIFOLD_ROOT_URI`); a machine is
+`manifold://machine/<machineId>`, directly under that root.
 `effect` is `allow` or `deny`; `reach` is `node` (that node alone) or `subtree` (that node and
 everything under it). A grant never names an action: actions declare capabilities, grants grant
 capabilities, and the two meet at the door.
@@ -236,6 +236,13 @@ every authority question identically after it** — parity is a fixture, not a c
 rows that match the caller's principal or one of its classes, and resolves each capability
 independently. The path is SYNTACTIC: containment is read off the URI, so evaluation touches no
 store beyond the grant rows themselves.
+
+Machine-scoped rows use this same waterfall, including allow/deny precedence and live
+invalidation, without reaching sibling machines or containers. This recognizes the scope;
+it does not change door admission: `core.machines.revoke` still requires workspace
+`machines:mint`, but names the machine as its trace target. The admitted-door policy for
+per-machine grants remains owed to #156/#190. Sharing remains container-only (ADR 0014):
+a machine reference is a valid address, not permission to mint a machine share.
 
 | #   | Rule                        | Reading                                                                                             |
 | --- | --------------------------- | --------------------------------------------------------------------------------------------------- |
@@ -1171,7 +1178,7 @@ authority, no outcome, no session and an empty `targets`; a trace row carries al
 `type: "trace"`, so `{ kind: "trace" }` IS the ledger and nothing has to be inferred from a NULL
 check. `door` is the full action name; `authority` is what the ladder discharged (`root`, the
 declared caps joined by `+`, or `open` for a door that demands nothing); `targets` are the
-`manifold://` nodes the door named, read off the same emissions the event plane carries and
+`manifold://` nodes the door named, collected from emissions or explicit `ctx.target(ref)` calls and
 published PARSED because the ladder is their only writer; `outcome` is `ok`, `failed`, or the
 denial rung (`TRACE_OUTCOMES` in `@manifold/protocol`), and NULL means the dispatch was still in
 flight — the ledger is written AHEAD of the handler, so an unsettled row is a dispatch that never
@@ -1217,13 +1224,14 @@ through this plugin — so re-enabling restores the whole trail.
 
 **`manifold://` addressing.** One canonical serialization of the addressing algebra, bijective
 with the structured wire forms (`parseManifoldUri` / `formatManifoldUri`,
-`packages/protocol/src/uri.ts`). Seven forms; every id segment is percent-encoded:
+`packages/protocol/src/uri.ts`). Eight forms; every id segment is percent-encoded:
 
 ```
 manifold://container/<containerId>
 manifold://container/<containerId>/element/<elementId>
 manifold://container/<containerId>/tile/<tileId>
 manifold://terminal/<terminalId>
+manifold://machine/<machineId>
 manifold://principal/<principalId>
 manifold://plugin/<pluginId>
 manifold://action/<actionName>
@@ -1233,6 +1241,11 @@ An unknown scheme or shape parses to `null` — nothing guesses. `GET /api/resol
 `ResolveResponse { uri, ref, exists, title }`, the round trip that turns a reference into
 something an agent can name; `/uri/<encoded>` is the browser deep link onto the same grammar.
 Grants, spotlights, and (from wave 2) event topics all name nodes this way.
+Machine references use the enrolled roster id, never the mutable display name; resolution
+returns its name as `title`, or `{ exists: false, title: null }` for an unknown id. Like
+other root topics, a machine topic matches only itself, not a container subtree. Addresses
+remain instance-local: cross-instance references are `{ origin, ref }`, not an authority
+segment in the URI (ADR 0014).
 
 ## Hardened plugins
 

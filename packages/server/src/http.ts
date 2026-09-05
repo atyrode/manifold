@@ -849,6 +849,10 @@ export class HttpApp {
       case "tile":
         this.requireCap(context, "containers:read", ref.containerId);
         return { exists: this.rooms.holdsTile(ref.containerId, ref.tileId), title: null };
+      case "machine": {
+        const machine = this.store.getMachine(ref.machineId);
+        return { exists: machine !== null, title: machine?.name ?? null };
+      }
       case "principal": {
         // Deliberately no per-principal authorization: principal identity is workspace
         // vocabulary. Any containers:read holder already reads every principal's id, name,

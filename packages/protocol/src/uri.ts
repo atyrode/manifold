@@ -7,7 +7,7 @@ import { z } from "zod";
  * link carries, and a log line prints; the struct is what a door consumes. Nothing is
  * addressable here that is not addressable there.
  *
- * The seven forms:
+ * The eight forms:
  *   manifold://terminal/<terminalId>
  *   manifold://container/<containerId>
  *   manifold://container/<containerId>/element/<elementId>
@@ -15,6 +15,7 @@ import { z } from "zod";
  *   manifold://principal/<principalId>
  *   manifold://plugin/<pluginId>
  *   manifold://action/<actionName>
+ *   manifold://machine/<machineId>
  *
  * An element and a tile are addressed THROUGH their container because neither has an
  * identity outside it — the same reason `TileRef`'s element form names an element id
@@ -42,6 +43,7 @@ export const ManifoldRefSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("principal"), principalId: RefIdSchema }),
   z.strictObject({ kind: z.literal("plugin"), pluginId: RefIdSchema }),
   z.strictObject({ kind: z.literal("action"), actionName: RefIdSchema }),
+  z.strictObject({ kind: z.literal("machine"), machineId: RefIdSchema }),
 ]);
 export type ManifoldRef = z.infer<typeof ManifoldRefSchema>;
 
@@ -67,6 +69,8 @@ export function formatManifoldUri(ref: ManifoldRef): string {
       return `${MANIFOLD_URI_SCHEME}plugin/${encodeURIComponent(ref.pluginId)}`;
     case "action":
       return `${MANIFOLD_URI_SCHEME}action/${encodeURIComponent(ref.actionName)}`;
+    case "machine":
+      return `${MANIFOLD_URI_SCHEME}machine/${encodeURIComponent(ref.machineId)}`;
     default: {
       const exhaustive: never = ref;
       return exhaustive;
@@ -124,6 +128,8 @@ export function parseManifoldUri(text: string): ManifoldRef | null {
         return { kind: "plugin", pluginId: first };
       case "action":
         return { kind: "action", actionName: first };
+      case "machine":
+        return { kind: "machine", machineId: first };
       default:
         return null;
     }
@@ -139,10 +145,10 @@ export function parseManifoldUri(text: string): ManifoldRef | null {
 }
 
 /**
- * THE WORKSPACE ROOT, which is the one node with no form of its own. The seven forms above
+ * THE WORKSPACE ROOT, which is the one node with no form of its own. The eight forms above
  * each name something the workspace HOLDS; this names the workspace itself, and it has no
  * `ManifoldRef` because there is nothing to discriminate — no id, no owner, no second
- * spelling. Adding an eighth union member to carry it would widen every wire schema that
+ * spelling. Adding a root union member to carry it would widen every wire schema that
  * accepts a ref (`MintShareRequest.node`, `ResolveResponse.ref`, an event's topic) in order
  * to express a value none of them has a use for.
  *
@@ -164,7 +170,7 @@ export const MANIFOLD_ROOT_URI = MANIFOLD_URI_SCHEME;
  * make every permission check a query, and would answer differently for a node whose row is
  * missing than for one whose row is present, which is a denial that depends on bookkeeping.
  *
- * A terminal, a principal, a plugin and an action sit directly under the root. Each is
+ * A terminal, a principal, a plugin, an action and a machine sit directly under the root. Each is
  * sovereign in the address algebra (A4: one owner, one home, one address) and none is
  * addressed through a container, so there is no intermediate node for a grant to name.
  */

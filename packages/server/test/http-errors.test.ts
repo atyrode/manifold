@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ActionOutcomeSchema, type RuntimeDeps } from "@manifold/protocol";
+import { ActionOutcomeSchema, MachineEnrollResponseSchema, ResolveResponseSchema, type RuntimeDeps } from "@manifold/protocol";
 import { loadConfig } from "../src/config.ts";
 import type { Logger } from "../src/log.ts";
 import { startServer, type RunningServer } from "../src/main.ts";
@@ -66,6 +66,28 @@ afterEach(async () => {
 });
 
 describe("HTTP error mapping", () => {
+  test("resolve names an enrolled machine and answers absence for an unknown machine", async () => {
+    const logger: Logger = { info(): void {}, warn(): void {}, error(): void {} };
+    const running = await startFixture(new FaultRuntime(), logger);
+    const headers = { authorization: `Bearer ${OWNER_KEY}`, "content-type": "application/json" };
+    const response = await fetch(`${running.publicUrl}/api/actions/core.machines.enroll`, {
+      method: "POST", headers, body: JSON.stringify({ name: "alpha" }),
+    });
+    const outcome = ActionOutcomeSchema.parse(await response.json());
+    if (!outcome.ok) throw new Error(outcome.denial.message);
+    const { machine } = MachineEnrollResponseSchema.parse(outcome.result);
+    for (const [machineId, title] of [[machine.id, "alpha"], ["unknown-machine", null]] as const) {
+      const uri = `manifold://machine/${machineId}`;
+      const resolved = await fetch(`${running.publicUrl}/api/resolve?uri=${encodeURIComponent(uri)}`, { headers });
+      expect(resolved.status).toBe(200);
+      expect(ResolveResponseSchema.parse(await resolved.json())).toEqual({
+        uri, ref: { kind: "machine", machineId }, exists: title !== null, title,
+      });
+    }
+    const malformed = await fetch(`${running.publicUrl}/api/resolve?uri=manifold://machine/`, { headers });
+    expect(malformed.status).toBe(400);
+  });
+
   test("an unknown handler error returns a non-leaking 500 internal response", async () => {
     const runtime = new FaultRuntime();
     const errors: Array<{ evt: string; fields?: Readonly<Record<string, unknown>> }> = [];

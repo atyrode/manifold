@@ -18,6 +18,7 @@ import {
  */
 const REFS: readonly { readonly ref: ManifoldRef; readonly uri: string }[] = [
   { ref: { kind: "terminal", terminalId: "s1" }, uri: "manifold://terminal/s1" },
+  { ref: { kind: "machine", machineId: "host/a" }, uri: "manifold://machine/host%2Fa" },
   { ref: { kind: "container", containerId: "p1" }, uri: "manifold://container/p1" },
   {
     ref: { kind: "element", containerId: "p1", elementId: "el-1" },
@@ -120,6 +121,9 @@ describe("manifold:// addressing", () => {
       "manifold://pad/p1",
       // Right head, wrong shape: empty, missing and surplus segments.
       "manifold://container/",
+      "manifold://machine/",
+      "manifold://machine/m1/extra",
+      "manifold://machine/%zz",
       "manifold://container//element/el-1",
       "manifold://container/p1/element",
       "manifold://container/p1/element/el-1/extra",
@@ -216,6 +220,7 @@ describe("manifold:// containment", () => {
     */
     for (const uri of [
       "manifold://terminal/s1",
+      "manifold://machine/m1",
       "manifold://principal/pr-1",
       "manifold://plugin/core.terminals",
       "manifold://action/core.terminals.rename",
@@ -256,6 +261,7 @@ describe("manifold:// containment", () => {
     // that the walk refused would be a stored row nothing could ever fire.
     expect(GrantNodeSchema.safeParse(MANIFOLD_ROOT_URI).success).toBe(true);
     expect(GrantNodeSchema.safeParse("manifold://container/p1").success).toBe(true);
+    expect(GrantNodeSchema.safeParse("manifold://machine/m1").success).toBe(true);
     expect(GrantNodeSchema.safeParse("manifold://container/p1/element/el-1").success).toBe(true);
     expect(GrantNodeSchema.safeParse("manifold://nothing/x").success).toBe(false);
     expect(GrantNodeSchema.safeParse("not-a-uri").success).toBe(false);

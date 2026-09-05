@@ -57,6 +57,7 @@ function resolveTarget(rest: string): Target {
         (`navigateUri`, issue #133). Nothing here names a manager, or knows that one exists.
        */
       return { state: "open", uri: decoded, center: false };
+    case "machine":
     case "principal":
     case "action":
       // Addressable, but not places: there is nowhere to send a browser for a capability

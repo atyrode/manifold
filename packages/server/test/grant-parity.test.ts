@@ -579,6 +579,27 @@ describe("the waterfall's own precedence", () => {
     return { store, auth, root, subject: auth.authenticate(grant.token) };
   }
 
+  test("machine grants stay on that root child and resolve allow/deny with the same waterfall", () => {
+    const where = evaluatorFixture();
+    const node = "manifold://machine/m1";
+    const principal = { kind: "principal" as const, id: where.subject.principal.id };
+    expect(where.auth.effectiveCaps(where.subject, node).has("machines:mint")).toBe(false);
+    where.auth.grant(
+      { principal, node, caps: ["machines:mint"], effect: "allow", reach: "subtree" },
+      where.root,
+    );
+    expect(where.auth.effectiveCaps(where.subject, node).has("machines:mint")).toBe(true);
+    expect(where.auth.effectiveCaps(where.subject, "manifold://machine/m2").has("machines:mint")).toBe(false);
+    expect(where.auth.effectiveCaps(where.subject, "manifold://").has("machines:mint")).toBe(false);
+    where.auth.grant(
+      { principal, node, caps: ["machines:mint"], effect: "deny", reach: "node" },
+      where.root,
+    );
+    expect(where.auth.effectiveCaps(where.subject, node).has("machines:mint")).toBe(false);
+    expect(where.auth.effectiveCaps(where.subject, node).has("containers:read")).toBe(true);
+    where.store.close();
+  });
+
   test("a deny at depth bites one capability through a shallower allow and leaves the rest", () => {
     const where = evaluatorFixture();
     expect(where.auth.effectiveCaps(where.subject, ELEMENT).has("scenes:write")).toBe(true);

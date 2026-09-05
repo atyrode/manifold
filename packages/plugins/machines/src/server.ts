@@ -1,5 +1,5 @@
 import type { EmitEvent } from "@manifold/plugin";
-import { identityColorFor, type MachineDrainStatus } from "@manifold/protocol";
+import { identityColorFor, type MachineDrainStatus, type ManifoldRef } from "@manifold/protocol";
 import { machinesManifest } from "./index.ts";
 
 /**
@@ -64,6 +64,7 @@ interface MachinesCtx {
    * which is floor and emits under this plugin's declared vocabulary (ADR 0012 §1).
    */
   readonly emit: EmitEvent;
+  target(ref: ManifoldRef): void;
 }
 
 /** A machine as the wire carries it: the row, its derived dot, and — for the list — liveness. */
@@ -194,6 +195,7 @@ export const machinesHandlers = {
     ctx: MachinesCtx,
     args: { machineId: string },
   ): Promise<Refusable<{ revoked: number }>> {
+    ctx.target({ kind: "machine", machineId: args.machineId });
     const outcome = ctx.identity.revokeMachine(args.machineId);
     return outcome.ok ? { revoked: outcome.value } : { refused: outcome.message };
   },
