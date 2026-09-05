@@ -33,7 +33,7 @@ export interface Logger {
  * called `key` is dropped from a record — which costs an auditor one field and costs nobody a
  * credential.
  */
-const SECRET_FIELD = /(token|key|authorization|secret)/i;
+const SECRET_FIELD = /(token|key|authorization|secret|password|passwd|credential|passphrase)/i;
 const TERMINAL_FIELD = /^(data|env|payload|terminalData)$/i;
 
 export function redactFields(fields: Readonly<Record<string, unknown>>): Record<string, unknown> {
