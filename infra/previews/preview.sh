@@ -167,7 +167,7 @@ gc() {
     [[ $state == CLOSED || $state == MERGED ]] && closed+=("$name")
   done <"$registry"
   for name in "${closed[@]}"; do down "$name"; done
-  docker builder prune --force --keep-storage "$PREVIEW_BUILD_CACHE_KEEP_STORAGE"
+  docker builder prune --all --force --keep-storage "$PREVIEW_BUILD_CACHE_KEEP_STORAGE"
   docker image prune --force
   log 'gc complete'
 }

@@ -92,9 +92,10 @@ The installation also preserves `DOCKER_HOST` and `DOCKER_CONTEXT` when set, so 
 Docker daemon remains reachable without an interactive login shell.
 Keep that checkout available for the service, just as for live units.
 
-After closed-PR teardown, `gc` runs `docker builder prune --force --keep-storage 5G` and
+After closed-PR teardown, `gc` runs `docker builder prune --all --force --keep-storage 5G` and
 `docker image prune --force`. The 5G constant in `common.sh` retains recent build layers
-while bounding reclaimable build-cache growth; Docker cannot prune layers still in use.
+while bounding reclaimable build-cache growth; `--all` includes unused non-dangling cache.
+Docker cannot prune layers still in use.
 Only dangling images are pruned globally: tagged images for open PRs are never swept.
 `down N` removes both `manifold-pr-pr-N:local` (the current Compose tag) and the older
 `manifold-pr-N:local` tag, without forcing removal of an image used by another container.
