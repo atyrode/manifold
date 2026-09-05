@@ -1321,6 +1321,24 @@ applied to vocabulary: one door onto "what do we call this kind".
       "means": "one HTTP or browser path. As a CONTRIBUTION KIND it is a browser path segment a plugin claims in its manifest (contributes.routes: { segment, title }): one URL space, so the segment is claimed globally and two manifests wanting it refuse with both names, while the web half only registers who draws it",
       "banned": [],
       "allow": []
+    },
+    {
+      "term": "isolate",
+      "means": "the runtime an INSTALLED plugin's code lives in and the boundary around it (ADR 0016 §1): one OS process per plugin on the server, one dedicated Worker per plugin in the browser, reached only through the protocol's frame pairs (`IsolateHostFrame`/`IsolateChildFrame`, `WebIsolateHostFrame`/`WebIsolateWorkerFrame`). A first-party row has none — it runs in-realm — and the roster says which by the presence of `install`, never by a third `source`",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "bundle",
+      "means": "the one-file JSON artifact an isolated plugin is installed from (`PluginBundleSchema`: format, manifest with `entry`, base64 members), pinned on the roster row by the sha256 of its exact bytes and re-verified at every boot. `artifact` is the word for those bytes wherever they are read (`ISOLATE_MAX_ARTIFACT_BYTES`, `artifact_unreadable`, `artifact_invalid`); `bundle` is the parsed document — one is the file, the other its meaning",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "vocabulary",
+      "means": "a CLOSED set the engine publishes as data and refuses anything outside of: the action, placement, event, grant and instance vocabularies at `GET /api/protocol`, the `evt` log vocabulary, and — for an isolated web half — the component vocabulary (`UiNodeSchema`: thirteen node kinds, five tones) it renders with instead of ever touching the DOM (ADR 0016 §3). A vocabulary is the opposite of an escape hatch: a kind or word it does not list is a refusal, never an `unknown`",
+      "banned": [],
+      "allow": []
     }
   ]
 }
