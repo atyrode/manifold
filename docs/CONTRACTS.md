@@ -2131,6 +2131,10 @@ is not a commit point any action owns.
 
 ## Persistence (SQLite, WAL; server-only)
 
+Every server SQLite connection sets `busy_timeout = 5000` (milliseconds) before configuring
+WAL and applying migrations. Writes wait up to five seconds for competing write locks,
+including Litestream's short checkpoint locks, before returning `SQLITE_BUSY`.
+
 ```
 containers(id TEXT PK, name TEXT, created_at INTEGER, sort_order INTEGER, folder_id TEXT,
      discipline TEXT NOT NULL DEFAULT 'canvas')        -- canvas | composition

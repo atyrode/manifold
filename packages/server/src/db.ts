@@ -555,9 +555,13 @@ function backupBeside(db: Database, path: string, version: number, from: number)
   renameSync(staging, target);
 }
 
+/** Litestream's checkpoint takes short write locks; wait rather than fail a competing write. */
+const SQLITE_BUSY_TIMEOUT_MS = 5000;
+
 /** Opens a Bun SQLite database, enables WAL, and applies numbered migrations atomically. */
 export function openDatabase(path: string): Database {
   const db = new Database(path, { create: true, strict: true });
+  db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};`);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA synchronous = NORMAL;");
   const meta = db

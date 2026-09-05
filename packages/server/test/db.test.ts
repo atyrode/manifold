@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { ROOT_TILE_ID } from "@manifold/protocol";
 import {
   ELEMENTS_KEY,
@@ -14,6 +15,50 @@ import {
 } from "@manifold/scene";
 import { openDatabase, SCHEMA_VERSION } from "../src/db.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
+
+test("an event write survives a competing SQLite write lock", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "manifold-db-busy-"));
+  const path = join(dir, "manifold.db");
+  const db = openDatabase(path);
+  let writer: Worker | undefined;
+  try {
+    const store = new ServerStore(db);
+    // SQLite blocks this thread synchronously, so the lock's release timer must run
+    // on another thread with real time: fake timers cannot drive SQLite's native wait.
+    // The handshake ensures BEGIN IMMEDIATE precedes our write.
+    writer = new Worker(
+      `
+      const { parentPort, workerData } = require("node:worker_threads");
+      const { Database } = require("bun:sqlite");
+      const db = new Database(workerData);
+      db.exec("BEGIN IMMEDIATE");
+      parentPort.once("message", () => {
+        setTimeout(() => {
+          db.exec("COMMIT");
+          db.close();
+          parentPort.close();
+        }, 250);
+      });
+      parentPort.postMessage("locked");
+      `,
+      { eval: true, workerData: path },
+    );
+    await new Promise<void>((resolve, reject) => {
+      writer?.once("message", () => resolve());
+      writer?.once("error", reject);
+      writer?.once("exit", (code) => reject(new Error(`SQLite writer exited early: ${code}`)));
+    });
+    writer.postMessage("release");
+    store.addEvent(null, 123, "principal", "principal_joined", {});
+    expect(store.listEvents({ limit: 1 })).toMatchObject([
+      { ts: 123, principalId: "principal", type: "principal_joined", payload: "{}" },
+    ]);
+  } finally {
+    await writer?.terminate();
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 interface DocRow {
   container_id: string;
