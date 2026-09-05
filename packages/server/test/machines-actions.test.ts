@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  MachineDrainStatusSchema,
   MachineEnrollResponseSchema,
   MachinesResponseSchema,
   identityColorFor,
@@ -9,7 +10,7 @@ import {
 } from "@manifold/protocol";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { silentLogger } from "../src/log.ts";
-import type { MachineLiveness, PluginHost } from "../src/plugin-host.ts";
+import type { MachineAdmission, PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
@@ -37,8 +38,16 @@ interface Fixture {
 }
 
 /** Liveness a case can drive after enrolling, standing in for machines that have dialled in. */
-function liveness(online: ReadonlySet<string>): MachineLiveness {
-  return { isOnline: (machineId) => online.has(machineId) };
+function liveness(online: ReadonlySet<string>): MachineAdmission {
+  return {
+    isOnline: (machineId) => online.has(machineId),
+    drain: (machineId, draining) =>
+      Promise.resolve(
+        online.has(machineId)
+          ? { ok: true, status: { terminalHostId: "host-A", draining, terminalIds: ["t1"] } }
+          : { ok: false, reason: "machine is offline: its terminals are unknown" },
+      ),
+  };
 }
 
 async function fixture(online: ReadonlySet<string> = new Set()): Promise<Fixture> {
@@ -305,6 +314,98 @@ describe("core.machines.list", () => {
       rule: "unknown_action",
       message: 'unknown action "core.machines.forget"',
     });
+    fix.store.close();
+  });
+});
+
+/**
+ * THE ADMISSION DOOR (#278). The mechanism is the broker's and proven there; this is the
+ * ladder around it — who may close a machine to new work, and that an owner's silence is a
+ * refusal rather than a safe-looking empty list.
+ */
+describe("core.machines.drain", () => {
+  test("relays the owner's report to a fleet administrator", async () => {
+    const online = new Set<string>();
+    const fix = await fixture(online);
+    const alpha = enrolled(
+      await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "alpha" }),
+    ).machine.id;
+    online.add(alpha);
+
+    const outcome = await fix.host.dispatch(fix.owner, "core.machines.drain", {
+      machineId: alpha,
+      draining: true,
+    });
+
+    if (!outcome.ok) throw new Error(`expected a report: ${outcome.denial.message}`);
+    expect(MachineDrainStatusSchema.parse(outcome.result)).toEqual({
+      terminalHostId: "host-A",
+      draining: true,
+      terminalIds: ["t1"],
+    });
+    fix.store.close();
+  });
+
+  test("an owner that cannot answer is refused, never reported empty", async () => {
+    const fix = await fixture();
+    const alpha = enrolled(
+      await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "alpha" }),
+    ).machine.id;
+
+    const outcome = await fix.host.dispatch(fix.owner, "core.machines.drain", {
+      machineId: alpha,
+      draining: true,
+    });
+
+    expect(denial(outcome)).toEqual({
+      rule: "refused",
+      message: "machine is offline: its terminals are unknown",
+    });
+    fix.store.close();
+  });
+
+  test("an unknown machine is refused before the mechanism is asked", async () => {
+    const fix = await fixture(new Set(["ghost"]));
+
+    const outcome = await fix.host.dispatch(fix.owner, "core.machines.drain", {
+      machineId: "ghost",
+      draining: true,
+    });
+
+    expect(denial(outcome)).toEqual({ rule: "refused", message: "unknown machine" });
+    fix.store.close();
+  });
+
+  test("needs machines:mint at workspace scope, exactly as enroll and revoke do", async () => {
+    const fix = await fixture();
+    const alpha = enrolled(
+      await fix.host.dispatch(fix.owner, "core.machines.enroll", { name: "alpha" }),
+    ).machine.id;
+
+    const capless = await fix.host.dispatch(
+      context(fix, ["containers:read"]),
+      "core.machines.drain",
+      { machineId: alpha, draining: true },
+    );
+    expect(denial(capless)).toEqual({
+      rule: "forbidden",
+      message: "machines:mint capability required",
+    });
+
+    const scoped = await fix.host.dispatch(
+      context(fix, ["machines:mint"], container(fix)),
+      "core.machines.drain",
+      { machineId: alpha, draining: true },
+    );
+    expect(denial(scoped)).toEqual({
+      rule: "forbidden",
+      message: "scoped tokens cannot invoke workspace actions",
+    });
+
+    const malformed = await fix.host.dispatch(fix.owner, "core.machines.drain", {
+      machineId: alpha,
+    });
+    expect(denial(malformed).rule).toBe("invalid_args");
     fix.store.close();
   });
 });

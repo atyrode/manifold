@@ -829,6 +829,9 @@ export class AuthService {
         name,
         tokenId: minted.record.id,
         lastSeen: this.runtime.now(),
+        // Nobody has dialled in yet: no owner identity to remember, and admission open.
+        ownerHostId: null,
+        draining: false,
       };
       this.store.createMachine(machine);
       return { machine, machineToken: minted.raw };

@@ -5,7 +5,7 @@ import { migrateToCanonLexicon, migrateToElementRefs } from "./migrate-lexicon.t
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -479,6 +479,29 @@ INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '18');
    * This one-way document vocabulary move uses the same atomic, backed-up runner as 11.
    */
   19: { backup: true, apply: migrateToElementRefs },
+  /**
+   * Terminal continuity across agent replacement (#278). TWO nullable-or-defaulted columns
+   * on `machines`, and both are admission state the hub must not forget across a restart:
+   *
+   * - `owner_host_id`: the `terminalHostId` the last ADMITTED hello named — the identity of
+   *   the process that owns the machine's PTYs — or NULL for a pre-v24 agent that is its own
+   *   owner. A same-token newcomer proves continuity against this column when no live socket
+   *   is there to prove it against, so a hub restart does not turn every reconnect into an
+   *   unproven one.
+   * - `draining`: the admission latch `core.machines.drain` sets. It is written BEFORE the
+   *   owner is asked, so a hub that restarts between closing admission and hearing the
+   *   owner's answer comes back with admission still closed — the one state a maintenance
+   *   window cannot afford to lose. `0` is every existing row: nothing was draining before
+   *   the column existed.
+   *
+   * Plain SQL and no snapshot: nothing rewritten, every existing row keeps every answer,
+   * reversible by dropping two columns.
+   */
+  20: `
+ALTER TABLE machines ADD COLUMN owner_host_id TEXT;
+ALTER TABLE machines ADD COLUMN draining INTEGER NOT NULL DEFAULT 0;
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '20');
+`,
 };
 
 interface TableRow {

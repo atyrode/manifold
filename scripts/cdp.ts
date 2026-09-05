@@ -13,6 +13,7 @@ interface CdpFrame {
   method?: string;
   params?: Record<string, unknown>;
   result?: Record<string, unknown>;
+  error?: { code: number; message: string };
 }
 
 /**
@@ -284,6 +285,18 @@ export class Browser {
       returnByValue: true,
       awaitPromise: true,
     });
+    if (frame.error !== undefined) throw new Error(`CDP evaluation failed: ${frame.error.message}`);
+    const exception = frame.result?.["exceptionDetails"] as
+      { text?: string; exception?: unknown } | undefined;
+    if (exception !== undefined) {
+      throw new Error(
+        `Page evaluation failed: ${
+          exception.exception === undefined
+            ? (exception.text ?? "unknown exception")
+            : describeRemoteObject(exception.exception)
+        }`,
+      );
+    }
     const value = (frame.result?.["result"] as { value?: T } | undefined)?.value;
     return value as T;
   }

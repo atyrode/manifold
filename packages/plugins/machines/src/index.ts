@@ -1,6 +1,8 @@
 import { defineAction } from "@manifold/plugin";
 import {
+  DrainMachineRequestSchema,
   EnrollMachineRequestSchema,
+  MachineDrainStatusSchema,
   MachineEnrollResponseSchema,
   MachinesResponseSchema,
   RevokeMachineRequestSchema,
@@ -22,10 +24,10 @@ import { z } from "zod";
  */
 export const machinesManifest: PluginManifest = {
   id: "core.machines",
-  version: "1.1.0",
+  version: "1.2.0",
   title: "Machines",
   description:
-    "Enrolls machines, lists them with live online state, withdraws a machine's credential, and births terminals.",
+    "Enrolls machines, lists them with live online state, withdraws a machine's credential, drains a machine's terminal admission, and births terminals.",
   capabilities: ["machines:mint", "containers:read"],
   contributes: {
     panels: [],
@@ -140,5 +142,32 @@ export const machinesActions = [
       second shape for one answer.
     */
     result: RevokeResultSchema,
+  }),
+  defineAction({
+    /*
+      ADMISSION AS AN ACT (issue #278). A host activation that replaces a machine's agent has
+      to know that no terminal will be born between its last look and the replacement, and
+      that what it is about to replace holds nothing — and "the machine looked idle" is not
+      that knowledge, because a create can land in the gap. This door closes admission on
+      the hub FIRST, then asks the machine's terminal owner to latch the same and report every
+      PTY it still holds, behind every create the hub had already sent. The answer is the
+      owner's, never inferred: an owner that cannot answer — offline, a pre-v24 agent that
+      names no owner, a timeout, a mismatched identity — is a `refused` denial, and admission
+      STAYS closed until `draining: false`, which is the only cancellation there is.
+
+      `machines:mint`, the same cap `enroll` and `revoke` carry, because closing a machine to
+      new work is fleet administration and grading it lower would let the cheaper capability
+      fence a machine the dearer one enrolled. `scope: "workspace"` for `revoke`'s reason: a
+      machine is a workspace-global fact with no container to be inside.
+
+      What this door does NOT do: it never kills, exits or forgets a terminal. Replacing an
+      owner that still holds work is the caller's decision to make in the open, with the ids
+      in hand and `core.terminals.kill` as the named door for each one.
+    */
+    name: "drain",
+    title: "Close or reopen a machine's terminal admission",
+    caps: ["machines:mint"],
+    input: DrainMachineRequestSchema,
+    result: MachineDrainStatusSchema,
   }),
 ];

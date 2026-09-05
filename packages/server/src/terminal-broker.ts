@@ -6,6 +6,7 @@ import {
   type ClientMessageBody,
   type EventKind,
   type EventPayload,
+  type MachineDrainStatus,
   type RuntimeDeps,
   type ServerToAgentMessage,
   type TerminalInfo,
@@ -39,6 +40,7 @@ const PENDING_OUTPUT_FRAMES = 256;
 const PENDING_OUTPUT_BYTES = 1_048_576;
 const CREATE_DEADLINE_MS = 10_000;
 const SNAPSHOT_DEADLINE_MS = 10_000;
+const DRAIN_DEADLINE_MS = 10_000;
 
 /** Online agent connection used by the broker without depending on Bun WebSocket types. */
 export interface MachineChannel {
@@ -48,7 +50,30 @@ export interface MachineChannel {
    * broker reads it before sending a frame an older agent parses as malformed (`program`).
    */
   readonly protocolVersion: number;
+  /**
+   * The identity of the process that owns this connection's PTYs (`hello.terminalHostId`,
+   * #278), or null for an agent that is its own owner. Null is also the CAPABILITY gate: an
+   * agent that named no owner parses `drain` as a malformed frame, so it is never sent one.
+   */
+  readonly terminalHostId: string | null;
   send(message: ServerToAgentMessage): boolean;
+}
+
+/**
+ * The owner's answer to one drain request, or why there is none. Every `ok: false` leaves the
+ * hub's admission exactly as the caller set it: an owner that cannot answer is not a safe one,
+ * and the caller cancels explicitly if it wants admission back.
+ */
+export type DrainOutcome =
+  | { readonly ok: true; readonly status: MachineDrainStatus }
+  | { readonly ok: false; readonly reason: string };
+
+interface PendingDrain {
+  machineId: string;
+  draining: boolean;
+  terminalHostId: string;
+  resolve: (outcome: DrainOutcome) => void;
+  cancelDeadline: (() => void) | null;
 }
 
 interface Viewer {
@@ -111,6 +136,13 @@ export class TerminalBroker implements TerminalPlacementPort {
   private readonly terminals = new Map<string, RuntimeTerminal>();
   private readonly pendingOpens = new Map<string, PendingOpen>();
   /**
+   * THE admission latch (#278), one per drained machine, mirrored from the `machines` row it
+   * is persisted on. In memory so `open` can refuse without a read per gesture; loaded at
+   * construction so a hub restart comes back with every drained machine still drained.
+   */
+  private readonly draining = new Set<string>();
+  private readonly pendingDrains = new Map<string, PendingDrain>();
+  /**
    * Circular startup wiring, same shape as `RoomManager`'s providers: a terminal born
    * directly into a composition hardens the container it composed, and that rule lives
    * with the rest of container lifecycle.
@@ -141,6 +173,9 @@ export class TerminalBroker implements TerminalPlacementPort {
      */
     private readonly holdsTileTree: TileTreeDisciplines,
   ) {
+    for (const machine of store.listMachines()) {
+      if (machine.draining) this.draining.add(machine.id);
+    }
     for (const row of store.listTerminals()) {
       const info: TerminalInfo = {
         id: row.id,
@@ -219,10 +254,25 @@ export class TerminalBroker implements TerminalPlacementPort {
    * that never stopped being online would be news about a socket rather than about the
    * machine. `actor` is null because nobody asked for this — a machine dialling in is the
    * world moving, not a principal acting.
+   *
+   * An owner that named itself is told the hub's admission state on every hello (#278), true
+   * or false, so its own latch converges to the persisted one: a drain that outlived a
+   * transport restart is re-latched, and a cancel issued while the machine was offline reaches
+   * it the moment it is back. A drain request in flight on the superseded socket cannot be
+   * trusted to be answered on this one, so it fails closed here rather than waiting out its
+   * deadline.
    */
   setMachineOnline(channel: MachineChannel): void {
     const wasOnline = this.machines.has(channel.machineId);
     this.machines.set(channel.machineId, channel);
+    if (wasOnline) this.failPendingDrains(channel.machineId, "machine reconnected mid-drain");
+    if (channel.terminalHostId !== null) {
+      channel.send({
+        type: "drain",
+        requestId: this.runtime.newId(),
+        draining: this.draining.has(channel.machineId),
+      });
+    }
     if (wasOnline) return;
     this.events?.emitCollection("machines", "machine_online", null, {
       machineId: channel.machineId,
@@ -237,6 +287,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     this.events?.emitCollection("machines", "machine_offline", null, {
       machineId: channel.machineId,
     });
+    this.failPendingDrains(channel.machineId, "machine disconnected mid-drain");
     for (const [terminalId, pending] of this.pendingOpens) {
       if (pending.machineId !== channel.machineId) continue;
       pending.cancelDeadline?.();
@@ -270,6 +321,125 @@ export class TerminalBroker implements TerminalPlacementPort {
   /** Reports whether the persisted machine currently has an authenticated socket. */
   isMachineOnline(machineId: string): boolean {
     return this.machines.has(machineId);
+  }
+
+  /** Whether `core.machines.drain` has closed this machine's terminal admission. */
+  isMachineDraining(machineId: string): boolean {
+    return this.draining.has(machineId);
+  }
+
+  /**
+   * THE ADMISSION CONTRACT (#278): closes or reopens new-terminal admission on a machine and
+   * asks the machine's PTY owner to do the same and say what it holds.
+   *
+   * ORDER IS THE WHOLE GUARANTEE. The latch is persisted and mirrored FIRST, so from this
+   * statement on no `open` reaches this machine — a hub restart before the owner answers
+   * comes back drained, not open. Only then is the owner asked, on the same ordered socket
+   * every `create` before it travelled on: its `drain_status` is therefore behind every
+   * create the hub had sent, and the ids it reports are the complete set a replacement would
+   * destroy, in-flight creates included. Nothing a viewer does between the latch and the
+   * answer can add to that set.
+   *
+   * Every way the owner CANNOT answer — offline, an agent that named no owner and so cannot
+   * be asked, a dropped frame, a deadline, a reply naming a different owner or the wrong
+   * state — is `ok: false`, and leaves the latch where the caller put it. Unknown is not safe;
+   * a caller that wanted admission back says so with `draining: false`, which is the ONLY
+   * thing that reopens it. A cancel that finds no owner to tell still reopens the hub's half,
+   * and the owner's half converges at its next hello (`setMachineOnline`).
+   */
+  drain(machineId: string, draining: boolean): Promise<DrainOutcome> {
+    this.store.setMachineDraining(machineId, draining);
+    if (draining) this.draining.add(machineId);
+    else this.draining.delete(machineId);
+    // A request still waiting is now answering a question the caller has since changed.
+    this.failPendingDrains(machineId, "superseded by a later drain request");
+    const machine = this.machines.get(machineId);
+    if (machine === undefined) {
+      return Promise.resolve({
+        ok: false,
+        reason: "machine is offline: its terminals are unknown",
+      });
+    }
+    if (machine.terminalHostId === null) {
+      return Promise.resolve({
+        ok: false,
+        reason: "machine agent names no terminal owner: it cannot be drained",
+      });
+    }
+    const terminalHostId = machine.terminalHostId;
+    const requestId = this.runtime.newId();
+    return new Promise<DrainOutcome>((resolve) => {
+      const pending: PendingDrain = {
+        machineId,
+        draining,
+        terminalHostId,
+        resolve,
+        cancelDeadline: null,
+      };
+      this.pendingDrains.set(requestId, pending);
+      if (!machine.send({ type: "drain", requestId, draining })) {
+        this.pendingDrains.delete(requestId);
+        resolve({ ok: false, reason: "machine connection unavailable" });
+        return;
+      }
+      pending.cancelDeadline = this.timers.schedule(() => {
+        pending.cancelDeadline = null;
+        if (this.pendingDrains.get(requestId) !== pending) return;
+        this.pendingDrains.delete(requestId);
+        this.logger.warn("machine_drain_timeout", { machineId, draining });
+        resolve({ ok: false, reason: "terminal owner did not acknowledge in time" });
+      }, DRAIN_DEADLINE_MS);
+    });
+  }
+
+  /**
+   * The owner's answer. Matched by request id AND by the machine it arrived from, then held to
+   * the identity and state the request was made against: a reply from a different owner, or
+   * one that did not apply the state it was asked for, is a failed drain rather than a
+   * report, because the number it carries would describe a process nobody is about to replace.
+   */
+  onDrainStatus(machineId: string, status: Extract<AgentMessage, { type: "drain_status" }>): void {
+    const pending = this.pendingDrains.get(status.requestId);
+    if (pending === undefined || pending.machineId !== machineId) {
+      // The hello-time sync (`setMachineOnline`) is answered here too; it has no waiter.
+      this.logger.info("machine_drain_status", {
+        machineId,
+        terminalHostId: status.terminalHostId,
+        draining: status.draining,
+        terminals: status.terminalIds.length,
+      });
+      return;
+    }
+    this.pendingDrains.delete(status.requestId);
+    pending.cancelDeadline?.();
+    if (status.terminalHostId !== pending.terminalHostId) {
+      pending.resolve({
+        ok: false,
+        reason: "terminal owner identity changed while draining",
+      });
+      return;
+    }
+    if (status.draining !== pending.draining) {
+      pending.resolve({ ok: false, reason: "terminal owner did not apply the requested state" });
+      return;
+    }
+    pending.resolve({
+      ok: true,
+      status: {
+        terminalHostId: status.terminalHostId,
+        draining: status.draining,
+        terminalIds: status.terminalIds,
+      },
+    });
+  }
+
+  private failPendingDrains(machineId: string, reason: string): void {
+    for (const [requestId, pending] of this.pendingDrains) {
+      if (pending.machineId !== machineId) continue;
+      pending.cancelDeadline?.();
+      this.pendingDrains.delete(requestId);
+      pending.resolve({ ok: false, reason });
+    }
   }
 
   /** Whether an agent create is still in flight for this container. */
@@ -426,6 +596,12 @@ export class TerminalBroker implements TerminalPlacementPort {
   /**
    * Reconciles the complete hello inventory: missing durable PTYs are exited, while
    * unadoptable agent PTYs are explicitly killed instead of becoming unmanaged orphans.
+   *
+   * Both inferences are DESTRUCTIVE, and both are safe here for one reason only: the gateway
+   * admits a hello exclusively from the machine's OWNER OF RECORD (`decideAdmission`, #278),
+   * so absence is the owner saying a PTY is gone and an unknown PTY is the owner's own,
+   * outliving a row a kill already deleted. A claimant that cannot prove that is refused
+   * before this method runs; it never gets to say anything about the machine's terminals.
    */
   reconcileMachineHello(machineId: string, advertised: readonly AdvertisedTerminal[]): void {
     const advertisedIds = new Set<string>();
@@ -484,6 +660,21 @@ export class TerminalBroker implements TerminalPlacementPort {
         type: "error",
         code: "no_machine",
         message: "no unambiguous online machine",
+        ref: message.elementId,
+      });
+      return;
+    }
+    if (this.draining.has(machine.machineId)) {
+      /*
+        THE LATCH (#278). Checked on the machine the open would actually reach, after
+        selection, so a drained machine that is the only one online refuses by name rather
+        than being silently picked. Nothing is minted before this line: a refused open leaves
+        no token and no pending row for a replacement to discover.
+      */
+      channel.send({
+        type: "error",
+        code: "conflict",
+        message: "machine is draining: new terminals are refused until the drain is cancelled",
         ref: message.elementId,
       });
       return;

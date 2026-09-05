@@ -1,5 +1,5 @@
 import type { EmitEvent } from "@manifold/plugin";
-import { identityColorFor } from "@manifold/protocol";
+import { identityColorFor, type MachineDrainStatus } from "@manifold/protocol";
 import { machinesManifest } from "./index.ts";
 
 /**
@@ -12,7 +12,14 @@ import { machinesManifest } from "./index.ts";
 interface MachineRow {
   readonly id: string;
   readonly name: string;
+  /** The admission latch `core.machines.drain` sets; the roster publishes it beside liveness. */
+  readonly draining: boolean;
 }
+
+/** The owner's answer to a drain request, or why there is none (the door relays the reason). */
+type DrainOutcome =
+  | { readonly ok: true; readonly status: MachineDrainStatus }
+  | { readonly ok: false; readonly reason: string };
 
 interface Enrollment {
   readonly machine: MachineRow;
@@ -26,6 +33,7 @@ type IdentityResult<T> =
 interface MachinesCtx {
   readonly store: {
     listMachines(): readonly MachineRow[];
+    getMachine(id: string): MachineRow | null;
     getMachineByName(name: string): MachineRow | null;
     /**
      * Which machines hold a WITHDRAWN credential. One store read for the whole roster
@@ -37,6 +45,12 @@ interface MachinesCtx {
   };
   readonly machines: {
     isOnline(machineId: string): boolean;
+    /**
+     * Closes or reopens a machine's terminal admission and asks its PTY owner what it holds
+     * (#278). The latch is the floor's and persisted; this plugin only turns the answer into
+     * the door's result, or the reason there is none into a refusal.
+     */
+    drain(machineId: string, draining: boolean): Promise<DrainOutcome>;
   };
   readonly identity: {
     enrollMachine(name: string): IdentityResult<Enrollment>;
@@ -67,6 +81,8 @@ interface MachineSummary extends MachineDot {
    * sees the roster it always saw.
    */
   readonly revoked?: boolean;
+  /** OMITTED when admission is open, for the same reason: a v23 reader's row is unchanged. */
+  readonly draining?: boolean;
 }
 
 /** Either a published result, or a refusal the door turns into a `refused` denial. */
@@ -125,6 +141,7 @@ export const machinesHandlers = {
           and one representation of "normal" is what keeps a v19 reader's parse exact.
         */
         ...(withdrawn.has(machine.id) ? { revoked: true } : {}),
+        ...(machine.draining ? { draining: true } : {}),
       })),
     };
   },
@@ -179,5 +196,27 @@ export const machinesHandlers = {
   ): Promise<Refusable<{ revoked: number }>> {
     const outcome = ctx.identity.revokeMachine(args.machineId);
     return outcome.ok ? { revoked: outcome.value } : { refused: outcome.message };
+  },
+
+  /**
+   * ADMISSION, relayed (issue #278). The mechanism is the floor's — the persisted latch, the
+   * refusal in `open`, the owner round trip — and this handler turns its answer into the
+   * result the door declares, or the reason there is none into a `refused` denial. Every
+   * refusal below happens AFTER the floor has set the latch the caller asked for, which is
+   * the property a maintenance caller relies on: a refused `draining: true` is a machine
+   * whose state is unknown AND whose admission is now closed, never one left open because
+   * the answer was awkward.
+   *
+   * NO EVENT EMITTED, for `revoke`'s reason: the roster already carries `draining` beside
+   * `online`, the trace ledger records the act at the door, and a second announcement of one
+   * act would be the plane rule with the seams showing.
+   */
+  async drain(
+    ctx: MachinesCtx,
+    args: { machineId: string; draining: boolean },
+  ): Promise<Refusable<MachineDrainStatus>> {
+    if (ctx.store.getMachine(args.machineId) === null) return { refused: "unknown machine" };
+    const outcome = await ctx.machines.drain(args.machineId, args.draining);
+    return outcome.ok ? outcome.status : { refused: outcome.reason };
   },
 };

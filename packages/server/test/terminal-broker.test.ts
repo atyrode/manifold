@@ -21,6 +21,7 @@ class FakeMachine implements MachineChannel {
   constructor(
     readonly machineId: string,
     readonly protocolVersion: number = PROTOCOL_VERSION,
+    readonly terminalHostId: string | null = null,
   ) {}
 
   send(message: ServerToAgentMessage): boolean {
@@ -282,7 +283,8 @@ describe("TerminalBroker controller lease", () => {
 
     // The durability the persisted exit used to buy now comes from the ABSENCE of a row: a
     // PTY that outlived an undeliverable kill has nothing to be adopted against, so hello
-    // reconciliation kills it outright.
+    // reconciliation kills it outright — the hello is the owner's, because the gateway
+    // admits no other (#278).
     fixture.broker.setMachineOnline(fixture.machine);
     fixture.broker.reconcileMachineHello(fixture.machine.machineId, [
       {
@@ -902,6 +904,166 @@ describe("TerminalBroker program and env (issue #192)", () => {
     if (create === undefined || create.type !== "create") throw new Error("missing create");
     expect("program" in create).toBe(false);
     expect(create.env.CODE_TEST).toBe("x");
+    setup.store.close();
+  });
+});
+
+/**
+ * THE ADMISSION CONTRACT (#278): the latch closes BEFORE the owner is asked, the owner's
+ * answer is behind every create the hub sent, and every way the owner cannot answer leaves
+ * admission closed. A drain never kills, exits or forgets anything.
+ */
+describe("TerminalBroker drain (issue #278)", () => {
+  /** A machine whose agent names an owner and answers drains under the test's control. */
+  function drainSetup() {
+    const setup = brokerSetup();
+    const machine = new FakeMachine(setup.machine.machineId, PROTOCOL_VERSION, "host-A");
+    setup.broker.setMachineOnline(machine);
+    machine.clear();
+    const answer = (
+      request: ServerToAgentMessage,
+      overrides: Partial<{ terminalHostId: string; draining: boolean; terminalIds: string[] }> = {},
+    ): void => {
+      if (request.type !== "drain") throw new Error("expected a drain request");
+      setup.broker.onDrainStatus(machine.machineId, {
+        type: "drain_status",
+        requestId: request.requestId,
+        terminalHostId: "host-A",
+        draining: request.draining,
+        terminalIds: [],
+        ...overrides,
+      });
+    };
+    const lastRequest = (): ServerToAgentMessage => {
+      const request = machine.sent.at(-1);
+      if (request === undefined) throw new Error("nothing was sent to the machine");
+      return request;
+    };
+    return { ...setup, machine, answer, lastRequest };
+  }
+
+  test("draining closes admission first, then reports what the owner holds behind every create", async () => {
+    const setup = drainSetup();
+    // A create already on the wire when the drain is requested: the owner's report is
+    // ordered behind it, so its id is in the answer even though `created` has not landed.
+    setup.broker.open(setup.opener, {
+      type: "terminal_open",
+      elementId: "in-flight",
+      cols: 80,
+      rows: 24,
+      placement: "tile",
+    });
+    const create = setup.machine.sent.find((message) => message.type === "create");
+    if (create === undefined || create.type !== "create") throw new Error("missing create");
+
+    const outcome = setup.broker.drain(setup.machine.machineId, true);
+    // The latch is set synchronously, and persisted, before the owner has answered anything.
+    expect(setup.broker.isMachineDraining(setup.machine.machineId)).toBe(true);
+    expect(setup.store.getMachine(setup.machine.machineId)?.draining).toBe(true);
+    expect(setup.lastRequest()).toMatchObject({ type: "drain", draining: true });
+    setup.socket.clear();
+    setup.broker.open(setup.opener, {
+      type: "terminal_open",
+      elementId: "too-late",
+      cols: 80,
+      rows: 24,
+      placement: "tile",
+    });
+    expect(setup.socket.messages()).toEqual([
+      expect.objectContaining({ type: "error", code: "conflict", ref: "too-late" }),
+    ]);
+    expect(setup.machine.sent.filter((message) => message.type === "create")).toHaveLength(1);
+
+    setup.answer(setup.lastRequest(), { terminalIds: [create.terminalId] });
+    expect(await outcome).toEqual({
+      ok: true,
+      status: { terminalHostId: "host-A", draining: true, terminalIds: [create.terminalId] },
+    });
+    // The in-flight create still commits: closing admission is not killing work.
+    setup.broker.onCreated(setup.machine.machineId, create.terminalId);
+    expect(setup.store.getTerminal(create.terminalId)?.status).toBe("running");
+
+    // Cancel is the only thing that reopens it.
+    const cancel = setup.broker.drain(setup.machine.machineId, false);
+    expect(setup.broker.isMachineDraining(setup.machine.machineId)).toBe(false);
+    setup.answer(setup.lastRequest(), { terminalIds: [create.terminalId] });
+    expect((await cancel).ok).toBe(true);
+    setup.socket.clear();
+    setup.broker.open(setup.opener, {
+      type: "terminal_open",
+      elementId: "after-cancel",
+      cols: 80,
+      rows: 24,
+      placement: "tile",
+    });
+    expect(setup.machine.sent.filter((message) => message.type === "create")).toHaveLength(2);
+    setup.store.close();
+  });
+
+  test("an owner that cannot answer is a refusal, and admission stays closed", async () => {
+    const setup = drainSetup();
+
+    // Deadline.
+    const timedOut = setup.broker.drain(setup.machine.machineId, true);
+    setup.clock.advance(10_000);
+    expect((await timedOut).ok).toBe(false);
+    expect(setup.broker.isMachineDraining(setup.machine.machineId)).toBe(true);
+
+    // Wrong owner answering.
+    const wrongOwner = setup.broker.drain(setup.machine.machineId, true);
+    setup.answer(setup.lastRequest(), { terminalHostId: "host-B" });
+    expect((await wrongOwner).ok).toBe(false);
+
+    // Owner that did not apply the state.
+    const notApplied = setup.broker.drain(setup.machine.machineId, true);
+    setup.answer(setup.lastRequest(), { draining: false });
+    expect((await notApplied).ok).toBe(false);
+
+    // A late answer to a superseded request is ignored, not credited to the new one.
+    const first = setup.broker.drain(setup.machine.machineId, true);
+    const firstRequest = setup.lastRequest();
+    const second = setup.broker.drain(setup.machine.machineId, true);
+    expect((await first).ok).toBe(false);
+    setup.answer(firstRequest, { terminalIds: ["stale"] });
+    setup.answer(setup.lastRequest(), { terminalIds: ["t1"] });
+    expect(await second).toEqual({
+      ok: true,
+      status: { terminalHostId: "host-A", draining: true, terminalIds: ["t1"] },
+    });
+
+    // Offline: unknown, and still closed.
+    setup.broker.setMachineOffline(setup.machine);
+    expect((await setup.broker.drain(setup.machine.machineId, true)).ok).toBe(false);
+    expect(setup.broker.isMachineDraining(setup.machine.machineId)).toBe(true);
+    expect(setup.store.getMachine(setup.machine.machineId)?.draining).toBe(true);
+
+    // Disconnect mid-request fails closed rather than waiting out the deadline.
+    setup.broker.setMachineOnline(setup.machine);
+    const midway = setup.broker.drain(setup.machine.machineId, true);
+    setup.broker.setMachineOffline(setup.machine);
+    expect((await midway).ok).toBe(false);
+    setup.store.close();
+  });
+
+  test("a pre-v24 agent cannot be drained, but the hub's half still refuses new terminals", async () => {
+    const setup = brokerSetup();
+    const outcome = await setup.broker.drain(setup.machine.machineId, true);
+    expect(outcome.ok).toBe(false);
+    expect(setup.machine.sent).toEqual([]);
+    setup.broker.open(setup.opener, {
+      type: "terminal_open",
+      elementId: "refused",
+      cols: 80,
+      rows: 24,
+      placement: "tile",
+    });
+    expect(setup.machine.sent).toEqual([]);
+    expect(setup.socket.messages()).toEqual([
+      expect.objectContaining({ type: "error", code: "conflict", ref: "refused" }),
+    ]);
+    // A cancel with nobody to tell still reopens the hub's half.
+    expect((await setup.broker.drain(setup.machine.machineId, false)).ok).toBe(false);
+    expect(setup.broker.isMachineDraining(setup.machine.machineId)).toBe(false);
     setup.store.close();
   });
 });

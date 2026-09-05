@@ -100,15 +100,20 @@ export async function ownerKeyOf(dataDir: string): Promise<string> {
 }
 
 /**
- * The local agent the gate's own server spawned, or null. Read the way the server decides
- * whether a recorded pid is still its agent (`agent-spawn.ts`, `livePid`): the pid file names
- * it AND `/proc/<pid>/cmdline` must still be the agent entry, so a pid the kernel has since
- * handed to something else is never signalled. Never by name: this box runs many manifolds.
+ * One half of the local machine the gate's own server spawned, or null. Read the way the
+ * server decides whether a recorded pid is still its process (`agent-spawn.ts`, `livePid`):
+ * the pid file names it AND `/proc/<pid>/cmdline` must still be the agent entry, so a pid the
+ * kernel has since handed to something else is never signalled. Never by name: this box runs
+ * many manifolds. Since #278 there are two files — `agent.pid` (the transport) and
+ * `terminal-host.pid` (the PTY owner) — and both are the gate's to reap.
  */
-function spawnedAgentPid(dataDir: string): number | null {
+function spawnedAgentPid(
+  dataDir: string,
+  pidFile: "agent.pid" | "terminal-host.pid",
+): number | null {
   let raw: string;
   try {
-    raw = readFileSync(join(dataDir, "agent.pid"), "utf8").trim();
+    raw = readFileSync(join(dataDir, pidFile), "utf8").trim();
   } catch {
     return null;
   }
@@ -165,7 +170,8 @@ async function reap(pid: number): Promise<void> {
  * writes is the handle, and it has to be read BEFORE the data dir goes.
  */
 export async function teardownServer(server: Bun.Subprocess, dataDir: string): Promise<void> {
-  const agent = spawnedAgentPid(dataDir);
+  const transport = spawnedAgentPid(dataDir, "agent.pid");
+  const terminalHost = spawnedAgentPid(dataDir, "terminal-host.pid");
   if (server.exitCode === null) server.kill("SIGTERM");
   const stopped = await Promise.race([
     server.exited.then(() => true),
@@ -173,6 +179,9 @@ export async function teardownServer(server: Bun.Subprocess, dataDir: string): P
   ]);
   if (!stopped && server.exitCode === null) server.kill("SIGKILL");
   await server.exited;
-  if (agent !== null) await reap(agent);
+  // Transport first, then the host: the host's SIGTERM is the destructive stop, and it is
+  // the gate's to take because every PTY under it is the gate's own disposable workload.
+  if (transport !== null) await reap(transport);
+  if (terminalHost !== null) await reap(terminalHost);
   rmSync(dataDir, { recursive: true, force: true });
 }

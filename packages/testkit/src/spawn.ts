@@ -31,7 +31,10 @@ import {
   type TokenGrant,
 } from "@manifold/protocol";
 import { SessionClient } from "@manifold/sdk";
+import { existsSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
@@ -65,13 +68,25 @@ export interface TestServer {
   stop(signal?: StopSignal): Promise<void>;
 }
 
-/** A separately spawned machine agent is stopped explicitly so test failures cannot leak PTYs. */
+/**
+ * A separately spawned machine: its TERMINAL HOST (the PTY owner) and its TRANSPORT (the
+ * process that dials the server), each a disposable child of this fixture and nobody
+ * else's (issue #278). `stop` ends both; `restartTransport` replaces only the dialling half
+ * and resolves once the new one is welcomed, which is the operation an activation performs.
+ * Both processes' logs land in one `output` so an e2e matcher reads one stream.
+ */
 export interface TestAgent {
   readonly machineId: string;
   readonly name: string | undefined;
+  /** The transport process; a new object after every `restartTransport`. */
   readonly proc: SpawnedProcess;
+  /** The terminal host process; the same object for the fixture's whole life. */
+  readonly host: SpawnedProcess;
   readonly output: ProcessOutput;
+  /** Stops the transport (signal, default SIGTERM) and then the host. */
   stop(signal?: StopSignal): Promise<void>;
+  /** Ends the transport as given (SIGKILL models a crash) and starts a fresh one on the same host. */
+  restartTransport(signal?: StopSignal): Promise<void>;
 }
 
 /** Server startup options keep every test isolated while still allowing fixed-port restart checks. */
@@ -273,9 +288,10 @@ function createStop(proc: SpawnedProcess): (signal?: StopSignal) => Promise<void
 function captureProcess(
   proc: SpawnedProcess,
   onStdoutLine?: (line: string) => void,
+  into?: { readonly stdout: LineRing; readonly stderr: LineRing },
 ): ProcessOutput {
-  const stdout = new LineRing();
-  const stderr = new LineRing();
+  const stdout = into?.stdout ?? new LineRing();
+  const stderr = into?.stderr ?? new LineRing();
   void collectLines(proc.stdout, stdout, onStdoutLine).catch((error: unknown) => {
     stdout.push(`output capture failed: ${error instanceof Error ? error.message : String(error)}`);
   });
@@ -603,18 +619,57 @@ export async function connect(server: TestServer, options: ConnectOptions): Prom
   }
 }
 
-/** Spawns the real agent entry and waits until the owner-visible machine record is online. */
+/**
+ * Spawns the real agent entry twice — once as the terminal host on a private socket under a
+ * temporary directory, once as the transport — and waits until the owner-visible machine
+ * record is online.
+ */
 export async function startAgent(options: StartAgentOptions): Promise<TestAgent> {
   const server = serverFromReadyUrl(options.serverUrl);
-  const env = mergedEnvironment(options.env);
-  env.MANIFOLD_SERVER_URL = server.httpUrl;
-  env.MANIFOLD_MACHINE_TOKEN = options.machineToken;
-  if (options.name === undefined) delete env.MANIFOLD_MACHINE_NAME;
-  else env.MANIFOLD_MACHINE_NAME = options.name;
+  const socketDir = await mkdtemp(join(tmpdir(), "manifold-terminal-host-"));
+  const socketPath = join(socketDir, "host.sock");
+  const rings = { stdout: new LineRing(), stderr: new LineRing() };
 
-  const proc = spawnPiped(["bun", "packages/agent/src/main.ts"], env);
-  const output = captureProcess(proc);
-  const stop = createStop(proc);
+  const hostEnv = mergedEnvironment(options.env);
+  hostEnv.MANIFOLD_TERMINAL_HOST_SOCKET = socketPath;
+  const host = spawnPiped(["bun", "packages/agent/src/main.ts", "--terminal-host"], hostEnv);
+  const output = captureProcess(host, undefined, rings);
+  const stopHost = createStop(host);
+  try {
+    // The host is ready once its socket exists; the transport fails by name without it.
+    await waitFor(
+      async () => {
+        if (host.exitCode !== null) {
+          throw new Error(`terminal host exited before readiness with code ${host.exitCode}`);
+        }
+        return existsSync(socketPath) ? true : undefined; // Bun.file().exists() is false for sockets
+      },
+      READY_TIMEOUT_MS,
+      50,
+    );
+  } catch (error) {
+    await stopHost();
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message}\n${formatOutput(output)}`, { cause: error });
+  }
+
+  const transportEnv = mergedEnvironment(options.env);
+  transportEnv.MANIFOLD_SERVER_URL = server.httpUrl;
+  transportEnv.MANIFOLD_MACHINE_TOKEN = options.machineToken;
+  transportEnv.MANIFOLD_TERMINAL_HOST_SOCKET = socketPath;
+  if (options.name === undefined) delete transportEnv.MANIFOLD_MACHINE_NAME;
+  else transportEnv.MANIFOLD_MACHINE_NAME = options.name;
+
+  let proc = spawnPiped(["bun", "packages/agent/src/main.ts"], transportEnv);
+  captureProcess(proc, undefined, rings);
+  let stopTransport = createStop(proc);
+  const stop = async (signal?: StopSignal): Promise<void> => {
+    try {
+      await stopTransport(signal);
+    } finally {
+      await stopHost(signal);
+    }
+  };
   try {
     const machineId = await waitFor(
       async () => {
@@ -636,9 +691,36 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
     return {
       machineId,
       name: options.name,
-      proc,
+      get proc() {
+        return proc;
+      },
+      host,
       output,
       stop,
+      async restartTransport(signal?: StopSignal): Promise<void> {
+        await stopTransport(signal);
+        let welcomed = false;
+        proc = spawnPiped(["bun", "packages/agent/src/main.ts"], transportEnv);
+        captureProcess(
+          proc,
+          (line) => {
+            if (line.includes('"evt":"welcome"')) welcomed = true;
+          },
+          rings,
+        );
+        stopTransport = createStop(proc);
+        const replacement = proc;
+        await waitFor(
+          () => {
+            if (replacement.exitCode !== null) {
+              throw new Error(`transport exited before welcome with code ${replacement.exitCode}`);
+            }
+            return welcomed ? true : undefined;
+          },
+          READY_TIMEOUT_MS,
+          50,
+        );
+      },
     };
   } catch (error) {
     await stop();

@@ -86,7 +86,7 @@ import {
 } from "./plugin-installs.ts";
 import type { RoomManager } from "./room.ts";
 import type { MachineRecord, PluginInstallRow, ServerStore, TraceAttribution } from "./stores.ts";
-import type { TerminalBroker } from "./terminal-broker.ts";
+import type { DrainOutcome, TerminalBroker } from "./terminal-broker.ts";
 
 /**
  * The caller's authority as a handler sees it: identity, what the token carries, and the
@@ -373,15 +373,17 @@ interface InstalledPlugin {
 }
 
 /**
- * Liveness, and nothing else. The other services on `ActionCtx` are the real classes
- * because plugins need their breadth; the machine socket registry is asked exactly one
- * question by the assembly — is this machine connected right now — and handing over the
- * gateway that authenticates machines, fences superseded sockets and relays PTY frames in
- * order to answer it would be authority nobody asked for. `MachineGateway` satisfies this
- * structurally, which is also what lets a test drive liveness without a socket.
+ * The two questions the assembly asks the machine socket registry — is this machine
+ * connected right now, and close or reopen its terminal admission and hear what its owner
+ * holds (#278) — and nothing else. The other services on `ActionCtx` are the real classes
+ * because plugins need their breadth; handing over the gateway that authenticates machines,
+ * fences superseded sockets and relays PTY frames in order to answer two questions would be
+ * authority nobody asked for. `MachineGateway` satisfies this structurally, which is also
+ * what lets a test drive liveness and drain without a socket.
  */
-export interface MachineLiveness {
+export interface MachineAdmission {
   isOnline(machineId: string): boolean;
+  drain(machineId: string, draining: boolean): Promise<DrainOutcome>;
 }
 
 /**
@@ -435,11 +437,12 @@ export interface ActionCtx {
   readonly rooms: RoomManager;
   readonly broker: TerminalBroker;
   /**
-   * Live machine liveness, straight from the socket registry. Persisted machine rows are a
-   * store read like any other; whether a machine is CONNECTED right now is knowledge only
-   * the gateway holds, and `core.machines.list` has to answer both in one row.
+   * Live machine liveness and admission, straight from the socket registry. Persisted machine
+   * rows are a store read like any other; whether a machine is CONNECTED right now, and what
+   * its PTY owner holds, is knowledge only the gateway has, and `core.machines.list` and
+   * `core.machines.drain` have to answer with it.
    */
-  readonly machines: MachineLiveness;
+  readonly machines: MachineAdmission;
   /**
    * THE placement executor — one door onto every way a thing comes to be somewhere
    * (`core.space.place`). A plugin declares the minimal slice it uses, which for placement
@@ -763,7 +766,7 @@ export class PluginHost {
     private readonly rooms: RoomManager,
     private readonly broker: TerminalBroker,
     private readonly placement: PlaceExecutor,
-    private readonly machines: MachineLiveness,
+    private readonly machines: MachineAdmission,
     private readonly dialer: InstanceDialer,
     private readonly runtime: RuntimeDeps,
     private readonly logger: Logger,
@@ -805,7 +808,7 @@ export class PluginHost {
     rooms: RoomManager,
     broker: TerminalBroker,
     placement: PlaceExecutor,
-    machines: MachineLiveness,
+    machines: MachineAdmission,
     dialer: InstanceDialer,
     runtime: RuntimeDeps,
     logger: Logger,

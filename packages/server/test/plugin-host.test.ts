@@ -41,7 +41,7 @@ import {
   OUTSIDE_SCOPE_REFUSAL,
   PluginHost,
   type IsolateDeps,
-  type MachineLiveness,
+  type MachineAdmission,
   type ServerPluginDef,
 } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
@@ -69,7 +69,11 @@ import {
 const OWNER_KEY = "a".repeat(64);
 
 /** No machine is connected in a bare fixture, which is the honest state of a fresh store. */
-const OFFLINE_MACHINES: MachineLiveness = { isOnline: () => false };
+const OFFLINE_MACHINES: MachineAdmission = {
+  isOnline: () => false,
+  drain: () =>
+    Promise.resolve({ ok: false, reason: "machine is offline: its terminals are unknown" }),
+};
 
 /**
  * The real default workspace tree, COMPOSED from the real registration's roster the way the
