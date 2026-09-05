@@ -36,7 +36,7 @@ let bundle: PluginBundle;
 
 beforeAll(async () => {
   dir = mkdtempSync(`${tmpdir()}/plugin-kit-pack-`);
-  const out = `${dir}/acme.counter.manifold-plugin.json`;
+  const out = `${dir}/example.counter.manifold-plugin.json`;
   const command = Bun.spawn(["bun", `${KIT}/src/pack.ts`, SAMPLE, "--out", out], {
     cwd: KIT,
     stdout: "pipe",
@@ -62,7 +62,7 @@ describe("the artifact", () => {
     expect(packed.bytes).toBe(bytes.byteLength);
     expect(packed.sha256).toBe(new Bun.CryptoHasher("sha256").update(bytes).digest("hex"));
     expect(bundle.format).toBe(1);
-    expect(bundle.manifest.id).toBe("acme.counter");
+    expect(bundle.manifest.id).toBe("example.counter");
     expect(bundle.manifest.entry).toEqual({ server: true, web: "web.js" });
     expect(Object.keys(bundle.files).sort()).toEqual([PLUGIN_BUNDLE_SERVER_FILE, "web.js"]);
   });
@@ -121,11 +121,11 @@ describe("the packed server half, as a real isolate", () => {
       return promise;
     };
     try {
-      send({ t: "load", pluginId: "acme.counter", manifest: bundle.manifest, dir });
+      send({ t: "load", pluginId: "example.counter", manifest: bundle.manifest, dir });
       const loaded = await next();
       expect(loaded).toMatchObject({
         t: "loaded",
-        actions: [{ name: "acme.counter.bump", caps: ["containers:read"], scope: "workspace" }],
+        actions: [{ name: "example.counter.bump", caps: ["containers:read"], scope: "workspace" }],
         hooks: { onEnable: true, onDisable: false, onAssemblyChanged: false },
       });
 
@@ -161,7 +161,7 @@ describe("the packed server half, as a real isolate", () => {
           result: { count: 42 },
           emits: [
             {
-              ref: { kind: "plugin", pluginId: "acme.counter" },
+              ref: { kind: "plugin", pluginId: "example.counter" },
               kind: "counter_bumped",
               payload: { count: 42 },
             },

@@ -178,7 +178,7 @@ Rules worth knowing before you write one:
   A panel `sidebar` contributed by `core.shell` is globally `core.shell.sidebar`. TWO prefixes are
   **reserved**: `engine.` belongs to the engine's own builtin doors, and `core.` is manifold's own
   authorship — assembly refuses any plugin claiming either (the second unless the shipped
-  distribution registered it). Pick your own leading segment (`acme.notes`); it needs no
+  distribution registered it). Pick your own leading segment (`example.notes`); it needs no
   registration anywhere and buys you exactly what `core.` buys manifold, which is nothing but a
   name (§7, "Three orthogonal facts about a plugin").
 - **Contribution ids are local names** (`^[a-z][a-zA-Z0-9-]*$` — interior capitals are allowed
@@ -1165,7 +1165,7 @@ Read the rows the other way round and each one names a squat it refuses:
   (`SHIPPED_PLUGIN_IDS` in `packages/server/src/assembly.ts`, handed to assembly as
   `AssemblyEnv.distribution`); there is no hand-kept list of "our" plugins anywhere, so shipping a
   new one is a row in that table and nothing else.
-- **Your own namespace is yours.** `acme.notes` needs no registration anywhere, collides with
+- **Your own namespace is yours.** `example.notes` needs no registration anywhere, collides with
   nobody, and gets exactly the same dispatch, authority, disable, dormancy and purge treatment
   `core.notes` gets. If you find a rule that treats a `core.` row better, that is a bug worth an
   issue: it is the claim this table exists to keep checkable.
@@ -1260,7 +1260,7 @@ second maintainer-only exception to the opening promise, for the same reason as 
 ```ts
 // src/web.tsx
 export const acmeWebPlugin = {
-  id: "acme.notes",
+  id: "example.notes",
   // WORKSPACE_OVERLAY_SLOTS is the closed vocabulary; the key type is the slot union, never
   // `string`, because an unregistered slot paints NOTHING and a typo would compile clean.
   workspaceOverlays: { inspector: MyChrome },
@@ -1297,7 +1297,7 @@ contributes: {
 
 // src/web.tsx — who draws it, keyed by the segment you claimed
 export const acmeWebPlugin = {
-  id: "acme.notes",
+  id: "example.notes",
   routes: { notes: NotesRoute },
 };
 
@@ -1322,7 +1322,7 @@ import type { WebBinding } from "@manifold/plugin";
 
 export const MY_BINDINGS: readonly WebBinding[] = [
   {
-    id: "acme.notes.focus", // namespaced by YOUR plugin id, or composition refuses the row
+    id: "example.notes.focus", // namespaced by YOUR plugin id, or composition refuses the row
     key: "F6", // a KEYSTROKE: `KeyboardEvent.key` verbatim, optionally prefixed `Mod+`
     label: "Focus notes", // how the sidebar's key table reads it
     when: "always", // or "canvas" / "composition"; defaults to "always"
@@ -1548,14 +1548,14 @@ const counter = definePanel<{ count: number | null; denial: string | null }>({
     ui.box({ direction: "column", gap: 2 }, [
       ui.heading("Counter", 2),
       state.count === null ? ui.spinner("Waiting") : ui.badge(`count ${String(state.count)}`),
-      ui.button("Bump", "bump", { tone: "accent", action: "acme.counter.bump" }),
+      ui.button("Bump", "bump", { tone: "accent", action: "example.counter.bump" }),
       state.denial === null
         ? ui.empty("No refusal yet.")
         : ui.text(state.denial, { tone: "danger" }),
     ]),
   update: async (state, event, host) => {
     if (event.event !== "bump") return state;
-    const outcome = await host.action("acme.counter.bump", { by: 1 });
+    const outcome = await host.action("example.counter.bump", { by: 1 });
     if (!outcome.ok) return { ...state, denial: outcome.denial.message };
     return { ...state, count: BumpResult.parse(outcome.result).count, denial: null };
   },
@@ -1565,7 +1565,7 @@ const counter = definePanel<{ count: number | null; denial: string | null }>({
   },
 });
 
-defineWebPlugin({ id: "acme.counter", panels: { counter } });
+defineWebPlugin({ id: "example.counter", panels: { counter } });
 ```
 
 A panel is a PROGRAM over its own state, not a component: `init` makes the state, `view` projects
@@ -1612,8 +1612,8 @@ posts one, so a bad tree becomes a `fault` naming the panel and the engine paint
 ### Packing
 
 ```sh
-bun run --cwd packages/plugin-kit pack <plugin-dir> --out acme.counter.manifold-plugin.json
-# {"file":"acme.counter.manifold-plugin.json","sha256":"e984…","bytes":1586951}
+bun run --cwd packages/plugin-kit pack <plugin-dir> --out example.counter.manifold-plugin.json
+# {"file":"example.counter.manifold-plugin.json","sha256":"e984…","bytes":1586951}
 ```
 
 `pack` reads `<plugin-dir>/manifest.json`, bundles `server.ts` (target `bun`) and `web.ts`

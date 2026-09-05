@@ -7,7 +7,7 @@ import { z } from "zod";
   THE REFERENCE ISOLATED PLUGIN, web half. One panel, `counter`, written as a program over its
   own state: `init` asks the host who is looking, `view` projects the state into the closed
   vocabulary — every one of its thirteen kinds appears below on purpose — and `update` folds
-  a named callback into the next state, dispatching `acme.counter.bump` through the host when
+  a named callback into the next state, dispatching `example.counter.bump` through the host when
   the button fires. Nothing here touches a DOM; the engine paints the tree.
  */
 
@@ -52,7 +52,7 @@ export const counter = definePanel<CounterState>({
       ),
       ui.input("note", state.note, { label: "Note", placeholder: "why this bump?" }),
       ui.toggle("loud", state.loud, "Loud"),
-      ui.button("Bump", "bump", { tone: "accent", action: "acme.counter.bump" }),
+      ui.button("Bump", "bump", { tone: "accent", action: "example.counter.bump" }),
       state.denial === null
         ? ui.empty("No refusal yet.")
         : ui.text(state.denial, { tone: "danger" }),
@@ -70,7 +70,7 @@ export const counter = definePanel<CounterState>({
       case "tick":
         return { ...state, ticks: state.ticks + 1 };
       case "bump": {
-        const outcome = await host.action("acme.counter.bump", { by: state.step });
+        const outcome = await host.action("example.counter.bump", { by: state.step });
         if (!outcome.ok) return { ...state, denial: outcome.denial.message };
         return { ...state, count: BumpResult.parse(outcome.result).count, denial: null };
       }
@@ -84,4 +84,4 @@ export const counter = definePanel<CounterState>({
   },
 });
 
-defineWebPlugin({ id: "acme.counter", panels: { counter } });
+defineWebPlugin({ id: "example.counter", panels: { counter } });

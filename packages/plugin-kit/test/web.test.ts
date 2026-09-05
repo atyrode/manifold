@@ -64,7 +64,7 @@ function page(def: WebPluginDef): FakePage {
 function init(fake: FakePage): void {
   fake.send({
     t: "init",
-    pluginId: "acme.thing",
+    pluginId: "example.thing",
     principal,
     caps: ["containers:read"],
     containerId: "c1",
@@ -83,7 +83,7 @@ const counter = definePanel<{ count: number; viewer: string; denial: string | nu
     ]),
   update: async (state, event, host) => {
     if (event.event !== "bump") return state;
-    const outcome = await host.action("acme.thing.bump", { by: 1 });
+    const outcome = await host.action("example.thing.bump", { by: 1 });
     if (!outcome.ok) return { ...state, denial: outcome.denial.message };
     return { ...state, count: CountResult.parse(outcome.result).count, denial: null };
   },
@@ -91,7 +91,7 @@ const counter = definePanel<{ count: number; viewer: string; denial: string | nu
 
 describe("init and mount", () => {
   test("init answers ready with the panel ids; mount renders the program's first view", async () => {
-    const fake = page({ id: "acme.thing", panels: { counter } });
+    const fake = page({ id: "example.thing", panels: { counter } });
     init(fake);
     expect(await fake.next()).toEqual({ t: "ready", panels: ["counter"] });
     fake.send({ t: "mount", instance: "i1", panel: "counter" });
@@ -103,7 +103,7 @@ describe("init and mount", () => {
   });
 
   test("a mount before init, or of a panel the guest does not serve, is a fault", async () => {
-    const fake = page({ id: "acme.thing", panels: { counter } });
+    const fake = page({ id: "example.thing", panels: { counter } });
     fake.send({ t: "mount", instance: "early", panel: "counter" });
     expect(await fake.next()).toEqual({
       t: "fault",
@@ -121,7 +121,7 @@ describe("init and mount", () => {
   });
 
   test("panel ids outside the vocabulary fault at init instead of leaving as a bad frame", async () => {
-    const fake = page({ id: "acme.thing", panels: { "Not Local": counter } });
+    const fake = page({ id: "example.thing", panels: { "Not Local": counter } });
     init(fake);
     expect(await fake.next()).toMatchObject({
       t: "fault",
@@ -132,7 +132,7 @@ describe("init and mount", () => {
 
 describe("events and host calls", () => {
   test("an event folds through update, a host call round-trips, and the new view is posted", async () => {
-    const fake = page({ id: "acme.thing", panels: { counter } });
+    const fake = page({ id: "example.thing", panels: { counter } });
     init(fake);
     await fake.next();
     fake.send({ t: "mount", instance: "i1", panel: "counter" });
@@ -143,7 +143,7 @@ describe("events and host calls", () => {
       t: "call",
       id: "c1",
       method: "action",
-      args: ["acme.thing.bump", { by: 1 }],
+      args: ["example.thing.bump", { by: 1 }],
     });
     fake.send({ t: "reply", id: "c1", ok: true, result: { ok: true, result: { count: 3 } } });
     expect(await fake.next()).toEqual({
@@ -154,7 +154,7 @@ describe("events and host calls", () => {
   });
 
   test("events fold in order even while an update is still awaiting the host", async () => {
-    const fake = page({ id: "acme.thing", panels: { counter } });
+    const fake = page({ id: "example.thing", panels: { counter } });
     init(fake);
     await fake.next();
     fake.send({ t: "mount", instance: "i1", panel: "counter" });
@@ -179,7 +179,7 @@ describe("events and host calls", () => {
 
   test("a host reply of ok:false reaches the program as HostCallError with the host's sentence", async () => {
     const fake = page({
-      id: "acme.thing",
+      id: "example.thing",
       panels: {
         probe: definePanel<string>({
           init: () => "",
@@ -212,7 +212,7 @@ describe("events and host calls", () => {
   });
 
   test("an event for an instance nobody mounted is ignored with a line", () => {
-    const fake = page({ id: "acme.thing", panels: { counter } });
+    const fake = page({ id: "example.thing", panels: { counter } });
     init(fake);
     fake.send({ t: "event", instance: "nobody", event: "bump" });
     fake.send({ t: "bogus" } as unknown as WebIsolateHostFrame);
@@ -226,7 +226,7 @@ describe("events and host calls", () => {
 describe("faults", () => {
   test("a tree outside the vocabulary, a throwing view and a throwing update each fault naming the panel", async () => {
     const fake = page({
-      id: "acme.thing",
+      id: "example.thing",
       panels: {
         bad: definePanel<string>({
           init: () => "tree",
@@ -270,7 +270,7 @@ describe("faults", () => {
 
   test("a program that fails to start faults and is not mounted", async () => {
     const fake = page({
-      id: "acme.thing",
+      id: "example.thing",
       panels: {
         broken: definePanel<never>({
           init: () => {
@@ -300,7 +300,7 @@ describe("subscribe and unmount", () => {
     let stopped = 0;
     let seen: GuestHost | null = null;
     const fake = page({
-      id: "acme.thing",
+      id: "example.thing",
       panels: {
         ticker: definePanel<number>({
           init: () => 0,

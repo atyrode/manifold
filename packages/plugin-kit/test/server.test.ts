@@ -24,7 +24,7 @@ import {
  */
 
 const manifest: PluginManifest = {
-  id: "acme.thing",
+  id: "example.thing",
   version: "1.0.0",
   title: "Thing",
   description: "",
@@ -133,8 +133,8 @@ describe("load", () => {
     expect(loaded.t).toBe("loaded");
     if (loaded.t !== "loaded") return;
     expect(loaded.actions.map((action) => action.name)).toEqual([
-      "acme.thing.echo",
-      "acme.thing.sweep",
+      "example.thing.echo",
+      "example.thing.sweep",
     ]);
     expect(loaded.actions[0]).toMatchObject({ scope: "workspace", caps: ["containers:read"] });
     expect(loaded.actions[0]).not.toHaveProperty("cleanup");
@@ -152,7 +152,7 @@ describe("load", () => {
     load(wrongId, "acme.other");
     expect(await wrongId.next()).toEqual({
       t: "load_failed",
-      error: 'loaded as "acme.other" but the manifest declares "acme.thing"',
+      error: 'loaded as "acme.other" but the manifest declares "example.thing"',
     });
 
     const unhandled = host({ manifest, actions: [echo], handlers: {} });
@@ -223,7 +223,7 @@ describe("dispatch", () => {
         result: { text: "old:hi:true:false" },
         emits: [
           {
-            ref: { kind: "plugin", pluginId: "acme.thing" },
+            ref: { kind: "plugin", pluginId: "example.thing" },
             kind: "thing_happened",
             payload: { id: "id-9" },
           },
@@ -383,10 +383,10 @@ describe("dispatch", () => {
       handlers: {
         async echo(ctx: GuestCtx, args: { text: string }) {
           if (args.text === "kind")
-            ctx.emit({ kind: "plugin", pluginId: "acme.thing" }, "Not A Kind");
+            ctx.emit({ kind: "plugin", pluginId: "example.thing" }, "Not A Kind");
           else {
             for (let index = 0; index <= MAX_ISOLATE_EMITS; index++) {
-              ctx.emit({ kind: "plugin", pluginId: "acme.thing" }, "thing_happened");
+              ctx.emit({ kind: "plugin", pluginId: "example.thing" }, "thing_happened");
             }
           }
           return { text: "unreachable" };
@@ -443,7 +443,7 @@ describe("hooks, shutdown and stray frames", () => {
           await ctx.storage.set("enabled", "1");
         },
         onDisable: (ctx) => {
-          ctx.emit({ kind: "plugin", pluginId: "acme.thing" }, "thing_happened");
+          ctx.emit({ kind: "plugin", pluginId: "example.thing" }, "thing_happened");
         },
         onAssemblyChanged: (_ctx, delta) => {
           if (delta.enabled[0] !== "core.notes") throw new Error("wrong delta");
