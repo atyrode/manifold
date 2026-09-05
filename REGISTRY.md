@@ -507,10 +507,10 @@ the next reader, not for the operator's pen. The first such record is
 [`0021-dockview-evaluation.md`](docs/decisions/0021-dockview-evaluation.md) (the tile renderer
 stays ours; its §8 reopen trigger is the living part).
 
-**Nothing is waiting as of 2026-09-01.** Every prior occupant left by the rule above, and the
-record below is where they went — kept here, in the one place that indexes proposed records,
-because "the table is empty" and "the table was never filled in" have to be distinguishable a
-month from now.
+**One record is waiting as of 2026-09-05** — the last row below, `Ratified` reading `waiting`.
+Every prior occupant left by the rule above, and the rows before it are where they went — kept
+here, in the one place that indexes proposed records, because "the table is empty" and "the table
+was never filled in" have to be distinguishable a month from now.
 
 | ADR                                                                   | Ratified                                  | What the yes obliged                                                                                                                                                                                                                                                                                                                                                         |
 | --------------------------------------------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -518,6 +518,7 @@ month from now.
 | [`0016-plugin-isolation.md`](docs/decisions/0016-plugin-isolation.md) | 2026-09-01, as written (R1-R3, R5, R8-R9) | The marketplace gate is discharged — a runner is ratified, so distribution is unblocked behind its stage 1. `PluginStorage` owes an async migration for every plugin, and §9's pillar question (R7) is a §Pillar inventory edit in the commit that adds the runner's files.                                                                                                  |
 | [`0019-identity-posture.md`](docs/decisions/0019-identity-posture.md) | 2026-09-01, ratified on landing           | The layered posture for #58: the owner key stays forever as bootstrap and break-glass, three hardening items are owed NOW (session expiry, a principal/device list with revoke, bootstrap audit on the trace ledger), reverse-proxy deployment is documented, and OIDC waits for a second human.                                                                             |
 | [`0020-desktop-shell.md`](docs/decisions/0020-desktop-shell.md)       | 2026-09-01, with one amendment            | Electron as a pinned runtime dependency with a CVE duty, PWA-first sequencing, the minted-token bootstrap, and the gated prototype — amended with acceptance claim 5: `verify:budgets` must hold INSIDE the shell, and a miss triggers the Tauri re-evaluation early. GPUI weighed and rejected as a category error (§1.4a). No shell code before the prototype's ADR terms. |
+| [`0024-plugins-are-mods.md`](docs/decisions/0024-plugins-are-mods.md) | waiting — proposed 2026-09-05             | Every plugin — `core.*`, installed, unpacked — runs in-realm with the full engine API; the capability ceiling is a declaration the installer reads; the hub's roster is the mod list and distributes web halves through a shared-module registry; unpacked plugins hot-load under a root developer mode; isolation is `install.hardened`, never the default; the §Roadmap marketplace gate is REVERSED; S13 is enforced at load for non-tree stylesheets |
 
 ## Disable semantics (D4′)
 
