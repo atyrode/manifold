@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.1] - 2026-09-05
+
+### Fixed
+
+- Server logs and the trace ledger now redact fields containing password, passwd, credential or passphrase, including nested fields and mixed-case names, so plugin action credentials no longer appear in either record. (#165, #302)
+- Event delivery shares the session channel's send bound of 256 queued frames or 1 MiB; events past it are dropped by name (`socket_backpressure`, with connection and topic) while the socket and its subscriptions stay live. Catch-up is a state read; room-channel traffic and other subscribers are unaffected. (#167, #305)
+- Placement refusals for a missing destination now name the container id and say it is not known to this workspace, rather than describing it as a canvas or composition. The placement denial note and carry preview show the same state without inventing a container kind. (#212, #304)
+- The server now waits up to five seconds for SQLite write locks, so brief Litestream checkpoint collisions no longer interrupt attendance writes or terminate the server. (#282, #303)
+- Resizing workspace panes now saves once when the drag ends, even if you pause while holding the divider or the browser is running slowly. Intermediate movement stays local instead of creating repeated layout writes. (#298, #307)
+
 ## [0.8.0] - 2026-09-05
 
 ### Breaking Changes
