@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { ActionOutcomeSchema, ContainerResponseSchema } from "../packages/protocol/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser } from "./cdp.ts";
-import { ownerKeyOf, reserveLoopbackPort, sleep, teardownServer, until } from "./gate-lib.ts";
+import { ownerKeyOf, reserveLoopbackPort, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-sel-");
@@ -153,7 +153,16 @@ try {
       deltaX: pan.deltaX / 0.5,
       deltaY: pan.deltaY / 0.5,
     });
-    await sleep(300);
+    await until(
+      () =>
+        browser!.evaluate<boolean>(`(() => {
+          const screen = document.querySelector('.xterm-screen').getBoundingClientRect();
+          return screen.left >= ${pan.visible.left} && screen.top >= ${pan.visible.top}
+            && screen.right <= ${pan.visible.right} && screen.bottom <= ${pan.visible.bottom};
+        })()`),
+      20_000,
+      "terminal screen inside the visible canvas after pan",
+    );
   }
 
   // Activate the embed (click-to-focus model), then focus xterm itself.
@@ -167,16 +176,34 @@ try {
     el.dispatchEvent(new MouseEvent('mouseup', o));
     el.dispatchEvent(new MouseEvent('click', o));
   })()`);
-  await sleep(600);
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "document.querySelector('.terminal-idle-veil:not(.terminal-idle-veil--on)') !== null",
+      ),
+    20_000,
+    "terminal activated",
+  );
   const screenBox = await browser.evaluate<{ x: number; y: number }>(
     "(() => { const s = document.querySelector('.xterm-screen').getBoundingClientRect(); return { x: s.x + s.width / 2, y: s.y + s.height / 2 }; })()",
   );
   // Real CDP click to give the hidden textarea focus, then load known content.
   await browser.drag([screenBox], 30);
-  await sleep(300);
+  await until(
+    () => browser!.evaluate<boolean>("document.activeElement?.matches('.xterm-helper-textarea') === true"),
+    20_000,
+    "xterm textarea focused",
+  );
   await browser.typeText("clear; seq 1 40");
   await browser.typeText("\r");
-  await sleep(1200);
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "(() => { const rows = [...document.querySelector('.xterm-rows').children].map(row => row.textContent.trim()); const last = rows.indexOf('40'); return last >= 0 && rows.slice(last + 1).some(text => text.length > 0); })()",
+      ),
+    20_000,
+    "known terminal output through row 40 and returned shell prompt painted",
+  );
   await revealScreen();
 
   async function dragAndPaint(rowIndex: number): Promise<{
@@ -204,6 +231,18 @@ try {
     );
     if (!hits)
       throw new Error(`row ${rowIndex} ("${row.text}") is not pointer-reachable at y=${yc}`);
+    // Clear the preceding selection through real input, so old paint cannot satisfy
+    // this drag's readiness check. Keep geometry assertions separate from readiness:
+    // painting the WRONG row must still fail, not wait for a more convenient result.
+    await browser!.drag([{ x: sx + 250, y: yc }], 40);
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          "(document.querySelector('.xterm-selection')?.childElementCount ?? 0) === 0",
+        ),
+      20_000,
+      `previous selection cleared before row ${rowIndex}`,
+    );
     await browser!.drag(
       [
         { x: sx + 250, y: yc },
@@ -214,7 +253,14 @@ try {
       ],
       40,
     );
-    await sleep(300);
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          "[...(document.querySelector('.xterm-selection')?.children ?? [])].some(band => { const rect = band.getBoundingClientRect(); return rect.width > 0 && rect.height > 0; })",
+        ),
+      20_000,
+      `selection paint after dragging row ${rowIndex} ("${row.text}")`,
+    );
     const bands = await browser!.evaluate<{ top: number; bottom: number }[]>(
       "[...(document.querySelector('.xterm-selection') ?? { children: [] }).children].map(d => { const b = d.getBoundingClientRect(); return { top: b.top, bottom: b.bottom }; })",
     );
@@ -259,7 +305,11 @@ try {
       deltaX: 0,
       deltaY: z > 1.3 ? 80 : -80,
     });
-    await sleep(200);
+    await until(
+      () => browser!.evaluate<boolean>(`window.__manifold.viewport().zoom ${z > 1.3 ? "<" : ">"} ${z}`),
+      20_000,
+      `canvas zoom ${z > 1.3 ? "decreased" : "increased"} from ${z} after pinch`,
+    );
   }
   const zoomNow = await browser.evaluate<number>("window.__manifold.viewport().zoom");
   if (zoomNow < 1.1 || zoomNow > 1.35)
@@ -299,7 +349,11 @@ try {
       deltaX: 0,
       deltaY: z > 1 ? 80 : -80,
     });
-    await sleep(200);
+    await until(
+      () => browser!.evaluate<boolean>(`window.__manifold.viewport().zoom ${z > 1 ? "<" : ">"} ${z}`),
+      20_000,
+      `canvas zoom ${z > 1 ? "decreased" : "increased"} from ${z} while restoring baseline`,
+    );
   }
   const restoredZoom = await browser.evaluate<number>("window.__manifold.viewport().zoom");
   if (Math.abs(restoredZoom - 1) >= 0.06)
