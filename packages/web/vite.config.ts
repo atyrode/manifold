@@ -180,11 +180,14 @@ function shellWorker(): Plugin {
   };
 }
 
-// Dev: vite on :5173 proxies API/WS to the manifold server on :7777.
+// Dev: vite on :5173 proxies API/WS to MANIFOLD_PORT (7777 by default).
+// MANIFOLD_DEV_HOST admits a live preview's hostname and sends HMR through its TLS router.
 // Prod: `vite build` emits dist/, served directly by the manifold server.
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, packageRoot, "VITE_MANIFOLD_");
   const title = env["VITE_MANIFOLD_SITE_TITLE"]?.trim() || DEFAULT_TITLE;
+  const target = `http://127.0.0.1:${process.env["MANIFOLD_PORT"] ?? 7777}`;
+  const devHost = process.env["MANIFOLD_DEV_HOST"];
   return {
     // These files are templates for shellIdentity, not a second set of unbranded public URLs.
     publicDir: false,
@@ -201,9 +204,15 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5173,
+      ...(devHost
+        ? {
+            allowedHosts: [devHost],
+            hmr: { protocol: "wss" as const, clientPort: 443, host: devHost },
+          }
+        : {}),
       proxy: {
-        "/api": { target: "http://127.0.0.1:7777", changeOrigin: false },
-        "/ws": { target: "http://127.0.0.1:7777", changeOrigin: true, ws: true },
+        "/api": { target, changeOrigin: false },
+        "/ws": { target, changeOrigin: true, ws: true },
       },
     },
     build: {

@@ -5,8 +5,8 @@
 # host, user, URL and key are repository variables and a secret, and the host-side receiver (a
 # forced-command SSH key that checks out the sha it is handed and rebuilds the compose project,
 # stamping MANIFOLD_VERSION/MANIFOLD_BUILD/MANIFOLD_CHANNEL from scripts/build-identity.ts) is
-# documented in the operator's dotfiles. Production is a different file and a different decision
-# (deploy-hub.yml).
+# implemented in infra/previews/receiver.sh (infra/previews/README.md). Production is a different
+# file and a different decision (deploy-hub.yml).
 name: Deploy development
 run-name: Deploy development ${{ github.event.workflow_run.head_sha }}
 
@@ -64,7 +64,7 @@ jobs:
           key="$(mktemp)"
           printf '%s\n' "$DEV_DEPLOY_SSH_KEY" > "$key"
           ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$key" \
-            "${{ vars.DEV_DEPLOY_USER }}@${{ vars.DEV_DEPLOY_HOST }}" "$SHA"
+            "${{ vars.DEV_DEPLOY_USER }}@${{ vars.DEV_DEPLOY_HOST }}" "dev $SHA"
           rm -f "$key"
 
       - name: Development answers with this build

@@ -355,9 +355,17 @@ forced-command SSH key, derives the expected `build` from the same checkout with
 and fails unless `/healthz` on the development URL answers exactly that. It is the GitHub
 Environment `development`, inert unless the repository variables `DEV_DEPLOY_HOST`,
 `DEV_DEPLOY_USER` and `DEV_DEPLOY_URL` and the secret `DEV_DEPLOY_SSH_KEY` exist, and it names no
-host or provider: the receiver on the host is the operator's own (atyrode/dotfiles).
+host or provider: the receiver is `infra/previews/receiver.sh`.
 
-**A self-hoster replaces both `deploy-*.yml` files.** They are the operator's two deployments,
+**Previews** are an optional development tier: `preview.<domain>` shows integrated `main`,
+`<N>.<domain>` follows PR #N's head on every push, and non-numeric `<name>.<domain>` serves a live
+worktree on the preview host with hot reload. `.github/workflows/deploy-preview.yml` deploys
+same-repository PRs and tears them down on close; a fresh preview seeded from development accepts
+the development owner key. `PREVIEW_DOMAIN` names the domain; setup, seeding, live mode and the
+operator-only pre-authenticated URL command are documented in `infra/previews/README.md`.
+A self-hoster may skip this tier entirely.
+
+**A self-hoster replaces the `deploy-*.yml` files.** They are the operator's deployments,
 gated on repository variables so a fork never runs them (ADR 0022). Yours consume the same
 releases: `docker compose pull` a tag, or build a commit and stamp it as above. Whatever you run,
 `/healthz` tells you what it is — `curl -fsS https://<your-domain>/healthz` answers
