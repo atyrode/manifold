@@ -153,8 +153,8 @@ brief may not widen its own scope — `docs/audits/README.md` is the run protoco
   blocks other tracked work. `design` — needs a design or decision before implementation.
   `tracking` — umbrella issue with a checklist. `code-plugin` — found making `atyrode/code` the
   second non-core plugin. `babel-plugin` — prerequisite for Babel, the first non-core plugin.
-  `bug` — something is not
-  working. `documentation` — docs only. `enhancement` — a new capability or request.
+  `bug` — something is not working. `documentation` — docs only. `enhancement` — a new
+  capability or request.
   `area:protocol` / `area:server` / `area:web` / `area:agent` / `area:sdk` / `area:plugins` /
   `area:infra` — the package or surface a code change lands in, in the commit-prefix vocabulary;
   docs and process issues keep `documentation` and `process` instead of an area.
