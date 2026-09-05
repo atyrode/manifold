@@ -2,6 +2,7 @@ import {
   OVERLAY_SLOTS,
   WORKSPACE_OVERLAY_SLOTS,
   ProjectionProvider,
+  RoomPipeRegistrationProvider,
   ViewportRegistrationProvider,
   instanceUrl,
   sessionUrl,
@@ -69,6 +70,7 @@ import {
 } from "react";
 import { Cover, Stack } from "@manifold/plugin/ui";
 import { dispatchAction, type StoredIdentity } from "./api.ts";
+import { createRoomPipeRegistry, panelSessionHandle } from "./room-pipes.ts";
 import { ContainerErrorBoundary } from "./error-boundary.tsx";
 import { FEED_TOPICS, SPACE_SET_LAYOUT_ACTION, WEB_PLUGIN_DEFS } from "./assembly.ts";
 
@@ -989,6 +991,11 @@ export interface HostServicesGateProps {
  * connection-level `plugins` frame reach plugin code at all. With no route to a container
  * (an empty workspace) the client stays unconnected: the HTTP doors still answer, and
  * `selfCaps()` is empty until a view exists, which reads correctly as "no view, no room".
+ *
+ * A spectator may not send a terminal mutation, so the handle plugin code receives is not this
+ * client itself but `panelSessionHandle` over it: every read stays here, and `openTerminal`,
+ * `sendTerminalInput`, `resizeTerminal`, `takeTerminal` and `killTerminal` ride the occupant
+ * pipe the mounted container renderer published for its room (`./room-pipes.ts`, issue #196).
  */
 export function HostServicesGate({
   identity,
@@ -1009,6 +1016,11 @@ export function HostServicesGate({
   const [viewport, setViewport] = useState<ViewportHandle | null>(null);
   const [authoring, setAuthoring] = useState<AuthoringHandle | null>(null);
   const [tileGeometry, setTileGeometry] = useState<TileGeometryHandle | null>(null);
+  /*
+    The renderers' occupant pipes, published to this gate for the gate's lifetime. Not React
+    state: a pipe is looked up when a panel calls a terminal verb, never at render.
+  */
+  const [roomPipes] = useState(createRoomPipeRegistry);
 
   const client = useMemo(
     () =>
@@ -1021,6 +1033,16 @@ export function HostServicesGate({
         ...(containerId === null ? {} : { spectator: true }),
       }),
     [identity.token, containerId],
+  );
+
+  /*
+    What plugin code is handed as `host.client`: this spectator for every read, and the
+    mounted renderers' occupant pipes for the terminal mutations a spectator may not send
+    (issue #196). The SDK client itself stays this file's.
+  */
+  const panelClient = useMemo(
+    () => panelSessionHandle(client, roomPipes, containerId),
+    [client, roomPipes, containerId],
   );
 
   useEffect(() => {
@@ -1123,7 +1145,7 @@ export function HostServicesGate({
 
   const host = useMemo<HostServices>(
     () => ({
-      client,
+      client: panelClient,
       principal: identity.principal,
       token: identity.token,
       containerId,
@@ -1160,7 +1182,7 @@ export function HostServicesGate({
     }),
     [
       authoring,
-      client,
+      panelClient,
       assembly,
       composedPanels,
       composedSections,
@@ -1224,13 +1246,15 @@ export function HostServicesGate({
 
   return (
     <ViewportRegistrationProvider value={setViewport}>
-      <AuthoringRegisterContext.Provider value={setAuthoring}>
-        <TileGeometryRegisterContext.Provider value={setTileGeometry}>
-          <ProjectionProvider value={projection}>
-            <HostServicesProvider value={host}>{children}</HostServicesProvider>
-          </ProjectionProvider>
-        </TileGeometryRegisterContext.Provider>
-      </AuthoringRegisterContext.Provider>
+      <RoomPipeRegistrationProvider value={roomPipes.register}>
+        <AuthoringRegisterContext.Provider value={setAuthoring}>
+          <TileGeometryRegisterContext.Provider value={setTileGeometry}>
+            <ProjectionProvider value={projection}>
+              <HostServicesProvider value={host}>{children}</HostServicesProvider>
+            </ProjectionProvider>
+          </TileGeometryRegisterContext.Provider>
+        </AuthoringRegisterContext.Provider>
+      </RoomPipeRegistrationProvider>
     </ViewportRegistrationProvider>
   );
 }

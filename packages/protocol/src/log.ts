@@ -41,6 +41,13 @@ export const LOG_EVENTS = [
   "plugin_installed",
   "plugin_uninstalled",
 
+  // Server: the isolation runner (ADR 0016 §6) — one child process per installed plugin.
+  "isolate_spawned",
+  "isolate_exited",
+  "isolate_crashed",
+  "isolate_evicted",
+  "isolate_call_failed",
+  "isolate_output",
   // Server: supervision of the co-located agent daemon.
   "local_agent_reused",
   "local_agent_spawn_locked",

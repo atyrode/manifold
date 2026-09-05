@@ -51,6 +51,7 @@ import {
   useProjection,
   useRemoteCursors,
   useRemoteGestures,
+  useRoomPipeRegistration,
   useViewportRegistration,
   type ItemEnvelope,
   type ContainerRendererProps,
@@ -323,9 +324,17 @@ export function CanvasView({
   const { notify } = useNotice();
   const route = useContainerRoute();
   const routed = depth === 1;
+  /*
+    THIS ROOM'S OCCUPANT PIPE (A4): the canvas dials the room it renders with the host's grant.
+    Its terminals are born on this channel and typed into through it, so it is also what a
+    panel's `host.client` terminal verbs ride once it is published (issue #196), routed or
+    embedded alike — an embedded canvas is the occupant of ITS room.
+  */
   const [client] = useState(
     () => new SessionClient({ url: sessionUrl(), containerId, token: host.token }),
   );
+  const registerRoomPipe = useRoomPipeRegistration();
+  useEffect(() => registerRoomPipe(containerId, client), [registerRoomPipe, containerId, client]);
   const [gestureStream] = useState(() => {
     const intervalMs = gestureSendIntervalOverride();
     return createGestureStream({

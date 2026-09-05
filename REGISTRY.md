@@ -71,6 +71,7 @@ must never be taught one.
         "packages/plugin/src/**",
         "packages/server/src/plugin-host.ts",
         "packages/server/src/plugin-installs.ts",
+        "packages/server/src/isolate/**",
         "packages/server/src/assembly.ts",
         "packages/server/src/main.ts",
         "packages/server/src/http.ts",
@@ -78,7 +79,7 @@ must never be taught one.
         "packages/server/src/index.ts"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the registry itself plus the doors it dispatches through, including the engine-owned enablement door (engine.plugins, a builtin roster row). Plugins presuppose the loader; it refuses collisions, resolves dependencies and order, and intersects capabilities — arbitration by definition. It ASSEMBLES the roster; it never renders a composition.",
+      "verdict": "the registry itself plus the doors it dispatches through, including the engine-owned enablement door (engine.plugins, a builtin roster row) and the isolation runner (ADR 0016 §9, R7: joined here rather than seated as its own pillar — the thing that loads a plugin's code is the same loader, one process boundary further out). Plugins presuppose the loader; it refuses collisions, resolves dependencies and order, and intersects capabilities — arbitration by definition. It ASSEMBLES the roster; it never renders a composition.",
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {
@@ -138,6 +139,7 @@ must never be taught one.
         "packages/web/src/main.tsx",
         "packages/web/src/app.tsx",
         "packages/web/src/plugin-host.tsx",
+        "packages/web/src/room-pipes.ts",
         "packages/web/src/assembly.ts",
         "packages/web/src/api.ts",
         "packages/web/src/error-boundary.tsx",
@@ -332,6 +334,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/web/src/plugin-host.tsx",
       "why": "the registry, web half: AssemblyProvider, PanelOutlet and its placeholder, HostServices"
+    },
+    {
+      "glob": "packages/web/src/room-pipes.ts",
+      "why": "the occupant room pipes the mounted container renderers publish, by container, and the SessionHandle the host hands plugin code: every read on the host's watching client, every terminal mutation routed through the pipe of the room that owns it (issue #196)"
     },
     {
       "glob": "packages/web/src/assembly.ts",
