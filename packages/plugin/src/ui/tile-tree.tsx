@@ -15,37 +15,15 @@ import { dividerRatios, type DividerDrag } from "../tile-snap.ts";
 import { FLIP_EPSILON, prefersReducedMotion } from "./flip.ts";
 
 /**
- * THE tile tree. A composition's layout is one recursive structure, so there is one
- * component that draws it — the fullscreen route and a container portal sitting on a
- * canvas render the same splits, the same ratio dividers and the same leaf frames from
- * the same code. A portal used to carry a parallel read-only mini-tree; it does not
- * any more, which is why an engaged portal's dividers drag exactly as fullscreen's do.
+ * One tile tree for workspace, composition and portal skins; hosts supply leaf chrome
+ * and interactivity. Inert spectators neither capture pointers nor write ratios.
+ * Divider frames call `onRatios`; release/cancel calls `onRatiosCommit` once if moved.
+ * Document hosts stream frames; action hosts preview locally and commit at release.
  *
- * What a host renderer still owns is the LEAF (`renderLeaf`) — a leaf's chrome is
- * discipline-specific (fullscreen leaves wear the carry grip, a portal's wear the
- * engagement shield) — and the two policy answers this component takes as arguments:
- *
- *   `classes`     which class family the boxes wear, because both skins are proof
- *                 hooks: `.composition-*` for the route, `.portal__*` for the portal.
- *   `interactive` whether a divider is a control or just structure. A watching portal
- *                 paints from a spectator socket whose writes the server refuses, so
- *                 its dividers render (the composition's shape is the information) and
- *                 do nothing: no pointer capture, no cursor, no doc write.
- *
- * PANE CONTENT SURVIVES STRUCTURAL EDITS. The recursive boxes are keyed by tile id,
- * and a split substitutes a NEW wrapper id into its parent's children — so React
- * discards and rebuilds boxes across a committed split. That must never tear down an
- * xterm, so a leaf's content is not rendered inside its box at all: each occupied
- * leaf's content renders exactly once through `createPortal` into a STABLE host
- * element keyed by REF IDENTITY (`refKey`), and a layout effect appends that
- * host into whatever box the current tree drew (the `appendChild` move flexlayout and
- * dockview use). React never sees the move; the terminal's DOM, buffer and scrollback
- * ride along untouched. Confirmed by `scripts/verify-tile-drop.ts`'s remount probe.
- *
- * There is deliberately no `scale` argument even though a portal draws its tree under a
- * `transform: scale()` (and under the canvas's own zoom). A divider drag is computed as
- * `pointer delta / box size`, and `getBoundingClientRect()` reports the box already
- * transformed, so both terms live in client space and the fraction is scale-invariant.
+ * Structural edits rebuild keyed boxes, never leaf content: stable portals keyed by
+ * ref identity are seated by TileMotionBoundary. Terminals keep their DOM and buffers
+ * across splits (scripts/verify-tile-drop.ts proves this with its remount probe).
+ * Divider delta and bounding-box size both use client space, so ratios are scale-invariant.
  */
 
 /** The class family one host paints its tree with; every box the tree owns is here. */
@@ -102,6 +80,7 @@ export interface TileTreeProps {
   /** False renders dividers as structure only — see the module note. */
   readonly interactive: boolean;
   readonly onRatios: (splitId: string, ratios: readonly number[]) => void;
+  readonly onRatiosCommit?: () => void;
   readonly renderLeaf: (node: Tile) => ReactNode;
 }
 
@@ -388,6 +367,7 @@ export function TileTree({
   classes,
   interactive,
   onRatios,
+  onRatiosCommit,
   renderLeaf,
 }: TileTreeProps): ReactNode {
   /** The outermost box the structure pass drew; content targeting is scoped to it. */
@@ -432,6 +412,7 @@ export function TileTree({
         classes={classes}
         interactive={interactive}
         onRatios={onRatios}
+        onRatiosCommit={onRatiosCommit}
         renderChild={renderChild}
         vacant={vacant}
       />
@@ -455,6 +436,7 @@ export function TileTree({
           classes={classes}
           interactive={interactive}
           onRatios={onRatios}
+          onRatiosCommit={onRatiosCommit}
           renderChild={renderChild}
           attachRoot={attachRoot}
           vacant={vacant}
@@ -471,6 +453,7 @@ interface TileSplitProps {
   readonly interactive: boolean;
   readonly renderChild: (tileId: string) => ReactNode;
   readonly onRatios: (splitId: string, ratios: readonly number[]) => void;
+  readonly onRatiosCommit: TileTreeProps["onRatiosCommit"];
   /** Set only on the tree's outermost split, for the content-seating scope. */
   readonly attachRoot?: (element: HTMLElement | null) => void;
   /** Which tile ids hold no occupant anywhere under them; see {@link vacantTiles}. */
@@ -487,15 +470,16 @@ function TileSplit({
   interactive,
   renderChild,
   onRatios,
+  onRatiosCommit,
   attachRoot,
   vacant,
 }: TileSplitProps) {
   const boxRef = useRef<HTMLDivElement | null>(null);
-  /** Live divider state; kept in a ref so a drag never re-renders the terminals it moves. */
-  const dragRef = useRef<DividerDrag | null>(null);
+  const dragRef = useRef<(DividerDrag & { pointerId: number; changed: boolean }) | null>(null);
   const row = node.dir === "row";
 
   const beginDrag = (index: number, event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (event.button !== 0 || dragRef.current !== null) return;
     const box = boxRef.current;
     if (box === null) return;
     const bounds = box.getBoundingClientRect();
@@ -504,6 +488,8 @@ function TileSplit({
     let total = 0;
     for (const ratio of node.ratios) total += ratio;
     dragRef.current = {
+      pointerId: event.pointerId,
+      changed: false,
       index,
       originPx: row ? event.clientX : event.clientY,
       sizePx,
@@ -519,19 +505,24 @@ function TileSplit({
 
   const moveDrag = (event: ReactPointerEvent<HTMLDivElement>): void => {
     const drag = dragRef.current;
-    if (drag === null) return;
+    if (drag === null || drag.pointerId !== event.pointerId) return;
     const next = dividerRatios(drag, row ? event.clientX : event.clientY);
     // `dividerRatios` hands back the same array when the drag is pinned; skipping the
     // write there keeps a stalled drag from spamming the doc with no-op updates.
-    if (next !== drag.ratios) onRatios(node.id, next);
+    if (next !== drag.ratios) {
+      drag.changed = true;
+      onRatios(node.id, next);
+    }
   };
 
   const endDrag = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (dragRef.current === null) return;
+    const drag = dragRef.current;
+    if (drag === null || drag.pointerId !== event.pointerId) return;
     dragRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    if (drag.changed) onRatiosCommit?.();
   };
 
   /*

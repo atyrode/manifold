@@ -109,9 +109,7 @@ export const spaceHandlers = {
       return { refused: `workspace leaves hold panels, not "${node.ref.kind}"` };
     }
     ctx.store.setWorkspaceLayout(ctx.principal.id, args.layout);
-    // ONE per gesture, and the gesture is already debounced to one call by the client (a
-    // divider drag paints per frame and commits once, D6) — so this line runs once per commit
-    // for the same reason the action does.
+    // The client commits once at gesture release; intermediate divider frames stay local.
     ctx.emit({ kind: "principal", principalId: ctx.principal.id }, "layout_set", {
       leaves: Object.keys(args.layout).length,
     });

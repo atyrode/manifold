@@ -2940,14 +2940,17 @@ try {
       })()`,
     );
     const commitsBefore = actionLog.filter((entry) => entry.name === "core.space.setLayout").length;
+    // A slow renderer and a pause while held are still ONE gesture.
+    await browser.send("Emulation.setCPUThrottlingRate", { rate: 4 });
     if (divider !== null) {
       const steps = Array.from({ length: 12 }, (_unused, index) => ({
         x: divider.x + 10 * (index + 1),
         y: divider.y,
       }));
-      await browser.drag([divider, ...steps], 20);
+      await browser.drag([divider, ...steps], 1_000);
     }
-    // The commit is a trailing debounce on the LAST frame, so the read waits for it to land.
+    await browser.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+    // Observe the released gesture's stored ratios; retain the window for stray trailing writes.
     const moved = await settles(async () => {
       const now = LayoutResponseSchema.parse(await getJson("/api/layout", viewer.token)).layout;
       return JSON.stringify(now["root"]?.ratios) !== JSON.stringify(before["root"]?.ratios);
@@ -3053,7 +3056,7 @@ try {
       dragged elsewhere it is still there after a reload, which is the only way to tell a
       remembered position from a re-centred one. A grip TAP selects rather than nudging, which
       is what the 6px threshold is for and what a synthetic press-and-release would break
-      first. And one gesture commits ONCE — the same trailing-debounce claim the divider drag
+      first. And one gesture commits ONCE — the same release-point claim the divider drag
       makes above, made again for every button that survived and for every drag out of the
       palette that replaced one, because a handful of verbs wired into one optimistic-local
       write path is a handful of chances to write twice, or not at all.
@@ -3248,7 +3251,7 @@ try {
 
       Nothing but a real browser reaches this. The payload is sealed by the source's own
       `dragstart` onto a DataTransfer, the destination is resolved from the pointer by the same
-      zone kernel every other carry uses, and the write is the same trailing debounce — three
+      zone kernel every other carry uses, and the write shares the same commit path — three
       places for one gesture to become two writes, or none.
     */
     /* Selector in, not a bare id: S15 reads gate contracts off the `[data-testid="…"]` LITERAL
@@ -3291,7 +3294,7 @@ try {
       const now = LayoutResponseSchema.parse(await getJson("/api/layout", viewer.token)).layout;
       return spacersIn(now) === spacersIn(beforeSpacer) + 1;
     }, 8_000);
-    // The trailing debounce again: a second dispatch for one release lands inside this window.
+    // A stray trailing dispatch for one release must still be counted.
     await sleep(1_500);
     const spacerCommits = commitCount() - beforeSpacerCommits;
     const carriedStructure = sealed.some(

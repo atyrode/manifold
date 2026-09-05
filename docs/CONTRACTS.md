@@ -797,7 +797,8 @@ its validation is STRUCTURAL ONLY: `validateTileLayout` plus "every leaf ref is 
 Unknown or disabled panel ids are ACCEPTED — a disabled plugin must never brick layout writes —
 and those leaves render placeholders whose chrome offers a remove control that commits the pruned
 tree through the same action. Divider drags obey the plane rule: local optimistic ratios per
-frame, ONE `core.space.setLayout` at the commit point, never one per frame.
+frame, ONE `core.space.setLayout` on pointerup or pointercancel after movement, never during a
+held pause or per frame. A press without movement writes nothing.
 
 **Leaf removal (`core.space.removeTile`).** `DELETE /api/containers/:id/tiles/:tileId` is
 deleted, not aliased. It was the LAST bespoke route that mutated workspace state, and the one
