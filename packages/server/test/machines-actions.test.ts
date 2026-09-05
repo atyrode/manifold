@@ -326,6 +326,10 @@ describe("core.machines.forget", () => {
     expect(MachinesResponseSchema.parse(listed.result).machines).toEqual([]);
     expect(fix.store.listEvents({ limit: 100 })).toEqual(expect.arrayContaining(history));
     expect(denial(await forget())).toEqual({ rule: "refused", message: "machine not found" });
+    expect(fix.store.listEvents({ type: "trace", limit: 1 })[0]).toMatchObject({
+      door: "core.machines.forget",
+      outcome: "refused",
+    });
     fix.store.close();
   });
 
