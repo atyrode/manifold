@@ -395,6 +395,8 @@ export interface MachineAdmission {
  * plugin's declared slice is exactly what it can touch, and it is verified at build time.
  */
 export interface ActionCtx {
+  /** The write-ahead ledger row's id, as returned by `core.events.list`. */
+  readonly traceId: number;
   readonly principal: Principal;
   readonly auth: ActionAuth;
   /**
@@ -1725,7 +1727,24 @@ export class PluginHost {
       (a drag arriving as one `core.space.place`) can produce one event and not one per frame.
      */
     const staged: { ref: ManifoldRef; kind: EventKind; payload: EventPayload }[] = [];
+    /*
+      THE WRITE-AHEAD (ADR 0018 §3). The attribution commits BEFORE the handler is invoked, so
+      by the time a handler can reach the store its own trace is already durable: a committed
+      mutation with no trace is not a race this ladder can lose, because the trace does not
+      wait on the mutation. The outcome is the one thing that cannot be known yet, so it is
+      the one thing the settle writes.
+
+      This is deliberately NOT one transaction with the handler's mutation, and the reason is
+      A6's own text rather than a limitation: a trace that rolled back with the mutation would
+      lose exactly the rows the axiom insists on — the refusal, and the door that mutated and
+      then threw. Wrapping an awaited handler in a SQLite transaction would also mean holding
+      the connection's write lock across a machine round-trip, which stalls every other
+      writer in the workspace behind one slow door. Ordering, not atomicity, is what makes the
+      ledger complete; §7 of the ADR carries the per-door-class table.
+     */
+    const traceId = this.store.appendTrace({ ...attribution, outcome: null, targets: [] });
     const ctx: ActionCtx = {
+      traceId,
       principal: auth.principal,
       auth: {
         principal: auth.principal,
@@ -1782,22 +1801,6 @@ export class PluginHost {
         staged.push({ ref, kind, payload: payload ?? {} });
       },
     };
-    /*
-      THE WRITE-AHEAD (ADR 0018 §3). The attribution commits BEFORE the handler is invoked, so
-      by the time a handler can reach the store its own trace is already durable: a committed
-      mutation with no trace is not a race this ladder can lose, because the trace does not
-      wait on the mutation. The outcome is the one thing that cannot be known yet, so it is
-      the one thing the settle writes.
-
-      This is deliberately NOT one transaction with the handler's mutation, and the reason is
-      A6's own text rather than a limitation: a trace that rolled back with the mutation would
-      lose exactly the rows the axiom insists on — the refusal, and the door that mutated and
-      then threw. Wrapping an awaited handler in a SQLite transaction would also mean holding
-      the connection's write lock across a machine round-trip, which stalls every other
-      writer in the workspace behind one slow door. Ordering, not atomicity, is what makes the
-      ledger complete; §7 of the ADR carries the per-door-class table.
-     */
-    const traceId = this.store.appendTrace({ ...attribution, outcome: null, targets: [] });
     const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
     let produced: unknown;
     try {

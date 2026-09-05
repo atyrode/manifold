@@ -90,8 +90,9 @@ function actionCtx(
   const emitted: Emitted[] = [];
   const slice: Pick<
     ActionCtx,
-    "principal" | "auth" | "containerScope" | "outsideScope" | "storage" | "now" | "newId" | "emit"
+    "traceId" | "principal" | "auth" | "containerScope" | "outsideScope" | "storage" | "now" | "newId" | "emit"
   > = {
+    traceId: 1,
     principal,
     auth: {
       principal,

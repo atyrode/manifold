@@ -1133,6 +1133,11 @@ plus exact field names `data`/`env`/`payload`/`terminalData`, also case-insensit
 invariants 5 and 6) and bounded at 4 KiB, past which the row keeps
 `{ oversize, keys }` instead of the bytes.
 
+Every action handler receives `ctx.traceId: number`, the id of its already-durable write-ahead
+row — exactly the `id` returned by `core.events.list` with `kind: "trace"`. It is available
+in-realm and in the isolated dispatch context, not permission to append or settle traces.
+Dispatches refused before invocation never reach a handler; their ledger behavior is unchanged.
+
 **Refusals are traced and unregistered names are not.** Every denial rung the ladder can answer
 with lands in the ledger; `unknown_action` does not, because there is no door, no declared
 authority and nothing to attribute, and because the name is caller-chosen — a ledger a stranger
@@ -1280,7 +1285,7 @@ JSON frames over `Bun.spawn` ipc, discriminated on `t`:
 | Direction  | `t`           | Carries                                                                                                                                                                    |
 | ---------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | host→child | `load`        | `pluginId`, `manifest`, `dir` — the first frame; the child already runs from `dir`                                                                                         |
-| host→child | `dispatch`    | `id`, `action` (LOCAL name), `args`, `ctx: { principal, caps, isRoot, containerScope, now }` — the caller's authority captured per id                                      |
+| host→child | `dispatch`    | `id`, `action` (LOCAL name), `args`, `ctx: { traceId, principal, caps, isRoot, containerScope, now }` — the caller's authority captured per id                                      |
 | host→child | `hook`        | `id`, `hook: "onEnable" \| "onDisable" \| "onAssemblyChanged"`, `delta?: { enabled, disabled }`                                                                            |
 | host→child | `reply`       | `id`, `ok: true, result` or `ok: false, error` — the answer to a child's `call`                                                                                            |
 | host→child | `shutdown`    | orderly exit; also what idle eviction sends                                                                                                                                |

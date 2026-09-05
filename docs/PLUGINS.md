@@ -424,6 +424,12 @@ correlation ref — is channel traffic the floor owns. Dispatching `core.termina
 `POST /api/actions/…` returns the decision and nothing else, and there is no action that creates
 a terminal; whether there should be one is the open design question in #185.
 
+Every handler can declare a `{ readonly traceId: number }` context slice to reference the
+write-ahead trace authorizing its dispatch. This is the ledger row's `id`, exactly as
+`core.events.list({ kind: "trace" })` returns it, already durable before your handler runs.
+Use it in domain records without searching by door, principal or time; only the dispatch ladder
+may write or settle traces. Refusals before invocation do not reach your handler.
+
 The server half supplies the handler:
 
 ```ts
@@ -1695,7 +1701,7 @@ subject. A handler is written against `GuestCtx`, which is the engine's `ActionC
 served across a process boundary (`docs/CONTRACTS.md` §Hardened plugins, `ISOLATE_CTX_METHODS`):
 
 - **Data the dispatch carries** — `ctx.principal`, `ctx.auth.{caps, isRoot, containerScope}`,
-  `ctx.containerScope`, `ctx.now()`, `ctx.pluginId`.
+  `ctx.traceId`, `ctx.containerScope`, `ctx.now()`, `ctx.pluginId`.
 - **Questions the host answers, as promises** — `ctx.auth.allows(cap, containerId?)`,
   `ctx.outsideScope(containerId)`, `ctx.newId()`, `ctx.storage.{get, set, delete, keys}`,
   `ctx.machines.isOnline(id)`, `ctx.placement.place(request)`, `ctx.host.{roster, enabled}`.

@@ -196,6 +196,7 @@ export class IsolateSupervisor implements IsolateRunner {
         action,
         args,
         ctx: {
+          traceId: ctx.traceId,
           principal: ctx.principal,
           caps: [...ctx.auth.caps],
           isRoot: ctx.auth.isRoot,

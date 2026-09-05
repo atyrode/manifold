@@ -135,6 +135,7 @@ describe("the packed server half, as a real isolate", () => {
         action: "bump",
         args: { by: 5 },
         ctx: {
+          traceId: 1,
           principal: { id: "p1", kind: "human", name: "Ada", color: "#e03131" },
           caps: ["containers:read"],
           isRoot: false,

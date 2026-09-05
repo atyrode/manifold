@@ -111,6 +111,7 @@ export type GuestEmit = (ref: ManifoldRef, kind: EventKind, payload?: EventPaylo
  * on the `dispatched` frame and the host flushes them only when the outcome is `ok`.
  */
 export interface GuestCtx {
+  readonly traceId: IsolateDispatchCtx["traceId"];
   readonly pluginId: string;
   readonly principal: Principal;
   readonly auth: GuestAuth;
@@ -314,6 +315,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
 
   const dispatchCtx = (call: Call, carried: IsolateDispatchCtx, staged: Emission[]): GuestCtx => {
     const ctx: GuestCtx = {
+      traceId: carried.traceId,
       pluginId: def.manifest.id,
       principal: carried.principal,
       auth: {
