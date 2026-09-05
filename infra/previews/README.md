@@ -1,10 +1,10 @@
 # Preview environments
 
-| Address | Runs |
-| --- | --- |
+| Address            | Runs                                                |
+| ------------------ | --------------------------------------------------- |
 | `preview.<domain>` | Integrated `main` (existing dev stack on port 7912) |
-| `<N>.<domain>` | PR N's head in `manifold-pr-N`; machine `pr-N` |
-| `<name>.<domain>` | Live host worktree: Vite HMR and Bun watch |
+| `<N>.<domain>`     | PR N's head in `manifold-pr-N`; machine `pr-N`      |
+| `<name>.<domain>`  | Live host worktree: Vite HMR and Bun watch          |
 
 Requirements: Bash, Bun, Docker Compose, Caddy, curl, jq, flock, Git and systemd
 user services. Enable linger for the deployment user. Keep this tooling in a stable
@@ -44,15 +44,16 @@ In the operator-owned public Caddy configuration **outside this repository**, su
 preview.<domain> {
   reverse_proxy 127.0.0.1:7912
 }
-https:// {
+*.<domain> {
   tls { on_demand }
   reverse_proxy 127.0.0.1:7900
 }
 ```
 
-The catch-all HTTPS site handles wildcard subdomains; the ask endpoint permits only
-`preview.<domain>` and registered names (a literal wildcard certificate would require
-DNS validation instead). Reserve this listener for previews or merge with existing sites.
+With `on_demand`, Caddy issues a certificate for each requested hostname at handshake time
+(HTTP validation), never a wildcard certificate, so no DNS plugin or zone credential is
+needed; the ask endpoint permits only `preview.<domain>` and registered names. Prefer the
+`*.<domain>` site address over a catch-all `https://` on a host that fronts other sites.
 Forced-command `authorized_keys` entry (use absolute paths; no forwarding or PTY):
 
 ```text

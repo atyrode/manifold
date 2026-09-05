@@ -104,7 +104,7 @@ The pipeline, in order:
 - **At the end of a task, and whenever asking the operator to look at something, name the
   preview URL and what to look at on it**: which panel, which action, and the expected result.
 - The operator's development owner key opens any seeded preview. `infra/previews/preview.sh
-  url N` on the host prints the pre-authenticated link only to the operator's local terminal;
+url N` on the host prints the pre-authenticated link only to the operator's local terminal;
   never paste that key-bearing link into a PR, chat, or log.
 - Live mode is only for a worktree on the preview host: start it with
   `infra/previews/preview.sh live <name> <path>`, say that you are using live mode, and stop it
