@@ -619,7 +619,7 @@ describe("session channel terminal verbs speak the ladder", () => {
   });
 
   test("the program and env a frame names are judged at the door, and the ledger records the program", async () => {
-    const base = fixture();
+    const base = await fixture();
     const { id, socket } = joinedSocket(base, OWNER_KEY);
     const argv: TerminalProgram["argv"] = ["/bin/sh", "-c", "printf CMD_OK; exec cat"];
 
@@ -661,7 +661,7 @@ describe("session channel terminal verbs speak the ladder", () => {
   });
 
   test("a program the door refuses never reaches the machine, and the refusal names it", async () => {
-    const base = fixture();
+    const base = await fixture();
     const guest = base.auth.mintToken(
       { principal: { name: "no spawner", kind: "human" }, caps: ["containers:read"] },
       base.owner,
