@@ -215,7 +215,9 @@ export const PROTOCOL_VERSION = 22;
  * allowlist (upper-case POSIX keys, never the `MANIFOLD_` prefix, merged UNDER the four fixed
  * keys); `create` gained the same OPTIONAL `program`, and its `env` now carries the opener's
  * keys beside the minted ones — a record it always was, read by every agent since v16 with
- * the same loop. The session error vocabulary gained `unsupported`.
+ * the same loop. The session error vocabulary gained `unsupported`. The published input of
+ * `core.terminals.open` gained both fields too: the gateway hands the door the frame's own
+ * program and env before any create, so the policy door judges what will run.
  *
  * Absence reproduces v21 EXACTLY: a `create` without `program` is the byte-identical frame,
  * and the agent that receives it resolves `$SHELL` → `bash` → `sh` as it always did. The

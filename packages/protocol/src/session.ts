@@ -247,9 +247,11 @@ const CLIENT_BODIES = {
      */
     placement: z.literal("tile").optional(),
     /**
-     * The program the PTY execs instead of the machine's shell (issue #192): carried to the
-     * agent as `create.program`, and refused `unsupported` when the target machine's agent
-     * predates the field. Absent ≡ the login shell, exactly the pre-v22 gesture.
+     * The program the PTY execs instead of the machine's shell (issue #192). The gateway
+     * hands it, with `env`, to `core.terminals.open` before any create — the door judges
+     * what will run and its trace records it — and only then carries it to the agent as
+     * `create.program`, refused `unsupported` when the target machine's agent predates the
+     * field. Absent ≡ the login shell, exactly the pre-v22 gesture.
      */
     program: TerminalProgramSchema.optional(),
     /** Environment merged under the fixed `MANIFOLD_*` keys; absent ≡ nothing added. */
