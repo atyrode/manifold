@@ -54,7 +54,6 @@ import {
   installRefusalWords,
   latestVersion,
   linkHost,
-  manifestLinks,
   permissionCount,
   permissionSummary,
   pluginPermissions,
@@ -513,7 +512,7 @@ function PluginDetail({
   const { manifest } = entry;
   const status = pluginStatus(roster, entry);
   const permissions = pluginPermissions(entry);
-  const links = manifestLinks(manifest);
+  const links = manifest.links;
   const parentId = parentOf(roster, entry);
   const children = childrenOf(roster, manifest.id);
   const relations = pluginRelations(roster, manifest.id);
@@ -593,7 +592,7 @@ function PluginDetail({
             </button>
           </span>
         )}
-        {links.repository === undefined ? null : (
+        {links?.repository === undefined ? null : (
           <span>
             Source{" "}
             <a
@@ -607,7 +606,7 @@ function PluginDetail({
             </a>
           </span>
         )}
-        {links.homepage === undefined ? null : (
+        {links?.homepage === undefined ? null : (
           <a
             className="plugin-manager-link"
             href={links.homepage}
@@ -618,7 +617,7 @@ function PluginDetail({
             Homepage
           </a>
         )}
-        {links.changelog === undefined ? null : (
+        {links?.changelog === undefined ? null : (
           <a
             className="plugin-manager-link"
             href={links.changelog}
@@ -987,7 +986,7 @@ function PluginRow({
   const status = pluginStatus(roster, entry);
   const permissions = permissionCount(entry);
   const latest = latestVersion(entry);
-  const links = manifestLinks(manifest);
+  const links = manifest.links;
   const classes = [
     "plugin-manager-row",
     entry.enabled ? "" : "is-disabled",
@@ -1061,7 +1060,7 @@ function PluginRow({
         ) : null}
       </span>
       <span className="plugin-manager-chips">
-        {entry.install === undefined ? null : links.repository === undefined ? (
+        {entry.install === undefined ? null : links?.repository === undefined ? (
           <Chip tone="publisher" title={`Published by ${publisherOf(manifest.id)}`}>
             {publisherOf(manifest.id)}
           </Chip>

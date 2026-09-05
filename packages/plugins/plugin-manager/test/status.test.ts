@@ -11,7 +11,6 @@ import type {
 import {
   latestVersion,
   linkHost,
-  manifestLinks,
   needsAttention,
   permissionCount,
   permissionSummary,
@@ -236,9 +235,8 @@ describe("permissions", () => {
 });
 
 describe("links and updates (#238)", () => {
-  test("a manifest without links renders none, and no update chip appears without a latest", () => {
+  test("no update chip appears without a latest release", () => {
     const plain = row("acme.x", { install: {} });
-    expect(manifestLinks(plain.manifest)).toEqual({});
     expect(latestVersion(plain)).toBeNull();
   });
 

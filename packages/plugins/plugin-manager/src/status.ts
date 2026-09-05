@@ -4,7 +4,6 @@ import {
   type PluginInstall,
   type PluginInstallRefusal,
   type PluginLifecycleState,
-  type PluginManifest,
   type PluginRefusalReason,
   type PluginRosterEntry,
 } from "@manifold/protocol";
@@ -57,6 +56,7 @@ const INSTALL_REFUSAL_WORDS: Readonly<Record<PluginInstallRefusal, string>> = {
   not_installed: "its install record is gone",
   namespace_reserved: "its id claims a namespace only the build may",
   still_enabled: "it was still on",
+  storage_retained: "its stored data has not been purged",
   no_entry: "its bundle names nothing to run",
 };
 
@@ -75,6 +75,7 @@ const INSTALL_DOOR_WORDS: Readonly<Record<PluginInstallRefusal, string>> = {
   not_installed: "Nothing is installed under that id",
   namespace_reserved: "That id claims a namespace only the build may",
   still_enabled: "Switch it off first",
+  storage_retained: "Purge its retained data before uninstalling",
   no_entry: "The bundle names nothing to run",
 };
 
@@ -337,32 +338,10 @@ export function permissionSummary(entry: PluginRosterEntry): string {
     : `${lead}: ${held.join(", ")}; withheld ${withheld.join(", ")}`;
 }
 
-/**
- * ADDITIVE-OPTIONAL FIELDS #238 (step 1) IS LANDING. The manifest gains `links` — where a
- * plugin's code lives, as URLs — on a sibling branch, and the hub's release poll will publish
- * a `latest` version beside an installed row's `install` block. This view is how the manager
- * reads both TODAY without a cast: a `PluginManifest` assigns to `RosterManifest` because the
- * only extra member is optional, and a build where the protocol lacks the field simply reads
- * `undefined` and renders nothing. Delete this view — not the readers — once `PluginManifest`
- * and `PluginInstall` carry the fields themselves.
- */
-export interface ManifestLinks {
-  readonly repository?: string;
-  readonly homepage?: string;
-  readonly changelog?: string;
-}
-export interface RosterManifest extends PluginManifest {
-  readonly links?: ManifestLinks;
-}
+/** An installed row's optional release-feed version (#238). */
 export interface RosterInstall extends PluginInstall {
   /** The newest version the plugin's release feed lists, when the hub has polled one (#238). */
   readonly latest?: string;
-}
-
-/** The manifest's declared links, read through the view above. */
-export function manifestLinks(manifest: PluginManifest): ManifestLinks {
-  const viewed: RosterManifest = manifest;
-  return viewed.links ?? {};
 }
 
 /** The update an installed row could take, or null while no feed has been polled (#238). */
