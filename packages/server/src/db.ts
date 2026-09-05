@@ -5,7 +5,7 @@ import { migrateToCanonLexicon } from "./migrate-lexicon.ts";
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -436,6 +436,28 @@ UPDATE tokens SET grant_id = NULL
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '16');
 `,
   },
+  /**
+   * Installed plugins (ADR 0016 §8 stage 2, #152). One row per plugin a root principal
+   * installed from a bundle: the hash the installer pinned, the source as they spelled it, the
+   * capability set they consented to, who and when, and where the artifact landed on disk.
+   * The MANIFEST is deliberately not a column: it lives in the bundle the row points at, and a
+   * bundle that no longer hashes to `sha256` is refused at boot rather than described from a
+   * copy the engine would then have to trust (R8, fail-closed).
+   *
+   * Plain SQL, no snapshot: a new table, nothing rewritten, reversible by a DROP.
+   */
+  17: `
+CREATE TABLE plugin_installs(
+  plugin_id TEXT PRIMARY KEY,
+  sha256 TEXT NOT NULL,
+  source TEXT NOT NULL,
+  granted_caps TEXT NOT NULL,
+  installed_by TEXT NOT NULL,
+  installed_at INTEGER NOT NULL,
+  bundle_path TEXT NOT NULL
+) WITHOUT ROWID;
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '17');
+`,
 };
 
 interface TableRow {

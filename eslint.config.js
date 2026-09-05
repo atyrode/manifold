@@ -41,4 +41,13 @@ export default tseslint.config(
       },
     },
   },
+  {
+    /*
+      The isolate runner's fixture guests are plain JS for the same reason: the supervisor
+      spawns `server.js` from a bundle directory verbatim, so the child side of the protocol is
+      written by hand in the file it runs from. One global is the whole child runtime.
+    */
+    files: ["packages/server/test/fixtures/isolate-guest*/server.js"],
+    languageOptions: { globals: { process: "readonly" } },
+  },
 );

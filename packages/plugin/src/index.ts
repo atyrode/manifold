@@ -27,13 +27,21 @@ export {
 export {
   ENGINE_DISABLED_EVENT,
   ENGINE_ENABLED_EVENT,
+  ENGINE_INSTALLED_EVENT,
+  ENGINE_INSTALL_ACTION,
   ENGINE_PLUGINS_ID,
   ENGINE_PURGED_EVENT,
   ENGINE_PURGE_ACTION,
   ENGINE_SET_ENABLED_ACTION,
   ENGINE_SET_SETTING_ACTION,
+  ENGINE_UNINSTALLED_EVENT,
+  ENGINE_UNINSTALL_ACTION,
+  PluginInstallRequestSchema,
+  PluginInstallResultSchema,
   enginePluginsActions,
   enginePluginsManifest,
+  type PluginInstallRequest,
+  type PluginInstallResult,
 } from "./builtin.ts";
 export { emissionRefusal, emitterMayEmit, type EmitEvent } from "./emit.ts";
 export { ITEM_NOUNS, itemNoun, itemNounPhrase } from "./item-noun.ts";

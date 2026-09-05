@@ -70,6 +70,8 @@ must never be taught one.
       "globs": [
         "packages/plugin/src/**",
         "packages/server/src/plugin-host.ts",
+        "packages/server/src/plugin-installs.ts",
+        "packages/server/src/isolate/**",
         "packages/server/src/assembly.ts",
         "packages/server/src/main.ts",
         "packages/server/src/http.ts",
@@ -77,7 +79,7 @@ must never be taught one.
         "packages/server/src/index.ts"
       ],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the registry itself plus the doors it dispatches through, including the engine-owned enablement door (engine.plugins, a builtin roster row). Plugins presuppose the loader; it refuses collisions, resolves dependencies and order, and intersects capabilities — arbitration by definition. It ASSEMBLES the roster; it never renders a composition.",
+      "verdict": "the registry itself plus the doors it dispatches through, including the engine-owned enablement door (engine.plugins, a builtin roster row) and the isolation runner (ADR 0016 §9, R7: joined here rather than seated as its own pillar — the thing that loads a plugin's code is the same loader, one process boundary further out). Plugins presuppose the loader; it refuses collisions, resolves dependencies and order, and intersects capabilities — arbitration by definition. It ASSEMBLES the roster; it never renders a composition.",
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {
@@ -280,6 +282,14 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/server/src/plugin-host.ts",
       "why": "action dispatch: the denial ladder, capability intersection, enablement, roster change fan-out"
+    },
+    {
+      "glob": "packages/server/src/plugin-installs.ts",
+      "why": "the install door's hands (ADR 0016 stage 2): an artifact fetched or read, pinned by hash before it is parsed, admitted before it is written, re-verified and re-extracted at every boot — the runner's input, which is why it sits beside the host"
+    },
+    {
+      "glob": "packages/server/src/isolate/**",
+      "why": "the isolation runner (ADR 0016 §1, §2, §6, §9): one supervised Bun process per installed plugin, its ctx slice served over IPC from the dispatching caller's own context, the dispatch deadline, the crash budget and idle eviction — the arbiter between a stranger's code and the store, which the ADR's own litmus places on the floor"
     },
     {
       "glob": "packages/server/src/assembly.ts",

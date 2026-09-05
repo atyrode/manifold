@@ -24,6 +24,7 @@ function fixture(readCmdline: AgentSpawnDeps["readCmdline"], localMachineName = 
     spawnAgent: true,
     localMachineName,
     announceKey: false,
+    pluginDevPaths: false,
     build: undefined,
   };
   const store = testStore();

@@ -136,8 +136,9 @@
   cursor: default;
 }
 
-/* The removal record: exhaustive, zeros included, and it outlives the row it describes. */
-.plugin-manager-removed {
+/* The removal record and the install record: exhaustive, and they outlive the row they describe. */
+.plugin-manager-removed,
+.plugin-manager-notice {
   margin: 0.35rem 0.25rem;
   color: #a5d8a5;
   font-size: 0.72rem;
@@ -373,37 +374,41 @@
   transition: background 0.5s ease;
 }
 
-/* The named deferral. Prose, so it WRAPS, and quiet enough that it never reads as an error. */
-.plugin-manager-browse {
+/*
+  THE INSTALLED TAB (ADR 0016 §8 stage 2): the install form over a rule, then the rows of what
+  walked through it. The inputs wear the search box's skin and the submit wears a filter chip's,
+  because a box you type into and a pill you press are already this dialog's vocabulary; the
+  uninstall lever wears the purge pill for the same reason and with the same restraint.
+*/
+.plugin-manager-installs {
   padding-top: 0.4rem;
-  color: #adb5bd;
-  font-size: 0.8rem;
 }
 
-.plugin-manager-browse p {
-  margin: 0;
-  overflow-wrap: anywhere;
+.plugin-manager-install {
+  display: grid;
+  gap: 0.45rem;
+  border-bottom: 1px solid #2b3036;
+  padding-bottom: 0.7rem;
 }
 
-.plugin-manager-browse code {
-  border-radius: 0.25rem;
-  padding: 0 0.2rem;
-  color: #dee2e6;
-  background: #22262c;
-  font-size: 0.74rem;
-}
-
-.plugin-manager-browse-title {
-  margin: 0;
-  color: #e9ecef;
-  font-size: 0.95rem;
-  letter-spacing: -0.015em;
-}
-
-.plugin-manager-browse-meanwhile {
-  border-left: 2px solid #343a40;
-  padding-left: 0.6rem;
+.plugin-manager-install-field {
+  display: grid;
+  gap: 0.15rem;
   color: #868e96;
+  font-size: 0.66rem;
+}
+
+.plugin-manager-install-field > input {
+  width: 100%;
+}
+
+.plugin-manager-install > button {
+  justify-self: start;
+}
+
+.plugin-manager-install > button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 /*

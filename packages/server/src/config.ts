@@ -16,6 +16,11 @@ export interface ServerConfig {
   localMachineName: string;
   /** Opt-in (`MANIFOLD_ANNOUNCE_KEY=1`): embed `#key=` in the boot announce. Off by default so the owner key never enters log streams. */
   announceKey: boolean;
+  /**
+   * Opt-in (`MANIFOLD_PLUGIN_DEV_PATHS=1`): `engine.plugins.install` accepts an absolute path
+   * anywhere on this host, not only under `<data>/plugin-uploads/`. Development only.
+   */
+  pluginDevPaths: boolean;
   /** Build provenance (`MANIFOLD_BUILD`, e.g. a git SHA) exposed by `/healthz`; undefined on ad-hoc runs. */
   build: string | undefined;
 }
@@ -105,6 +110,7 @@ export function loadConfig(
     spawnAgent: env.MANIFOLD_SPAWN_AGENT !== "0",
     localMachineName,
     announceKey: env.MANIFOLD_ANNOUNCE_KEY === "1",
+    pluginDevPaths: env.MANIFOLD_PLUGIN_DEV_PATHS === "1",
     build: build !== undefined && build.length > 0 ? build : undefined,
   };
 }
