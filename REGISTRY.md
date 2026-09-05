@@ -288,6 +288,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
       "why": "the install door's hands (ADR 0016 stage 2): an artifact fetched or read, pinned by hash before it is parsed, admitted before it is written, re-verified and re-extracted at every boot — the runner's input, which is why it sits beside the host"
     },
     {
+      "glob": "packages/server/src/isolate/**",
+      "why": "the isolation runner (ADR 0016 §1, §2, §6, §9): one supervised Bun process per installed plugin, its ctx slice served over IPC from the dispatching caller's own context, the dispatch deadline, the crash budget and idle eviction — the arbiter between a stranger's code and the store, which the ADR's own litmus places on the floor"
+    },
+    {
       "glob": "packages/server/src/assembly.ts",
       "why": "the server-side registration point — the ONLY server file permitted to import @manifold-plugin/*"
     },
