@@ -832,7 +832,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "program",
-      "means": "the argv a PTY execs in place of $SHELL (`terminal_open.program`, carried to the agent as `create.program`, issue #192); absent ≡ the login shell. Named PROGRAM rather than command because `command` is core.commands' word for a palette row, and one concept per word means the second claimant renames",
+      "means": "the argv a PTY execs in place of $SHELL (`terminal_open.program`, judged at `core.terminals.open` whose input carries it, then carried to the agent as `create.program`, issue #192); absent ≡ the login shell. Named PROGRAM rather than command because `command` is core.commands' word for a palette row, and one concept per word means the second claimant renames",
       "banned": [],
       "allow": []
     },

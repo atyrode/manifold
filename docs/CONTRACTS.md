@@ -775,11 +775,21 @@ which is
 exactly what invariant 14 forbids, so the cutover took the channel's answer rather than the route's.
 `kill` is `cleanup: true` (removal survives a disable), the rename broadcasts
 `terminal_event { kind:"renamed", name }` into the home, and the kill sweeps the terminal, its home,
-and every portal onto that home. `open` carries `terminals:spawn` at `scope: "container"`, because a
+and every portal onto that home. `open { containerId, elementId, cols, rows, machineId?,
+placement?, program?, env? }` carries `terminals:spawn` at `scope: "container"`, because a
 terminal is born inside one container and the per-terminal agent token minted for it is
 container-scoped
 with that cap — a workspace-graded creation door would have quietly ended agents spawning their own
-terminals. The reads are doors too: `listByContainer` is `scope: "container"` (the route it replaces
+terminals. `program { argv }` and `env` (issue #192) are the SAME shapes and bounds the
+`terminal_open` frame carries (§Terminals over the session channel), and they are in the door's
+input so the policy door judges WHAT a terminal is born running, not only who may open where: the
+gateway hands the door the frame's own program and env before anything is minted or sent, and
+the broker receives that frame only once the door allowed, so a socket cannot present a shell to
+the policy and a program to the machine — one value, read once. The trace of the dispatch is the
+durable record of the program (`env` is redacted from the ledger by name, like every env the
+ledger sees). Today the handler judges neither beyond their shape; an argv or env rule lands in
+`core.terminals.open` and nowhere else.
+The reads are doors too: `listByContainer` is `scope: "container"` (the route it replaces
 answered a
 scoped token with its own container's rows), while `listAll` keeps the default because the terminal
 index it
@@ -788,8 +798,9 @@ replaces refused scoped tokens outright. Mutating affordances in the DOM carry
 
 Two things about that door are worth stating because they are what "one door per concept" cost here.
 The session channel now DISPATCHES the action rather than duplicating its authority:
-`terminal_open` calls `core.terminals.open` first and only then asks the broker (a create is a
-machine round trip whose reply is socket traffic, so the PTY is still born on the channel), and
+`terminal_open` calls `core.terminals.open` first — with the frame's own `program` and `env` in
+the door's input — and only then asks the broker (a create is a machine round trip whose reply
+is socket traffic, so the PTY is still born on the channel), and
 `terminal_kill` dispatches `core.terminals.kill` — `broker.kill(channel, …)` is deleted, so one door
 answers for both the UI and the channel, and the surviving rule is the stricter one: an exited
 terminal is
@@ -1421,17 +1432,21 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   exactly the pre-v22 gesture. `env` is an allowlist the opener adds to the PTY: at most 32
   keys, each an upper-case POSIX name (`^[A-Z_][A-Z0-9_]*$`), values at most 4096 chars, and
   NEVER the `MANIFOLD_` prefix — refused `invalid` at the frame by shape, and merged UNDER the
-  four fixed keys so those always win even so. Two refusals are the opener's to handle:
-  `error { code:"unsupported" }` when the target machine's agent spoke a protocol older than
-  v22 (`TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION`) — the server never sends `create.program` to
-  such an agent, whose strict parser would read it as a malformed frame and drop its socket;
-  the remedy is another machine or an upgraded agent — and `error { code:"conflict" }`
-  "terminal creation failed" when the agent could not exec `argv[0]`, whose named reason
-  (`program not found: <argv0>`, `program not executable: <argv0>`) travels the machine channel
-  as `create_error.message` and lands in the agent's log, never on the session channel (agent
-  diagnostics stay off the client wire, as for every create failure). Neither field reaches
-  `core.terminals.open`'s arguments, as `cwd` does not: the door judges WHO may open WHERE, and
-  the transport carries WHAT runs.
+  four fixed keys so those always win even so. Both fields go THROUGH THE DOOR FIRST: the
+  gateway dispatches `core.terminals.open` with this frame's `program` and `env` in its input
+  (§Terminal administration) before anything is minted or sent, so a policy denial
+  (`error { code:"forbidden" }`, the door's own message, on the opener's `ref`) refuses the
+  program before any machine hears of it, and what the ledger records as authorized is what the
+  agent is then asked to exec — the socket has no second place to present a different program.
+  `cwd` stays the transport's: it is where the shell starts, never what runs. Two further
+  refusals are the opener's to handle: `error { code:"unsupported" }` when the target machine's
+  agent spoke a protocol older than v22 (`TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION`) — the server
+  never sends `create.program` to such an agent, whose strict parser would read it as a
+  malformed frame and drop its socket; the remedy is another machine or an upgraded agent — and
+  `error { code:"conflict" }` "terminal creation failed" when the agent could not exec `argv[0]`,
+  whose named reason (`program not found: <argv0>`, `program not executable: <argv0>`) travels
+  the machine channel as `create_error.message` and lands in the agent's log, never on the
+  session channel (agent diagnostics stay off the client wire, as for every create failure).
 - **A terminal is born with a home** (`homed: "eager"`). The home id is minted BEFORE the
   PTY, because the terminal-scoped agent token and the `MANIFOLD_CONTAINER` a program inside the
   terminal reads must both name the container the terminal LIVES in — and a canvas is never

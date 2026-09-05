@@ -4,7 +4,7 @@
 
 ### Added
 
-- A terminal can be born running a program: `terminal_open` (and `SessionClient.openTerminal`) take an optional `program { argv }` the PTY execs in place of the login shell, plus an optional `env` allowlist merged under the fixed `MANIFOLD_*` keys, so a plugin can launch a named program on a machine and see its output first — no prompt, nothing typed. A machine whose agent predates the field (protocol 22) refuses by name instead of dropping its connection, and a program the machine cannot run is a named creation error rather than a garbled shell. Existing agents keep their terminals across this deploy. (#192, #200)
+- A terminal can be born running a program: `terminal_open` (and `SessionClient.openTerminal`) take an optional `program { argv }` the PTY execs in place of the login shell, plus an optional `env` allowlist merged under the fixed `MANIFOLD_*` keys, so a plugin can launch a named program on a machine and see its output first — no prompt, nothing typed. Both go through the `core.terminals.open` policy door before any machine hears of them — the door's input carries the program and env, a denial refuses the program before anything is created, and the trace ledger records what was authorized. A machine whose agent predates the field (protocol 22) refuses by name instead of dropping its connection, and a program the machine cannot run is a named creation error rather than a garbled shell. Existing agents keep their terminals across this deploy. (#192, #200)
 
 ### Changed
 
@@ -15,6 +15,7 @@
 - The plugin authoring guide and the action's own doc comment now say plainly that `core.terminals.open` only authorizes a terminal — the terminal itself is born by `terminal_open` on the session socket, and no action creates one. (#186, #193)
 - The plugin authoring guide now says up front that today's only authoring channel is a package inside this repository registered by a maintainer, cross-referenced to the issues that make out-of-tree plugins possible, and labels its two pointers into engine source as maintainer-only exceptions instead of leaving them to contradict the guide's opening promise. (#188, #195)
 - The verification gates ask the kernel for a free loopback port — for the throwaway server and for every Chromium they launch — instead of picking one blindly inside the ephemeral range, so a sibling gate's outbound connection can no longer turn a docs-only run red with `Is port N in use?`. (#198)
+
 ## [0.6.2] - 2026-09-02
 
 ### Added
