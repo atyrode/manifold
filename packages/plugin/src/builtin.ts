@@ -163,7 +163,10 @@ export const enginePluginsManifest: PluginManifest = {
  * `*` by another name — so the door says `*` and nothing narrower. Both answer refusals as
  * `{ refused: "<PLUGIN_INSTALL_REFUSALS member>: detail" }`, class first, so a client switches
  * on the prefix exactly as it does for the toggle refusals. Uninstall requires the row
- * disabled (`still_enabled`) and leaves the plugin's storage alone: destruction is `purge`.
+ * disabled (`still_enabled`) and never destroys the plugin's storage on its own: while that
+ * storage holds rows it refuses `storage_retained` unless `purge: true` is passed, and then it
+ * purges first — the purge door's own path, the same `plugin_purged` event — and uninstalls
+ * second (#233). Destruction is `purge`, whichever door it is asked through.
  */
 export const enginePluginsActions: readonly AnyActionDef[] = [
   defineAction({
@@ -202,7 +205,11 @@ export const enginePluginsActions: readonly AnyActionDef[] = [
     name: "uninstall",
     title: "Uninstall a disabled plugin's bundle",
     caps: ["*"],
-    input: z.strictObject({ id: PluginIdSchema }),
+    input: z.strictObject({
+      id: PluginIdSchema,
+      /** Consent to purge the plugin's stored data first; without it, retained data refuses. */
+      purge: z.boolean().optional(),
+    }),
     result: z.strictObject({}),
   }),
 ];
