@@ -1136,9 +1136,11 @@ export class SessionClient {
    * resolves; the doc update precedes the confirmation on the same socket.
    *
    * `program` names what the PTY execs instead of the machine's shell, and `env` is merged
-   * under the fixed `MANIFOLD_*` keys (issue #192). A machine whose agent predates programs
-   * rejects with `unsupported`; a program the machine cannot exec is a `conflict` from the
-   * agent's `create_error`.
+   * under the fixed `MANIFOLD_*` keys (issue #192). Both ride the one `terminal_open` frame,
+   * and the server hands them to `core.terminals.open` before any create: a policy denial
+   * (`forbidden`, the door's message) refuses the program before a machine hears of it. A
+   * machine whose agent predates programs rejects with `unsupported`; a program the machine
+   * cannot exec is a `conflict` from the agent's `create_error`.
    */
   openTerminal(opts: {
     elementId: string;
