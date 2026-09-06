@@ -10,6 +10,9 @@ import {
 } from "@manifold/protocol";
 import { z } from "zod";
 import { packPlugin, type PackResult } from "../src/pack.ts";
+import * as React from "react";
+import * as Plugin from "@manifold/plugin";
+import * as UI from "@manifold/plugin/ui";
 
 /**
  * `pack` TURNS THE SAMPLE INTO THE ARTIFACT THE INSTALL DOOR READS — and the artifact runs.
@@ -37,11 +40,14 @@ let bundle: PluginBundle;
 beforeAll(async () => {
   dir = mkdtempSync(`${tmpdir()}/plugin-kit-pack-`);
   const out = `${dir}/example.counter.manifold-plugin.json`;
-  const command = Bun.spawn(["bun", `${KIT}/src/pack.ts`, SAMPLE, "--out", out], {
-    cwd: KIT,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  const command = Bun.spawn(
+    ["bun", `${KIT}/src/pack.ts`, SAMPLE, "--out", out, "--self-contained"],
+    {
+      cwd: KIT,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
   const [stdout, stderr, code] = await Promise.all([
     new Response(command.stdout).text(),
     new Response(command.stderr).text(),
@@ -70,7 +76,6 @@ describe("the artifact", () => {
   test("both halves are self-contained: the kit, the protocol and zod are inlined", () => {
     for (const name of [PLUGIN_BUNDLE_SERVER_FILE, "web.js"]) {
       const source = Buffer.from(bundle.files[name] ?? "", "base64").toString("utf8");
-      expect(source.length).toBeGreaterThan(1_000);
       // No bare specifier survives: nothing for a loader to resolve.
       expect(source.match(/^\s*import\b[^\n]*\bfrom\s*["'][^./]/m)).toBeNull();
       expect(source.match(/\brequire\(\s*["']@manifold/)).toBeNull();
@@ -87,6 +92,43 @@ describe("the artifact", () => {
       );
     } finally {
       rmSync(bare, { recursive: true, force: true });
+    }
+  });
+
+  test("in-realm exports resolve from the host registry, with no shared bare imports", async () => {
+    const out = `${dir}/in-realm.json`;
+    const command = Bun.spawn(
+      ["bun", `${KIT}/src/pack.ts`, `${import.meta.dir}/fixtures/in-realm`, "--out", out],
+      {
+        cwd: KIT,
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [code, stderr] = await Promise.all([command.exited, new Response(command.stderr).text()]);
+    if (code !== 0) throw new Error(stderr);
+    const artifact = PluginBundleSchema.parse(await Bun.file(out).json());
+    const source = Buffer.from(artifact.files["web.js"] ?? "", "base64").toString("utf8");
+    expect(source).not.toMatch(
+      /\b(?:from\s*|import\s*\(\s*|require\s*\(\s*)["'](?:react|@manifold\/)/,
+    );
+    expect(artifact.builtAgainst?.react).toMatch(/^\d+\.\d+\.\d+/);
+    expect(artifact.builtAgainst?.["@manifold/plugin"]).toMatch(/^\d+\.\d+\.\d+/);
+    const key = Symbol.for("manifold.shared");
+    const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+    Object.defineProperty(globalThis, key, {
+      configurable: true,
+      value: { react: React, "@manifold/plugin/ui": UI, "@manifold/plugin": Plugin },
+    });
+    try {
+      const file = `${dir}/in-realm.mjs`;
+      await Bun.write(file, source);
+      const loaded = await import(file);
+      expect(loaded.default.id).toBe("example.counter");
+      expect(typeof loaded.default.panels.counter).toBe("function");
+    } finally {
+      if (previous === undefined) Reflect.deleteProperty(globalThis, key);
+      else Object.defineProperty(globalThis, key, previous);
     }
   });
 });

@@ -161,8 +161,13 @@ export async function startServer(): Promise<SpawnedServer> {
   return { url: new URL(readyUrl).origin, ownerKey: OWNER_KEY, dataDir, output, stop };
 }
 
-async function verifyOne(hub: Hub, facts: BundleFacts, bundle: string): Promise<VerifyReport> {
-  await installBundle({ source: facts.source, hub, sha256: facts.sha256 });
+async function verifyOne(
+  hub: Hub,
+  facts: BundleFacts,
+  bundle: string,
+  hardened: boolean,
+): Promise<VerifyReport> {
+  await installBundle({ source: facts.source, hub, sha256: facts.sha256, hardened });
   const row = (await roster(hub)).find((entry) => entry.manifest.id === facts.id);
   if (row === undefined)
     throw new VerifyFailure(bundle, `row ${facts.id} is not on the roster after install`);
@@ -194,6 +199,7 @@ async function verifyOne(hub: Hub, facts: BundleFacts, bundle: string): Promise<
 export async function verifyBundles(
   bundles: readonly string[],
   onReport: (report: VerifyReport) => void = () => {},
+  options: { readonly hardened?: boolean } = {},
 ): Promise<VerifyReport[]> {
   if (bundles.length === 0) throw new Error("verify needs at least one bundle");
   const inspected = await Promise.all(
@@ -218,7 +224,7 @@ export async function verifyBundles(
   try {
     for (const entry of ordered) {
       installed.push(entry);
-      const report = await verifyOne(hub, entry.facts, entry.bundle);
+      const report = await verifyOne(hub, entry.facts, entry.bundle, options.hardened === true);
       reports.push(report);
       onReport(report);
     }
@@ -244,15 +250,21 @@ export async function verifyBundles(
 }
 
 if (import.meta.main) {
-  const bundles = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  const hardened = argv.includes("--hardened");
+  const bundles = argv.filter((word) => word !== "--hardened");
   if (bundles.length === 0 || bundles.some((word) => word.startsWith("--"))) {
-    console.error("usage: manifold-verify <bundle>...");
+    console.error("usage: manifold-verify [--hardened] <bundle>...");
     process.exit(2);
   }
   try {
-    await verifyBundles(bundles, (report) => {
-      console.log(JSON.stringify(report));
-    });
+    await verifyBundles(
+      bundles,
+      (report) => {
+        console.log(JSON.stringify(report));
+      },
+      { hardened },
+    );
   } catch (error) {
     exitWith("verify", error);
   }

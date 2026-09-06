@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { BunPlugin } from "bun";
 import {
   PLUGIN_BUNDLE_FORMAT,
   PLUGIN_BUNDLE_SERVER_FILE,
@@ -7,21 +10,11 @@ import {
   type PluginBundle,
 } from "@manifold/protocol";
 
-/**
- * `pack` — from a plugin directory to the ONE artifact an install door reads (ADR 0016 §8,
- * `PluginBundleSchema`).
- *
- *     bun run --cwd packages/plugin-kit pack <plugin-dir> --out <file>
- *
- * The directory holds `manifest.json` (a `PluginManifest` whose `entry` names at least one
- * half), `server.ts` when `entry.server` is true and `web.ts` when `entry.web` names a file.
- * Each half is bundled by `Bun.build` with NOTHING external — the kit, the protocol and zod
- * are inlined — so the artifact is self-contained: the engine's loader is one
- * `Bun.spawn(["bun", "--smol", "<dir>/server.js"])` and one `new Worker(".../web.js")`, and
- * neither ever resolves a package. The bundle is parsed against the protocol's schema before
- * it is written, and the printed `sha256` is over the file's exact bytes — the pin an
- * installer hands `engine.plugins.install`.
- */
+/** Packing changes linkage, not trust: only the installer chooses `install.hardened`. */
+export interface PackOptions {
+  /** Resolve floor imports through the host registry; false preserves self-contained kit guests. */
+  readonly shared?: boolean;
+}
 
 export interface PackResult {
   readonly file: string;
@@ -29,12 +22,97 @@ export interface PackResult {
   readonly bytes: number;
 }
 
-async function build(entrypoint: string, target: "bun" | "browser"): Promise<string> {
+const SHARED: Record<string, true> = {
+  react: true,
+  "react-dom": true,
+  "react/jsx-runtime": true,
+  "react/jsx-dev-runtime": true,
+  "@manifold/plugin": true,
+  "@manifold/plugin/hooks": true,
+  "@manifold/plugin/ui": true,
+  "@manifold/protocol": true,
+  "@manifold/sdk": true,
+  "@manifold/scene": true,
+};
+async function sharedModules(
+  pluginDir: string,
+  builtAgainst: Record<string, string>,
+): Promise<BunPlugin> {
+  const namespaces: Record<string, string> = {};
+  const floorDir = fileURLToPath(new URL("../../plugin/", import.meta.url));
+  const release = (await Bun.file(new URL("../../web/package.json", import.meta.url)).json()) as {
+    version: string;
+  };
+  // Inventory before the consuming build: nested Bun.build calls inside onLoad deadlock.
+  for (const path of Object.keys(SHARED)) {
+    let entry: string;
+    try {
+      entry = Bun.resolveSync(path, pluginDir);
+    } catch {
+      entry = Bun.resolveSync(path, floorDir);
+    }
+    let packageDir = dirname(entry);
+    while (!(await Bun.file(join(packageDir, "package.json")).exists())) {
+      const parent = dirname(packageDir);
+      if (parent === packageDir) throw new Error(`No package metadata for ${path}`);
+      packageDir = parent;
+    }
+    const metadata = (await Bun.file(join(packageDir, "package.json")).json()) as {
+      name: string;
+      version?: string;
+    };
+    builtAgainst[metadata.name] = metadata.version ?? release.version;
+    let names: string[];
+    if (path === "react" || path.startsWith("react/") || path === "react-dom") {
+      // The author may resolve a different installed React version, so this path is runtime-selected.
+      names = Object.keys(await import(entry));
+    } else {
+      // Resolve export-star chains and erase type-only exports without executing browser floor
+      // modules: they can own CSS or browser-only module initialization.
+      const probe = await Bun.build({ entrypoints: [entry], target: "browser", format: "esm" });
+      if (!probe.success)
+        throw new Error(`Cannot discover ${path} exports: ${probe.logs.join("; ")}`);
+      const js = probe.outputs.find((output) => output.kind === "entry-point");
+      if (js === undefined) throw new Error(`No export inventory for ${path}`);
+      names = new Bun.Transpiler({ loader: "js" }).scan(await js.text()).exports;
+    }
+    namespaces[path] =
+      `const shared = globalThis[Symbol.for("manifold.shared")];\n` +
+      `if (!shared || !shared[${JSON.stringify(path)}]) throw new Error(${JSON.stringify(`Missing shared module: ${path}`)});\n` +
+      names
+        .map(
+          (name, index) =>
+            `const e${index} = shared[${JSON.stringify(path)}][${JSON.stringify(name)}]; export { e${index} as ${JSON.stringify(name)} };`,
+        )
+        .join("\n");
+  }
+  return {
+    name: "manifold-shared",
+    setup(builder) {
+      builder.onResolve({ filter: /^(?:react(?:-dom)?(?:\/.*)?|@manifold\/.*)$/ }, ({ path }) => {
+        if (SHARED[path]) return { path, namespace: "manifold-shared" };
+        return undefined;
+      });
+      builder.onLoad({ filter: /.*/, namespace: "manifold-shared" }, ({ path }) => {
+        const contents = namespaces[path];
+        if (contents === undefined) throw new Error(`No shared export inventory for ${path}`);
+        return { contents, loader: "js" };
+      });
+    },
+  };
+}
+
+async function build(
+  entrypoint: string,
+  target: "bun" | "browser",
+  plugins: BunPlugin[],
+): Promise<string> {
   const result = await Bun.build({
     entrypoints: [entrypoint],
     target,
     format: "esm",
     minify: false,
+    plugins,
   });
   if (!result.success || result.outputs.length === 0) {
     const detail = result.logs.map((log) => log.message).join("; ");
@@ -45,25 +123,33 @@ async function build(entrypoint: string, target: "bun" | "browser"): Promise<str
   return artifact.text();
 }
 
-export async function packPlugin(pluginDir: string, outFile: string): Promise<PackResult> {
+export async function packPlugin(
+  pluginDir: string,
+  outFile: string,
+  options: PackOptions = {},
+): Promise<PackResult> {
+  pluginDir = resolve(pluginDir);
   const manifestFile = `${pluginDir}/manifest.json`;
   const manifest = PluginManifestSchema.parse(await Bun.file(manifestFile).json());
   if (manifest.entry === undefined) {
     throw new Error(`${manifestFile}: manifest.entry must name the halves this bundle runs`);
   }
   const files: Record<string, string> = {};
+  const builtAgainst: Record<string, string> = {};
+  const plugins = options.shared === false ? [] : [await sharedModules(pluginDir, builtAgainst)];
   if (manifest.entry.server === true) {
-    const source = await build(`${pluginDir}/server.ts`, "bun");
+    const source = await build(`${pluginDir}/server.ts`, "bun", plugins);
     files[PLUGIN_BUNDLE_SERVER_FILE] = Buffer.from(source, "utf8").toString("base64");
   }
   if (manifest.entry.web !== undefined) {
-    const source = await build(`${pluginDir}/web.ts`, "browser");
+    const source = await build(`${pluginDir}/web.ts`, "browser", plugins);
     files[manifest.entry.web] = Buffer.from(source, "utf8").toString("base64");
   }
   const bundle: PluginBundle = PluginBundleSchema.parse({
     format: PLUGIN_BUNDLE_FORMAT,
     manifest,
     files,
+    ...(options.shared === false ? {} : { builtAgainst }),
   });
   const bytes = new TextEncoder().encode(JSON.stringify(bundle));
   await Bun.write(outFile, bytes);
@@ -72,13 +158,14 @@ export async function packPlugin(pluginDir: string, outFile: string): Promise<Pa
 }
 
 function usage(): never {
-  console.error("usage: manifold-pack <plugin-dir> --out <file>");
+  console.error("usage: manifold-pack <plugin-dir> --out <file> [--self-contained]");
   process.exit(2);
 }
 
 if (import.meta.main) {
-  // `<dir> --out <file>` or `--out <file> <dir>`: three words, `--out` never last.
-  const argv = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const shared = !args.includes("--self-contained");
+  const argv = args.filter((arg) => arg !== "--self-contained");
   const outAt = argv.indexOf("--out");
   const pluginDir = outAt === 0 ? argv[2] : argv[0];
   const outFile = argv[outAt + 1];
@@ -88,8 +175,7 @@ if (import.meta.main) {
     outAt === 2 ||
     pluginDir === undefined ||
     outFile === undefined
-  ) {
+  )
     usage();
-  }
-  console.log(JSON.stringify(await packPlugin(pluginDir, outFile)));
+  console.log(JSON.stringify(await packPlugin(pluginDir, outFile, { shared })));
 }

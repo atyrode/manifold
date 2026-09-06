@@ -76,6 +76,7 @@ interface DevOptions {
   readonly root: string;
   readonly hub: Hub;
   readonly deliver?: Delivery;
+  readonly hardened?: boolean;
   readonly packDir: string;
 }
 
@@ -92,7 +93,7 @@ async function cycle(
   const plugins: CycleEntry[] = [];
   for (const plugin of await discoverPlugins(options.root)) {
     const file = join(options.packDir, `${plugin.id}.manifold-plugin.json`);
-    const packed = await packPlugin(plugin.dir, file);
+    const packed = await packPlugin(plugin.dir, file, { shared: options.hardened !== true });
     if (last.get(plugin.id) === packed.sha256) {
       plugins.push({ id: plugin.id, sha256: packed.sha256, outcome: "unchanged" });
       continue;
@@ -101,6 +102,7 @@ async function cycle(
       source: file,
       hub: options.hub,
       sha256: packed.sha256,
+      hardened: options.hardened === true,
       ...(options.deliver === undefined ? {} : { deliver: options.deliver }),
     });
     last.set(plugin.id, packed.sha256);
@@ -153,7 +155,7 @@ export async function devLoop(options: Omit<DevOptions, "packDir">): Promise<nev
 
 function usage(): never {
   console.error(
-    "usage: manifold-dev <plugins-root> --hub <url> [--deliver path | docker:<container>] [--owner-key-file <path>]",
+    "usage: manifold-dev <plugins-root> --hub <url> [--hardened] [--deliver path | docker:<container>] [--owner-key-file <path>]",
   );
   process.exit(2);
 }
@@ -167,6 +169,7 @@ if (import.meta.main) {
     await devLoop({
       root: resolve(root),
       hub: { url: flags.hub, ownerKey },
+      hardened: flags.hardened === true,
       ...(flags.deliver === undefined ? {} : { deliver: flags.deliver }),
     });
   } catch (error) {

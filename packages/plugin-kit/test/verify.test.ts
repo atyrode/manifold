@@ -25,11 +25,14 @@ let bundle = "";
 beforeAll(async () => {
   dir = mkdtempSync(`${tmpdir()}/plugin-kit-verify-`);
   bundle = `${dir}/${PLUGIN_ID}.manifold-plugin.json`;
-  const command = Bun.spawn(["bun", `${KIT}/src/pack.ts`, SAMPLE, "--out", bundle], {
-    cwd: KIT,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  const command = Bun.spawn(
+    ["bun", `${KIT}/src/pack.ts`, SAMPLE, "--out", bundle, "--self-contained"],
+    {
+      cwd: KIT,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
   const [stderr, code] = await Promise.all([new Response(command.stderr).text(), command.exited]);
   if (code !== 0) throw new Error(`pack exited ${String(code)}: ${stderr}`);
 });
@@ -41,7 +44,7 @@ afterAll(() => {
 test.skipIf(!canSpawnServer())(
   "verify installs the sample, knocks on its door, and uninstalls it",
   async () => {
-    const reports = await verifyBundles([bundle]);
+    const reports = await verifyBundles([bundle], undefined, { hardened: true });
     expect(reports).toEqual([
       {
         bundle,
@@ -70,10 +73,12 @@ test.skipIf(!canSpawnServer())(
   async () => {
     const server = await startServer();
     try {
-      const first = await installBundle({ source: bundle, hub: server });
+      const first = await installBundle({ source: bundle, hub: server, hardened: true });
       expect(first.outcome).toBe("installed");
       expect(first.hub).toBe(server.url);
-      expect((await installBundle({ source: bundle, hub: server })).outcome).toBe("unchanged");
+      expect((await installBundle({ source: bundle, hub: server, hardened: true })).outcome).toBe(
+        "unchanged",
+      );
 
       // The same plugin with one manifest field moved: a different sha under the same id.
       const parsed = PluginBundleSchema.parse(await Bun.file(bundle).json());
@@ -82,7 +87,7 @@ test.skipIf(!canSpawnServer())(
         edited,
         JSON.stringify({ ...parsed, manifest: { ...parsed.manifest, title: "Edited counter" } }),
       );
-      const second = await installBundle({ source: edited, hub: server });
+      const second = await installBundle({ source: edited, hub: server, hardened: true });
       expect(second.outcome).toBe("replaced");
       expect(second.sha256).not.toBe(first.sha256);
 
@@ -103,7 +108,9 @@ test.skipIf(!canSpawnServer())(
   async () => {
     const server = await startServer();
     try {
-      expect((await installBundle({ source: bundle, hub: server })).outcome).toBe("installed");
+      expect((await installBundle({ source: bundle, hub: server, hardened: true })).outcome).toBe(
+        "installed",
+      );
 
       // A part (ADR 0023): the sample's web half under `example.counter.part`, declaring the
       // parent `required`. Web-only, so the engine has no process to spawn for it.
@@ -127,7 +134,9 @@ test.skipIf(!canSpawnServer())(
           files: { [webFile]: parsed.files[webFile] },
         }),
       );
-      expect((await installBundle({ source: part, hub: server })).outcome).toBe("installed");
+      expect((await installBundle({ source: part, hub: server, hardened: true })).outcome).toBe(
+        "installed",
+      );
 
       // Switching the parent off alone is refused by the engine while the part is on; the
       // replace path takes the part down first and brings both back.
@@ -136,7 +145,7 @@ test.skipIf(!canSpawnServer())(
         edited,
         JSON.stringify({ ...parsed, manifest: { ...parsed.manifest, title: "Edited parent" } }),
       );
-      const replaced = await installBundle({ source: edited, hub: server });
+      const replaced = await installBundle({ source: edited, hub: server, hardened: true });
       expect(replaced.outcome).toBe("replaced");
 
       const rows = await roster(server);
