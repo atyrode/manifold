@@ -1822,6 +1822,121 @@ the file's exact bytes and is the pin `engine.plugins.install` demands; the door
 source may come from, the default grant, the refusal classes, where the bundle lives afterwards —
 is §7 Installing a plugin, and the artifact's shape is `docs/CONTRACTS.md` §Hardened plugins.
 
+### Developing against a hub
+
+Packing is the artifact; the loop is `dev` (issue #319), and it exists because the only way to see
+an isolated plugin change is on a running hub — the isolate respawned, the web half re-served
+`no-store`, a browser reload. `dev` walks a directory for every `manifest.json` (a part inside its
+parent's directory, ADR 0023; `node_modules` and `dist` are never entered), packs each into a
+temporary directory, installs parents before parts, then watches the directory and repeats on
+change, debounced, installing only the bundles whose sha moved. One JSON line per cycle.
+
+```sh
+# from a manifold checkout, pointing at your plugins directory
+bun run --cwd packages/plugin-kit dev <plugins-root> --hub http://127.0.0.1:7777 --owner-key-file <data>/owner.key
+# from an author repository with manifold checked out beside it (the pack.sh layout)
+bun run dev -- --hub http://127.0.0.1:7912 --deliver docker:manifold-dev-manifold-1
+```
+
+Every cycle is `install`, the one-shot command underneath, and `install` is idempotent over the
+hub's roster: it reads `GET /api/plugins` first, and the same id at the same sha is `unchanged`
+(nothing asked of the hub); another sha is `replaced` — `engine.plugins.setEnabled false`,
+`engine.plugins.install { replace: true }`, `setEnabled true`, the three steps §7 demands; an
+absent id is `installed`. A replace is FAMILY-aware: the engine refuses to switch off a row an
+enabled row declares `required` (`missing_dependency`), so replacing `atyrode.code` while
+`atyrode.code.generator` is on switches the dependents off first, deepest first (transitively,
+read from the roster's manifests), then the target, and after the install switches the target
+and then the dependents back on in reverse. If the replace is refused, the old bundle stays and
+everything goes back on in that same order. It answers one line, `{ id, sha256, hub, outcome }`,
+and a refusal exits non-zero with the class and detail (`hash_mismatch: …`) on stderr.
+
+```sh
+bun run --cwd packages/plugin-kit install:bundle <bundle | https://…> --hub <url> \
+  [--sha256 <hex>] [--deliver path | docker:<container>] [--owner-key-file <path>]
+```
+
+**Two delivery strategies**, because the door reads a path or an https URL and nothing else
+(§7): `--deliver path` (the default for a file) hands the hub the bundle's absolute path, which a
+hub on the same machine accepts under `MANIFOLD_PLUGIN_DEV_PATHS=1` or from its drop box;
+`--deliver docker:<container>` copies the bundle into `<container>:/data/plugin-uploads/` — the
+drop box every hub accepts — and installs from there, which is how a hub in a container on the
+box you are sitting at is reached. An `https://` source is handed through untouched. **The owner
+key** comes from `--owner-key-file`, else `MANIFOLD_OWNER_KEY_FILE`, else — with docker delivery —
+the container's own `/data/owner.key` over `docker exec`. It is never an argument and never
+printed.
+
+The hub an author sees a change on is the **integrated preview**, `https://preview.<domain>`
+(`infra/previews/README.md`): it follows every green `main` and runs on the preview host as compose
+project `manifold-dev`, container `manifold-dev-manifold-1`, port `127.0.0.1:7912`. From that
+host, the second command above installs your working tree on it as you save. Production is not a
+development target (§Delivering).
+
+### Verifying
+
+An author repository's own tests drive a fake host. `verify` is the command that proves the
+artifact composes with a REAL engine, and it is `packages/testkit/e2e/isolated-plugin.test.ts`
+made public, because `@manifold/testkit` is private and an author repository cannot import it:
+
+```sh
+bun run --cwd packages/plugin-kit verify <bundle>...
+# {"bundle":"dist/example.counter.manifold-plugin.json","id":"example.counter","sha256":"8b8a…","doors":{"example.counter.bump":"ok"}}
+```
+
+It spawns this checkout's server (a temporary data dir, a fixed throwaway owner key, a free port,
+`MANIFOLD_PLUGIN_DEV_PATHS=1`), installs the bundles parents first whatever order the shell glob
+handed them, and for each asserts that its roster row is enabled and its `lifecycle` is neither
+`enable_failed` nor `isolate_crashed`, then dispatches every door the row publishes with `{}` as
+the owner and requires any answer but `unavailable` — `invalid_args` and `refused` come from your
+code in your process, which is the fact being checked; `unavailable` is the runner saying that
+process is gone or mute. Then it uninstalls with `purge` in reverse. The first failure exits
+non-zero naming the bundle, the row or the door.
+
+In CI, the reusable workflow `.github/workflows/plugins.yml` (`workflow_call`, input
+`plugins-dir`, default `plugins`) does the whole sequence: it checks the caller out at `caller/`,
+reads `caller/<plugins-dir>/MANIFOLD_REV`, checks this repository out at that rev at `manifold/`
+beside it (the sibling layout an author repository's `pack.sh` resolves), installs both, then in
+`caller/<plugins-dir>` runs `bun run check`, `bun test`, `bun run pack`, `bun run verify` and
+uploads `dist/` as the `manifold-plugins` artifact. An author repository's CI is one job:
+
+```yaml
+jobs:
+  plugins:
+    uses: atyrode/manifold/.github/workflows/plugins.yml@<MANIFOLD_REV>
+    with:
+      plugins-dir: plugins
+```
+
+`plugins/MANIFOLD_REV` and that `@<rev>` are bumped together, so the workflow and the kit it runs
+are one commit of this repository. The author repository's `plugins/package.json` wraps the kit:
+`verify` is `bun ../../manifold/packages/plugin-kit/src/verify.ts dist/*.manifold-plugin.json`
+(the shell expands the glob) and `dev` is `bun ../../manifold/packages/plugin-kit/src/dev.ts .`,
+flags passed through after `--`.
+
+### Delivering
+
+A release of an author repository (`release.yml` on `v*`) packs, attaches `dist/*.manifold-plugin.json`
+and `SHA256SUMS` to the GitHub Release, and then — for each bundle, parents first — asks the
+preview host's receiver to install it on the integrated preview:
+`ssh <user>@<host> "plugin https://github.com/<owner>/<repo>/releases/download/<tag>/<id>.manifold-plugin.json <sha256>"`
+over the same forced-command deploy key manifold's own `deploy-dev.yml` uses (`secrets.DEV_DEPLOY_SSH_KEY`,
+`vars.DEV_DEPLOY_HOST`; the step is skipped when the variable is unset). The receiver's `plugin`
+verb runs `install` from the host's stable tooling checkout against the dev stack with
+`--deliver docker:<container>`, reading the owner key out of the container — no secret leaves the
+host, and nothing but an https URL and a hash crosses the socket (`infra/previews/README.md`).
+
+Production (`https://manifold.tyrode.dev`) is the one hub nothing automates: the operator installs
+a release there from its asset URL in the plugin manager, root only, by hand (ADR 0022). A change
+is "delivered" when its release is installed on the integrated preview; whether it reaches
+production is the operator's decision, not a workflow's.
+
+**What an author repository's `AGENTS.md` must tell its agents**, because an agent there never
+reads this file first: the four commands in `plugins/` (`bun run check`, `bun test`, `bun run pack`,
+`bun run verify`) and that `verify` is the gate that spawns a real engine; that the inner loop is
+`bun run dev -- --hub <url> --deliver docker:<container>` against the integrated preview from the
+preview host, and its URL; that `plugins/MANIFOLD_REV` and the `uses:` ref move together; that a
+release installs itself on the preview and never on production; and what to tell the operator to
+look at — the preview's plugin manager row for the id, and the panel or door the change touched.
+
 ### What an isolated plugin does NOT get (ADR 0016 §3)
 
 Say it out loud rather than discover it:

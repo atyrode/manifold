@@ -188,6 +188,19 @@ gc_timer() {
   systemctl --user daemon-reload
   systemctl --user enable --now manifold-previews-gc.timer
 }
+plugin() {
+  local url=$1 sha=$2 container
+  plugin_url "$url"; sha256_arg "$sha"
+  [[ -d $PREVIEW_DEV_CHECKOUT ]] || fail "no dev checkout at $PREVIEW_DEV_CHECKOUT"
+  # The integrated preview's container, as its own compose project names it; the kit reads the
+  # owner key out of it over docker exec, so no secret is ever on this side of the socket.
+  container=$(cd "$PREVIEW_DEV_CHECKOUT" && MANIFOLD_DOMAIN="preview.$PREVIEW_DOMAIN" env -u MANIFOLD_OWNER_KEY docker compose ps -q manifold)
+  [[ $container =~ ^[0-9a-f]{12,64}$ ]] || fail 'the integrated preview container is not running'
+  log "installing $url on https://preview.$PREVIEW_DOMAIN"
+  # The kit from THIS (stable) checkout, against the dev stack's loopback port.
+  (cd "$here/../.." && bun packages/plugin-kit/src/install.ts "$url" --sha256 "$sha" \
+    --hub "http://127.0.0.1:$PREVIEW_DEV_PORT" --deliver "docker:$container")
+}
 case "${1:-}:$#" in
   up:3) up "$2" "$3" ;;
   down:2) down "$2" ;;
@@ -198,5 +211,6 @@ case "${1:-}:$#" in
   router:1) router ;;
   gc:1) gc ;;
   gc-timer:1) gc_timer ;;
-  *) fail 'usage: preview.sh up N SHA | down N | ls | url N-or-name | live name worktree | unlive name | router | gc | gc-timer' ;;
+  plugin:3) plugin "$2" "$3" ;;
+  *) fail 'usage: preview.sh up N SHA | down N | ls | url N-or-name | live name worktree | unlive name | router | gc | gc-timer | plugin URL SHA256' ;;
 esac

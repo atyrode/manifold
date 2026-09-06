@@ -9,10 +9,16 @@
     "./ui": "./src/ui.ts"
   },
   "bin": {
-    "manifold-pack": "./src/pack.ts"
+    "manifold-pack": "./src/pack.ts",
+    "manifold-install": "./src/install.ts",
+    "manifold-dev": "./src/dev.ts",
+    "manifold-verify": "./src/verify.ts"
   },
   "scripts": {
-    "pack": "bun src/pack.ts"
+    "pack": "bun src/pack.ts",
+    "install:bundle": "bun src/install.ts",
+    "dev": "bun src/dev.ts",
+    "verify": "bun src/verify.ts"
   },
   "dependencies": {
     "@manifold/protocol": "workspace:*",

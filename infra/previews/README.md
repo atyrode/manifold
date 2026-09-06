@@ -28,6 +28,8 @@ The CLI also reads this file; file values override inherited environment values.
 - `PREVIEW_DOMAIN`: required base domain (without `preview.`).
 - `PREVIEW_DEV_CHECKOUT`: existing dev checkout; default `$HOME/manifold-dev`.
 - `PREVIEW_DEV_URL`: dev health URL; default `https://preview.<domain>`.
+- `PREVIEW_DEV_PORT`: the dev stack's loopback port; default `7912`. The `plugin` verb installs
+  through it.
 - `PREVIEW_SEED`: optional absolute path to a `/data` backup `.tgz`; new PR volumes only. The
   production assertion signing key is always excluded so every preview generates its own.
 - `PREVIEW_PORT_RANGE`: default `7920-7999`; live servers use routed port + 1000.
@@ -84,13 +86,23 @@ restrict,command="env PREVIEW_HOME=/path/to/previews /path/to/repo/infra/preview
 ## Operations
 
 Run `infra/previews/preview.sh` with: `router`; `up 123 <sha>`; `down 123`; `ls`;
-`url 123`; `live feature /path/to/worktree`; `url feature`; `unlive feature`; `gc`; `gc-timer`.
+`url 123`; `live feature /path/to/worktree`; `url feature`; `unlive feature`; `gc`; `gc-timer`;
+`plugin <https-url> <sha256>`.
 `up` reuses the port and data on redeploy, waits for the exact build, then prints its URL.
 `down` destroys the container, volume, checkout and per-PR image (including an image whose
 checkout is already gone). An absent image is a no-op; `unlive` retains live data.
 `gc` removes PRs reported CLOSED or MERGED by `gh pr view`; without `gh` it is a no-op.
-The receiver accepts `dev <sha>`, `preview up 123 <sha>`, `preview down 123`, or a
-bare `<sha>` (legacy dev deployment). Other commands are refused.
+The receiver accepts `dev <sha>`, `preview up 123 <sha>`, `preview down 123`,
+`plugin <https-url> <sha256>`, or a bare `<sha>` (legacy dev deployment). Other commands are refused.
+
+`plugin <url> <sha256>` installs a published plugin bundle on the integrated preview: it runs
+`packages/plugin-kit/src/install.ts` from this stable checkout against `http://127.0.0.1:$PREVIEW_DEV_PORT`
+with `--deliver docker:<container>`, the container being the dev checkout's compose service
+`manifold`; the owner key is read out of that container's `/data/owner.key` and never leaves the
+host. An author repository's release workflow calls it once per bundle, parents first, over the
+same forced-command key (`docs/PLUGINS.md` §9 Delivering). The stable checkout needs
+`bun install --frozen-lockfile` once, like a live worktree. Production is never a receiver verb:
+the operator installs there from the release URL in the plugin manager, by hand.
 
 Integrated and numbered previews normally admit an existing production browser identity through
 the POST handoff in ADR 0027. The ordinary public URL carries no credential. A fresh seeded
