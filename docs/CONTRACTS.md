@@ -507,7 +507,7 @@ nothing. Both real containers carry the `discipline_match` guard. Destination fo
 container kind that admits them and the discipline it requires: `canvas`→canvas,
 `tile`→a composition, `compose`→a composition born on a CANVAS, `unplaced`→neither. `text` and
 `draw` are CONTRIBUTED kinds shown here for reading only: their traits live in
-`core.notes`' and `core.draw`' manifests, not in `ITEM_KINDS`.
+`core.notes`' and `core.canvas.draw`' manifests, not in `ITEM_KINDS`.
 
 **Homing** is how an item acquires the composition it LIVES in, and it is a property of the
 KIND, never of a gesture: `eager` — the server births the home with the item, so a terminal
@@ -825,7 +825,7 @@ handler's result is validated against the action's `result` schema; a mismatch i
 `dependency_disabled`, `data_downgrade`, `data_migration_missing`, `element_type_owned`,
 `still_enabled`, `developer_mode_off` — and a `refused` message is the class verbatim when there is
 nothing to name, otherwise `"<class>: <offenders, comma-separated>"` (`builtin: engine.plugins`,
-`still_enabled: core.draw`, `missing_dependency: test.leaf`, `developer_mode_off: example.hello`).
+`still_enabled: core.canvas.draw`, `missing_dependency: test.leaf`, `developer_mode_off: example.hello`).
 Clients switch on the prefix before `": "`; the remainder is identity for display, never meaning.
 
 **Enablement is workspace-global, hot, and an ENGINE door.** `engine.plugins.setEnabled { id, enabled }`
