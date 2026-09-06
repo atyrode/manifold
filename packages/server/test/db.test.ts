@@ -1229,6 +1229,8 @@ CREATE TABLE plugin_installs(
   granted_caps TEXT NOT NULL, installed_by TEXT NOT NULL, installed_at INTEGER NOT NULL,
   bundle_path TEXT NOT NULL, actions TEXT NOT NULL DEFAULT '[]'
 ) WITHOUT ROWID;
+CREATE TABLE plugin_kv(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+  PRIMARY KEY (plugin_id, key)) WITHOUT ROWID;
 INSERT INTO meta(key, value) VALUES ('schema_version', '20');
 INSERT INTO plugin_installs VALUES ('vendor.elder', '${"0".repeat(64)}', '/uploads/elder',
   '["containers:read"]', 'p-owner', 1, '/data/plugins/vendor.elder/bundle.json', '[]');
