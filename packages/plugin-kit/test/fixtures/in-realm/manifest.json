@@ -13,5 +13,5 @@
     "tools": [],
     "events": []
   },
-  "entry": { "web": "web.js" }
+  "entry": { "web": "web.js", "styles": true }
 }
