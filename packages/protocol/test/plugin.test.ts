@@ -384,6 +384,7 @@ describe("the plugin roster", () => {
       "element_type_owned",
       "still_enabled",
       "developer_mode_off",
+      "stylesheet_unscoped",
     ]);
     for (const refusal of PLUGIN_REFUSAL_REASONS) {
       expect(PluginRosterEntrySchema.safeParse({ ...entry, refusal }).success).toBe(true);

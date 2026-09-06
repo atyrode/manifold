@@ -603,6 +603,15 @@ export const PLUGIN_BUNDLE_FORMAT = 1;
 export const PLUGIN_BUNDLE_SERVER_FILE = "server.js";
 
 /**
+ * The file the web half's skin lives in when `entry.styles` is true (ADR 0025 §7, #258): one
+ * fixed name for the same reason as the server's — the loader fetches it by name at
+ * `GET /api/plugins/:id/styles.css`, and the hub reads it by name to admit it. An OPTIONAL
+ * member of an already-open `files` record, so a bundle written before it existed parses
+ * unchanged and the format literal did not move.
+ */
+export const PLUGIN_BUNDLE_STYLES_FILE = "styles.css";
+
+/**
  * A member's name inside the bundle: FLAT, one path segment, no leading dot. The files are
  * extracted beside the artifact into `<sha256>/`, so a name that could climb (`../`), nest, or
  * hide (`.env`) is refused at the schema rather than trusted to the extractor (invariant 6).
@@ -615,9 +624,10 @@ export const MAX_PLUGIN_BUNDLE_FILES = 64;
  * The artifact, parsed. `manifest.entry` is REQUIRED here (the manifest schema leaves it
  * optional because an in-realm manifest has no entry to name) and must name at least one
  * half; every half it names must be a member of `files`, so an installed plugin never
- * discovers at enable time that its own bundle is missing its code. Members are base64 of the
- * file's bytes, each bounded by the artifact cap because nothing inside an artifact can be
- * larger than the artifact.
+ * discovers at enable time that its own bundle is missing its code — and a declared sheet
+ * must be there too, beside a web half to dress. Members are base64 of the file's bytes, each
+ * bounded by the artifact cap because nothing inside an artifact can be larger than the
+ * artifact.
  */
 export const PluginBundleSchema = z
   .strictObject({
@@ -661,6 +671,17 @@ export const PluginBundleSchema = z
     }
     if (entry.web !== undefined && !Object.hasOwn(ctx.value.files, entry.web)) {
       missing(entry.web, "web");
+    }
+    if (entry.styles !== true) return;
+    if (entry.web === undefined) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["manifest", "entry", "styles"],
+        message: "entry.styles names a sheet but no web half wears it",
+      });
+    } else if (!Object.hasOwn(ctx.value.files, PLUGIN_BUNDLE_STYLES_FILE)) {
+      missing(PLUGIN_BUNDLE_STYLES_FILE, "styles");
     }
   });
 export type PluginBundle = z.infer<typeof PluginBundleSchema>;

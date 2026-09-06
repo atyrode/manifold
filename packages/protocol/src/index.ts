@@ -506,6 +506,7 @@ export {
   PLUGIN_BUNDLE_FILE_PATTERN,
   PLUGIN_BUNDLE_FORMAT,
   PLUGIN_BUNDLE_SERVER_FILE,
+  PLUGIN_BUNDLE_STYLES_FILE,
   PluginBundleFileSchema,
   PluginBundleSchema,
   UI_NODE_TYPES,
@@ -546,6 +547,17 @@ export {
   UNTRACED_DENIAL_RULE,
   type TraceOutcome,
 } from "./trace.ts";
+export {
+  PLUGIN_ROOT_PART_SEAM,
+  anchorOf,
+  cssRules,
+  everyCompound,
+  pluginRootClass,
+  splitTop,
+  unscopedRule,
+  type CssRule,
+  type UnscopedRule,
+} from "./stylesheet.ts";
 export { buildProtocolJsonSchema, type ProtocolExtras } from "./jsonschema.ts";
 export {
   BuildChannelSchema,
