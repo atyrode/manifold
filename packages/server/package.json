@@ -31,6 +31,10 @@
     "yjs": "13.6.32",
     "zod": "4.4.3"
   },
+  "peerDependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
   "devDependencies": {
     "@types/bun": "^1.3.2"
   }

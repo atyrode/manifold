@@ -81,6 +81,8 @@ export const PluginInstallRequestSchema = z.strictObject({
   grant: CapSchema.array().max(CAPS.length).optional(),
   /** Consent to upgrade an id already installed at a different hash; it must be disabled. */
   replace: z.boolean().optional(),
+  /** Optional process/Worker isolation; absent means the full in-realm engine API. */
+  hardened: z.boolean().optional(),
 });
 export type PluginInstallRequest = z.infer<typeof PluginInstallRequestSchema>;
 

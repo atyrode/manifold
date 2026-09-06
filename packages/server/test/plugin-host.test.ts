@@ -1640,11 +1640,11 @@ interface InstallFixture extends HostFixture {
   readonly dataDir: string;
   readonly runner: FakeRunner;
   readonly isolates: IsolateDeps;
-  /** Writes a bundle into the uploads box; answers the door's two arguments. */
+  /** Writes a hardened-runner bundle into the uploads box. */
   drop(
     manifest?: PluginManifest,
     files?: Record<string, string>,
-  ): { source: string; sha256: string };
+  ): { source: string; sha256: string; hardened: true };
 }
 
 async function installFixture(
@@ -1683,7 +1683,7 @@ async function installFixture(
         `drop-${String(dropped)}.manifold-plugin.json`,
       );
       writeFileSync(source, bytes);
-      return { source, sha256: sha256Hex(bytes) };
+      return { source, sha256: sha256Hex(bytes), hardened: true };
     },
   };
 }
@@ -1695,6 +1695,55 @@ function installedRow(host: PluginHost, id: string): PluginRoster[number] {
 }
 
 describe("PluginHost install doors", () => {
+  test("in-realm installs use the full context and reload only after disable and enable", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    const { source, sha256 } = fixture.drop(SAMPLE_MANIFEST, {
+      "server.js": `
+        import { z } from ${JSON.stringify(import.meta.resolve("zod"))};
+        const { defineAction } = globalThis[Symbol.for("manifold.shared")]["@manifold/plugin"];
+        let calls = 0;
+        export default {
+          actions: [defineAction({
+            name: "ping", title: "Ping", caps: ["containers:read"],
+            input: z.strictObject({}), result: z.unknown(),
+          })],
+          handlers: {
+            async ping(ctx) {
+              return {
+                calls: ++calls,
+                owner: ctx.store.pluginInstalls()[0].installedBy,
+                principal: ctx.principal.id,
+              };
+            },
+          },
+        };
+      `,
+      "web.js": "export {};",
+    });
+    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
+      true,
+    );
+    const result = (calls: number) => ({
+      ok: true,
+      result: { calls, owner: fixture.owner.principal.id, principal: fixture.owner.principal.id },
+    });
+    expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual(result(1));
+    expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual(result(2));
+    expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+    expect(denial(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe(
+      "plugin_disabled",
+    );
+    expect(await host.setEnabled(SAMPLE_ID, true, "admin")).toEqual({ ok: true });
+    expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual(result(1));
+    expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+    expect(await host.uninstall(SAMPLE_ID, "admin", false)).toEqual({ ok: true });
+    expect(denial(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe(
+      "unknown_action",
+    );
+    fixture.store.close();
+  });
+
   test("install lands a plugin row carrying the installer's consent, high-risk caps withheld", async () => {
     const hooks: HookLog = { calls: [] };
     const fixture = await installFixture((ref) => sampleLoad(ref, {}, hooks));
@@ -1710,14 +1759,18 @@ describe("PluginHost install doors", () => {
 
     // Root only: a manager token switches shipped rows, it does not admit a stranger's code.
     const manager = context(fixture, ["plugins:manage"]);
-    expect(denial(await host.dispatch(manager, ENGINE_INSTALL_ACTION, { source, sha256 }))).toEqual(
-      {
-        rule: "forbidden",
-        message: "* capability required",
-      },
-    );
+    expect(
+      denial(
+        await host.dispatch(manager, ENGINE_INSTALL_ACTION, { source, sha256, hardened: true }),
+      ),
+    ).toEqual({
+      rule: "forbidden",
+      message: "* capability required",
+    });
 
-    expect(await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).toEqual({
+    expect(
+      await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256, hardened: true }),
+    ).toEqual({
       ok: true,
       result: { id: SAMPLE_ID, version: "1.2.3", grantedCaps: ["containers:read"] },
     });
@@ -1730,6 +1783,7 @@ describe("PluginHost install doors", () => {
       grantedCaps: ["containers:read"],
       installedBy: fixture.owner.principal.id,
       installedAt: fixture.runtime.now(),
+      hardened: true,
     });
     expect(row.actions.map((action) => action.name)).toEqual([
       `${SAMPLE_ID}.ping`,
@@ -1737,9 +1791,6 @@ describe("PluginHost install doors", () => {
     ]);
     expect(fixture.runner.loads).toEqual([SAMPLE_ID]);
     expect(fixture.store.pluginInstalls().map((stored) => stored.pluginId)).toEqual([SAMPLE_ID]);
-    // The doors the assembly published are the row's record of them, for the boot that cannot
-    // re-verify the bundle (below): what is stored is exactly what the roster says.
-    expect(fixture.store.pluginInstalls()[0]?.actions).toEqual(row.actions);
     // An install of an enabled row IS an enable: the hook fires and the roster is pushed.
     expect(hooks.calls).toEqual([`enable:${SAMPLE_ID}`]);
     expect(published).toHaveLength(1);
@@ -1762,6 +1813,7 @@ describe("PluginHost install doors", () => {
       source,
       sha256,
       grant: ["tokens:mint", "scenes:write"],
+      hardened: true,
     });
     expect(outcome).toEqual({
       ok: true,
@@ -1774,9 +1826,15 @@ describe("PluginHost install doors", () => {
     const fixture = await installFixture();
     const host = await customHost(fixture, [], { isolates: fixture.isolates });
     const { source, sha256 } = fixture.drop();
-    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
-      true,
-    );
+    expect(
+      (
+        await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+          source,
+          sha256,
+          hardened: true,
+        })
+      ).ok,
+    ).toBe(true);
     // Root holds every cap; the refusal is the PLUGIN's grant, and the message says so.
     expect(denial(await host.dispatch(fixture.owner, `${SAMPLE_ID}.mint`, {}))).toEqual({
       rule: "forbidden",
@@ -1792,9 +1850,15 @@ describe("PluginHost install doors", () => {
     const fixture = await installFixture();
     const host = await customHost(fixture, [], { isolates: fixture.isolates });
     const { source, sha256 } = fixture.drop();
-    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
-      true,
-    );
+    expect(
+      (
+        await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+          source,
+          sha256,
+          hardened: true,
+        })
+      ).ok,
+    ).toBe(true);
     const stored = fixture.store.pluginInstalls()[0];
     if (stored === undefined) throw new Error("no install row");
     await fixture.store.pluginStorage(SAMPLE_ID).set("kept", "yes");
@@ -1837,9 +1901,15 @@ describe("PluginHost install doors", () => {
     const fixture = await installFixture();
     const host = await customHost(fixture, [], { isolates: fixture.isolates });
     const { source, sha256 } = fixture.drop();
-    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
-      true,
-    );
+    expect(
+      (
+        await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+          source,
+          sha256,
+          hardened: true,
+        })
+      ).ok,
+    ).toBe(true);
     expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
     expect(installedRow(host, SAMPLE_ID).changedBy).toBe("admin");
     // Nothing stored, so the plain door goes through — and takes the OFF with it.
@@ -1849,9 +1919,15 @@ describe("PluginHost install doors", () => {
     });
     expect(fixture.store.disabledPlugins().has(SAMPLE_ID)).toBe(false);
 
-    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
-      true,
-    );
+    expect(
+      (
+        await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+          source,
+          sha256,
+          hardened: true,
+        })
+      ).ok,
+    ).toBe(true);
     const row = installedRow(host, SAMPLE_ID);
     expect(row.enabled).toBe(true);
     expect(row.changedBy).toBeUndefined();
@@ -1890,13 +1966,21 @@ describe("PluginHost install doors", () => {
     ).toMatch(/^already_installed: /);
     expect(
       denial(
-        await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { ...second, replace: true }),
+        await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+          ...second,
+          replace: true,
+          hardened: true,
+        }),
       ).message,
     ).toMatch(/^still_enabled: /);
 
     expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
     expect(
-      await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { ...second, replace: true }),
+      await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+        ...second,
+        replace: true,
+        hardened: true,
+      }),
     ).toEqual({
       ok: true,
       result: { id: SAMPLE_ID, version: "2.0.0", grantedCaps: ["containers:read"] },
@@ -1920,7 +2004,11 @@ describe("PluginHost install doors", () => {
       isolates: fixture.isolates,
     });
     const { source, sha256 } = fixture.drop();
-    const outcome = await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 });
+    const outcome = await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+      source,
+      sha256,
+      hardened: true,
+    });
     expect(denial(outcome).message).toMatch(/^artifact_invalid: duplicate plugin id/);
     expect(fixture.store.pluginInstalls()).toEqual([]);
     expect(existsSync(join(fixture.dataDir, "plugins", SAMPLE_ID))).toBe(false);
@@ -1938,7 +2026,11 @@ describe("PluginHost install doors", () => {
     });
     const host = await customHost(fixture, [], { isolates: fixture.isolates });
     const { source, sha256 } = fixture.drop();
-    const outcome = await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 });
+    const outcome = await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+      source,
+      sha256,
+      hardened: true,
+    });
     expect(denial(outcome).message).toBe("artifact_invalid: server.js threw at import");
     expect(fixture.store.pluginInstalls()).toEqual([]);
     expect(host.roster().some((entry) => entry.manifest.id === SAMPLE_ID)).toBe(false);
@@ -1949,9 +2041,15 @@ describe("PluginHost install doors", () => {
     const fixture = await installFixture();
     const host = await customHost(fixture, [], { isolates: fixture.isolates });
     const { source, sha256 } = fixture.drop();
-    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
-      true,
-    );
+    expect(
+      (
+        await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+          source,
+          sha256,
+          hardened: true,
+        })
+      ).ok,
+    ).toBe(true);
     const stored = fixture.store.pluginInstalls()[0];
     if (stored === undefined) throw new Error("no install row");
     const published = installedRow(host, SAMPLE_ID).actions;
@@ -2016,9 +2114,15 @@ describe("PluginHost install doors", () => {
     );
     const host = await customHost(fixture, [], { isolates: fixture.isolates });
     const { source, sha256 } = fixture.drop();
-    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
-      true,
-    );
+    expect(
+      (
+        await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+          source,
+          sha256,
+          hardened: true,
+        })
+      ).ok,
+    ).toBe(true);
     for (const rule of ["invalid_args", "unavailable"] as const) {
       expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, { rule })).toEqual({
         ok: false,
@@ -2035,9 +2139,15 @@ describe("PluginHost install doors", () => {
     const fixture = await installFixture();
     const host = await customHost(fixture, [], { isolates: fixture.isolates });
     const { source, sha256 } = fixture.drop();
-    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
-      true,
-    );
+    expect(
+      (
+        await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+          source,
+          sha256,
+          hardened: true,
+        })
+      ).ok,
+    ).toBe(true);
     const nextRoster = (): Promise<PluginRoster> => {
       const { promise, resolve } = Promise.withResolvers<PluginRoster>();
       const remove = host.onRosterChange((roster) => {

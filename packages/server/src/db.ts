@@ -5,7 +5,7 @@ import { migrateToCanonLexicon, migrateToElementRefs } from "./migrate-lexicon.t
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -501,6 +501,11 @@ INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '18');
 ALTER TABLE machines ADD COLUMN owner_host_id TEXT;
 ALTER TABLE machines ADD COLUMN draining INTEGER NOT NULL DEFAULT 0;
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '20');
+`,
+  21: `
+ALTER TABLE plugin_installs ADD COLUMN hardened INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE plugin_installs ADD COLUMN built_against TEXT;
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '21');
 `,
 };
 
