@@ -48,9 +48,42 @@ A plugin is a workspace package under `packages/plugins/<name>`, published as
 }
 ```
 
-A plugin is registered in exactly two places — `packages/server/src/assembly.ts` and
-`packages/web/src/assembly.ts`. There is no discovery, no filesystem scan, no load order:
-assembly is data, and an unregistered package is not a plugin.
+In-tree registration is maintainer work, not just two imports. For a new package with both
+server and web registrations, the wiring changes **five existing files plus a workspace
+install**, in addition to the package's own files:
+
+1. Create `packages/plugins/<name>/package.json` with the exports above and its permitted
+   dependencies. Root `package.json` already includes `packages/plugins/*` in `workspaces`;
+   do not add a per-plugin workspace row.
+2. Create `packages/plugins/<name>/tsconfig.json`, extending `../../../tsconfig.base.json`,
+   with `include` covering its source and tests. For a browser half, include the DOM library,
+   JSX setting and CSS declaration described below. There are no TypeScript project
+   `references` to add to `packages/server/tsconfig.json` or `packages/web/tsconfig.json`:
+   their imports reach the plugin through its package exports.
+3. Add `"@manifold-plugin/<name>": "workspace:*"` to `packages/server/package.json` and
+   to `packages/web/package.json` if the browser imports it.
+4. Run **`bun install` at the repository root before adding the host imports**, and commit
+   the resulting `bun.lock`. The workspace glob alone does not link the package into either
+   host's dependencies. A running `bun --watch` server can crash on the new import until the
+   dependency rows have been installed; restart it after installation if necessary.
+5. Register the manifest and any actions, handlers or element payload schemas in
+   `packages/server/src/assembly.ts` (`SERVER_PLUGIN_DEFS`). Even a browser-only plugin needs
+   this row: the server publishes its existence and contributions.
+6. Register the browser half in `packages/web/src/assembly.ts` (`WEB_PLUGIN_DEFS`) if it
+   exports one; a headless plugin needs no browser registration or browser dependency.
+
+These are explicit runtime registrations: no filesystem scan loads an in-tree plugin, and
+an unregistered workspace package is not on the roster. The shipped roster fixture in
+`packages/server/test/helpers.ts` (`SHIPPED_ROSTER`) and the namespace set
+`SHIPPED_PLUGIN_IDS` in `packages/server/src/assembly.ts` are derived from `SERVER_PLUGIN_DEFS`;
+neither needs a second hand-kept id list.
+
+Run `bun run check`: root `package.json` delegates plugin typechecks to
+`scripts/check-plugins.ts`, which discovers every `packages/plugins/*/tsconfig.json`,
+including packages not imported by either host. No per-plugin edit to that command is needed.
+The parallel full gate currently has a separate package list in `scripts/gate.ts`; add the
+new package there too. Contribution-specific registry obligations (terms, CSS families and
+device-local keys) are listed in §8, not additional runtime registration files.
 
 Your dependency budget is `@manifold/protocol`, `@manifold/scene`, `@manifold/sdk`, and
 `@manifold/plugin`. Importing anything else from the tree — server internals, web internals,
