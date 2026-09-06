@@ -3,16 +3,19 @@
 **Read this if you are an agent.** This file plus two live endpoints are the complete
 onboarding surface; you should not need to read manifold's source to author a plugin.
 
-**Two authoring targets, and the manifest decides.** The first is a package inside this
-repository — `packages/plugins/<name>`, registered in the two assembly files (§1) by a
-maintainer and rebuilt with the tree; it is what §1–§8 describe, and it is handed the engine's
-real objects. The second is an ISOLATED plugin (§9, ADR 0016): authored anywhere against
-`@manifold/plugin-kit`, packed into one artifact, installed at `engine.plugins.install` and run as
-a stranger's code in its own process and its own `Worker`, against a narrower, documented
-interface. A manifest with `entry` is the second kind. Two places below point at the engine's
-own source for a shape — the registration shape in §6 and the web registration channels in §7 —
-and they are the named exceptions to the promise above, flagged as maintainer-only where they
-occur; neither applies to an isolated plugin.
+**Two authoring channels, one execution mode, and the installer decides the runner.** The first
+channel is a package inside this repository — `packages/plugins/<name>`, registered in the two
+assembly files (§1) by a maintainer and rebuilt with the tree; it is what §1–§8 describe. The
+second is a plugin authored anywhere, packed into one bundle by `@manifold/plugin-kit` and
+installed at `engine.plugins.install` (§10); a manifest with `entry` is the second kind. Both run
+IN-REALM by default — the web half in the page with React and the real `HostServices`, the server
+half in the hub with the full `ActionCtx` (ADR 0025) — so §1–§8 are the contract for an installed
+plugin too. The exception is a row its installer chose to HARDEN (`hardened: true` at the door,
+ADR 0016): it runs as a stranger's code in its own process and its own `Worker`, against the
+narrower interface §9 documents. Two places below point at the engine's own source for a shape —
+the registration shape in §6 and the web registration channels in §7 — and they are the named
+exceptions to the promise above, flagged as maintainer-only where they occur; neither applies to
+a hardened plugin.
 
 ```sh
 curl -H "authorization: Bearer $TOKEN" http://localhost:7777/api/plugins    # the live roster: every plugin, its manifest, whether it is enabled, its actions
@@ -432,8 +435,9 @@ turning a plugin off does not make its name available. Choose an unclaimed id fo
 [`compositionsWebPlugin`](../packages/plugins/compositions/src/web.tsx) registers
 `{ id: "core.compositions", renderers: { composition: CompositionView } }`.
 For your own plugin, substitute your plugin id, your declared discipline id and your component,
-and register both halves through the assembly files (§1). This is the in-realm authoring channel;
-the isolated web kit currently serves panels only (§9), not container renderers.
+and register both halves through the assembly files (§1). This is the in-tree channel; an
+installed in-realm bundle ships the same `WebPluginDef` (§10), while a hardened row's web kit
+serves panels only (§9), not container renderers.
 
 Your component receives
 [`ContainerRendererProps`](../packages/plugin/src/projection.ts), imported from
@@ -754,7 +758,7 @@ you can read but not forge. If you have more than 64 KiB of a thing, it is a doc
 have a plane (§5).
 
 **One contract, every plugin.** ADR 0016 §4 (ratified, R3) made `PluginStorage` promise-returning
-for every plugin, first-party included, because an isolated plugin's storage calls cross a process
+for every plugin, first-party included, because a hardened plugin's storage calls cross a process
 boundary and two storage contracts would be two doors onto one concept (invariant 14). In-realm the
 handle is synchronous inside — the SQLite call runs before the promise comes back, so `await` costs
 a microtask and nothing else — and every refusal (a reserved or malformed key, an oversize value) is
@@ -1283,7 +1287,7 @@ array together; no new client or socket is involved.
 A terminal is channel traffic — its birth is a round trip to a machine and its bytes are a
 stream — and `host.client` carries the whole of it, so a plugin that opens, drives or watches a
 terminal does it through the handle it was given and never by building a `SessionClient` from
-`host.token` (issue #196; ADR 0016 §3 withdraws the token from an isolated plugin, and what is
+`host.token` (issue #196; ADR 0016 §3 withdraws the token from a hardened plugin, and what is
 on the handle is what its RPC will carry):
 
 ```ts
@@ -1706,17 +1710,18 @@ choosing an id learns which two are taken without reading this file.
 
 Everything above is the in-tree channel: a package in this repository, registered by a maintainer.
 A plugin that is NOT compiled into the build is INSTALLED instead (ADR 0016 §8 stage 2), from a
-bundle — one JSON file, `<id>.manifold-plugin.json`, whose shape and authoring kit §Isolated
-target describes. Its roster row is `source: "plugin"` like any assembled row, and carries one
-block no first-party row has: `install`, what the installer consented to.
+bundle — one JSON file, `<id>.manifold-plugin.json`, packed by the kit §10 walks through (its
+shape is `docs/CONTRACTS.md` §Hardened plugins). Its roster row is `source: "plugin"` like any
+assembled row, and carries one block no first-party row has: `install`, what the installer
+consented to — including which runner (`install.hardened`).
 
 Two doors on the engine's own row, and both are **root only** (`caps: ["*"]`): `plugins:manage`
 lets a principal decide which of the shipped plugins are on; installing admits code nobody in this
 build wrote, and a manager token that could do that would be `*` by another name.
 
 ```
-engine.plugins.install   { source, sha256, grant?, replace? }  → { id, version, grantedCaps }
-engine.plugins.uninstall { id, purge? }                        → {}
+engine.plugins.install   { source, sha256, grant?, replace?, hardened? }  → { id, version, grantedCaps }
+engine.plugins.uninstall { id, purge? }                                   → {}
 ```
 
 - **`source`** is an `https://` URL (fetched with a 30 s bound, at most
@@ -1738,6 +1743,12 @@ engine.plugins.uninstall { id, purge? }                        → {}
   with `<cap> not granted to plugin <id>`, whoever asked.
 - **`replace: true`** upgrades an id already installed at another hash; like `uninstall`, it needs
   the row switched OFF first (`still_enabled`).
+- **`hardened: true`** runs the row on ADR 0016's runner — its own Bun process and its own
+  `Worker`, against §9's narrower interface — instead of in-realm. Absent or false is in-realm.
+  The installer chooses it, never the manifest; the row publishes it as `install.hardened` and
+  the manager's Installed band says **In-realm** or **Hardened** in words. A hardened row needs
+  a bundle packed for it (§9 Packing): the selector does not turn a React web half into a worker
+  program.
 
 Refusals answer `{ refused: "<class>: detail" }` with a class from `PLUGIN_INSTALL_REFUSALS`
 (`artifact_unreadable`, `artifact_invalid`, `hash_mismatch`, `already_installed`,
@@ -2011,26 +2022,40 @@ are the checks that will fail _your_ plugin:
 
 ## 9. Writing a hardened (out-of-tree) plugin
 
-Everything above describes the IN-REALM target: a plugin handed the engine's real objects —
-React, `@manifold/plugin`, `HostServices`, the full `ActionCtx`. That is the ratified default for
-EVERY row, installed ones included (ADR 0025). An installed in-realm web half exports its default
-`WebPluginDef`; its server half exports its default server definition with actions and handlers.
-The hub imports the server half with the full `ActionCtx`. Every open browser fetches and imports
-the web half when the roster announces it, with no reload; disable drops its definition and
-re-enable loads it afresh. Layout and stored data survive disable.
+This section is for one kind of row only: one its installer chose to HARDEN. Everything else in
+this file — §1–§8 for what a plugin is, §10 for authoring and installing one on your instance —
+describes the IN-REALM target, the ratified default for every row (ADR 0025). Read this section
+when the code you are writing will be installed with `hardened: true`, or when you are deciding
+whether to ask an installer for that.
 
-This section describes the optional HARDENED target: an installer passes `hardened: true` to
-`engine.plugins.install`, choosing a separate Bun process and browser Worker with the narrower
-interface below. Absent or false means in-realm. The manifest does not choose the runner:
-`entry` only names the bundle's halves (`{ "server": true, "web": "web.js" }`). Both targets keep
-the same hash pin, install door, capability declaration and refusal ladder. The Installed band
-shows **In-realm** or **Hardened** on each row. React-over-frames for hardened rows is #259;
-unpacked authoring is #257 and its guide is #260.
+**What the runner is.** `engine.plugins.install { hardened: true }` (§7) runs the row on ADR
+0016's runner instead of in the page and the hub: its server half in its own Bun process,
+spawned from the bundle's `server.js` and spoken to over ipc frames; its web half in its own
+dedicated `Worker`, painting through `render` frames of a closed vocabulary. Both boundaries are
+message boundaries, so both frame sets are `@manifold/protocol` schemas published under
+`isolateContract` at `GET /api/protocol` (`docs/CONTRACTS.md` §Hardened plugins). Absent or
+false at the door is in-realm. The manifest never chooses: `entry` only names the halves the
+bundle runs (`{ "server": true, "web": "web.js" }`), and the same hash pin, install door,
+capability declaration and refusal ladder apply either way. The roster says which runner a row
+got (`install.hardened`); the plugin manager's Installed band says it in words, **In-realm** or
+**Hardened**.
+
+**When to choose it.** An installer hardens a row they do not trust to hold the process: code
+from a source they have not read, on an instance where a server half that loops or corrupts
+memory must not take the hub down (ADR 0025 §6 names that as the in-realm cost). The price is
+the interface below — no React, no `@manifold/plugin`, no token, panels as the only web
+contribution — and a bundle built for it: hardening does not turn a React web half into a
+worker program, so a hardened row is a hardened row from the first line of code. If the
+installer is you, on your own instance, reading your own agent's output, §10 is the shorter
+road; `hardened: true` stays available when a row earns it, and `uninstall` is the other
+remedy. React delivered over the same frames, so one web half runs either way, is owed (#259);
+until it lands, the `ui.*` builders below are the hardened vocabulary.
 
 The kit is `@manifold/plugin-kit` (`packages/plugin-kit`; the reference plugin it ships is
 `packages/plugin-kit/test/fixtures/sample/`, quoted below). It depends on `@manifold/protocol` and
-zod and on nothing else, which is exactly what your plugin may depend on: an isolated plugin never
-imports `@manifold/plugin`, `@manifold/sdk` or `@manifold/scene`.
+zod and on nothing else, which is exactly what a hardened plugin may depend on: it never imports
+React, `@manifold/plugin`, `@manifold/sdk` or `@manifold/scene`, and `pack --self-contained`
+inlines everything it does import (§Packing).
 
 ### The server half: `server.ts`
 
@@ -2168,7 +2193,13 @@ Tones are meanings — `neutral`, `accent`, `muted`, `danger`, `success` — nev
 refused past 32 levels or 2000 nodes, and a node with a key the kind does not have (`style`,
 `className`, `onClick`) is refused rather than ignored; the runtime parses every tree before it
 posts one, so a bad tree becomes a `fault` naming the panel and the engine paints the panel as
-`empty` with tone `danger`. There is no plugin CSS. Ink has one owner (S13).
+`empty` with tone `danger`.
+
+**The stylesheet rule (S13).** A hardened plugin ships no CSS and paints no ink of its own: there
+is no `styles.css` member in its bundle, no `style` or `className` key in its vocabulary, and the
+engine's renderer owns every pixel the tree becomes — tones are the whole palette. Ink has one
+owner, and for a hardened row that owner is never the plugin. (An in-realm plugin's skin is §1
+Your skin ships with you; admitting a bundled stylesheet under the same rule is #258.)
 
 ### Packing
 
@@ -2177,32 +2208,30 @@ bun run --cwd packages/plugin-kit pack <plugin-dir> --out example.counter.manifo
 ```
 
 `pack --self-contained` reads `<plugin-dir>/manifest.json`, bundles `server.ts` (target `bun`)
-and `web.ts` (target `browser`) with the hardened kit runtimes inlined. Without that option,
-`pack` builds an in-realm bundle: React, React DOM, the JSX runtimes, all three `@manifold/plugin`
-entries, `@manifold/protocol`, `@manifold/sdk` and `@manifold/scene` are shared through
-`globalThis[Symbol.for("manifold.shared")]`. A build-time rewrite removes bare shared imports;
-the shell and hub supply their own module identities. No import map or new runtime dependency is
-needed. The bundle records React/floor versions in `builtAgainst`, copied to `install.builtAgainst`
-on the roster; the manager's incompatibility presentation is #238.
-
-For the React example, pack `packages/plugin-kit/test/fixtures/in-realm` without
-`--self-contained`, then call `engine.plugins.install { source, sha256, hardened: false }`.
-For the hardened sample below, pack with `--self-contained` and install with `hardened: true`.
-Packing cannot turn a React definition into a hardened program; the installer chooses which code
-and runner they consent to. Both outputs use `PluginBundleSchema`: `format: 1`, manifest with
-`entry`, optional `builtAgainst`, and base64 members.
-The printed `sha256` is over the file's exact bytes and is the pin `engine.plugins.install` demands; the door itself — where a
-source may come from, the default grant, the refusal classes, where the bundle lives afterwards —
-is §7 Installing a plugin, and the artifact's shape is `docs/CONTRACTS.md` §Hardened plugins.
+and `web.ts` (target `browser`) with the kit's guest runtimes, the protocol and zod INLINED, and
+writes one JSON document (`PluginBundleSchema`: `format: 1`, the manifest with its `entry`, the
+members as base64, no `builtAgainst`). The artifact is self-contained because the runner resolves
+nothing: the hub's process runner is one `Bun.spawn` of the bundle's `server.js`, the page's is one
+`new Worker("/api/plugins/<id>/web.js")`, and neither has the shared-module registry an in-realm
+bundle imports through. That is why the flag is required for a hardened row and why it is the
+only difference at pack time: `pack` without it builds the in-realm bundle §10 describes, and
+installing THAT with `hardened: true` is refused at the door — `artifact_invalid: isolate exited
+before load (exit code 1)`, the child having died on `Missing shared module: @manifold/plugin`
+(the hub log's `isolate_output` lines carry the sentence) — and rolled back. The printed
+`sha256` is over the file's exact bytes and is the pin `engine.plugins.install` demands; the
+door itself — where a source may come from, the default grant, the refusal classes, where the
+bundle lives afterwards — is §7 Installing a plugin, and the artifact's shape is
+`docs/CONTRACTS.md` §Hardened plugins.
 
 ### Developing against a hub
 
 Packing is the artifact; the loop is `dev` (issue #319), and it exists because the only way to see
-an isolated plugin change is on a running hub — the isolate respawned, the web half re-served
+a hardened plugin change is on a running hub — the child respawned, the web half re-served
 `no-store`, a browser reload. `dev` walks a directory for every `manifest.json` (a part inside its
 parent's directory, ADR 0023; `node_modules` and `dist` are never entered), packs each into a
 temporary directory, installs parents before parts, then watches the directory and repeats on
-change, debounced, installing only the bundles whose sha moved. One JSON line per cycle.
+change, debounced, installing only the bundles whose sha moved. One JSON line per cycle. The same
+loop without `--hardened` is the in-realm author's loop, walked through in §10.
 
 ```sh
 # from a manifold checkout, pointing at your plugins directory
@@ -2230,7 +2259,8 @@ bun run --cwd packages/plugin-kit install:bundle <bundle | https://…> --hub <u
 
 `dev --hardened` packs self-contained code and installs it hardened. `install:bundle --hardened`
 and `verify --hardened` select that same installer choice for already-packed hardened bundles.
-Omit the flag for in-realm definitions; no manifest field chooses a runner.
+Omit the flag for in-realm definitions (§10); no manifest field chooses a runner, and `install`
+treats a runner change at the same sha as a `replaced`, because the row's consent changed.
 
 **Two delivery strategies**, because the door reads a path or an https URL and nothing else
 (§7): `--deliver path` (the default for a file) hands the hub the bundle's absolute path, which a
@@ -2314,9 +2344,11 @@ preview host, and its URL; that `plugins/MANIFOLD_REV` and the `uses:` ref move 
 release installs itself on the preview and never on production; and what to tell the operator to
 look at — the preview's plugin manager row for the id, and the panel or door the change touched.
 
-### What an isolated plugin does NOT get (ADR 0016 §3)
+### What a hardened plugin does NOT get (ADR 0016 §3)
 
-Say it out loud rather than discover it:
+Say it out loud rather than discover it. None of this applies to an in-realm row, installed or
+not — an in-realm plugin gets everything §1–§8 describe (ADR 0025 §1); this is the price of the
+runner, paid only by a row whose installer chose it:
 
 - **No React, and no `@manifold/plugin`.** No `usePolledResource`, no `@manifold/plugin/ui`
   primitives, no tile geometry, no projection registry, no `HostServices` object. The web half
@@ -2324,22 +2356,345 @@ Say it out loud rather than discover it:
 - **No token.** `HostServices.token` is a real bearer handed to trusted in-realm code; a worker
   never holds it. It calls the door through the host, which attaches the viewer's authority.
 - **No Yjs.** `ElementTx.text()` hands back a live `Y.Text`, which cannot cross a boundary, so
-  **an isolated plugin cannot contribute a collaborative-text element renderer** — nor any element
+  **a hardened plugin cannot contribute a collaborative-text element renderer** — nor any element
   renderer, section, tool, route or overlay in stage 1: `panels` are the one web contribution kind
   a worker serves. This is ADR 0016's T3 stated plainly: element renderers are a two-class
-  contribution, and after this wave WHICH interfaces a stranger's agent can author against depends
-  on how the plugin is distributed. `core.notes` is the worked example of what stays first-party.
+  contribution, and WHICH interfaces a stranger's agent can author against depends on whether
+  the installer hardened the row. `core.notes` is the worked example of what stays in-realm.
 - **No engine object.** `ctx.store`, `ctx.rooms`, `ctx.broker`, `ctx.identity`, `ctx.dials` and
   the storage ledger verbs (`dataVersion`, `appliedMigrations`) are not served in stage 1. They are
   absent from `GuestCtx`'s type, and reaching one at runtime anyway raises
   `IsolateSliceUnavailable` — which the runtime answers as `refused`, a named rung at the door.
 - **No other plugin's anything.** Storage, event kinds, roster rows: unreachable by construction
   rather than by contract.
+- **No CSS.** The stylesheet rule above: no `styles.css`, no `className`, no `style`.
 
-What you DO get is the same door: an installed plugin's actions sit on the roster beside
-first-party ones, are traced at every dispatch, and answer the same ladder — plus the runner's own
-states, which are roster data (`lifecycle: "isolate_starting" | "isolate_crashed"`) and a named
-refusal (`unavailable`) when the isolate is gone or did not answer in `ISOLATE_DISPATCH_DEADLINE_MS`.
+What you DO get is the same door: a hardened plugin's actions sit on the roster beside first-party
+ones, are traced at every dispatch, and answer the same ladder — plus the runner's own states,
+which are roster data (`lifecycle: "isolate_starting" | "isolate_crashed"`) and a named refusal
+(`unavailable`) when the child is gone or did not answer in `ISOLATE_DISPATCH_DEADLINE_MS`. And
+what a hardened row buys the instance: a server half that throws, loops or corrupts its own
+process takes down one child, respawned under `ISOLATE_CRASH_BUDGET`, never the hub.
+
+## 10. Authoring a plugin on your instance
+
+This is the road most plugins take (ADR 0025): you — or the agent you asked — write a plugin
+against the SAME interfaces §1–§8 describe, pack it with the kit, and install it on your own hub
+with the door. It runs in-realm: its web half in every joined browser with React, all three
+`@manifold/plugin` entries and the real `HostServices`; its server half in the hub with the full
+`ActionCtx`. Nothing is dumbed down and nothing is reloaded — the roster announces the row and
+every open browser imports the module. Every command below is the kit's real CLI, run once
+against a throwaway hub while this section was written; the roster and `GET /api/protocol` stay
+authoritative over the prose.
+
+**Shipped today, and owed.** What is here is the in-realm loader (#256): a packed bundle, the
+install door, live loading in the browser, `dev` as the save-and-replace loop. Unpacked plugins —
+a directory under `<data>/authored/<id>/` the hub itself watches and rebuilds, the root-only
+developer-mode switch (`engine.plugins.setDeveloperMode`, `developer_mode_off` as a named
+refusal) and the authoring door (`engine.plugins.author { id, files }`) that lets an agent write
+a plugin into your instance in one call — are #257 and are NOT present; when they land they add
+a second way to get the same files onto the same roster, and this section grows a subsection.
+Until then the loop is the kit's, from a checkout of this repository.
+
+### The directory
+
+A plugin is a directory holding a manifest and the two halves the manifest's `entry` names. The
+kit reads exactly these file names:
+
+```
+example.hello/
+  manifest.json     # §2, plus "entry": { "server": true, "web": "web.js" }
+  server.ts         # default-exports { actions, handlers, lifecycle? }
+  web.ts            # default-exports the WebPluginDef (§7 The web registration channels)
+  package.json      # only so that `zod` resolves from here; nothing else is needed
+```
+
+`entry` says which halves the bundle carries — `server: true` for `server.ts`, `web: "web.js"` for
+`web.ts` — and is the ONLY thing that distinguishes this manifest from an in-tree one (§2 applies
+in full: id grammar, capability ceiling, `contributes`, the assembly refusals). It does not choose
+a runner; the installer does (§7, §9).
+
+The server half default-exports what a `packages/plugins/*` package's `server.ts` exports (§3, §4):
+actions from `defineAction`, handlers written against `ActionCtx`, optional lifecycle hooks. The
+manifest is not repeated in the module — the hub attaches the bundle's.
+
+```ts
+// server.ts
+import { defineAction, type ActionCtx } from "@manifold/plugin";
+import { z } from "zod";
+
+const greet = defineAction({
+  name: "greet",
+  title: "Greet",
+  caps: ["containers:read"],
+  input: z.strictObject({ name: z.string().min(1).max(40).default("world") }),
+  result: z.strictObject({ greeting: z.string(), calls: z.number().int() }),
+});
+
+export default {
+  actions: [greet],
+  handlers: {
+    async greet(ctx: ActionCtx, args: { name: string }) {
+      const calls = Number((await ctx.storage.get("calls")) ?? "0") + 1;
+      await ctx.storage.set("calls", String(calls));
+      return { greeting: `hello, ${args.name}`, calls };
+    },
+  },
+};
+```
+
+The web half default-exports the registration object §7 The web registration channels describes —
+`id` plus the channel records (`panels`, `sections`, `elements`, `routes`, `renderers`, the two
+overlay kinds, `terminals`) — with ordinary React components in them. `pack` reads `web.ts`, so
+write `createElement` or keep JSX in a file `web.ts` imports.
+
+```ts
+// web.ts
+import { createElement, useState } from "react";
+import { Stack } from "@manifold/plugin/ui";
+import { panelRefId, type PanelProps } from "@manifold/plugin";
+import { z } from "zod";
+
+const GreetResult = z.object({ greeting: z.string() });
+
+function Hello({ host }: PanelProps) {
+  const [greeting, setGreeting] = useState("Press the button.");
+  return createElement(
+    Stack,
+    { gap: "0.5rem" },
+    createElement("output", { id: panelRefId("example.hello", "hello") }, greeting),
+    createElement(
+      "button",
+      {
+        type: "button",
+        "data-action": "example.hello.greet",
+        onClick: async () => {
+          const outcome = await host.client.action("example.hello.greet", {
+            name: host.principal.id,
+          });
+          setGreeting(
+            outcome.ok ? GreetResult.parse(outcome.result).greeting : outcome.denial.message,
+          );
+        },
+      },
+      "Greet me",
+    ),
+  );
+}
+
+export default { id: "example.hello", panels: { hello: Hello } };
+```
+
+`packages/plugin-kit/test/fixtures/in-realm/` is the same thing at its smallest — a web-only
+counter, `entry: { "web": "web.js" }`, no server half — and it is what the kit's own tests pack.
+
+**Two things the directory does not carry yet.** A `styles.css` import in `web.ts` is not packed:
+the bundle has one JavaScript member per half, and admitting a plugin stylesheet at load under the
+S13 ownership rule (every selector's leftmost compound is `.plugin-<id with "." as "_">`) is #258.
+Until it lands, style with `@manifold/plugin/ui` (§7b) and the engine's classes. And `pack` does
+not typecheck: run `tsc` in your own directory if you want types, against the floor packages of
+the checkout you pack from.
+
+### The shared externals
+
+Your bundle does not carry React or the floor. These modules, and only these, are SHARED with the
+shell and the hub, which publish their own module identities under
+`globalThis[Symbol.for("manifold.shared")]` (`packages/web/src/shared-registry.ts`,
+`packages/server/src/shared-modules.ts`):
+
+```
+react            react-dom            react/jsx-runtime         react/jsx-dev-runtime
+@manifold/plugin @manifold/plugin/hooks @manifold/plugin/ui
+@manifold/protocol   @manifold/sdk    @manifold/scene
+```
+
+`pack` rewrites a bare import of any of them into a read from that registry at build time — no
+import map, no runtime dependency — so a hook you call is the shell's React, a `Stack` you render is
+the shell's `Stack`, and a `PluginManifestSchema` you parse with is the hub's. Everything else you
+import (`zod` above) is inlined into your member, which is why your directory needs it installed
+(`bun add zod` — a `pack` from a directory without it stops at `Could not resolve: "zod"`). The
+floor resolves from your directory first and from the checkout the kit runs in otherwise. The
+bundle records the version of each shared package it was built against (`builtAgainst`, copied to
+`install.builtAgainst` on your row); a hub upgrade can move those versions under you, which is
+the coupling ADR 0025 (b) accepts — the manager's presentation of it is #238. Outside the shell
+and the hub the registry does not exist, and the module throws `Missing shared module: <name>`
+on import: that is what a hardened runner sees when handed an in-realm bundle (§9 Packing).
+
+### Pack
+
+```sh
+bun run --cwd packages/plugin-kit pack <plugin-dir> --out <id>.manifold-plugin.json
+# {"file":"…/example.hello.manifold-plugin.json","sha256":"4757261c…","bytes":1399881}
+```
+
+One JSON document (`PluginBundleSchema`): `format: 1`, your manifest, `builtAgainst`, and the
+built halves as base64 members. The printed `sha256` is over the file's exact bytes and is the
+pin the door demands; the bytes depend on the build inputs, so pack from the same working
+directory when you mean to reproduce a pin. `--self-contained` is §9's flag and not yours.
+
+### Install with the door
+
+The door is `engine.plugins.install` (§7). The kit knocks on it for you, reading the roster first:
+
+```sh
+bun run --cwd packages/plugin-kit install:bundle <id>.manifold-plugin.json --hub http://127.0.0.1:7777 \
+  --owner-key-file <data>/owner.key            # [--sha256 <hex>] [--deliver path | docker:<container>]
+# {"id":"example.hello","sha256":"4757261c…","hub":"http://127.0.0.1:7777","outcome":"installed"}
+```
+
+`install:bundle` calls `engine.plugins.install { source, sha256, hardened: false }` — in-realm is
+the explicit consent it writes, and the flag that changes it is `--hardened` (§9). The owner key
+comes from `--owner-key-file`, else `MANIFOLD_OWNER_KEY_FILE`, and is never an argument. The hub
+reads the bundle from the path you give it when it runs on the same machine with
+`MANIFOLD_PLUGIN_DEV_PATHS=1`, or from its drop box `<data>/plugin-uploads/`; `--deliver
+docker:<container>` copies it into a containerised hub's drop box (§9 Developing against a hub has
+the two strategies in full). The second run at the same bytes is `{"outcome":"unchanged"}` and
+asks the hub nothing; different bytes are `replaced` — off, install over with `replace: true`, on.
+
+What a refusal looks like, verbatim from the run behind this section — a handler declaring a cap
+the manifest did not, and a pin that no longer matched the file:
+
+```
+install: engine.plugins.install refused (refused): artifact_invalid: action "example.hello.greet" requires cap "containers:read" outside its manifest capabilities []
+install: …/example.hello.manifold-plugin.json hashes to 4757261c…, not the pinned e60564d1…
+```
+
+The first is the assembly refusing at the door, the bundle rolled back, nothing on the roster
+(§7 lists the classes); the second is the kit refusing before it touches the hub. A server half
+that throws while being imported is the same first shape — `artifact_invalid` naming the error —
+because the hub imports it inside the install and rolls back on failure.
+
+Your row now reads, on `GET /api/plugins`:
+
+```json
+{
+  "manifest": { "id": "example.hello", "…": "…" },
+  "enabled": true,
+  "lifecycle": null,
+  "install": {
+    "sha256": "4757261c…",
+    "source": "/…/example.hello.manifold-plugin.json",
+    "grantedCaps": ["containers:read"],
+    "hardened": false,
+    "builtAgainst": {
+      "react": "19.2.8",
+      "react-dom": "19.2.8",
+      "@manifold/plugin": "0.10.1",
+      "…": "…"
+    }
+  },
+  "actions": [{ "name": "example.hello.greet", "…": "…" }]
+}
+```
+
+and the door is open to whoever the ladder admits:
+
+```
+POST /api/actions/example.hello.greet   {"name":"alex"}
+→ {"ok":true,"result":{"greeting":"hello, alex","calls":1}}
+```
+
+In every joined browser the roster change arrives over the session, the shell fetches
+`/api/plugins/example.hello/web.js` with the bearer in the Authorization header (`200
+text/javascript`, `cache-control: no-store`), imports it from a Blob URL — credentials never
+ride a module URL — checks the default export's `id`, and your panel joins the assembly. No
+reload: the leaf a layout already held for `example.hello.hello` stops being the engine's
+placeholder and becomes your component. The plugin manager lists the row in its Installed band
+with **In-realm** beside it.
+
+### Iterate
+
+```sh
+bun run --cwd packages/plugin-kit dev <plugins-root> --hub http://127.0.0.1:7777 --owner-key-file <data>/owner.key
+# {"cycle":1,"plugins":[{"id":"example.hello","sha256":"4757261c…","outcome":"unchanged"}],"ms":745}
+# {"cycle":2,"plugins":[{"id":"example.hello","sha256":"e60564d1…","outcome":"replaced"}],"ms":868}
+```
+
+`dev` packs every `manifest.json` under the root, installs what moved, then watches and repeats
+on save (§9 Developing against a hub has the walk, the debounce and the family order). Cycle 1
+above found the row already at the same bytes; cycle 2 is one edit to `server.ts` — the hub
+switched the row off, installed over it, switched it on, and the next dispatch answered with the
+new sentence and `"calls":2`: **storage survives a replace** exactly as it survives a disable
+(§4). In the browser the replaced web half is dropped and the new one imported, so the panel
+REMOUNTS and its component state is gone — save the state you care about through `ctx.storage`
+or the document, not `useState`. Hot module replacement that keeps component state is not
+shipped and not promised.
+
+### Disable and enable
+
+The kit has no verb for this because the engine's own door is one line, and the manager's switch
+is the same door. Off, then on:
+
+```
+POST /api/actions/engine.plugins.setEnabled   {"id":"example.hello","enabled":false}   → {"ok":true,"result":{}}
+POST /api/actions/example.hello.greet         {}   → {"ok":false,"denial":{"rule":"plugin_disabled","message":"plugin \"example.hello\" is disabled"}}
+POST /api/actions/engine.plugins.setEnabled   {"id":"example.hello","enabled":true}    → {"ok":true,"result":{}}
+POST /api/actions/example.hello.greet         {}   → {"ok":true,"result":{"greeting":"hi there, world","calls":3}}
+```
+
+Disable RETAINS (§4): the row still publishes its doors (they answer `plugin_disabled`), your
+storage keeps its rows (`calls` went 2 → 3 across the round trip), every principal's layout keeps
+the leaf, and each browser drops the loaded definition so the leaf paints the engine's named
+placeholder. Enable imports the module afresh — a new module instance, not the old one woken —
+and the panel is back.
+
+### Uninstall
+
+```
+POST engine.plugins.uninstall {"id":"example.hello"}                → refused: still_enabled: disable "example.hello" before uninstalling it
+POST engine.plugins.setEnabled {"id":"example.hello","enabled":false}
+POST engine.plugins.uninstall {"id":"example.hello"}                → refused: storage_retained: 1 keys; purge first or pass purge: true
+POST engine.plugins.uninstall {"id":"example.hello","purge":true}   → {"ok":true,"result":{}}
+```
+
+Three answers, in the order you will meet them: removing running code is refused; removing a row
+whose storage still holds anything is refused; `purge: true` runs the purge verb first — the same
+`plugin_purged` event `engine.plugins.purge` emits — and the uninstall second. The row, its bundle
+under `<data>/plugins/<id>/`, and its enablement switch are gone; a fresh install of the same id
+is a fresh row (§7).
+
+### Verify, deliver, promote
+
+`verify` (§9 Verifying) spawns a real engine from this checkout, installs your bundle, dispatches
+every door it publishes and uninstalls it — without `--hardened` it exercises the in-realm path:
+
+```sh
+bun run --cwd packages/plugin-kit verify <id>.manifold-plugin.json
+# {"bundle":"example.hello.manifold-plugin.json","id":"example.hello","sha256":"e60564d1…","doors":{"example.hello.greet":"ok"}}
+```
+
+"Promoting" a plugin you wrote on your instance — to another hub of yours, to the integrated
+preview, to a release somebody else installs — is `pack` on the same files and the door on the
+other hub; §9 Verifying and §9 Delivering describe the author repository, the CI workflow and the
+release path, and every word of them holds for an in-realm bundle with `--hardened` left off.
+The code does not change when it moves. What may change is the installer's choice: a hub whose
+operator does not trust the bundle to hold their process installs it with `hardened: true`, and
+then §9 is the contract the code has to meet.
+
+### The failure model
+
+A mod degrades its own row, and can take the hub down (ADR 0025 §6). Know which failure is which:
+
+- **A panel that throws** while rendering is caught at the outlet by the shell's error boundary
+  and painted as the engine's placeholder naming your plugin; the rest of the workspace is fine.
+- **A web half that fails to import** — a syntax error, a `Missing shared module`, a default
+  export whose `id` is not the row's — degrades the row on THAT browser only: the console reads
+  `evt=plugin_module_import_failed <id>`, the leaf keeps the placeholder, and the server knows
+  nothing about it (a browser's failure is not something the server knows).
+- **A server half that throws while being imported** is refused at the install door as
+  `artifact_invalid` and rolled back (above). At boot, a stored bundle that no longer hashes to
+  its pin is refused by name on its row (`install.refusal: "hash_mismatch"`) and none of it is
+  loaded.
+- **A hook that throws** is `lifecycle: "enable_failed"` / `"disable_failed"` on the roster
+  (§4); the disable always completes.
+- **A handler that throws** fails that one dispatch: the trace settles `failed`, the hub logs
+  `http_request_failed`, and the caller gets HTTP 500 `internal server error` — an error, not a
+  denial, because no rung of the ladder fired. The hub stays up.
+- **A server half that loops forever, exhausts memory or corrupts the process takes the hub
+  down**, and this document says so rather than pretending a boundary it does not have. You
+  installed it; the trace ledger (ADR 0018) names every door it opened; the restart re-hashes and
+  re-imports every installed row. The remedies are `engine.plugins.uninstall` and
+  `hardened: true` (§9), the one runner where that sentence does not hold.
 
 ## Further reading
 
