@@ -18,7 +18,7 @@ git -C "$checkout" fetch -q --tags origin
 git -C "$checkout" checkout -q --detach "$1"
 identity "$checkout"
 echo "deploy-dev: version=$MANIFOLD_VERSION build=$MANIFOLD_BUILD channel=$MANIFOLD_CHANNEL"
-(cd "$checkout" && MANIFOLD_DOMAIN="preview.$PREVIEW_DOMAIN" docker compose up -d --build manifold)
+(cd "$checkout" && MANIFOLD_DOMAIN="preview.$PREVIEW_DOMAIN" MANIFOLD_IDENTITY_AUTHORITY="https://$PREVIEW_DOMAIN" docker compose up -d --build manifold)
 echo "deploy-dev: waiting for $public_url/healthz"
 wait_health "$public_url" "$MANIFOLD_BUILD"
 echo "deploy-dev: hub healthy on $MANIFOLD_BUILD"

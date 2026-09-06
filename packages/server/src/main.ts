@@ -228,7 +228,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     runtime,
     events,
   );
-  const http = new HttpApp(config, store, auth, rooms, broker, machines, plugins, logger);
+  const http = new HttpApp(config, store, auth, rooms, broker, machines, plugins, logger, runtime);
 
   const server = Bun.serve<WebSocketData>({
     port: config.port,

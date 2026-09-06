@@ -119,6 +119,8 @@ Everything durable is in the `manifold-data` named volume, mounted at `/data`:
 - `manifold.db` — SQLite store (scenes, principals, hashed tokens, session lifecycle).
 - `owner.key` (mode 600) — the root bootstrap secret, generated on first boot unless
   `MANIFOLD_OWNER_KEY` pins it.
+- `preview-identity.key` (mode 600) — the Ed25519 private key that signs short-lived preview
+  identity assertions. It must remain private to this instance.
 - `agent.token` / `agent.lock` — machine credential and local boot lock.
 - `agent.pid` / `terminal-host.pid` — independent transport and terminal-host process handles.
 - `terminal-host/host.sock` — private NDJSON Unix socket (0600, directory 0700), not a
@@ -143,7 +145,7 @@ Presence, cursor traffic, and terminal bytes are never persisted (by design).
 docker compose exec manifold tar cz -C / data > manifold-backup-$(date +%F).tgz
 ```
 
-The archive contains the owner key — store it like a secret.
+The archive contains the owner key and preview-identity signing key — store it like a secret.
 
 ## Replicate the database (optional)
 
@@ -395,12 +397,16 @@ Environment `development`, inert unless the repository variables `DEV_DEPLOY_HOS
 host or provider: the receiver is `infra/previews/receiver.sh`.
 
 **Previews** are an optional development tier: `preview.<domain>` shows integrated `main`,
-`<N>.<domain>` follows PR #N's head on every push, and non-numeric `<name>.<domain>` serves a live
+`<N>.<domain>` follows PR N's head on every push, and non-numeric `<name>.<domain>` serves a live
 worktree on the preview host with hot reload. `.github/workflows/deploy-preview.yml` deploys
-same-repository PRs and tears them down on close; a fresh preview seeded from development accepts
-the development owner key. `PREVIEW_DOMAIN` names the domain; setup, seeding, live mode and the
-operator-only pre-authenticated URL command are documented in `infra/previews/README.md`.
-A self-hoster may skip this tier entirely.
+same-repository PRs and tears them down on close. With
+`MANIFOLD_PREVIEW_DOMAIN=<domain>` on production, integrated and numbered previews use the
+production browser identity handoff (ADR 0027): public URLs carry no secret, production
+credentials never enter preview code, and production capability restrictions are preserved.
+A fresh preview seeded from development still accepts the development owner key as break-glass.
+`PREVIEW_DOMAIN` names the domain; setup, seeding, live mode and the operator-only
+pre-authenticated fallback command are documented in `infra/previews/README.md`. A self-hoster may
+skip this tier entirely.
 
 **A self-hoster replaces the `deploy-*.yml` files.** They are the operator's deployments,
 gated on repository variables so a fork never runs them (ADR 0022). Yours consume the same

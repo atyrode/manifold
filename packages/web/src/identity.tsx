@@ -1,13 +1,124 @@
 import { IDENTITY_COLORS, PrincipalSchema } from "@manifold/protocol";
 import { instanceOrigin, isForeignInstance } from "@manifold/plugin/hooks";
 import { Cover } from "@manifold/plugin/ui";
-import { useState, type FormEvent, type ReactNode } from "react";
-import { createPrincipal, type StoredIdentity } from "./api.ts";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import {
+  createPrincipal,
+  getPreviewIdentityAuthority,
+  issuePreviewIdentity,
+  startPreviewIdentity,
+  type StoredIdentity,
+} from "./api.ts";
 
 const OWNER_KEY_STORAGE = "manifold.ownerKey";
 const IDENTITY_STORAGE = "manifold.identity";
 const OWNER_KEY_PATTERN = /^[0-9a-f]{64}$/i;
 const OWNER_FRAGMENT_PATTERN = /^#key=([0-9a-f]{64})$/i;
+const PREVIEW_NONCE_STORAGE = "manifold.previewNonce";
+
+function previewHandoffRequest(): { audience: string; nonce: string } | null {
+  if (window.location.pathname !== "/auth/preview") return null;
+  const params = new URLSearchParams(window.location.search);
+  const audience = params.get("audience");
+  const nonce = params.get("nonce");
+  if (audience === null || nonce === null) return null;
+  return { audience, nonce };
+}
+
+function MissingIdentity({ message }: { readonly message: string }) {
+  return (
+    <main className="gate-screen">
+      <Cover className="gate-cover">
+        <section className="gate-card" aria-labelledby="owner-link-title">
+          <p className="eyebrow">manifold</p>
+          <h1 id="owner-link-title">Sign in required</h1>
+          <p>{message}</p>
+        </section>
+      </Cover>
+    </main>
+  );
+}
+
+function PreviewAdmission() {
+  const [message, setMessage] = useState("Checking production identity…");
+  useEffect(() => {
+    let active = true;
+    void getPreviewIdentityAuthority()
+      .then(async (authority) => {
+        if (!active) return;
+        if (authority === null) {
+          setMessage(
+            "This browser has no owner key or identity token. Start manifold and open its full pre-authenticated URL to continue.",
+          );
+          return;
+        }
+        const nonce = await startPreviewIdentity();
+        if (!active) return;
+        sessionStorage.setItem(PREVIEW_NONCE_STORAGE, nonce);
+        const target = new URL("/auth/preview", authority);
+        target.searchParams.set("audience", window.location.origin);
+        target.searchParams.set("nonce", nonce);
+        window.location.assign(target);
+      })
+      .catch((reason: unknown) => {
+        if (active) {
+          setMessage(
+            reason instanceof Error
+              ? reason.message
+              : "Production identity could not be reached. Try again.",
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+  return <MissingIdentity message={message} />;
+}
+
+function PreviewHandoff({
+  identity,
+  request,
+}: {
+  readonly identity: StoredIdentity;
+  readonly request: { audience: string; nonce: string };
+}) {
+  const [message, setMessage] = useState("Authorizing preview…");
+  useEffect(() => {
+    let active = true;
+    void issuePreviewIdentity(identity.token, request.audience, request.nonce)
+      .then((assertion) => {
+        if (!active) return;
+        const form = document.createElement("form");
+        form.method = "POST";
+        form.action = `${request.audience}/auth/preview/callback`;
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = "assertion";
+        input.value = assertion;
+        form.append(input);
+        document.body.append(form);
+        form.submit();
+      })
+      .catch((reason: unknown) => {
+        if (!active) return;
+        const detail =
+          reason instanceof Error
+            ? reason.message
+            : "This production identity cannot open the preview.";
+        if (detail === "expired" || detail === "revoked") {
+          window.localStorage.removeItem(credentialKey(IDENTITY_STORAGE));
+          window.location.reload();
+          return;
+        }
+        setMessage(detail);
+      });
+    return () => {
+      active = false;
+    };
+  }, [identity.token, request.audience, request.nonce]);
+  return <MissingIdentity message={message} />;
+}
 
 /**
  * A CREDENTIAL BELONGS TO ONE INSTANCE. A token is minted by the server that will be asked to
@@ -60,11 +171,37 @@ function loadIdentity(): StoredIdentity | null {
     const decoded: unknown = JSON.parse(serialized);
     if (decoded === null || typeof decoded !== "object") throw new Error("invalid identity");
     const token = Reflect.get(decoded, "token");
+    const expiresAt = Reflect.get(decoded, "expiresAt");
+    const expiresInMs = Reflect.get(decoded, "expiresInMs");
+    const receivedAt = Reflect.get(decoded, "receivedAt");
     const principal = PrincipalSchema.safeParse(Reflect.get(decoded, "principal"));
-    if (typeof token !== "string" || token.length === 0 || !principal.success) {
+    if (
+      typeof token !== "string" ||
+      token.length === 0 ||
+      (expiresAt !== undefined && (typeof expiresAt !== "number" || !Number.isFinite(expiresAt))) ||
+      (expiresInMs !== undefined &&
+        (typeof expiresInMs !== "number" || !Number.isFinite(expiresInMs))) ||
+      (receivedAt !== undefined &&
+        (typeof receivedAt !== "number" || !Number.isFinite(receivedAt))) ||
+      (expiresInMs === undefined) !== (receivedAt === undefined) ||
+      !principal.success
+    ) {
       throw new Error("invalid identity");
     }
-    return { token, principal: principal.data };
+    if (
+      typeof expiresInMs === "number" &&
+      typeof receivedAt === "number" &&
+      Date.now() - receivedAt >= expiresInMs
+    ) {
+      throw new Error("expired identity");
+    }
+    return {
+      token,
+      principal: principal.data,
+      ...(typeof expiresAt === "number" ? { expiresAt } : {}),
+      ...(typeof expiresInMs === "number" ? { expiresInMs } : {}),
+      ...(typeof receivedAt === "number" ? { receivedAt } : {}),
+    };
   } catch {
     window.localStorage.removeItem(credentialKey(IDENTITY_STORAGE));
     return null;
@@ -83,25 +220,25 @@ export function IdentityGate({ children }: IdentityGateProps) {
   const [color, setColor] = useState<(typeof IDENTITY_COLORS)[number]>(IDENTITY_COLORS[3]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const handoff = previewHandoffRequest();
+  useEffect(() => {
+    if (identity?.expiresInMs === undefined || identity.receivedAt === undefined) return;
+    const timer = window.setTimeout(
+      () => {
+        window.localStorage.removeItem(credentialKey(IDENTITY_STORAGE));
+        setIdentity(null);
+      },
+      Math.max(0, identity.expiresInMs - (Date.now() - identity.receivedAt)),
+    );
+    return () => window.clearTimeout(timer);
+  }, [identity]);
 
+  if (identity !== null && handoff !== null) {
+    return <PreviewHandoff identity={identity} request={handoff} />;
+  }
   if (identity !== null) return children(identity);
 
-  if (ownerKey === null) {
-    return (
-      <main className="gate-screen">
-        <Cover className="gate-cover">
-          <section className="gate-card" aria-labelledby="owner-link-title">
-            <p className="eyebrow">manifold</p>
-            <h1 id="owner-link-title">Open the URL printed by the server</h1>
-            <p>
-              This browser has no owner key or identity token. Start manifold and open its full
-              pre-authenticated URL to continue.
-            </p>
-          </section>
-        </Cover>
-      </main>
-    );
-  }
+  if (ownerKey === null) return <PreviewAdmission />;
 
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();

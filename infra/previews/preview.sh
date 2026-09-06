@@ -70,7 +70,7 @@ up() {
     log "creating data volume for PR $number"
     docker volume create "$volume" >/dev/null
     if [[ -n ${PREVIEW_SEED:-} ]]; then
-      if ! docker run --rm -v "$volume:/data" -v "$(realpath "$PREVIEW_SEED"):/seed.tgz:ro" alpine tar xzf /seed.tgz -C /data; then
+      if ! docker run --rm -v "$volume:/data" -v "$(realpath "$PREVIEW_SEED"):/seed.tgz:ro" alpine tar xzf /seed.tgz -C /data --exclude=preview-identity.key; then
         docker volume rm "$volume" >/dev/null
         fail 'seeding failed; removed incomplete data volume'
       fi

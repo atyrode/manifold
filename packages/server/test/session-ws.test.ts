@@ -8,7 +8,7 @@ import {
   type Container,
 } from "@manifold/protocol";
 import { LOCAL_ORIGIN, Y, createSceneDoc, encodeUpdate, writeElement } from "@manifold/scene";
-import { AuthService } from "../src/auth.ts";
+import { AuthService, PREVIEW_IDENTITY_TOKEN_TTL_MS } from "../src/auth.ts";
 import type { EventHub } from "../src/event-hub.ts";
 import { silentLogger } from "../src/log.ts";
 import type { PluginHost } from "../src/plugin-host.ts";
@@ -628,6 +628,41 @@ describe("SessionGateway liveness", () => {
       fixture.gateway.message("tab", JSON.stringify({ type: "pong" }));
       expect(socket.closed).toBeNull();
     }
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("an expiring browser credential fences an already-open session socket", async () => {
+    const fixture = await gatewayFixture();
+    const socket = new FakeSocket();
+    const token = fixture.auth.acceptPreviewIdentity({
+      version: 1,
+      id: "assertion",
+      issuer: "https://manifold.example",
+      audience: "https://preview.manifold.example",
+      issuedAt: fixture.runtime.now(),
+      expiresAt: fixture.runtime.now() + 60_000,
+      nonce: "n".repeat(43),
+      principal: {
+        id: "production-human",
+        kind: "human",
+        name: "production human",
+        color: "#1971c2",
+      },
+      caps: ["containers:read"],
+      containerId: null,
+    }).token;
+    join(fixture.gateway, "preview", socket, fixture.container.id, token);
+
+    const rounds = PREVIEW_IDENTITY_TOKEN_TTL_MS / DIAL_PING_INTERVAL_MS;
+    for (let round = 1; round < rounds; round += 1) {
+      fixture.clock.advance(DIAL_PING_INTERVAL_MS);
+      fixture.gateway.message("preview", JSON.stringify({ type: "pong" }));
+      expect(socket.closed).toBeNull();
+    }
+    fixture.clock.advance(DIAL_PING_INTERVAL_MS);
+    expect(socket.closed).toEqual({ code: 4403, reason: "expired" });
 
     fixture.gateway.shutdown();
     fixture.store.close();

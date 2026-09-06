@@ -87,8 +87,8 @@ jobs:
               issue_number: context.issue.number,
               body: [
                 marker,
-                "It follows every push to this PR. It is seeded from the development instance, so the development owner key opens it.",
-                `On the host, \`infra/previews/preview.sh url ${process.env.N}\` prints the pre-authenticated link only to the operator's local terminal. Do not paste that key-bearing link into this PR or logs.`,
+                "It follows every push to this PR. Open this ordinary URL using your production identity; no preview key or token is needed.",
+                `The browser title names PR ${process.env.N}, and the teal favicon distinguishes it from production and the integrated preview.`,
               ].join("\n\n"),
             });
 

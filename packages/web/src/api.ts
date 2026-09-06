@@ -6,6 +6,10 @@ import {
   AttendanceResponseSchema,
   ContainerSchema,
   TokenGrantSchema,
+  IssuePreviewIdentityRequestSchema,
+  PreviewIdentityAssertionSchema,
+  PreviewIdentityConfigSchema,
+  PreviewIdentityNonceResponseSchema,
   type Container,
   type Attendance,
   type Principal,
@@ -18,6 +22,9 @@ import { ACCESS_CREATE_PRINCIPAL_ACTION, INDEX_READ_CONTAINER_ACTION } from "./a
 export interface StoredIdentity {
   readonly token: string;
   readonly principal: Principal;
+  readonly expiresInMs?: number;
+  readonly receivedAt?: number;
+  readonly expiresAt?: number;
 }
 
 async function readBody(response: Response): Promise<unknown> {
@@ -87,7 +94,38 @@ export async function createPrincipal(
   const grant = TokenGrantSchema.parse(
     await dispatchAction(ownerKey, ACCESS_CREATE_PRINCIPAL_ACTION, request),
   );
-  return { token: grant.token, principal: grant.principal };
+  return {
+    token: grant.token,
+    principal: grant.principal,
+    ...(grant.expiresAt === undefined ? {} : { expiresAt: grant.expiresAt }),
+  };
+}
+
+/** Discovers whether this instance delegates browser admission to a production authority. */
+export async function getPreviewIdentityAuthority(): Promise<string | null> {
+  const body = await requestJson("/api/identity/preview-config", {});
+  return PreviewIdentityConfigSchema.parse(body).authority;
+}
+
+/** Starts one browser-bound preview handoff and returns its short-lived nonce. */
+export async function startPreviewIdentity(): Promise<string> {
+  const body = await requestJson("/api/identity/preview-start", { method: "POST" });
+  return PreviewIdentityNonceResponseSchema.parse(body).nonce;
+}
+
+/** Asks the signed-in production instance for one short-lived, audience-bound assertion. */
+export async function issuePreviewIdentity(
+  token: string,
+  audience: string,
+  nonce: string,
+): Promise<string> {
+  const input = IssuePreviewIdentityRequestSchema.parse({ audience, nonce });
+  const body = await requestJson("/api/identity/preview-assertion", {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(input),
+  });
+  return PreviewIdentityAssertionSchema.parse(body).assertion;
 }
 
 /**
