@@ -147,8 +147,12 @@ export class AuthoredPlugins {
     }
     const current = this.host.unpackedRow(id);
     if (current !== null && current.sha256 === sha256) {
-      const { installedBy: _installedBy, ...unchanged } = current;
-      return unchanged;
+      return {
+        id: current.id,
+        version: current.version,
+        grantedCaps: current.grantedCaps,
+        sha256: current.sha256,
+      };
     }
     const outcome = await this.host.installUnpacked(id, bundle, sha256, current?.installedBy ?? by);
     if ("refused" in outcome) {
