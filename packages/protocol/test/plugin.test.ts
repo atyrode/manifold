@@ -383,6 +383,7 @@ describe("the plugin roster", () => {
       "data_migration_missing",
       "element_type_owned",
       "still_enabled",
+      "developer_mode_off",
     ]);
     for (const refusal of PLUGIN_REFUSAL_REASONS) {
       expect(PluginRosterEntrySchema.safeParse({ ...entry, refusal }).success).toBe(true);

@@ -41,6 +41,13 @@ export const LOG_EVENTS = [
   "plugin_installed",
   "plugin_uninstalled",
 
+  // Server: the unpacked directory (ADR 0025 §4, #257) — files written through the authoring
+  // door, a rebuild that could not become a row (a build error, an assembly refusal), and the
+  // workspace's developer-mode switch moving. Never a file's contents (invariant 6).
+  "plugin_authored",
+  "plugin_authored_build_failed",
+  "developer_mode_changed",
+
   // Server: the isolation runner (ADR 0016 §6) — one child process per installed plugin.
   "isolate_spawned",
   "isolate_exited",

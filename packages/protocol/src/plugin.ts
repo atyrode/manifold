@@ -715,6 +715,10 @@ export type PluginLifecycleState = (typeof PLUGIN_LIFECYCLE_STATES)[number];
  *                             type. A reservation outlives a disable so stored nodes can
  *                             never be inherited by a stranger.
  *   `still_enabled`           a purge was asked of a plugin that is still on.
+ *   `developer_mode_off`      an UNPACKED row (`install.mode: "unpacked"`, ADR 0025 §4) while
+ *                             the workspace's developer mode is off: the directory it is built
+ *                             from is admitted only behind `engine.plugins.setDeveloperMode`,
+ *                             so enable, authoring and the rebuild loop all refuse by this name.
  *
  * A row carries at most one, and the roster carries every row, so a client renders "why"
  * without a second call: which dependency is off is read from this row's manifest against
@@ -731,6 +735,7 @@ export const PLUGIN_REFUSAL_REASONS = [
   "data_migration_missing",
   "element_type_owned",
   "still_enabled",
+  "developer_mode_off",
 ] as const;
 export const PluginRefusalReasonSchema = z.enum(PLUGIN_REFUSAL_REASONS);
 export type PluginRefusalReason = (typeof PLUGIN_REFUSAL_REASONS)[number];
@@ -769,6 +774,17 @@ export const PluginInstallRefusalSchema = z.enum(PLUGIN_INSTALL_REFUSALS);
 export type PluginInstallRefusal = (typeof PLUGIN_INSTALL_REFUSALS)[number];
 
 /**
+ * Where an installed row's bytes COME FROM (ADR 0025 §4). `bundle` is an artifact somebody
+ * handed to the install door; `unpacked` is a directory under `<data>/authored/<id>/` the hub
+ * itself watches and rebuilds, pinning the row by the hash of the bytes it built. Absent ≡
+ * `bundle`, so every row written before the field existed keeps exactly the sense it had. The
+ * same install path, the same loader, the same pin — the mode says only who packs.
+ */
+export const PLUGIN_INSTALL_MODES = ["bundle", "unpacked"] as const;
+export const PluginInstallModeSchema = z.enum(PLUGIN_INSTALL_MODES);
+export type PluginInstallMode = (typeof PLUGIN_INSTALL_MODES)[number];
+
+/**
  * What an installer CONSENTED TO, on the row (ADR 0016 §5): the artifact pinned by hash, where
  * it came from as the installer spelled it, and the capability set granted — the roster is
  * where every principal reads a grant, so it lives here and nowhere else. `grantedCaps` is
@@ -781,6 +797,8 @@ export type PluginInstallRefusal = (typeof PLUGIN_INSTALL_REFUSALS)[number];
  * `hash_mismatch` here and `enable_failed` on the row, never loaded (R8, fail-closed).
  */
 export const PluginInstallSchema = z.strictObject({
+  /** Who packed the bytes; absent is `bundle` (ADR 0025 §4). */
+  mode: PluginInstallModeSchema.optional(),
   /** Installer-selected hardening; absent is in-realm (ADR 0025). */
   hardened: z.boolean().optional(),
   /** Shared React and floor-package versions used to build the bundle. */
@@ -1024,6 +1042,7 @@ export function pluginVocabulary(): Record<string, unknown> {
       what the roster will then say about the grant, from the same read as everything else.
     */
     installRefusals: PLUGIN_INSTALL_REFUSALS,
+    installModes: PLUGIN_INSTALL_MODES,
     install: z.toJSONSchema(PluginInstallSchema),
     denialRules: ACTION_DENIAL_RULES,
     actionScopes: ACTION_SCOPES,
