@@ -130,6 +130,15 @@ you. Every rule here follows from that.
   PR — know which ones touch your target files, and read their bodies. Open PRs claim things too:
   the next ADR number is taken by an OPEN PR as much as by `main` (on 2026-09-05 two branches both
   created `0024`). Check both before numbering.
+- **The claim on an issue is a draft PR whose body says `Closes #N`.** Before starting on N, look
+  for one (`gh pr list --state open --search "Closes #N"`); if it exists, the issue is taken.
+  Open yours before the first substantive commit, so the claim exists from the first push. There
+  is no label and no assignee for this: every agent is the same GitHub account, and a label
+  cannot show when it went stale. Work that produces no branch — triage, a diagnosis, an audit
+  run — claims by commenting on the issue what it is doing, and unclaims by commenting what it
+  found.
+- A claim with no push for 24 hours is stale. Comment on that PR saying you are taking the issue
+  over, open your own PR, and close the stale one as superseded — never push to it (below).
 - Keep PRs small; rebase onto `main` before running the gate. Never reformat text you did not
   change — a rebase over someone else's hunk should be empty where you were not.
 - Unexpected changes in the tree are someone's work. Adapt to them; never revert them.
