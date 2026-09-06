@@ -61,7 +61,7 @@ export const PLUGIN_SECTIONS = [
   {
     kind: "installed",
     title: "Installed",
-    note: "Bundles somebody consented to: a stranger's code, isolated, holding only the capabilities its installer granted.",
+    note: "Bundles somebody consented to. Each row says whether it runs in-realm with the full engine API or hardened in a separate runner; grants govern its doors.",
     empty: "No installed plugins. Install one from a bundle.",
     holds: (entry: PluginRosterEntry) =>
       entry.source !== "builtin" && !entry.manifest.id.startsWith(CORE_NAMESPACE_PREFIX),
