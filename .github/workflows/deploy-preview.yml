@@ -43,7 +43,7 @@ jobs:
       - name: Decide whether this head has anything to show
         id: diff
         if: github.event.action != 'closed'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const files = await github.paginate(github.rest.pulls.listFiles, {
@@ -72,7 +72,7 @@ jobs:
       # and later touches code still gets its link exactly once.
       - name: Post the preview URL once
         if: github.event.action != 'closed' && steps.diff.outputs.deploy == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const marker = `Preview: ${process.env.PREVIEW_URL}`;
