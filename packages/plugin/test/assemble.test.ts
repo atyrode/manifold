@@ -64,6 +64,39 @@ const shell: PluginDef = {
 };
 
 describe("assembleRoster", () => {
+  test("a child must prove its home with a required parent edge", () => {
+    const parent = manifest({ id: "acme.product" });
+    const child = manifest({ id: "acme.product.part" });
+    for (const type of [undefined, "optional", "incompatible"] as const) {
+      const candidate = {
+        ...child,
+        dependencies: type === undefined ? {} : { [parent.id]: { type } },
+      };
+      expect(() =>
+        assembleRoster(
+          [
+            { manifest: parent, actions: [] },
+            { manifest: candidate, actions: [] },
+          ],
+          NONE,
+        ),
+      ).toThrow(
+        'plugin "acme.product.part" claims a home under "acme.product" without a required dependency on it (orphan_child)',
+      );
+    }
+    const assembly = assembleRoster(
+      [
+        { manifest: parent, actions: [] },
+        {
+          manifest: { ...child, dependencies: { [parent.id]: { type: "required" } } },
+          actions: [],
+        },
+      ],
+      NONE,
+    );
+    expect(assembly.roster.map((row) => row.manifest.id)).toContain(child.id);
+  });
+
   test("composes a roster whose names, registries and published schemas are the vocabulary", () => {
     const assembly = assembleRoster([terminals, shell], NONE);
 

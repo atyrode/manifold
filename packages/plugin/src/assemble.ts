@@ -793,16 +793,16 @@ export function assembleRoster(
   reportDuplicates(seatPanels, "seat", problems);
   reportDuplicates(routeSegments, "route", problems);
 
-  /*
-    DEPENDENCIES. Two axes, deliberately separate (NeoForge's and Home Assistant's shape):
-    `dependencies` says what must be THERE, `after` says only what must come FIRST. A missing
-    `after` target is ignored — it is an ordering wish about a plugin that may legitimately
-    not exist. A missing REQUIRED dependency is structural: no toggle produces it, so it
-    refuses here with both names.
-  */
+  // Dependencies require presence; `after` only orders targets that are composed.
   const blockers = new Map<string, Set<string>>();
   for (const id of manifests.keys()) blockers.set(id, new Set());
   for (const [id, manifest] of manifests) {
+    const parent = id.slice(0, id.lastIndexOf("."));
+    if (parent.includes(".") && manifest.dependencies?.[parent]?.type !== "required") {
+      problems.push(
+        `plugin "${id}" claims a home under "${parent}" without a required dependency on it (orphan_child)`,
+      );
+    }
     // Present by construction: `blockers` was seeded from the same map.
     const edgeInto = blockers.get(id) ?? new Set<string>();
     for (const [target, dependency] of dependencyEntries(manifest)) {
