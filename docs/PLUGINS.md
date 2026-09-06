@@ -2486,7 +2486,7 @@ write `createElement` or keep JSX in a file `web.ts` imports.
 ```ts
 // web.ts
 import { createElement, useState } from "react";
-import { Stack } from "@manifold/plugin/ui";
+import { Stack } from "@manifold/ui";
 import { panelRefId, type PanelProps } from "@manifold/plugin";
 import { z } from "zod";
 
@@ -2526,7 +2526,7 @@ counter, `entry: { "web": "web.js" }`, no server half — and it is what the kit
 **Two things the directory does not carry yet.** A `styles.css` import in `web.ts` is not packed:
 the bundle has one JavaScript member per half, and admitting a plugin stylesheet at load under the
 S13 ownership rule (every selector's leftmost compound is `.plugin-<id with "." as "_">`) is #258.
-Until it lands, style with `@manifold/plugin/ui` (§7b) and the engine's classes. And `pack` does
+Until it lands, style with `@manifold/ui` (§7b) and the engine's classes. And `pack` does
 not typecheck: run `tsc` in your own directory if you want types, against the floor packages of
 the checkout you pack from.
 
@@ -2539,7 +2539,7 @@ shell and the hub, which publish their own module identities under
 
 ```
 react            react-dom            react/jsx-runtime         react/jsx-dev-runtime
-@manifold/plugin @manifold/plugin/hooks @manifold/plugin/ui
+@manifold/plugin @manifold/plugin/hooks @manifold/ui
 @manifold/protocol   @manifold/sdk    @manifold/scene
 ```
 
