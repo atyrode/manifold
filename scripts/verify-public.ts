@@ -3,8 +3,9 @@
  *
  * Localhost success proves nothing about a public deployment: TLS, the CDN/proxy hop,
  * WebSocket upgrades through that hop, and origin behaviour are only exercised from
- * outside. This script drives the PUBLIC origin end to end — a real browser (system
- * chromium over CDP, no extra dependency), real public WebSockets, real PTYs.
+ * outside. This script drives the PUBLIC workspace with target-origin credentials —
+ * a real browser (system chromium over CDP, no extra dependency), real public WebSockets,
+ * real PTYs. It does not exercise production-to-preview sign-in or transient auth documents.
  *
  * Usage:  bun scripts/verify-public.ts <origin>    # or MANIFOLD_ORIGIN
  * Env:    MANIFOLD_ORIGIN (when no argv origin), MANIFOLD_OWNER_KEY (else ./data/owner.key),
@@ -168,6 +169,11 @@ let terminalId = "";
 // Constructed eagerly (cheap; launch() happens inside its step) so the outer
 // finally can always close it — close() is a no-op before launch.
 const browser = new Browser();
+
+console.log(
+  "SCOPE authentication: target-origin owner-key entry and local human first-visit gate; " +
+    "production-to-preview sign-in and transient authentication documents are NOT exercised.",
+);
 
 try {
   await step("public origin serves healthz over TLS", async () => {

@@ -2424,6 +2424,21 @@ build target and nothing branches on which instance is being looked at.
 
 ## Testability (agent-facing)
 
+- **Preview admission coverage** (#332): `packages/server/test/preview-identity.test.ts`
+  exercises two real servers, an initial handoff, then authority key rotation while the same
+  preview survives. It proves that the new assertion grants usable preview-local access,
+  tampered signatures are refused, and authority outage fails closed. This is HTTP-level
+  coverage, not browser navigation or first-paint coverage. The earlier stable-authority
+  handoff coverage missed the old-preview/new-key transition.
+- **Public browser coverage**: `scripts/verify-public.ts` enters through the target origin's
+  owner-key fragment and local human first-visit gate, then exercises its workspace, embedded
+  terminal and public WebSockets; it also checks anonymous denial. It does NOT exercise
+  production-identity admission to a preview or inspect
+  transient sign-in documents. Passing it cannot close a production-to-preview sign-in incident.
+  That deployed path requires a real-browser check from production identity through preview
+  callback/finalize to the workspace, including transient-document visual inspection, on the
+  exact affected origin and build (AGENTS.md §Commands). Keep production secrets out of PR CI
+  and preview environments; isolated scripted admission checks use throwaway authorities.
 - **Debug probe** (`packages/plugin/src/debug-probe.ts`, reached by plugin code through
   `@manifold/plugin/hooks`): when `localStorage["manifold:debug"]
 === "1"`, the active container renderer installs `window.__manifold` — READ-ONLY snapshot
