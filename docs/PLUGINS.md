@@ -947,6 +947,203 @@ for (const row of host.assembly.sections.filter((row) => row.enabled)) {
 }
 ```
 
+#### Browser channel plane
+
+This is the **in-realm browser** contract; hardened workers use §9's `GuestHost` instead.
+A panel, section, overlay or element renderer uses `host.client` (`SessionHandle`, exported
+from `@manifold/plugin`). It never opens its own socket or constructs a client from
+`host.token`. Invariant 3 means one WebSocket implementation, the SDK's; invariant 13 keeps
+continuous PTY I/O, cursor motion and live drags on their existing channels, with discrete
+authority-bearing mutations through actions at the commit point (§5). Event subscriptions
+are notifications, not a second mutation door. Sources: `AGENTS.md` invariants 3/13 and
+[`host.ts`](../packages/plugin/src/host.ts), `SessionHandle` / `HostServices`.
+
+There are three different lifetimes here, not three sockets:
+
+- **Room channel:** a `SessionClient` joins one `containerId`, as an occupant by default or
+  with `spectator: true` for a read-only projection. It carries the document, attendance,
+  presence and terminal frames. `connect(): Promise<void>` joins and resolves on the first
+  `init`; `close(): void` leaves that handle's channel. The SDK pools channels sharing the
+  same URL and token on one connection and owns reconnect/rejoin. Only a container renderer
+  opens its own room handle; ordinary contributions borrow the host's and do not close it.
+  Source: [`session-client.ts`](../packages/sdk/src/session-client.ts), `SessionClientOptions`,
+  `connect`, `close`; transport: [`connection-pool.ts`](../packages/sdk/src/connection-pool.ts).
+- **Terminal attachment:** not a separate endpoint or `SessionClient`. Subscribe with
+  `on("terminal_snapshot", ...)`, `on("terminal_output", ...)` and `on("terminal_event", ...)`,
+  then `attachTerminal(id)`; release listeners with their returned functions and balance the
+  attachment with `detachTerminal(id)`. Last detach releases the wire subscription; reconnect
+  reattaches. Filter frames by `terminalId`. The host's reads concern the routed room; its
+  mutation routing and controller rules are in “Terminals through the handle” below.
+  Sources: [`host.ts`](../packages/plugin/src/host.ts), `SessionHandle`, and
+  [`session-client.ts`](../packages/sdk/src/session-client.ts), `attachTerminal` / `detachTerminal`.
+- **Event topics:** `host.client.subscribe(topics, handler)` takes `readonly ManifoldRef[]`
+  and delivers `ServerEvent`; the return value unsubscribes only that caller. It is legal
+  before the channel opens; declarations are restored after reconnect and shared interests
+  are refcounted on the socket. No replay: re-read state after a gap. For collection data use
+  `usePolledResource` below, passing `host.topics.index`, `.terminals`, `.attendance` or
+  `.machines` rather than inventing topic strings or opening a feed per row. Those arrays
+  name all nodes that move the collection, not necessarily only its owner's node.
+  Sources: [`host.ts`](../packages/plugin/src/host.ts), `FeedTopics`, and
+  [`session-client.ts`](../packages/sdk/src/session-client.ts), `subscribe`; authority and
+  emission rules: §6b.
+
+The plugin roster is connection-level news too, not a room event: the SDK's
+`onPlugins(handler)` returns an unsubscribe and immediately replays its last roster if known.
+It does not arrive through `on("message", ...)`. Plugin components normally read
+`host.assembly` instead. Source: [`session-client.ts`](../packages/sdk/src/session-client.ts),
+`SessionEvents` / `onPlugins`.
+
+**When construction is appropriate.** A container renderer owns a projection's room handle,
+as shipped in
+[`composition-view.tsx`](../packages/plugins/compositions/src/composition-view.tsx):
+`new SessionClient({ url: sessionUrl(), containerId, token: host.token })`. Keep it stable for
+that mounted room, call `connect()` with rejection handling, and `close()` on teardown.
+Publish it in an effect through the callback returned by `useRoomPipeRegistration()`:
+`registerRoomPipe(containerId, client)` returns the registration's cleanup. This registers
+the occupant pipe for host terminal routing; it does not open another socket. Do not call
+`connect()` on each render: on an already-connected handle it redials the shared transport.
+`sessionUrl()` derives the selected instance's `ws(s)://…/ws/session` URL, not necessarily
+the page's origin ([`instance.ts`](../packages/plugin/src/instance.ts)).
+
+The exact SDK exports used here are `SessionClient`, `SessionClientOptions`, `SessionEvents`,
+`ConnectionStatus` and, for binary terminal data, `base64ToBytes`
+([`packages/sdk/src/index.ts`](../packages/sdk/src/index.ts)). `sessionUrl`,
+`useRoomPipeRegistration`, `useContainerRoute` and `usePolledResource` are **not SDK
+exports**: they come from `@manifold/plugin/hooks`
+([`hooks.ts`](../packages/plugin/src/hooks.ts)). No raw `WebSocket`, private pool import or
+new transport state machine belongs in a plugin.
+
+#### Routed container context: `useContainerRoute`
+
+`useContainerRoute(): ContainerRoute` reads the shell's `ContainerRouteProvider`; it opens
+no channel and throws without that ancestor. Use it in a routed panel or container renderer,
+not in a contribution that assumes every mount site has a route. It carries no identity:
+`host.principal` remains the authority for that fact. The complete shape is exported from
+`@manifold/plugin/hooks`
+([`container-route.ts`](../packages/plugin/src/container-route.ts)):
+
+```ts
+interface ContainerRoute {
+  readonly requestedContainerId: string | null;
+  readonly activeContainer: Container | null;
+  readonly containers: readonly Container[] | null;
+  readonly routedDiscipline: Container["discipline"] | "unknown";
+  readonly originContainerId: string | null;
+  readonly presence: readonly Attendance[];
+  readonly soloOccupants: ReadonlyMap<string, PlacementItem>;
+  readonly creating: boolean;
+  navigate(path: string, options?: { readonly replace?: boolean }): void;
+  createContainer(discipline: Container["discipline"]): void;
+  refreshActiveContainer(): void;
+  onWorkspaceChange(state: WorkspaceSidebarState | null): void;
+  onCreateTerminalChange(create: ((machine?: MachineSummary) => void) | null): void;
+  isOverSidebar(clientX: number, clientY: number): boolean;
+}
+
+interface WorkspaceSidebarState {
+  readonly status: ConnectionStatus;
+  readonly savedAt: number | null;
+  readonly rev: number;
+  readonly terminalCount: number;
+  readonly onCreateTerminal: (machine?: MachineSummary) => void;
+}
+```
+
+`containers: null` means the initial index read is pending; `activeContainer` is the routed
+record from the index, a direct read or this tab's memory. `routedDiscipline: "unknown"` is
+a cold deep link, not a discipline to author into. `originContainerId` is shrink's return
+address (last canvas, otherwise the workspace root). A panel can inspect
+`useContainerRoute().routedDiscipline` before offering a composition-specific operation;
+the shipped reader is
+[`ContainerViewPanel`](../packages/plugins/shell/src/container-view-panel.tsx).
+This is route data, not proof that a writable occupant pipe has mounted.
+
+The reporting callbacks belong to the **mounted renderer**: report sidebar state through
+`onWorkspaceChange`, and publish the terminal-creation callback through
+`onCreateTerminalChange`, clearing it with `null` on teardown. The composition renderer
+does the latter in
+[`composition-view.tsx`](../packages/plugins/compositions/src/composition-view.tsx).
+A panel asks `host.authoring?.createTerminal(machine)` for the mounted renderer's creation
+flow; `host.authoring` is null when none is published. It does not publish a competing
+callback. Sources: [`host.ts`](../packages/plugin/src/host.ts), `AuthoringHandle`, and
+[`workspace.tsx`](../packages/web/src/workspace.tsx).
+
+#### Shared reads: `usePolledResource`
+
+The full call is
+`usePolledResource<T>(fetchFn: () => Promise<T>, intervalMs: number, options: PolledResourceOptions<T>): PolledResource<T>`.
+Import the hook and its types from `@manifold/plugin/hooks`, not the SDK. `fetchFn` may be
+inline: changing its function identity does not restart the feed. `intervalMs` is the
+fallback cadence; the exported `FALLBACK_POLL_MS` is 2000. Readers of one resource share
+one feed, request and published answer; if their intervals differ, the shortest wins.
+Source for this entire contract:
+[`polled-resource.ts`](../packages/plugin/src/polled-resource.ts).
+
+- **`key: string` (required):** the resource, never the component. Reuse the exported
+  `INDEX_RESOURCE`, `TERMINALS_RESOURCE`, `CONTAINER_TERMINALS_RESOURCE`,
+  `ATTENDANCE_RESOURCE` or `MACHINES_RESOURCE` when reading those collections.
+- **`initial: T` (required):** the value exposed before a response has seeded the shared
+  feed. It is not a reset command for an already-published value.
+- **`enabled?: boolean` (default `true`):** false detaches this subscriber, so it does not
+  fetch or keep the feed alive; other enabled readers continue.
+- **`hold?: () => boolean`:** any subscriber returning true holds publication for all
+  readers, for example during a drag. Held event reads are retried, not lost; the current
+  implementation caps starvation at ten seconds.
+- **`equal?: (current: T, incoming: T) => boolean`:** suppress publication of equal
+  answers. Default comparison uses a JSON structural digest (object key order matters);
+  provide a comparator only when that is wrong for the resource.
+- **`onError?: (reason: unknown) => void`:** receives read failures. The existing value
+  remains; there is no separate error field in the return value.
+- **`restartKey?: string | number | boolean | null` (default `null`):** partitions answers
+  along with `key`, for example by route id. Readers sharing the pair must read the same
+  resource with compatible policies. The current identity uses `String(restartKey)`, so
+  do not rely on `1` and `"1"` selecting different feeds.
+- **`topics?: readonly ManifoldRef[]` (default empty):** all event topics that invalidate
+  this answer. There is **no event-kind filter option**; every matching topic event
+  schedules a read.
+- **`events?: FeedEvents`:** pass `host.client`. Its structural contract is
+  `subscribe(topics, handler): () => void`, `status`, and
+  `on("status", handler): () => void` (`FeedEvents` is defined in the implementation,
+  not re-exported by `/hooks`). Both nonempty `topics` and this door are needed for
+  event-backed reads.
+
+The return is `{ value: T, setValue: Dispatch<SetStateAction<T>>, refresh: () => void }`.
+`setValue` publishes a local/optimistic answer to the shared feed; it does **not** mutate
+the server. `refresh()` asks for a read now, for example after a successful action.
+The feed reads initially, catches up when the channel becomes live, and coalesces event
+bursts. With a live subscription there is no polling timer; without one it uses the
+fallback cadence. Hidden tabs stop the fallback timer, keep subscriptions, and read once
+on visibility return. On unmount or disable the hook releases that reader; the last
+reader releases the subscription and timer. Do not add a parallel polling effect.
+
+For example, the shipped
+[`MachinesSection`](../packages/plugins/machines/src/web.tsx) reads through this contract:
+
+```tsx
+import { FALLBACK_POLL_MS, MACHINES_RESOURCE, usePolledResource } from "@manifold/plugin/hooks";
+import type { HostServices } from "@manifold/plugin";
+import type { MachineSummary } from "@manifold/protocol";
+
+function MachineCount({ host }: { host: HostServices }) {
+  const { value: machines } = usePolledResource<readonly MachineSummary[] | null>(
+    () => host.client.machines(),
+    FALLBACK_POLL_MS,
+    {
+      key: MACHINES_RESOURCE,
+      initial: null,
+      topics: host.topics.machines,
+      events: host.client,
+    },
+  );
+  return <span>{machines === null ? "Loading machines" : `${machines.length} machines`}</span>;
+}
+```
+
+This is the same feed as the shipped section, with only its rendering reduced. The section
+also uses `refresh()` after a successful administration action, not an event payload as
+replacement state. Reading another collection changes the fetch, resource key and topic
+array together; no new client or socket is involved.
+
 #### Terminals through the handle
 
 A terminal is channel traffic — its birth is a round trip to a machine and its bytes are a
@@ -1016,6 +1213,38 @@ the one contribution that dials a room of its own (A4: resolve the reference, op
 grant, project it), and it publishes that pipe with `useRoomPipeRegistration` from
 `@manifold/plugin/hooks` on mount so the routing above has something to route through — the
 shipped canvas and composition renderers are the worked examples.
+
+**Worked terminal subscription: the shipped viewer.**
+[`terminal-view.tsx`](../packages/plugins/terminals/src/terminal-view.tsx) takes the room
+client supplied by its mount site; it constructs no client. Its effect installs snapshot,
+output, lifecycle and error listeners **before** `attachTerminal(terminalId)`, filtering
+each terminal frame by id. A snapshot replaces the screen and sets the sequence watermark;
+outputs received before it are buffered, then only those above its watermark are written
+in sequence. Later duplicate/older outputs are ignored. It decodes `message.data` with
+the SDK export `base64ToBytes`, not a string decoder that could damage binary data.
+`terminal_event` with `kind: "resized"` updates the viewer's geometry. Keyboard data goes
+through `sendTerminalInput` only when the viewer is not read-only; a `not_controller`
+error paints the refusal. Leaving the open connection state resets sequence bookkeeping
+for the next snapshot. Cleanup releases every listener, disposes the keyboard subscription
+and calls `detachTerminal`, **not** `close()` on the borrowed client.
+
+That sequence preserves the snapshot-plus-output contract (`docs/CONTRACTS.md` §attach);
+an output frame or `terminal_opened` is not a shell-readiness signal. Use `program` when
+opening a specific executable rather than inventing such a signal. `terminal_event` kinds
+are `opened`, `exited`, `controller_changed`, `resized`, `parked`, `renamed`
+([`packages/protocol/src/session.ts`](../packages/protocol/src/session.ts)).
+The controller is a **principal**, not a connection:
+[`terminal-broker.ts`](../packages/server/src/terminal-broker.ts) compares `controllerId`
+with `channel.auth.principal.id`. Closing an attachment is not killing the PTY or taking
+its lease; `takeTerminal` and `killTerminal` remain the separate checked verbs above.
+
+`openTerminal` correlates the reply's `terminal_opened.ref` (or its `elementId` when `ref`
+is absent) with the supplied `elementId`, and rejects a matching error or a timeout
+(`timeoutMs`, default 15000). Both `cols` and
+`rows` are required; `program` and `env` are the supported optional executable/environment
+fields, not a `command` option. Source:
+[`session-client.ts`](../packages/sdk/src/session-client.ts), `openTerminal`, and
+[`host.ts`](../packages/plugin/src/host.ts), `SessionHandle`.
 
 ### Mounted location and shared titlebars
 
@@ -1247,8 +1476,9 @@ Five rules, and they are all mechanized:
 **Consuming.** From an SDK client, `client.subscribe(topics, handler)` returns its own
 unsubscribe; declarations are refcounted onto the socket, so two panels watching one node cost
 one `subscribe` and neither cancels the other. In the browser, do not hand-roll a listener: pass
-`topics` (and the event kinds you care about) to the shared feed
-(`usePolledResource`, `@manifold/plugin/hooks`) and keep your one fetch function. The feed reads
+`topics` and `events: host.client` to the shared feed
+(`usePolledResource`, `@manifold/plugin/hooks`; full options under Host services) and keep
+your one fetch function. There is no event-kind filter option. The feed reads
 once at mount, then once per burst of matching events, content-compares the answer so an
 unchanged one re-renders nobody, and falls back to a cadence in exactly two states — the socket
 is down, or the feed named no topics at all (the roomless workspace root). A timer never runs
