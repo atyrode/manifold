@@ -1725,6 +1725,10 @@ describe("PluginHost install doors", () => {
     expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
       true,
     );
+    // Absent on the wire is in-realm, and the ROW says so: the persisted flag is what a
+    // restart reloads by, so a request that named no runner must not be read back as
+    // hardened by migration 21's backfill or by any column default.
+    expect(fixture.store.pluginInstalls().map((row) => row.hardened)).toEqual([false]);
     const result = (calls: number): ActionOutcome => ({
       ok: true,
       result: { calls, owner: fixture.owner.principal.id, principal: fixture.owner.principal.id },
