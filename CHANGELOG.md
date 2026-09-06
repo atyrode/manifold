@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0] - 2026-09-06
+
+### Added
+
+- Action handlers now receive `ctx.traceId`, the id of their write-ahead trace row returned by `core.events.list`, including across isolated-plugin dispatches. Plugin authors can link domain records directly to the trace authorizing the action without searching by door, principal or time. (#166, #312)
+- Integrated and pull-request previews can now admit an existing production browser identity without copying a production key or token, while preserving that identity’s workspace-wide capability restrictions in a short-lived preview-local session. Numbered previews identify their PR in the browser title and use a distinct teal favicon. (#286, #314)
+
 ## [0.8.1] - 2026-09-05
 
 ### Fixed
