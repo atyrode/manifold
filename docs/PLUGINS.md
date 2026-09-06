@@ -360,17 +360,17 @@ Every field below is required on each row; unknown fields are refused. The shape
 placement vocabulary are
 [`DisciplineDefSchema` and `PlacementTraitsSchema`](../packages/protocol/src/placement.ts):
 
-| Field | Meaning |
-| ----- | ------- |
-| `id` | Global discipline id, matching `^[a-z][a-z0-9-]*$`, at most 32 characters ([`ContainerDisciplineSchema`](../packages/protocol/src/layout.ts)). It is not prefixed by the plugin id and need not equal its last segment. |
-| `title` | Display noun, 1–64 characters. |
-| `item` | Placement traits of a container of this discipline when that container is itself the item being placed; all three fields below are required. |
-| `item.groups` | Groups the container belongs to: `tileable`, `mergeable`, `unplaceable`, `embeddable`, `canvas_item`, `canvas_item_as_portal`, `extractable`; at most seven entries. |
-| `item.guards` | Item-site guards: `no_self_embed` (refuse self-embedding), `solo_only` (only a single occupant merges), `tree_only` (structure needs an existing tree); at most three entries. |
-| `item.homed` | `eager` (home born with the item), `on_claim` (home materializes when placement first needs it), `inline` (exists in its document or row), or `null` (no home applies). |
-| `accepts` | Groups this container accepts as a destination, from the same seven-value vocabulary as `item.groups`; at most seven entries. |
-| `guards` | Container-site guards: only `discipline_match` is available, so at most one entry. It checks that the destination form appears in `destinations`; omitting this guard does not enforce that list. |
-| `destinations` | Destination forms that may address this discipline: `canvas`, `tile`, `compose`, `unplaced`; at most four entries. These are the existing wire forms, not new discipline ids or leaf kinds. |
+| Field          | Meaning                                                                                                                                                                                                                 |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`           | Global discipline id, matching `^[a-z][a-z0-9-]*$`, at most 32 characters ([`ContainerDisciplineSchema`](../packages/protocol/src/layout.ts)). It is not prefixed by the plugin id and need not equal its last segment. |
+| `title`        | Display noun, 1–64 characters.                                                                                                                                                                                          |
+| `item`         | Placement traits of a container of this discipline when that container is itself the item being placed; all three fields below are required.                                                                            |
+| `item.groups`  | Groups the container belongs to: `tileable`, `mergeable`, `unplaceable`, `embeddable`, `canvas_item`, `canvas_item_as_portal`, `extractable`; at most seven entries.                                                    |
+| `item.guards`  | Item-site guards: `no_self_embed` (refuse self-embedding), `solo_only` (only a single occupant merges), `tree_only` (structure needs an existing tree); at most three entries.                                          |
+| `item.homed`   | `eager` (home born with the item), `on_claim` (home materializes when placement first needs it), `inline` (exists in its document or row), or `null` (no home applies).                                                 |
+| `accepts`      | Groups this container accepts as a destination, from the same seven-value vocabulary as `item.groups`; at most seven entries.                                                                                           |
+| `guards`       | Container-site guards: only `discipline_match` is available, so at most one entry. It checks that the destination form appears in `destinations`; omitting this guard does not enforce that list.                       |
+| `destinations` | Destination forms that may address this discipline: `canvas`, `tile`, `compose`, `unplaced`; at most four entries. These are the existing wire forms, not new discipline ids or leaf kinds.                             |
 
 The shipped [`core.compositions` manifest](../packages/plugins/compositions/src/index.ts)
 declares this row:
@@ -408,20 +408,20 @@ Your component receives
 [`ContainerRendererProps`](../packages/plugin/src/projection.ts), imported from
 `@manifold/plugin/hooks`, whether routed or embedded in another container:
 
-| Field | Meaning |
-| ----- | ------- |
-| `host` | Required `HostServices`: the mounting host's client, principal, token and assembly (§6 Host services). |
-| `containerId` | Required string identifying the container to project. Use this address, not the host's routed container id, for an embedded renderer. |
-| `containers` | Required `readonly Container[]`: all containers the index knows, for local placement resolution. |
-| `presence` | Required `readonly Attendance[]`: attendance supplied by the mount site. |
-| `soloOccupants?` | `ReadonlyMap<string, PlacementItem>`: the index's single-occupant composition fold, which an embedded renderer cannot compute itself. |
-| `navigate` | Required `(path: string) => void` navigation callback. |
-| `depth?` | Container nesting depth: 1 when routed, 2 when embedded one level down. |
-| `projectionScope?` | `ProjectionScope \| null`: mounted ancestry and its root attendance client (§6 Mounted location and shared titlebars). |
-| `frame?` | `"window"` (default, outer frame) or `"tile"` (square seams against adjacent leaves). |
-| `titlebarDragProps?` | `TitlebarDragProps`: drag affordance to forward to the shared titlebar. |
-| `titlebarExtras?` | `ReactNode`: extra titlebar actions. |
-| `titlebarMiddle?` | `ReactNode`: middle titlebar content. |
+| Field                | Meaning                                                                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `host`               | Required `HostServices`: the mounting host's client, principal, token and assembly (§6 Host services).                                |
+| `containerId`        | Required string identifying the container to project. Use this address, not the host's routed container id, for an embedded renderer. |
+| `containers`         | Required `readonly Container[]`: all containers the index knows, for local placement resolution.                                      |
+| `presence`           | Required `readonly Attendance[]`: attendance supplied by the mount site.                                                              |
+| `soloOccupants?`     | `ReadonlyMap<string, PlacementItem>`: the index's single-occupant composition fold, which an embedded renderer cannot compute itself. |
+| `navigate`           | Required `(path: string) => void` navigation callback.                                                                                |
+| `depth?`             | Container nesting depth: 1 when routed, 2 when embedded one level down.                                                               |
+| `projectionScope?`   | `ProjectionScope \| null`: mounted ancestry and its root attendance client (§6 Mounted location and shared titlebars).                |
+| `frame?`             | `"window"` (default, outer frame) or `"tile"` (square seams against adjacent leaves).                                                 |
+| `titlebarDragProps?` | `TitlebarDragProps`: drag affordance to forward to the shared titlebar.                                                               |
+| `titlebarExtras?`    | `ReactNode`: extra titlebar actions.                                                                                                  |
+| `titlebarMiddle?`    | `ReactNode`: middle titlebar content.                                                                                                 |
 
 The shipped [`CompositionView`](../packages/plugins/compositions/src/composition-view.tsx)
 opens its own room pipe with `host.token` and registers it through `useRoomPipeRegistration`
@@ -1518,7 +1518,7 @@ what all six are keyed by, and which of them the manifest declares:
 
 | Channel               | Keyed by                                                                  | Manifest row                         |
 | --------------------- | ------------------------------------------------------------------------- | ------------------------------------ |
-| **renderers**         | a container DISCIPLINE declared by the plugin                          | **`contributes.disciplines`** (§2)   |
+| **renderers**         | a container DISCIPLINE declared by the plugin                             | **`contributes.disciplines`** (§2)   |
 | **overlays**          | a mounted overlay SLOT (`titlebar`, `container-spotlight`)                | no                                   |
 | **workspaceOverlays** | a workspace overlay SLOT (`commands`, `inspector`, `toolbar`)             | no                                   |
 | **terminal facet**    | nothing: one viewer per workspace, published for other renderers to mount | no                                   |
