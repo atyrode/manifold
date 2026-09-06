@@ -71,11 +71,17 @@ What is protected:
 - Delegated authority is real and revocable. Per-principal bearer tokens minted
   through `core.access.mint` carry a capability subset and an optional container
   scope; `core.access.revoke` kills them and severs their live sockets at once.
-- Interactively minted credentials expire. The bearer token a browser bootstrap
-  receives carries a **14 day** default expiry and is refused past it as `expired`
-  — a socket close reason and an HTTP `forbidden` — after which the browser
-  re-bootstraps from the owner key. Machine tokens (`docs/ENROLL.md`) are exempt
-  and never expire: an agent's credential is long-lived by design.
+- Ordinary credentials expire. Human browser credentials have a **14-day** lifetime and
+  ordinary agent/automation credentials **one hour**. Expired credentials are refused as
+  `expired` over HTTP and session sockets; automation must obtain fresh authorized credentials
+  for longer work and revoke its test credentials when finished. The recovery owner key and
+  machine enrollment (`docs/ENROLL.md`) remain non-expiring; internally generated terminal
+  credentials are revoked when their terminal exits or is removed.
+- On upgrade through schema 21, existing unbounded ordinary credentials receive a one-time
+  grace period from migration: fourteen days for humans, one hour for agents. The database is
+  backed up first; restarts do not extend grace. Finite credentials, machine credentials and
+  principals bound to running managed terminals retain their existing lifetimes. See
+  `docs/CONTRACTS.md` §Identity for the exact policy before upgrading persistent automation.
 
 If your deployment needs real authentication — named humans, SSO, an audit trail
 of who opened the door — put an authenticating proxy in front: Cloudflare Access,

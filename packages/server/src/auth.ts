@@ -68,6 +68,8 @@ const CONCRETE_CAPS: readonly Exclude<Cap, "*">[] = CAPS.filter(
  * fire hardest on exactly the careful operator who keeps one tab open and touches it rarely.
  */
 export const INTERACTIVE_TOKEN_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+/** Ordinary automated credentials expire after one hour, including federated tickets (#326). */
+export const AUTOMATED_TOKEN_TTL_MS = 60 * 60 * 1000;
 /** Preview-local browser credentials are renewed through production and bound revocation drift. */
 export const PREVIEW_IDENTITY_TOKEN_TTL_MS = 15 * 60 * 1000;
 
@@ -98,22 +100,14 @@ export const OWNER_AUDIT_WINDOW_MS = 60 * 60 * 1000;
  * unexpiring credential, because an exemption a caller can select is not an exemption, it is
  * an opt-out.
  */
-type TokenExpiry = "interactive" | "preview" | "never";
+type TokenExpiry = "interactive" | "automated" | "preview" | "never";
 
 /**
- * ADR 0019 §2's exemption as code rather than as a comment.
- *
- * A HUMAN's credential is a session: it was obtained interactively and can be obtained
- * interactively again, so it expires. An AGENT's is long-lived by design — A2 makes agents
- * first-class principals precisely because they cannot re-authenticate through a browser,
- * and shortening their credentials is a fleet outage wearing a security hat.
- *
- * An enrolled MACHINE's token never reaches this function: `persistMachine` passes `never`
- * at the call site and `authenticateMachine` has no expiry rung at all, so the same ruling
- * is made twice, structurally, on the path where it matters most.
+ * Ordinary principals always receive finite credentials. Machine enrollment and internally
+ * generated terminal credentials choose their lifecycle exemptions explicitly at the mint.
  */
 function expiryFor(kind: Principal["kind"]): TokenExpiry {
-  return kind === "human" ? "interactive" : "never";
+  return kind === "human" ? "interactive" : "automated";
 }
 
 /**
@@ -132,7 +126,7 @@ export interface AuthContext {
   isRoot: boolean;
   tokenId: string | null;
   grantId: string | null;
-  /** Absolute expiry for browser credentials; absent for owner and machine paths. */
+  /** Absolute credential expiry; absent for owner, machine, and terminal-lifecycle paths. */
   expiresAt?: number;
 }
 
@@ -655,7 +649,11 @@ export class AuthService {
       expiry === "never"
         ? null
         : createdAt +
-          (expiry === "preview" ? PREVIEW_IDENTITY_TOKEN_TTL_MS : INTERACTIVE_TOKEN_TTL_MS);
+          (expiry === "preview"
+            ? PREVIEW_IDENTITY_TOKEN_TTL_MS
+            : expiry === "automated"
+              ? AUTOMATED_TOKEN_TTL_MS
+              : INTERACTIVE_TOKEN_TTL_MS);
     const grant: Grant | null =
       caps.length === 0
         ? null
@@ -833,11 +831,9 @@ export class AuthService {
   /**
    * Mints the container-scoped agent identity injected into a newly created terminal.
    *
-   * `expiryFor` answers `never` here, and that is the exemption doing its job rather than an
-   * oversight: the holder is an agent inside a PTY with no way to re-authenticate, and a
-   * credential that died under it mid-task would be a fleet outage wearing a security hat
-   * (ADR 0019 §2). Its life is bounded by the terminal's instead — killing the terminal
-   * revokes the identity.
+   * Explicitly terminal-lifecycle-bound, not exempt because the principal is an agent:
+   * terminal exit or kill revokes this identity instead of a wall-clock deadline interrupting
+   * its PTY. External mints for the same principal still receive the ordinary agent bound.
    */
   mintSessionAgentToken(terminalId: string, containerId: string, actorId: string): TokenGrant {
     const id = this.runtime.newId();
@@ -849,13 +845,7 @@ export class AuthService {
     };
     this.store.createPrincipal(principal, this.runtime.now());
     const caps: Cap[] = ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"];
-    const minted = this.persistToken(
-      principal.id,
-      caps,
-      containerId,
-      actorId,
-      expiryFor(principal.kind),
-    );
+    const minted = this.persistToken(principal.id, caps, containerId, actorId, "never");
     return { token: minted.raw, principal, caps, containerId };
   }
 
@@ -1232,10 +1222,8 @@ export class AuthService {
       this.store.createPrincipal(principal, this.runtime.now());
     }
     /*
-      A ticket is an ORDINARY credential, so it takes the ordinary expiry rule: the guest
-      side re-opens the dial to get another one (`core.access.openDial`), which is exactly
-      the "can be obtained interactively again" test `expiryFor` encodes. A human guest's
-      ticket expires; an agent guest's does not, for the reason every other agent's does not.
+      A ticket is an ORDINARY credential: human guests receive the interactive bound and
+      agent guests receive the automated bound. Federation is not an expiry exemption.
     */
     const minted = this.persistToken(
       principal.id,

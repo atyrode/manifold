@@ -5,7 +5,7 @@ import { migrateToCanonLexicon, migrateToElementRefs } from "./migrate-lexicon.t
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -502,6 +502,40 @@ ALTER TABLE machines ADD COLUMN owner_host_id TEXT;
 ALTER TABLE machines ADD COLUMN draining INTEGER NOT NULL DEFAULT 0;
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '20');
 `,
+  /**
+   * Bound legacy human and ordinary-agent credentials once (#326). This rewrites issued
+   * credential data, so the runner must publish its recovery image before the transaction.
+   * Durations are historical migration policy, not imports from today's minting policy.
+   * Machine relationships and running terminal ownership, never names, preserve lifecycle
+   * credentials. Already finite or revoked tokens retain their exact existing state.
+   */
+  21: {
+    backup: true,
+    apply(db) {
+      const now = Date.now();
+      db.query(
+        `
+UPDATE tokens
+SET expires_at = ? + CASE
+  WHEN (SELECT kind FROM principals WHERE id = tokens.principal_id) = 'human'
+    THEN 14 * 24 * 60 * 60 * 1000
+  ELSE 60 * 60 * 1000
+END
+WHERE revoked_at IS NULL AND expires_at IS NULL
+  AND principal_id IN (SELECT id FROM principals WHERE kind IN ('human', 'agent'))
+  AND NOT EXISTS (
+    SELECT 1 FROM machines
+    WHERE machines.id = tokens.principal_id OR machines.token_id = tokens.id
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM terminals
+    WHERE terminals.agent_principal_id = tokens.principal_id AND terminals.status = 'running'
+  )
+`,
+      ).run(now);
+      db.exec("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '21')");
+    },
+  },
 };
 
 interface TableRow {

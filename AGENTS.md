@@ -299,6 +299,26 @@ the index is the generated `docs/decisions/README.md`.
     or the gate fails it as dead. Prose inside comment bodies is review's job rather than the
     scanner's — what a comment describes is covered mechanically, because its identifiers are.
 
+## Automation credential hygiene
+
+- On any persistent instance, automation uses a dedicated, clearly named run-owned
+  `kind: "agent"` principal with only the capabilities and scope it needs. Never impersonate an
+  operator or mint test credentials into an existing human or fleet principal. A test that
+  deliberately exercises the human sign-in form uses a unique verification name instead.
+- Track the principal IDs and resources each run creates. Teardown must revoke every run-owned
+  credential through `core.access.revoke`, on success and failure, and verify that no live
+  credentials remain. Close test PTYs and remove test containers too; removing a canvas does not
+  necessarily destroy the terminals it references. One cleanup failure must not skip other cleanup.
+- Never revoke an operator-supplied credential or an unrelated principal. If cleanup cannot
+  complete, report the instance, non-secret resource IDs and failed operation; do not call the run
+  clean. Expiry is a backstop, not a substitute for teardown.
+- Ordinary agent credentials expire after one hour; human credentials retain their fourteen-day
+  policy. Long-running automation must obtain a fresh authorized credential, not request an
+  unbounded one. The recovery owner key, machine enrollment and internally managed terminal
+  credentials have distinct lifecycle rules in `docs/CONTRACTS.md`; no test may opt into those
+  exceptions to avoid cleanup. Tests whose entire throwaway server/data directory is destroyed
+  need no additional credential revocation.
+
 ## Conventions
 
 - TypeScript strict; no `any` (use `unknown` + narrowing); exhaustive `switch` over
