@@ -9,7 +9,7 @@
  * those registries and holds the tree to them — in BOTH directions, so an unrecorded crossing
  * fails here rather than in review.
  *
- * The static half (S1-S19; S18 is reserved for ADR 0023's import-direction check) runs against
+ * The static half (S1-S19) runs against
  * the source tree with the TypeScript parser, never a regex over source (D14): imports, storage
  * keys, action markers and route literals are AST facts, and a regex that "mostly works" on
  * them is a gate that mostly holds.
@@ -31,6 +31,7 @@
  *   S15 gate contracts: every test-id query is registered, painted and live
  *   S16 the floor's own size: `packages/plugin/src` stays inside its declared line budget
  *   S17 hosting neutrality: no shipped file names a hosting provider (ADR 0022)
+ *   S18 import direction follows paths: parent never imports child; child uses parent contract
  *   S19 decision records: every record's status block parses, successors exist, numbers are
  *       unique, and `docs/decisions/README.md` is the generated index byte for byte
  *
@@ -367,6 +368,13 @@ function moduleSpecifiers(
     ) {
       specifiers.push({ text: node.arguments[0].text, line: lineOf(file, node) });
     }
+    if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteral(node.argument.literal)
+    ) {
+      specifiers.push({ text: node.argument.literal.text, line: lineOf(file, node) });
+    }
   });
   return specifiers;
 }
@@ -544,6 +552,13 @@ function resolvePackageEntry(specifier: string): string | null {
   const entry = owner.exports[match[2] === undefined ? "." : `.${match[2]}`];
   if (entry === undefined) return null;
   return `${owner.dir}/${entry.replace(/^\.\//, "")}`;
+}
+
+/** Source ownership is a path fact, not a package-name exemption. */
+function pluginPart(owner: PluginPackage, path: string): string | null {
+  const local = path.slice(owner.dir.length + 1);
+  const first = local.split("/")[0] ?? "";
+  return !local.includes("/") || first === "src" || first === "test" ? null : first;
 }
 
 // ─────────────────────────────────────────────────────────── S1: assembly
@@ -725,15 +740,82 @@ for (const row of registries.floor) {
    */
   const DRAWINGS = "lucide-react";
   const offenders: string[] = [];
+  const directionOffenders: string[] = [];
+  const domFile = ts.createSourceFile(
+    "lib.dom.d.ts",
+    readFileSync(join(dirname(ts.getDefaultLibFilePath({})), "lib.dom.d.ts"), "utf8"),
+    ts.ScriptTarget.ESNext,
+    true,
+  );
+  const domNames = new Set<string>(["React", "JSX"]);
+  for (const statement of domFile.statements) {
+    if (
+      (ts.isInterfaceDeclaration(statement) ||
+        ts.isTypeAliasDeclaration(statement) ||
+        ts.isFunctionDeclaration(statement)) &&
+      statement.name !== undefined
+    ) {
+      domNames.add(statement.name.text);
+    }
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name)) domNames.add(declaration.name.text);
+      }
+    }
+  }
   let scanned = 0;
   for (const owner of PLUGIN_PACKAGES) {
-    for (const path of sourcesMatching(`${owner.dir}/src/**`)) {
+    for (const path of sourcesMatching(`${owner.dir}/**`)) {
       scanned += 1;
+      const part = pluginPart(owner, path);
+      const contractEntry = owner.exports["./contract"];
+      const isContract = contractEntry !== undefined && path === join(owner.dir, contractEntry);
+      if (isContract) {
+        const file = parsed(path);
+        walk(file, (node) => {
+          if (ts.isIdentifier(node) && domNames.has(node.text)) {
+            directionOffenders.push(
+              `${path}:${String(lineOf(file, node))} contract names ${node.text}`,
+            );
+          }
+        });
+      }
       for (const specifier of moduleSpecifiers(path)) {
         const text = specifier.text;
-        if (text.startsWith("@manifold-plugin/") && !text.startsWith(`${owner.name}/`)) {
+        const target = text.startsWith(".") ? join(dirname(path), text) : resolvePackageEntry(text);
+        const targetOwner =
+          target === null
+            ? undefined
+            : PLUGIN_PACKAGES.find((candidate) => target.startsWith(`${candidate.dir}/`));
+        const ownSpecifier = text === owner.name || text.startsWith(`${owner.name}/`);
+        if (
+          (text.startsWith("@manifold-plugin/") && !ownSpecifier) ||
+          (targetOwner !== undefined && targetOwner !== owner)
+        ) {
           offenders.push(`${path}:${String(specifier.line)} reaches into ${text}`);
           continue;
+        }
+        if (
+          isContract &&
+          (ENGINE[text] !== true ||
+            text === "@manifold/plugin/hooks" ||
+            text === "@manifold/plugin/ui")
+        ) {
+          directionOffenders.push(`${path}:${String(specifier.line)} contract imports ${text}`);
+        } else if (targetOwner === owner || ownSpecifier) {
+          const targetPart =
+            target === null
+              ? (text.slice(owner.name.length + 1).split("/")[0] ?? null)
+              : pluginPart(owner, target);
+          if (part === null && targetPart !== null) {
+            directionOffenders.push(
+              `${path}:${String(specifier.line)} parent imports child ${text}`,
+            );
+          } else if (part !== null && targetPart !== part && text !== `${owner.name}/contract`) {
+            directionOffenders.push(
+              `${path}:${String(specifier.line)} child imports ${text}; parent access is contract-only`,
+            );
+          }
         }
         if (text.startsWith("@manifold/") && ENGINE[text] !== true) {
           offenders.push(`${path}:${String(specifier.line)} imports ${text}`);
@@ -752,6 +834,13 @@ for (const row of registries.floor) {
     offenders.length === 0
       ? `${String(scanned)} plugin sources import only protocol/scene/sdk/plugin, and no drawing`
       : list(offenders),
+  );
+  check(
+    "S18 import direction follows the plugin tree",
+    directionOffenders.length === 0,
+    directionOffenders.length === 0
+      ? `${String(scanned)} plugin sources respect parent/child and contract boundaries`
+      : list(directionOffenders),
   );
 }
 
@@ -887,7 +976,9 @@ for (const row of registries.floor) {
       package DECLARES is an id the server composed — not merely that some file mentions it.
     */
     const declared: string[] = [];
-    for (const path of sourcesMatching(`${owner.dir}/src/**`)) {
+    for (const path of sourcesMatching(`${owner.dir}/**`).filter(
+      (path) => !path.includes("/test/"),
+    )) {
       const file = parsed(path);
       walk(file, (node) => {
         if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name)) return;
