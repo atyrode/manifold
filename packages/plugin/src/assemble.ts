@@ -244,6 +244,12 @@ export interface AssemblyEnv {
    * def never has one.
    */
   readonly installs?: ReadonlyMap<string, PluginInstall>;
+  /**
+   * The workspace's developer-mode switch (ADR 0025 §4). `false` marks every DISABLED row
+   * whose install is `mode: "unpacked"` with `developer_mode_off`; absent means unknown, the
+   * browser's case, which renders the verdict the server already published.
+   */
+  readonly developerMode?: boolean;
 }
 
 /**
@@ -885,6 +891,9 @@ export function assembleRoster(
       if (conflicts(manifest.id).length > 0) return "incompatible_dependency";
       if (manifest.essential === true) return "essential";
       return null;
+    }
+    if (env.developerMode === false && env.installs?.get(manifest.id)?.mode === "unpacked") {
+      return "developer_mode_off";
     }
     if (unmet(manifest.id).length > 0) return "dependency_disabled";
     return null;

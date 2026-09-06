@@ -3,6 +3,8 @@ import {
   CapSchema,
   ENGINE_NAMESPACE_PREFIX,
   LocalNameSchema,
+  MAX_PLUGIN_BUNDLE_FILES,
+  PluginBundleFileSchema,
   PluginIdSchema,
   PluginPurgeResultSchema,
   SettingValueSchema,
@@ -47,6 +49,8 @@ export const ENGINE_PURGE_ACTION = `${ENGINE_PLUGINS_ID}.purge`;
 export const ENGINE_SET_SETTING_ACTION = `${ENGINE_PLUGINS_ID}.setSetting`;
 export const ENGINE_INSTALL_ACTION = `${ENGINE_PLUGINS_ID}.install`;
 export const ENGINE_UNINSTALL_ACTION = `${ENGINE_PLUGINS_ID}.uninstall`;
+export const ENGINE_SET_DEVELOPER_MODE_ACTION = `${ENGINE_PLUGINS_ID}.setDeveloperMode`;
+export const ENGINE_AUTHOR_ACTION = `${ENGINE_PLUGINS_ID}.author`;
 
 /**
  * THE ENGINE DOOR'S EVENT KINDS (ADR 0012). The enablement door is the one door the engine
@@ -65,6 +69,7 @@ export const ENGINE_DISABLED_EVENT = "plugin_disabled";
 export const ENGINE_PURGED_EVENT = "plugin_purged";
 export const ENGINE_INSTALLED_EVENT = "plugin_installed";
 export const ENGINE_UNINSTALLED_EVENT = "plugin_uninstalled";
+export const ENGINE_DEVELOPER_MODE_EVENT = "developer_mode_changed";
 
 /**
  * What an INSTALL door asks for (ADR 0016 §8 stage 2): the artifact by location and by the
@@ -93,12 +98,42 @@ export const PluginInstallResultSchema = z.strictObject({
 });
 export type PluginInstallResult = z.infer<typeof PluginInstallResultSchema>;
 
+/**
+ * What the AUTHORING door asks for (ADR 0025 §4): a plugin id and the files to write into its
+ * unpacked directory, `<data>/authored/<id>/`. Names are the bundle's flat member grammar
+ * (`PluginBundleFileSchema`: one segment, no leading dot), so nothing can climb out of the
+ * directory; a `null` value REMOVES that file. Every other file the directory holds stays —
+ * one door and one file write is the point, and an edit is one entry. The hub rebuilds the
+ * directory the moment the write lands and installs the result through the ONE install path,
+ * so the answer is the row as the roster now shows it: the pin of the bytes it built.
+ */
+export const PluginAuthorRequestSchema = z.strictObject({
+  id: PluginIdSchema,
+  files: z
+    .record(
+      PluginBundleFileSchema,
+      z
+        .string()
+        .max(1024 * 1024)
+        .nullable(),
+    )
+    .refine((files) => Object.keys(files).length <= MAX_PLUGIN_BUNDLE_FILES, {
+      message: `at most ${String(MAX_PLUGIN_BUNDLE_FILES)} files`,
+    }),
+});
+export type PluginAuthorRequest = z.infer<typeof PluginAuthorRequestSchema>;
+
+export const PluginAuthorResultSchema = PluginInstallResultSchema.extend({
+  sha256: z.string().length(64),
+});
+export type PluginAuthorResult = z.infer<typeof PluginAuthorResultSchema>;
+
 export const enginePluginsManifest: PluginManifest = {
   id: ENGINE_PLUGINS_ID,
   version: "1.0.0",
   title: "Plugin engine",
   description:
-    "The engine's own administration doors: workspace-global enablement, the purge verb that destroys a disabled plugin's data, and the install and uninstall doors that admit or remove a stranger's bundle.",
+    "The engine's own administration doors: workspace-global enablement, the purge verb that destroys a disabled plugin's data, the install and uninstall doors that admit or remove a stranger's bundle, and the developer-mode and authoring doors that admit a plugin written on this instance.",
   capabilities: ["plugins:manage", "*"],
   contributes: {
     panels: [],
@@ -112,6 +147,7 @@ export const enginePluginsManifest: PluginManifest = {
       { id: ENGINE_PURGED_EVENT, title: "Plugin data purged" },
       { id: ENGINE_INSTALLED_EVENT, title: "Plugin installed" },
       { id: ENGINE_UNINSTALLED_EVENT, title: "Plugin uninstalled" },
+      { id: ENGINE_DEVELOPER_MODE_EVENT, title: "Developer mode changed" },
     ],
   },
 };
@@ -150,6 +186,14 @@ export const enginePluginsManifest: PluginManifest = {
  * storage holds rows it refuses `storage_retained` unless `purge: true` is passed, and then it
  * purges first — the purge door's own path, the same `plugin_purged` event — and uninstalls
  * second (#233). Destruction is `purge`, whichever door it is asked through.
+ *
+ * `setDeveloperMode` and `author` (ADR 0025 §4) are root-only for the same reason: a
+ * directory the hub rebuilds and loads is code nobody in this build wrote, admitted by
+ * whoever holds the instance. The switch is one workspace-global meta row, published beside
+ * the roster (`developerMode`) so agents and humans read the same value; off, every unpacked
+ * row refuses enable as `developer_mode_off` and `author` refuses by the same name. Turning it
+ * off switches every enabled unpacked row off through `setEnabled` — the one door, each traced
+ * — before the switch flips, so no unpacked code runs while the switch reads off.
  */
 export const enginePluginsActions: readonly AnyActionDef[] = [
   defineAction({
@@ -194,5 +238,19 @@ export const enginePluginsActions: readonly AnyActionDef[] = [
       purge: z.boolean().optional(),
     }),
     result: z.strictObject({}),
+  }),
+  defineAction({
+    name: "setDeveloperMode",
+    title: "Admit or refuse plugins authored on this instance",
+    caps: ["*"],
+    input: z.strictObject({ on: z.boolean() }),
+    result: z.strictObject({}),
+  }),
+  defineAction({
+    name: "author",
+    title: "Write a plugin's files on this instance and load it",
+    caps: ["*"],
+    input: PluginAuthorRequestSchema,
+    result: PluginAuthorResultSchema,
   }),
 ];

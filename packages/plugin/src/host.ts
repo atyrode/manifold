@@ -338,6 +338,8 @@ export interface ComposedPanel extends AssemblyPanel {
  */
 export interface AssemblyFacet {
   roster(): PluginRoster;
+  /** The workspace's developer-mode switch, as it rides beside the roster (ADR 0025 §4). */
+  developerMode(): boolean;
   enabled(id: string): boolean;
   /** The plugin's human title, for placeholders, key tables and admin chrome; null when unknown. */
   pluginTitle(id: string): string | null;
