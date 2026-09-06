@@ -2713,6 +2713,11 @@ build target and nothing branches on which instance is being looked at.
   tampered signatures are refused, and authority outage fails closed. This is HTTP-level
   coverage, not browser navigation or first-paint coverage. The earlier stable-authority
   handoff coverage missed the old-preview/new-key transition.
+- **Dark authentication first paint** (#334): `scripts/verify-pwa.ts` holds real shell,
+  callback, finalize and refusal documents with page scripts disabled and external assets
+  blocked, under a light system preference. It samples rendered background pixels and checks
+  text/link contrast. The signed handoff uses two throwaway local instances; this browser
+  coverage complements the rotation regression but does not claim a public deployment works.
 - **Public browser coverage**: `scripts/verify-public.ts` enters through the target origin's
   owner-key fragment and local human first-visit gate, then exercises its workspace, embedded
   terminal and public WebSockets; it also checks anonymous denial. It does NOT exercise
