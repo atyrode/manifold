@@ -368,7 +368,7 @@ pool entry and no new client (`AXIOMS.md` §The portable lens).
 | GET /api/protocol                    | none                                  | → generated JSON-Schema of all wire messages, plus the published placement, plugin/action, event and grant vocabularies                                                                                                                                                                                                                                                                                                                                                                |
 | GET /api/attendance                  | containers:read                       | → `{ attendance: [{containerId, principals}] }` for currently connected OCCUPANTS; scoped tokens see only their container                                                                                                                                                                                                                                                                                                                                                              |
 | POST /api/actions/:name              | per action (declared)                 | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door                                                                                                                                                                                                                                                                                                                                         |
-| GET /api/plugins                     | any token                             | → `PluginRoster` (manifests, `enabled`, `source`, action summaries). Container-scoped tokens included: the roster is vocabulary                                                                                                                                                                                                                                                                                                                                                        |
+| GET /api/plugins                     | any token                             | → `{ plugins: PluginRoster, developerMode? }` (manifests, `enabled`, `source`, action summaries; the developer-mode switch beside them, absent ≡ off). Container-scoped tokens included: the roster is vocabulary                                                                                                                                                                                                                                                                      |
 | GET /api/plugins/:id/web.js          | any token                             | → the worker module of an installed, ENABLED plugin (`text/javascript`, `cache-control: no-store`, `etag: "<sha256>"`); 404 otherwise. §Hardened plugins                                                                                                                                                                                                                                                                                                                               |
 | GET /api/layout                      | any token                             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the default composed from the roster's seats when unset. Self-scoped by construction                                                                                                                                                                                                                                                                                                                                          |
 | GET /api/bindings                    | containers:read                       | → `{ overrides }` — the CALLER's key rebindings as binding id → key, self-scoped exactly as the layout read is. `core.keys.setBinding` is the only writer                                                                                                                                                                                                                                                                                                                              |
@@ -763,7 +763,9 @@ plugin's data, contributions and neighbours across an enable/disable is the **be
 (`docs/decisions/0013-plugin-behavioral-contract.md`, per-kind table in `REGISTRY.md`
 §Disable semantics).
 
-**The roster.** `GET /api/plugins` returns one entry per assembled row:
+**The roster.** `GET /api/plugins` returns `{ plugins, developerMode? }` — one entry per assembled
+row, and beside them the workspace's developer-mode switch (ADR 0025 §4; absent ≡ off), which
+rides the connection-level `plugins` frame the same way:
 
 ```ts
 {
@@ -774,14 +776,18 @@ plugin's data, contributions and neighbours across an enable/disable is the **be
            | "isolate_starting" | "isolate_crashed",   // absent ≡ ok; the isolate_ pair is the runner's
   refusal?: PluginRefusalReason,              // why this row cannot be toggled right now
   changedBy?: string | null, changedAt?: number | null,    // who last flipped it, and when
-  install?: { sha256, source, grantedCaps, installedBy, installedAt, hardened?, builtAgainst?, refusal? }  // present iff INSTALLED (§Hardened plugins)
+  install?: { sha256, source, grantedCaps, installedBy, installedAt, hardened?, builtAgainst?, mode?, refusal? }  // present iff INSTALLED (§Hardened plugins)
 }
 ```
+
+`install.mode` is `"bundle" | "unpacked"` (`PLUGIN_INSTALL_MODES`, absent ≡ `bundle`): who packed
+the bytes — an installer with the kit, or the hub itself from `<data>/authored/<id>/` (§Unpacked
+plugins below).
 
 `GET /api/protocol` embeds the same vocabulary beside the wire schemas, plus a `pluginContract`
 block — `engineNamespace`, `sources`, `dependencyTypes`, `dormantModes`, `defaultDormantMode`,
 `residualMechanisms`, `purgeTargets`, `lifecycleStates`, `refusalReasons`, `installRefusals`,
-`denialRules`, `defaultElementPlacement`, and JSON Schemas for the manifest, actions, outcomes,
+`installModes`, `denialRules`, `defaultElementPlacement`, and JSON Schemas for the manifest, actions, outcomes,
 roster entries, the install block and purge results — so an agent learns every door AND every
 closed enum from one read.
 
@@ -817,10 +823,10 @@ handler's result is validated against the action's `result` schema; a mismatch i
 **Refusal classes are the contract; prose is not.** `PLUGIN_REFUSAL_REASONS` is closed —
 `essential`, `builtin`, `unknown_plugin`, `missing_dependency`, `incompatible_dependency`,
 `dependency_disabled`, `data_downgrade`, `data_migration_missing`, `element_type_owned`,
-`still_enabled` — and a `refused` message is the class verbatim when there is nothing to name,
-otherwise `"<class>: <offenders, comma-separated>"` (`builtin: engine.plugins`,
-`still_enabled: core.draw`, `missing_dependency: test.leaf`). Clients switch on the prefix before
-`": "`; the remainder is identity for display, never meaning.
+`still_enabled`, `developer_mode_off` — and a `refused` message is the class verbatim when there is
+nothing to name, otherwise `"<class>: <offenders, comma-separated>"` (`builtin: engine.plugins`,
+`still_enabled: core.draw`, `missing_dependency: test.leaf`, `developer_mode_off: example.hello`).
+Clients switch on the prefix before `": "`; the remainder is identity for display, never meaning.
 
 **Enablement is workspace-global, hot, and an ENGINE door.** `engine.plugins.setEnabled { id, enabled }`
 (cap `plugins:manage`) is a **builtin roster row** (`source: "builtin"`), not a plugin action: the
@@ -1499,7 +1505,8 @@ client switches on the prefix): `artifact_unreadable`, `artifact_invalid` (wrong
 manifest that fails the schema, or an assembly refusal such as a duplicate id caught at install
 time and rolled back rather than raised at boot), `hash_mismatch`, `already_installed` (same id,
 different hash, no `replace: true`), `not_installed`, `namespace_reserved` (`engine.` / `core.`),
-`still_enabled` (uninstall and replace both require the row disabled first), `storage_retained`,
+`still_enabled` (uninstall and replace both require the row disabled first — except the hub's own
+unpacked replace, §Unpacked plugins), `storage_retained`,
 `no_entry`. **Uninstall** (`{ id, purge? }`) removes the row and the files and never destroys
 plugin storage on its own: while the plugin's namespace holds rows — reserved ones included, the
 same count `purge` reports — it refuses `storage_retained: <n> keys; purge first or pass purge:
@@ -1554,7 +1561,8 @@ it. The child runs under the server's own `bun` with an environment of exactly `
 and `MANIFOLD_PLUGIN_ID` (invariant 6); its stdout and stderr reach the server log line by line
 as `isolate_output`, capped. Log events: `isolate_spawned`, `isolate_exited`, `isolate_crashed`,
 `isolate_evicted`, `isolate_call_failed`, `isolate_output`, `plugin_installed`,
-`plugin_uninstalled`, `web_isolate_fault`.
+`plugin_uninstalled`, `plugin_authored`, `plugin_authored_build_failed`,
+`developer_mode_changed`, `web_isolate_fault`.
 
 **Web isolate — page ↔ Worker (`WebIsolateHostFrameSchema` / `WebIsolateWorkerFrameSchema`).**
 `postMessage` frames, discriminated on `t`:
@@ -1613,6 +1621,54 @@ call before it used. One behaviour the proof records rather than endorses: unins
 plugin's ENABLEMENT beside its storage (the disabled set is keyed by id), so a reinstall of an
 id that was switched off in order to be uninstalled comes back off.
 
+### Unpacked plugins
+
+The second way an installed row lands (ADR 0025 §4, #257): the hub builds it. `<data>/authored/<id>/`
+holds the files (`manifest.json` plus the halves `entry` names; `web.tsx` is accepted beside
+`web.ts`); `<data>/authored/.build/<id>.manifold-plugin.json` is what the hub packed them into, with
+the kit's own `packPlugin` (`@manifold/plugin-kit/pack`: the same `Bun.build` and shared-specifier
+rewrite `manifold-pack` runs — one bundler, invariant 14). The hub watches the directory
+(`node:fs` `watch`, no dependency; a change debounces into one rebuild; every directory is rebuilt
+once at start) and installs the build through the ONE `install` path as `{ source: <that .build
+file>, sha256: <hash of the bytes it wrote>, replace: true }`, so `authored/` is the second box a
+path source is accepted from beside `plugin-uploads/`. The row is `install.mode: "unpacked"`,
+`hardened: false`, pinned like any bundle; migration 22 adds `plugin_installs.mode` (`bundle`
+default). The web loader is unchanged: a new pin prunes and re-imports, so panels remount.
+
+**Two root-only doors** (`caps: ["*"]`, traced like every door). `engine.plugins.setDeveloperMode
+{ on }` flips one workspace-global meta row (`plugins:developer-mode`), published as
+`developerMode` beside every roster (`GET /api/plugins`, the `plugins` frame; absent ≡ off) and
+emitting `developer_mode_changed { on }` on the engine's node. OFF first disables every enabled
+unpacked row through `setEnabled` — each traced and attributed to whoever flipped — then flips; a
+refusal on the way stops the flip with that refusal. ON moves no row. While off, an unpacked row's
+enable answers `developer_mode_off: <id>` (a member of `PLUGIN_REFUSAL_REASONS`, and the row's
+`refusal` mark on the roster) and the directory is not built. `engine.plugins.author { id, files }`
+writes `files` into the directory (`PluginBundleFileSchema` names, so nothing climbs out; a `null`
+removes; unnamed files stay), logs `plugin_authored` (count of files, never contents), rebuilds,
+and answers `PluginAuthorResult` — the install result plus `sha256`, the pin the roster now shows.
+While off it refuses `developer_mode_off: <id>` before writing.
+
+**The one admission difference.** A running unpacked row replaced by the hub's own rebuild is
+replaced LIVE rather than refused `still_enabled`: the old module hears `onDisable`, the row is
+re-imported fresh, `onEnable` fans out, the installer on the row stays whoever first admitted it,
+and the previous artifact leaves the disk. Same bytes (same hash) replace nothing and publish
+nothing. A build error, a manifest the schema refuses, an `AssemblyError` in the edit or a
+manifest whose `id` is not the directory's answers `artifact_invalid: <detail>`, logs
+`plugin_authored_build_failed`, rolls back to the previous row and wakes it again (`onEnable`).
+`uninstall` removes the row and its pinned copy as for a bundle and leaves the directory.
+
+**The proof.** `packages/server/test/plugin-host.test.ts` ("PluginHost unpacked plugins")
+drives the host with an injected builder (`IsolateDeps.pack`; the kit's `Bun.build` cannot run
+under `bun test` from the repository root): the row at the pack's hash, the unchanged short-circuit,
+the live replace and its hook order, the installer kept across replaces, the `AssemblyError`
+rollback and the manifest-id refusal, OFF disabling first and marking by name, and both doors
+root-only. `packages/testkit/e2e/unpacked-plugin.test.ts` runs a REAL server with the REAL kit: a
+`web.tsx` React panel authored through the door reaches a view joined before it existed as a
+roster frame carrying `mode: "unpacked"`, its `web.js` is served at the frame's pin with React
+resolved through the shared registry, an edit moves the pin and the served module, a broken edit
+is `artifact_invalid` with the row standing, and OFF disables the row, marks it, 404s its module
+and refuses its enable by name.
+
 **Why no first-party plugin runs hardened yet (ADR 0016 §8.1).** Stage 1 owes one first-party
 plugin running both ways, and none qualifies against `ISOLATE_CTX_METHODS` today. Every
 first-party server half reaches at least one slice the runner does not serve: `core.keys`,
@@ -1660,11 +1716,14 @@ frame twice from the same shapes — a channel-less BODY union and the wire unio
 **Connection frames address the SOCKET, not a channel.** `@manifold/protocol` publishes them as
 `CONNECTION_BODIES` and `CLIENT_CONNECTION_BODIES` beside the channelized `SERVER_BODIES` and
 `CLIENT_BODIES`, and they carry no `ch` because the thing they concern is the connection
-itself. `plugins { roster }` was the first such server→client frame: it is delivered once when
-the socket opens (before any `join`) and again whenever the roster changes, which is what makes
-enable/disable hot for every open tab. The SDK pool demultiplexes connection frames to
-pool-level listeners (`SessionClient.onPlugins`, which replays the latest roster to a late
-subscriber) instead of dropping them as frames for an unknown channel.
+itself. `plugins { roster, developerMode? }` was the first such server→client frame: it is
+delivered once when the socket opens (before any `join`) and again whenever the roster changes —
+a developer-mode flip republishes the roster, its `developer_mode_off` marks moved, and nothing
+else — which is what makes enable/disable hot for every open tab. `developerMode` is additive and
+optional (absent ≡ off, the pre-#257 wire), so the frame grammar did not bump. The SDK pool
+demultiplexes connection frames to pool-level listeners (`SessionClient.onPlugins(roster,
+developerMode)`, which replays the latest pair to a late subscriber) instead of dropping them as
+frames for an unknown channel.
 
 **The event plane (v17, ADR 0012).** `subscribe`/`unsubscribe { topics: ManifoldRef[] }` declare
 and withdraw interest; `event { topic, kind, at, actor, payload }` is one notification. All three
