@@ -136,7 +136,7 @@ async function darkCanvas(driver: Browser, label: string): Promise<void> {
     throw new Error("first-paint screenshot is not a one-pixel RGB(A) PNG");
   }
   const chunks: Buffer[] = [];
-  for (let offset = 8; offset < png.length; ) {
+  for (let offset = 8; offset < png.length;) {
     const length = png.readUInt32BE(offset);
     if (png.toString("ascii", offset + 4, offset + 8) === "IDAT") {
       chunks.push(png.subarray(offset + 8, offset + 8 + length));
@@ -144,21 +144,30 @@ async function darkCanvas(driver: Browser, label: string): Promise<void> {
     offset += length + 12;
   }
   const rgb = [...inflateSync(Buffer.concat(chunks)).subarray(1, 4)];
-  assert(`${label} paints dark before scripts/styles`, rgb.every((value) => value < 64), rgb.join(","));
+  assert(
+    `${label} paints dark before scripts/styles`,
+    rgb.every((value) => value < 64),
+    rgb.join(","),
+  );
   const colors = await driver.evaluate<string[]>(
     "[document.body, ...document.querySelectorAll('h1, p, a')].map(node => getComputedStyle(node).color)",
   );
   const luminance = (channels: number[]): number =>
     channels.reduce((sum, value, index) => {
       const s = value / 255;
-      return sum + (s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4) * [0.2126, 0.7152, 0.0722][index]!;
+      return (
+        sum +
+        (s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4) * [0.2126, 0.7152, 0.0722][index]!
+      );
     }, 0);
   const background = luminance(rgb);
   assert(
     `${label} keeps text and links readable`,
     colors.every((color) => {
       const foreground = luminance((color.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number));
-      return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05) >= 4.5;
+      return (
+        (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05) >= 4.5
+      );
     }),
   );
 }
@@ -312,7 +321,10 @@ try {
     form.submit();
   })()`);
   await until(
-    () => driver.evaluate<boolean>("location.pathname === '/auth/preview/callback' && document.readyState === 'complete'"),
+    () =>
+      driver.evaluate<boolean>(
+        "location.pathname === '/auth/preview/callback' && document.readyState === 'complete'",
+      ),
     10_000,
     "the real preview form callback",
   );
