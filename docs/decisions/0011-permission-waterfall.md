@@ -539,3 +539,49 @@ Implementation begins (next wave) — at which point the `casbin`/`CASL` evaluat
 completed and recorded here before a line of evaluator code is written; or when cross-instance
 sharing (wave 3) supplies real values for `principal.kind === "instance"`, which is the one
 field of this design that wave 1 and wave 2 leave inert.
+
+## Addendum 2026-09-06
+
+**Authorization stays in-process, with no authorization-library dependency.** This records the
+operator-ratified posture in [#130](https://github.com/atyrode/manifold/issues/130), not an
+adoption of a new engine. The waterfall remains `AuthService.allows` / `effectiveCaps` in
+`packages/server/src/auth.ts`, reached by the HTTP, session and plugin doors in
+`packages/server/src/{http,session-ws,plugin-host}.ts`.
+
+The reasons are concrete:
+
+- **Latency is paid at every authority-checked door**, and scene writes also ask on channel
+  traffic. `effectiveCaps` memoizes per credential and node; an unchanged grant epoch makes a
+  repeated check a map lookup rather than another containment walk and SQL read. A permission
+  check needs no network hop, so authorization adds neither an RPC round trip nor a separate
+  service's availability to that path.
+- **One Bun process owns one SQLite database.** `packages/server/src/main.ts` constructs one
+  `ServerStore` over `manifold.db` and passes it to `AuthService`. Grants, tokens and shares
+  already live together; share and grant writes can commit in the same transaction. Grant
+  writes invalidate the process-local epoch, while credential revocation uses the existing
+  live-socket fence. There is no distributed authorization state to coordinate in this topology.
+- **An engine does not remove our hard parts.** The dependency evaluation in §1 found that
+  casbin and CASL still leave the containment walk and precedence comparator to us, while adding
+  adapters, policy translation and cache-coherency work. Keeping one waterfall also resolves the
+  concrete capabilities in one walk rather than one library call per capability.
+
+**Reopen the engine decision when either observable condition is met:**
+
+1. **A ratified deployment target requires two or more server processes to decide against the
+   same authorization state.** This includes a second serving process for one instance, not
+   merely an independent guest connected by a share. Record the target topology and the required
+   revocation/invalidation guarantee before implementing it: the current in-process epoch and
+   socket fence do not reach that second process.
+2. **A ratified cross-instance use case requires synchronized grant changes beyond ADR 0014's
+   host-owned share rows and attenuated tickets.** The concrete boundary is a requirement for
+   more than one instance to evaluate or update the same grants, or to propagate grant changes
+   so another instance can decide authority locally instead of asking the node's host. Record
+   that use case and its consistency requirement. A second ordinary share alone does not cross
+   this boundary: ADR 0014 keeps the host authoritative and the guest's lens joins it directly.
+
+At either trigger, **OpenFGA and SpiceDB are candidates for a Zanzibar-class engine evaluation;
+casbin Watcher is a candidate for cross-process invalidation**, not itself a Zanzibar-class
+replacement. Compare their preservation of waterfall precedence, credential attenuation and live
+revocation, and measure permission-check latency against the in-process path at the target grant
+count and topology. These are candidates to watch, not dependencies adopted, and meeting a trigger
+opens an evaluation rather than authorizing a migration.
