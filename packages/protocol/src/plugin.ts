@@ -534,15 +534,24 @@ export const PluginPurgeResultSchema = z.strictObject({
 export type PluginPurgeResult = z.infer<typeof PluginPurgeResultSchema>;
 
 /**
- * WHERE AN ISOLATED PLUGIN'S CODE IS, inside its bundle. `server: true` means the bundle's
- * `server.js` member is the server guest (the file name is fixed — `PLUGIN_BUNDLE_SERVER_FILE`
- * — because the kit inlines its runtime and the loader is one `Bun.spawn`); `web` names the
- * member the browser fetches at `GET /api/plugins/:id/web.js` and runs in a dedicated Worker.
- * Either half alone is a plugin; a bundle naming neither is refused `no_entry`.
+ * WHERE AN INSTALLED PLUGIN'S CODE IS, inside its bundle. `server: true` means the bundle's
+ * `server.js` member is the server half (the file name is fixed — `PLUGIN_BUNDLE_SERVER_FILE`
+ * — because the kit inlines its runtime and the hardened loader is one `Bun.spawn`); `web`
+ * names the member the browser fetches at `GET /api/plugins/:id/web.js` and imports in-realm,
+ * or runs in a dedicated Worker when the installer hardened the row. Either half alone is a
+ * plugin; a bundle naming neither is refused `no_entry`.
+ *
+ * `styles: true` means the bundle's `styles.css` member (`PLUGIN_BUNDLE_STYLES_FILE`, fixed
+ * like the server's) is the web half's skin, served at `GET /api/plugins/:id/styles.css` and
+ * injected by the loader while the row is enabled — admitted only when every selector is
+ * rooted at the plugin's own class (ADR 0025 §7, `stylesheet_unscoped`). Additive and optional:
+ * absent is exactly the pre-#258 bundle, one JavaScript member per half and no ink, so no
+ * wire version moved.
  */
 export const PluginEntrySchema = z.strictObject({
   web: z.string().min(1).max(128).optional(),
   server: z.boolean().optional(),
+  styles: z.boolean().optional(),
 });
 export type PluginEntry = z.infer<typeof PluginEntrySchema>;
 
@@ -719,6 +728,13 @@ export type PluginLifecycleState = (typeof PLUGIN_LIFECYCLE_STATES)[number];
  *                             the workspace's developer mode is off: the directory it is built
  *                             from is admitted only behind `engine.plugins.setDeveloperMode`,
  *                             so enable, authoring and the rebuild loop all refuse by this name.
+ *   `stylesheet_unscoped`     the bundle's `styles.css` has a selector whose leftmost compound
+ *                             is not the plugin's own root class, or a rule with no class at
+ *                             all (ADR 0025 §7, S13 at load): ink has one owner, and a sheet
+ *                             that reaches past its root is a second writer for somebody's
+ *                             family. Named at the install door for a bundle and the unpacked
+ *                             build, and here for an enable that re-verifies a stored bundle
+ *                             (R8): the detail is the selector, with its line.
  *
  * A row carries at most one, and the roster carries every row, so a client renders "why"
  * without a second call: which dependency is off is read from this row's manifest against
@@ -736,6 +752,7 @@ export const PLUGIN_REFUSAL_REASONS = [
   "element_type_owned",
   "still_enabled",
   "developer_mode_off",
+  "stylesheet_unscoped",
 ] as const;
 export const PluginRefusalReasonSchema = z.enum(PLUGIN_REFUSAL_REASONS);
 export type PluginRefusalReason = (typeof PLUGIN_REFUSAL_REASONS)[number];
@@ -758,6 +775,10 @@ export type PluginRefusalReason = (typeof PLUGIN_REFUSAL_REASONS)[number];
  *                          first, or pass `purge: true` and the door purges before it uninstalls.
  *                          Uninstall never destroys data on its own, and it never strands any.
  *   `no_entry`             the manifest names no half to run — nothing to install.
+ *   `stylesheet_unscoped`  `entry.styles` is set and the sheet reaches past the plugin's root
+ *                          class (ADR 0025 §7): the detail names the selector and its line.
+ *                          The same class the toggle answers, because the unpacked build path
+ *                          and a bundle install meet the rule at this door.
  */
 export const PLUGIN_INSTALL_REFUSALS = [
   "artifact_unreadable",
@@ -769,6 +790,7 @@ export const PLUGIN_INSTALL_REFUSALS = [
   "still_enabled",
   "storage_retained",
   "no_entry",
+  "stylesheet_unscoped",
 ] as const;
 export const PluginInstallRefusalSchema = z.enum(PLUGIN_INSTALL_REFUSALS);
 export type PluginInstallRefusal = (typeof PLUGIN_INSTALL_REFUSALS)[number];

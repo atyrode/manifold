@@ -36,7 +36,7 @@ import { closeClients, e2eFailure, stopProcesses } from "./helpers.ts";
 const PLUGIN_ID = "example.unpacked";
 const PANEL = "hello";
 
-function manifest(version: string): string {
+function manifest(version: string, styles = false): string {
   return JSON.stringify({
     id: PLUGIN_ID,
     version,
@@ -50,7 +50,7 @@ function manifest(version: string): string {
       tools: [],
       events: [],
     },
-    entry: { web: "web.js" },
+    entry: styles ? { web: "web.js", styles: true } : { web: "web.js" },
   });
 }
 
@@ -192,6 +192,36 @@ test("a plugin authored on the instance reaches a joined view, remounts on edit,
       expect(broken.denial.message).toStartWith("artifact_invalid:");
     }
     expect((await webModule(server)).headers.get("etag")).toBe(`"${second.sha256}"`);
+
+    // S13 at load (#258): a declared sheet that paints a shell family is refused by name
+    // through the same build path, the row standing; rooted at the plugin's class it is served
+    // beside the module at the new pin. (`web.tsx` is restored: the broken edit left it on disk.)
+    const styled = await author(server, {
+      "manifest.json": manifest("1.0.0", true),
+      "web.tsx": webTsx("bonjour"),
+      "styles.css": ".sidebar-section-title { color: red }",
+    });
+    expect(styled).toEqual({
+      ok: false,
+      denial: {
+        rule: "refused",
+        message:
+          "stylesheet_unscoped: styles.css:1 the leftmost compound is not this plugin's root class (.sidebar-section-title)",
+      },
+    });
+    expect((await webModule(server)).headers.get("etag")).toBe(`"${second.sha256}"`);
+    const third = await authored(server, {
+      "styles.css": ".plugin-example_unpacked { color: rgb(214, 63, 98) }",
+    });
+    await waitFor(() => rowOf(heard)?.install?.sha256 === third.sha256, 15_000, 20);
+    const sheet = await fetch(new URL(`/api/plugins/${PLUGIN_ID}/styles.css`, server.httpUrl), {
+      headers: { authorization: `Bearer ${server.ownerKey}` },
+    });
+    expect(sheet.status).toBe(200);
+    expect(sheet.headers.get("content-type")).toStartWith("text/css");
+    expect(sheet.headers.get("cache-control")).toBe("no-store");
+    expect(sheet.headers.get("etag")).toBe(`"${third.sha256}"`);
+    expect(await sheet.text()).toContain(".plugin-example_unpacked");
 
     // OFF again: the running unpacked row is disabled first, then marked; enable refuses by name.
     await ownerAction(server, "engine.plugins.setDeveloperMode", { on: false });

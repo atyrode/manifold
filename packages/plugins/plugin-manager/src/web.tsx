@@ -988,6 +988,7 @@ function toggleRefusal(
     case "element_type_owned":
     case "unknown_plugin":
     case "developer_mode_off":
+    case "stylesheet_unscoped":
       return status.why;
     case "incompatible_dependency":
     case "still_enabled":

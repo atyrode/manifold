@@ -84,16 +84,31 @@ test("in-realm install appears in a second open browser; disable drops it and re
     expect(await second.evaluate<string>("globalThis.__inRealmNoReload")).toBe(
       "open-before-install",
     );
+    // The ink arrived with the code (#258): one `<style data-plugin>` in the head, its rules
+    // rooted at the plugin's class and painting the panel's own root.
+    const styled = () =>
+      second.evaluate<boolean>(
+        "document.querySelector('style[data-plugin=\"example.counter\"]') !== null",
+      );
+    await waitFor(styled, 10_000, 50);
+    expect(
+      await second.evaluate<string>(
+        "getComputedStyle(document.querySelector('[data-testid=in-realm-counter]')).color",
+      ),
+    ).toBe("rgb(214, 63, 98)");
     await ownerAction(server, "engine.plugins.setEnabled", {
       id: "example.counter",
       enabled: false,
     });
     await waitFor(async () => !(await visible()), 10_000, 50);
+    // Off, the sheet leaves with the panel (D4′): a disabled plugin paints nothing.
+    expect(await styled()).toBe(false);
     await ownerAction(server, "engine.plugins.setEnabled", {
       id: "example.counter",
       enabled: true,
     });
     await waitFor(visible, 10_000, 50);
+    await waitFor(styled, 10_000, 50);
     expect(await second.evaluate<string>("globalThis.__inRealmNoReload")).toBe(
       "open-before-install",
     );

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
   PLUGIN_BUNDLE_SERVER_FILE,
+  PLUGIN_BUNDLE_STYLES_FILE,
   PluginBundleSchema,
   type IsolateChildFrame,
   type IsolateHostFrame,
@@ -95,6 +96,19 @@ describe("the artifact", () => {
     }
   });
 
+  test("a sheet beside the manifest is carried only when declared, and then as it is (#258)", async () => {
+    const undeclared = mkdtempSync(`${tmpdir()}/plugin-kit-sheet-`);
+    try {
+      await Bun.write(`${undeclared}/manifest.json`, JSON.stringify(bundle.manifest));
+      await Bun.write(`${undeclared}/${PLUGIN_BUNDLE_STYLES_FILE}`, ".x {}");
+      await expect(packPlugin(undeclared, `${undeclared}/out.json`)).rejects.toThrow(
+        "entry.styles is not true",
+      );
+    } finally {
+      rmSync(undeclared, { recursive: true, force: true });
+    }
+  });
+
   test("in-realm exports resolve from the host registry, with no shared bare imports", async () => {
     const out = `${dir}/in-realm.json`;
     const command = Bun.spawn(
@@ -108,6 +122,11 @@ describe("the artifact", () => {
     const [code, stderr] = await Promise.all([command.exited, new Response(command.stderr).text()]);
     if (code !== 0) throw new Error(stderr);
     const artifact = PluginBundleSchema.parse(await Bun.file(out).json());
+    expect(artifact.manifest.entry.styles).toBe(true);
+    // The sheet is a member as written — never bundled, never rewritten — for the hub to admit.
+    expect(Buffer.from(artifact.files[PLUGIN_BUNDLE_STYLES_FILE] ?? "", "base64").toString()).toBe(
+      await Bun.file(`${import.meta.dir}/fixtures/in-realm/${PLUGIN_BUNDLE_STYLES_FILE}`).text(),
+    );
     const source = Buffer.from(artifact.files["web.js"] ?? "", "base64").toString("utf8");
     expect(source).not.toMatch(
       /\b(?:from\s*|import\s*\(\s*|require\s*\(\s*)["'](?:react|@manifold\/)/,

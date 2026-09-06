@@ -5,6 +5,7 @@ import type { BunPlugin } from "bun";
 import {
   PLUGIN_BUNDLE_FORMAT,
   PLUGIN_BUNDLE_SERVER_FILE,
+  PLUGIN_BUNDLE_STYLES_FILE,
   PluginBundleSchema,
   PluginManifestSchema,
   type PluginBundle,
@@ -152,6 +153,21 @@ export async function packPlugin(
     throw new Error(`${manifestFile}: manifest.entry must name the halves this bundle runs`);
   }
   const files: Record<string, string> = {};
+  /*
+    The sheet is carried as it is, never bundled: the hub admits it under the root-class rule
+    and the loader injects it beside the module (ADR 0025 §7). Declared or not is the
+    manifest's word — a sheet on disk that the manifest does not name is refused here, before
+    a build is paid for, rather than silently left behind; a declared one that is missing
+    fails the read by name.
+  */
+  const sheet = Bun.file(`${pluginDir}/${PLUGIN_BUNDLE_STYLES_FILE}`);
+  if (manifest.entry.styles === true) {
+    files[PLUGIN_BUNDLE_STYLES_FILE] = Buffer.from(await sheet.text(), "utf8").toString("base64");
+  } else if (await sheet.exists()) {
+    throw new Error(
+      `${manifestFile}: ${PLUGIN_BUNDLE_STYLES_FILE} is beside the manifest but entry.styles is not true`,
+    );
+  }
   const builtAgainst: Record<string, string> = {};
   const plugins = options.shared === false ? [] : [await sharedModules(pluginDir, builtAgainst)];
   if (manifest.entry.server === true) {

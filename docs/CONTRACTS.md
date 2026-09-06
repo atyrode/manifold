@@ -370,6 +370,7 @@ pool entry and no new client (`AXIOMS.md` §The portable lens).
 | POST /api/actions/:name              | per action (declared)                 | action args → 200 `ActionOutcome`: `{ok:true,result}` or `{ok:false,denial:{rule,message}}`. Refusals are DATA, never non-2xx. THE action door                                                                                                                                                                                                                                                                                                                                         |
 | GET /api/plugins                     | any token                             | → `{ plugins: PluginRoster, developerMode? }` (manifests, `enabled`, `source`, action summaries; the developer-mode switch beside them, absent ≡ off). Container-scoped tokens included: the roster is vocabulary                                                                                                                                                                                                                                                                      |
 | GET /api/plugins/:id/web.js          | any token                             | → the worker module of an installed, ENABLED plugin (`text/javascript`, `cache-control: no-store`, `etag: "<sha256>"`); 404 otherwise. §Hardened plugins                                                                                                                                                                                                                                                                                                                               |
+| GET /api/plugins/:id/styles.css      | any token                             | → the admitted stylesheet of an installed, ENABLED plugin whose `entry.styles` is true (`text/css`, `cache-control: no-store`, `etag: "<sha256>"`); 404 otherwise. §Hardened plugins, S13 at load                                                                                                                                                                                                                                                                                      |
 | GET /api/layout                      | any token                             | → `{ layout }` — the CALLER's workspace `TileLayout`, or the default composed from the roster's seats when unset. Self-scoped by construction                                                                                                                                                                                                                                                                                                                                          |
 | GET /api/bindings                    | containers:read                       | → `{ overrides }` — the CALLER's key rebindings as binding id → key, self-scoped exactly as the layout read is. `core.keys.setBinding` is the only writer                                                                                                                                                                                                                                                                                                                              |
 | GET /api/settings                    | containers:read                       | → `{ values }` — effective principal and workspace plugin setting deltas as setting ref → boolean or string. `engine.plugins.setSetting` is the only writer                                                                                                                                                                                                                                                                                                                            |
@@ -823,9 +824,11 @@ handler's result is validated against the action's `result` schema; a mismatch i
 **Refusal classes are the contract; prose is not.** `PLUGIN_REFUSAL_REASONS` is closed —
 `essential`, `builtin`, `unknown_plugin`, `missing_dependency`, `incompatible_dependency`,
 `dependency_disabled`, `data_downgrade`, `data_migration_missing`, `element_type_owned`,
-`still_enabled`, `developer_mode_off` — and a `refused` message is the class verbatim when there is
-nothing to name, otherwise `"<class>: <offenders, comma-separated>"` (`builtin: engine.plugins`,
-`still_enabled: core.canvas.draw`, `missing_dependency: test.leaf`, `developer_mode_off: example.hello`).
+`still_enabled`, `developer_mode_off`, `stylesheet_unscoped` — and a `refused` message is the class
+verbatim when there is nothing to name, otherwise `"<class>: <offenders, comma-separated>"`
+(`builtin: engine.plugins`, `still_enabled: core.canvas.draw`, `missing_dependency: test.leaf`,
+`developer_mode_off: example.hello`, `stylesheet_unscoped: styles.css:2 … (.sidebar-row)` — the
+one whose offender is a selector rather than an id, §Hardened plugins).
 Clients switch on the prefix before `": "`; the remainder is identity for display, never meaning.
 
 **Enablement is workspace-global, hot, and an ENGINE door.** `engine.plugins.setEnabled { id, enabled }`
@@ -1454,20 +1457,55 @@ identities; the kit rewrites shared imports at build time, without an import map
 dependency. The bundle's optional `builtAgainst` version map is recorded as
 `install.builtAgainst`; compatibility presentation belongs to #238.
 
+**Ink ownership at load — S13's runtime twin (ADR 0025 §7, #258).** An installed or unpacked
+plugin's `styles.css` is admitted only if the leftmost compound of EVERY selector anchors on the
+plugin's own root class, `.plugin-<id with each "." as "_">` (`acme.counter` →
+`.plugin-acme_counter`; `_` because a segment may carry `-` but never `_` under
+`PLUGIN_ID_PATTERN`, so two ids never share a root) — the root itself or a part of it under the
+`__` seam no id can produce (`.plugin-acme_counter__title`). A `@keyframes` name is read as its
+own selector and meets the same rule. A rule with no class at all (`body`, `:root`, an attribute
+selector) is refused outright: it reaches every node in the document. Compounds to the right are
+the plugin's own subtree and are not judged, exactly as `verify:axioms` S13 reads ownership in the
+tree — the leftmost family is the one whose removal makes the rule dead. A shell family wrapped in
+`:is()` / `:where()` as the leftmost compound is still the shell's. The walk is ONE module,
+`@manifold/protocol`'s `stylesheet.ts` (`cssRules`, `everyCompound`, `anchorOf`, `unscopedRule`),
+imported by the gate for the tree's sheets and by the hub for a bundle's (invariant 14). The
+refusal is `stylesheet_unscoped: styles.css:<line> <why> (<selector>)` — from `engine.plugins.install`
+for a bundle and from `engine.plugins.author` / the rebuild loop for an unpacked directory (both
+through the one install path, before anything is written, the working row standing), and from
+`engine.plugins.setEnabled` when the stored bundle is re-verified (R8); at boot the same verdict
+is `install.refusal` on the row with `enable_failed`, nothing loaded. This is ink ownership, not
+security (`AXIOMS.md` §Explicitly not a goal: themes): a mod holds the DOM and could paint from
+code; the rule makes a second writer for a shell family impossible by construction in the one
+artifact that is declarative. It binds `core.*` too — their sheets are in the tree, where S13 checks
+them; no runtime check reads a tree row's CSS, because the build already did.
+
+The loader fetches an admitted sheet beside the module (`GET /api/plugins/:id/styles.css`, bearer
+in the header, same pin) and injects it as `<style data-plugin="<id>">` in the document head when
+the module is imported; the element is removed when the row leaves the wanted set — disabled,
+uninstalled, or replaced at a new pin — so a disabled plugin paints nothing (D4′) as it renders
+nothing. A plugin's own JSX wears the root class on its root element; the engine adds no wrapper.
+
 **The artifact (`PluginBundleSchema`).** One JSON file, `<id>.manifold-plugin.json`, at most
 `ISOLATE_MAX_ARTIFACT_BYTES` (16 MiB):
 
 ```json
 { "format": 1,
-  "manifest": { ...PluginManifest, "entry": { "server": true, "web": "web.js" } },
-  "files": { "server.js": "<base64>", "web.js": "<base64>" } }
+  "manifest": { ...PluginManifest, "entry": { "server": true, "web": "web.js", "styles": true } },
+  "files": { "server.js": "<base64>", "web.js": "<base64>", "styles.css": "<base64>" } }
 ```
 
 `format` is the literal `1` and nothing else parses. `manifest.entry` is REQUIRED here (optional
 on an in-tree manifest, which has no code to point at) and must name at least one half:
 `entry.server === true` means `files["server.js"]` is the server guest module (the name is fixed,
 `PLUGIN_BUNDLE_SERVER_FILE`), `entry.web` names the key of the worker module. Every half named
-must be a member of `files`, refused at the schema naming the half. Member names are FLAT
+must be a member of `files`, refused at the schema naming the half. `entry.styles === true`
+(additive-optional, #258) means `files["styles.css"]` (`PLUGIN_BUNDLE_STYLES_FILE`, fixed like
+the server's) is the web half's stylesheet — refused at the schema when the member is missing or
+no web half is named, and admitted only under the root-class rule above; absent, the bundle is
+exactly the pre-#258 one, so the format literal did not move and no protocol version bumped
+(a bundle written before the field parses unchanged, and a reader that knows it reads no sheet
+from one that lacks it). Member names are FLAT
 (`PLUGIN_BUNDLE_FILE_PATTERN`: one segment, no leading dot, no slash) because the files are
 extracted beside the artifact; a name that could climb is refused before any extractor sees it.
 Values are base64 of the file's bytes. **`sha256` is over the artifact's exact bytes**, never over
@@ -1507,7 +1545,8 @@ time and rolled back rather than raised at boot), `hash_mismatch`, `already_inst
 different hash, no `replace: true`), `not_installed`, `namespace_reserved` (`engine.` / `core.`),
 `still_enabled` (uninstall and replace both require the row disabled first — except the hub's own
 unpacked replace, §Unpacked plugins), `storage_retained`,
-`no_entry`. **Uninstall** (`{ id, purge? }`) removes the row and the files and never destroys
+`no_entry`, `stylesheet_unscoped` (the sheet reaches past the plugin's root class — S13 at load,
+above; the detail names `styles.css:<line>` and the selector). **Uninstall** (`{ id, purge? }`) removes the row and the files and never destroys
 plugin storage on its own: while the plugin's namespace holds rows — reserved ones included, the
 same count `purge` reports — it refuses `storage_retained: <n> keys; purge first or pass purge:
 true`, and `purge: true` runs the purge verb first (the same path and the same `plugin_purged`
@@ -1600,6 +1639,11 @@ every kind into one CSS family it owns (`mf-vocab`); no plugin CSS ever crosses.
 with `Content-Type: text/javascript`, `Cache-Control: no-store` and `ETag` equal to the install's
 `sha256`; 404 otherwise (not installed, disabled, or no web half). Same auth as `GET /api/plugins`.
 
+**`GET /api/plugins/:id/styles.css`.** Serves `files["styles.css"]` of an INSTALLED, ENABLED
+plugin whose `entry.styles` is true, with `Content-Type: text/css`, `Cache-Control: no-store` and
+the same `ETag`; 404 otherwise (not installed, disabled, no sheet declared). Same auth. The sheet
+is the one admitted under the root-class rule at install and re-verified at enable and boot.
+
 **The proof (ADR 0016 §8 stage 1).** Every claim above is held by two subjects, both driving the
 kit's reference plugin (`packages/plugin-kit/test/fixtures/sample`, `example.counter`) as a
 stranger's code. `packages/testkit/e2e/isolated-plugin.test.ts` runs REAL server processes: the
@@ -1666,8 +1710,16 @@ root-only. `packages/testkit/e2e/unpacked-plugin.test.ts` runs a REAL server wit
 `web.tsx` React panel authored through the door reaches a view joined before it existed as a
 roster frame carrying `mode: "unpacked"`, its `web.js` is served at the frame's pin with React
 resolved through the shared registry, an edit moves the pin and the served module, a broken edit
-is `artifact_invalid` with the row standing, and OFF disables the row, marks it, 404s its module
-and refuses its enable by name.
+is `artifact_invalid` with the row standing, an authored sheet painting a shell family is
+`stylesheet_unscoped` naming the selector with the row standing while a rooted one is served at
+`styles.css` at the new pin, and OFF disables the row, marks it, 404s its module and refuses its
+enable by name. The sheet's own proof: `packages/protocol/test/stylesheet.test.ts` (the walk:
+rooted passes; a shell family leftmost, wrapped in `:is()`/`:where()` or written to the root's
+left, a classless rule, a cousin id's root and a bare `@keyframes` refuse), the host suite (a
+bundle refused `stylesheet_unscoped` writing nothing, a rooted one served and 404 while off, an
+undeclared member never served) and `packages/testkit/e2e/in-realm-plugin.test.ts` in a real
+Chromium: the fixture's `<style data-plugin="example.counter">` arrives with the module, paints
+the counter's own root, leaves on disable and returns on enable.
 
 **Why no first-party plugin runs hardened yet (ADR 0016 §8.1).** Stage 1 owes one first-party
 plugin running both ways, and none qualifies against `ISOLATE_CTX_METHODS` today. Every

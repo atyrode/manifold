@@ -2045,7 +2045,9 @@ are the checks that will fail _your_ plugin:
   file under `packages/` resolves to a `REGISTRY.md` §Lexicon `cssFamilies` row, and every rule
   is defined by the owner of the leftmost family it scopes into. A family painted from another
   package's sheet, a family with no row, a row whose stylesheet defines nothing, or a classless
-  rule outside the floor sheet — each is RED, named by file and selector.
+  rule outside the floor sheet — each is RED, named by file and selector. A bundle's sheet meets
+  the same rule at load instead, against your root class (§10 Your stylesheet), with the same
+  selector walk.
 - In the browser: `/api/protocol` and `/api/plugins` agree with the assembly; hot
   enable/disable takes effect without a reload; an action invoked over the SDK is observed in
   the DOM and vice versa; the denial ladder returns the documented rules.
@@ -2240,7 +2242,8 @@ posts one, so a bad tree becomes a `fault` naming the panel and the engine paint
 is no `styles.css` member in its bundle, no `style` or `className` key in its vocabulary, and the
 engine's renderer owns every pixel the tree becomes — tones are the whole palette. Ink has one
 owner, and for a hardened row that owner is never the plugin. (An in-realm plugin's skin is §1
-Your skin ships with you; admitting a bundled stylesheet under the same rule is #258.)
+Your skin ships with you in the tree, and §10 Your stylesheet for a bundle: the same rule, met
+at load.)
 
 ### Packing
 
@@ -2445,16 +2448,17 @@ kit reads exactly these file names:
 
 ```
 example.hello/
-  manifest.json     # §2, plus "entry": { "server": true, "web": "web.js" }
+  manifest.json     # §2, plus "entry": { "server": true, "web": "web.js", "styles": true }
   server.ts         # default-exports { actions, handlers, lifecycle? }
   web.ts            # default-exports the WebPluginDef (§7 The web registration channels)
+  styles.css        # your skin, every selector rooted at .plugin-<id> (below); only with "styles": true
   package.json      # only so that `zod` resolves from here; nothing else is needed
 ```
 
 `entry` says which halves the bundle carries — `server: true` for `server.ts`, `web: "web.js"` for
-`web.ts` — and is the ONLY thing that distinguishes this manifest from an in-tree one (§2 applies
-in full: id grammar, capability ceiling, `contributes`, the assembly refusals). It does not choose
-a runner; the installer does (§7, §9).
+`web.ts`, `styles: true` for `styles.css` — and is the ONLY thing that distinguishes this manifest
+from an in-tree one (§2 applies in full: id grammar, capability ceiling, `contributes`, the
+assembly refusals). It does not choose a runner; the installer does (§7, §9).
 
 The server half default-exports what a `packages/plugins/*` package's `server.ts` exports (§3, §4):
 actions from `defineAction`, handlers written against `ActionCtx`, optional lifecycle hooks. The
@@ -2531,14 +2535,46 @@ export default { id: "example.hello", panels: { hello: Hello } };
 ```
 
 `packages/plugin-kit/test/fixtures/in-realm/` is the same thing at its smallest — a web-only
-counter, `entry: { "web": "web.js" }`, no server half — and it is what the kit's own tests pack.
+counter, `entry: { "web": "web.js", "styles": true }`, no server half — and it is what the kit's
+own tests pack.
 
-**Two things the directory does not carry yet.** A `styles.css` import in `web.ts` or `web.tsx` is
-not packed: the bundle has one JavaScript member per half, and admitting a plugin stylesheet at
-load under the S13 ownership rule (every selector's leftmost compound is `.plugin-<id with "." as "_">`) is #258.
-Until it lands, style with `@manifold/ui` (§7b) and the engine's classes. And `pack` does
-not typecheck: run `tsc` in your own directory if you want types, against the floor packages of
-the checkout you pack from.
+**One thing the directory does not carry.** `pack` does not typecheck: run `tsc` in your own
+directory if you want types, against the floor packages of the checkout you pack from.
+
+### Your stylesheet
+
+A `styles.css` beside the manifest is carried as a member of the bundle when the manifest says
+`"entry": { …, "styles": true }` — as it is, never bundled, and not imported from `web.ts`: the
+loader injects it beside your module. A sheet on disk that the manifest does not declare is
+refused by `pack` rather than left behind silently. The hub admits it under S13's rule at load
+(ADR 0025 §7; `CONTRACTS.md` §Hardened plugins):
+
+- **The leftmost compound of EVERY selector is your root class**, `.plugin-<id with each "." as "_">`
+  — `example.hello` → `.plugin-example_hello` — either the root itself or a part of it under the
+  `__` seam, `.plugin-example_hello__title`. `_` because an id segment may carry `-` but never `_`,
+  so no two plugins can share a root, and `__` because no id can produce it. Put the root class on
+  your panel's root element yourself (`<Stack className="plugin-example_hello">`); the engine adds
+  no wrapper.
+- **Everything to the right is yours.** `.plugin-example_hello .sidebar-row { … }` reaches into
+  your own subtree and is admitted; `.sidebar-row { … }` is the shell's family and is refused —
+  so is `:is(.sidebar-row)` or `.sidebar .plugin-example_hello`, because the leftmost compound
+  decides, exactly as S13 reads ownership in the tree.
+- **A rule with no class is refused outright** — `body`, `:root`, `[data-x]` — because it reaches
+  every node in the document. Read the ground's tokens (§7b) instead; set your own under your root.
+- **`@keyframes` names meet the same rule**: `@keyframes plugin-example_hello__pulse`.
+
+The refusal is `stylesheet_unscoped: styles.css:<line> <why> (<selector>)`, from the install door for
+a bundle and from the authoring door or the rebuild loop for an unpacked directory — before anything
+is written, the working row standing — and from `setEnabled` if a stored bundle is ever re-verified
+against a stricter rule. The admitted sheet is served at `GET /api/plugins/<id>/styles.css` (same
+bearer, same `no-store`, same `ETag` as `web.js`) and injected as `<style data-plugin="<id>">`
+while your row is enabled; off, it is removed with your panels (D4′). This is ink ownership, not a
+sandbox: you hold the DOM and could paint from code, and the rule is what makes a second writer
+for a shell family impossible in the one artifact that is declarative. It binds `core.*` too,
+whose sheets S13 checks in the tree.
+
+`packages/plugin-kit/test/fixtures/in-realm/styles.css` is the smallest example: the counter's root
+and its count, both under `.plugin-example_counter`.
 
 ### The shared externals
 
@@ -2715,7 +2751,8 @@ ONE entry. The answer is the install result plus the pin of the bytes the hub bu
 (your editor over `ssh`, an agent's shell) is the same loop: the watch debounces a change into
 one rebuild, and every existing directory is rebuilt once at start, so an edit made while the hub
 was down reaches the roster too. `web.tsx` is accepted here as everywhere the kit reads a
-directory; a `styles.css` is still #258.
+directory, and so is `styles.css` under Your stylesheet's rule: a sheet that reaches past your
+root is `stylesheet_unscoped` by name, the working row standing.
 
 What a save does that `dev` (above) cannot: a running unpacked row is replaced LIVE — the old
 module hears `onDisable`, the new one is imported fresh and hears `onEnable`, the row is never

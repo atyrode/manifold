@@ -11,7 +11,9 @@ import {
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import {
   ISOLATE_MAX_ARTIFACT_BYTES,
+  PLUGIN_BUNDLE_STYLES_FILE,
   PluginBundleSchema,
+  unscopedRule,
   type PluginBundle,
   type PluginInstallRefusal,
 } from "@manifold/protocol";
@@ -222,6 +224,27 @@ export function parseBundle(bytes: Uint8Array): PluginBundle {
 }
 
 /**
+ * S13 AT LOAD (ADR 0025 §7, #258): a bundle that declares `entry.styles` is admitted only if
+ * every selector of its `styles.css` is rooted at the plugin's own class, by the one walk the
+ * gate reads the tree with (`@manifold/protocol` `unscopedRule`). The refusal names the first
+ * selector and its line, which is what an author fixes. A sheet nobody declared is not read:
+ * the loader never fetches it either.
+ */
+export function stylesheetRefusal(bundle: PluginBundle): InstallRefusal | null {
+  if (bundle.manifest.entry.styles !== true) return null;
+  const encoded = bundle.files[PLUGIN_BUNDLE_STYLES_FILE] ?? "";
+  const offender = unscopedRule(
+    Buffer.from(encoded, "base64").toString("utf8"),
+    bundle.manifest.id,
+  );
+  if (offender === null) return null;
+  return new InstallRefusal(
+    "stylesheet_unscoped",
+    `${PLUGIN_BUNDLE_STYLES_FILE}:${String(offender.line)} ${offender.reason === "classless" ? "a rule with no class reaches every node" : "the leftmost compound is not this plugin's root class"} (${offender.selector})`,
+  );
+}
+
+/**
  * Decodes every member into `dir`, one file per member. Names are flat by schema
  * (`PLUGIN_BUNDLE_FILE_PATTERN`), so `join` cannot leave the directory. Existing files are
  * overwritten: at boot this is what makes the extracted tree a cache of the verified bundle
@@ -237,7 +260,8 @@ export function extractBundle(bundle: PluginBundle, dir: string): void {
 /**
  * Fetch, pin, parse, admit, write — in that order, and the order is the contract: a hash
  * mismatch or a refused bundle writes nothing. The pin is compared on the EXACT bytes read,
- * never on a re-serialization.
+ * never on a re-serialization. The host's verdict (namespace, replace) comes before the
+ * sheet's, so a squat is named as a squat.
  */
 export async function installArtifact(request: ArtifactRequest): Promise<InstalledArtifact> {
   const bytes = await readArtifact(request);
@@ -246,7 +270,7 @@ export async function installArtifact(request: ArtifactRequest): Promise<Install
     throw new InstallRefusal("hash_mismatch", `artifact hashes to ${sha256}`);
   }
   const bundle = parseBundle(bytes);
-  const refusal = request.admit?.(bundle) ?? null;
+  const refusal = request.admit?.(bundle) ?? stylesheetRefusal(bundle);
   if (refusal !== null) throw refusal;
   const { bundlePath, dir } = installLayout(request.dataDir, bundle.manifest.id, sha256);
   mkdirSync(dirname(bundlePath), { recursive: true, mode: 0o700 });
@@ -264,6 +288,8 @@ export type BundleVerdict =
  * re-extracted; any failure is a verdict the host puts on the roster (`enable_failed`,
  * `install.refusal`) and never loads. A bundle whose manifest names a different id than the
  * row is refused too: the row is the installer's consent and the manifest may not move it.
+ * The sheet meets its rule again here, so a row admitted before the rule existed — or under a
+ * looser one — is refused fail-closed rather than painted.
  */
 export function verifyInstalledBundle(row: PluginInstallRow): BundleVerdict {
   let bytes: Uint8Array;
@@ -292,6 +318,8 @@ export function verifyInstalledBundle(row: PluginInstallRow): BundleVerdict {
       detail: `bundle manifest is "${bundle.manifest.id}", the install is "${row.pluginId}"`,
     };
   }
+  const unscoped = stylesheetRefusal(bundle);
+  if (unscoped !== null) return { ok: false, refusal: unscoped.reason, detail: unscoped.detail };
   const dir = row.bundlePath.slice(0, -PLUGIN_BUNDLE_SUFFIX.length);
   extractBundle(bundle, dir);
   return { ok: true, bundle, dir };

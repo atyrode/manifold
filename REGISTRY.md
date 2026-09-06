@@ -220,7 +220,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
   "floor": [
     {
       "glob": "packages/protocol/src/**",
-      "why": "wire schemas, capabilities, the placement algebra, manifest and action shapes, the manifold:// grammar — the vocabulary every plane speaks"
+      "why": "wire schemas, capabilities, the placement algebra, manifest and action shapes, the manifold:// grammar — the vocabulary every plane speaks; and the one CSS selector walk (`stylesheet.ts`, string parsing and nothing else) the gate reads the tree with and the hub admits a bundle's sheet with (ADR 0025 §7)"
     },
     {
       "glob": "packages/scene/src/**",
@@ -592,8 +592,11 @@ Four rules bind that table:
   `core.shell`, `core.brand`, `core.keys` and `core.plugins`, plus the three seats the floor
   dispatches: `core.space`, `core.index` and `core.access`), `builtin`
   (an engine door has no toggle), the dependency classes, the data-version classes,
-  `still_enabled` and `developer_mode_off` (an unpacked row while developer mode is off, ADR 0025
-  §4 — the one class the authoring door shares with the toggle) are members of one published set; the roster also carries `changedBy` /
+  `still_enabled`, `developer_mode_off` (an unpacked row while developer mode is off, ADR 0025
+  §4 — the one class the authoring door shares with the toggle) and `stylesheet_unscoped` (a
+  bundle's `styles.css` reaching past the plugin's own root class, ADR 0025 §7 — named at the
+  install door for a bundle and the unpacked build, and by the toggle when a stored bundle is
+  re-verified) are members of one published set; the roster also carries `changedBy` /
   `changedAt`, so a placeholder can say who turned this off, and `lifecycle` (`ok` /
   `enable_failed` / `disable_failed`), because a teardown that fails is a state every principal
   can see rather than an assertion. Disable always completes. A family control is the parent's
@@ -1421,6 +1424,12 @@ applied to vocabulary: one door onto "what do we call this kind".
       "means": "a CLOSED set the engine publishes as data and refuses anything outside of: the action, placement, event, grant and instance vocabularies at `GET /api/protocol`, the `evt` log vocabulary, and — for an isolated web half — the component vocabulary (`UiNodeSchema`: thirteen node kinds, five tones) it renders with instead of ever touching the DOM (ADR 0016 §3). A vocabulary is the opposite of an escape hatch: a kind or word it does not list is a refusal, never an `unknown`",
       "banned": [],
       "allow": []
+    },
+    {
+      "term": "stylesheet",
+      "means": "a plugin's skin as one CSS file — `src/styles.css` in the tree, imported by the web half and checked by S13 against §cssFamilies; the `styles.css` member of a bundle (`entry.styles: true`, `PLUGIN_BUNDLE_STYLES_FILE`), admitted at load only when every selector is rooted at the plugin's own class `.plugin-<id>` and refused `stylesheet_unscoped` otherwise (ADR 0025 §7), served at GET /api/plugins/:id/styles.css and injected as `<style data-plugin>` while the row is enabled. Ink has one owner; a stylesheet is where that owner writes it",
+      "banned": [],
+      "allow": []
     }
   ]
 }
@@ -1456,6 +1465,19 @@ context: they are checked for REGISTRATION, so no family hides inside a descenda
 and never for ownership. `@keyframes` names are families too. A rule with no class anywhere —
 the reset, `:root`, `[data-drop-denial]` — is the floor's by construction and may appear
 nowhere else, which is what stops a plugin from restyling `body`.
+
+**A sheet that is not in the tree meets the same rule at load (ADR 0025 §7, #258).** An
+installed or unpacked plugin's `styles.css` has no row here, so the hub is its S13: every
+selector's leftmost compound must anchor on the plugin's own root class,
+`.plugin-<id with each "." as "_">` (or a part of it under `__`, a seam no id can produce), a
+classless rule is refused outright, and the refusal is `stylesheet_unscoped` by name — at the
+install door, at the unpacked build, and when a stored bundle is re-verified. The walk is ONE
+module, `packages/protocol/src/stylesheet.ts`, imported by `verify:axioms` for the tree and by
+the hub for a bundle (invariant 14); a kit fixture's sheet under `test/fixtures/` is read the
+hub's way by the gate ("S13 css ownership at load") and registers no family. It binds `core.*`
+too — their sheets are here, where S13 checks them; no runtime check reads a tree row's CSS.
+This is ink ownership, not security: the mod holds the DOM, and the rule closes the one
+declarative artifact against a second writer for a shell family.
 
 **One owner is not a package, and that asymmetry is real.** Every plugin's stylesheet lives in
 its package. The shell's cannot: the sidebar, the workspace frame and the routed container view
@@ -2244,7 +2266,7 @@ parser over the dispatch ladder; its live half dispatches every registered door.
 | S10   | **The residual carve-out, published**: the script prints every `cleanup: true` action in the assembly, so growth of the action plane's one disable exemption is a line in a gate diff rather than a later discovery (ADR 0013 §9). Two assertions give the list teeth: a cleanup door's verb is REMOVAL, against the script's closed verb list — which mechanizes the ruling `core.terminals` makes by hand in a comment, that claiming a lease is administration and therefore not `cleanup` — and a cleanup door belongs to a PLUGIN, because an engine door publishes `source: "builtin"`, has no toggle, and cannot carry a residual from a disable it can never suffer.                                                                                                                                                                                                                                                                        |
 | S11   | **Lexicon**: no word in any §Lexicon row's `banned` list appears in an identifier, a classified wire literal, a CSS selector, a file or directory name, or a Markdown heading, outside a declared `allow` row — and every `allow` row suppresses at least one real occurrence, every `term` occurs at least once, and no `term` sits in another row's `banned` list.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | S12   | **One label vocabulary**: exactly ONE table in the tree translates an item kind into a display noun, its keys are `ITEM_KINDS` ∪ the assembly's element types, and every value's canonical word is that key's registry term. A second such table fails (invariant 14 applied to vocabulary).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| S13   | **CSS ownership**: every selector family in every stylesheet under `packages/` resolves to a §Lexicon `cssFamilies` row, and every rule is defined by the owner of the leftmost family it scopes into. A family painted from another package's sheet, a family with no row, a row whose stylesheet defines nothing, or a classless rule outside the floor sheet — each is RED, named by file and selector.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| S13   | **CSS ownership**: every selector family in every stylesheet under `packages/` resolves to a §Lexicon `cssFamilies` row, and every rule is defined by the owner of the leftmost family it scopes into. A family painted from another package's sheet, a family with no row, a row whose stylesheet defines nothing, or a classless rule outside the floor sheet — each is RED, named by file and selector. A sheet under a kit `test/fixtures/` is an installed plugin's and is read the hub's way instead ("S13 css ownership at load", ADR 0025 §7, #258): every selector rooted at `.plugin-<id>` by the one walk `packages/protocol/src/stylesheet.ts` lends both readers, else RED naming the selector.                                                                                                                                                                                                                                        |
 | S14   | **Log-event vocabulary**: every `evt` a producer passes to `Logger.info/warn/error` in `packages/server/src` or to the agent's log sink, and every `"evt":"…"` literal a `packages/testkit` e2e or a `scripts/` gate matches inside raw stdout, is a member of `LOG_EVENTS` — and every member has a live producer, so a name nobody emits is a stale row. The producer half is also a compile error (`LogEvent`); the CONSUMER half is why the check exists, because no type reaches inside a string literal.                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | S15   | **Gate contracts**: every `[data-testid=…]` literal and every `clickTestId(…)` argument in `scripts/` resolves to a §Gate-contracts row AND to a live `data-testid=` attribute in that row's renderer (templated attributes match by shape), and every row is queried by some script. A gate keyed off button copy, or off a test-id nobody declared, fails.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | S16   | **The floor's budget**: `packages/plugin/src` (source only, tests excluded) stays inside a declared line ceiling — a printed WARN at 9,000 and RED above 12,000. Every other static check asks whether a boundary is clean; this one asks how big the engine got, which is the failure mode the litmus test cannot see because it governs each addition and never the aggregate. `packages/plugin/src` is where growth lands first: every plugin imports it, so a helper put there is reachable by everything without justifying itself to a second party. Raising a threshold is a diff somebody defends; [ADR 0024](docs/decisions/0024-mounted-projection-and-tile-motion.md) records this change's bounded admission.                                                                                                                                                                                                                           |

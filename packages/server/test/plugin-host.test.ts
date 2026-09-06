@@ -1961,6 +1961,69 @@ describe("PluginHost install doors", () => {
     fixture.store.close();
   });
 
+  test("a bundle whose sheet reaches past its root class is refused stylesheet_unscoped and writes nothing; a rooted one is served at the pin (#258)", async () => {
+    const fixture = await installFixture();
+    const host = await customHost(fixture, [], {
+      distribution: SHIPPED_PLUGIN_IDS,
+      isolates: fixture.isolates,
+    });
+    const manifest: PluginManifest = {
+      ...SAMPLE_MANIFEST,
+      entry: { server: true, web: "web.js", styles: true },
+    };
+    const unscoped = fixture.drop(manifest, {
+      "server.js": "export {};",
+      "web.js": "export const web = 1;",
+      "styles.css": ".plugin-vendor_sample { color: red }\n.sidebar-section-title { color: red }",
+    });
+    expect(
+      denial(await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, unscoped)).message,
+    ).toBe(
+      "stylesheet_unscoped: styles.css:2 the leftmost compound is not this plugin's root class (.sidebar-section-title)",
+    );
+    expect(fixture.store.pluginInstalls()).toEqual([]);
+    expect(existsSync(join(fixture.dataDir, "plugins"))).toBe(false);
+
+    const classless = fixture.drop(manifest, {
+      "server.js": "export {};",
+      "web.js": "export const web = 1;",
+      "styles.css": "body { margin: 0 }",
+    });
+    expect(
+      denial(await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, classless)).message,
+    ).toBe("stylesheet_unscoped: styles.css:1 a rule with no class reaches every node (body)");
+
+    const sheet =
+      ".plugin-vendor_sample { color: red }\n.plugin-vendor_sample__title { font-weight: 600 }";
+    const rooted = fixture.drop(manifest, {
+      "server.js": "export {};",
+      "web.js": "export const web = 1;",
+      "styles.css": sheet,
+    });
+    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, rooted)).ok).toBe(true);
+    expect(host.stylesheet(SAMPLE_ID)).toEqual({
+      sha256: rooted.sha256,
+      bytes: Buffer.from(sheet),
+    });
+    // Off, the sheet leaves with the module: nothing is fetched for a row that paints nothing.
+    expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+    expect(host.stylesheet(SAMPLE_ID)).toBeNull();
+    expect(await host.setEnabled(SAMPLE_ID, true, "admin")).toEqual({ ok: true });
+    expect(host.stylesheet(SAMPLE_ID)?.sha256).toBe(rooted.sha256);
+    // A bundle that declares no sheet serves none, whatever it carries.
+    expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+    const undeclared = fixture.drop(
+      { ...SAMPLE_MANIFEST, version: "2.0.0" },
+      { "server.js": "export {};", "web.js": "export const web = 1;", "styles.css": sheet },
+    );
+    expect(
+      (await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { ...undeclared, replace: true }))
+        .ok,
+    ).toBe(true);
+    expect(host.stylesheet(SAMPLE_ID)).toBeNull();
+    fixture.store.close();
+  });
+
   test("a second install of an id is already_installed; replace needs the row off, then upgrades", async () => {
     const fixture = await installFixture();
     const host = await customHost(fixture, [], { isolates: fixture.isolates });
@@ -2230,19 +2293,19 @@ function unpackedManifest(extras: Partial<PluginManifest> = {}): string {
 
 /**
  * The kit's shape without the kit's bundler: `manifest.json` parsed, `server.ts` as the server
- * member, `web.tsx` as the web member, a manifest the schema refuses thrown as a build error.
+ * member, `web.tsx` as the web member, `styles.css` carried as it is when present, a manifest
+ * the schema refuses thrown as a build error.
  */
 async function fakePack(pluginDir: string, outFile: string): Promise<{ sha256: string }> {
   const manifest: unknown = JSON.parse(readFileSync(join(pluginDir, "manifest.json"), "utf8"));
   const member = (name: string): string =>
     Buffer.from(readFileSync(join(pluginDir, name), "utf8")).toString("base64");
-  const bytes = Buffer.from(
-    JSON.stringify({
-      format: 1,
-      manifest,
-      files: { "server.js": member("server.ts"), "web.js": member("web.tsx") },
-    }),
-  );
+  const files: Record<string, string> = {
+    "server.js": member("server.ts"),
+    "web.js": member("web.tsx"),
+  };
+  if (existsSync(join(pluginDir, "styles.css"))) files["styles.css"] = member("styles.css");
+  const bytes = Buffer.from(JSON.stringify({ format: 1, manifest, files }));
   writeFileSync(outFile, bytes);
   return { sha256: sha256Hex(bytes) };
 }
@@ -2400,6 +2463,55 @@ describe("PluginHost unpacked plugins", () => {
     );
     expect(impostor).toEqual({
       refused: `artifact_invalid: manifest id "vendor.other" is not the directory it was authored in, "${UNPACKED_ID}"`,
+    });
+    fixture.store.close();
+  });
+
+  test("an authored sheet that reaches past the root is refused stylesheet_unscoped with the row standing; rooted, it is served at the pin (#258)", async () => {
+    const { fixture, host } = await unpackedFixture();
+    expect(await host.setDeveloperMode(true, "admin")).toEqual({ ok: true });
+    const authored = await host.author(
+      {
+        id: UNPACKED_ID,
+        files: {
+          "manifest.json": unpackedManifest(),
+          "server.ts": unpackedServer("1.0.0"),
+          "web.tsx": "export const web = 1;",
+        },
+      },
+      "admin",
+    );
+    if ("refused" in authored) throw new Error(authored.refused);
+
+    // The author declares the sheet and writes one that paints the shell: refused by name,
+    // through the same install path a bundle meets, and the working row stands at its pin.
+    expect(
+      await host.author(
+        {
+          id: UNPACKED_ID,
+          files: {
+            "manifest.json": unpackedManifest({
+              entry: { server: true, web: "web.js", styles: true },
+            }),
+            "styles.css": ".sidebar-section-title { color: red }",
+          },
+        },
+        "admin",
+      ),
+    ).toEqual({
+      refused:
+        "stylesheet_unscoped: styles.css:1 the leftmost compound is not this plugin's root class (.sidebar-section-title)",
+    });
+    expect(installedRow(host, UNPACKED_ID).install?.sha256).toBe(authored.sha256);
+    expect(host.stylesheet(UNPACKED_ID)).toBeNull();
+
+    const sheet = ".plugin-vendor_unpacked { color: red }";
+    const rooted = await host.author({ id: UNPACKED_ID, files: { "styles.css": sheet } }, "admin");
+    if ("refused" in rooted) throw new Error(rooted.refused);
+    expect(rooted.sha256).not.toBe(authored.sha256);
+    expect(host.stylesheet(UNPACKED_ID)).toEqual({
+      sha256: rooted.sha256,
+      bytes: Buffer.from(sheet),
     });
     fixture.store.close();
   });

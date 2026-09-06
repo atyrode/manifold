@@ -314,6 +314,34 @@ describe("the install artifact", () => {
       ).success,
     ).toBe(true);
   });
+
+  test("a declared sheet must be a member, beside a web half to wear it (#258)", () => {
+    const manifest = bundle().manifest;
+    const declared = { ...manifest, entry: { web: "web.js", styles: true } };
+    const missing = PluginBundleSchema.safeParse(
+      bundle({ manifest: declared, files: { "web.js": "aGk=" } }),
+    );
+    expect(missing.success).toBe(false);
+    expect(missing.error?.issues[0]?.path).toEqual(["manifest", "entry", "styles"]);
+    const bare = PluginBundleSchema.safeParse(
+      bundle({
+        manifest: { ...manifest, entry: { server: true, styles: true } },
+        files: { "server.js": "aGk=", "styles.css": "aGk=" },
+      }),
+    );
+    expect(bare.success).toBe(false);
+    expect(bare.error?.issues[0]?.path).toEqual(["manifest", "entry", "styles"]);
+    expect(
+      PluginBundleSchema.safeParse(
+        bundle({ manifest: declared, files: { "web.js": "aGk=", "styles.css": "aGk=" } }),
+      ).success,
+    ).toBe(true);
+    // Undeclared, an extra member is carried and ignored: the pre-#258 bundle parses unchanged.
+    expect(
+      PluginBundleSchema.safeParse(bundle({ files: { ...bundle().files, "styles.css": "aGk=" } }))
+        .success,
+    ).toBe(true);
+  });
 });
 
 describe("an installed row", () => {
@@ -363,6 +391,7 @@ describe("an installed row", () => {
       "still_enabled",
       "storage_retained",
       "no_entry",
+      "stylesheet_unscoped",
     ]);
     // A bundle that stopped hashing to its pin is fail-closed (R8): `hash_mismatch` on the
     // install block, `enable_failed` on the row, never loaded.

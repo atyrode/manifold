@@ -1,0 +1,10 @@
+/* The fixture's ink (ADR 0025 §7, #258): every rule is rooted at the plugin's own class. */
+.plugin-example_counter {
+  border-left: 4px solid rgb(214, 63, 98);
+  padding-left: 0.75rem;
+}
+.plugin-example_counter__count {
+  font-family: monospace;
+  font-size: 1.5rem;
+  color: rgb(214, 63, 98);
+}
