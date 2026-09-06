@@ -241,10 +241,12 @@ equivalent. An unrestricted root remains `*`; a root affected by administered de
 other credential carry only their effective concrete capabilities at `manifold://`. Acceptance
 verifies issuer, audience, signature, browser-bound nonce, a positive lifetime of at most 60 seconds
 and assertion id, then deterministically maps `(issuer, sourcePrincipalId)` to a local principal
-with `origin: issuer` and mints a 15-minute preview-local token. The browser removes it at expiry
-and repeats the production check. Session sockets close `4403 expired` when their credential
-expires, so production revocation or grant changes reach an already-open preview within that lease
-and a new/renewed preview sees them immediately. Assertions are single-use within a server process
+with `origin: issuer` and mints a preview-local token with the ordinary interactive lifetime
+(fourteen days, the same as a production browser credential; ADR 0028). The browser removes it at
+expiry and repeats the production check. Session sockets close `4403 expired` when their credential
+expires. A new or renewed preview sees production revocation or grant changes immediately; an
+already-open preview is bounded by its own credential's expiry or by revoking that preview
+principal's sessions on the preview. Assertions are single-use within a server process
 and too short-lived to survive a useful restart replay window.
 
 `preview_identity_issued` and `preview_identity_accepted` are ordinary journal events carrying
