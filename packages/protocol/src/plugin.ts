@@ -781,6 +781,10 @@ export type PluginInstallRefusal = (typeof PLUGIN_INSTALL_REFUSALS)[number];
  * `hash_mismatch` here and `enable_failed` on the row, never loaded (R8, fail-closed).
  */
 export const PluginInstallSchema = z.strictObject({
+  /** Installer-selected hardening; absent is in-realm (ADR 0025). */
+  hardened: z.boolean().optional(),
+  /** Shared React and floor-package versions used to build the bundle. */
+  builtAgainst: z.record(z.string(), z.string()).optional(),
   sha256: z.string().length(64),
   /** The url or path as given, so an operator can tell where a stranger's code came from. */
   source: z.string().max(2048),
@@ -813,10 +817,9 @@ export const PluginRosterEntrySchema = z.strictObject({
   changedBy: z.string().min(1).max(128).nullish(),
   changedAt: z.number().int().min(0).nullish(),
   /**
-   * Present iff the plugin was INSTALLED (ADR 0016 §8 stage 2): the row is a stranger's code
-   * running isolated, and this block is what an installer consented to. Absent for every
-   * in-realm row, first-party `plugin` and `builtin` alike — presence is what selects the
-   * runner (§1), so there is no third `source` value to invent.
+   * Present iff the plugin was installed. The installer chooses the runner with
+   * `hardened`; absent or false runs in-realm, true selects the hardened runner.
+   * Bundled first-party and builtin rows have no install record.
    */
   install: PluginInstallSchema.optional(),
 });

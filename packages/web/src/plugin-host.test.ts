@@ -33,6 +33,7 @@ interface ManifestFields {
   readonly id: string;
   readonly title?: string;
   readonly contributes?: Partial<PluginManifest["contributes"]>;
+  readonly entry?: PluginManifest["entry"];
 }
 
 function entry(fields: ManifestFields, enabled = true): PluginRosterEntry {
@@ -43,6 +44,7 @@ function entry(fields: ManifestFields, enabled = true): PluginRosterEntry {
       title: fields.title ?? fields.id,
       description: "",
       capabilities: [],
+      ...(fields.entry === undefined ? {} : { entry: fields.entry }),
       contributes: {
         panels: [],
         sections: [],
@@ -145,50 +147,32 @@ describe("buildBrowserAssembly", () => {
     expect(assembly.pluginTitle("core.draw")).toBe("Drawing");
   });
 
-  /**
-   * THE SECOND SOURCE (ADR 0016 §1): a row that arrived through `install` with a web half
-   * resolves every declared panel to the engine's isolated panel without anything in the tree
-   * naming it — and the same component on every rebuild, or every roster change would remount
-   * the tile and re-init the guest.
-   */
-  test("an installed plugin's declared panels resolve to the isolated panel, stably", () => {
-    const installed = (web: boolean, install: boolean): PluginRosterEntry => {
-      const row = entry({
+  test("only installer-selected hardening selects the stable worker panel", () => {
+    const installed = (hardened?: boolean): PluginRosterEntry => ({
+      ...entry({
         id: "acme.notes",
         title: "Notes",
+        entry: { web: "web.js" },
         contributes: { panels: [{ id: "main", title: "Notes" }] },
-      });
-      return {
-        ...row,
-        source: "plugin",
-        manifest: web ? { ...row.manifest, entry: { web: "web.js" } } : row.manifest,
-        ...(install
-          ? {
-              install: {
-                sha256: "a".repeat(64),
-                source: "/uploads/acme.notes.manifold-plugin.json",
-                grantedCaps: [],
-                installedBy: "p1",
-                installedAt: 1,
-              },
-            }
-          : {}),
-      };
-    };
-    const panelOf = (roster: PluginRoster, defs: readonly WebPluginDef[] = []) =>
-      buildBrowserAssembly(roster, 1, defs).panels.get("acme.notes.main");
-
-    const resolved = panelOf([installed(true, true)]);
-    expect(resolved?.Component).not.toBeNull();
-    expect(resolved?.enabled).toBe(true);
-    expect(panelOf([installed(true, true)])?.Component).toBe(resolved?.Component ?? null);
-
-    // Installed with no web half, or a web half that is not installed (first-party): no runner.
-    expect(panelOf([installed(false, true)])?.Component).toBeNull();
-    expect(panelOf([installed(true, false)])?.Component).toBeNull();
-    // An in-tree registration for the same id still wins the slot.
-    const inTree: WebPluginDef = { id: "acme.notes", panels: { main: Sidebar } };
-    expect(panelOf([installed(true, true)], [inTree])?.Component).toBe(Sidebar);
+      }),
+      install: {
+        sha256: "a".repeat(64),
+        source: "/uploads/acme.notes.manifold-plugin.json",
+        grantedCaps: [],
+        installedBy: "p1",
+        installedAt: 1,
+        ...(hardened === undefined ? {} : { hardened }),
+      },
+    });
+    const def: WebPluginDef = { id: "acme.notes", panels: { main: Sidebar } };
+    const panelOf = (row: PluginRosterEntry) =>
+      buildBrowserAssembly([row], 1, [def]).panels.get("acme.notes.main")?.Component;
+    const worker = panelOf(installed(true));
+    expect(worker).not.toBeNull();
+    expect(worker).not.toBe(Sidebar);
+    expect(panelOf(installed(true))).toBe(worker);
+    expect(panelOf(installed(false))).toBe(Sidebar);
+    expect(panelOf(installed())).toBe(Sidebar);
   });
 
   test("a disabled plugin keeps every contribution, tagged enabled:false", () => {

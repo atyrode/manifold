@@ -5420,7 +5420,14 @@ try {
 
     /* Packed by the kit's own command, as an author packs: a real second process. */
     const pack = Bun.spawn(
-      ["bun", join(kit, "src/pack.ts"), join(kit, "test/fixtures/sample"), "--out", bundlePath],
+      [
+        "bun",
+        join(kit, "src/pack.ts"),
+        join(kit, "test/fixtures/sample"),
+        "--out",
+        bundlePath,
+        "--self-contained",
+      ],
       { cwd: kit, stdout: "pipe", stderr: "pipe" },
     );
     const [packOut, packErr, packCode] = await Promise.all([
@@ -5432,7 +5439,7 @@ try {
     const sha256 = String(Reflect.get(JSON.parse(packOut) as object, "sha256"));
 
     const admitted = ActionOutcomeSchema.parse(
-      await dispatch(ENGINE_INSTALL_ACTION, { source: bundlePath, sha256 }),
+      await dispatch(ENGINE_INSTALL_ACTION, { source: bundlePath, sha256, hardened: true }),
     );
     const installedRow = PluginsResponseSchema.parse(await getJson("/api/plugins")).plugins.find(
       (entry) => entry.manifest.id === PLUGIN_ID,

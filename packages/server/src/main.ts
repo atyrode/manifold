@@ -1,3 +1,4 @@
+import "./shared-modules.ts";
 import { resolve } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { elementPayloadGuard } from "@manifold/plugin";

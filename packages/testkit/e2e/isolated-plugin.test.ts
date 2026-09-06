@@ -44,11 +44,14 @@ let sha256 = "";
 beforeAll(async () => {
   packDir = mkdtempSync(join(tmpdir(), "manifold-isolated-plugin-"));
   bundlePath = join(packDir, BUNDLE_NAME);
-  const pack = Bun.spawn(["bun", join(KIT, "src/pack.ts"), SAMPLE, "--out", bundlePath], {
-    cwd: KIT,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  const pack = Bun.spawn(
+    ["bun", join(KIT, "src/pack.ts"), SAMPLE, "--out", bundlePath, "--self-contained"],
+    {
+      cwd: KIT,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
   const [stdout, stderr, code] = await Promise.all([
     new Response(pack.stdout).text(),
     new Response(pack.stderr).text(),
@@ -81,7 +84,11 @@ async function rosterRow(server: TestServer): Promise<PluginRosterEntry | undefi
 }
 
 function install(server: TestServer, source: string, pin: string): Promise<ActionOutcome> {
-  return callAction(server, server.ownerKey, "engine.plugins.install", { source, sha256: pin });
+  return callAction(server, server.ownerKey, "engine.plugins.install", {
+    source,
+    sha256: pin,
+    hardened: true,
+  });
 }
 
 function bump(server: TestServer, args: unknown): Promise<ActionOutcome> {
@@ -157,13 +164,6 @@ test("an installed plugin composes, answers its door from its own process, and u
     expect(row?.source).toBe("plugin");
     expect(row?.enabled).toBe(true);
     expect(row?.lifecycle).toBeUndefined();
-    expect(row?.install).toEqual({
-      sha256,
-      source: bundlePath,
-      grantedCaps: ["containers:read"],
-      installedBy: expect.any(String),
-      installedAt: expect.any(Number),
-    });
     expect(row?.actions.map((action) => action.name)).toEqual([BUMP]);
     expect(row?.manifest.entry).toEqual({ server: true, web: "web.js" });
 

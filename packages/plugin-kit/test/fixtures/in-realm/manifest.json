@@ -1,0 +1,17 @@
+{
+  "id": "example.counter",
+  "version": "1.0.0",
+  "title": "Example counter",
+  "description": "A live in-realm React counter sharing the shell's React and standard UI.",
+  "capabilities": [],
+  "contributes": {
+    "settings": [],
+    "panels": [{ "id": "counter", "title": "Example counter" }],
+    "seats": [{ "panel": "counter", "order": 100 }],
+    "sections": [],
+    "elements": [],
+    "tools": [],
+    "events": []
+  },
+  "entry": { "web": "web.js" }
+}

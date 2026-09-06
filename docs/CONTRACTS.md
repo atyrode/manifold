@@ -756,8 +756,8 @@ web halves — and both run `assembleRoster` from `@manifold/plugin`, which refu
 plugin ids, action names, panel ids, element types and tool ids by NAMING every offender.
 Manifests are inert DATA: no executable fields; `entry` names which halves an INSTALLED bundle
 runs and is absent on every in-tree manifest (§Hardened plugins). Plugins are trusted in-process
-code (ADR 0010, ADR 0025) and hardened only when their installer chose it (ADR 0016; today every
-installed row, until the in-realm loader lands — §Hardened plugins); the
+code (ADR 0010, ADR 0025) and hardened only when their installer chose `hardened: true`
+(ADR 0016; §Hardened plugins); the
 wire is the security boundary and every authority decision happens at a door. What happens to a
 plugin's data, contributions and neighbours across an enable/disable is the **behavioral contract**
 (`docs/decisions/0013-plugin-behavioral-contract.md`, per-kind table in `REGISTRY.md`
@@ -774,7 +774,7 @@ plugin's data, contributions and neighbours across an enable/disable is the **be
            | "isolate_starting" | "isolate_crashed",   // absent ≡ ok; the isolate_ pair is the runner's
   refusal?: PluginRefusalReason,              // why this row cannot be toggled right now
   changedBy?: string | null, changedAt?: number | null,    // who last flipped it, and when
-  install?: { sha256, source, grantedCaps, installedBy, installedAt, refusal? }  // present iff INSTALLED (§Hardened plugins)
+  install?: { sha256, source, grantedCaps, installedBy, installedAt, hardened?, builtAgainst?, refusal? }  // present iff INSTALLED (§Hardened plugins)
 }
 ```
 
@@ -799,15 +799,15 @@ fan-out order.
 object; the answer is always HTTP 200 carrying `ActionOutcome`. The ladder is MONOTONIC and
 stops at the first rule that fires:
 
-| Order | `rule`            | Fires when                                                                                                                                                                                                                                                                                    |
-| ----- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | `unknown_action`  | no assembled action carries that name                                                                                                                                                                                                                                                         |
-| 2     | `plugin_disabled` | the owning plugin is disabled in this workspace — SKIPPED for actions declared `cleanup: true` (D12: removal survives a disable; `core.terminals.kill` is the wave-1 occupant)                                                                                                                |
-| 3     | `forbidden`       | the caller is container-scoped (`containerScope !== null`) AND the action declares `scope: "workspace"` (the default) — message "scoped tokens cannot invoke workspace actions". An action declaring `scope: "container"` skips this rung; its handler MUST honour `ctx.containerScope`       |
-| 4     | `forbidden`       | the caller lacks one of the action's DECLARED caps (intersection at the door, not inside the handler)                                                                                                                                                                                         |
-| 5     | `invalid_args`    | the body fails the action's `input` schema                                                                                                                                                                                                                                                    |
-| 6     | `refused`         | the handler refused on domain grounds, or the engine refused by CLASS — the message is a refusal class, optionally naming offenders (below)                                                                                                                                                   |
-| 7     | `unavailable`     | the isolate that holds the handler is not running (crashed past `ISOLATE_CRASH_BUDGET`) or did not answer within `ISOLATE_DISPATCH_DEADLINE_MS` (ADR 0016 §6, §Hardened plugins below). Only a hardened row — today every row carrying `install` — can answer it; an in-realm door never does |
+| Order | `rule`            | Fires when                                                                                                                                                                                                                                                                              |
+| ----- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | `unknown_action`  | no assembled action carries that name                                                                                                                                                                                                                                                   |
+| 2     | `plugin_disabled` | the owning plugin is disabled in this workspace — SKIPPED for actions declared `cleanup: true` (D12: removal survives a disable; `core.terminals.kill` is the wave-1 occupant)                                                                                                          |
+| 3     | `forbidden`       | the caller is container-scoped (`containerScope !== null`) AND the action declares `scope: "workspace"` (the default) — message "scoped tokens cannot invoke workspace actions". An action declaring `scope: "container"` skips this rung; its handler MUST honour `ctx.containerScope` |
+| 4     | `forbidden`       | the caller lacks one of the action's DECLARED caps (intersection at the door, not inside the handler)                                                                                                                                                                                   |
+| 5     | `invalid_args`    | the body fails the action's `input` schema                                                                                                                                                                                                                                              |
+| 6     | `refused`         | the handler refused on domain grounds, or the engine refused by CLASS — the message is a refusal class, optionally naming offenders (below)                                                                                                                                             |
+| 7     | `unavailable`     | the hardened runner that holds the handler is not running (crashed past `ISOLATE_CRASH_BUDGET`) or did not answer within `ISOLATE_DISPATCH_DEADLINE_MS`; a bundle that failed verification also refuses here before any code is loaded (ADR 0016 §6, §Hardened plugins below)           |
 
 Order matters: a caller must not learn that an action exists and is forbidden before the cheaper
 facts (existence, enablement) are settled, and a handler never sees unvalidated arguments. A
@@ -1412,15 +1412,11 @@ from a directory alike — and isolation is HARDENING an installer may choose fo
 the default (ADR 0025, operator-ratified 2026-09-05, reversing ADR 0016 §1's "an installed row
 runs isolated"). A HARDENED row runs on ADR 0016's runner: its server half in its own OS process
 and its web half in its own dedicated `Worker`, against the narrower interface this section
-describes. The selector is `install.hardened === true` once the in-realm loader lands (#256);
-**today it is `install !== undefined`**, because the loader that would run an installed row in
-the page and the hub process is not yet built, so TODAY every installed row still runs hardened
-and every "installed" below means exactly that. That deferral must be visible in-product
-(`AXIOMS.md` §Change control): no roster field or refusal carries it yet — `install.hardened` is
-the field that will, and until it exists #256 owes the plugin manager's Installed band the
-sentence that installed rows run hardened. Every first-party row — `builtin` and every
-`packages/plugins/*` package — runs in-realm; the runner is selected by the row's `install`
-block, never by a third `source` value. Both boundaries are message boundaries, so both frame
+describes. The selector is `install?.hardened === true`; absent or false runs in-realm.
+The installer chooses it at `engine.plugins.install`, never the manifest author. The manager's
+Installed band names each row's runner in words, **In-realm** or **Hardened**. Every first-party
+row — `builtin` and every `packages/plugins/*` package — runs in-realm. No third `source` value
+is needed. The hardened boundaries are message boundaries, so both frame
 sets are `@manifold/protocol` schemas (`packages/protocol/src/isolate.ts`) and both are published
 under `isolateContract` at `GET /api/protocol` beside the closed component vocabulary, the served
 ctx methods, the runner's numbers and the artifact shape — an out-of-tree author reads the whole
@@ -1439,6 +1435,18 @@ door it opened (ADR 0018), and the remedy is `uninstall` or reinstalling with `h
 dialled guest's browser runs the host's in-realm plugins with the guest's token for THAT hub —
 no authority beyond what the hub already holds for that principal, and nothing that reaches the
 guest's own instance (ADR 0016 T5/T6, ADR 0025 §Consequences).
+
+The browser fetches an enabled installed web half with the Authorization bearer header and
+imports a Blob URL; credentials never ride a module URL. The module's default `WebPluginDef`
+joins the shipped definitions whenever the live roster changes. Disable drops the loaded
+definition, retaining layout and data; re-enable imports afresh. A server half likewise exports
+its default server definition and is imported in the hub, not evaluated by a second module system.
+React, React DOM, the JSX runtimes, all three `@manifold/plugin` entries, `@manifold/protocol`,
+`@manifold/sdk` and `@manifold/scene` resolve through
+`globalThis[Symbol.for("manifold.shared")]`. The shell and hub publish their own namespace
+identities; the kit rewrites shared imports at build time, without an import map or runtime
+dependency. The bundle's optional `builtAgainst` version map is recorded as
+`install.builtAgainst`; compatibility presentation belongs to #238.
 
 **The artifact (`PluginBundleSchema`).** One JSON file, `<id>.manifold-plugin.json`, at most
 `ISOLATE_MAX_ARTIFACT_BYTES` (16 MiB):
@@ -1469,9 +1477,10 @@ assembly admitted it, never from the file — under a manifest whose `version` i
 and whose `capabilities` is the union of what those doors declare; a dispatch to one answers the
 runner's rung, `unavailable`, with message `bundle failed verification at boot: <class>`, traced
 like every other rung (a row admitted before its doors were recorded composes doorless, as it
-always did). The bundle is self-contained — the kit's `pack` inlines both guest runtimes — so the
-loader is one `Bun.spawn(["bun", "--smol", "<dir>/server.js"], { ipc, serialization: "json" })`
-and one `new Worker("/api/plugins/<id>/web.js", { type: "module" })`.
+always did). Hardened bundles are self-contained (`pack --self-contained`) and run with the
+existing process/Worker runners. In-realm bundles use the shared-module registry and plain
+`import()`. Selecting hardening does not turn a React definition into a worker program; the
+React-over-frames reconciler is #259.
 
 **The install grant (ADR 0016 §5, R4 = option B).** `install.grantedCaps` is what the installer
 consented to. It defaults to the manifest's declared `capabilities` minus the high-risk set

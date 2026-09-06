@@ -193,6 +193,8 @@ interface PluginInstallDbRow {
   installed_at: number;
   bundle_path: string;
   actions: string;
+  hardened: number;
+  built_against: string | null;
 }
 
 interface MachineAuthRow extends MachineRow {
@@ -351,6 +353,8 @@ export interface PluginInstallRow {
   readonly installedAt: number;
   readonly bundlePath: string;
   readonly actions: readonly ActionSummary[];
+  readonly hardened?: boolean;
+  readonly builtAgainst?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -654,11 +658,15 @@ function toPluginInstall(row: PluginInstallDbRow): PluginInstallRow {
     installedAt: row.installed_at,
     bundlePath: row.bundle_path,
     actions: parseActions(row.actions),
+    hardened: row.hardened !== 0,
+    ...(row.built_against === null
+      ? {}
+      : { builtAgainst: z.record(z.string(), z.string()).parse(JSON.parse(row.built_against)) }),
   };
 }
 
 const PLUGIN_INSTALL_SELECT = `SELECT plugin_id, sha256, source, granted_caps, installed_by,
-   installed_at, bundle_path, actions FROM plugin_installs`;
+   installed_at, bundle_path, actions, hardened, built_against FROM plugin_installs`;
 
 /**
  * A container row is the whole object: `discipline` names which renderer it asks for.
@@ -950,11 +958,14 @@ export class ServerStore {
    */
   putPluginInstall(row: PluginInstallRow): void {
     this.db
-      .query<void, [string, string, string, string, string, number, string, string]>(
+      .query<
+        void,
+        [string, string, string, string, string, number, string, string, number, string | null]
+      >(
         `INSERT OR REPLACE INTO plugin_installs(
            plugin_id, sha256, source, granted_caps, installed_by, installed_at, bundle_path,
-           actions
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           actions, hardened, built_against
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.pluginId,
@@ -965,6 +976,8 @@ export class ServerStore {
         row.installedAt,
         row.bundlePath,
         JSON.stringify(row.actions),
+        row.hardened === true ? 1 : 0,
+        row.builtAgainst === undefined ? null : JSON.stringify(row.builtAgainst),
       );
   }
 

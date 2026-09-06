@@ -1204,9 +1204,69 @@ INSERT INTO plugin_installs VALUES ('vendor.elder', '${"0".repeat(64)}', '/uploa
   });
 });
 
+describe("migration 21: the runner an install was verified against", () => {
+  test("a row admitted before the column reads hardened; one written after with no consent does not", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-db-hardened-"));
+    const path = join(dir, "manifold.db");
+    try {
+      // A schema-20 install: admitted when the isolate child was the only runner there was.
+      const seed = new Database(path, { create: true, strict: true });
+      seed.exec(`
+CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER);
+CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER,
+  owner_host_id TEXT, draining INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INTEGER NOT NULL,
+  ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
+  PRIMARY KEY (container_id, epoch, rev));
+CREATE TABLE plugin_installs(
+  plugin_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, source TEXT NOT NULL,
+  granted_caps TEXT NOT NULL, installed_by TEXT NOT NULL, installed_at INTEGER NOT NULL,
+  bundle_path TEXT NOT NULL, actions TEXT NOT NULL DEFAULT '[]'
+) WITHOUT ROWID;
+INSERT INTO meta(key, value) VALUES ('schema_version', '20');
+INSERT INTO plugin_installs VALUES ('vendor.elder', '${"0".repeat(64)}', '/uploads/elder',
+  '["containers:read"]', 'p-owner', 1, '/data/plugins/vendor.elder/bundle.json', '[]');
+`);
+      seed.close();
+
+      const db = openDatabase(path);
+      const store = new ServerStore(db);
+      // The column's own default is in-realm, so a backfilled 1 is the only way the elder row
+      // can read hardened: its bundle was packed for the child and never verified in-realm.
+      expect(store.pluginInstalls().map((row) => [row.pluginId, row.hardened])).toEqual([
+        ["vendor.elder", true],
+      ]);
+      expect(store.pluginInstalls()[0]).not.toHaveProperty("builtAgainst");
+
+      // A row the door writes after the upgrade carries whatever the installer consented to,
+      // and nothing about the backfill leaks into it.
+      store.putPluginInstall({
+        pluginId: "vendor.newer",
+        sha256: "1".repeat(64),
+        source: "/uploads/newer",
+        grantedCaps: [],
+        installedBy: "p-owner",
+        installedAt: 2,
+        bundlePath: "/data/plugins/vendor.newer/bundle.json",
+        actions: [],
+      });
+      expect(store.pluginInstalls().map((row) => [row.pluginId, row.hardened])).toEqual([
+        ["vendor.elder", true],
+        ["vendor.newer", false],
+      ]);
+      db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 /**
- * Schema-18 persistence tables consumed by 19. Layouts are raw historical data, never passed
- * through today's strict TileSchema; fixed Yjs client ids make every revision reproducible.
+ * Schema-18 persistence tables consumed by 19, plus the empty `plugin_installs` a schema-18
+ * database always carries: opening this fixture replays 21 too, which alters that table.
+ * Layouts are raw historical data, never passed through today's strict TileSchema; fixed
+ * Yjs client ids make every revision reproducible.
  */
 function seedPreV19(path: string): {
   readonly rows: DocRow[];
@@ -1219,6 +1279,11 @@ CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INT
   PRIMARY KEY (container_id, epoch, rev));
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER);
+CREATE TABLE plugin_installs(
+  plugin_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, source TEXT NOT NULL,
+  granted_caps TEXT NOT NULL, installed_by TEXT NOT NULL, installed_at INTEGER NOT NULL,
+  bundle_path TEXT NOT NULL, actions TEXT NOT NULL DEFAULT '[]'
+) WITHOUT ROWID;
 INSERT INTO meta(key, value) VALUES ('schema_version', '18');
 `);
   const doc = createSceneDoc();
@@ -1412,11 +1477,13 @@ describe("migration 19: contributed element refs", () => {
         .query<{ key: string; value: string }, []>("SELECT key, value FROM meta ORDER BY key")
         .all();
       // A direct retry must be a no-op even when the converted bytes are already present.
-      // Rewinding past 19 also rewinds 20's two columns: `ADD COLUMN` is not re-runnable, and
-      // the retry under test is 19's, not a duplicate-column failure of its successor.
+      // Rewinding past 19 also rewinds 20's and 21's columns: `ADD COLUMN` is not re-runnable,
+      // and the retry under test is 19's, not a duplicate-column failure of a successor.
       db.exec("UPDATE meta SET value = '18' WHERE key = 'schema_version'");
       db.exec("ALTER TABLE machines DROP COLUMN owner_host_id");
       db.exec("ALTER TABLE machines DROP COLUMN draining");
+      db.exec("ALTER TABLE plugin_installs DROP COLUMN hardened");
+      db.exec("ALTER TABLE plugin_installs DROP COLUMN built_against");
       db.close();
       const backup = new Database(`${path}.pre-v19.bak`, { strict: true });
       expect(

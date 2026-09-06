@@ -5,7 +5,7 @@ import { migrateToCanonLexicon, migrateToElementRefs } from "./migrate-lexicon.t
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -501,6 +501,27 @@ INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '18');
 ALTER TABLE machines ADD COLUMN owner_host_id TEXT;
 ALTER TABLE machines ADD COLUMN draining INTEGER NOT NULL DEFAULT 0;
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '20');
+`,
+  /**
+   * In-realm loading with optional hardening (#256). `hardened` records the runner the
+   * installer consented to: `1` is the isolate child, `0` is a plain module import in the hub's
+   * own realm. The column DEFAULT is 0 because that is the wire default too — an install
+   * request that says nothing about hardening asks for in-realm, and the store writes the
+   * column explicitly on every insert, so the default only ever describes a new install.
+   * The UPDATE is a separate statement about HISTORY: every row that exists at upgrade time
+   * was admitted before in-realm loading existed, so the hardened runner is the only one its
+   * bundle was ever packed for and verified against. Backfilling with `DEFAULT 1` instead
+   * would make the schema claim that an unspecified new install is hardened, which is the
+   * opposite of what the door does. `built_against` is the shared-module version pins the
+   * bundle declared, JSON, or NULL for a bundle that declared none.
+   *
+   * Plain SQL, no snapshot: two added columns and one backfill, reversible by two DROPs.
+   */
+  21: `
+ALTER TABLE plugin_installs ADD COLUMN hardened INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE plugin_installs ADD COLUMN built_against TEXT;
+UPDATE plugin_installs SET hardened = 1;
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '21');
 `,
 };
 

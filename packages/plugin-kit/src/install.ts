@@ -36,6 +36,7 @@ export interface InstallOptions {
   readonly source: string;
   readonly hub: Hub;
   readonly deliver?: Delivery;
+  readonly hardened?: boolean;
   /** The expected pin; the command refuses before touching the hub when the bytes disagree. */
   readonly sha256?: string;
 }
@@ -214,11 +215,19 @@ export async function installBundle(options: InstallOptions): Promise<InstallRep
 
   const rows = await roster(hub);
   const row = rows.find((entry) => entry.manifest.id === facts.id);
-  if (row?.install?.sha256 === facts.sha256) return report("unchanged");
+  if (
+    row?.install?.sha256 === facts.sha256 &&
+    (row.install.hardened === true) === (options.hardened === true)
+  )
+    return report("unchanged");
 
   const source = await deliver(facts, options.deliver ?? { kind: "path" });
   if (row === undefined) {
-    await ownerAction(hub, "engine.plugins.install", { source, sha256: facts.sha256 });
+    await ownerAction(hub, "engine.plugins.install", {
+      source,
+      sha256: facts.sha256,
+      hardened: options.hardened === true,
+    });
     return report("installed");
   }
   // A replace needs the row off (`still_enabled`), and the row cannot go off while an enabled
@@ -237,6 +246,7 @@ export async function installBundle(options: InstallOptions): Promise<InstallRep
       source,
       sha256: facts.sha256,
       replace: true,
+      hardened: options.hardened === true,
     });
   } catch (error) {
     for (const id of on) await setEnabled(id, true).catch(() => {});
@@ -256,6 +266,7 @@ export interface HubFlags {
   readonly sha256?: string;
   readonly deliver?: Delivery;
   readonly ownerKeyFile?: string;
+  readonly hardened?: boolean;
   readonly positionals: readonly string[];
 }
 
@@ -264,12 +275,17 @@ export function parseHubFlags(argv: readonly string[], allowSha: boolean): HubFl
   let sha256: string | undefined;
   let deliver: Delivery | undefined;
   let ownerKeyFile: string | undefined;
+  let hardened = false;
   const positionals: string[] = [];
   for (let at = 0; at < argv.length; at++) {
     const word = argv[at];
     if (word === undefined) break;
     if (!word.startsWith("--")) {
       positionals.push(word);
+      continue;
+    }
+    if (word === "--hardened") {
+      hardened = true;
       continue;
     }
     const value = argv[at + 1];
@@ -298,6 +314,7 @@ export function parseHubFlags(argv: readonly string[], allowSha: boolean): HubFl
   return {
     hub,
     positionals,
+    ...(hardened ? { hardened } : {}),
     ...(sha256 === undefined ? {} : { sha256 }),
     ...(deliver === undefined ? {} : { deliver }),
     ...(ownerKeyFile === undefined ? {} : { ownerKeyFile }),
@@ -312,7 +329,7 @@ export function exitWith(command: string, error: unknown): never {
 
 function usage(): never {
   console.error(
-    "usage: manifold-install <bundle-file | https://…> --hub <url> [--sha256 <hex>] [--deliver path | docker:<container>] [--owner-key-file <path>]",
+    "usage: manifold-install <bundle-file | https://…> --hub <url> [--hardened] [--sha256 <hex>] [--deliver path | docker:<container>] [--owner-key-file <path>]",
   );
   process.exit(2);
 }
@@ -332,6 +349,7 @@ if (import.meta.main) {
     const report = await installBundle({
       source,
       hub: { url: flags.hub, ownerKey },
+      hardened: flags.hardened === true,
       ...(flags.sha256 === undefined ? {} : { sha256: flags.sha256 }),
       ...(flags.deliver === undefined ? {} : { deliver: flags.deliver }),
     });

@@ -154,6 +154,7 @@ interface InstallDraft {
   readonly source: string;
   readonly sha256: string;
   readonly grant: readonly Cap[];
+  readonly hardened: boolean;
 }
 
 /** One chip: a word with a tone, and the sentence behind it on hover. */
@@ -330,6 +331,7 @@ function InstallForm({
   const [source, setSource] = useState("");
   const [sha256, setSha256] = useState("");
   const [grant, setGrant] = useState<ReadonlySet<Cap>>(new Set());
+  const [hardened, setHardened] = useState(false);
   const ready = source.trim().length > 0 && /^[0-9a-f]{64}$/i.test(sha256.trim());
   return (
     <form
@@ -342,6 +344,7 @@ function InstallForm({
           source: source.trim(),
           sha256: sha256.trim().toLowerCase(),
           grant: WITHHELD_BY_DEFAULT.filter((cap) => grant.has(cap)),
+          hardened,
         });
       }}
     >
@@ -371,6 +374,20 @@ function InstallForm({
           data-testid="plugin-manager-install-sha256"
           onChange={(event) => setSha256(event.target.value)}
         />
+      </label>
+      <label className="plugin-manager-install-field">
+        <span>
+          <input
+            type="checkbox"
+            checked={hardened}
+            disabled={busy}
+            onChange={(event) => setHardened(event.target.checked)}
+          />{" "}
+          Run hardened — requires a self-contained hardened bundle
+        </span>
+        <small>
+          Otherwise runs in-realm with React and the full engine API. Only install code you trust.
+        </small>
       </label>
       <div className="plugin-manager-install-field">
         <span>
@@ -1092,6 +1109,18 @@ function PluginRow({
         ) : null}
       </span>
       <span className="plugin-manager-chips">
+        {entry.install === undefined ? null : (
+          <Chip
+            tone="muted"
+            title={
+              entry.install.hardened === true
+                ? "Runs in a separate process and browser Worker"
+                : "Runs with React and the full engine API"
+            }
+          >
+            {entry.install.hardened === true ? "Hardened" : "In-realm"}
+          </Chip>
+        )}
         {entry.install === undefined ? null : links?.repository === undefined ? (
           <Chip tone="publisher" title={`Published by ${publisherOf(manifest.id)}`}>
             {publisherOf(manifest.id)}
@@ -1403,6 +1432,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
       const outcome = await host.client.action(ENGINE_INSTALL_ACTION, {
         source: draft.source,
         sha256: draft.sha256,
+        hardened: draft.hardened,
         ...(draft.grant.length === 0 ? {} : { grant: [...draft.grant] }),
       });
       if (!outcome.ok) {

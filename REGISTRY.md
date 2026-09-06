@@ -71,6 +71,7 @@ must never be taught one.
         "packages/plugin/src/**",
         "packages/server/src/plugin-host.ts",
         "packages/server/src/plugin-installs.ts",
+        "packages/server/src/shared-modules.ts",
         "packages/server/src/isolate/**",
         "packages/server/src/assembly.ts",
         "packages/server/src/main.ts",
@@ -139,6 +140,7 @@ must never be taught one.
         "packages/web/src/main.tsx",
         "packages/web/src/app.tsx",
         "packages/web/src/plugin-host.tsx",
+        "packages/web/src/shared-registry.ts",
         "packages/web/src/room-pipes.ts",
         "packages/web/src/assembly.ts",
         "packages/web/src/api.ts",
@@ -285,6 +287,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
       "why": "action dispatch: the denial ladder, capability intersection, enablement, roster change fan-out"
     },
     {
+      "glob": "packages/server/src/shared-modules.ts",
+      "why": "ADR 0025 §3 shared-module registry in the assembly-engine pillar: bootstrap because imported plugins require it before evaluation; neutral because it names only floor modules and React; arbitration because every bundle receives the hub's single module identity rather than a private engine"
+    },
+    {
       "glob": "packages/server/src/plugin-installs.ts",
       "why": "the install door's hands (ADR 0016 stage 2): an artifact fetched or read, pinned by hash before it is parsed, admitted before it is written, re-verified and re-extracted at every boot — the runner's input, which is why it sits beside the host"
     },
@@ -339,6 +345,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/web/src/plugin-host.tsx",
       "why": "the registry, web half: AssemblyProvider, PanelOutlet and its placeholder, HostServices"
+    },
+    {
+      "glob": "packages/web/src/shared-registry.ts",
+      "why": "ADR 0025 §3 shared-module registry in the web-plugin-host pillar: bootstrap because imported plugins require it before evaluation; neutral because it imports only floor packages and React; arbitration because React hooks and engine contexts must have the shell's single identity"
     },
     {
       "glob": "packages/web/src/room-pipes.ts",
@@ -1356,13 +1366,13 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "isolate",
-      "means": "the runtime an INSTALLED plugin's code lives in and the boundary around it (ADR 0016 §1): one OS process per plugin on the server, one dedicated Worker per plugin in the browser, reached only through the protocol's frame pairs (`IsolateHostFrame`/`IsolateChildFrame`, `WebIsolateHostFrame`/`WebIsolateWorkerFrame`). A first-party row has none — it runs in-realm — and the roster says which by the presence of `install`, never by a third `source`",
+      "means": "the runtime a hardened plugin's code lives in and the boundary around it (ADR 0016 §1, re-scoped by ADR 0025): one OS process per plugin on the server, one dedicated Worker per plugin in the browser, reached only through the protocol frame pairs. The installer selects it with install.hardened === true; absent or false runs in-realm",
       "banned": [],
       "allow": []
     },
     {
       "term": "bundle",
-      "means": "the one-file JSON artifact an isolated plugin is installed from (`PluginBundleSchema`: format, manifest with `entry`, base64 members), pinned on the roster row by the sha256 of its exact bytes and re-verified at every boot. `artifact` is the word for those bytes wherever they are read (`ISOLATE_MAX_ARTIFACT_BYTES`, `artifact_unreadable`, `artifact_invalid`); `bundle` is the parsed document — one is the file, the other its meaning",
+      "means": "the one-file JSON artifact a plugin is installed from (PluginBundleSchema: format, manifest with entry, optional builtAgainst versions, base64 members), pinned on the roster row by the sha256 of its exact bytes and re-verified at every boot. artifact is the word for those bytes wherever they are read; bundle is the parsed document — one is the file, the other its meaning",
       "banned": [],
       "allow": []
     },
@@ -1860,6 +1870,10 @@ register. Anything else is presence, document, or action state — A2 leaves no 
     {
       "key": "manifold:arrange-toolbar-position",
       "why": "where THIS device parked core.arrange's floating toolbar (an {dx,dy} offset from its bottom-centre default). A toolbar's parking spot is about this screen's size and this hand's reach — it names nothing in the workspace, and publishing it would move a collaborator's toolbar out from under them. Optional by construction: a write that throws leaves the toolbar at its default, which is why the drag never surfaces a storage failure"
+    },
+    {
+      "key": "manifold.shared",
+      "why": "ADR 0025 §3 realm-local Symbol.for registry of the shell's shared module namespaces, not persisted storage: React and floor module identities must be local to the JavaScript realm evaluating the plugin, while the authoritative roster and install consent remain server state"
     },
     {
       "key": "manifold:plugin-manager-collapsed",

@@ -28,6 +28,7 @@ import {
   CAPS,
   CORE_NAMESPACE_PREFIX,
   ENGINE_NAMESPACE_PREFIX,
+  PLUGIN_BUNDLE_SERVER_FILE,
   formatManifoldUri,
   TRACE_AUTHORITY_OPEN,
   TRACE_AUTHORITY_ROOT,
@@ -318,7 +319,7 @@ function unverifiedDef(row: PluginInstallRow, refusal: PluginInstallRefusal): Se
 }
 
 /** The worker module's bytes, decoded once at load so the route serves without re-decoding. */
-function webModuleOf(bundle: PluginBundle): Uint8Array | null {
+function webModuleOf(bundle: PluginBundle): Uint8Array<ArrayBuffer> | null {
   const name = bundle.manifest.entry.web;
   if (name === undefined) return null;
   const encoded = bundle.files[name];
@@ -349,10 +350,8 @@ export interface HostControl {
 }
 
 /**
- * What the host needs to run INSTALLED plugins (ADR 0016 §8 stage 2): the runner that holds a
- * child process per plugin, and the data dir the artifacts live under. Absent ≡ this host
- * admits no bundles — the install door refuses, and a unit test composing first-party defs
- * never spawns a process.
+ * The artifact directory and optional-hardening runner for installed plugins. Absent means
+ * this host admits no bundles; the runner is used only for an install hardened by its owner.
  */
 export interface IsolateDeps {
   readonly runner: IsolateRunner;
@@ -369,7 +368,7 @@ export interface IsolateDeps {
 interface InstalledPlugin {
   readonly row: PluginInstallRow;
   readonly bundle: PluginBundle | null;
-  readonly web: Uint8Array | null;
+  readonly web: Uint8Array<ArrayBuffer> | null;
   readonly refusal?: PluginInstallRefusal;
 }
 
@@ -729,10 +728,9 @@ function traceTargets(targets: readonly ManifoldRef[]): readonly string[] {
  * to switch off — is state only the handler can see, so all of it lands on the LAST rung as
  * a named `refused` class. The ladder a client learned still holds.
  *
- * Isolation (ADR 0016) adds one rung and one half-rung, both for INSTALLED rows only: the
- * installer's grant is intersected at rung 4 before the caller's caps are, and a child that
- * is not there to answer is `unavailable`, after `refused` — the runner's rung alone, an
- * in-realm door never says it.
+ * Every install's grant is intersected at rung 4 before the caller's caps. Optional hardening
+ * (ADR 0016) adds `unavailable` for a child that cannot answer, after `refused`; ordinary
+ * in-realm handlers keep the same ladder as the distribution's handlers.
  */
 export class PluginHost {
   /*
@@ -866,6 +864,7 @@ export class PluginHost {
    */
   private async loadInstalled(): Promise<void> {
     if (this.isolates === null) return;
+    const disabled = this.store.disabledPlugins();
     for (const row of this.store.pluginInstalls()) {
       const verdict = verifyInstalledBundle(row);
       if (!verdict.ok) {
@@ -890,7 +889,12 @@ export class PluginHost {
         web: webModuleOf(verdict.bundle),
       });
       try {
-        this.installedDefs.set(row.pluginId, await this.loadIsolated(verdict.bundle, verdict.dir));
+        this.installedDefs.set(
+          row.pluginId,
+          row.hardened !== true && disabled.has(row.pluginId)
+            ? this.dormantDef(row, verdict.bundle)
+            : await this.loadBundle(verdict.bundle, verdict.dir, row.hardened === true),
+        );
       } catch (error) {
         // The bundle is what it was when admitted, so the row keeps its real manifest; only
         // the doors are missing, and the roster says so rather than the boot failing.
@@ -913,15 +917,51 @@ export class PluginHost {
     });
   }
 
-  /**
-   * The def an installed bundle serves through. A server half is the runner's: it spawns the
-   * child and reports the doors the child announced. A web-only bundle has no child and no
-   * doors — its def is its manifest, so the row composes and the worker route can find it.
-   */
-  private async loadIsolated(bundle: PluginBundle, dir: string): Promise<ServerPluginDef> {
-    if (this.isolates === null) throw new Error("this host runs no isolates");
+  /** Keeps the roster's doors without retaining any executable code while disabled. */
+  private dormantDef(row: PluginInstallRow, bundle: PluginBundle): ServerPluginDef {
+    return {
+      manifest: bundle.manifest,
+      actions: row.actions.map((action) => localActionDef(row.pluginId, action)),
+      handlers: {},
+    };
+  }
+
+  /** A plain module import by default; only the installer's consent selects a child. */
+  private async loadBundle(
+    bundle: PluginBundle,
+    dir: string,
+    hardened: boolean,
+  ): Promise<ServerPluginDef> {
+    if (this.isolates === null) throw new Error("this host admits no bundles");
     if (bundle.manifest.entry.server !== true) {
       return { manifest: bundle.manifest, actions: [], handlers: {} };
+    }
+    if (!hardened) {
+      const source = bundle.files[PLUGIN_BUNDLE_SERVER_FILE];
+      if (source === undefined) throw new IsolateLoadError("bundle has no server module");
+      const url = URL.createObjectURL(
+        new Blob([Buffer.from(source, "base64")], {
+          type: "text/javascript",
+        }),
+      );
+      try {
+        // Runtime-selected pinned bytes; Blob identity forces a fresh module on each enable.
+        const { default: def } = await import(url);
+        if (
+          def === null ||
+          typeof def !== "object" ||
+          !Array.isArray(def.actions) ||
+          def.handlers === null ||
+          typeof def.handlers !== "object"
+        ) {
+          throw new Error("server module must default-export a ServerPluginDef");
+        }
+        return { ...def, manifest: bundle.manifest };
+      } catch (error) {
+        throw new IsolateLoadError(error instanceof Error ? error.message : "server import failed");
+      } finally {
+        URL.revokeObjectURL(url);
+      }
     }
     const loaded = await this.isolates.runner.load({
       pluginId: bundle.manifest.id,
@@ -991,6 +1031,8 @@ export class PluginHost {
         grantedCaps: [...entry.row.grantedCaps],
         installedBy: entry.row.installedBy,
         installedAt: entry.row.installedAt,
+        hardened: entry.row.hardened === true,
+        ...(entry.row.builtAgainst === undefined ? {} : { builtAgainst: entry.row.builtAgainst }),
         ...(entry.refusal === undefined ? {} : { refusal: entry.refusal }),
       });
     }
@@ -1124,6 +1166,19 @@ export class PluginHost {
       if (missing.length > 0) return refused("dependency_disabled", missing);
       const clashes = this.assembled.conflicts(id);
       if (clashes.length > 0) return refused("incompatible_dependency", clashes);
+      const installed = this.installed.get(id);
+      if (installed !== undefined && installed.row.hardened !== true) {
+        const verdict = verifyInstalledBundle(installed.row);
+        if (!verdict.ok) return installRefused(verdict.refusal, verdict.detail);
+        try {
+          this.installedDefs.set(id, await this.loadBundle(verdict.bundle, verdict.dir, false));
+          this.syncDefs();
+        } catch (error) {
+          if (error instanceof IsolateLoadError)
+            return installRefused("artifact_invalid", error.message);
+          throw error;
+        }
+      }
       /*
         Data is checked at the door as well as at boot, because a disabled plugin's data is
         RETAINED and untouched (the residual mechanism is `retain`; there is no
@@ -1139,7 +1194,17 @@ export class PluginHost {
         applied: new Set(await storage.appliedMigrations()),
         migrations: this.defs.find((def) => def.manifest.id === id)?.migrations ?? [],
       });
-      if (plan.kind === "refused") return { refused: `${plan.reason}: ${plan.detail}` };
+      if (plan.kind === "refused") {
+        if (
+          installed !== undefined &&
+          installed.row.hardened !== true &&
+          installed.bundle !== null
+        ) {
+          this.installedDefs.set(id, this.dormantDef(installed.row, installed.bundle));
+          this.syncDefs();
+        }
+        return { refused: `${plan.reason}: ${plan.detail}` };
+      }
       // `migrate` stamps the declared version itself, once its chain has actually run.
       if (plan.kind === "migrate") await this.applyMigrations(id, plan.run);
       else if (plan.stamp !== null) await storage.stampDataVersion(plan.stamp);
@@ -1161,6 +1226,17 @@ export class PluginHost {
       ),
     };
     await this.fanOut(delta, wasEnabled);
+    const installed = this.installed.get(id);
+    if (
+      !enabled &&
+      installed !== undefined &&
+      installed.row.hardened !== true &&
+      installed.bundle !== null
+    ) {
+      this.installedDefs.set(id, this.dormantDef(installed.row, installed.bundle));
+      this.syncDefs();
+      this.assembled = await this.reassemble();
+    }
     this.publish();
     /*
       THE COMMIT POINT, announced. Not staged like a handler's emission: this method IS the
@@ -1319,17 +1395,22 @@ export class PluginHost {
       installedAt: this.runtime.now(),
       bundlePath: artifact.bundlePath,
       actions: [],
+      hardened: request.hardened === true,
+      ...(bundle.builtAgainst === undefined ? {} : { builtAgainst: bundle.builtAgainst }),
     };
     const web = webModuleOf(bundle);
     const wasEnabled = new Set(
       this.assembled.roster.filter((entry) => entry.enabled).map((entry) => entry.manifest.id),
     );
     // A replace retires the running child first: two children for one id is two doors.
-    if (previous !== undefined) await isolates.runner.unload(id);
+    if (previous?.row.hardened === true) await isolates.runner.unload(id);
     this.installed.set(id, { row: consent, bundle, web });
     this.lifecycleStates.delete(id);
     try {
-      this.installedDefs.set(id, await this.loadIsolated(bundle, artifact.dir));
+      this.installedDefs.set(
+        id,
+        await this.loadBundle(bundle, artifact.dir, consent.hardened === true),
+      );
       this.syncDefs();
       this.assembled = await this.reassemble();
     } catch (error) {
@@ -1356,6 +1437,11 @@ export class PluginHost {
       disabled: [],
     };
     if (delta.enabled.length > 0) await this.fanOut(delta, wasEnabled);
+    if (!this.assembled.enabled(id) && row.hardened !== true) {
+      this.installedDefs.set(id, this.dormantDef(row, bundle));
+      this.syncDefs();
+      this.assembled = await this.reassemble();
+    }
     this.publish();
     this.logger.info("plugin_installed", {
       plugin: id,
@@ -1388,7 +1474,7 @@ export class PluginHost {
     previous: InstalledPlugin | undefined,
     previousDef: ServerPluginDef | undefined,
   ): Promise<void> {
-    if (this.isolates !== null) {
+    if (this.isolates !== null && this.installed.get(id)?.row.hardened === true) {
       try {
         await this.isolates.runner.unload(id);
       } catch (error) {
@@ -1453,7 +1539,7 @@ export class PluginHost {
         );
       }
     }
-    await this.isolates.runner.unload(id);
+    if (entry.row.hardened === true) await this.isolates.runner.unload(id);
     removeInstall(entry.row);
     this.store.deletePluginInstall(id);
     this.store.clearPluginEnablement(id);
@@ -1484,7 +1570,9 @@ export class PluginHost {
    * Null for everything else, which the route answers as 404 — a disabled plugin's code is not
    * fetched by anyone, and a refused bundle's never is.
    */
-  webModule(id: string): { readonly sha256: string; readonly bytes: Uint8Array } | null {
+  webModule(
+    id: string,
+  ): { readonly sha256: string; readonly bytes: Uint8Array<ArrayBuffer> } | null {
     const entry = this.installed.get(id);
     if (entry === undefined || entry.web === null || !this.assembled.enabled(id)) return null;
     return { sha256: entry.row.sha256, bytes: entry.web };

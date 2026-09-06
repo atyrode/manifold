@@ -623,6 +623,8 @@ export const PluginBundleSchema = z
   .strictObject({
     format: z.literal(PLUGIN_BUNDLE_FORMAT),
     manifest: PluginManifestSchema.extend({ entry: PluginEntrySchema }),
+    /** Shared React and floor-package versions used at build time (ADR 0025). */
+    builtAgainst: z.record(z.string(), z.string()).optional(),
     files: z
       .record(PluginBundleFileSchema, z.base64().max(ISOLATE_MAX_ARTIFACT_BYTES))
       .check((ctx) => {
