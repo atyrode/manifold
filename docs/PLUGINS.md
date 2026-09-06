@@ -2373,7 +2373,10 @@ over the same forced-command deploy key manifold's own `deploy-dev.yml` uses (`s
 `vars.DEV_DEPLOY_HOST`; the step is skipped when the variable is unset). The receiver's `plugin`
 verb runs `install` from the host's stable tooling checkout against the dev stack with
 `--deliver docker:<container>`, reading the owner key out of the container — no secret leaves the
-host, and nothing but an https URL and a hash crosses the socket (`infra/previews/README.md`).
+host. The command carries only an https URL, a hash and an optional exact fourth word
+`--hardened` (`infra/previews/README.md`). The three-word form retains the in-realm default;
+append `--hardened` for a bundle built for this section's hardened runner. Both the receiver and
+direct `preview.sh plugin` command refuse unknown flags and extra arguments before installation.
 
 Production (`https://manifold.tyrode.dev`) is the one hub nothing automates: the operator installs
 a release there from its asset URL in the plugin manager, root only, by hand (ADR 0022). A change
