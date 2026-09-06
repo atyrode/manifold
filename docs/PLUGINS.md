@@ -2422,14 +2422,15 @@ every open browser imports the module. Every command below is the kit's real CLI
 against a throwaway hub while this section was written; the roster and `GET /api/protocol` stay
 authoritative over the prose.
 
-**Shipped today, and owed.** What is here is the in-realm loader (#256): a packed bundle, the
-install door, live loading in the browser, `dev` as the save-and-replace loop. Unpacked plugins —
-a directory under `<data>/authored/<id>/` the hub itself watches and rebuilds, the root-only
-developer-mode switch (`engine.plugins.setDeveloperMode`, `developer_mode_off` as a named
-refusal) and the authoring door (`engine.plugins.author { id, files }`) that lets an agent write
-a plugin into your instance in one call — are #257 and are NOT present; when they land they add
-a second way to get the same files onto the same roster, and this section grows a subsection.
-Until then the loop is the kit's, from a checkout of this repository.
+**Two ways onto the roster, one set of files.** The first is the kit's, from a checkout of this
+repository: a directory packed into one bundle, the install door, live loading in the browser,
+`dev` as the save-and-replace loop (#256; the rest of this section). The second is the hub's own
+(#257, "Unpacked plugins" below): a directory under `<data>/authored/<id>/` the hub itself watches
+and rebuilds with the same kit, admitted behind the root-only developer-mode switch
+(`engine.plugins.setDeveloperMode`; `developer_mode_off` is its named refusal), and the authoring
+door (`engine.plugins.author { id, files }`) that lets an agent write a plugin into your instance in
+one call. Same files, same build, same install path, same roster row — the second way is the
+first with the hub holding the kit.
 
 ### The directory
 
@@ -2480,8 +2481,11 @@ export default {
 
 The web half default-exports the registration object §7 The web registration channels describes —
 `id` plus the channel records (`panels`, `sections`, `elements`, `routes`, `renderers`, the two
-overlay kinds, `terminals`) — with ordinary React components in them. `pack` reads `web.ts`, so
-write `createElement` or keep JSX in a file `web.ts` imports.
+overlay kinds, `terminals`) — with ordinary React components in them. `pack` reads `web.tsx` when
+it exists and `web.ts` otherwise (one name per half), so keep JSX in the entry itself or write
+`createElement`. JSX is compiled with the PRODUCTION transform (`react/jsx-runtime`) whatever the
+packing process's `NODE_ENV`: the shell's shared `react/jsx-dev-runtime` is a production React's,
+whose `jsxDEV` is undefined, so a development-transformed member would throw at first render.
 
 ```ts
 // web.ts
@@ -2523,9 +2527,9 @@ export default { id: "example.hello", panels: { hello: Hello } };
 `packages/plugin-kit/test/fixtures/in-realm/` is the same thing at its smallest — a web-only
 counter, `entry: { "web": "web.js" }`, no server half — and it is what the kit's own tests pack.
 
-**Two things the directory does not carry yet.** A `styles.css` import in `web.ts` is not packed:
-the bundle has one JavaScript member per half, and admitting a plugin stylesheet at load under the
-S13 ownership rule (every selector's leftmost compound is `.plugin-<id with "." as "_">`) is #258.
+**Two things the directory does not carry yet.** A `styles.css` import in `web.ts` or `web.tsx` is
+not packed: the bundle has one JavaScript member per half, and admitting a plugin stylesheet at
+load under the S13 ownership rule (every selector's leftmost compound is `.plugin-<id with "." as "_">`) is #258.
 Until it lands, style with `@manifold/ui` (§7b) and the engine's classes. And `pack` does
 not typecheck: run `tsc` in your own directory if you want types, against the floor packages of
 the checkout you pack from.
@@ -2654,6 +2658,74 @@ new sentence and `"calls":2`: **storage survives a replace** exactly as it survi
 REMOUNTS and its component state is gone — save the state you care about through `ctx.storage`
 or the document, not `useState`. Hot module replacement that keeps component state is not
 shipped and not promised.
+
+### Unpacked plugins: the hub holds the kit
+
+The second way (ADR 0025 §4, #257) needs no checkout and no `pack`: the hub watches
+`<data>/authored/<id>/`, builds it with the kit's own `packPlugin` — the same `Bun.build` and the
+same shared-module rewrite `manifold-pack` runs, so an unpacked row and a promoted bundle are the
+same bytes from the same files — and installs the result through the ONE install door as an
+unpacked replace. The row it lands is an installed row like any other, carrying
+`install.mode: "unpacked"` (absent ≡ `"bundle"`) and the pin of the bytes the hub built.
+
+```
+<data>/authored/
+  example.hello/                       # your files: manifest.json, server.ts, web.tsx (or web.ts)
+  .build/example.hello.manifold-plugin.json   # what the hub packed them into, the row's source
+```
+
+**Developer mode is the door onto the directory, and it is off.** A directory the hub rebuilds and
+loads is code nobody in this build wrote, admitted by whoever holds the instance, so the switch is
+root-only (`caps: ["*"]`) and workspace-global — one meta row, published beside every roster as
+`developerMode` on `GET /api/plugins` and the `plugins` frame (absent ≡ off), so agents and humans
+read the same value:
+
+```
+POST /api/actions/engine.plugins.setDeveloperMode   {"on":true}    → {"ok":true,"result":{}}
+```
+
+Off, the directory is not built; an unpacked row's enable is refused by name
+(`developer_mode_off: example.hello`, a member of `PLUGIN_REFUSAL_REASONS`, so the manager's lock
+wording is the class); and the authoring door below refuses by the same name before it writes
+anything. Turning it OFF first disables every enabled unpacked row through `setEnabled` — each
+traced and attributed to whoever flipped the switch — and only then flips, so no unpacked code is
+running once the switch reads off. Turning it ON moves no row: the marks lift, the rows stay where
+the flip left them, and the next save builds again. The manager shows the switch under the
+**Unpacked** band's heading (`data-action="engine.plugins.setDeveloperMode"`, root only) and an
+**Unpacked** chip on each such row.
+
+**The authoring door** writes the files and rebuilds, in one call:
+
+```
+POST /api/actions/engine.plugins.author
+  {"id":"example.hello","files":{"manifest.json":"{…}","web.tsx":"import { useState } from \"react\"; …"}}
+→ {"ok":true,"result":{"id":"example.hello","version":"1.0.0","grantedCaps":[],"sha256":"…"}}
+```
+
+Names are the bundle's flat member grammar (one segment, no leading dot), so nothing can climb out
+of the directory; a `null` value removes that file, and every file not named stays — an edit is
+ONE entry. The answer is the install result plus the pin of the bytes the hub built, which is the
+`install.sha256` every joined browser sees on the next roster frame. A write made any other way
+(your editor over `ssh`, an agent's shell) is the same loop: the watch debounces a change into
+one rebuild, and every existing directory is rebuilt once at start, so an edit made while the hub
+was down reaches the roster too. `web.tsx` is accepted here as everywhere the kit reads a
+directory; a `styles.css` is still #258.
+
+What a save does that `dev` (above) cannot: a running unpacked row is replaced LIVE — the old
+module hears `onDisable`, the new one is imported fresh and hears `onEnable`, the row is never
+off between, and the installer on the row stays whoever first admitted it. In the browser the new
+pin prunes the loaded definition and re-imports, so the panel remounts with the change, without a
+reload. A save that changes nothing (same bytes, same hash) replaces nothing and remounts nothing.
+A save that is wrong — a build error, a manifest the schema refuses, an assembly refusal such as a
+dependency nobody composed — is `artifact_invalid` naming the problem, logged as
+`plugin_authored_build_failed`, and the previous row STANDS: an edit is never able to take a
+working plugin off the roster by being wrong. A manifest whose `id` is not the directory's is
+refused the same way. `uninstall` removes the row and its pinned copy under `<data>/plugins/<id>/`
+exactly as for a bundle; the directory and its `.build/` output stay, because they are yours —
+remove the directory to stop the watch, or leave it and the next save is a fresh row.
+
+Promotion is the same as for the kit's road: the bytes under `.build/` ARE a bundle, and `pack` on
+the same directory from a checkout produces them again.
 
 ### Disable and enable
 

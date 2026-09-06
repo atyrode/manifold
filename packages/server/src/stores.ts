@@ -29,6 +29,7 @@ import {
   type Container,
   type Grant,
   type IndexEntry,
+  type PluginInstallMode,
   type PluginSettingValues,
   type Principal,
   type TileLayout,
@@ -52,6 +53,8 @@ const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1_000;
 const PLUGINS_DISABLED_META = "plugins:disabled";
 const PLUGINS_ATTRIBUTION_META = "plugins:attribution";
 const ELEMENT_OWNERS_META = "plugins:element-owners";
+/** The workspace's developer-mode switch (ADR 0025 §4): `"1"` on, anything else off. */
+const DEVELOPER_MODE_META = "plugins:developer-mode";
 const DisabledPluginsSchema = z.array(z.string().min(1)).max(256);
 const AttributionSchema = z.record(
   z.string().min(1),
@@ -195,6 +198,7 @@ interface PluginInstallDbRow {
   actions: string;
   hardened: number;
   built_against: string | null;
+  mode: string;
 }
 
 interface MachineAuthRow extends MachineRow {
@@ -355,6 +359,8 @@ export interface PluginInstallRow {
   readonly actions: readonly ActionSummary[];
   readonly hardened?: boolean;
   readonly builtAgainst?: Readonly<Record<string, string>>;
+  /** Who packed the bytes; absent is `bundle` (ADR 0025 §4). */
+  readonly mode?: PluginInstallMode;
 }
 
 /**
@@ -662,11 +668,12 @@ function toPluginInstall(row: PluginInstallDbRow): PluginInstallRow {
     ...(row.built_against === null
       ? {}
       : { builtAgainst: z.record(z.string(), z.string()).parse(JSON.parse(row.built_against)) }),
+    ...(row.mode === "unpacked" ? { mode: "unpacked" as const } : {}),
   };
 }
 
 const PLUGIN_INSTALL_SELECT = `SELECT plugin_id, sha256, source, granted_caps, installed_by,
-   installed_at, bundle_path, actions, hardened, built_against FROM plugin_installs`;
+   installed_at, bundle_path, actions, hardened, built_against, mode FROM plugin_installs`;
 
 /**
  * A container row is the whole object: `discipline` names which renderer it asks for.
@@ -804,6 +811,19 @@ export class ServerStore {
         Object.fromEntries([...attribution].sort(([left], [right]) => (left < right ? -1 : 1))),
       ),
     );
+  }
+
+  /**
+   * The developer-mode switch (ADR 0025 §4), one workspace-global meta row like the disabled
+   * set: off until somebody turns it on, and read fresh at every assembly so the roster's
+   * `developer_mode_off` marks are always the switch's current word.
+   */
+  developerMode(): boolean {
+    return this.getMeta(DEVELOPER_MODE_META) === "1";
+  }
+
+  setDeveloperMode(on: boolean): void {
+    this.setMeta(DEVELOPER_MODE_META, on ? "1" : "0");
   }
 
   /** Who last flipped each plugin, and when. A corrupt row reads as "nobody knows". */
@@ -960,12 +980,24 @@ export class ServerStore {
     this.db
       .query<
         void,
-        [string, string, string, string, string, number, string, string, number, string | null]
+        [
+          string,
+          string,
+          string,
+          string,
+          string,
+          number,
+          string,
+          string,
+          number,
+          string | null,
+          string,
+        ]
       >(
         `INSERT OR REPLACE INTO plugin_installs(
            plugin_id, sha256, source, granted_caps, installed_by, installed_at, bundle_path,
-           actions, hardened, built_against
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           actions, hardened, built_against, mode
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.pluginId,
@@ -978,6 +1010,7 @@ export class ServerStore {
         JSON.stringify(row.actions),
         row.hardened === true ? 1 : 0,
         row.builtAgainst === undefined ? null : JSON.stringify(row.builtAgainst),
+        row.mode ?? "bundle",
       );
   }
 

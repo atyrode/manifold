@@ -598,7 +598,12 @@ export class HttpApp {
       // looking at.
       const context = this.authenticate(request);
       this.requireCap(context, "containers:read");
-      return jsonResponse(PluginsResponseSchema.parse({ plugins: this.plugins.roster() }));
+      return jsonResponse(
+        PluginsResponseSchema.parse({
+          plugins: this.plugins.roster(),
+          developerMode: this.plugins.developerMode(),
+        }),
+      );
     }
 
     /*

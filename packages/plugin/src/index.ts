@@ -37,12 +37,19 @@ export {
   ENGINE_SET_SETTING_ACTION,
   ENGINE_UNINSTALLED_EVENT,
   ENGINE_UNINSTALL_ACTION,
+  ENGINE_SET_DEVELOPER_MODE_ACTION,
+  ENGINE_AUTHOR_ACTION,
+  ENGINE_DEVELOPER_MODE_EVENT,
   PluginInstallRequestSchema,
   PluginInstallResultSchema,
+  PluginAuthorRequestSchema,
+  PluginAuthorResultSchema,
   enginePluginsActions,
   enginePluginsManifest,
   type PluginInstallRequest,
   type PluginInstallResult,
+  type PluginAuthorRequest,
+  type PluginAuthorResult,
 } from "./builtin.ts";
 export { emissionRefusal, emitterMayEmit, type EmitEvent } from "./emit.ts";
 export { ITEM_NOUNS, itemNoun, itemNounPhrase } from "./item-noun.ts";

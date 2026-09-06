@@ -113,6 +113,14 @@ async function build(
     format: "esm",
     minify: false,
     plugins,
+    /*
+      A bundle is a PRODUCTION artifact whatever the packing process's NODE_ENV: the shell it
+      runs in is a production React whose shared `react/jsx-dev-runtime` exports `jsxDEV` as
+      undefined, so a member compiled with the development JSX transform (Bun's default when
+      NODE_ENV is unset — the hub's own case when it packs an unpacked directory) throws
+      `jsxDEV is not a function` at first render. This define selects `react/jsx-runtime`.
+    */
+    define: { "process.env.NODE_ENV": '"production"' },
   });
   if (!result.success || result.outputs.length === 0) {
     const detail = result.logs.map((log) => log.message).join("; ");
@@ -121,6 +129,15 @@ async function build(
   const [artifact] = result.outputs;
   if (artifact === undefined) throw new Error(`bundling ${entrypoint} produced no artifact`);
   return artifact.text();
+}
+
+/**
+ * The web half's entry: `web.tsx` when the author kept JSX in the entry itself (the authoring
+ * door's shape, docs/PLUGINS.md §10), else `web.ts`. One name per half otherwise.
+ */
+async function webEntry(pluginDir: string): Promise<string> {
+  const tsx = `${pluginDir}/web.tsx`;
+  return (await Bun.file(tsx).exists()) ? tsx : `${pluginDir}/web.ts`;
 }
 
 export async function packPlugin(
@@ -142,7 +159,7 @@ export async function packPlugin(
     files[PLUGIN_BUNDLE_SERVER_FILE] = Buffer.from(source, "utf8").toString("base64");
   }
   if (manifest.entry.web !== undefined) {
-    const source = await build(`${pluginDir}/web.ts`, "browser", plugins);
+    const source = await build(await webEntry(pluginDir), "browser", plugins);
     files[manifest.entry.web] = Buffer.from(source, "utf8").toString("base64");
   }
   const bundle: PluginBundle = PluginBundleSchema.parse({

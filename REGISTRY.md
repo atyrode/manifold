@@ -71,6 +71,7 @@ must never be taught one.
         "packages/plugin/src/**",
         "packages/server/src/plugin-host.ts",
         "packages/server/src/plugin-installs.ts",
+        "packages/server/src/authored.ts",
         "packages/server/src/shared-modules.ts",
         "packages/server/src/isolate/**",
         "packages/server/src/assembly.ts",
@@ -304,6 +305,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/server/src/plugin-installs.ts",
       "why": "the install door's hands (ADR 0016 stage 2): an artifact fetched or read, pinned by hash before it is parsed, admitted before it is written, re-verified and re-extracted at every boot — the runner's input, which is why it sits beside the host"
+    },
+    {
+      "glob": "packages/server/src/authored.ts",
+      "why": "the unpacked directory's hands (ADR 0025 §4): <data>/authored/<id>/ watched, built with the kit's own packPlugin (one bundler, invariant 14), and handed to the ONE install path as an unpacked replace pinned from the bytes it wrote — the loop is bootstrap because nothing else turns a save into a roster row, neutral because it reads no manifest field, and arbitration because developer mode is checked at its two entrances"
     },
     {
       "glob": "packages/server/src/isolate/**",
@@ -586,8 +591,9 @@ Four rules bind that table:
 - **Refusals are named classes, not one boolean.** `essential` (the four rail non-negotiables
   `core.shell`, `core.brand`, `core.keys` and `core.plugins`, plus the three seats the floor
   dispatches: `core.space`, `core.index` and `core.access`), `builtin`
-  (an engine door has no toggle), the dependency classes, the data-version classes and
-  `still_enabled` are members of one published set; the roster also carries `changedBy` /
+  (an engine door has no toggle), the dependency classes, the data-version classes,
+  `still_enabled` and `developer_mode_off` (an unpacked row while developer mode is off, ADR 0025
+  §4 — the one class the authoring door shares with the toggle) are members of one published set; the roster also carries `changedBy` /
   `changedAt`, so a placeholder can say who turned this off, and `lifecycle` (`ok` /
   `enable_failed` / `disable_failed`), because a teardown that fails is a state every principal
   can see rather than an assertion. Disable always completes. A family control is the parent's
@@ -1389,6 +1395,24 @@ applied to vocabulary: one door onto "what do we call this kind".
     {
       "term": "bundle",
       "means": "the one-file JSON artifact a plugin is installed from (PluginBundleSchema: format, manifest with entry, optional builtAgainst versions, base64 members), pinned on the roster row by the sha256 of its exact bytes and re-verified at every boot. artifact is the word for those bytes wherever they are read; bundle is the parsed document — one is the file, the other its meaning",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "unpacked",
+      "means": "an installed row the hub itself built from a directory under <data>/authored/<id>/ rather than one an installer packed (install.mode: \"unpacked\"; absent is bundle) (ADR 0025 §4). The same bytes a pack of the same files produces, through the same install door, onto the same roster row — what differs is who held the kit, and that a running unpacked row is replaced live on a save rather than refused still_enabled",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "authored",
+      "means": "written on this instance, into <data>/authored/<id>/ — by the root-only door engine.plugins.author { id, files } or by any write to the directory the hub watches — and rebuilt by the hub into an unpacked row (ADR 0025 §4). Names the directory and the act; the row it produces is unpacked",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "developer mode",
+      "means": "the root-only, workspace-global switch (engine.plugins.setDeveloperMode { on }; one meta row, published as developerMode beside every roster, absent is off) behind which the authored directory is built and unpacked rows may be enabled (ADR 0025 §4). Off disables every enabled unpacked row through setEnabled first, then flips; while off, their enable and the authoring door refuse developer_mode_off by name",
       "banned": [],
       "allow": []
     },

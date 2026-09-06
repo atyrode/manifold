@@ -497,8 +497,17 @@ export type ResolveResponse = z.infer<typeof ResolveResponseSchema>;
  * roster arrives unsolicited on the connection-level `plugins` session frame whenever it
  * changes; this door is how a client that has not opened a socket yet (or holds no room to
  * join) learns the vocabulary.
+ *
+ * `developerMode` is the workspace's ONE switch for unpacked plugins (ADR 0025 §4), published
+ * beside the roster so an agent and a human read the same value the same way (A2): while it is
+ * off every `install.mode: "unpacked"` row refuses enable as `developer_mode_off`, and the
+ * authoring door refuses by the same name. Absent ≡ off, so a reader of an older hub sees the
+ * one state such a hub can be in.
  */
-export const PluginsResponseSchema = z.strictObject({ plugins: PluginRosterSchema });
+export const PluginsResponseSchema = z.strictObject({
+  plugins: PluginRosterSchema,
+  developerMode: z.boolean().optional(),
+});
 export type PluginsResponse = z.infer<typeof PluginsResponseSchema>;
 
 /**

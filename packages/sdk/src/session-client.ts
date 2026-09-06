@@ -152,9 +152,11 @@ export interface SessionEvents {
   /**
    * The workspace's plugin roster arrived (socket open) or changed (an enable/disable).
    * It is connection-level news, not room traffic, so it never reaches `message`.
-   * Subscribe through `onPlugins`, which replays the last one it heard.
+   * Subscribe through `onPlugins`, which replays the last one it heard. `developerMode` is
+   * the switch published beside the roster (`PluginsResponseSchema`); a hub that says
+   * nothing about it is off.
    */
-  plugins_changed: (roster: PluginRoster) => void;
+  plugins_changed: (roster: PluginRoster, developerMode: boolean) => void;
 }
 
 /**
@@ -243,10 +245,12 @@ export class SessionClient {
   private outbox: ClientMessageBody[] = [];
   private closeError: Error | null = null;
   /**
-   * The last plugin roster this connection delivered, replayed to every late `onPlugins`
-   * subscriber. A roster is workspace state, so the newest one is the whole truth.
+   * The last plugin roster this connection delivered, with the developer-mode switch that
+   * rode beside it, replayed to every late `onPlugins` subscriber. A roster is workspace
+   * state, so the newest one is the whole truth.
    */
-  private pluginRoster: PluginRoster | null = null;
+  private pluginRoster: { readonly roster: PluginRoster; readonly developerMode: boolean } | null =
+    null;
   /**
    * Live event subscriptions. A Set rather than a keyed table: two callers may name the same
    * node for different reasons, and each holds its own release — so identity is the record
@@ -518,10 +522,12 @@ export class SessionClient {
    */
   private handleConnection(body: ConnectionFrame): void {
     switch (body.type) {
-      case "plugins":
-        this.pluginRoster = body.roster;
-        this.emit("plugins_changed", body.roster);
+      case "plugins": {
+        const developerMode = body.developerMode === true;
+        this.pluginRoster = { roster: body.roster, developerMode };
+        this.emit("plugins_changed", body.roster, developerMode);
         return;
+      }
       case "event":
         this.deliverEvent(body);
         return;
@@ -581,9 +587,9 @@ export class SessionClient {
    * so a host mounting after the socket opened renders a composition immediately instead
    * of waiting for the next enable/disable. Returns the unsubscribe.
    */
-  onPlugins(fn: (roster: PluginRoster) => void): () => void {
+  onPlugins(fn: (roster: PluginRoster, developerMode: boolean) => void): () => void {
     const off = this.on("plugins_changed", fn);
-    if (this.pluginRoster !== null) fn(this.pluginRoster);
+    if (this.pluginRoster !== null) fn(this.pluginRoster.roster, this.pluginRoster.developerMode);
     return off;
   }
 

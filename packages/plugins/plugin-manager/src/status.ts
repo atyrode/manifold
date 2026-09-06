@@ -110,6 +110,7 @@ const REFUSAL_WORDS: Readonly<Record<PluginRefusalReason, string>> = {
   data_migration_missing: "its stored data needs a migration this build does not carry",
   element_type_owned: "another plugin owns an element type it declares",
   still_enabled: "it is still on",
+  developer_mode_off: "unpacked: developer mode is off",
 };
 
 /** The two lifecycle failures that are not a status word of their own, as sentences. */
@@ -197,6 +198,7 @@ export function refusalWords(
     case "data_migration_missing":
     case "element_type_owned":
     case "still_enabled":
+    case "developer_mode_off":
       return REFUSAL_WORDS[reason];
     default: {
       const exhaustive: never = reason;

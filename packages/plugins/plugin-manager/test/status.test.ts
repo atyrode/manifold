@@ -168,6 +168,7 @@ describe("pluginStatus", () => {
       "data_migration_missing",
       "element_type_owned",
       "still_enabled",
+      "developer_mode_off",
     ];
     for (const refusal of classes) {
       for (const enabled of [true, false]) {

@@ -531,7 +531,12 @@ const ServerPingSchema = z.strictObject({ type: z.literal("ping") });
  * bare literal beside it rather than joining the table: it has no body to parse.
  */
 export const CONNECTION_BODIES = {
-  plugins: z.strictObject({ type: z.literal("plugins"), roster: PluginRosterSchema }),
+  /** The roster and, beside it, the developer-mode switch (`PluginsResponseSchema`); absent ≡ off. */
+  plugins: z.strictObject({
+    type: z.literal("plugins"),
+    roster: PluginRosterSchema,
+    developerMode: z.boolean().optional(),
+  }),
   /**
    * ONE thing happened to ONE node, emitted at the door that committed it — once, at the
    * commit point, never per frame of the gesture that led there.

@@ -1,5 +1,6 @@
 import {
   AssemblyError,
+  ENGINE_DEVELOPER_MODE_EVENT,
   ENGINE_INSTALLED_EVENT,
   ENGINE_UNINSTALLED_EVENT,
   LIFECYCLE_TIMEOUT_MS,
@@ -16,6 +17,8 @@ import {
   type AssemblyEnv,
   type EmitEvent,
   type LifecycleCtx,
+  type PluginAuthorRequest,
+  type PluginAuthorResult,
   type PluginDef,
   type PluginInstallRequest,
   type PluginInstallResult,
@@ -66,6 +69,7 @@ import type {
 } from "@manifold/protocol";
 import { ServiceError } from "./auth.ts";
 import type { AuthContext, AuthService, MachineEnrollment, ServiceErrorCode } from "./auth.ts";
+import { AuthoredPlugins, type AuthoredPack } from "./authored.ts";
 import type { EventHub } from "./event-hub.ts";
 import type { InstanceDialer } from "./instance-dialer.ts";
 import {
@@ -345,6 +349,11 @@ export interface HostControl {
     installedBy: string,
   ): Promise<ActionRefused | PluginInstallResult>;
   uninstall(id: string, removedBy: string, purge: boolean): Promise<ActionRefused | { ok: true }>;
+  setDeveloperMode(on: boolean, changedBy: string): Promise<ActionRefused | { ok: true }>;
+  author(
+    request: PluginAuthorRequest,
+    authoredBy: string,
+  ): Promise<ActionRefused | PluginAuthorResult>;
   roster(): PluginRoster;
   enabled(id: string): boolean;
 }
@@ -358,6 +367,8 @@ export interface IsolateDeps {
   readonly dataDir: string;
   /** `MANIFOLD_PLUGIN_DEV_PATHS=1`: path sources anywhere, not only under `plugin-uploads/`. */
   readonly devPaths?: boolean;
+  /** How an unpacked directory is built; the kit's `packPlugin` unless a test injects one. */
+  readonly pack?: AuthoredPack;
 }
 
 /**
@@ -588,6 +599,25 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
         if ("refused" in outcome) return outcome;
         return {};
       },
+      /**
+       * The two doors onto code written ON THIS INSTANCE (ADR 0025 §4). As thin as the install
+       * pair, for the same reason: the switch, the directory, the build and the row are the
+       * host's verdicts, and the door only names who asked.
+       */
+      async setDeveloperMode(
+        ctx: EngineDoorCtx,
+        args: { on: boolean },
+      ): Promise<ActionRefused | Record<string, never>> {
+        const outcome = await ctx.host.setDeveloperMode(args.on, ctx.principal.id);
+        if ("refused" in outcome) return outcome;
+        return {};
+      },
+      async author(
+        ctx: EngineDoorCtx,
+        args: PluginAuthorRequest,
+      ): Promise<ActionRefused | PluginAuthorResult> {
+        return ctx.host.author(args, ctx.principal.id);
+      },
       /** The single settings door: declaration, authority, value, then durable write. */
       async setSetting(
         ctx: EngineDoorCtx,
@@ -750,8 +780,15 @@ export class PluginHost {
   private readonly installed = new Map<string, InstalledPlugin>();
   private readonly installedDefs = new Map<string, ServerPluginDef>();
   private readonly isolates: IsolateDeps | null;
+  /**
+   * The unpacked directory's hands (ADR 0025 §4): present exactly when this host admits
+   * bundles, because an unpacked row IS an installed row and lands through the same door.
+   */
+  private readonly authored: AuthoredPlugins | null;
   private readonly storages = new Map<string, PluginStorageAdmin>();
-  private readonly rosterListeners = new Set<(roster: PluginRoster) => void>();
+  private readonly rosterListeners = new Set<
+    (roster: PluginRoster, developerMode: boolean) => void
+  >();
   private readonly builtins: ReadonlySet<string>;
   /**
    * The ids the shipped distribution registers, handed in by the composition root because
@@ -791,6 +828,20 @@ export class PluginHost {
     this.builtins = new Set(ENGINE_BUILTIN_DEFS.map((def) => def.manifest.id));
     this.distribution = options.distribution;
     this.isolates = options.isolates ?? null;
+    this.authored =
+      this.isolates === null
+        ? null
+        : new AuthoredPlugins(
+            this.isolates.dataDir,
+            {
+              installUnpacked: (id, source, sha256, installedBy) =>
+                this.installUnpacked(id, source, sha256, installedBy),
+              unpackedRow: (id) => this.unpackedRow(id),
+              developerMode: () => this.store.developerMode(),
+            },
+            logger,
+            this.isolates.pack,
+          );
     this.lifecycleTimeoutMs = options.lifecycleTimeoutMs ?? LIFECYCLE_TIMEOUT_MS;
     for (const def of this.defs) this.handlers.set(def.manifest.id, def.handlers);
   }
@@ -1033,6 +1084,7 @@ export class PluginHost {
         installedAt: entry.row.installedAt,
         hardened: entry.row.hardened === true,
         ...(entry.row.builtAgainst === undefined ? {} : { builtAgainst: entry.row.builtAgainst }),
+        ...(entry.row.mode === "unpacked" ? { mode: "unpacked" as const } : {}),
         ...(entry.refusal === undefined ? {} : { refusal: entry.refusal }),
       });
     }
@@ -1044,6 +1096,7 @@ export class PluginHost {
       lifecycle: this.lifecycleStates,
       attribution: this.store.pluginAttribution(),
       installs,
+      developerMode: this.store.developerMode(),
     };
   }
 
@@ -1119,12 +1172,31 @@ export class PluginHost {
     return this.assembled.roster;
   }
 
-  /** Registers a roster listener and returns its removal, mirroring `AuthService.onRevoked`. */
-  onRosterChange(listener: (roster: PluginRoster) => void): () => void {
+  /** The workspace's developer-mode switch (ADR 0025 §4), published beside every roster. */
+  developerMode(): boolean {
+    return this.store.developerMode();
+  }
+
+  /**
+   * Registers a roster listener and returns its removal, mirroring `AuthService.onRevoked`.
+   * The listener hears the developer-mode switch with every roster, because the two ride one
+   * frame: a flip republishes the roster (its `developer_mode_off` marks moved) and nothing
+   * else, so there is exactly one "the plugins changed" signal (invariant 14).
+   */
+  onRosterChange(listener: (roster: PluginRoster, developerMode: boolean) => void): () => void {
     this.rosterListeners.add(listener);
     return () => {
       this.rosterListeners.delete(listener);
     };
+  }
+
+  /**
+   * THE WATCH on `<data>/authored/` (ADR 0025 §4): started by the composition root once the
+   * socket is bound, so a rebuild found at start never delays the first request. Returns the
+   * stop; a host that admits no bundles has nothing to watch and returns a no-op.
+   */
+  watchAuthored(): () => void {
+    return this.authored?.watch() ?? (() => {});
   }
 
   /**
@@ -1167,6 +1239,10 @@ export class PluginHost {
       const clashes = this.assembled.conflicts(id);
       if (clashes.length > 0) return refused("incompatible_dependency", clashes);
       const installed = this.installed.get(id);
+      // The directory is admitted only behind the switch (ADR 0025 §4): off, by name.
+      if (installed?.row.mode === "unpacked" && !this.store.developerMode()) {
+        return refused("developer_mode_off", [id]);
+      }
       if (installed !== undefined && installed.row.hardened !== true) {
         const verdict = verifyInstalledBundle(installed.row);
         if (!verdict.ok) return installRefused(verdict.refusal, verdict.detail);
@@ -1339,10 +1415,20 @@ export class PluginHost {
    *
    * Then the transition is announced exactly as a toggle is: hooks fan out (an install of an
    * enabled row IS an enable), the roster is published, one log line, one event.
+   *
+   * `unpacked` is the rebuild loop knocking (ADR 0025 §4): the artifact is what the hub just
+   * packed from `<data>/authored/<id>/`, the row lands as `mode: "unpacked"`, and the manifest
+   * must name the directory it was built from. It is the ONE difference in admission: a
+   * running unpacked row is replaced LIVE rather than refused `still_enabled` — its `onDisable`
+   * runs, the previous module is left behind (it stays in memory until restart, a cost
+   * developer mode accepts), the new one is imported fresh, and `onEnable` fans out as for an
+   * enable — because a save is not a state anybody wants to be asked to disable for. An
+   * `AssemblyError` in the edit rolls back to the previous row and wakes it again.
    */
   async install(
     request: PluginInstallRequest,
     installedBy: string,
+    unpacked?: { readonly id: string },
   ): Promise<ActionRefused | PluginInstallResult> {
     const isolates = this.isolates;
     if (isolates === null) {
@@ -1364,6 +1450,12 @@ export class PluginHost {
               `"${id}" claims a namespace only this build may use`,
             );
           }
+          if (unpacked !== undefined && unpacked.id !== id) {
+            return new InstallRefusal(
+              "artifact_invalid",
+              `manifest id "${id}" is not the directory it was authored in, "${unpacked.id}"`,
+            );
+          }
           const existing = this.installed.get(id);
           if (existing === undefined) return null;
           if (request.replace !== true) {
@@ -1372,7 +1464,8 @@ export class PluginHost {
               `"${id}" is installed at ${existing.row.sha256}; pass replace to upgrade it`,
             );
           }
-          if (this.assembled.enabled(id)) {
+          const live = unpacked !== undefined && existing.row.mode === "unpacked";
+          if (this.assembled.enabled(id) && !live) {
             return new InstallRefusal("still_enabled", `disable "${id}" before replacing it`);
           }
           return null;
@@ -1397,11 +1490,19 @@ export class PluginHost {
       actions: [],
       hardened: request.hardened === true,
       ...(bundle.builtAgainst === undefined ? {} : { builtAgainst: bundle.builtAgainst }),
+      ...(unpacked === undefined ? {} : { mode: "unpacked" as const }),
     };
     const web = webModuleOf(bundle);
     const wasEnabled = new Set(
       this.assembled.roster.filter((entry) => entry.enabled).map((entry) => entry.manifest.id),
     );
+    // A LIVE replace (unpacked over a running unpacked row): the old module is told first, and
+    // the row leaves the "was enabled" set so the new module's `onEnable` fans out below.
+    const live = previous !== undefined && wasEnabled.has(id);
+    if (live) {
+      await this.hook(id, "onDisable", "disable_failed");
+      wasEnabled.delete(id);
+    }
     // A replace retires the running child first: two children for one id is two doors.
     if (previous?.row.hardened === true) await isolates.runner.unload(id);
     this.installed.set(id, { row: consent, bundle, web });
@@ -1415,6 +1516,8 @@ export class PluginHost {
       this.assembled = await this.reassemble();
     } catch (error) {
       await this.rollbackInstall(id, artifact, previous, previousDef);
+      // The previous row is still on and still serving: wake it again, as it was.
+      if (live) await this.hook(id, "onEnable", "enable_failed");
       if (error instanceof IsolateLoadError)
         return installRefused("artifact_invalid", error.message);
       if (error instanceof AssemblyError) {
@@ -1450,6 +1553,7 @@ export class PluginHost {
       principal: installedBy,
       caps: row.grantedCaps,
       replaced: previous !== undefined,
+      ...(unpacked === undefined ? {} : { mode: "unpacked" }),
     });
     // The commit point, on the engine's own node, for the reason `setEnabled` gives.
     this.events.emit(
@@ -1460,6 +1564,80 @@ export class PluginHost {
       { plugin: id, version: bundle.manifest.version, sha256 },
     );
     return { id, version: bundle.manifest.version, grantedCaps: [...row.grantedCaps] };
+  }
+
+  /**
+   * The rebuild loop's knock on the door above (ADR 0025 §4): an unpacked replace of the
+   * artifact the hub packed, pinned at the hash of the bytes it wrote. Answers the row as the
+   * authoring door promises it — the install result plus that pin.
+   */
+  private async installUnpacked(
+    id: string,
+    source: string,
+    sha256: string,
+    installedBy: string,
+  ): Promise<ActionRefused | PluginAuthorResult> {
+    const outcome = await this.install({ source, sha256, replace: true }, installedBy, { id });
+    if ("refused" in outcome) return outcome;
+    return { ...outcome, sha256 };
+  }
+
+  /** The unpacked row of record for `id` as the loop reads it, or null for anything else. */
+  private unpackedRow(id: string): (PluginAuthorResult & { readonly installedBy: string }) | null {
+    const entry = this.installed.get(id);
+    if (entry === undefined || entry.row.mode !== "unpacked" || entry.bundle === null) return null;
+    return {
+      id,
+      version: entry.bundle.manifest.version,
+      grantedCaps: [...entry.row.grantedCaps],
+      sha256: entry.row.sha256,
+      installedBy: entry.row.installedBy,
+    };
+  }
+
+  /**
+   * THE DEVELOPER-MODE SWITCH (ADR 0025 §4): one workspace-global meta row, flipped by root
+   * and published beside every roster. OFF disables every enabled unpacked row FIRST — each
+   * through `setEnabled`, the one door, traced and attributed to whoever flipped the switch —
+   * so no unpacked code is running once the switch reads off; a refusal on the way stops the
+   * flip with that refusal. ON changes no row: the rows stay off as they were left, their
+   * `developer_mode_off` marks lift, and the next save or authoring call builds again.
+   */
+  async setDeveloperMode(on: boolean, changedBy: string): Promise<ActionRefused | { ok: true }> {
+    if (this.authored === null) {
+      return installRefused("artifact_unreadable", "this server admits no bundles");
+    }
+    if (this.store.developerMode() === on) return { ok: true };
+    if (!on) {
+      for (const [id, entry] of this.installed) {
+        if (entry.row.mode !== "unpacked" || !this.assembled.enabled(id)) continue;
+        const outcome = await this.setEnabled(id, false, changedBy);
+        if ("refused" in outcome) return outcome;
+      }
+    }
+    this.store.setDeveloperMode(on);
+    this.assembled = await this.reassemble();
+    this.publish();
+    this.logger.info("developer_mode_changed", { on, principal: changedBy });
+    this.events.emit(
+      enginePluginsManifest.id,
+      { kind: "plugin", pluginId: enginePluginsManifest.id },
+      ENGINE_DEVELOPER_MODE_EVENT,
+      changedBy,
+      { on },
+    );
+    return { ok: true };
+  }
+
+  /** THE AUTHORING DOOR (ADR 0025 §4): the directory's hands, then the install path above. */
+  async author(
+    request: PluginAuthorRequest,
+    authoredBy: string,
+  ): Promise<ActionRefused | PluginAuthorResult> {
+    if (this.authored === null) {
+      return installRefused("artifact_unreadable", "this server admits no bundles");
+    }
+    return this.authored.author(request, authoredBy);
   }
 
   /**
@@ -1660,7 +1838,8 @@ export class PluginHost {
   }
 
   private publish(): void {
-    for (const listener of this.rosterListeners) listener(this.assembled.roster);
+    const developerMode = this.store.developerMode();
+    for (const listener of this.rosterListeners) listener(this.assembled.roster, developerMode);
   }
 
   /**
