@@ -57,6 +57,7 @@ interface MachinesCtx {
     rotateMachineToken(machine: MachineRow): IdentityResult<Enrollment>;
     /** Withdraws a machine's credential and answers how many died; 0 is a success. */
     revokeMachine(machineId: string): IdentityResult<number>;
+    forgetMachine(machineId: string): IdentityResult<void>;
   };
   /**
    * The fleet's news, staged on the engine and published only if this dispatch commits. Only
@@ -198,6 +199,21 @@ export const machinesHandlers = {
     ctx.target({ kind: "machine", machineId: args.machineId });
     const outcome = ctx.identity.revokeMachine(args.machineId);
     return outcome.ok ? { revoked: outcome.value } : { refused: outcome.message };
+  },
+
+  /**
+   * REMOVAL, relayed. Legal only after withdrawal: the mechanism refuses a live credential,
+   * retained terminals and a pending drain by name, and a second forget answers as unknown.
+   * The trace names the machine explicitly because this is the last row that ever will —
+   * once the roster row is gone, nothing derives that address from an emission.
+   */
+  async forget(
+    ctx: MachinesCtx,
+    args: { machineId: string },
+  ): Promise<Refusable<Record<string, never>>> {
+    ctx.target({ kind: "machine", machineId: args.machineId });
+    const outcome = ctx.identity.forgetMachine(args.machineId);
+    return outcome.ok ? {} : { refused: outcome.message };
   },
 
   /**

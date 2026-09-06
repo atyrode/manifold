@@ -42,6 +42,12 @@
   cursor: pointer;
 }
 
+.machine-revoke[data-action="core.machines.forget"] {
+  width: auto;
+  padding-inline: 0.35rem;
+  font-size: 0.7rem;
+}
+
 .machine-revoke:hover,
 .machine-revoke:focus-visible {
   border-color: #495057;

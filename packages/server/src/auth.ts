@@ -980,6 +980,26 @@ export class AuthService {
     return count;
   }
 
+  /** Removes only withdrawn inventory; terminal ownership and history are never torn down. */
+  forgetMachine(machineId: string, actor: AuthContext): void {
+    if (!this.allows(actor, "machines:mint") || actor.containerScope !== null) {
+      throw new ServiceError("forbidden", "machines:mint capability required");
+    }
+    this.store.transaction(() => {
+      const machine = this.store.getMachine(machineId);
+      if (machine === null) throw new ServiceError("not_found", "machine not found");
+      const token = this.store.getToken(machine.tokenId);
+      if (token !== null && token.revokedAt === null) {
+        throw new ServiceError("conflict", "not_revoked");
+      }
+      if (machine.draining) throw new ServiceError("conflict", "drain_pending");
+      if (this.store.hasMachineTerminals(machineId)) {
+        throw new ServiceError("conflict", "terminals_retained");
+      }
+      this.store.deleteMachine(machineId);
+    });
+  }
+
   /**
    * THE CREDENTIAL LIST (ADR 0019 §3): every principal this caller may administer, when it
    * was created, and the credentials of it that are still alive.

@@ -192,3 +192,18 @@ launchctl load -w ~/Library/LaunchAgents/dev.tyrode.manifold-agent.plist
 - Terminals run as the agent's user on that machine. The agent is the only
   process with the token; the token authorizes the machine channel only (it is
   not a principal bearer).
+
+## Decommission a machine
+
+Delete its retained terminals through the ordinary terminal controls first. Clear any pending
+maintenance drain with `core.machines.drain { machineId, draining: false }` while the agent
+can still answer. Then dispatch `core.machines.revoke { machineId }` to withdraw its credential.
+The row remains **Revoked** until you use its two-press **Forget** control or dispatch
+`core.machines.forget { machineId }`; both administration doors require `machines:mint` and
+an unscoped credential.
+
+Forget removes the roster row and all its tokens, never silently revokes or kills anything.
+It refuses with `not_revoked` for a live credential, `drain_pending` for latched admission,
+or `terminals_retained` for any remaining terminal row (including exited terminals).
+History and traces remain unchanged, with the old machine id unresolved. Re-enrolling the
+same name after forgetting creates a new identity; it does not reconnect that history.

@@ -420,6 +420,13 @@ export const RevokeMachineRequestSchema = z.strictObject({
 });
 export type RevokeMachineRequest = z.infer<typeof RevokeMachineRequestSchema>;
 
+/** Removes an already-revoked, terminal-free machine from the roster. */
+export const ForgetMachineRequestSchema = z.strictObject({
+  machineId: z.string().min(1),
+});
+export type ForgetMachineRequest = z.infer<typeof ForgetMachineRequestSchema>;
+export const ForgetMachineResultSchema = z.strictObject({});
+
 /**
  * `core.machines.drain` — the ATOMIC admission contract a host activation needs before it
  * replaces a machine's agent (issue #278). `draining: true` closes new-terminal admission on

@@ -2136,6 +2136,22 @@ export class ServerStore {
       .map(toMachine);
   }
 
+  hasMachineTerminals(machineId: string): boolean {
+    return (
+      this.db
+        .query<{ id: string }, [string]>("SELECT id FROM terminals WHERE machine_id = ? LIMIT 1")
+        .get(machineId) !== null
+    );
+  }
+
+  /** Includes old rotated credentials; journal and trace references deliberately survive. */
+  deleteMachine(machineId: string): void {
+    this.transaction(() => {
+      this.db.query("DELETE FROM machines WHERE id = ?").run(machineId);
+      this.db.query("DELETE FROM tokens WHERE principal_id = ?").run(machineId);
+    });
+  }
+
   /**
    * Sets the admission latch (`core.machines.drain`). Persisted BEFORE the owner is asked,
    * so a hub restart between the two cannot reopen admission by forgetting it was closed.

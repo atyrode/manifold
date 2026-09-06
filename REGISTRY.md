@@ -1187,6 +1187,12 @@ applied to vocabulary: one door onto "what do we call this kind".
       "allow": []
     },
     {
+      "term": "forget",
+      "means": "remove a revoked machine's roster row and credentials, never implicitly revoke it, cancel a drain, or destroy retained terminals or history",
+      "banned": [],
+      "allow": []
+    },
+    {
       "term": "instance",
       "means": "one manifold server and its data: an addressing space with exactly one origin, and the unit a share crosses between",
       "banned": [],
