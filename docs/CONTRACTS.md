@@ -1412,15 +1412,11 @@ from a directory alike — and isolation is HARDENING an installer may choose fo
 the default (ADR 0025, operator-ratified 2026-09-05, reversing ADR 0016 §1's "an installed row
 runs isolated"). A HARDENED row runs on ADR 0016's runner: its server half in its own OS process
 and its web half in its own dedicated `Worker`, against the narrower interface this section
-describes. The selector is `install.hardened === true` once the in-realm loader lands (#256);
-**today it is `install !== undefined`**, because the loader that would run an installed row in
-the page and the hub process is not yet built, so TODAY every installed row still runs hardened
-and every "installed" below means exactly that. That deferral must be visible in-product
-(`AXIOMS.md` §Change control): no roster field or refusal carries it yet — `install.hardened` is
-the field that will, and until it exists #256 owes the plugin manager's Installed band the
-sentence that installed rows run hardened. Every first-party row — `builtin` and every
-`packages/plugins/*` package — runs in-realm; the runner is selected by the row's `install`
-block, never by a third `source` value. Both boundaries are message boundaries, so both frame
+describes. The selector is `install?.hardened === true`; absent or false runs in-realm.
+The installer chooses it at `engine.plugins.install`, never the manifest author. The manager's
+Installed band names each row's runner in words, **In-realm** or **Hardened**. Every first-party
+row — `builtin` and every `packages/plugins/*` package — runs in-realm. No third `source` value
+is needed. The hardened boundaries are message boundaries, so both frame
 sets are `@manifold/protocol` schemas (`packages/protocol/src/isolate.ts`) and both are published
 under `isolateContract` at `GET /api/protocol` beside the closed component vocabulary, the served
 ctx methods, the runner's numbers and the artifact shape — an out-of-tree author reads the whole
@@ -1439,6 +1435,18 @@ door it opened (ADR 0018), and the remedy is `uninstall` or reinstalling with `h
 dialled guest's browser runs the host's in-realm plugins with the guest's token for THAT hub —
 no authority beyond what the hub already holds for that principal, and nothing that reaches the
 guest's own instance (ADR 0016 T5/T6, ADR 0025 §Consequences).
+
+The browser fetches an enabled installed web half with the Authorization bearer header and
+imports a Blob URL; credentials never ride a module URL. The module's default `WebPluginDef`
+joins the shipped definitions whenever the live roster changes. Disable drops the loaded
+definition, retaining layout and data; re-enable imports afresh. A server half likewise exports
+its default server definition and is imported in the hub, not evaluated by a second module system.
+React, React DOM, the JSX runtimes, all three `@manifold/plugin` entries, `@manifold/protocol`,
+`@manifold/sdk` and `@manifold/scene` resolve through
+`globalThis[Symbol.for("manifold.shared")]`. The shell and hub publish their own namespace
+identities; the kit rewrites shared imports at build time, without an import map or runtime
+dependency. The bundle's optional `builtAgainst` version map is recorded as
+`install.builtAgainst`; compatibility presentation belongs to #238.
 
 **The artifact (`PluginBundleSchema`).** One JSON file, `<id>.manifold-plugin.json`, at most
 `ISOLATE_MAX_ARTIFACT_BYTES` (16 MiB):
@@ -1469,9 +1477,10 @@ assembly admitted it, never from the file — under a manifest whose `version` i
 and whose `capabilities` is the union of what those doors declare; a dispatch to one answers the
 runner's rung, `unavailable`, with message `bundle failed verification at boot: <class>`, traced
 like every other rung (a row admitted before its doors were recorded composes doorless, as it
-always did). The bundle is self-contained — the kit's `pack` inlines both guest runtimes — so the
-loader is one `Bun.spawn(["bun", "--smol", "<dir>/server.js"], { ipc, serialization: "json" })`
-and one `new Worker("/api/plugins/<id>/web.js", { type: "module" })`.
+always did). Hardened bundles are self-contained (`pack --self-contained`) and run with the
+existing process/Worker runners. In-realm bundles use the shared-module registry and plain
+`import()`. Selecting hardening does not turn a React definition into a worker program; the
+React-over-frames reconciler is #259.
 
 **The install grant (ADR 0016 §5, R4 = option B).** `install.grantedCaps` is what the installer
 consented to. It defaults to the manifest's declared `capabilities` minus the high-risk set

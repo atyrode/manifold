@@ -2013,17 +2013,19 @@ are the checks that will fail _your_ plugin:
 
 Everything above describes the IN-REALM target: a plugin handed the engine's real objects —
 React, `@manifold/plugin`, `HostServices`, the full `ActionCtx`. That is the ratified default for
-EVERY row, installed ones included (ADR 0025, operator-ratified 2026-09-05); the loader that runs
-an installed bundle in-realm is owed (#256), and until it lands every installed row runs the way
-this section describes. This section is the HARDENED target (ADR 0016, stage 1+2): a row its
-installer chose to isolate — `install.hardened: true` once #256 lands, every installed row
-today — authored anywhere, packed into one artifact, installed at a door, and run as a stranger's
-code: its server half in its own Bun process, its web half in its own dedicated `Worker`, against
-the narrower interface below. The manifest decides which target you are writing for: an in-tree
-manifest has no `entry`; an installed one must, and `entry` names the halves the bundle runs
-(`{ "server": true, "web": "web.js" }`). Nothing else about the manifest changes — same id
-grammar, same capability ceiling, same `contributes`, same assembly refusals, same denial ladder
-at the door. Authoring an in-realm plugin on a running instance is §10, owed with the loader (#260).
+EVERY row, installed ones included (ADR 0025). An installed in-realm web half exports its default
+`WebPluginDef`; its server half exports its default server definition with actions and handlers.
+The hub imports the server half with the full `ActionCtx`. Every open browser fetches and imports
+the web half when the roster announces it, with no reload; disable drops its definition and
+re-enable loads it afresh. Layout and stored data survive disable.
+
+This section describes the optional HARDENED target: an installer passes `hardened: true` to
+`engine.plugins.install`, choosing a separate Bun process and browser Worker with the narrower
+interface below. Absent or false means in-realm. The manifest does not choose the runner:
+`entry` only names the bundle's halves (`{ "server": true, "web": "web.js" }`). Both targets keep
+the same hash pin, install door, capability declaration and refusal ladder. The Installed band
+shows **In-realm** or **Hardened** on each row. React-over-frames for hardened rows is #259;
+unpacked authoring is #257 and its guide is #260.
 
 The kit is `@manifold/plugin-kit` (`packages/plugin-kit`; the reference plugin it ships is
 `packages/plugin-kit/test/fixtures/sample/`, quoted below). It depends on `@manifold/protocol` and
@@ -2171,15 +2173,25 @@ posts one, so a bad tree becomes a `fault` naming the panel and the engine paint
 ### Packing
 
 ```sh
-bun run --cwd packages/plugin-kit pack <plugin-dir> --out example.counter.manifold-plugin.json
-# {"file":"example.counter.manifold-plugin.json","sha256":"e984…","bytes":1586951}
+bun run --cwd packages/plugin-kit pack <plugin-dir> --out example.counter.manifold-plugin.json --self-contained
 ```
 
-`pack` reads `<plugin-dir>/manifest.json`, bundles `server.ts` (target `bun`) and `web.ts`
-(target `browser`) with the kit, the protocol and zod INLINED — the artifact is self-contained and
-the engine's loader never resolves a package — and writes one JSON document (`PluginBundleSchema`:
-`format: 1`, the manifest with its `entry`, the members as base64). The printed `sha256` is over
-the file's exact bytes and is the pin `engine.plugins.install` demands; the door itself — where a
+`pack --self-contained` reads `<plugin-dir>/manifest.json`, bundles `server.ts` (target `bun`)
+and `web.ts` (target `browser`) with the hardened kit runtimes inlined. Without that option,
+`pack` builds an in-realm bundle: React, React DOM, the JSX runtimes, all three `@manifold/plugin`
+entries, `@manifold/protocol`, `@manifold/sdk` and `@manifold/scene` are shared through
+`globalThis[Symbol.for("manifold.shared")]`. A build-time rewrite removes bare shared imports;
+the shell and hub supply their own module identities. No import map or new runtime dependency is
+needed. The bundle records React/floor versions in `builtAgainst`, copied to `install.builtAgainst`
+on the roster; the manager's incompatibility presentation is #238.
+
+For the React example, pack `packages/plugin-kit/test/fixtures/in-realm` without
+`--self-contained`, then call `engine.plugins.install { source, sha256, hardened: false }`.
+For the hardened sample below, pack with `--self-contained` and install with `hardened: true`.
+Packing cannot turn a React definition into a hardened program; the installer chooses which code
+and runner they consent to. Both outputs use `PluginBundleSchema`: `format: 1`, manifest with
+`entry`, optional `builtAgainst`, and base64 members.
+The printed `sha256` is over the file's exact bytes and is the pin `engine.plugins.install` demands; the door itself — where a
 source may come from, the default grant, the refusal classes, where the bundle lives afterwards —
 is §7 Installing a plugin, and the artifact's shape is `docs/CONTRACTS.md` §Hardened plugins.
 
@@ -2194,14 +2206,14 @@ change, debounced, installing only the bundles whose sha moved. One JSON line pe
 
 ```sh
 # from a manifold checkout, pointing at your plugins directory
-bun run --cwd packages/plugin-kit dev <plugins-root> --hub http://127.0.0.1:7777 --owner-key-file <data>/owner.key
+bun run --cwd packages/plugin-kit dev <plugins-root> --hub http://127.0.0.1:7777 --owner-key-file <data>/owner.key --hardened
 # from an author repository with manifold checked out beside it (the pack.sh layout)
-bun run dev -- --hub http://127.0.0.1:7912 --deliver docker:manifold-dev-manifold-1
+bun run dev -- --hub http://127.0.0.1:7912 --deliver docker:manifold-dev-manifold-1 --hardened
 ```
 
 Every cycle is `install`, the one-shot command underneath, and `install` is idempotent over the
-hub's roster: it reads `GET /api/plugins` first, and the same id at the same sha is `unchanged`
-(nothing asked of the hub); another sha is `replaced` — `engine.plugins.setEnabled false`,
+hub's roster: it reads `GET /api/plugins` first, and the same id at the same sha and hardening is
+`unchanged` (nothing asked of the hub); another sha or runner choice is `replaced` — `setEnabled false`,
 `engine.plugins.install { replace: true }`, `setEnabled true`, the three steps §7 demands; an
 absent id is `installed`. A replace is FAMILY-aware: the engine refuses to switch off a row an
 enabled row declares `required` (`missing_dependency`), so replacing `atyrode.code` while
@@ -2213,8 +2225,12 @@ and a refusal exits non-zero with the class and detail (`hash_mismatch: …`) on
 
 ```sh
 bun run --cwd packages/plugin-kit install:bundle <bundle | https://…> --hub <url> \
-  [--sha256 <hex>] [--deliver path | docker:<container>] [--owner-key-file <path>]
+  [--sha256 <hex>] [--deliver path | docker:<container>] [--owner-key-file <path>] [--hardened]
 ```
+
+`dev --hardened` packs self-contained code and installs it hardened. `install:bundle --hardened`
+and `verify --hardened` select that same installer choice for already-packed hardened bundles.
+Omit the flag for in-realm definitions; no manifest field chooses a runner.
 
 **Two delivery strategies**, because the door reads a path or an https URL and nothing else
 (§7): `--deliver path` (the default for a file) hands the hub the bundle's absolute path, which a
@@ -2239,7 +2255,7 @@ artifact composes with a REAL engine, and it is `packages/testkit/e2e/isolated-p
 made public, because `@manifold/testkit` is private and an author repository cannot import it:
 
 ```sh
-bun run --cwd packages/plugin-kit verify <bundle>...
+bun run --cwd packages/plugin-kit verify <bundle>... --hardened
 # {"bundle":"dist/example.counter.manifold-plugin.json","id":"example.counter","sha256":"8b8a…","doors":{"example.counter.bump":"ok"}}
 ```
 
