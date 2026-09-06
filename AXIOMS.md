@@ -319,11 +319,14 @@ conversion work list — which floor surface becomes which plugin, and the rulin
   - **App shells** — packaging manifold's client for hosts that are not a plain browser tab, and
     ADR-gated when it is built rather than sketched now. A **PWA pass is the near milestone**:
     installability, offline shell, and the origin-configurability the portable-lens rule already
-    demands, with no client fork. For desktop, **Electron is the ratified leading candidate** — to
-    be judged in its own ADR at that milestone — because rendering predictability matters to the
-    two surfaces manifold is hardest on (the React Flow canvas and xterm), which its own bundled
-    Chromium gives, because `WebContentsView` embeds a real web view without re-implementing one,
-    and because the local agent already fits the sidecar shape it packages well. **Tauri is
+    demands, with no client fork. For desktop, **Ratified (operator, 2026-09-01): Electron is
+    confirmed** by [ADR 0020](docs/decisions/0020-desktop-shell.md) as a pinned runtime dependency
+    with a CVE duty — because rendering predictability matters to the two surfaces manifold is
+    hardest on (the React Flow canvas and xterm), which its own bundled Chromium gives, because
+    `WebContentsView` embeds a real web view without re-implementing one, and because the local
+    agent already fits the sidecar shape it packages well. **The ratification's one amendment
+    (§6.3, acceptance claim 5): `verify:budgets` must hold inside the shell; a miss triggers the
+    Tauri re-evaluation early.** **Tauri is
     re-evaluated at a native-mobile milestone**, where a system web view stops being a liability
     and binary size starts being one. Whatever ships obeys the portable-lens rule: a shell adds
     host-composed plugins, never a second client. **The ordering is ratified (operator,
