@@ -320,6 +320,11 @@ describe("core.machines.forget", () => {
     expect((await forget()).ok).toBe(true);
     expect(fix.store.getMachine(machineId)).toBeNull();
     expect(fix.store.listTokensByPrincipal(machineId)).toEqual([]);
+    expect(fix.store.listEvents({ type: "trace", limit: 1 })[0]).toMatchObject({
+      door: "core.machines.forget",
+      outcome: "ok",
+      targets: [`manifold://machine/${machineId}`],
+    });
     const listed = await fix.host.dispatch(fix.owner, "core.machines.list", {});
     if (!listed.ok) throw new Error(listed.denial.message);
     expect(MachinesResponseSchema.parse(listed.result).machines).toEqual([]);
