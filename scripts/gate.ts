@@ -62,7 +62,6 @@ const packages = [
   "plugins/presence",
   "plugins/machines",
   "plugins/index",
-  "plugins/draw",
   "plugins/notes",
   "plugins/uri",
   "plugins/access",

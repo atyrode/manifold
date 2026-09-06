@@ -487,7 +487,7 @@ function registrationFromObject(
   return id === null ? null : { id, panels, sections, source };
 }
 
-/** Follows `drawWebPlugin` back to `@manifold-plugin/draw/web` and reads the object there. */
+/** Follows `drawWebPlugin` back to `@manifold-plugin/canvas/draw/web` and reads the object there. */
 function resolveExportedRegistration(file: ts.SourceFile, name: string): WebRegistration | null {
   let specifier: string | null = null;
   walk(file, (node) => {
@@ -543,7 +543,7 @@ function pluginPackages(): readonly PluginPackage[] {
 
 const PLUGIN_PACKAGES = pluginPackages();
 
-/** `@manifold-plugin/draw/web` → `packages/plugins/draw/src/web.tsx`, via the exports map. */
+/** `@manifold-plugin/canvas/draw/web` → `packages/plugins/canvas/draw/src/web.tsx`, via the exports map. */
 function resolvePackageEntry(specifier: string): string | null {
   const match = /^(@manifold-plugin\/[a-z-]+)(\/.+)?$/.exec(specifier);
   if (match === null) return null;
@@ -2982,7 +2982,11 @@ try {
       await dispatch("core.terminals.rename", { terminalId: terminal.id }),
     );
     const scopedManage = ActionOutcomeSchema.parse(
-      await dispatch(ENGINE_SET_ENABLED_ACTION, { id: "core.draw", enabled: false }, scoped.token),
+      await dispatch(
+        ENGINE_SET_ENABLED_ACTION,
+        { id: "core.canvas.draw", enabled: false },
+        scoped.token,
+      ),
     );
     const essential = ActionOutcomeSchema.parse(
       await dispatch(ENGINE_SET_ENABLED_ACTION, { id: "core.shell", enabled: false }),
@@ -4700,16 +4704,20 @@ try {
     await until(
       async () => {
         // The listing lives in the manager's modal, so the wait presses the opener first and
-        // then asks for the row: the rung is about the row existing, not about who opened it.
+        // then expands the canvas family so the child's own toggle is reachable.
         if (!(await openPluginManager())) return false;
         return await browser!.evaluate<boolean>(
-          `document.querySelector('[data-testid="plugin-manager"] [data-plugin="core.draw"]') !== null`,
+          `(() => {
+            const expand = document.querySelector('[data-testid="plugin-manager"] [data-plugin="core.canvas"] [data-testid="plugin-manager-family-expand"]');
+            if (expand instanceof HTMLElement && expand.getAttribute('aria-expanded') === 'false') expand.click();
+            return document.querySelector('[data-testid="plugin-manager"] [data-plugin="core.canvas.draw"]') !== null;
+          })()`,
         );
       },
       20_000,
-      "the plugin manager listing core.draw",
+      "the plugin manager listing core.canvas.draw",
     );
-    const drawGone = await pressToggle("core.draw", false);
+    const drawGone = await pressToggle("core.canvas.draw", false);
     const inert = await settles(async () => {
       const toolbar = await browser!.evaluate<boolean>(
         `document.querySelector('[data-testid="toolbar-draw"]') === null`,
@@ -4720,22 +4728,22 @@ try {
       return toolbar && placeheld;
     }, 10_000);
     check(
-      "R3 core.draw off, by the manager's own button",
+      "R3 core.canvas.draw off, by the manager's own button",
       drawGone && inert,
       drawGone && inert
         ? "one press on the plugin manager: tool button gone and the existing stroke reads as a named placeholder, no reload"
         : drawGone
           ? "the press landed but the canvas did not go inert"
-          : "the plugin manager's toggle did not turn core.draw off",
+          : "the plugin manager's toggle did not turn core.canvas.draw off",
     );
 
     // The direct-dispatch half, deliberately kept: the same plugin comes back through the
     // API door, and the manager's own row must agree without anyone reloading it.
-    const drawBack = await setEnabled("core.draw", true);
+    const drawBack = await setEnabled("core.canvas.draw", true);
     const rowAgrees = await settles(
       () =>
         browser!.evaluate<boolean>(
-          `document.querySelector(${JSON.stringify(managerToggle("core.draw"))})?.getAttribute('aria-checked') === 'true'`,
+          `document.querySelector(${JSON.stringify(managerToggle("core.canvas.draw"))})?.getAttribute('aria-checked') === 'true'`,
         ),
       10_000,
     );
@@ -4749,7 +4757,7 @@ try {
       return toolbar && painted;
     }, 10_000);
     check(
-      "R3 core.draw back on, by the API door",
+      "R3 core.canvas.draw back on, by the API door",
       drawBack && restored && rowAgrees,
       restored && rowAgrees
         ? "tool and ink both return live, and the manager's row reports the API's change"
@@ -5647,7 +5655,7 @@ try {
   /*
     Every toggle put back before the summary. The data dir here is a temp one, but the gate
     is also run by hand against a real workspace during development, and a check that leaves
-    `core.draw` off is a check that broke the thing it was inspecting.
+    `core.canvas.draw` off is a check that broke the thing it was inspecting.
   */
   if (disabledHere.size > 0 && origin !== "") {
     const ownerKey = await ownerKeyOf(dataDir);
