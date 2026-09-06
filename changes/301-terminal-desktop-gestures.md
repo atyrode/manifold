@@ -3,4 +3,4 @@ section: Added
 issue: 301
 ---
 
-Terminals now open HTTP(S) links with Ctrl+click or Cmd+click, copy and clear completed mouse selections, and paste clipboard text on right-click while retaining browser-menu and mouse-reporting escape hatches.
+Terminals now open HTTP(S) links with Ctrl+click or Cmd+click. Automatic copy-and-clear on selection and right-click clipboard paste are separate personal settings in the Terminals plugin, both off by default. When enabled, clipboard gestures retain browser-menu and mouse-reporting escape hatches.

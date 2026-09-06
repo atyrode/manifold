@@ -258,6 +258,8 @@ export type ControlKind =
    * status dots: the reason is a sentence the caller supplies as a hint, never a picture.
    */
   | "locked"
+  /** Acquire control of a shared interactive surface. */
+  | "takeControl"
   /**
    * THE ASSEMBLY, as a list a reader can open: the roster this workspace was composed from.
    * `assembly` is the registered word for exactly that concept (`REGISTRY.md` §Lexicon), and
@@ -324,6 +326,7 @@ const CONTROL_GLYPHS: Record<ControlKind, LucideIcon> = {
   /** The equals sign itself: two even bars, legible at 13px where a distribute glyph mushes. */
   equalize: Equal,
   locked: Lock,
+  takeControl: MousePointer2,
   assembly: Blocks,
   nesting: ListTree,
   grip: GripVertical,

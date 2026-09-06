@@ -2159,6 +2159,7 @@ aim?: CarryAim, denied?: boolean }`. `useTileDeparture(sourceContainerId, overri
 
 `TerminalRendererProps` and `ContainerRendererProps` accept `projectionScope?`,
 `frame?: "window" | "tile"`, `titlebarMiddle?`, `titlebarExtras?`, and `titlebarDragProps?`.
+Both receive `host: HostServices`, including the authoritative composed plugin settings.
 The mounted renderer owns its bar and forwards these slots rather than receiving a duplicate
 host-drawn bar. `NodeTitleBar.dragProps: TitlebarDragProps` opts the whole bar into dragging;
 interactive descendants and rename input remain controls, never drag sources.
@@ -2205,6 +2206,16 @@ schedules at most one pending animation-frame publication; unchanged geometry is
 Publication re-measures the current host before reading the grid, because an earlier resize
 echo may have changed xterm's dimensions since the scheduling fit. This removes the trailing
 quiet-period delay without changing controller/preview authority or the terminal wire.
+
+`core.terminals` declares two independent **principal-scoped**, default-off boolean settings:
+`copy-on-select` ("Copy selection automatically") and `paste-on-right-click` ("Paste on
+right-click"). They use the existing plugin settings door and appear in the Terminals plugin's
+settings pane. Changes apply to already-mounted terminal views without recreating xterm or
+reconnecting the PTY. With automatic copy off, selection remains highlighted and does not touch
+the clipboard; when on, a completed selection copies and clears only after clipboard success.
+With right-click paste off, the normal context menu is untouched; when on, Shift-right-click and
+mouse-reporting applications retain their existing behavior. Disabling a preference also prevents
+its pending clipboard completion from clearing a selection or pasting into the terminal.
 
 ### Terminals over the session channel
 

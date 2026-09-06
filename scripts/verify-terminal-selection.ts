@@ -8,9 +8,9 @@
  * distance from the terminal origin ("the more down I go, the greater the offset").
  *
  * The gate drives a REAL browser drag over known rows at zoom 1 (baseline) and at
- * canvas zoom ≈ 1.2, checks the painted selection while the button is held, then
- * checks actual clipboard text and deselection after release. Selection must never
- * clear mid-drag, and copying must select the row under the pointer at every zoom.
+ * canvas zoom ≈ 1.2. Default selection stays painted without touching the clipboard;
+ * opting in through plugin settings copies and clears only after release. Selection
+ * must never clear mid-drag, and its painted row must match the pointer at every zoom.
  *
  * Self-contained: builds the web bundle to a temp dir, spawns its own server + agent,
  * cleans up. Env: MANIFOLD_CHROMIUM (else system chromium).
@@ -18,6 +18,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { settingRefId } from "../packages/plugin/src/index.ts";
 import { ActionOutcomeSchema, ContainerResponseSchema } from "../packages/protocol/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser } from "./cdp.ts";
@@ -213,7 +214,50 @@ try {
   );
   await revealScreen();
 
-  async function dragAndPaint(rowIndex: number): Promise<{
+  async function setGesturePreference(setting: string, value: boolean): Promise<void> {
+    await browser!.clickTestId("plugin-manager-open");
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          "document.querySelector('[data-plugin=\"core.terminals\"]') !== null",
+        ),
+      3000,
+      "terminal plugin settings available",
+    );
+    await browser!.evaluate(
+      'document.querySelector(\'[data-plugin="core.terminals"] [data-testid="plugin-manager-row-open"]\').click()',
+    );
+    const selector = `[data-setting="${settingRefId("core.terminals", setting)}"]`;
+    await until(
+      () =>
+        browser!.evaluate<boolean>(`document.querySelector(${JSON.stringify(selector)}) !== null`),
+      3000,
+      `declared ${setting} preference`,
+    );
+    const checked = await browser!.evaluate<string>(
+      `document.querySelector(${JSON.stringify(selector)}).getAttribute('aria-checked')`,
+    );
+    if (checked !== String(value)) {
+      await browser!.evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    }
+    await until(
+      () =>
+        browser!.evaluate<boolean>(
+          `(() => { const toggle = document.querySelector(${JSON.stringify(selector)}); return toggle?.getAttribute('aria-checked') === ${JSON.stringify(String(value))} && !toggle.disabled; })()`,
+        ),
+      3000,
+      `${setting} preference committed`,
+    );
+    await browser!.evaluate(
+      "document.querySelector('[aria-label=\"Close the plugin manager\"]').click()",
+    );
+    await browser!.evaluate("document.querySelector('.xterm-helper-textarea').focus()");
+  }
+
+  async function dragAndPaint(
+    rowIndex: number,
+    autoCopy: boolean,
+  ): Promise<{
     draggedOn: string;
     paintedRows: string[];
     zoom: number;
@@ -298,14 +342,18 @@ try {
       buttons: 0,
       clickCount: 1,
     });
-    await until(
-      () =>
-        browser!.evaluate<boolean>(
-          "navigator.clipboard.readText().then(text => text !== 'selection gate sentinel')",
-        ),
-      3000,
-      "completed selection copied to clipboard",
-    );
+    if (autoCopy) {
+      await until(
+        () =>
+          browser!.evaluate<boolean>(
+            "navigator.clipboard.readText().then(text => text !== 'selection gate sentinel')",
+          ),
+        3000,
+        "completed selection copied to clipboard",
+      );
+    } else {
+      await Bun.sleep(150);
+    }
     const copied = await browser!.evaluate<string>("navigator.clipboard.readText()");
     await Bun.sleep(100);
     const cleared = await browser!.evaluate<boolean>(
@@ -314,13 +362,13 @@ try {
     return { draggedOn: row.text, paintedRows: painted, zoom, copied, cleared };
   }
 
-  async function assertRow(name: string, rowIndex: number): Promise<void> {
-    const result = await dragAndPaint(rowIndex);
+  async function assertRow(name: string, rowIndex: number, autoCopy: boolean): Promise<void> {
+    const result = await dragAndPaint(rowIndex, autoCopy);
     const ok =
       result.paintedRows.length === 1 &&
       result.paintedRows[0] === result.draggedOn &&
-      result.copied === result.draggedOn &&
-      result.cleared;
+      result.copied === (autoCopy ? result.draggedOn : "selection gate sentinel") &&
+      result.cleared === autoCopy;
     const detail = `dragged on rendered row #${rowIndex} ("${result.draggedOn}") at zoom ${result.zoom.toFixed(2)}, painted [${result.paintedRows.join(", ")}], copied ${JSON.stringify(result.copied)}, cleared ${result.cleared}`;
     console.log(`${ok ? "PASS" : "FAIL"}  ${name}: ${detail}`);
     if (!ok) failures.push(`${name}: ${detail}`);
@@ -330,7 +378,9 @@ try {
   const baselineZoom = await browser.evaluate<number>("window.__manifold.viewport().zoom");
   if (Math.abs(baselineZoom - 1) >= 0.06)
     throw new Error(`baseline canvas zoom is not 1 (got ${baselineZoom})`);
-  for (const rowIndex of [2, 12, 24]) await assertRow(`zoom 1 selects the dragged row`, rowIndex);
+  for (const rowIndex of [2, 12, 24])
+    await assertRow("default selection stays highlighted without copying", rowIndex, false);
+  await setGesturePreference("copy-on-select", true);
 
   // Zoom through the canvas's real pinch interaction: trackpad pinches arrive as
   // ctrl+wheel (modifiers bit 2), which is the only wheel gesture that zooms now —
@@ -383,7 +433,7 @@ try {
 
   // THE REGRESSION: drift grows with distance from the terminal origin.
   for (const rowIndex of [2, 8, 14, 20])
-    await assertRow(`zoomed canvas selects the dragged row`, rowIndex);
+    await assertRow(`opt-in copy selects the dragged row on zoomed canvas`, rowIndex, true);
 
   // Restore baseline sanity after zooming back out through the same real input path.
   for (let i = 0; i < 12; i++) {
@@ -407,7 +457,9 @@ try {
   if (Math.abs(restoredZoom - 1) >= 0.06)
     throw new Error(`could not restore canvas zoom to 1 (got ${restoredZoom})`);
   await revealScreen();
-  await assertRow("zoom restored to 1 selects the dragged row", 12);
+  await assertRow("opt-in copy after zoom restored to 1", 12, true);
+  await setGesturePreference("copy-on-select", false);
+  await assertRow("disabling automatic copy preserves selection again", 12, false);
 
   // URL activation is intentionally modified-click only: ordinary clicks keep
   // terminal focus/selection semantics, while Ctrl+click opens an external tab.
@@ -499,12 +551,55 @@ try {
     console.log("PASS  Ctrl+click opens terminal URLs in an isolated external tab");
   }
 
+  // The other terminal mount site must consume the same principal preferences.
+  await browser.evaluate(
+    "document.querySelector('[aria-label=\"Expand terminal to full view\"]').click()",
+  );
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "document.querySelector('[aria-label=\"Shrink view\"]') !== null && document.querySelector('.xterm-rows')?.textContent.includes('https://example.com/manifold-terminal-link') === true",
+      ),
+    20_000,
+    "fullscreen terminal replayed the existing session",
+  );
+
   // Read the real browser clipboard with a real right click, then observe PTY
   // output that cannot be confused with the echoed command itself.
   await browser.evaluate(`navigator.clipboard.writeText("printf 'PASTE-%s\\\\n' ARRIVED")`);
   const pastePoint = await browser.evaluate<{ x: number; y: number }>(
     "(() => { const r = document.querySelector('.xterm-screen').getBoundingClientRect(); return { x: r.x + 80, y: r.y + 40 }; })()",
   );
+  await browser.evaluate(`document.addEventListener('contextmenu', event => {
+    if (event.target instanceof Element && event.target.closest('.xterm-host'))
+      queueMicrotask(() => { window.__terminalContextMenuPrevented = event.defaultPrevented; });
+  }, true)`);
+  await browser.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    ...pastePoint,
+    button: "right",
+    buttons: 2,
+    clickCount: 1,
+  });
+  await browser.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    ...pastePoint,
+    button: "right",
+    buttons: 0,
+    clickCount: 1,
+  });
+  await Bun.sleep(150);
+  if (
+    await browser.evaluate<boolean>(
+      "document.querySelector('.xterm-rows').textContent.includes(\"printf 'PASTE-%s\") || window.__terminalContextMenuPrevented !== false",
+    )
+  ) {
+    throw new Error("default right-click pasted text or suppressed the normal context menu");
+  }
+  console.log("PASS  default right-click preserves the context menu without pasting");
+  await browser.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+  await browser.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+  await setGesturePreference("paste-on-right-click", true);
   await browser.send("Input.dispatchMouseEvent", {
     type: "mousePressed",
     ...pastePoint,

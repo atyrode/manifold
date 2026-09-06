@@ -13,6 +13,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { settingValue } from "@manifold/plugin";
 import { base64ToBytes } from "@manifold/sdk";
 import {
   TitlebarOutlet,
@@ -41,6 +42,7 @@ import {
   TITLEBAR_ACTIONS_CLASS,
 } from "@manifold/ui";
 import { loadTerminalFont, TERMINAL_FONT_FAMILY, TERMINAL_FONT_SIZE } from "./terminal-font";
+import { terminalsManifest } from "./index";
 import { installTerminalGestures } from "./terminal-gestures";
 import {
   MAX_TERMINAL_FONT_SIZE,
@@ -51,6 +53,7 @@ import {
 
 /** Hosts one no-gap terminal viewer and keeps controller-only input and sizing explicit. */
 export function TerminalView({
+  host,
   client,
   terminalId,
   elementId,
@@ -72,6 +75,14 @@ export function TerminalView({
   onRenameTitle,
   renameAction,
 }: TerminalRendererProps) {
+  const copyOnSelect =
+    settingValue(host.assembly.settings, terminalsManifest.id, "copy-on-select") === true;
+  const pasteOnRightClick =
+    settingValue(host.assembly.settings, terminalsManifest.id, "paste-on-right-click") === true;
+  const gesturePreferencesRef = useRef({ copyOnSelect, pasteOnRightClick });
+  useEffect(() => {
+    gesturePreferencesRef.current = { copyOnSelect, pasteOnRightClick };
+  }, [copyOnSelect, pasteOnRightClick]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -277,6 +288,7 @@ export function TerminalView({
       container,
       () => readOnlyRef.current,
       (message) => notifyRef.current(message, { key: `terminal-clipboard:${terminalId}` }),
+      () => gesturePreferencesRef.current,
     );
     terminalRef.current = terminal;
     fitRef.current = fitAddon;
@@ -656,14 +668,14 @@ export function TerminalView({
             {showTakeControl ? (
               <button
                 type="button"
-                className="node-titlebar__ctl terminal-take-control"
+                className="node-titlebar__ctl"
                 data-action="core.terminals.take"
                 aria-label="Take control of terminal"
-                title="View-only — take control (or double-click terminal content)"
+                title="Take control · or double-click terminal"
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={handleTakeControl}
               >
-                Take control
+                <ControlIcon kind="takeControl" size={12} />
               </button>
             ) : null}
             <button

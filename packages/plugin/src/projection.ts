@@ -124,6 +124,7 @@ export interface RegisteredTool {
  * implementor and the mount sites can reach it, and none of them may import each other.
  */
 export interface TerminalRendererProps {
+  readonly host: HostServices;
   readonly client: SessionClient;
   readonly terminalId: string;
   /** Stable placement id: a canvas element id, or a tile id inside a composition. */

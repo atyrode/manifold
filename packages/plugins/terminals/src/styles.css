@@ -152,11 +152,6 @@
   pointer-events: none;
 }
 
-.terminal-take-control {
-  width: auto;
-  padding-inline: 0.4rem;
-}
-
 /* Centering and rhythm are the layout Cover+Stack's; this is the veil itself. */
 .terminal-exited {
   position: absolute;

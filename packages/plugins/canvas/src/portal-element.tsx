@@ -279,6 +279,7 @@ function PortalTerminalTile({
         paints the engine's named placeholder in the same box.
       */}
       <TerminalRenderer
+        host={container.host}
         client={client}
         terminalId={terminalId}
         elementId={tileId}

@@ -7,6 +7,10 @@ export function installTerminalGestures(
   host: HTMLElement,
   readOnly: () => boolean,
   notice: (message: string) => void,
+  preferences: () => {
+    readonly copyOnSelect: boolean;
+    readonly pasteOnRightClick: boolean;
+  },
 ): () => void {
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
   const activate = (event: MouseEvent, uri: string): void => {
@@ -23,7 +27,6 @@ export function installTerminalGestures(
   // Both plain URLs and OSC 8 use the same activation policy. Keep xterm's
   // protocol filter as well: unsafe OSC targets must not become links at all.
   terminal.options.linkHandler = { activate, allowNonHttpProtocols: false };
-  terminal.options.rightClickSelectsWord = false;
   terminal.loadAddon(new WebLinksAddon(activate));
 
   let disposed = false;
@@ -31,11 +34,12 @@ export function installTerminalGestures(
   let changedDuringDrag = false;
   let selectionVersion = 0;
   const copySelection = (): void => {
+    if (!preferences().copyOnSelect) return;
     const text = terminal.getSelection();
     if (!text) return;
     const version = selectionVersion;
     const failed = (): void => {
-      if (!disposed) {
+      if (!disposed && preferences().copyOnSelect) {
         notice(
           "Could not copy terminal selection. Allow clipboard access in your browser, or press Ctrl+Shift+C (Cmd+C on Mac) to copy the retained selection.",
         );
@@ -50,6 +54,7 @@ export function installTerminalGestures(
       // selection change. Never erase a newer or still-unfinished selection.
       if (
         !disposed &&
+        preferences().copyOnSelect &&
         !dragging &&
         version === selectionVersion &&
         terminal.getSelection() === text
@@ -63,7 +68,17 @@ export function installTerminalGestures(
     if (dragging) changedDuringDrag = terminal.hasSelection();
     else copySelection();
   });
+  const shouldPasteOnRightClick = (event: MouseEvent): boolean =>
+    preferences().pasteOnRightClick &&
+    !event.shiftKey &&
+    terminal.modes.mouseTrackingMode === "none";
   const mouseDown = (event: MouseEvent): void => {
+    // Firefox runs xterm's native right-click word selection on mousedown.
+    // Suppress it only when this gesture will paste; otherwise keep platform defaults.
+    if (event.button === 2 && shouldPasteOnRightClick(event)) {
+      event.stopPropagation();
+      return;
+    }
     if (event.button !== 0) return;
     selectionVersion++;
     dragging = true;
@@ -85,7 +100,7 @@ export function installTerminalGestures(
   const contextMenu = (event: MouseEvent): void => {
     // Shift-right-click remains the browser menu. Mouse-reporting applications
     // retain their ordinary right-button events, rather than receiving a paste.
-    if (event.shiftKey || terminal.modes.mouseTrackingMode !== "none") return;
+    if (!shouldPasteOnRightClick(event)) return;
     event.preventDefault();
     event.stopPropagation();
     if (readOnly()) {
@@ -93,7 +108,7 @@ export function installTerminalGestures(
       return;
     }
     const failed = (): void => {
-      if (!disposed)
+      if (!disposed && preferences().pasteOnRightClick)
         notice(
           "Could not read the clipboard. Allow clipboard access in your browser, or use Ctrl+Shift+V (Cmd+V on Mac) to paste. Shift-right-click opens the browser menu.",
         );
@@ -103,7 +118,7 @@ export function installTerminalGestures(
       return;
     }
     void navigator.clipboard.readText().then((text) => {
-      if (disposed) return;
+      if (disposed || !preferences().pasteOnRightClick) return;
       if (readOnly()) {
         notice("This terminal preview is read-only. Open the terminal to paste.");
         return;

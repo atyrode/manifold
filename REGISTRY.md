@@ -1977,6 +1977,11 @@ string" is the question a broken gate actually asks.
 {
   "gateContracts": [
     {
+      "testid": "plugin-manager-row-open",
+      "renderer": "packages/plugins/plugin-manager/src/web.tsx",
+      "why": "the terminal-selection gate opens the Terminals settings through the same plugin detail affordance as a person, then proves each default-off clipboard gesture and its live opt-in transition"
+    },
+    {
       "testid": "identity-enter",
       "renderer": "packages/web/src/identity.tsx",
       "why": "every gate crosses the identity gate first; the submit button's COPY changes while submitting, so the contract cannot be its label"

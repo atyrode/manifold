@@ -1424,6 +1424,8 @@ Renderers own their chrome and invite contributions into its slots. Import `Proj
 
 Both `TerminalRendererProps` and `ContainerRendererProps` expose `projectionScope?`,
 `frame?: "window" | "tile"`, `titlebarMiddle?`, `titlebarExtras?`, and `titlebarDragProps?`.
+Pass the mount site's `host: HostServices` to both renderers so the occupant can read its
+composed plugin settings without a second settings store or transport.
 Forward these to the occupant's own shared bar, not a second host-rendered bar. The middle
 slot hosts attendance; extra actions host native terminal font controls. `NodeTitleBar` maps
 `extraActions` to its action area and accepts `dragProps?: TitlebarDragProps` from

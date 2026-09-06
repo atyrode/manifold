@@ -1008,6 +1008,7 @@ export function CompositionView({
         return (
           <TerminalRenderer
             key={`${node.id}:${ref.terminalId}`}
+            host={host}
             client={client}
             terminalId={ref.terminalId}
             elementId={node.id}
