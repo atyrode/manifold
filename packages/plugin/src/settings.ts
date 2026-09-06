@@ -1,4 +1,4 @@
-import type { PluginRoster, SettingKind, SettingRef } from "@manifold/protocol";
+import type { PluginRoster, SettingDef, SettingRef, SettingValue } from "@manifold/protocol";
 
 /**
  * PLUGIN SETTINGS, as a composition registry — the same shape actions, panels, sections and
@@ -40,19 +40,12 @@ export function settingRefId(plugin: string, setting: string): SettingRef {
  * "this is what the plugin ships" from "this is what you chose", and a table that only carried
  * the answer could not.
  */
-export interface ComposedSetting {
-  /** The published name: `${plugin}.${id}`. */
+export type ComposedSetting = SettingDef & {
   readonly ref: SettingRef;
   readonly plugin: string;
-  /** The local id its manifest declared. */
-  readonly id: string;
-  readonly title: string;
-  readonly kind: SettingKind;
-  /** What the manifest ships. */
-  readonly declared: boolean;
-  /** What this principal reads: the declaration with their delta applied. */
-  readonly value: boolean;
-}
+  readonly declared: SettingValue;
+  readonly value: SettingValue;
+};
 
 /**
  * THE EFFECTIVE TABLE: every declared setting in the roster, with one principal's values
@@ -74,7 +67,7 @@ export interface ComposedSetting {
  */
 export function composeSettings(
   roster: PluginRoster,
-  values: Readonly<Record<string, boolean>> = {},
+  values: Readonly<Record<string, SettingValue>> = {},
 ): readonly ComposedSetting[] {
   const composed: ComposedSetting[] = [];
   for (const entry of roster) {
@@ -82,13 +75,17 @@ export function composeSettings(
       const ref = settingRefId(entry.manifest.id, setting.id);
       const stored = values[ref];
       composed.push({
+        ...setting,
         ref,
         plugin: entry.manifest.id,
-        id: setting.id,
-        title: setting.title,
-        kind: setting.kind,
         declared: setting.default,
-        value: stored ?? setting.default,
+        value: (
+          setting.kind === "boolean"
+            ? typeof stored === "boolean"
+            : setting.values.some((value) => value.id === stored)
+        )
+          ? stored!
+          : setting.default,
       });
     }
   }
@@ -141,7 +138,7 @@ export function settingValue(
   settings: readonly ComposedSetting[],
   plugin: string,
   setting: string,
-): boolean | null {
+): SettingValue | null {
   const ref = settingRefId(plugin, setting);
   return settings.find((row) => row.ref === ref)?.value ?? null;
 }

@@ -5,6 +5,7 @@ import {
   LocalNameSchema,
   PluginIdSchema,
   PluginPurgeResultSchema,
+  SettingValueSchema,
   type PluginManifest,
 } from "@manifold/protocol";
 import { z } from "zod";
@@ -103,6 +104,7 @@ export const enginePluginsManifest: PluginManifest = {
     elements: [],
     tools: [],
     events: [
+      { id: "plugin_setting_changed", title: "Workspace plugin setting changed" },
       { id: ENGINE_ENABLED_EVENT, title: "Plugin enabled" },
       { id: ENGINE_DISABLED_EVENT, title: "Plugin disabled" },
       { id: ENGINE_PURGED_EVENT, title: "Plugin data purged" },
@@ -124,37 +126,16 @@ export const enginePluginsManifest: PluginManifest = {
  * for. The refusal is `still_enabled`, and the remedy is one visible step: disable, then
  * purge.
  *
- * `setSetting` is the odd one out on this row, and deliberately so. THE OTHER TWO CHANGE THE
- * WORKSPACE; this one changes the CALLER — a value stored against their principal, over a
- * declaration some other plugin made. It is the engine's for the reason enablement is, applied
- * to the litmus a pillar is admitted by (AXIOMS.md §Foundation law):
- *
- *   BOOTSTRAP CIRCULARITY. The sidebar drops a row whose setting reads false before any plugin
- *     has drawn, so the values are composition input. A plugin owning the write door could be
- *     disabled, and then every OTHER plugin's preferences would be frozen — including the one
- *     that hid a row the reader now wants back. That is exactly the trap `setEnabled` was
- *     moved out of `core.plugins` to escape (ADR 0013 §11).
- *   NEUTRALITY. The door names no plugin and no preference: it takes a declaration's address
- *     and a value, over a vocabulary every manifest may extend. `core.plugins` renders the
- *     panes, and rendering them is precisely why it must not own the writes — a manager is one
- *     UI for a mechanism, and a stranger's manager gets the same door.
- *   ARBITRATION. The write is refused unless the assembly says that declaration exists
- *     (`settingWriteRefusal`), which is state no single plugin can see and the caller cannot be
- *     trusted to have read.
- *
- * So it is NOT the `core.keys` precedent, and the difference is worth naming: a key binding is
- * registration data `core.keys` itself composes and publishes — its own concept, its own door.
- * A setting is every OTHER plugin's concept, and the engine is the only party with no favourite
- * among them.
+ * `setSetting` arbitrates declared values before composition. Principal values need no
+ * capability; workspace values require `plugins:manage` and emit `plugin_setting_changed`.
+ * The engine owns the door because the sidebar consumes settings before any plugin draws,
+ * and no plugin may own another plugin's preferences.
  *
  * `value: null` RETRACTS the opinion — the ref leaves the map and the row reads its manifest's
  * default again. One door rather than a `resetSetting` sibling, because "I have no opinion" is
  * a value this map can express and a second door would be a second way to write one map.
  *
- * It carries NO capability and emits NO event, and those are the same fact twice: nothing here
- * is anybody else's business. A preference is stored against the caller's own principal, so
- * there is no authority to grade beyond being someone, and broadcasting it would tell every
- * peer in the workspace which rows a reader keeps in their rail.
+ * Workspace notifications invalidate the same settings read for every connected principal.
  *
  * `install` and `uninstall` (ADR 0016 §8 stage 2) are ROOT-ONLY, and the asymmetry with the
  * three doors above is the point: `plugins:manage` lets a principal decide which of the
@@ -185,12 +166,12 @@ export const enginePluginsActions: readonly AnyActionDef[] = [
   }),
   defineAction({
     name: "setSetting",
-    title: "Set one of your plugin settings",
+    title: "Set a declared plugin setting",
     caps: [],
     input: z.strictObject({
       plugin: PluginIdSchema,
       setting: LocalNameSchema,
-      value: z.boolean().nullable(),
+      value: SettingValueSchema.nullable(),
     }),
     result: z.strictObject({}),
   }),

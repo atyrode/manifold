@@ -524,9 +524,9 @@ export const BindingsResponseSchema = z.strictObject({ overrides: BindingOverrid
 export type BindingsResponse = z.infer<typeof BindingsResponseSchema>;
 
 /**
- * `GET /api/settings` — the CALLER's plugin setting values. Self-scoped exactly as the layout
- * and binding doors are: a preference is per principal, so the door takes no id, and
- * `engine.plugins.setSetting` writes only the caller's own.
+ * `GET /api/settings` — principal setting deltas with workspace declarations resolved from
+ * shared rows. No principal id is accepted: the credential chooses the principal.
+ * `engine.plugins.setSetting` is the sole writer for both scopes.
  *
  * It is a FLOOR read for the same reason `/api/bindings` is one: the engine composes the
  * sidebar — a row whose setting reads false is dropped before any plugin has drawn anything —

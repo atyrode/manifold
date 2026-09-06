@@ -23,7 +23,7 @@ import {
   assemblyTileTrees,
   type PlaceOutcome,
 } from "../src/placement.ts";
-import { PluginHost, type MachineAdmission } from "../src/plugin-host.ts";
+import { PluginHost, type MachineAdmission, type ServerPluginDef } from "../src/plugin-host.ts";
 import type { RoomManager, RoomTimers, TileTreeDisciplines } from "../src/room.ts";
 import type { RawSocket } from "../src/session-channel.ts";
 import { ServerStore } from "../src/stores.ts";
@@ -334,6 +334,7 @@ export async function testPluginHost(
   broker: TerminalBroker,
   runtime: RuntimeDeps,
   options: {
+    readonly settingsPlugins?: readonly ServerPluginDef[];
     readonly lifecycleTimeoutMs?: number;
     /** Machine liveness and admission, defaulting to "nothing is connected" — the honest state of a store. */
     readonly machines?: MachineAdmission;
@@ -383,7 +384,7 @@ export async function testPluginHost(
       options.logger ?? silentLogger,
     );
   host = await PluginHost.boot(
-    SERVER_PLUGIN_DEFS,
+    [...SERVER_PLUGIN_DEFS, ...(options.settingsPlugins ?? [])],
     store,
     auth,
     rooms,

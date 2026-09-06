@@ -95,14 +95,12 @@ export const SectionPresentationSchema = z.enum(SECTION_PRESENTATIONS);
 export type SectionPresentation = (typeof SECTION_PRESENTATIONS)[number];
 export const DEFAULT_SECTION_PRESENTATION: SectionPresentation = "disclosure";
 
-/**
- * WHAT KIND OF VALUE a declared setting holds. A CLOSED vocabulary, and one member wide on
- * purpose: booleans are the whole of what the first consumers need — a row is shown or it is
- * not — and a kind nobody can store yet would be a manifest field that validates and then
- * does nothing. A second kind is a protocol change reviewed as one, which is exactly the
- * review a new value shape deserves.
- */
-export const SETTING_KINDS = ["boolean"] as const;
+/** Closed value kinds and storage scopes published with the manifest vocabulary. */
+export const SETTING_KINDS = ["boolean", "enum"] as const;
+export const SETTING_SCOPES = ["principal", "workspace"] as const;
+export const SettingScopeSchema = z.enum(SETTING_SCOPES);
+export const SettingValueSchema = z.union([z.boolean(), z.string().min(1).max(128)]);
+export type SettingValue = z.infer<typeof SettingValueSchema>;
 export const SettingKindSchema = z.enum(SETTING_KINDS);
 export type SettingKind = (typeof SETTING_KINDS)[number];
 
@@ -126,12 +124,33 @@ export type SettingKind = (typeof SETTING_KINDS)[number];
  * ({@link SettingRefSchema}), so a plugin can never declare a preference outside its own
  * namespace and a stored value always says whose declaration it answers.
  */
-export const SettingDefSchema = z.strictObject({
+const settingFields = {
   id: LocalNameSchema,
   title: TitleSchema,
-  kind: SettingKindSchema,
-  default: z.boolean(),
-});
+  scope: SettingScopeSchema.optional(),
+};
+export const SettingDefSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ ...settingFields, kind: z.literal("boolean"), default: z.boolean() }),
+  z
+    .strictObject({
+      ...settingFields,
+      kind: z.literal("enum"),
+      values: z
+        .array(z.strictObject({ id: z.string().min(1).max(128), title: TitleSchema }))
+        .min(1)
+        .max(32),
+      default: z.string().min(1).max(128),
+    })
+    .superRefine((setting, ctx) => {
+      if (new Set(setting.values.map((value) => value.id)).size !== setting.values.length)
+        ctx.addIssue({ code: "custom", message: "invalid_setting_enum: duplicate values" });
+      if (!setting.values.some((value) => value.id === setting.default))
+        ctx.addIssue({
+          code: "custom",
+          message: "invalid_setting_enum: default is outside values",
+        });
+    }),
+]);
 export type SettingDef = z.infer<typeof SettingDefSchema>;
 
 /**
@@ -954,8 +973,7 @@ export type SettingRef = z.infer<typeof SettingRefSchema>;
  * customized", and a stored ref no declaration answers is DROPPED at composition rather than
  * pruned from the store: a plugin turned off for a week must find its preferences intact.
  *
- * Values are booleans because {@link SETTING_KINDS} has one member. When it grows, this map
- * grows with it, in the same protocol change.
+ * Values are booleans or declared enum strings.
  *
  * Bounded at 128 entries: a manifest may declare eight settings, so this is a ceiling on a
  * principal's deltas over a roster of some size rather than a limit any real workspace meets,
@@ -963,7 +981,7 @@ export type SettingRef = z.infer<typeof SettingRefSchema>;
  */
 export const MAX_PLUGIN_SETTING_VALUES = 128;
 export const PluginSettingValuesSchema = z
-  .record(SettingRefSchema, z.boolean())
+  .record(SettingRefSchema, SettingValueSchema)
   .refine((values) => Object.keys(values).length <= MAX_PLUGIN_SETTING_VALUES, {
     message: `at most ${MAX_PLUGIN_SETTING_VALUES} plugin setting values`,
   });
@@ -1032,6 +1050,7 @@ export function pluginVocabulary(): Record<string, unknown> {
       contribution, so an agent reading `manifest` already knows how one is spelled.
     */
     settingKinds: SETTING_KINDS,
+    settingScopes: SETTING_SCOPES,
     maxPluginSettingValues: MAX_PLUGIN_SETTING_VALUES,
     pluginSettingValues: z.toJSONSchema(PluginSettingValuesSchema),
   };

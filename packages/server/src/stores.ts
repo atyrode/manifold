@@ -1078,6 +1078,31 @@ export class ServerStore {
     this.setMeta(`settings:${principalId}`, JSON.stringify(sorted));
   }
 
+  /** Workspace settings have one durable row per declared ref, independent of principals. */
+  workspacePluginSetting(ref: string): boolean | string | undefined {
+    const raw = this.getMeta(`workspace-setting:${ref}`);
+    return raw === null ? undefined : (JSON.parse(raw) as boolean | string);
+  }
+
+  setWorkspacePluginSetting(ref: string, value: boolean | string | null): void {
+    if (value === null)
+      this.db.query("DELETE FROM meta WHERE key = ?").run(`workspace-setting:${ref}`);
+    else this.setMeta(`workspace-setting:${ref}`, JSON.stringify(value));
+  }
+
+  effectivePluginSettings(
+    principalId: string,
+    workspaceRefs: readonly string[],
+  ): PluginSettingValues {
+    const values = this.pluginSettings(principalId);
+    for (const ref of workspaceRefs) {
+      delete values[ref as keyof PluginSettingValues];
+      const value = this.workspacePluginSetting(ref);
+      if (value !== undefined) values[ref as keyof PluginSettingValues] = value;
+    }
+    return values;
+  }
+
   listIndex(): IndexEntry[] {
     return this.db
       .query<IndexRow, []>(

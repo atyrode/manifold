@@ -572,7 +572,7 @@ Four rules bind that table:
   enforcement is #261). No toggle answers a structural problem, so none of them is a refusal class.
 
 **A settings drop is NOT on this table**, and the distinction is the reason to say so here.
-`contributes.settings` declares preferences whose values are per PRINCIPAL, and a section naming
+`contributes.settings` declares preferences whose values default to per PRINCIPAL scope, and a section naming
 one of its own plugin's settings is dropped from the sidebar while that value reads false
 (`visibleSections`, `packages/plugin/src/settings.ts`). Every axis above is workspace-global and
 about a plugin's ACTIVE surface; this one is one reader's rail. So none of the four rules apply
@@ -1014,7 +1014,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "setting",
-      "means": "contribution kind: one preference a manifest declares (contributes.settings — id, title, kind, default), whose VALUE is per principal, server-saved as a delta over the declaration and written only through engine.plugins.setSetting. A section may name one of its own plugin's settings (SectionDef.setting), and a row whose setting reads false is DROPPED at composition (visibleSections) — a preference, never a disable: nothing is retained, marked or tombstoned, because the reader who turned it off already knows where it went. It is the engine's noun rather than any plugin's: the engine composes the table, refuses a write no declaration answers, and has no favourite among the manifests that declare them",
+      "means": "contribution kind: one preference a manifest declares (contributes.settings — id, title, kind, default, scope). Kinds are boolean and enum; scope defaults to principal or is workspace, shared by everyone with plugins:manage required to write. Values are server-saved deltas written only through engine.plugins.setSetting. A section may name its owning plugin's boolean setting, and false drops the row at composition, never disables the plugin. The engine composes the table and arbitrates declarations without a favourite plugin",
       "banned": [],
       "allow": []
     },

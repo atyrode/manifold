@@ -380,7 +380,7 @@ export interface AssemblyFacet {
   refreshBindings(): void;
   /**
    * THE COMPOSED SETTINGS TABLE, sorted by ref, carrying EFFECTIVE values — every declared
-   * preference in the roster with this principal's delta already applied, and the shipped
+   * preference with principal and workspace deltas applied, and the shipped
    * default beside it (`ComposedSetting.declared`).
    *
    * A DISABLED plugin's rows are present, unlike its key bindings: a preference answers nobody
@@ -393,15 +393,11 @@ export interface AssemblyFacet {
    */
   readonly settings: readonly ComposedSetting[];
   /**
-   * THIS PRINCIPAL'S SETTING VALUES, as setting ref → value: the delta the table above was
-   * composed with, published so chrome can tell "you chose this" from "this is what it ships",
-   * and see a stored value the composition IGNORED because no declaration answers it any more.
-   *
-   * A read, like everything else here. Writing one is `engine.plugins.setSetting`, and the map
-   * is stored per principal on the server, so what a reader sees here is the same delta every
-   * device of theirs composes with.
+   * EFFECTIVE SETTING VALUES, as setting ref → value: principal deltas with shared workspace
+   * declarations resolved. Written only through `engine.plugins.setSetting`; workspace changes
+   * invalidate the same read for every connected principal through the event plane.
    */
-  readonly settingValues: Readonly<Record<string, boolean>>;
+  readonly settingValues: Readonly<Record<string, boolean | string>>;
   /**
    * RE-READ the stored values and recompose the table — `refreshBindings` for the other
    * per-principal delta, and the same seam discipline: a door wrote a value, the engine owns
