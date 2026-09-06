@@ -217,6 +217,7 @@ async function dragSequence(
     readonly fx: number;
     readonly fy: number;
     readonly holdMs: number;
+    readonly movingTileId?: string;
   }[],
   release: boolean,
   extraJs = "() => null",
@@ -287,7 +288,25 @@ async function dragSequence(
           await wait(120);
           fire(onto, 'dragover', x, y);
         }
-        await wait(80);
+        if (stop.movingTileId === undefined) {
+          await wait(80);
+        } else {
+          // A timer can run before React's preview commit or WAAPI's first painted frame.
+          // Keep the carry alive until its actual content host has moved and settled.
+          const deadline = performance.now() + 10_000;
+          while (true) {
+            const areaEl = document.querySelector(${JSON.stringify(area)});
+            const motion = (${tileMotionJs})(areaEl)[stop.movingTileId];
+            const host = areaEl?.querySelector(
+              '[data-tile-id="' + CSS.escape(stop.movingTileId) + '"] .tile-content-host');
+            if (motion?.moved && host?.getAnimations().every(
+              (animation) => animation.playState === 'finished')) break;
+            if (performance.now() >= deadline)
+              throw new Error('timed out waiting for painted preview motion of ' + stop.movingTileId);
+            fire(onto, 'dragover', x, y);
+            await wait(120);
+          }
+        }
         const areaEl = document.querySelector(${JSON.stringify(area)});
         const slot = areaEl === null ? null : areaEl.querySelector('.tile-preview');
         const rect = slot === null ? null : (() => {
@@ -508,7 +527,15 @@ try {
     browser,
     `.index-item[data-tree-id="${termC.containerId}"]`,
     ".tile-area",
-    [{ selector: `[data-tile-id="${leafB}"]`, fx: 0.5, fy: 0.85, holdMs: 250 }],
+    [
+      {
+        selector: `[data-tile-id="${leafB}"]`,
+        fx: 0.5,
+        fy: 0.85,
+        holdMs: 250,
+        movingTileId: leafB,
+      },
+    ],
     true,
     `() => {
       const pane = document.querySelector('[data-tile-id="${leafB}"] .xterm');
@@ -633,10 +660,34 @@ try {
     `[data-tile-id="${leafA}"] [data-titlebar-draggable]`,
     ".tile-area",
     [
-      { selector: `[data-tile-id="${leafB}"]`, fx: 0.08, fy: 0.5, holdMs: 120 },
-      { selector: `[data-tile-id="${leafB}"]`, fx: 0.92, fy: 0.5, holdMs: 120 },
-      { selector: `[data-tile-id="${leafB}"]`, fx: 0.5, fy: 0.14, holdMs: 120 },
-      { selector: `[data-tile-id="${leafB}"]`, fx: 0.5, fy: 0.86, holdMs: 120 },
+      {
+        selector: `[data-tile-id="${leafB}"]`,
+        fx: 0.08,
+        fy: 0.5,
+        holdMs: 120,
+        movingTileId: leafC,
+      },
+      {
+        selector: `[data-tile-id="${leafB}"]`,
+        fx: 0.92,
+        fy: 0.5,
+        holdMs: 120,
+        movingTileId: leafC,
+      },
+      {
+        selector: `[data-tile-id="${leafB}"]`,
+        fx: 0.5,
+        fy: 0.14,
+        holdMs: 120,
+        movingTileId: leafB,
+      },
+      {
+        selector: `[data-tile-id="${leafB}"]`,
+        fx: 0.5,
+        fy: 0.86,
+        holdMs: 120,
+        movingTileId: leafB,
+      },
       { selector: `[data-tile-id="${leafB}"]`, fx: 0.5, fy: 0.5, holdMs: 120 },
       // The carry's own leaf answers nothing: the slot idles instead of lying.
       { selector: `[data-tile-id="${leafA}"]`, fx: 0.5, fy: 0.5, holdMs: 120 },
