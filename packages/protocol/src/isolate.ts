@@ -393,6 +393,7 @@ export type AssemblyDelta = z.infer<typeof AssemblyDeltaSchema>;
  * because it consults grants the child never sees; it is served as a call back.
  */
 export const IsolateDispatchCtxSchema = z.strictObject({
+  traceId: z.number().int().positive(),
   principal: PrincipalSchema,
   caps: CapSchema.array(),
   isRoot: z.boolean(),

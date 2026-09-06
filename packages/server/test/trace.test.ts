@@ -154,7 +154,11 @@ function probeDefs(): readonly ServerPluginDef[] {
           title: "Reads the ledger from inside its own dispatch",
           caps: [],
           input: z.strictObject({}),
-          result: z.strictObject({ own: z.number(), outcome: z.string().nullable() }),
+          result: z.strictObject({
+            own: z.number(),
+            outcome: z.string().nullable(),
+            traceId: z.number(),
+          }),
         }),
         defineAction({
           name: "keepSecrets",
@@ -210,11 +214,11 @@ function probeDefs(): readonly ServerPluginDef[] {
           });
           return {};
         },
-        peekLedger: async (ctx: { store: ServerStore }) => {
+        peekLedger: async (ctx: { store: ServerStore; traceId: number }) => {
           const own = ctx.store
             .listEvents({ type: TRACE_ROW_TYPE, limit: 10 })
             .filter((row) => row.door === "test.probe.peekLedger");
-          return { own: own.length, outcome: own[0]?.outcome ?? null };
+          return { own: own.length, outcome: own[0]?.outcome ?? null, traceId: ctx.traceId };
         },
         keepSecrets: async () => ({}),
         refuseLoudly: async (ctx: {
@@ -537,9 +541,17 @@ describe("the trace ledger records every exercise of authority", () => {
 
     // The handler read its OWN row out of the journal, which is the write-ahead made visible:
     // no mutation a handler makes can precede the record of who was allowed to make it.
-    expect(outcome.result).toEqual({ own: 1, outcome: null });
+    const recorded = newestTrace(base);
+    expect(outcome.result).toEqual({ own: 1, outcome: null, traceId: recorded.id });
+    const listed = await base.host.dispatch(base.owner, "core.events.list", { kind: "trace" });
+    if (!listed.ok) throw new Error("the ledger read door refused");
+    const rows = EventsListResponseSchema.parse(listed.result).events;
+    expect(rows.find((row) => row.id === recorded.id)).toMatchObject({
+      door: "test.probe.peekLedger",
+      outcome: "ok",
+    });
     // And by the time the dispatch answers, that same row carries the outcome.
-    expect(newestTrace(base).outcome).toBe("ok");
+    expect(recorded.outcome).toBe("ok");
     base.store.close();
   });
 

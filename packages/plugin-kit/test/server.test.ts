@@ -42,6 +42,7 @@ const manifest: PluginManifest = {
 const principal = { id: "p1", kind: "human", name: "Ada", color: "#e03131" } as const;
 
 const ctxOf = (overrides: Partial<IsolateDispatchCtx> = {}): IsolateDispatchCtx => ({
+  traceId: 1,
   principal,
   caps: ["containers:read"],
   isRoot: false,
