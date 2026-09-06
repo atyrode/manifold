@@ -1,12 +1,14 @@
 import "../src/shared-modules.ts";
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ENGINE_AUTHOR_ACTION,
   ENGINE_INSTALL_ACTION,
   ENGINE_PLUGINS_ID,
   ENGINE_PURGE_ACTION,
+  ENGINE_SET_DEVELOPER_MODE_ACTION,
   ENGINE_SET_ENABLED_ACTION,
   ENGINE_UNINSTALL_ACTION,
   MAX_STORAGE_VALUE_BYTES,
@@ -26,6 +28,7 @@ import type {
 import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../src/assembly.ts";
+import { authoredLayout } from "../src/authored.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
 import {
   IsolateDenial,
@@ -2181,6 +2184,324 @@ describe("PluginHost install doors", () => {
     // A disabled row's module is nobody's to fetch.
     expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
     expect(host.webModule(SAMPLE_ID)).toBeNull();
+    fixture.store.close();
+  });
+});
+
+/**
+ * UNPACKED PLUGINS (ADR 0025 §4): the authoring door, the developer-mode switch and the live
+ * replace, against a pack that is not the kit's — `Bun.build` cannot run under `bun test` from
+ * the repository root (see `packages/plugin-kit/test/pack.test.ts`), so the seam the host
+ * exposes for exactly this reason (`IsolateDeps.pack`) is handed a builder that turns the
+ * directory's files into the same bundle grammar the kit writes. What these cases defend is
+ * the host's part of the loop: the switch's verdicts, the row, the hash, the rollback.
+ */
+
+const UNPACKED_ID = "vendor.unpacked";
+const UNPACKED_HOOKS = Symbol.for("manifold.test.unpacked-hooks");
+
+/** A server half that records its lifecycle on a process-global array the case reads. */
+function unpackedServer(version: string): string {
+  return `
+    const hooks = (globalThis[Symbol.for("manifold.test.unpacked-hooks")] ??= []);
+    export default {
+      actions: [],
+      handlers: {},
+      lifecycle: {
+        onEnable: () => { hooks.push("enable:${version}"); },
+        onDisable: () => { hooks.push("disable:${version}"); },
+      },
+    };
+  `;
+}
+
+function unpackedManifest(extras: Partial<PluginManifest> = {}): string {
+  return JSON.stringify({
+    id: UNPACKED_ID,
+    version: "1.0.0",
+    title: "Unpacked",
+    description: "authored on this instance",
+    capabilities: ["containers:read"],
+    contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+    entry: { server: true, web: "web.js" },
+    ...extras,
+  });
+}
+
+/**
+ * The kit's shape without the kit's bundler: `manifest.json` parsed, `server.ts` as the server
+ * member, `web.tsx` as the web member, a manifest the schema refuses thrown as a build error.
+ */
+async function fakePack(pluginDir: string, outFile: string): Promise<{ sha256: string }> {
+  const manifest: unknown = JSON.parse(readFileSync(join(pluginDir, "manifest.json"), "utf8"));
+  const member = (name: string): string =>
+    Buffer.from(readFileSync(join(pluginDir, name), "utf8")).toString("base64");
+  const bytes = Buffer.from(
+    JSON.stringify({
+      format: 1,
+      manifest,
+      files: { "server.js": member("server.ts"), "web.js": member("web.tsx") },
+    }),
+  );
+  writeFileSync(outFile, bytes);
+  return { sha256: sha256Hex(bytes) };
+}
+
+function hookLog(): string[] {
+  return ((globalThis as Record<symbol, unknown>)[UNPACKED_HOOKS] ??= []) as string[];
+}
+
+async function unpackedFixture(): Promise<{ fixture: InstallFixture; host: PluginHost }> {
+  const fixture = await installFixture();
+  mkdirSync(join(fixture.dataDir, "authored", ".build"), { recursive: true });
+  const host = await customHost(fixture, [], {
+    isolates: { ...fixture.isolates, pack: fakePack },
+  });
+  hookLog().length = 0;
+  return { fixture, host };
+}
+
+describe("PluginHost unpacked plugins", () => {
+  test("author builds the directory into an unpacked row pinned at the pack's hash; an edit replaces it live", async () => {
+    const { fixture, host } = await unpackedFixture();
+    const published: { roster: PluginRoster; developerMode: boolean }[] = [];
+    host.onRosterChange((roster, developerMode) => {
+      published.push({ roster, developerMode });
+    });
+    expect(host.developerMode()).toBe(false);
+    expect(await host.setDeveloperMode(true, "admin")).toEqual({ ok: true });
+    // The flip rides the roster frame: one publish, the switch beside it.
+    expect(published.map((entry) => entry.developerMode)).toEqual([true]);
+    expect(host.developerMode()).toBe(true);
+
+    const authored = await host.author(
+      {
+        id: UNPACKED_ID,
+        files: {
+          "manifest.json": unpackedManifest(),
+          "server.ts": unpackedServer("1.0.0"),
+          "web.tsx": "export const web = 1;",
+        },
+      },
+      fixture.owner.principal.id,
+    );
+    if ("refused" in authored) throw new Error(authored.refused);
+    const { bundle } = authoredLayout(fixture.dataDir, UNPACKED_ID);
+    // The answer is the row: the install result plus the pin of the bytes the pack wrote.
+    expect(authored).toEqual({
+      id: UNPACKED_ID,
+      version: "1.0.0",
+      grantedCaps: ["containers:read"],
+      sha256: sha256Hex(readFileSync(bundle)),
+    });
+    const row = installedRow(host, UNPACKED_ID);
+    expect(row.enabled).toBe(true);
+    expect(row.install?.mode).toBe("unpacked");
+    expect(row.install?.sha256).toBe(authored.sha256);
+    expect(row.install?.source).toBe(bundle);
+    expect(row.install?.installedBy).toBe(fixture.owner.principal.id);
+    expect(fixture.store.pluginInstalls().map((stored) => stored.mode)).toEqual(["unpacked"]);
+    expect(hookLog()).toEqual(["enable:1.0.0"]);
+    expect(host.webModule(UNPACKED_ID)?.sha256).toBe(authored.sha256);
+
+    // A save that changes nothing replaces nothing: same hash, no publish, no hook.
+    const publishes = published.length;
+    expect(
+      await host.author(
+        { id: UNPACKED_ID, files: { "web.tsx": "export const web = 1;" } },
+        "someone-else",
+      ),
+    ).toEqual(authored);
+    expect(published).toHaveLength(publishes);
+
+    // An edit while the row RUNS replaces it live: the old module hears `onDisable`, the new
+    // one `onEnable`, the row carries the new hash and the installer who first admitted it —
+    // never the later author — and the old artifact leaves the disk.
+    const firstBundlePath = fixture.store.pluginInstalls()[0]?.bundlePath ?? "";
+    const edited = await host.author(
+      {
+        id: UNPACKED_ID,
+        files: {
+          "manifest.json": unpackedManifest({ version: "2.0.0" }),
+          "server.ts": unpackedServer("2.0.0"),
+        },
+      },
+      "someone-else",
+    );
+    if ("refused" in edited) throw new Error(edited.refused);
+    expect(edited.version).toBe("2.0.0");
+    expect(edited.sha256).not.toBe(authored.sha256);
+    const replaced = installedRow(host, UNPACKED_ID);
+    expect(replaced.enabled).toBe(true);
+    expect(replaced.manifest.version).toBe("2.0.0");
+    expect(replaced.install?.sha256).toBe(edited.sha256);
+    expect(replaced.install?.installedBy).toBe(fixture.owner.principal.id);
+    expect(hookLog()).toEqual(["enable:1.0.0", "disable:1.0.0", "enable:2.0.0"]);
+    expect(existsSync(firstBundlePath)).toBe(false);
+    expect(host.webModule(UNPACKED_ID)?.sha256).toBe(edited.sha256);
+    fixture.store.close();
+  });
+
+  test("an edit the assembly refuses rolls back to the previous row and wakes it again", async () => {
+    const { fixture, host } = await unpackedFixture();
+    expect(await host.setDeveloperMode(true, "admin")).toEqual({ ok: true });
+    const authored = await host.author(
+      {
+        id: UNPACKED_ID,
+        files: {
+          "manifest.json": unpackedManifest(),
+          "server.ts": unpackedServer("1.0.0"),
+          "web.tsx": "export const web = 1;",
+        },
+      },
+      "admin",
+    );
+    if ("refused" in authored) throw new Error(authored.refused);
+
+    // The edit requires a plugin nobody composed: an `AssemblyError`, answered by name.
+    const broken = await host.author(
+      {
+        id: UNPACKED_ID,
+        files: {
+          "manifest.json": unpackedManifest({
+            version: "2.0.0",
+            dependencies: { "vendor.absent": { type: "required" } },
+          }),
+        },
+      },
+      "admin",
+    );
+    expect(broken).toEqual({
+      refused: `artifact_invalid: plugin "${UNPACKED_ID}" requires plugin "vendor.absent", which is not composed`,
+    });
+    const row = installedRow(host, UNPACKED_ID);
+    expect(row.enabled).toBe(true);
+    expect(row.manifest.version).toBe("1.0.0");
+    expect(row.install?.sha256).toBe(authored.sha256);
+    expect(fixture.store.pluginInstalls().map((stored) => stored.sha256)).toEqual([
+      authored.sha256,
+    ]);
+    expect(hookLog()).toEqual(["enable:1.0.0", "disable:1.0.0", "enable:1.0.0"]);
+
+    // A build that fails (the manifest is not even JSON) is the same class, and the row stands.
+    const unbuildable = await host.author(
+      { id: UNPACKED_ID, files: { "manifest.json": "{ not json" } },
+      "admin",
+    );
+    expect("refused" in unbuildable && unbuildable.refused.startsWith("artifact_invalid: ")).toBe(
+      true,
+    );
+    expect(installedRow(host, UNPACKED_ID).install?.sha256).toBe(authored.sha256);
+
+    // A manifest naming another id is not the directory it was authored in.
+    const impostor = await host.author(
+      { id: UNPACKED_ID, files: { "manifest.json": unpackedManifest({ id: "vendor.other" }) } },
+      "admin",
+    );
+    expect(impostor).toEqual({
+      refused: `artifact_invalid: manifest id "vendor.other" is not the directory it was authored in, "${UNPACKED_ID}"`,
+    });
+    fixture.store.close();
+  });
+
+  test("developer mode off disables every unpacked row first, then refuses enable and author by name", async () => {
+    const { fixture, host } = await unpackedFixture();
+    // Off, the door refuses before anything is written.
+    expect(
+      await host.author(
+        { id: UNPACKED_ID, files: { "manifest.json": unpackedManifest() } },
+        "admin",
+      ),
+    ).toEqual({ refused: `developer_mode_off: ${UNPACKED_ID}` });
+    expect(existsSync(authoredLayout(fixture.dataDir, UNPACKED_ID).dir)).toBe(false);
+
+    expect(await host.setDeveloperMode(true, "admin")).toEqual({ ok: true });
+    const authored = await host.author(
+      {
+        id: UNPACKED_ID,
+        files: {
+          "manifest.json": unpackedManifest(),
+          "server.ts": unpackedServer("1.0.0"),
+          "web.tsx": "export const web = 1;",
+        },
+      },
+      "admin",
+    );
+    if ("refused" in authored) throw new Error(authored.refused);
+    expect(installedRow(host, UNPACKED_ID).enabled).toBe(true);
+
+    const published: { roster: PluginRoster; developerMode: boolean }[] = [];
+    host.onRosterChange((roster, developerMode) => {
+      published.push({ roster, developerMode });
+    });
+    // OFF: the running unpacked row is disabled through the one door, attributed to whoever
+    // flipped the switch, BEFORE the switch reads off — then the row is marked by name.
+    expect(await host.setDeveloperMode(false, "flipper")).toEqual({ ok: true });
+    expect(host.developerMode()).toBe(false);
+    expect(hookLog()).toEqual(["enable:1.0.0", "disable:1.0.0"]);
+    // Two publishes: the disable (switch still on, nothing marked yet), then the flip.
+    expect(published.map((entry) => entry.developerMode)).toEqual([true, false]);
+    const off = installedRow(host, UNPACKED_ID);
+    expect(off.enabled).toBe(false);
+    expect(off.refusal).toBe("developer_mode_off");
+    expect(off.changedBy).toBe("flipper");
+    expect(await host.setEnabled(UNPACKED_ID, true, "admin")).toEqual({
+      refused: `developer_mode_off: ${UNPACKED_ID}`,
+    });
+    expect(
+      await host.author(
+        { id: UNPACKED_ID, files: { "web.tsx": "export const web = 2;" } },
+        "admin",
+      ),
+    ).toEqual({ refused: `developer_mode_off: ${UNPACKED_ID}` });
+    expect(installedRow(host, UNPACKED_ID).install?.sha256).toBe(authored.sha256);
+
+    // ON again moves no row: the mark lifts, the row stays where the flip left it.
+    expect(await host.setDeveloperMode(true, "admin")).toEqual({ ok: true });
+    const back = installedRow(host, UNPACKED_ID);
+    expect(back.enabled).toBe(false);
+    expect(back.refusal).toBeUndefined();
+    expect(await host.setEnabled(UNPACKED_ID, true, "admin")).toEqual({ ok: true });
+    expect(hookLog()).toEqual(["enable:1.0.0", "disable:1.0.0", "enable:1.0.0"]);
+    fixture.store.close();
+  });
+
+  test("setDeveloperMode and author are root only", async () => {
+    const { fixture, host } = await unpackedFixture();
+    const manager = context(fixture, ["plugins:manage"]);
+    expect(
+      denial(await host.dispatch(manager, ENGINE_SET_DEVELOPER_MODE_ACTION, { on: true })),
+    ).toEqual({ rule: "forbidden", message: "* capability required" });
+    expect(
+      denial(
+        await host.dispatch(manager, ENGINE_AUTHOR_ACTION, {
+          id: UNPACKED_ID,
+          files: { "manifest.json": unpackedManifest() },
+        }),
+      ),
+    ).toEqual({ rule: "forbidden", message: "* capability required" });
+    expect(host.developerMode()).toBe(false);
+
+    expect(
+      await host.dispatch(fixture.owner, ENGINE_SET_DEVELOPER_MODE_ACTION, { on: true }),
+    ).toEqual({ ok: true, result: {} });
+    const outcome = await host.dispatch(fixture.owner, ENGINE_AUTHOR_ACTION, {
+      id: UNPACKED_ID,
+      files: {
+        "manifest.json": unpackedManifest(),
+        "server.ts": unpackedServer("1.0.0"),
+        "web.tsx": "export const web = 1;",
+      },
+    });
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.result).toEqual({
+        id: UNPACKED_ID,
+        version: "1.0.0",
+        grantedCaps: ["containers:read"],
+        sha256: installedRow(host, UNPACKED_ID).install?.sha256,
+      });
+    }
     fixture.store.close();
   });
 });
