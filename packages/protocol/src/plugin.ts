@@ -20,7 +20,7 @@ import {
  * collision, and a collision inside one namespace is a named refusal rather than
  * shadowing (AXIOMS.md D5).
  */
-export const PLUGIN_ID_PATTERN = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/;
+export const PLUGIN_ID_PATTERN = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,2}$/;
 export const PluginIdSchema = z.string().regex(PLUGIN_ID_PATTERN).max(64);
 export type PluginId = z.infer<typeof PluginIdSchema>;
 
@@ -909,7 +909,7 @@ export type ActionOutcome = z.infer<typeof ActionOutcomeSchema>;
  * segment is a LOCAL name and those admit interior capitals (`core.keys.setBinding`), while
  * every segment before it is a plugin-id segment.
  */
-export const BINDING_ID_PATTERN = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+\.[a-z][a-zA-Z0-9-]*$/;
+export const BINDING_ID_PATTERN = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,2}\.[a-z][a-zA-Z0-9-]*$/;
 export const BindingIdSchema = z.string().regex(BINDING_ID_PATTERN).max(96);
 export type BindingId = z.infer<typeof BindingIdSchema>;
 
