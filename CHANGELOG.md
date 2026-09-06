@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.13.0] - 2026-09-06
+
+### Added
+
+- Terminals now open HTTP(S) links with Ctrl+click or Cmd+click. Automatic copy-and-clear on selection and right-click clipboard paste are separate personal settings in the Terminals plugin, both off by default. When enabled, clipboard gestures retain browser-menu and mouse-reporting escape hatches. (#301, #292)
+
+### Changed
+
+- A preview identity now lives as long as a production browser credential (fourteen days) instead of fifteen minutes, so an open preview no longer restarts its sign-in and canvas connection every quarter hour. (#362, #292)
+
+### Fixed
+
+- Terminal text no longer stretches during divider drags, running programs receive size updates throughout the drag, and changing font size keeps the bottom row inside its pane. (#284, #292)
+- Views no longer wait indefinitely for initialization while another view keeps their shared connection alive. Missing initialization is retried per view with a bounded deadline and a named failure if recovery is exhausted, without interrupting healthy sibling views. Session diagnostics now distinguish connection opening, channel joins, initialization sending, and closure without logging credentials. (#323, #292)
+- Preview sign-in follows the production authority's current verification key instead of keeping an obsolete key until the preview restarts. Fresh valid assertions continue working after authority key rotation; tampered assertions and unavailable verification keys still refuse admission. (#332, #292)
+- Preview sign-in now stays dark through callback, finalization, and failure pages, with readable text and retry links. The app also paints dark before its scripts or stylesheets load, avoiding white flashes when entering a preview or signing in on a slow connection. (#334, #292)
+- Terminal backgrounds remain continuous below the last row at different font sizes, including when unfocused. A compact titlebar icon replaces the bottom takeover ribbon; double-clicking terminal content also takes control without making single clicks steal it. Terminals that exit successfully now disappear automatically from every view instead of leaving an exited screen; failed or unknown exits remain available for inspection and dismissal. (#363, #292)
+
 ## [0.12.0] - 2026-09-06
 
 ### Added
