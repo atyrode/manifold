@@ -8,10 +8,15 @@ import {
 } from "@manifold/plugin";
 import {
   ContainerRouteProvider,
+  TileTree,
+  WORKSPACE_TREE_CLASSES,
   WorkspaceShellProvider,
   carriesItem,
   projectLocalPresence,
+  setVantage,
+  useNotice,
   usePolledResource,
+  useVantage,
   ATTENDANCE_RESOURCE,
   INDEX_RESOURCE,
   TERMINALS_RESOURCE,
@@ -19,13 +24,6 @@ import {
   type WorkspaceShell,
   type WorkspaceSidebarState,
 } from "@manifold/plugin/hooks";
-import {
-  TileTree,
-  WORKSPACE_TREE_CLASSES,
-  setVantage,
-  useNotice,
-  useVantage,
-} from "@manifold/plugin/ui";
 import { ContainerResponseSchema } from "@manifold/protocol";
 import type {
   MachineSummary,

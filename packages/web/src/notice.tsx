@@ -8,13 +8,12 @@ import {
   type ReactNode,
 } from "react";
 import {
-  ControlIcon,
   NoticeContext,
-  Stack,
   type NoticeApi,
   type NoticeLifetime,
   type NoticeOptions,
-} from "@manifold/plugin/ui";
+} from "@manifold/plugin/hooks";
+import { ControlIcon, Stack } from "@manifold/ui";
 
 /**
  * The one notice ref, PROVIDER half. Before this module the app had four independent
@@ -33,7 +32,7 @@ import {
  * `key` is what makes repeated failures readable: a poll that fails every 1.5s
  * replaces its own notice in place instead of building a wall of identical rows.
  *
- * THE OTHER HALF OF THIS DOOR IS `@manifold/plugin/ui`: the context object, `NoticeApi` and
+ * THE OTHER HALF OF THIS DOOR IS `@manifold/plugin/hooks`: the context object, `NoticeApi` and
  * `useNotice` live there, because a plugin may not import a floor module and every plugin
  * needs to be able to say "that was refused" into the same stack. This file supplies the
  * value; nothing here is re-exported, so there is exactly one place to import a notice from

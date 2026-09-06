@@ -70,7 +70,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { Cover, Stack } from "@manifold/plugin/ui";
+import { Cover, Stack } from "@manifold/ui";
 import { dispatchAction, type StoredIdentity } from "./api.ts";
 import { createRoomPipeRegistry, panelSessionHandle } from "./room-pipes.ts";
 import { ContainerErrorBoundary } from "./error-boundary.tsx";

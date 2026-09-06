@@ -341,8 +341,8 @@
 }
 
 /* The canvas half of the carry ease-away. The tile half, and the reasoning behind both,
-   live in packages/plugin/src/ui/styles.css beside the carry mechanism itself; the shared
-   values are the floor's `--carry-fade-*` tokens so a viewer sees what the dragger sees. */
+   live in packages/plugin/src/styles.css beside the carry mechanism itself; the shared
+   values are the design system's `--carry-fade-*` tokens so a viewer sees what the dragger sees. */
 .canvas .react-flow__node.dragging,
 .canvas .react-flow__node.is-carried-away {
   transition: var(--carry-fade-transition);

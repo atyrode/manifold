@@ -12,7 +12,7 @@ import { z } from "zod";
 import { packPlugin, type PackResult } from "../src/pack.ts";
 import * as React from "react";
 import * as Plugin from "@manifold/plugin";
-import * as UI from "@manifold/plugin/ui";
+import * as UI from "@manifold/ui";
 
 /**
  * `pack` TURNS THE SAMPLE INTO THE ARTIFACT THE INSTALL DOOR READS — and the artifact runs.
@@ -114,11 +114,13 @@ describe("the artifact", () => {
     );
     expect(artifact.builtAgainst?.react).toMatch(/^\d+\.\d+\.\d+/);
     expect(artifact.builtAgainst?.["@manifold/plugin"]).toMatch(/^\d+\.\d+\.\d+/);
+    // The design system is a shared module too, or a mod could not import it (issue #240).
+    expect(artifact.builtAgainst?.["@manifold/ui"]).toMatch(/^\d+\.\d+\.\d+/);
     const key = Symbol.for("manifold.shared");
     const previous = Object.getOwnPropertyDescriptor(globalThis, key);
     Object.defineProperty(globalThis, key, {
       configurable: true,
-      value: { react: React, "@manifold/plugin/ui": UI, "@manifold/plugin": Plugin },
+      value: { react: React, "@manifold/ui": UI, "@manifold/plugin": Plugin },
     });
     try {
       const file = `${dir}/in-realm.mjs`;

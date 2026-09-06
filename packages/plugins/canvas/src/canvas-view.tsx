@@ -60,21 +60,17 @@ import {
   useRemoteGestures,
   useRoomPipeRegistration,
   useViewportRegistration,
+  currentVantage,
+  setVantage,
+  subscribeVantage,
+  useNotice,
   type ItemEnvelope,
   type ContainerRendererProps,
   type ProjectionPlaceholderProps,
   type ProjectionState,
   type RegisteredElement,
 } from "@manifold/plugin/hooks";
-import {
-  ItemIcon,
-  NodeTitleBar,
-  RemoteCursorIcon,
-  currentVantage,
-  setVantage,
-  subscribeVantage,
-  useNotice,
-} from "@manifold/plugin/ui";
+import { ItemIcon, NodeTitleBar, RemoteCursorIcon } from "@manifold/ui";
 import { MONO_PORTAL_CLASS_SELECTOR, PORTAL_DRAG_HANDLE, PortalNode } from "./portal-element.tsx";
 import {
   CanvasProviders,

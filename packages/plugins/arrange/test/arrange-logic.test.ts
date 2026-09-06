@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { ROOT_RING_PX, resolveTileAim, type TileAim } from "@manifold/plugin/hooks";
-import { WORKSPACE_TREE_CLASSES } from "@manifold/plugin/ui";
+import {
+  ROOT_RING_PX,
+  WORKSPACE_TREE_CLASSES,
+  resolveTileAim,
+  type TileAim,
+} from "@manifold/plugin/hooks";
 import { validateTileLayout, type Tile, type TileLayout } from "@manifold/protocol";
 import {
   PANEL_ARRANGE_RULES,

@@ -30,19 +30,19 @@ import {
   ItemIcon,
   NodeTitleBar,
   RemoteCursorIcon,
-  COMPOSITION_TREE_CLASSES,
   Stack,
+  type TitlebarDragProps,
+} from "@manifold/ui";
+import {
+  COMPOSITION_TREE_CLASSES,
   TilePreviewOverlay,
   TileTree,
   TileZoneDebug,
   subscribeVantage,
   currentVantage,
   useNotice,
-  type TitlebarDragProps,
   useTileDeparture,
   type TilePreviewOverlayProps,
-} from "@manifold/plugin/ui";
-import {
   ElementOutlet,
   ContainerOverlayOutlet,
   ContainerRenderer,

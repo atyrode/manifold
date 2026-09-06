@@ -2,7 +2,7 @@ import "./styles.css";
 import { FALLBACK_POLL_MS, MACHINES_RESOURCE, usePolledResource } from "@manifold/plugin/hooks";
 import type { SectionProps } from "@manifold/plugin";
 import type { MachineSummary } from "@manifold/protocol";
-import { ControlIcon, ItemIcon, Stack } from "@manifold/plugin/ui";
+import { ControlIcon, ItemIcon, Stack } from "@manifold/ui";
 import { useCallback, useState, type ReactElement } from "react";
 import { MACHINES_FORGET_ACTION, MACHINES_REVOKE_ACTION } from "./index.ts";
 

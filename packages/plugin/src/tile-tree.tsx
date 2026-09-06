@@ -10,9 +10,9 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-import { refKey } from "../tile-geometry.ts";
-import { dividerRatios, type DividerDrag } from "../tile-snap.ts";
-import { FLIP_EPSILON, prefersReducedMotion } from "./flip.ts";
+import { FLIP_EPSILON, prefersReducedMotion } from "@manifold/ui";
+import { refKey } from "./tile-geometry.ts";
+import { dividerRatios, type DividerDrag } from "./tile-snap.ts";
 
 /**
  * One tile tree for workspace, composition and portal skins; hosts supply leaf chrome

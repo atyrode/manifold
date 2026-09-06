@@ -29,7 +29,7 @@
  * same package: the check enforces the stylesheet, not the directory.
  *
  * The tile-tree's `workspace-split` / `workspace-pane` / `workspace-divider` skin is NOT here.
- * Those three class names are declared in `packages/plugin/src/ui/tile-tree.tsx`
+ * Those three class names are declared in `packages/plugin/src/tile-tree.tsx`
  * (`WORKSPACE_TREE_CLASSES`), so they live with the component that draws them.
  */
 
@@ -368,7 +368,7 @@
  * section that outgrows its slot scrolls ITSELF — and a `plain` row draws itself end to end.
  *
  * While a row is held the stack makes space: the ORDER is the preview, so rows land in their
- * projected slots and FLIP plays the difference (`@manifold/plugin/ui`'s `useFlipStack`, which
+ * projected slots and FLIP plays the difference (`@manifold/ui`'s `useFlipStack`, which
  * is off entirely under `prefers-reduced-motion: reduce`). Nothing here animates: the transform
  * is the motion primitive's, so there is no transition on a row to fight with it.
  */

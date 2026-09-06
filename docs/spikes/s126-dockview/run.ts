@@ -65,7 +65,7 @@ const FILES: Record<string, { readonly path: string; readonly type: string }> = 
     type: "text/css",
   },
   // The REAL application skin, so the control is the control.
-  "/plugin.css": { path: `${ROOT}packages/plugin/src/ui/styles.css`, type: "text/css" },
+  "/plugin.css": { path: `${ROOT}packages/plugin/src/styles.css`, type: "text/css" },
 };
 
 const server = Bun.serve({

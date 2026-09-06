@@ -43,7 +43,7 @@ import type {
   SceneElement,
   TerminalSummary,
 } from "@manifold/protocol";
-import { Cluster, ControlIcon, ItemIcon, Stack } from "@manifold/plugin/ui";
+import { Cluster, ControlIcon, ItemIcon, Stack } from "@manifold/ui";
 import {
   useCallback,
   useEffect,

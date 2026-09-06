@@ -8,8 +8,8 @@ import {
   type RefObject,
 } from "react";
 
-import { resolveTileAim } from "../tile-geometry.ts";
-import { areaUnits } from "../use-tile-drop.ts";
+import { resolveTileAim } from "./tile-geometry.ts";
+import { areaUnits } from "./use-tile-drop.ts";
 
 /**
  * The drop-zone field, made visible: a debug-only overlay that SAMPLES the real

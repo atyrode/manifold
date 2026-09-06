@@ -1,31 +1,27 @@
 import {
   ITEM_MIME,
+  WORKSPACE_TREE_CLASSES,
   areaUnits,
   carriesItem,
+  heldStructure,
+  holdStructure,
+  keyCapLabel,
   readEnvelope,
+  releaseStructure,
   resolveTileAim,
   sealEnvelope,
+  setVantage,
   tileProspect,
+  useHeldStructure,
+  useNotice,
   useProjection,
+  useVantage,
   type AreaFractions,
   type TileAim,
   type UnitRect,
   type WorkspaceOverlayProps,
 } from "@manifold/plugin/hooks";
-import {
-  ControlIcon,
-  ItemIcon,
-  KeyCap,
-  WORKSPACE_TREE_CLASSES,
-  heldStructure,
-  holdStructure,
-  releaseStructure,
-  setVantage,
-  useHeldStructure,
-  useNotice,
-  useVantage,
-  type ControlKind,
-} from "@manifold/plugin/ui";
+import { ControlIcon, ItemIcon, KeyCap, type ControlKind } from "@manifold/ui";
 import { ROOT_TILE_ID, type Structure, type TileEdge, type TileLayout } from "@manifold/protocol";
 import {
   useCallback,
@@ -1107,7 +1103,7 @@ export function ArrangeOverlay({ host }: WorkspaceOverlayProps): ReactElement {
             <span className="arrange-palette-state" role="status">
               <ControlIcon kind={paletteCarry === "remove" ? "discard" : "cancel"} size={13} />
               {paletteCarry === "remove" ? "Drop to remove" : "Drop to cancel"}
-              <KeyCap stroke="Escape" />
+              <KeyCap label={keyCapLabel("Escape")} />
               lets go
             </span>
           ) : null}

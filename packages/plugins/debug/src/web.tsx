@@ -1,5 +1,5 @@
 import type { WebBinding } from "@manifold/plugin";
-import { toggleZoneProbe } from "@manifold/plugin/ui";
+import { toggleZoneProbe } from "@manifold/plugin/hooks";
 
 import { debugManifest } from "./index.ts";
 import { Inspector, toggleInspector } from "./inspector.tsx";

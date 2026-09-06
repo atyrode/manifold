@@ -11,6 +11,7 @@
     "@manifold/protocol": "workspace:*",
     "@manifold/scene": "workspace:*",
     "@manifold/sdk": "workspace:*",
+    "@manifold/ui": "workspace:*",
     "react": "19.2.8"
   },
   "devDependencies": {

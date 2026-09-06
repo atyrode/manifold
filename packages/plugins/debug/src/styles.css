@@ -86,7 +86,7 @@
   color: #dee2e6;
 }
 
-/* The row vocabulary is the stdlib's now (`.kv` in `@manifold/plugin/ui`): the list, the
+/* The row vocabulary is the design system's now (`.kv` in `@manifold/ui`): the list, the
    two columns and the wrap-not-scroll value contract all come from `KeyValueList` /
    `KeyValueRow`. What stays here is TINT — the words' colours are this reading's own. */
 

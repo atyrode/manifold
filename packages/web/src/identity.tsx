@@ -1,6 +1,6 @@
 import { IDENTITY_COLORS, PrincipalSchema } from "@manifold/protocol";
 import { instanceOrigin, isForeignInstance } from "@manifold/plugin/hooks";
-import { Cover } from "@manifold/plugin/ui";
+import { Cover } from "@manifold/ui";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   createPrincipal,

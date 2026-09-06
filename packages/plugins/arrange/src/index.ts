@@ -16,7 +16,7 @@ import { type PluginManifest } from "@manifold/protocol";
  *
  * `core.shell` keeps no arrange code: the F8 binding is this plugin's own row now (`web.ts`),
  * and the floor host that used to render the grip and the bar keeps only what the litmus
- * demands — the vantage store (`@manifold/plugin/ui`, untouched), the layout door
+ * demands — the vantage store (`@manifold/plugin/hooks`, untouched), the layout door
  * (`core.space.setLayout`, `@manifold-plugin/shell`, untouched), the tile-geometry read
  * surface it now PUBLISHES instead of privately owning, and the overlay outlet it mounts.
  * Disabling this plugin removes the F8 binding, the toolbar, the grips and the wireframe —

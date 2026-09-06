@@ -1,79 +1,17 @@
 /*
  * THE FLOOR'S STYLESHEET — and nothing else.
  *
- * What survives here passes the same test every floor file passes: it is bootstrap
- * chrome, it is neutral between plugins, or it is a token two owners read. That is the
- * reset, the type and colour ground, the identity gate, the one notice stack, the engine's
- * inert plugin placeholder, the drop-denial cue every target shares, and the two keyframes
- * more than one owner animates with.
+ * What survives here passes the same test every floor file passes: it is bootstrap chrome or it
+ * is neutral between plugins. That is the identity gate, the one notice stack, the engine's
+ * inert plugin placeholder and the two keyframes more than one owner animates with.
  *
- * Every family that belongs to somebody is somewhere else, and `verify:axioms` S13 keeps
- * it that way: the cssFamilies registry in REGISTRY.md §Lexicon names one owning stylesheet
- * per selector family, and a family painted outside its owner is gate RED.
+ * The GROUND — the tokens, the reset, the type and colour defaults — is the design system's
+ * (`packages/ui/src/styles.css`, `@manifold/ui`), imported ahead of this sheet by `main.tsx` so
+ * every rule below composes over it. Every family that belongs to somebody is somewhere else,
+ * and `verify:axioms` S13 keeps it that way: the cssFamilies registry in REGISTRY.md §Lexicon
+ * names one owning stylesheet per selector family, and a family painted outside its owner is
+ * gate RED.
  */
-
-:root {
-  color-scheme: dark;
-  font-family:
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
-  color: #f1f3f5;
-  background: #101216;
-  font-synthesis: none;
-
-  /* The carry ease-away, published as tokens because it is read from two owners' sheets:
-     the canvas half (packages/plugins/canvas/src/styles.css) and the tile half
-     (packages/plugin/src/ui/styles.css). A held item and every viewer's copy of it must
-     fade by the SAME amount, and a duplicated number is how that stops being true. */
-  --carry-fade-opacity: 0.15;
-  --carry-fade-transition: opacity 160ms ease;
-
-  /* THE DROP PREVIEW'S MOTION, in one place (issue #66). Three durations used to live in
-     three unrelated blocks with nothing saying they were one system, so the slot, its cue
-     and the panes gliding under them could be retuned apart. They are one gesture and they
-     read as one: the slot leads, its fade is a touch quicker so a zone change reads as a
-     move rather than a cross-dissolve, and the real panes take longer because they travel
-     further and carry live content.
-
-     ONE DURATION FOR BOTH PRODUCERS, deliberately. The alternative considered — easing a
-     REMOTE slot differently so it pairs with the sender's eased ghost — is exactly the
-     "second remote flavor" invariant 11 forbids: the ghost is a peer's POINTER, resampled
-     at the send cadence and smoothed by `GESTURE_HALF_LIFE_MS` because it arrives as
-     samples, while a slot is a resolved ZONE that snaps to tile boundaries for everyone.
-     Different objects, different jobs; the pairing was never the missing thing. */
-  --preview-slot-transition: 90ms ease;
-  --preview-cue-transition: 80ms ease;
-  --preview-pane-transition: 120ms ease;
-}
-
-* {
-  box-sizing: border-box;
-}
-
-html,
-body,
-#root {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-}
-
-body {
-  min-width: 320px;
-  overflow: hidden;
-}
-
-button,
-input {
-  font: inherit;
-}
-
-button {
-  color: inherit;
-}
 
 .gate-screen {
   height: 100%;
@@ -135,21 +73,6 @@ button {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-}
-
-input {
-  width: 100%;
-  border: 1px solid #495057;
-  border-radius: 0.55rem;
-  outline: none;
-  padding: 0.7rem 0.8rem;
-  color: #f8f9fa;
-  background: #171a1f;
-}
-
-input:focus {
-  border-color: #748ffc;
-  box-shadow: 0 0 0 3px rgb(116 143 252 / 18%);
 }
 
 .color-fieldset {
@@ -391,18 +314,6 @@ input:focus {
 .lens-note-action:focus-visible {
   color: #f1f3f5;
   background: #364fc7;
-}
-
-/* ── Placement legality cues ──────────────────────────────────────────────────
-   Uniform across every drop target, because the pipeline behind them is uniform:
-   a target stamps `data-drop-denial="<rule>"` on itself and `.is-denied` on its
-   preview box, and the named rule rides in the element's `title`. The prose badge
-   is the human half of the same denial. Legal targets keep the existing highlights
-   (`.sidebar-row--terminal-target`, `.tile-preview`). */
-[data-drop-denial] {
-  outline: 1px dashed rgb(255 107 107 / 55%);
-  outline-offset: -2px;
-  cursor: not-allowed;
 }
 
 /* ── Skeletons ────────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import "./styles.css";
 import type { SectionProps } from "@manifold/plugin";
-import { ControlIcon, Disclosure, Stack } from "@manifold/plugin/ui";
+import { ControlIcon, Disclosure, Stack } from "@manifold/ui";
 import {
   CredentialsResponseSchema,
   RevokeResultSchema,

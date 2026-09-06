@@ -85,30 +85,33 @@ The parallel full gate currently has a separate package list in `scripts/gate.ts
 new package there too. Contribution-specific registry obligations (terms, CSS families and
 device-local keys) are listed in §8, not additional runtime registration files.
 
-Your dependency budget is `@manifold/protocol`, `@manifold/scene`, `@manifold/sdk`, and
-`@manifold/plugin`. Importing anything else from the tree — server internals, web internals,
-another plugin — fails the gate.
+Your dependency budget is the three named layers (ADR 0025 §8): the SDK — `@manifold/protocol`,
+`@manifold/sdk` and `@manifold/scene`, talking to the hub; the engine API — `@manifold/plugin`,
+being a plugin; and the design system — `@manifold/ui`, looking like manifold. Importing anything
+else from the tree — server internals, web internals, another plugin — fails the gate.
 
-`@manifold/plugin` has three entries, and which one you reach for is a real distinction:
+`@manifold/plugin` has two entries, and which one you reach for is a real distinction:
 
-| entry                    | what it holds                                                                                                                                          |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@manifold/plugin`       | the registry and the contracts — manifests, `defineAction`, host types. Platform-free, because the SERVER assembles through it.                        |
-| `@manifold/plugin/hooks` | plane mechanism in a browser: the carry/drop vocabulary, the element host, `usePolledResource`.                                                        |
-| `@manifold/plugin/ui`    | the standard library for looking like manifold: `ItemIcon`/`ControlIcon`, `NodeTitleBar`, `useNotice`, and the published vantage store (`setVantage`). |
+| entry                    | what it holds                                                                                                                                                                                               |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@manifold/plugin`       | the registry and the contracts — manifests, `defineAction`, host types. Platform-free, because the SERVER assembles through it.                                                                             |
+| `@manifold/plugin/hooks` | plane mechanism in a browser: the carry/drop vocabulary, the element host, `usePolledResource`, the one tile tree, `useNotice`, the published vantage store (`setVantage`), `requestRebind`, `keyCapLabel`. |
 
-`/ui` is a standard library rather than a component kit: you extend it by passing nodes into its
-slots (`icon`, `middle`, `extraActions`), never by growing a component's props, so re-drawing the
-whole icon set stays a change to one file and no call site. What is CLOSED there is
-`ControlKind`: a fixed list, closed to ADDITIONS and not to callers — you may not grow the
-union, and you are expected to call it, because a plugin's chrome should wear the same mark for
-the same verb the shell's chrome does. The rule that keeps the list honest is on the NAME: every
-kind is a neutral verb (or, for `bindings`/`assembly`, a neutral noun naming what pressing
-opens), so the list would read the same with every plugin in this build replaced. #116 deleted
-the two kinds that broke it (`endTerminal`, `terminalTree` — a plugin's object in the floor's
-vocabulary, and dead besides) and migrated the three plugins that broke it from the other side,
-by hand-importing lucide and re-implementing the one wrapper. Meanwhile a vocabulary the
-ASSEMBLY owns stays open: `ItemIcon` takes any item kind, your contributed element types
+`@manifold/ui` is the third layer and its own package: `ItemIcon`/`ControlIcon`, `NodeTitleBar`,
+the layout algebra (§7b), `Disclosure`, `ScrollRegion`, `Popover`, `Chip`, `KeyValueList`,
+`KeyCap`, `useFlipStack` — and the ground stylesheet with the tokens. See "Looking like manifold"
+under §7b for how the layers relate. It is a standard library rather than a component kit: you
+extend it by passing nodes into its slots (`icon`, `middle`, `extraActions`), never by growing a
+component's props, so re-drawing the whole icon set stays a change to one file and no call site.
+What is CLOSED there is `ControlKind`: a fixed list, closed to ADDITIONS and not to callers — you
+may not grow the union, and you are expected to call it, because a plugin's chrome should wear
+the same mark for the same verb the shell's chrome does. The rule that keeps the list honest is
+on the NAME: every kind is a neutral verb (or, for `bindings`/`assembly`, a neutral noun naming
+what pressing opens), so the list would read the same with every plugin in this build replaced.
+#116 deleted the two kinds that broke it (`endTerminal`, `terminalTree` — a plugin's object in
+the floor's vocabulary, and dead besides) and migrated the three plugins that broke it from the
+other side, by hand-importing lucide and re-implementing the one wrapper. Meanwhile a vocabulary
+the ASSEMBLY owns stays open: `ItemIcon` takes any item kind, your contributed element types
 included, and draws a neutral element mark for a kind it holds no drawing for (#69 wave F).
 `@manifold-plugin/terminals/web` is the worked example: its terminal viewer owns no drawing and
 no notice mechanism of its own.
@@ -193,9 +196,11 @@ the same cheap direction as adding a lexicon term.
 
 Two consequences worth knowing before you write a selector. Your rules may reach INTO your own
 subtree only: ownership follows the leftmost family in a selector, so `.my-panel .node-titlebar`
-is yours while a bare `.node-titlebar` rule is the neutral chrome's and belongs in
-`packages/plugin/src/ui/styles.css`. And a rule with no class at all — `body`, `:root`, an
-element default — is the floor's alone, because it reaches every node in the document.
+is yours while a bare `.node-titlebar` rule is the design system's and belongs in
+`packages/ui/src/styles.css`. And a rule with no class at all — `body`, `:root`, an element
+default — is the design system's GROUND alone, because it reaches every node in the document.
+Tokens are the theming seam: read the shell's CSS variables for free coherence, or set your own
+under your root; never write to the shell's families.
 
 The TypeScript side needs one line of setup: your `tsconfig.json` names
 `../../plugin/src/css-modules.d.ts` in its `include`, which is where the `declare module "*.css"`
@@ -1412,7 +1417,7 @@ Both `TerminalRendererProps` and `ContainerRendererProps` expose `projectionScop
 Forward these to the occupant's own shared bar, not a second host-rendered bar. The middle
 slot hosts attendance; extra actions host native terminal font controls. `NodeTitleBar` maps
 `extraActions` to its action area and accepts `dragProps?: TitlebarDragProps` from
-`@manifold/plugin/ui`: `draggable?` and native div `onDragStart`/`onDrag`/`onDragEnd` handlers.
+`@manifold/ui`: `draggable?` and native div `onDragStart`/`onDrag`/`onDragEnd` handlers.
 Opting in marks the whole bar with `data-titlebar-draggable`; `draggable: false` supports an
 external pointer transport. Interactive descendants, rename input and selected title text
 remain protected from host dragging. No separate visible grip is needed.
@@ -1425,7 +1430,7 @@ display, never the shared PTY geometry.
 Do not reach into another plugin's CSS families to mask corners. Keep the live content host
 stable: tile preview and authoritative FLIP settlement transform `tile-content-host`, never
 both a pane ancestor and its content. Pass `useTileDeparture(containerId, overrides)` from
-`@manifold/plugin/ui` to `TilePreviewOverlay.departure`. It reactively reads the shared local
+`@manifold/plugin/hooks` to `TilePreviewOverlay.departure`. It reactively reads the shared local
 carry register, preferring a local matching tile over the freshest source-matching remote
 override even without an aim; incoming target arbitration wins. Portals combine canvas and
 own-room overrides only at this overlay leaf, not in their live content host. Clear on
@@ -1480,7 +1485,7 @@ contributes: {
 ```tsx
 // 2. the component — reached like any other section, so it takes `SectionProps`
 import { useWorkspaceShell } from "@manifold/plugin/hooks";
-import { ControlIcon } from "@manifold/plugin/ui";
+import { ControlIcon } from "@manifold/ui";
 
 export function NewCanvasRow() {
   // The rail's WIDTH is the host's fact, and the one thing a row usually needs from it:
@@ -1529,7 +1534,7 @@ Four rules the shipped rows follow, and the reasons:
 
 Motion is free and not yours to write: the stack plays a FLIP whenever the visible order
 changes — your row being enabled, disabled, nudged or dragged — from `useFlipStack` in
-`@manifold/plugin/ui`, and it is off entirely under `prefers-reduced-motion: reduce`. Do not add
+`@manifold/ui`, and it is off entirely under `prefers-reduced-motion: reduce`. Do not add
 a `transition` to a row; it would fight the transform.
 
 ### Marking your affordances
@@ -1913,15 +1918,15 @@ answered would be running a disabled plugin. `when` is declared for readers rath
 enforced by the engine: your handler is the only thing that knows your surface.
 
 **Printing a key is not owning one.** Anything may print a row off `host.assembly.bindings`; if
-you do, draw it with `KeyCap` from `@manifold/plugin/ui` (the one keycap, and the one place
-`Mod` becomes ⌘ or Ctrl) and send a reader who wants to change it through `requestRebind(id)`,
+you do, draw it with `KeyCap` from `@manifold/ui` (the one keycap) labelled by `keyCapLabel` from
+`@manifold/plugin/hooks` (the one place `Mod` becomes ⌘ or Ctrl) and send a reader who wants to change it through `requestRebind(id)`,
 which the workspace's binding editor answers. Neither side names the other.
 
 ---
 
 ## 7b. Layout primitives
 
-`@manifold/plugin/ui` ships a small layout algebra; compose your section and renderer
+`@manifold/ui` ships a small layout algebra; compose your section and renderer
 bodies with it instead of writing bespoke flex/overflow CSS. Six intrinsic boxes:
 
 - **`Stack`** — vertical rhythm (`gap`, optional `align`). The default for any section body.
@@ -1955,6 +1960,36 @@ directly — S2 fails the gate.
 
 The sidebar element is a size container (`container: sidebar / inline-size`), so your
 section CSS may density-query it: `@container sidebar (max-width: 236px) { … }`.
+
+### Looking like manifold
+
+Three named layers, and a mod imports all three (ADR 0025 §8, #240). The precedent is Unity's UI
+Toolkit and Unreal's Slate: the editor is built on the toolkit mods use, so the toolkit is real.
+
+| layer         | packages                                                 | answers                                                                                                                                                |
+| ------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| SDK           | `@manifold/protocol`, `@manifold/sdk`, `@manifold/scene` | talking to the hub: wire schemas, the one WebSocket client, the document plane.                                                                        |
+| Engine API    | `@manifold/plugin`, `@manifold/plugin/hooks`             | being a plugin: `HostServices`, hooks, tile geometry, projection, the one tile tree, notices, view state.                                              |
+| Design system | `@manifold/ui`                                           | looking like manifold: components (this section's algebra, glyphs, titlebar, chrome), the tokens and the ground stylesheet, the FLIP motion primitive. |
+
+The shell and every `core.*` panel render with `@manifold/ui` — the sidebar, the terminal viewer,
+the plugin manager, the identity gate — so what you import is what the product is drawn with, not
+a sanctioned subset. `@manifold/plugin` re-exports nothing from it: the engine imports the design
+system exactly as you do, and the design system imports nothing from the engine.
+
+**Tokens are the theming seam.** `@manifold/ui`'s stylesheet is the ground: `:root` tokens
+(`--carry-fade-*`, `--preview-*-transition`, the type and colour ground), the reset and the
+element defaults. Use the shell's CSS variables and your surface coheres for free; set your own
+under your root (`.plugin-<id>`) and it diverges on purpose. What you may never do is paint the
+SHELL's families — S13 holds that at the gate and, for installed mods, at load (§9).
+
+**Components are optional; contracts are not.** Tile geometry, D4′ disable/dormant semantics and
+`data-action` come from the engine API whether or not you compose with `<Stack>`. A panel that
+hand-rolls its flex is legal; a panel that invents a second placement pipeline is not.
+
+**Hardened mods (§9) speak the same vocabulary serialized.** The `ui.box`/`ui.badge` builders the
+kit ships are the frame form of these components — `ui.box` IS `<Stack>` — and the follow-up to
+#240 makes the hardened renderer serialize this one component set rather than a parallel one.
 
 ## 8. What the gate checks
 
@@ -2318,7 +2353,7 @@ look at — the preview's plugin manager row for the id, and the panel or door t
 
 Say it out loud rather than discover it:
 
-- **No React, and no `@manifold/plugin`.** No `usePolledResource`, no `@manifold/plugin/ui`
+- **No React, and no `@manifold/plugin`.** No `usePolledResource`, no `@manifold/ui`
   primitives, no tile geometry, no projection registry, no `HostServices` object. The web half
   is a program over the vocabulary, full stop.
 - **No token.** `HostServices.token` is a real bearer handed to trusted in-realm code; a worker

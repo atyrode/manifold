@@ -1,9 +1,10 @@
 /**
  * The engine's platform-free half: composition, contracts, the default workspace. Anything
- * that names React or a DOM type lives behind a subpath instead — `@manifold/plugin/hooks`
- * for browser plane mechanism, `@manifold/plugin/ui` for the plugin-facing standard library —
- * because the SERVER composes through this same entry and must never pull a browser hook (or
- * a DOM lib) into its type graph.
+ * that names React or a DOM type lives behind `@manifold/plugin/hooks` instead — browser plane
+ * mechanism, the tile renderer, the notice consumer half, view state — because the SERVER
+ * composes through this same entry and must never pull a browser hook (or a DOM lib) into its
+ * type graph. How a plugin LOOKS like manifold is not this package's question at all: the
+ * design system is `@manifold/ui` (ADR 0025 §8), and this package re-exports nothing from it.
  */
 export { defineAction, type ActionDef, type AnyActionDef } from "./action.ts";
 export {

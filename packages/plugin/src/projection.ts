@@ -21,8 +21,8 @@ import type { SessionClient } from "@manifold/sdk";
 
 import { ElementHostProvider } from "./element-host.ts";
 import { MAX_LOCATION_PATH_LENGTH } from "@manifold/protocol";
-import { publishLocation } from "./ui/vantage.ts";
-import type { TitlebarDragProps } from "./ui/node-titlebar.tsx";
+import type { TitlebarDragProps } from "@manifold/ui";
+import { publishLocation } from "./vantage.ts";
 import type {
   ElementDocument,
   ElementProps,

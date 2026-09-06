@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@manifold/plugin": "workspace:*",
+    "@manifold/ui": "workspace:*",
     "@types/bun": "^1.3.2",
     "@types/react": "^19.2.0",
     "react": "19.2.8"

@@ -171,7 +171,7 @@ export type SettingDef = z.infer<typeof SettingDefSchema>;
  *
  * NOT `group`: that word is taken, by the placement algebra's capability sets (§Lexicon), and
  * one concept per word is the law. `cluster` is this concept's canon term — a declared set of
- * sidebar rows painted side by side — and the `Cluster` box from `@manifold/plugin/ui` is what
+ * sidebar rows painted side by side — and the `Cluster` box from `@manifold/ui` is what
  * happens to paint one, the same way the `layout` family's components are named for the shape
  * they draw without touching the canon term.
  *

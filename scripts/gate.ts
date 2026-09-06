@@ -48,6 +48,7 @@ async function run(name: string, cmd: readonly string[], cwd = repoRoot): Promis
 
 const packages = [
   "protocol",
+  "ui",
   "plugin",
   "scene",
   "sdk",

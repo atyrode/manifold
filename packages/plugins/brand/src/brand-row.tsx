@@ -1,6 +1,6 @@
 import { settingValue, type SectionProps } from "@manifold/plugin";
 import { useWorkspaceShell } from "@manifold/plugin/hooks";
-import { ControlIcon } from "@manifold/plugin/ui";
+import { ControlIcon } from "@manifold/ui";
 import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { parseChangelogReferences } from "./changelog-references.ts";
