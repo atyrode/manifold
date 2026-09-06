@@ -905,7 +905,7 @@ describe("floor doors emit at their commit points", () => {
     subscribe(fixture, "tab", [{ kind: "plugin", pluginId: "engine.plugins" }]);
 
     const outcome = await fixture.host.dispatch(fixture.owner, "engine.plugins.setEnabled", {
-      id: "core.draw",
+      id: "core.canvas.draw",
       enabled: false,
     });
     expect(outcome.ok).toBe(true);
@@ -914,7 +914,7 @@ describe("floor doors emit at their commit points", () => {
     expect(heard.map((event) => event.kind)).toEqual(["plugin_disabled"]);
     // The toggled plugin is the PAYLOAD, not the topic: a plugin may not be the subject of
     // another plugin's emission, and enablement is the engine's ledger about it.
-    expect(heard[0]?.payload["plugin"]).toBe("core.draw");
+    expect(heard[0]?.payload["plugin"]).toBe("core.canvas.draw");
     fixture.gateway.shutdown();
     fixture.store.close();
   });

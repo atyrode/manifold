@@ -70,6 +70,13 @@ export const arrangeManifest: PluginManifest = {
   description:
     "The F8 scene editor: a floating palette you drag stacks and spacers out of, plus the panel-move grips, wireframe delimitation and gesture/commit pipeline that render while it is armed.",
   capabilities: [],
+  dependencies: {
+    "core.space": {
+      type: "required",
+      reason:
+        "arrangement commits workspace structure through core.space layout and placement doors",
+    },
+  },
   contributes: {
     panels: [],
     sections: [],

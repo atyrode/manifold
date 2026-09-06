@@ -41,8 +41,8 @@ function registry(
   return new Map(rows);
 }
 
-const DRAW = ["draw", element("core.draw", "Drawing", DrawNode)] as const;
-const DRAW_OFF = ["draw", element("core.draw", "Drawing", DrawNode, false)] as const;
+const DRAW = ["draw", element("core.canvas.draw", "Drawing", DrawNode)] as const;
+const DRAW_OFF = ["draw", element("core.canvas.draw", "Drawing", DrawNode, false)] as const;
 const SKETCH = ["sketch", element("core.sketch", "Sketch", OtherNode)] as const;
 
 describe("nodeTypesFor", () => {
@@ -83,8 +83,8 @@ describe("nodeTypesFor", () => {
   });
 
   test("a different attached component is a different vocabulary", () => {
-    const first = registry(["draw", element("core.draw", "Drawing", DrawNode)]);
-    const second = registry(["draw", element("core.draw", "Drawing", OtherNode)]);
+    const first = registry(["draw", element("core.canvas.draw", "Drawing", DrawNode)]);
+    const second = registry(["draw", element("core.canvas.draw", "Drawing", OtherNode)]);
 
     // The signature keys on WHICH component is attached, not merely on the type name: a
     // hot-swapped renderer that reused the cached map would keep painting the old one.
@@ -93,7 +93,7 @@ describe("nodeTypesFor", () => {
 
   test("a declared element with no registered renderer is still a species", () => {
     const map = nodeTypesFor(
-      registry(["draw", element("core.draw", "Drawing", null)]),
+      registry(["draw", element("core.canvas.draw", "Drawing", null)]),
       Placeholder,
     );
 

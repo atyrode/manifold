@@ -88,13 +88,13 @@ const terminals = row("core.terminals", "Terminals", {
 });
 const canvas = row("core.canvas", "Canvas", {
   description: "The freeform discipline",
-  dependencies: { "core.space": { type: "required" }, "core.draw": { type: "optional" } },
+  dependencies: { "core.space": { type: "required" } },
   capabilities: ["scenes:write"],
 });
 const space = row("core.space", "Space");
 const notes = row("core.notes", "Notes", { enabled: false, changedAt: 500 });
-/** A peer with a `required` edge on a two-segment id: a relation, never a nesting. */
-const draw = row("core.draw", "Draw", {
+/** The canvas's nested drawing contribution. */
+const draw = row("core.canvas.draw", "Draw", {
   dependencies: { "core.canvas": { type: "required" } },
 });
 /** A stranger's family: the baseline, and a part that requires it. */
@@ -212,16 +212,11 @@ describe("pluginCatalog", () => {
     expect(installed!.on).toBe(3);
   });
 
-  test("a peer's dependency does not nest it: core.draw is a row of its own", () => {
+  test("canvas is one family while peers with required edges remain independent", () => {
     const [, , core] = pluginCatalog(roster, ask());
-    expect(ids(core!.rows)).toEqual([
-      "core.canvas",
-      "core.draw",
-      "core.notes",
-      "core.space",
-      "core.terminals",
-    ]);
-    expect(core!.rows.every((candidate) => candidate.children.length === 0)).toBe(true);
+    expect(ids(core!.rows)).toEqual(["core.canvas", "core.notes", "core.space", "core.terminals"]);
+    expect(core!.rows.find((candidate) => candidate.entry === canvas)?.children).toEqual([draw]);
+    expect(core!.rows.find((candidate) => candidate.entry === terminals)?.children).toEqual([]);
   });
 
   test("installed rows group by publisher before the sort applies", () => {
@@ -263,7 +258,6 @@ describe("pluginCatalog", () => {
     expect(flat(["installed"])).toEqual(["acme.charts", "atyrode.code"]);
     expect(flat(["builtin"])).toEqual([
       "core.canvas",
-      "core.draw",
       "core.notes",
       "core.space",
       "core.terminals",
@@ -301,7 +295,6 @@ describe("pluginCatalog", () => {
     expect(core("name")).toEqual([
       "core.canvas",
       "core.crash",
-      "core.draw",
       "core.notes",
       "core.space",
       "core.terminals",
@@ -309,7 +302,6 @@ describe("pluginCatalog", () => {
     expect(core("status")).toEqual([
       "core.crash",
       "core.canvas",
-      "core.draw",
       "core.space",
       "core.terminals",
       "core.notes",
@@ -319,7 +311,6 @@ describe("pluginCatalog", () => {
     expect(core("changed").slice(1)).toEqual([
       "core.canvas",
       "core.crash",
-      "core.draw",
       "core.space",
       "core.terminals",
     ]);

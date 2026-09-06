@@ -94,7 +94,7 @@ import { FEED_TOPICS, SPACE_SET_LAYOUT_ACTION, WEB_PLUGIN_DEFS } from "./assembl
  *
  * Disabled plugins keep their contributions in every registry, tagged `enabled: false`, for
  * the same reason the engine keeps them server-side: a consumer must be able to say "waiting
- * on core.draw" rather than show nothing (D4).
+ * on core.canvas.draw" rather than show nothing (D4).
  */
 
 /**
@@ -1401,7 +1401,7 @@ export type PluginPlaceholderProps = ProjectionPlaceholderProps;
 
 /**
  * The one inert-contribution ref, shared by workspace panes and canvas nodes: it NAMES
- * what is missing, so a disabled plugin reads as "core.draw is off", never as a blank box.
+ * what is missing, so a disabled plugin reads as "core.canvas.draw is off", never as a blank box.
  * The remove control commits a pruned workspace tree through `core.space.setLayout` — named
  * through `assembly.ts` (`SPACE_SET_LAYOUT_ACTION`), like every door this floor knocks on —
  * which is why a disable can never brick a layout (D4, `[R: layout-lock blocker]`). That

@@ -1,10 +1,4 @@
-/**
- * A tool id. Deliberately NOT a closed union: `select` and `text` are the two `core.canvas`
- * declares for itself, and everything else is contributed by another plugin's manifest
- * (`core.draw` is the first), so the strip's vocabulary comes from the composition rather
- * than from a literal type nobody outside this file could extend.
- */
-export type CanvasTool = string;
+import type { CanvasTool } from "./contract.ts";
 
 /**
  * The two modes this plugin owns, in strip order. They are declared in `canvasManifest` like
@@ -40,7 +34,7 @@ export function toolFlags(tool: CanvasTool): CanvasToolFlags {
 /**
  * Keyboard shortcuts. `d` names the draw tool from here because no manifest declares a key
  * binding yet; that is DATA, not an import, and the caller checks the answer against the live
- * composition, so pressing it with `core.draw` disabled selects nothing.
+ * composition, so pressing it with `core.canvas.draw` disabled selects nothing.
  */
 export function toolForKey(key: string): CanvasTool | null {
   switch (key.toLowerCase()) {

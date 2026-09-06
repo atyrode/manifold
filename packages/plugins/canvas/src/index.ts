@@ -18,7 +18,7 @@ import { type PluginManifest } from "@manifold/protocol";
  * titlebar, `core.views` for a container's life, `core.space.place` for every placement. A
  * canvas action would be a second door onto one of those (invariant 14).
  *
- * `scenes:write` is declared for the same reason `core.draw` and `core.notes` declare it: it is
+ * `scenes:write` is declared for the same reason `core.canvas.draw` and `core.notes` declare it: it is
  * the capability a viewer needs in order to author into a room, even though nothing here
  * dispatches an action.
  *
@@ -26,7 +26,7 @@ import { type PluginManifest } from "@manifold/protocol";
  *
  * `tools` — `select` and `text` are the canvas's own two modes, declared here rather than left
  * as anonymous chrome so the vocabulary is READABLE: an agent asking `GET /api/plugins` sees
- * every mode the ref offers, not just the ones other plugins added. `core.draw`'s tool
+ * every mode the ref offers, not just the ones other plugins added. `core.canvas.draw`'s tool
  * arrives through the same registry, which is why the strip has no literal naming it.
  *
  * No `panels`. A container renderer is reached by LAYOUT, through the projection's container-ref
@@ -41,7 +41,7 @@ import { type PluginManifest } from "@manifold/protocol";
  * routed through the engine's element frame, because the engine's frame exists to give a
  * STRANGER's element a resizer and a commit path, and the canvas needs neither for its own
  * addressing species. Content elements — `text`, `draw` — belong to `core.notes` and
- * `core.draw`, and reach this ref through the element registry like any other plugin's.
+ * `core.canvas.draw`, and reach this ref through the element registry like any other plugin's.
  */
 export const canvasManifest: PluginManifest = {
   id: "core.canvas",

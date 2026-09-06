@@ -148,7 +148,7 @@ export function publisherOf(id: string): string {
  *      edge is the proof: without it the engine has no idea the two are related, and the
  *      manager would be drawing a hierarchy the door does not enforce.
  *
- * A peer with an ordinary `required` edge (`core.draw` → `core.canvas`) fails (1) and stays a
+ * A peer with an ordinary `required` edge (`core.terminals` → `core.space`) fails (1) and stays a
  * peer; that relationship is the Relations card's, never a nesting.
  */
 export function parentOf(

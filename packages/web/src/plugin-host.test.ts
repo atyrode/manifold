@@ -78,7 +78,7 @@ const MACHINES = {
 } as const satisfies ManifestFields;
 
 const DRAW = {
-  id: "core.draw",
+  id: "core.canvas.draw",
   title: "Drawing",
   contributes: {
     elements: [{ type: "draw", title: "Drawing" }],
@@ -95,7 +95,7 @@ const URI = {
 const DEFS: readonly WebPluginDef[] = [
   { id: "core.shell", panels: { sidebar: Sidebar, "container-view": ContainerView } },
   { id: "core.machines", sections: { machines: MachinesSection } },
-  { id: "core.draw", elements: { draw: DrawNode } },
+  { id: "core.canvas.draw", elements: { draw: DrawNode } },
   { id: "core.uri", routes: { uri: UriRoute } },
 ];
 
@@ -123,7 +123,7 @@ describe("buildBrowserAssembly", () => {
     // the toolbar switches on, so there is no registration to attach and nothing a web half
     // could use to rename what the roster declared.
     expect(assembly.tools).toEqual([
-      { id: "draw", plugin: "core.draw", title: "Draw", toolbar: "canvas", enabled: true },
+      { id: "draw", plugin: "core.canvas.draw", title: "Draw", toolbar: "canvas", enabled: true },
     ]);
     expect(assembly.revision).toBe(3);
     expect(assembly.roster).toHaveLength(3);
@@ -144,7 +144,7 @@ describe("buildBrowserAssembly", () => {
     });
     expect(assembly.elements.get("draw")?.Component).toBeNull();
     expect(assembly.tools[0]?.title).toBe("Draw");
-    expect(assembly.pluginTitle("core.draw")).toBe("Drawing");
+    expect(assembly.pluginTitle("core.canvas.draw")).toBe("Drawing");
   });
 
   test("only installer-selected hardening selects the stable worker panel", () => {
@@ -208,7 +208,7 @@ describe("buildBrowserAssembly", () => {
       enabled: false,
     });
     // And the title survives, because that is what the placeholder prints.
-    expect(assembly.pluginTitle("core.draw")).toBe("Drawing");
+    expect(assembly.pluginTitle("core.canvas.draw")).toBe("Drawing");
   });
 
   test("the projection channels take their plugin's roster state", () => {

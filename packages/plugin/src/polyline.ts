@@ -2,7 +2,7 @@
  * POLYLINE GEOMETRY: the one derivation of a flat `[x0, y0, x1, y1, …]` coordinate list into
  * the two SVG strings a browser needs to paint it, plus the extents both of those rest on.
  *
- * It was written twice — `core.canvas`'s stroke module and `core.draw`'s renderer each carried
+ * It was written twice — `core.canvas`'s stroke module and `core.canvas.draw`'s renderer each carried
  * a byte-for-byte equivalent copy, because sibling plugins may not import each other
  * (REGISTRY.md §Foundation, `verify:axioms` S2) and no shared shelf held the math. The copy in
  * the renderer justified itself with a comment citing a floor-import restriction that never
@@ -20,7 +20,7 @@
  *   Both halves of every such payload are already reachable only through the engine's element
  *   host, so the geometry cannot sit below it.
  *
- *   NEUTRALITY, which is the criterion that decided the NAME. "Stroke" is `core.draw`'s domain
+ *   NEUTRALITY, which is the criterion that decided the NAME. "Stroke" is `core.canvas.draw`'s domain
  *   noun (REGISTRY.md §Lexicon: "one freehand ink record") and the pillar whose verdict is "it
  *   names no plugin" may not learn it — the element schema deliberately unlearned `draw` for
  *   the same reason. A POLYLINE is not a stroke: it is a coordinate sequence, and this module

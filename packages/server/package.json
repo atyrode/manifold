@@ -13,7 +13,6 @@
     "@manifold-plugin/commands": "workspace:*",
     "@manifold-plugin/compositions": "workspace:*",
     "@manifold-plugin/debug": "workspace:*",
-    "@manifold-plugin/draw": "workspace:*",
     "@manifold-plugin/events": "workspace:*",
     "@manifold-plugin/keys": "workspace:*",
     "@manifold-plugin/machines": "workspace:*",

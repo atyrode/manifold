@@ -1,7 +1,8 @@
 import { useProjection } from "@manifold/plugin/hooks";
 import { Cluster } from "@manifold/ui";
 import { useMemo } from "react";
-import { CANVAS_TOOLS, type CanvasTool } from "./canvas-tool.ts";
+import { CANVAS_TOOLS } from "./canvas-tool.ts";
+import type { CanvasTool } from "./contract.ts";
 
 interface CanvasToolbarProps {
   readonly tool: CanvasTool;
@@ -18,7 +19,7 @@ interface ToolbarItem {
  * itself. Every button comes from the one tool registry the engine builds from the roster;
  * this ref contributes no literal naming any tool, including its own two. `select` and
  * `text` are `core.canvas`'s manifest rows, so they arrive through exactly the door
- * `core.draw`'s tool arrives through, and disabling `core.draw` removes its button live with
+ * `core.canvas.draw`'s tool arrives through, and disabling `core.canvas.draw` removes its button live with
  * no reload (R3).
  *
  * The only judgement left here is ORDER, which is this ref's to make: the canvas's own

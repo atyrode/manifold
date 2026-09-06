@@ -694,7 +694,7 @@ describe("the residual carve-out and the purge verb", () => {
 
   test("a purge report accounts for every target, zeros included", () => {
     const report = PluginPurgeResultSchema.parse({
-      id: "core.draw",
+      id: "core.canvas.draw",
       removed: { storage: 3, elements: 0, ownership: 1 },
     });
     expect(report.removed.elements).toBe(0);
@@ -706,7 +706,7 @@ describe("the residual carve-out and the purge verb", () => {
       { storage: -1, elements: 0, ownership: 0 },
     ]) {
       expect(
-        PluginPurgeResultSchema.safeParse({ id: "core.draw", removed }).success,
+        PluginPurgeResultSchema.safeParse({ id: "core.canvas.draw", removed }).success,
         JSON.stringify(removed),
       ).toBe(false);
     }
