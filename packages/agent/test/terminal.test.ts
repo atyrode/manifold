@@ -288,8 +288,11 @@ test("kill terminates the PTY and resolves exited; dispose is idempotent", async
   await h.waitUntil(() => h.outputs.length > 0);
   const exit = await h.terminal.kill();
   expect(h.terminal.alive).toBe(false);
-  // Interactive shells ignore SIGTERM; the PTY close delivers SIGHUP → signal death → null.
-  expect(exit.exitCode).toBeNull();
+  // The promise kill returns IS `exited`: one exit, observed once, however it arrived.
+  expect(await h.terminal.exited).toBe(exit);
+  // No assertion on the code: kill sends SIGTERM (ignored by interactive shells) and closes
+  // the master, and whether the shell reads EOF first (exit 0) or takes SIGHUP first (signal,
+  // null) is the kernel's race, not this contract's. The code is forwarded as reported (#330).
   h.terminal.dispose();
   h.terminal.dispose(); // idempotent, no throw
 }, 12000);
