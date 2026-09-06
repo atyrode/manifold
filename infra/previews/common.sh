@@ -7,12 +7,13 @@ if [[ -f "$PREVIEW_HOME/env" ]]; then
     [[ -z "$line" || "$line" == \#* ]] && continue
     key=${line%%=*}; value=${line#*=}
     case "$key" in
-      PREVIEW_DOMAIN|PREVIEW_SEED|PREVIEW_DEV_CHECKOUT|PREVIEW_DEV_URL|PREVIEW_PORT_RANGE|PREVIEW_ROUTER_PORT|MANIFOLD_DEV_SPOKE_UNIT|MANIFOLD_DEV_SPOKE_BINARY|MANIFOLD_DEV_SPOKE_ENV) export "$key=$value" ;;
+      PREVIEW_DOMAIN|PREVIEW_SEED|PREVIEW_DEV_CHECKOUT|PREVIEW_DEV_URL|PREVIEW_DEV_PORT|PREVIEW_PORT_RANGE|PREVIEW_ROUTER_PORT|MANIFOLD_DEV_SPOKE_UNIT|MANIFOLD_DEV_SPOKE_BINARY|MANIFOLD_DEV_SPOKE_ENV) export "$key=$value" ;;
       *) printf 'preview: unknown env key: %s\n' "$key" >&2; exit 2 ;;
     esac
   done <"$PREVIEW_HOME/env"
 fi
 export PREVIEW_DEV_CHECKOUT="${PREVIEW_DEV_CHECKOUT:-$HOME/manifold-dev}"
+export PREVIEW_DEV_PORT="${PREVIEW_DEV_PORT:-7912}"
 export PREVIEW_PORT_RANGE="${PREVIEW_PORT_RANGE:-7920-7999}"
 export PREVIEW_ROUTER_PORT="${PREVIEW_ROUTER_PORT:-7900}"
 # Keep recent build layers without letting daily preview rebuilds consume the host disk.
@@ -23,9 +24,14 @@ fail() { log "$*" >&2; exit 2; }
 require_domain() {
   [[ ${PREVIEW_DOMAIN:-} =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || fail 'set PREVIEW_DOMAIN to a DNS domain'
   [[ $PREVIEW_ROUTER_PORT =~ ^[0-9]+$ ]] || fail 'invalid PREVIEW_ROUTER_PORT'
+  [[ $PREVIEW_DEV_PORT =~ ^[0-9]+$ ]] || fail 'invalid PREVIEW_DEV_PORT'
 }
 pr_name() { [[ $1 =~ ^[1-9][0-9]{0,9}$ ]] || fail 'expected a positive PR number'; }
 sha_arg() { [[ $1 =~ ^[0-9a-f]{7,40}$ ]] || fail 'expected a commit SHA'; }
+sha256_arg() { [[ $1 =~ ^[0-9a-f]{64}$ ]] || fail 'expected a sha256'; }
+# A published bundle's address: https, one host, a path of URL-safe characters and nothing a
+# shell or a log line could misread. The receiver splits on whitespace before this runs.
+plugin_url() { [[ $1 =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~%/+-]+\.manifold-plugin\.json$ ]] || fail 'expected an https URL ending in .manifold-plugin.json'; }
 identity() {
   local output key value
   output=$(cd "$1" && bun scripts/build-identity.ts --env)

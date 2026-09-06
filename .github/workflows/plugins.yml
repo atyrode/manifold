@@ -1,0 +1,89 @@
+# THE CI OF AN OUT-OF-TREE PLUGIN REPOSITORY (docs/PLUGINS.md §9 Verifying, issue #319), owned
+# here so atyrode/code and atyrode/babel each carry one `uses:` line rather than a copy of it.
+# The caller's `<plugins-dir>/MANIFOLD_REV` pins the manifold this kit is taken from, and the two
+# checkouts sit beside each other as `caller/` and `manifold/` — the sibling layout the author
+# repositories' pack.sh already resolves (`../../manifold` from `caller/<plugins-dir>/`). The
+# caller bumps MANIFOLD_REV and its `uses: …@<rev>` together, so the workflow and the kit it
+# runs are always the same commit of this repository.
+name: Plugins
+
+on:
+  workflow_call:
+    inputs:
+      plugins-dir:
+        description: Directory in the caller holding package.json, MANIFOLD_REV and the plugins
+        type: string
+        default: plugins
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the caller
+        uses: actions/checkout@v4
+        with:
+          path: caller
+
+      - name: Read the pinned manifold rev
+        id: rev
+        working-directory: caller/${{ inputs.plugins-dir }}
+        run: |
+          rev="$(tr -d '[:space:]' < MANIFOLD_REV)"
+          [ -n "$rev" ] || { echo "MANIFOLD_REV is empty"; exit 1; }
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Check out manifold at that rev
+        uses: actions/checkout@v4
+        with:
+          repository: atyrode/manifold
+          ref: ${{ steps.rev.outputs.rev }}
+          path: manifold
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+
+      - name: Cache bun's download store
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('manifold/bun.lock', format('caller/{0}/bun.lock', inputs.plugins-dir)) }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Install manifold's dependencies
+        working-directory: manifold
+        run: bun install --frozen-lockfile
+
+      - name: Install the plugins' dependencies
+        working-directory: caller/${{ inputs.plugins-dir }}
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: caller/${{ inputs.plugins-dir }}
+        run: bun run check
+
+      - name: Unit tests
+        working-directory: caller/${{ inputs.plugins-dir }}
+        run: bun test
+
+      - name: Pack
+        working-directory: caller/${{ inputs.plugins-dir }}
+        run: bun run pack
+
+      - name: Verify against a real engine
+        # Spawns manifold's server from the sibling checkout, installs every packed bundle
+        # parents first, knocks on every door, uninstalls (packages/plugin-kit/src/verify.ts).
+        working-directory: caller/${{ inputs.plugins-dir }}
+        run: bun run verify
+
+      - name: Upload the bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifold-plugins
+          path: caller/${{ inputs.plugins-dir }}/dist/
+          if-no-files-found: error

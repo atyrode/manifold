@@ -4,7 +4,9 @@
  * The root export is the pure half: the vocabulary builders, the two error classes and every
  * public type. The runtimes live behind their own doors so a bundle carries only the half it
  * runs — `@manifold/plugin-kit/server` (`defineServerPlugin`), `@manifold/plugin-kit/web`
- * (`defineWebPlugin`) — and `pack` is the command that turns a directory into an artifact.
+ * (`defineWebPlugin`) — and the commands are `pack` (a directory to an artifact), `install` (an
+ * artifact onto a hub), `dev` (pack and install on every change) and `verify` (artifacts against
+ * a real spawned engine), each its own file under `src/` (issue #319).
  */
 export { HostCallError, IsolateSliceUnavailable } from "./errors.ts";
 export {

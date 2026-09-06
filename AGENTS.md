@@ -25,6 +25,9 @@ bun run release          # operator-invoked: freeze fragments, bump, tag, push, 
 bun run promote vX.Y.Z  # promote one published release to production; never a side effect of a release
 bun run dev:server     # server on :7777 (auto-spawns local machine agent)
 bun run dev:web        # vite on :5173, proxying to :7777
+bun run --cwd packages/plugin-kit dev|verify|install:bundle   # out-of-tree plugin loop, real-engine
+                       # check, install on a hub (docs/PLUGINS.md §9); the reusable CI is
+                       # .github/workflows/plugins.yml and the preview receiver's `plugin` verb
 
 bun run verify:convergence              # TWO real browsers, real pointer gestures, local
                        # throwaway server: asserts canvasA = sdkA = canonical = sdkB =
