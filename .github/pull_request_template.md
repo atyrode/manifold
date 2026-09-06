@@ -6,4 +6,5 @@ Closes #
 
 ## Fragment
 
-- [ ] Yes: changelog fragment added, or no: not user-visible.
+- [ ] `changes/<issue>-<slug>.md` added
+- [ ] not user-visible: none
