@@ -37,9 +37,18 @@ bun run verify:convergence              # TWO real browsers, real pointer gestur
 bun scripts/verify-public.ts <origin>   # public-origin gate: real browser (draw + canvas
                        # + embedded terminal), public WebSockets, two viewers on one
                        # session, session survival after all viewers leave, anonymous
-                       # denial. Localhost green is NOT evidence a public deployment
-                       # works — run this before claiming one does.
+                       # denial. Uses target-origin credentials, NOT production-to-preview
+                       # sign-in. Localhost green is NOT public-deployment evidence.
 ```
+
+For public incident verification, record three separate states: **source-fixed** (regression
+passes), **deployed** (`/healthz` on the exact affected origin identifies the intended build),
+and **runtime-verified** (the originally failing user path succeeds there). Before declaring
+an incident fixed or asking the operator to retry, verify that original path on that origin
+and build; a different preview or credential shortcut is not a substitute. For sign-in, follow
+the real production-to-preview browser flow and inspect its transient documents, not just the
+final workspace. Report the path exercised and any unexercised boundary. If deployment is held,
+say the operator's current origin remains broken; do not request blind retries.
 
 ## Issues and pull requests
 
@@ -328,6 +337,11 @@ the index is the generated `docs/decisions/README.md`.
   transition, a precedence rule, a real error — and delete it when the contract goes. Code that
   is neither tested nor documented is a defect, and the correct fix may be DELETION rather than
   a test: a test written to cover something nobody needs makes the unneeded thing permanent.
+  When processes have independent lifetimes, cover an old consumer surviving a new authority:
+  establish use before replacing authority state, keep the consumer alive, then exercise the
+  same boundary again, including invalid-input and authority-unavailable refusals. Fresh-start
+  success alone cannot prove this transition (preview identity key rotation, #332;
+  `docs/CONTRACTS.md` §Testability).
 - **Roster restraint.** The default distribution stays small and non-opinionated. A new core
   plugin needs the same justification discipline as a new pillar (`AXIOMS.md` §Foundation law):
   extending an existing seat beats adding a new one, and an opinionated feature belongs on the
