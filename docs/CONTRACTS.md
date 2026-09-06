@@ -172,6 +172,20 @@ and produces negative geometry that the commit path then rejects.
   one-writer rule is untouched: an authentication has no `door`, so it is not a trace, and
   `appendTrace`/`settleTrace` keep exactly the two callers `verify:trace` T1 permits.
 
+### Social-layer responsibilities (ADR 0015)
+
+There is no `core.social` seat. The five responsibilities redistributed by ADR 0015 §2
+belong to the existing owners and roadmap waves below, not to a new plugin in the default
+distribution. `AXIOMS.md` §Roadmap's Social-layer bullet summarizes this allocation.
+
+| Roadmap noun                   | Owner and delivery contract                                                                                                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| identity beyond a device grant | `Principal` and `Principal.origin` (ADR 0014) supply the landed identity shape; identity development follows #58 and ADR 0019's posture.                                          |
+| share-invitation signaling     | `core.access.mintShare` / `revokeShare` / `listShares` and the instance channel's `ticket_request` / `ticket` exchange (ADR 0014), already shipped.                               |
+| friends / contacts             | A local, asymmetric contacts ledger on `core.access`, keyed by `(origin, ref)` and granting no authority (ADR 0015 §3); a roadmap obligation, not a new seat.                      |
+| agent chat / DM                | The Notifications wave's durable addressed message (ADR 0015 §4); not an event, not a new plane, and not a separate chat seat.                                                  |
+| presence on a shared node      | `core.presence`, unchanged: guests participate on the host's session channel, so vantage and attendance already cross origins; ADR 0015 §5 records the separate consent question. |
+
 ### Production identity handoff to disposable previews (ADR 0027)
 
 Preview access is explicit bearer admission without moving the bearer. A preview configured with
@@ -265,11 +279,17 @@ With it, a node-scoped grant genuinely widens or narrows a LIVE credential — o
 ordinary dispatch, with no re-authentication, because authority is a per-request question and
 never cached into a session.
 
-**The owner key is synthesized, never stored.** A context with no token (`tokenId`/`grantId`
-`null`) is evaluated against a synthesized root grant (`manifold://`, `["*"]`, allow, subtree),
-so no `revokeGrant` can lock the owner out of their own workspace. Symmetrically,
-`AuthService.grant` refuses any `deny` row that would match the workspace owner at any node
-(`cannot deny the workspace owner`).
+**The owner key is synthesized, never stored.** An owner-principal context with no token
+(`tokenId`/`grantId` `null`) is evaluated against a synthesized root grant
+(`manifold://`, `["*"]`, allow, subtree), so no `revokeGrant` can lock the owner out of their
+own workspace. **The owner is undeniable by evaluation, not by a write-time veto:** the
+evaluator drops `deny` rows for the owner principal, including class denials. Class denials
+remain valid for other subjects. `AuthService.grant` refuses only a principal-specific
+`deny` naming the owner (`cannot deny the workspace owner`), rather than refusing every row
+that could match the owner. A token acting as the owner still references only its own
+token-bound grant row under the ceiling rule above; denying it is not attenuation — mint
+it narrower or revoke it. This is ADR 0011 §5's landed split, implemented by
+`AuthService.applicableRows` and `AuthService.grant` in `packages/server/src/auth.ts`.
 
 **Nothing above the seam moved.** `AuthContext.allows(cap, containerId)` keeps its signature and
 all 27 call sites; it maps `containerId` to `manifold://container/<id>` and asks the evaluator.
@@ -1675,11 +1695,25 @@ engaged is a socket role rather than a UI mode anyone has to learn.
 
 ### Scene sync (Yjs CRDT)
 
-- Each room holds one canonical `Y.Doc`. Its `elements` map contains strict portal, text,
-  and draw records from `@manifold/protocol` — the terminal element kind is RETIRED, so a
-  canvas holds furniture and REFERENCES only; a removed element is absent rather than
-  retained as a tombstone. Rendering order is (`zIndex`, `id`). `@manifold/scene` owns the
-  Yjs representation and is the only production module that imports Yjs directly.
+- Each room holds one canonical `Y.Doc`. Its `elements` map contains bounded
+  `SceneElementSchema` records from `@manifold/protocol`, not a closed union of element
+  types. A removed element is absent rather than retained as a tombstone. Rendering order
+  is (`zIndex`, `id`). `@manifold/scene` owns the Yjs representation and is the only
+  production module that imports Yjs directly.
+- **Element envelope and payload bounds** (`packages/protocol/src/elements.ts`; reasoning:
+  ADR 0013 §16). The required envelope fields are `id` (1–128 characters), `type`
+  (1–32 characters, not an enum), finite `x` and `y`, finite positive `width` and `height`,
+  and integer `zIndex`. Every other key is payload, stored flat beside the envelope rather
+  than nested under a `payload` key. An element may carry at most
+  `MAX_ELEMENT_PAYLOAD_KEYS` = **16** payload keys, each 1–`MAX_ELEMENT_PAYLOAD_KEY_LENGTH`
+  = **64** characters. Each value is a JSON scalar (string, finite number, boolean or null)
+  or a depth-one array of those scalars: no objects or nested arrays. Strings, including
+  array members, are bounded by `MAX_TEXT_LENGTH` = **20,000** characters; arrays by
+  `MAX_STROKE_POINT_VALUES` = **8,192** values. These are per-key/value bounds, not a
+  replacement for the document-update and full-document limits below. Unknown element
+  types round-trip under these bounds; a known type's payload must also satisfy its owner's
+  registered schema at the element-host/scene boundary. Plugin payload schemas belong to
+  element registrations, never inert manifests.
 - The SDK applies edits optimistically with `client.transact(tx => ...)`. Field patches are
   independent CRDT writes, text content is a nested `Y.Text`, and one local undo manager
   tracks local create/patch/text/remove transactions. Consumers project the SDK's
@@ -1701,8 +1735,10 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   lineage fence: the SDK drops queued old-lineage document updates, replaces its `Y.Doc`,
   and emits `scene_reset` so held nested types are discarded. `resync_request {}` asks for
   the current full state; convergence does not depend on detecting contiguous revisions.
-- **Container discipline.** A container row carries `discipline: "canvas" | "composition"`; both
-  disciplines share the room/doc machinery, and the two are lenses on ONE container object.
+- **Container discipline.** A container row carries an open, bounded discipline id declared
+  through `contributes.disciplines`, not a closed protocol union. The distribution ships
+  `canvas` and `composition`; they share the room/doc machinery as lenses on ONE container
+  object.
   A composition stores its tile tree in the doc's `layout` map
   (`LAYOUT_KEY`): tiles are splits (`dir` row/column, parallel `ratios`/`children`,
   `ref` null) or leaves whose `ref` is `{ kind:"terminal", terminalId }`,
