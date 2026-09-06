@@ -589,7 +589,9 @@ describe("the waterfall's own precedence", () => {
       where.root,
     );
     expect(where.auth.effectiveCaps(where.subject, node).has("machines:mint")).toBe(true);
-    expect(where.auth.effectiveCaps(where.subject, "manifold://machine/m2").has("machines:mint")).toBe(false);
+    expect(
+      where.auth.effectiveCaps(where.subject, "manifold://machine/m2").has("machines:mint"),
+    ).toBe(false);
     expect(where.auth.effectiveCaps(where.subject, "manifold://").has("machines:mint")).toBe(false);
     where.auth.grant(
       { principal, node, caps: ["machines:mint"], effect: "deny", reach: "node" },
