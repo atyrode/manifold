@@ -54,15 +54,16 @@ const VERIFY_NAME = `verify-${crypto.randomUUID()}`;
 const TEARDOWN_STEP = "verify principal revoked on teardown";
 
 /** One dispatch through the action door as the owner: the result, or the denial as an error. */
-async function act(name: string, args: unknown): Promise<unknown> {
+async function act(name: string, args: unknown, resourceId?: string): Promise<unknown> {
+  const operation = resourceId === undefined ? name : `${name} (${resourceId})`;
   const res = await fetch(`${origin}/api/actions/${name}`, {
     method: "POST",
     headers: httpHeaders,
     body: JSON.stringify(args),
   });
-  if (!res.ok) throw new Error(`${name} failed: ${res.status}`);
+  if (!res.ok) throw new Error(`${operation} failed: ${res.status}`);
   const outcome = ActionOutcomeSchema.parse(await res.json());
-  if (!outcome.ok) throw new Error(`${name} refused: ${outcome.denial.message}`);
+  if (!outcome.ok) throw new Error(`${operation} refused: ${outcome.denial.message}`);
   return outcome.result;
 }
 
@@ -125,7 +126,9 @@ async function revokeVerifyPrincipal(): Promise<string> {
   await step("verification terminals removed", async () => {
     const terminals = await listOwnedTerminals(ids);
     const results = await Promise.allSettled(
-      terminals.map((terminal) => act("core.terminals.kill", { terminalId: terminal.id })),
+      terminals.map((terminal) =>
+        act("core.terminals.kill", { terminalId: terminal.id }, terminal.id),
+      ),
     );
     const failures = results.filter((result) => result.status === "rejected");
     if (failures.length > 0) {
@@ -141,7 +144,7 @@ async function revokeVerifyPrincipal(): Promise<string> {
   });
   const revocations = await Promise.allSettled(
     ids.map(async (principalId) =>
-      RevokeResultSchema.parse(await act("core.access.revoke", { principalId })),
+      RevokeResultSchema.parse(await act("core.access.revoke", { principalId }, principalId)),
     ),
   );
   let revoked = 0;
@@ -156,12 +159,16 @@ async function revokeVerifyPrincipal(): Promise<string> {
       `failed to revoke ${failures.length} verification identity(s)`,
     );
   }
-  const live = (await listCredentials()).filter(
-    (row) => ids.includes(row.principal.id) && row.sessions.length > 0,
+  const live = (await listCredentials()).filter((row) =>
+    row.sessions.some(
+      (credential) =>
+        ids.includes(row.principal.id) ||
+        (credential.mintedBy !== undefined && ids.includes(credential.mintedBy)),
+    ),
   );
   if (live.length > 0) {
     throw new Error(
-      `${String(live.length)} '${VERIFY_NAME}' principal(s) still hold live credentials`,
+      `verification credentials remain for principal(s): ${live.map((row) => row.principal.id).join(", ")}`,
     );
   }
   return `${String(revoked)} credential(s) revoked for principal ${ids.join(", ")}`;
@@ -180,7 +187,14 @@ async function step(name: string, run: () => Promise<string>): Promise<void> {
     results.push({ name, ok: true, detail });
     console.log(`PASS  ${name}${detail === "" ? "" : ` — ${detail}`}`);
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+    const detail =
+      error instanceof AggregateError
+        ? `${error.message}: ${error.errors
+            .map((cause: unknown) => (cause instanceof Error ? cause.message : String(cause)))
+            .join("; ")}`
+        : error instanceof Error
+          ? error.message
+          : String(error);
     results.push({ name, ok: false, detail });
     console.log(`FAIL  ${name} — ${detail}`);
   }
@@ -423,7 +437,10 @@ try {
   // the production origin, and neither may the principal the gate minted — both run on
   // success, failure, and throw alike. The browser goes first so the grant it holds is
   // never in use when its token dies.
-  await browser.close().catch(() => console.log("WARN  evt=verify_browser_close_failed"));
+  await step("verification browser closed", async () => {
+    await browser.close();
+    return "browser closed";
+  });
   await step("verification container removed", cleanupContainer);
   await step(TEARDOWN_STEP, revokeVerifyPrincipal);
 }

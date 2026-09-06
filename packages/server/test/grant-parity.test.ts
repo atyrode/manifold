@@ -190,6 +190,7 @@ CREATE TABLE containers(id TEXT PRIMARY KEY, name TEXT, created_at INTEGER, sort
 CREATE TABLE tokens(id TEXT PRIMARY KEY, hash TEXT UNIQUE, principal_id TEXT, caps TEXT,
   container_id TEXT, created_at INTEGER, revoked_at INTEGER, minted_by TEXT);
 CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER);
+CREATE TABLE terminals(id TEXT PRIMARY KEY, agent_principal_id TEXT, status TEXT);
 CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER,
   principal_id TEXT, type TEXT, payload TEXT);
 CREATE TABLE shares(id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, container_id TEXT NOT NULL,
