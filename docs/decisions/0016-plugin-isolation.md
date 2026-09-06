@@ -447,3 +447,129 @@ or supervision library evaluated by name against a hand-rolled one, per ADR 0010
 be recorded here before code is written; or `ShadowRealm` reaches Stage 4 with engine
 implementations, which would change §1's browser answer; or the component model lands standardized
 async imports, which is the one development that would make a WASM runner worth re-measuring.
+
+## Addendum 2026-09-06
+
+This closes the evaluation gap identified in [#127's 2026-09-05 triage](https://github.com/atyrode/manifold/issues/127).
+Stage 1 has shipped (`CHANGELOG.md` 0.7.0); this is a retrospective comparison, not a claim that
+the missing evaluation preceded its code. No dependency is adopted and no ratified rule changes.
+The normative contract is `docs/CONTRACTS.md` §Hardened plugins, including ADR 0025's later
+choice of hardening rather than mandatory isolation. The comparison here concerns that runner,
+not the in-realm loader #256 is to supply.
+
+### The runner being compared
+
+- **Browser:** `packages/web/src/isolate/worker-host.ts` fetches the installed `web.js` with the
+  page's bearer and starts a module Worker from its bytes as a Blob; the bearer is not sent to
+  the Worker. `WorkerRegistry` actually keys workers by `(pluginId, containerId)` within a host
+  gate, shares one across mounted panel instances for that pair, and terminates it after the last
+  lease's grace period. Logic executes off the page's thread, without its DOM or live host
+  objects. Schema-checked frames carry named host calls and closed component trees;
+  `vocabulary.tsx` paints those trees in the host. Worker-wide faults terminate that Worker and
+  reach its panels, not the server roster. These are concrete benefits a replacement must retain,
+  not a claim of a browser memory quota or an implemented browser execution deadline.
+- **Server:** `packages/server/src/isolate/ipc.ts` starts one Bun child process per installed
+  server half with a minimal environment and JSON IPC. `supervisor.ts` supplies bounded round
+  trips, a kill path, a crash budget and idle eviction; `proxy-def.ts` serves the request's ctx
+  calls. A separate process is not an OS permission sandbox: the spawn shown here installs no
+  filesystem/network restriction or per-plugin memory ceiling. `--smol` is not such a ceiling.
+- **Loading:** `packages/plugin-kit/src/pack.ts` bundles each half with `Bun.build`, inlining the
+  kit and dependencies into self-contained files. The installed artifact is hash-pinned and
+  rechecked at boot (§Hardened plugins). There is no runtime package-resolution service to
+  replace. Nor does this runner put guest code in SES Compartments: withholding host handles
+  over RPC does not remove a Worker's ambient browser APIs or a Bun child's ambient OS APIs.
+
+### SES / Endo: in-isolate authority confinement
+
+[Hardened JavaScript's mechanisms and boundaries](https://hardenedjs.org/) support §7's existing
+conclusion: SES is a complement, not the runner. It would replace ordinary guest evaluation
+inside each Worker/process with a locked-down environment and a Compartment endowed only with
+the intended guest API. It would save implementing intrinsic taming, safe evaluators and
+capability confinement ourselves. Calling `lockdown()` before an ordinary module import is
+not enough: lockdown does not erase the initial global's powerful objects; code must actually
+execute in the Compartment, with module loading and endowments controlled.
+
+SES cannot replace the Worker's separate execution thread, externally invoked termination,
+or the server supervisor's process kill and crash/idle accounting. Compartments still share
+a thread and heap (§What each boundary actually costs); the host-rendered component vocabulary
+and request authority checks remain necessary. Conversely, ordinary Workers do not supply SES's
+intrinsic taming or ambient-authority confinement.
+
+**Verdict:** rejected as a replacement boundary; **not adopted as an additional layer, revisit
+when an in-isolate ambient-authority fence is proposed**, before writing its evaluator or
+endowment machinery. Invariant 8 then needs a pinned SES version, any Endo loader dependencies,
+measured bundle/startup/heap cost per isolate and compatibility evidence for the actual Bun and
+browser guest bundles. The earlier `ses@2.3.0` discussion is evidence, not an adoption or a
+current size measurement. No dependency cost is paid by this addendum.
+
+### LavaMoat: per-package supply-chain policy
+
+[LavaMoat's Node runtime](https://lavamoat.github.io/guides/lavamoat-node/) uses SES Compartments
+and a policy controlling each package's globals, built-ins and dependency access. Its
+[webpack integration](https://lavamoat.github.io/guides/webpack/) wraps modules and applies policy
+per package. This would replace unrestricted evaluation of dependencies inside a guest, not the
+Worker host or process supervisor, and would save writing package compartmentalization, policy
+generation and policy enforcement ourselves. Package policy is not manifold's per-request
+capability grant, artifact verification, or closed UI vocabulary; those remain separate duties.
+As a SES-based layer it cannot supply the Worker's separate thread or replace process termination.
+
+There is a concrete integration mismatch, not proof that LavaMoat could never work here:
+the shipped packer has already collapsed dependencies into a Bun bundle. Per-package enforcement
+would require preserving their boundaries through a supported build/loader, not applying policy
+to the flattened file and claiming its dependencies are separately confined. Upstream documents
+Node and webpack/Browserify integrations, not a demonstrated drop-in for this Bun packer and Blob
+Worker. The webpack guide also excludes Module Federation and calls the integration experimental.
+
+**Verdict: not adopted, revisit when a hardened plugin needs independently restricted npm
+dependencies and a supported packaging path can preserve those package boundaries.** Invariant 8
+would weigh SES plus the policy runtime, build integration, generated policies and overrides
+against the confinement code and maintenance saved. Bun IPC compatibility, Blob Worker loading,
+policy review ownership and measured per-bundle weight would need proof with pinned versions;
+this source review does not provide that adoption evidence. A generated policy is a review
+starting point, not proof that a malicious dependency deserves the authority it requests.
+
+### Module federation: runtime code sharing
+
+[Webpack's Module Federation model](https://webpack.js.org/concepts/module-federation/) loads
+remote modules and negotiates shared modules between builds; evaluation then executes module
+factories in the consuming runtime. It could replace self-contained packaging/loading with
+remote entries, chunk loading and shared dependency resolution. It would save building that
+machinery if independent runtime code sharing were needed, but it cannot replace the Worker's
+thread, termination or message-only host interface. Importing a remote component into the page
+would instead give it the page realm and bypass the hardened runner's no-DOM contract. Loading
+federated code inside a Worker could retain that boundary, but would still need the existing
+host protocol and an authenticated, hash-pinned path for every loaded chunk.
+
+**Verdict:** rejected as an isolation mechanism; **not adopted for loading, revisit when
+self-contained artifacts have a measured duplication cost or independently shared modules become
+a requirement.** Invariant 8 would then weigh the federation runtime and bundler integration,
+version negotiation and chunk verification against bytes actually saved. No such saving is
+established here; a remote loader adds machinery to a path that currently needs no runtime
+dependency resolver. Sharing a React runtime cannot make live React/DOM objects cross a Worker.
+
+### Import maps: module specifier resolution
+
+[Native import maps](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
+map module specifiers to URLs in documents; they do not apply to modules loaded into Workers or
+worklets. They could replace document-side specifier-resolution configuration, but the hardened
+runner loads a self-contained Blob module, not a document module graph. An import map provides
+neither a separate thread nor termination, authority confinement, or the runner's message
+validation and host-owned UI. Its integrity metadata does not turn resolution into isolation.
+
+**Verdict:** rejected as a replacement for this Worker loader/boundary; **not adopted, revisit
+when native Worker import maps are supported by the targeted browsers and the artifact contract
+actually needs an external module graph.** Native maps add no JavaScript runtime dependency;
+a shim or custom resolver would add one and need its own invariant-8 comparison, including
+authenticated loading and pins for that graph. This is not a reason to build a Worker import-map
+shim now, nor a verdict on document loading for an in-realm plugin.
+
+### No hand-rolled JavaScript sandbox
+
+The anti-goal in #127 remains explicit: **no hand-rolled JavaScript sandbox**. The runner uses
+platform Worker/process primitives plus manifold's protocol and supervision; those do not amount
+to a safe JavaScript evaluator. Deferring SES or LavaMoat does not authorize substituting a custom
+evaluator, global-object filter or package-policy engine. If those protections become required,
+the triggers above reopen the named libraries before implementation. Likewise, federation and
+import maps being loading tools rather than isolation boundaries does not discredit SES or
+LavaMoat's complementary role. This addendum closes the missing comparison, not the historical
+pre-code ordering gap, and claims no new sandbox guarantees for the shipped runner.
