@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.11.0] - 2026-09-06
+
+### Added
+
+- Installed plugins can now run in-realm with React and the full engine API, loading into joined browsers without a reload and returning when re-enabled. The installer can still choose the hardened runner, and the plugin manager names each row's choice. Bundles share the host's React and floor modules and record the versions they were built against. (#256, #352)
+
+### Changed
+
+- The design system is its own package: plugin authors import components, tokens and the layout algebra from `@manifold/ui`, the same package the shell and every core panel are drawn with, and installed React plugins receive it as a shared module. `@manifold/plugin/ui` is gone; the engine's browser mechanism (the tile tree, notices, view state, `keyCapLabel`) rides `@manifold/plugin/hooks`. (#240, #358)
+
 ## [0.10.1] - 2026-09-06
 
 ### Added
