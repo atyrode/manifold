@@ -2039,7 +2039,7 @@ the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` 
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
 4403 revoked, 4409 version, or 4003 admission refused (incumbent continuity mismatch or
 supersession damp). Version acceptance is the
-`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18, 19, 20, 21, 22, 23, 24}` (protocol/version.ts), NOT
+`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18, 19, 20, 21, 22, 23, 24, 25}` (protocol/version.ts), NOT
 strict equality: agents are long-lived and survive server deploys, so every compatible agent
 version stays accepted (session/browser joins remain strictly current). An unchanged agent wire
 adds the new version to the set; a strictly additive-optional change also adds it when every old
@@ -2192,7 +2192,7 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{18, 19, 20, 21, 22, 23, 24}` — its own wire, its own set, the
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{18, 19, 20, 21, 22, 23, 24, 25}` — its own wire, its own set, the
 same invariant-10 discipline the machine channel follows.
 
 Guest→host: `pong`, `ticket_request { requestId, principal }` — the guest's OWN principal
