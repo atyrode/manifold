@@ -122,6 +122,30 @@ and produces negative geometry that the commit path then rejects.
 
 ## Identity, tokens, capabilities
 
+The standing posture is **layer, never replace**, ratified by the operator on **2026-09-01**.
+Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.md).
+
+- The owner key MUST remain the bootstrap and break-glass credential. The localhost
+  single-operator path MUST work offline, in one command, without an external service,
+  DNS record or OAuth app registration. Any additional identity layer sits above that path,
+  never replaces it.
+- Agent credentials MUST remain non-interactive: machine enrollment tokens and agents'
+  per-principal bearer tokens MUST NOT require a human login flow. Owner-key rotation is a
+  file swap followed by interactive-browser re-bootstrap; it MUST NOT disturb enrolled
+  machines, whose credentials are independent (procedure: `docs/SELF-HOST.md`).
+- Principal and device inventory with credential revocation is a standing requirement, not
+  deferred to multi-human identity. The existing doors are `core.access.listCredentials`,
+  `core.access.revoke`, `core.machines.list` and `core.machines.revoke`; their admission,
+  disclosure and revocation contracts remain under §Plugins, actions, and the workspace layout.
+- Authenticating reverse proxies are a documented deployment mode, not a bundled identity
+  feature. They authenticate the edge, not distinct humans inside manifold.
+- OIDC is deferred until a **second human**, not a second browser, holds authority on an
+  operated instance. That layer MUST be a relying party in front of `createPrincipal`,
+  mapping an external subject to a principal without replacing the capability model or
+  removing the owner-key bypass. No OIDC implementation is owed before that trigger;
+  its dependency verdict belongs to its implementing ADR. First-party accounts and a
+  bundled identity provider are not part of this posture.
+
 - `Principal { id, kind: "human" | "agent", name, color, origin? }`. Stable; stored in SQLite.
 - Every request, and every CHANNEL on a session socket, acts as exactly one principal via
   bearer token; a connection carries one credential's channels, because the SDK pools by
@@ -147,10 +171,11 @@ and produces negative geometry that the commit path then rejects.
   tests are exempt.
 - **Expiry** (ADR 0019 §2, schema 15, v20). A token row carries `expires_at`; NULL means
   never, which is what every row written before schema 15 means and what nothing backfills.
-  An interactively minted credential gets `INTERACTIVE_TOKEN_TTL_MS` = **14 days**
-  (`packages/server/src/auth.ts`, with the reason for the number beside it). Enforced in
-  `authenticate` on the rung after revocation, refused `forbidden` with message **`expired`**.
-  `TokenGrant.expiresAt?` publishes it at the mint.
+  Ordinary human credentials get `INTERACTIVE_TOKEN_TTL_MS` = **14 days** from mint time,
+  not an idle timeout (`packages/server/src/auth.ts`). Preview-local human credentials instead
+  get `PREVIEW_IDENTITY_TOKEN_TTL_MS` = **15 minutes** (§Production identity handoff to
+  disposable previews below). Enforced in `authenticate` on the rung after revocation,
+  refused `forbidden` with message **`expired`**. `TokenGrant.expiresAt?` publishes it at the mint.
 - **The two named credential refusals** are the closed set `AUTH_REFUSALS`
   (`revoked`, `expired`), published under `identity.authRefusals` in `GET /api/protocol`. They
   travel verbatim: as the 4403 close reason on `/ws/session`, and as the `forbidden` message
