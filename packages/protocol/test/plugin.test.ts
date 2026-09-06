@@ -57,6 +57,15 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
 }
 
 describe("plugin manifest", () => {
+  test("a plugin id stops at one independently enabled part", () => {
+    expect(PluginManifestSchema.safeParse(manifest({ id: "acme.product.part" })).success).toBe(
+      true,
+    );
+    expect(
+      PluginManifestSchema.safeParse(manifest({ id: "acme.product.part.detail" })).success,
+    ).toBe(false);
+  });
+
   test("the contribution lists default to empty, so a manifest declares only what it adds", () => {
     const parsed = PluginManifestSchema.parse({
       id: "core.space",
