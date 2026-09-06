@@ -1,3 +1,4 @@
+import "./shared-registry.ts";
 import {
   OVERLAY_SLOTS,
   WORKSPACE_OVERLAY_SLOTS,
@@ -63,6 +64,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ComponentType,
   type ReactElement,
@@ -73,6 +75,7 @@ import { dispatchAction, type StoredIdentity } from "./api.ts";
 import { createRoomPipeRegistry, panelSessionHandle } from "./room-pipes.ts";
 import { ContainerErrorBoundary } from "./error-boundary.tsx";
 import { isolatedPanel } from "./isolate/index.ts";
+import { webModulePath } from "./isolate/worker-host.ts";
 import { FEED_TOPICS, SPACE_SET_LAYOUT_ACTION, WEB_PLUGIN_DEFS } from "./assembly.ts";
 
 /**
@@ -341,22 +344,16 @@ export function buildBrowserAssembly(
     titles.set(manifest.id, manifest.title);
     if (enabled) enabledIds.add(manifest.id);
 
-    /*
-      THE SECOND SOURCE OF PANEL COMPONENTS (ADR 0016 §1): an INSTALLED row — `install` on the
-      roster, `entry.web` in its manifest — declares its panels exactly as an in-tree plugin does,
-      and every one of them resolves to the engine's isolated panel, which mounts the id on the
-      plugin's worker. Nothing here names a plugin: the row's data selects the runner. An in-tree
-      def for the same id would be an assembly duplicate the server refuses before this runs, so
-      the `??` is precedence in name only.
-    */
-    const isolated = entry.install !== undefined && manifest.entry?.web !== undefined;
+    // Hardening is the installer's choice, never inferred from installation provenance.
+    const isolated = entry.install?.hardened === true && manifest.entry?.web !== undefined;
     for (const panel of manifest.contributes.panels) {
       panels.set(`${manifest.id}.${panel.id}`, {
         plugin: manifest.id,
         title: panel.title,
         arranges: panel.arranges,
-        Component:
-          def?.panels?.[panel.id] ?? (isolated ? isolatedPanel(manifest.id, panel.id) : null),
+        Component: isolated
+          ? isolatedPanel(manifest.id, panel.id)
+          : (def?.panels?.[panel.id] ?? null),
         enabled,
       });
     }
@@ -733,8 +730,69 @@ function EssentialRecovery({
  * turns them back on, so the offer has to come from the floor that composed it, before the
  * workspace paints (see {@link EssentialRecovery}).
  */
+interface LoadedWebPlugin {
+  readonly sha256: string;
+  readonly def: WebPluginDef;
+}
+
+/** Fetch authority stays in the header; module evaluation only sees a local Blob URL. */
+async function importWebPlugin(
+  id: string,
+  token: string,
+  signal: AbortSignal,
+): Promise<WebPluginDef> {
+  const response = await fetch(instanceUrl(webModulePath(id)), {
+    headers: { Authorization: `Bearer ${token}` },
+    signal,
+  });
+  if (!response.ok) throw new Error(`plugin module fetch failed (${response.status})`);
+  const url = URL.createObjectURL(new Blob([await response.text()], { type: "text/javascript" }));
+  try {
+    const module = (await import(/* @vite-ignore */ url)) as { default?: WebPluginDef };
+    if (module.default?.id !== id) throw new Error("plugin module default export has the wrong id");
+    return module.default;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 export function AssemblyProvider({ identity, children }: AssemblyProviderProps): ReactElement {
   const [state, setState] = useState<RosterState>(INITIAL_ROSTER);
+  const loaded = useRef(new Map<string, LoadedWebPlugin>());
+  const [loadedEpoch, setLoadedEpoch] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    const wanted = new Map(
+      state.roster
+        .filter(
+          (row) =>
+            row.enabled &&
+            row.install !== undefined &&
+            row.install.hardened !== true &&
+            row.install.refusal === undefined &&
+            row.manifest.entry?.web !== undefined,
+        )
+        .map((row) => [row.manifest.id, row.install!.sha256]),
+    );
+    for (const [id, held] of loaded.current) {
+      if (wanted.get(id) !== held.sha256) loaded.current.delete(id);
+    }
+    for (const [id, sha256] of wanted) {
+      if (loaded.current.has(id)) continue;
+      void importWebPlugin(id, identity.token, controller.signal).then(
+        (def) => {
+          if (controller.signal.aborted) return;
+          loaded.current.set(id, { sha256, def });
+          setLoadedEpoch((epoch) => epoch + 1);
+        },
+        () => {
+          // A browser-local import failure leaves this row's named missing-web placeholder.
+          if (!controller.signal.aborted) console.error("evt=plugin_module_import_failed", id);
+        },
+      );
+    }
+    return () => controller.abort();
+  }, [state.roster, identity.token]);
   const [overrides, setOverrides] = useState<Readonly<Record<string, string>>>({});
   /** Bumped to ask for a fresh read; the effect below is keyed on it. */
   const [overridesEpoch, setOverridesEpoch] = useState(0);
@@ -847,8 +905,26 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
   }, []);
 
   const assembly = useMemo(
-    () => buildBrowserAssembly(state.roster, state.revision, WEB_PLUGIN_DEFS, overrides, values),
-    [state, overrides, values],
+    () =>
+      buildBrowserAssembly(
+        state.roster,
+        state.revision,
+        [
+          ...WEB_PLUGIN_DEFS,
+          ...state.roster.flatMap((row) => {
+            const held = loaded.current.get(row.manifest.id);
+            return row.enabled &&
+              row.install?.hardened !== true &&
+              held?.sha256 === row.install?.sha256 &&
+              held !== undefined
+              ? [held.def]
+              : [];
+          }),
+        ],
+        overrides,
+        values,
+      ),
+    [state, overrides, values, loadedEpoch],
   );
 
   return (
