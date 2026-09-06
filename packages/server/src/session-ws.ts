@@ -222,8 +222,10 @@ export class SessionGateway {
     this.removeRevocationListener = auth.onRevoked((principalId, containerId) => {
       this.revokePrincipal(principalId, containerId);
     });
-    this.removeRosterListener = plugins.onRosterChange((roster) => {
-      const frame = JSON.stringify(CONNECTION_BODIES.plugins.parse({ type: "plugins", roster }));
+    this.removeRosterListener = plugins.onRosterChange((roster, developerMode) => {
+      const frame = JSON.stringify(
+        CONNECTION_BODIES.plugins.parse({ type: "plugins", roster, developerMode }),
+      );
       for (const connection of this.connections.values()) {
         if (!connection.closed) connection.socket.send(frame);
       }
@@ -257,7 +259,11 @@ export class SessionGateway {
      */
     socket.send(
       JSON.stringify(
-        CONNECTION_BODIES.plugins.parse({ type: "plugins", roster: this.plugins.roster() }),
+        CONNECTION_BODIES.plugins.parse({
+          type: "plugins",
+          roster: this.plugins.roster(),
+          developerMode: this.plugins.developerMode(),
+        }),
       ),
     );
   }

@@ -290,6 +290,12 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     to reach back, so it should not run before this process can be reached.
   */
   dialer.start();
+  /*
+    The unpacked directory's watch (ADR 0025 §4) starts here too: a rebuild it finds at start
+    installs through the same door a request would, so it runs once the socket serves rather
+    than delaying the first request behind a build.
+  */
+  const unwatchAuthored = plugins.watchAuthored();
   if (options.announce !== false) {
     // The pre-authed fragment is announce-key opt-in (MANIFOLD_ANNOUNCE_KEY=1,
     // dev/test only) so the owner key never enters persisted log streams;
@@ -306,6 +312,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       if (stopped) return;
       stopped = true;
       rooms.flushAll();
+      unwatchAuthored();
       sessions.shutdown();
       machines.shutdown();
       instances.shutdown();

@@ -6,7 +6,8 @@
     ".": "./src/index.ts",
     "./server": "./src/server.ts",
     "./web": "./src/web.ts",
-    "./ui": "./src/ui.ts"
+    "./ui": "./src/ui.ts",
+    "./pack": "./src/pack.ts"
   },
   "bin": {
     "manifold-pack": "./src/pack.ts",

@@ -1477,13 +1477,15 @@ describe("migration 19: contributed element refs", () => {
         .query<{ key: string; value: string }, []>("SELECT key, value FROM meta ORDER BY key")
         .all();
       // A direct retry must be a no-op even when the converted bytes are already present.
-      // Rewinding past 19 also rewinds 20's and 21's columns: `ADD COLUMN` is not re-runnable,
-      // and the retry under test is 19's, not a duplicate-column failure of a successor.
+      // Rewinding past 19 also rewinds 20's, 21's and 22's columns: `ADD COLUMN` is not
+      // re-runnable, and the retry under test is 19's, not a duplicate-column failure of a
+      // successor.
       db.exec("UPDATE meta SET value = '18' WHERE key = 'schema_version'");
       db.exec("ALTER TABLE machines DROP COLUMN owner_host_id");
       db.exec("ALTER TABLE machines DROP COLUMN draining");
       db.exec("ALTER TABLE plugin_installs DROP COLUMN hardened");
       db.exec("ALTER TABLE plugin_installs DROP COLUMN built_against");
+      db.exec("ALTER TABLE plugin_installs DROP COLUMN mode");
       db.close();
       const backup = new Database(`${path}.pre-v19.bak`, { strict: true });
       expect(

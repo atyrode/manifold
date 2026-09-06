@@ -5,7 +5,7 @@ import { migrateToCanonLexicon, migrateToElementRefs } from "./migrate-lexicon.t
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -522,6 +522,19 @@ ALTER TABLE plugin_installs ADD COLUMN hardened INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE plugin_installs ADD COLUMN built_against TEXT;
 UPDATE plugin_installs SET hardened = 1;
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '21');
+`,
+  /**
+   * Unpacked plugins (#257, ADR 0025 §4). `mode` records who packed an install's bytes:
+   * `'bundle'` is an artifact somebody handed to the install door, `'unpacked'` a directory
+   * under `<data>/authored/<id>/` the hub rebuilds itself. The DEFAULT is the wire default —
+   * absent on the roster means `bundle` — and every row present at upgrade was admitted
+   * through the door from an artifact, so the default IS the backfill and no UPDATE is owed.
+   *
+   * Plain SQL, no snapshot: one added column, reversible by one DROP.
+   */
+  22: `
+ALTER TABLE plugin_installs ADD COLUMN mode TEXT NOT NULL DEFAULT 'bundle';
+INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '22');
 `,
 };
 

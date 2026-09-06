@@ -123,6 +123,15 @@ async function build(
   return artifact.text();
 }
 
+/**
+ * The web half's entry: `web.tsx` when the author kept JSX in the entry itself (the authoring
+ * door's shape, docs/PLUGINS.md §10), else `web.ts`. One name per half otherwise.
+ */
+async function webEntry(pluginDir: string): Promise<string> {
+  const tsx = `${pluginDir}/web.tsx`;
+  return (await Bun.file(tsx).exists()) ? tsx : `${pluginDir}/web.ts`;
+}
+
 export async function packPlugin(
   pluginDir: string,
   outFile: string,
@@ -142,7 +151,7 @@ export async function packPlugin(
     files[PLUGIN_BUNDLE_SERVER_FILE] = Buffer.from(source, "utf8").toString("base64");
   }
   if (manifest.entry.web !== undefined) {
-    const source = await build(`${pluginDir}/web.ts`, "browser", plugins);
+    const source = await build(await webEntry(pluginDir), "browser", plugins);
     files[manifest.entry.web] = Buffer.from(source, "utf8").toString("base64");
   }
   const bundle: PluginBundle = PluginBundleSchema.parse({

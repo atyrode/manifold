@@ -31,6 +31,14 @@ import { sha256Hex, type PluginInstallRow } from "./stores.ts";
 
 /** Under the data dir: where a bare path source is accepted from (an operator's drop box). */
 export const PLUGIN_UPLOADS_DIR = "plugin-uploads";
+/**
+ * Under the data dir: `authored/<id>/` holds the files an unpacked plugin is built from and
+ * `authored/.build/<id>.manifold-plugin.json` is what the hub packed them into (ADR 0025 §4)
+ * — the second box a path source is accepted from, because the rebuild loop installs through
+ * the same door with the same reader as an operator's drop.
+ */
+export const AUTHORED_DIR = "authored";
+export const AUTHORED_BUILD_DIR = ".build";
 /** Under the data dir: `plugins/<id>/<sha256>.manifold-plugin.json` beside `plugins/<id>/<sha256>/`. */
 export const PLUGINS_DIR = "plugins";
 export const PLUGIN_BUNDLE_SUFFIX = ".manifold-plugin.json";
@@ -169,13 +177,16 @@ function readArtifactFile(request: ArtifactRequest): Uint8Array {
   }
   if (request.devPaths !== true) {
     const uploads = resolve(request.dataDir, PLUGIN_UPLOADS_DIR);
-    let box: string;
-    try {
-      box = realpathSync(uploads);
-    } catch {
-      box = uploads;
-    }
-    if (!path.startsWith(`${box}${sep}`)) {
+    const inside = [uploads, resolve(request.dataDir, AUTHORED_DIR)].some((box) => {
+      let real: string;
+      try {
+        real = realpathSync(box);
+      } catch {
+        real = box;
+      }
+      return path.startsWith(`${real}${sep}`);
+    });
+    if (!inside) {
       throw new InstallRefusal(
         "artifact_unreadable",
         `path sources are accepted only under ${uploads}${sep} (or with MANIFOLD_PLUGIN_DEV_PATHS=1)`,
