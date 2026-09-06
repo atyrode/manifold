@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { PROTOCOL_VERSION, ServerMessageSchema, type Principal } from "@manifold/protocol";
 import type { AuthContext } from "../src/auth.ts";
-import { SessionChannel, type RawSocket } from "../src/session-channel.ts";
+import { SessionChannel, serializeServerMessage, type RawSocket } from "../src/session-channel.ts";
 
 class StatusSocket implements RawSocket {
   bufferedAmount = 0;
@@ -111,6 +111,40 @@ describe("SessionChannel channel scope", () => {
       rev: 3,
       at: 7,
     });
+  });
+
+  test("disposing a membership discards stale init and data before its channel id is reused", () => {
+    const socket = new StatusSocket([]);
+    socket.bufferedAmount = 1;
+    const abandoned = peerFor(socket);
+    abandoned.send({
+      type: "init",
+      protocolVersion: PROTOCOL_VERSION,
+      epoch: "abandoned",
+      rev: 0,
+      doc: "AAA=",
+      self: abandoned.auth.principal,
+      selfConnId: abandoned.id,
+      selfCaps: ["*"],
+      attendance: [],
+      terminals: [],
+    });
+    abandoned.send({ type: "saved", rev: 1, at: 0 });
+
+    abandoned.dispose();
+    const replacement = peerFor(socket);
+    replacement.send({ type: "saved", rev: 2, at: 0 });
+    socket.bufferedAmount = 0;
+    abandoned.drain();
+    replacement.drain();
+    // A delayed producer holding the old membership must not write into its replacement.
+    expect(abandoned.sendSerialized(serializeServerMessage({ type: "saved", rev: 3, at: 0 }))).toBe(
+      false,
+    );
+    expect(socket.sent.map((frame) => ServerMessageSchema.parse(JSON.parse(frame)))).toEqual([
+      { type: "saved", ch: "c1", rev: 2, at: 0 },
+    ]);
+    expect(socket.closed).toBeNull();
   });
 
   test("closing a channel announces it and leaves the socket carrying its siblings", () => {

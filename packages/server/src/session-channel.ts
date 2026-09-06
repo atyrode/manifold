@@ -128,6 +128,14 @@ export class SessionChannel {
     this.sender.drain();
   }
 
+  /** Silently retires a membership and discards its queued frames, including init/resync. */
+  dispose(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.sender.stop();
+    this.onClosed(this);
+  }
+
   /**
    * Ends THIS channel and leaves the socket alone: the client hears `channel_closed`
    * with the same close-code vocabulary a socket close used to carry, and every other
@@ -138,9 +146,7 @@ export class SessionChannel {
     if (this.closed) return;
     const frame = serializeServerMessage({ type: "channel_closed", code, reason });
     this.socket.send(this.tag(frame.body));
-    this.closed = true;
-    this.sender.stop();
-    this.onClosed(this);
+    this.dispose();
   }
 
   /**

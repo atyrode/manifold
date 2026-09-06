@@ -381,16 +381,14 @@ export class SessionClient {
   connect(): Promise<void> {
     this.closeError = null;
     const { promise, resolve, reject } = Promise.withResolvers<void>();
-    const offInit = this.on("init", () => {
-      offInit();
-      offStatus();
-      resolve();
-    });
     const offStatus = this.on("status", (s: ConnectionStatus) => {
-      if (s === "closed") {
+      // Both init and resync establish state. A join send never resolves connect().
+      if (s === "open") {
         offStatus();
-        offInit();
-        reject(this.closeError ?? new Error("terminal closed before init"));
+        resolve();
+      } else if (s === "closed") {
+        offStatus();
+        reject(this.closeError ?? new Error("channel closed before initialization"));
       }
     });
     if (this.channel === null) this.attach();
@@ -464,8 +462,8 @@ export class SessionClient {
           this.channel = null;
           this.closeError = new Error(
             reason.trim() === ""
-              ? `terminal rejected with close code ${code}`
-              : `terminal rejected with close code ${code}: ${reason.trim()}`,
+              ? `channel closed with code ${code}`
+              : `channel closed with code ${code}: ${reason.trim()}`,
           );
           this.setStatus("closed");
         },

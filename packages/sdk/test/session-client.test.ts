@@ -250,19 +250,22 @@ describe("shared transport", () => {
    * Two rooms of one tab: same url, same token, same socket factory — which is exactly
    * what a canvas plus a portal portal looks like in the browser.
    */
-  function twoRooms(options: { reconnect?: boolean } = {}): MultiplexHarness {
+  function twoRooms(
+    options: { reconnect?: boolean; spectatorSibling?: boolean } = {},
+  ): MultiplexHarness {
     FakeSocket.instances = [];
     const factory = (url: string): WebSocket => new FakeSocket(url) as unknown as WebSocket;
-    const build = (containerId: string): SessionClient =>
+    const build = (containerId: string, spectator = false): SessionClient =>
       new SessionClient({
         url: "ws://test/ws/session",
         containerId,
         token: "tok",
         reconnect: options.reconnect ?? false,
+        spectator,
         webSocketFactory: factory,
       });
     const first = build("container1");
-    const second = build("container2");
+    const second = build("container2", options.spectatorSibling);
     const firstConnect = first.connect();
     const secondConnect = second.connect();
     const socket = FakeSocket.instances.at(-1);
@@ -349,6 +352,159 @@ describe("shared transport", () => {
       .parse(JSON.parse(socket.sent[before] ?? "{}"));
     expect(cursor).toMatchObject({ type: "cursor", ch: first.channelId });
 
+    first.close();
+    second.close();
+  });
+
+  /** Keep the shared TCP link alive while advancing channel deadlines deterministically. */
+  function keepPinging(socket: FakeSocket, milliseconds: number): void {
+    for (let elapsed = 0; elapsed < milliseconds; elapsed += 1_000) {
+      socket.receive({ type: "ping" });
+      vi.advanceTimersByTime(1_000);
+    }
+  }
+
+  test("missing channel init recovers while an initialized spectator keeps pinging", async () => {
+    vi.useFakeTimers();
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms({
+      reconnect: true,
+      spectatorSibling: true,
+    });
+    socket.open();
+    receiveOn(socket, second, initFor(second, "spectator", "in-b"));
+    await secondConnect;
+    first.requestResync(); // Durable intent must wait for actual state, not the join send.
+    keepPinging(socket, 10_000);
+    expect(first.status).toBe("reconnecting");
+    expect(first.epoch).toBe("");
+    expect(framesOfType(socket, "leave")).toEqual([{ type: "leave", ch: channelOf(first) }]);
+    expect(framesOfType(socket, "resync_request")).toEqual([]);
+
+    // State from the abandoned join during backoff cannot complete connect or cancel retry.
+    receiveOn(socket, first, initFor(first, "abandoned", "stale"));
+    expect(first.epoch).toBe("");
+    keepPinging(socket, 1_000);
+    expect(framesOfType(socket, "join").map((frame) => frame.ch)).toEqual([
+      channelOf(first),
+      channelOf(second),
+      channelOf(first),
+    ]);
+    receiveOn(socket, first, { ...initFor(first, "healed", "in-a"), type: "resync" });
+    await firstConnect;
+    expect(first.status).toBe("open");
+    expect(first.epoch).toBe("healed");
+    expect(framesOfType(socket, "resync_request")).toEqual([
+      { type: "resync_request", ch: channelOf(first) },
+    ]);
+    keepPinging(socket, 30_000);
+    expect(framesOfType(socket, "join")).toHaveLength(3);
+    expect(second.status).toBe("open");
+    expect(second.epoch).toBe("spectator");
+    expect(second.elements.has("in-b")).toBe(true);
+    expect(socket.closedWith).toBeNull();
+    expect(FakeSocket.instances).toHaveLength(1);
+    first.close();
+    second.close();
+  });
+
+  test("persistent missing init rejects after bounded attempts without resetting its sibling", async () => {
+    vi.useFakeTimers();
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms({ reconnect: true });
+    const failed = expect(firstConnect).rejects.toThrow("channel initialization timed out");
+    socket.open();
+    receiveOn(socket, second, initFor(second, "healthy", "in-b"));
+    await secondConnect;
+    keepPinging(socket, 40_000);
+    await failed;
+    expect(first.status).toBe("closed");
+    expect(first.channelId).toBeNull();
+    expect(
+      framesOfType(socket, "join").filter((frame) => frame.containerId === "container1"),
+    ).toHaveLength(3);
+    keepPinging(socket, 40_000);
+    expect(framesOfType(socket, "join")).toHaveLength(4);
+    expect(second.status).toBe("open");
+    expect(socket.closedWith).toBeNull();
+    second.close();
+  });
+
+  test("release cancels a pending init deadline and an already scheduled rejoin", async () => {
+    vi.useFakeTimers();
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms({ reconnect: true });
+    const failed = expect(firstConnect).rejects.toThrow("closed before initialization");
+    socket.open();
+    receiveOn(socket, second, initFor(second, "healthy", "in-b"));
+    await secondConnect;
+    first.close();
+    await failed;
+    keepPinging(socket, 20_000);
+    expect(framesOfType(socket, "join")).toHaveLength(2);
+    const reconnect = first.connect();
+    const stopped = expect(reconnect).rejects.toThrow("closed before initialization");
+    keepPinging(socket, 10_000);
+    expect(first.status).toBe("reconnecting");
+    first.close();
+    await stopped;
+    keepPinging(socket, 20_000);
+    expect(framesOfType(socket, "join")).toHaveLength(3);
+    expect(second.status).toBe("open");
+    second.close();
+  });
+
+  test("a channel refusal cancels init recovery rather than retrying the refusal", async () => {
+    vi.useFakeTimers();
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms({ reconnect: true });
+    const failed = expect(firstConnect).rejects.toThrow("container not found");
+    socket.open();
+    receiveOn(socket, second, initFor(second, "healthy", "in-b"));
+    await secondConnect;
+    keepPinging(socket, 10_000);
+    receiveOn(socket, first, {
+      type: "channel_closed",
+      code: 4404,
+      reason: "container not found",
+    });
+    await failed;
+    keepPinging(socket, 40_000);
+    expect(framesOfType(socket, "join")).toHaveLength(2);
+    expect(second.status).toBe("open");
+    second.close();
+  });
+
+  test("reconnect disabled bounds missing init without a retry", async () => {
+    vi.useFakeTimers();
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms();
+    const failed = expect(firstConnect).rejects.toThrow("channel initialization timed out");
+    socket.open();
+    receiveOn(socket, second, initFor(second, "healthy", "in-b"));
+    await secondConnect;
+    keepPinging(socket, 20_000);
+    await failed;
+    expect(first.status).toBe("closed");
+    expect(framesOfType(socket, "join")).toHaveLength(2);
+    expect(second.status).toBe("open");
+    second.close();
+  });
+
+  test("redial cancels a channel retry and its previous initialization deadline", async () => {
+    vi.useFakeTimers();
+    const { first, second, socket, firstConnect, secondConnect } = twoRooms({ reconnect: true });
+    socket.open();
+    receiveOn(socket, second, initFor(second, "healthy", "in-b"));
+    await secondConnect;
+    keepPinging(socket, 10_000);
+    const reconnected = first.connect();
+    const replacement = FakeSocket.instances.at(-1);
+    if (!replacement || replacement === socket) throw new Error("no replacement socket");
+    replacement.open();
+    receiveOn(replacement, first, initFor(first, "fresh", "in-a"));
+    receiveOn(replacement, second, initFor(second, "healthy", "in-b"));
+    await Promise.all([firstConnect, reconnected]);
+    keepPinging(replacement, 30_000);
+    expect(framesOfType(replacement, "join")).toHaveLength(2);
+    expect(framesOfType(replacement, "leave")).toEqual([]);
+    expect(FakeSocket.instances).toHaveLength(2);
+    expect(first.status).toBe("open");
     first.close();
     second.close();
   });
@@ -501,11 +657,8 @@ describe("shared transport", () => {
       reason: "container not found",
     });
 
-    // Identical shape to the socket-level rejection this replaced: a room that cannot be
-    // joined reports its close code, and the tab's other rooms never notice.
-    await expect(firstConnect).rejects.toThrow(
-      "terminal rejected with close code 4404: container not found",
-    );
+    // Report the server's code and reason, without prescribing the SDK's prose.
+    await expect(firstConnect).rejects.toThrow(/4404.*container not found/);
     receiveOn(socket, second, initFor(second, "e-b", "in-b"));
     await secondConnect;
     expect(second.status).toBe("open");

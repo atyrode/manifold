@@ -629,8 +629,8 @@ anybody.
   releases that one; naming the item by identity releases all of them. Nothing is destroyed,
   which is the whole difference from the park it replaced: there is no pool to move into
   because there is nowhere else to be.
-- **Reaping, and the ONE lifecycle predicate.** A terminal stops in exactly one of two ways,
-  and the whole difference is INTENT.
+- **Reaping, and the ONE removal path.** Explicit removal and successful natural exit
+  remove a terminal; nonzero and unknown natural exits retain evidence.
   - **KILLED** — somebody asked for it: `terminal_kill`, the action
     `core.terminals.kill { terminalId }`, or `core.space.removeTile { containerId, tileId }` on
     its last
@@ -641,16 +641,25 @@ anybody.
     nothing is left to report it on. The tile door is the one tile gesture that is NOT a
     placement (nothing accepts "nowhere" as a destination for a LEAF); a note's leaf is its
     only placement, so its element goes with it.
-  - **EXITED** — the PTY stopped on its own. That is INFORMATION, so nothing at all is
-    deleted: the row keeps its REAL exit code (`null` only when none was observed, e.g. an
-    agent-disconnected exit), its home keeps its leaf, and every portal onto that home keeps
-    rendering it until somebody kills it. Killing an already-exited terminal sweeps it exactly
-    like a running one — dismissing a dead terminal is the same verb, not a second path.
+  - **SUCCESSFUL EXIT** — the PTY stopped on its own with `exitCode === 0` (including shell
+    Ctrl+D). Operator-ratified 2026-09-06: it uses the SAME canonical removal as a kill —
+    every terminal leaf and row disappears for every viewer, its credential is revoked,
+    and an emptied home plus every reference to it retires. Other occupants of a shared
+    composition and references to that surviving composition remain. No retained exit row
+    or client-side hiding is involved.
+    The durable `terminal_exited` event records code zero after the removal sweep, with the
+    former home identity, so retiring an empty home does not erase the successful outcome.
+  - **ERROR OR UNKNOWN EXIT** — the PTY stopped with a nonzero code or `null`. Its row keeps
+    the REAL exit code (`null` only when none was observed), its home keeps its leaf, and
+    every portal keeps rendering it until somebody dismisses it. Its credential is revoked.
+    Dismissing it uses the same removal path as killing a running terminal.
 
-  The predicate is structural, not a stored flag: a killed terminal is gone before the
-  machine's `exited` frame can arrive, so that frame finds nothing and no third status can
-  propagate. An undeliverable kill (machine offline) still removes everything; the PTY that
-  outlived it is killed by `hello` reconciliation, which finds no row to adopt it against.
+  The predicate is structural, not a stored flag: a removed terminal is gone before any
+  duplicate or late `exited` frame arrives, so no row can be resurrected. Owner-admitted hello
+  reconciliation applies the same exit rule to replayed exits; an absent PTY has unknown
+  status and is retained with `null`, never treated as success. An undeliverable kill
+  (machine offline) still removes everything; a PTY that outlived it is killed by `hello`
+  reconciliation, which finds no row to adopt it against. Machine-owner admission is unchanged.
 
 - **Emptying and deletion.** A composition that just lost its last occupant retires: it is
   the DEPARTURE, not the emptiness, that retires a container, so a deliberately empty
@@ -1923,6 +1932,19 @@ Throttle state (cursor, gesture, resync cadence) is per channel because the cade
 enforces are per room, and Bun's drain callback flushes channels in rotation so one chatty
 room cannot monopolize the shared socket buffer.
 
+**Channel initialization.** Sending `join` does not initialize a channel. Only its
+`init` or `resync` satisfies the SDK's ten-second initialization deadline. A healthy
+sibling channel's heartbeats cannot extend that deadline. With reconnect enabled, a
+missing initialization leaves and rejoins only the affected channel using the existing
+backoff, retaining queued intent and leaving siblings alone. Three timed-out attempts
+end that channel with a named initialization failure; reconnect-disabled clients fail
+after one. Release, refusal and socket replacement cancel outstanding deadlines.
+
+Session diagnostics record connection/channel/container identifiers, join role,
+whether initialization was accepted for sending, elapsed join time and numeric socket
+close codes. They do not log credentials, join bodies or peer-supplied close text;
+`initQueued` is a send outcome, not proof that the browser rendered the view.
+
 **Spectators.** `spectator: true` joins a channel that WATCHES the room without occupying
 it (absent ≡ occupant) — the two members of `ChannelRole`. A portal's resting preview uses it:
 the portal IS a real
@@ -2298,17 +2320,18 @@ quiet-period delay without changing controller/preview authority or the terminal
   the home as `terminal_event { kind:"renamed", name }`, where every titlebar and index row picks
   it up without a refetch. Labels everywhere are `name ?? machine name`.
 - `output { terminalId, seq, data }` streams to all LIVE viewers; `terminal_event
-{ kind:"exited", exitCode }` on a PTY that stopped ON ITS OWN. Such a terminal stays listed
-  (status `exited`, real code) with its leaf and every portal onto its home intact, so the
-  exit code stays readable until somebody kills it. A KILL broadcasts no `exited` event: the
-  leaf and the portals vanish through the documents instead, which is how viewers learn the
-  terminal is gone rather than dead.
+{ kind:"exited", exitCode }` retains a PTY's nonzero or unknown natural exit. Such a terminal
+  stays listed (status `exited`, real code) with its leaf and portals intact until dismissed.
+  A successful natural exit (`exitCode === 0`) and an explicit kill instead share canonical
+  removal: no `exited` frame or retained row, and leaves and retired-home references vanish
+  through their persisted documents. The existing `terminal_killed` collection event
+  announces canonical removal, including successful natural exits.
 - `terminal_event { kind:"parked" }` keeps its pre-cutover kind name and now means exactly "this
   terminal left THIS room": it fires in the OLD home when a merge or an extraction re-homes
   the terminal, paired with `terminal_opened` carrying the new leaf in the new home, and
-  UNPAIRED when a kill reaps the terminal — it left every room. Clients drop the row from
-  their terminal listing on it, which is what makes a kill visible at once rather than at the
-  next resync. Nothing is parked anywhere — the frame is a departure notice, not a state.
+  UNPAIRED when canonical removal reaps the terminal — it left every room. Clients drop the
+  row from their terminal listing on it, making explicit kills and successful exits visible
+  at once rather than at resync. Nothing is parked anywhere: this is a departure notice.
 - Terminal ids are opaque. A terminal's placements are read from live containers (portal
   elements and tile leaves), never from the terminal row: one terminal can be referenced from
   many canvases at once, so no single `elementId` could describe it. Text and draw elements

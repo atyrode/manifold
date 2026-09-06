@@ -1239,8 +1239,15 @@ export function CanvasView({
   const terminals = projection.terminals;
   const createTerminal = useCallback(
     async (machine?: MachineSummary): Promise<void> => {
-      if (client.epoch === "") {
-        notify("Waiting for the canvas connection", { key: "new-terminal" });
+      if (client.status !== "open") {
+        notify(
+          client.status === "closed"
+            ? "Canvas connection failed. Reload to connect again."
+            : client.status === "reconnecting"
+              ? "Recovering the canvas connection"
+              : "Connecting to the canvas",
+          { key: "new-terminal" },
+        );
         return;
       }
       const facet = terminals !== null && terminals.enabled ? terminals.facet : null;

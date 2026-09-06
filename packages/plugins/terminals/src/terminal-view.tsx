@@ -62,6 +62,7 @@ export function TerminalView({
   onClose,
   onRestart,
   onExpand,
+  onEngage,
   onShrink,
   titlebarExtras,
   titlebarMiddle,
@@ -85,7 +86,11 @@ export function TerminalView({
   /** Post-replay fit/refresh, owned by the terminal effect and called from the socket effect. */
   const settleRef = useRef<(() => void) | null>(null);
   const focusedRef = useRef(false);
-  const [viewOnlyError, setViewOnlyError] = useState(false);
+  const [takeDenied, setTakeDenied] = useState<{
+    readonly client: TerminalRendererProps["client"];
+    readonly terminalId: string;
+  } | null>(null);
+  const pendingTakeRef = useRef<{ terminalId: string; elementId: string } | null>(null);
   const [fontState, setFontState] = useState<"loading" | "ready" | Error>("loading");
   const fontReady = fontState === "ready";
   const [, rerender] = useReducer((version: number) => version + 1, 0);
@@ -202,17 +207,19 @@ export function TerminalView({
   }, [active, fontReady, terminalReady]);
 
   useEffect(() => {
-    const refreshTerminal = (): void => {
-      if (client.terminals.get(terminalId)?.controllerId === client.self?.id) {
-        setViewOnlyError(false);
-      }
-      rerender();
-    };
+    const refreshTerminal = (): void => rerender();
     const offTerminals = client.on("terminals_changed", refreshTerminal);
     const offAttendance = client.on("attendance_changed", rerender);
+    const offError = client.on("error", (message) => {
+      if (message.code === "forbidden" && message.ref === terminalId) {
+        pendingTakeRef.current = null;
+        setTakeDenied({ client, terminalId });
+      }
+    });
     return () => {
       offTerminals();
       offAttendance();
+      offError();
     };
   }, [client, terminalId]);
 
@@ -256,7 +263,7 @@ export function TerminalView({
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: terminalFontPreferences.get(terminalId),
       theme: {
-        background: "#0b0d10",
+        background: getComputedStyle(container).getPropertyValue("--terminal-background").trim(),
         foreground: "#e6e9ef",
         cursor: "#f8f9fa",
         selectionBackground: "#364fc766",
@@ -431,15 +438,6 @@ export function TerminalView({
       }
     });
 
-    const offError = client.on("error", (message) => {
-      if (
-        message.code === "not_controller" &&
-        (message.ref === undefined || message.ref === terminalId)
-      ) {
-        setViewOnlyError(true);
-      }
-    });
-
     // A watched portal may receive browser focus before its occupant socket is ready.
     // Keep keystrokes off the spectator socket throughout that transition; host-owned
     // titlebar controls never lift this PTY input guard.
@@ -464,7 +462,6 @@ export function TerminalView({
       offSnapshot();
       offOutput();
       offTerminalEvent();
-      offError();
       offStatus();
       inputDisposable.dispose();
       client.detachTerminal(terminalId);
@@ -477,7 +474,47 @@ export function TerminalView({
     scheduleResizeRef.current?.();
   }, [isController]);
 
-  const showViewOnly = viewOnlyError && !isController;
+  const caps = client.selfCaps();
+  const canTake =
+    terminal?.status === "running" &&
+    offlineMachine === null &&
+    !isController &&
+    (caps.includes("*") || caps.includes("terminals:write")) &&
+    !(takeDenied?.client === client && takeDenied.terminalId === terminalId);
+  const showTakeControl = canTake && (!readOnly || onEngage !== undefined);
+
+  // The explicit gesture survives the portal's gapless spectator → occupant swap.
+  // A changed placement, ended engagement or refused join cancels it; only the
+  // promoted, initialized occupant may send the existing take action.
+  useEffect(() => {
+    const pending = pendingTakeRef.current;
+    if (pending === null) return;
+    if (
+      pending.terminalId !== terminalId ||
+      pending.elementId !== elementId ||
+      !active ||
+      !canTake
+    ) {
+      pendingTakeRef.current = null;
+      return;
+    }
+    if (readOnly || client.status !== "open") return;
+    pendingTakeRef.current = null;
+    client.takeTerminal(terminalId);
+    terminalRef.current?.focus();
+  }, [active, canTake, client, elementId, readOnly, terminalId]);
+
+  const handleTakeControl = (): void => {
+    if (!showTakeControl) return;
+    if (readOnly) {
+      pendingTakeRef.current = { terminalId, elementId };
+      onEngage?.();
+      return;
+    }
+    if (client.status !== "open") return;
+    client.takeTerminal(terminalId);
+    terminalRef.current?.focus();
+  };
 
   // The preview's input remains read-only even when its host permits titlebar placement
   // actions. Terminal focus traffic belongs to the occupant socket, never to its chrome.
@@ -616,6 +653,19 @@ export function TerminalView({
         closeClassName="terminal-ctl--close"
         extraActions={
           <>
+            {showTakeControl ? (
+              <button
+                type="button"
+                className="node-titlebar__ctl terminal-take-control"
+                data-action="core.terminals.take"
+                aria-label="Take control of terminal"
+                title="View-only — take control (or double-click terminal content)"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={handleTakeControl}
+              >
+                Take control
+              </button>
+            ) : null}
             <button
               type="button"
               className="node-titlebar__ctl"
@@ -653,7 +703,17 @@ export function TerminalView({
           </>
         }
       />
-      <div className="xterm-host" ref={containerRef} />
+      <div
+        className="xterm-host"
+        ref={containerRef}
+        data-action={showTakeControl ? "core.terminals.take" : undefined}
+        onDoubleClickCapture={handleTakeControl}
+        onDoubleClick={(event) => {
+          // Never preventDefault: a controller keeps xterm's word selection.
+          event.stopPropagation();
+          // xterm may consume the event before this bubble handler; takeover runs in capture.
+        }}
+      />
       {fontReady ? null : (
         <div
           className="terminal-font-status"
@@ -674,28 +734,6 @@ export function TerminalView({
         className={`terminal-idle-veil${active ? "" : " terminal-idle-veil--on"}`}
         aria-hidden="true"
       />
-      {/*
-        NOT a notice, so it does not become a notice: this is a MODE indicator. It
-        states a standing condition of this terminal ("your socket may not write
-        here") and it is the control that ends that condition, anchored to the
-        ref the condition applies to. A notice is a message about an event that
-        just happened and then stops being true; this stays true until clicked, and
-        in a canvas of many terminals it has to say WHICH terminal by sitting on it.
-      */}
-      {showViewOnly && !readOnly ? (
-        <button
-          className="view-only-ribbon"
-          type="button"
-          onClick={() => {
-            client.takeTerminal(terminalId);
-            // Hand focus straight back to the terminal: the whole point of
-            // taking control is to type, and the button click just stole focus.
-            terminalRef.current?.focus();
-          }}
-        >
-          view-only — click to take control
-        </button>
-      ) : null}
       {terminal?.status === "exited" || offlineMachine !== null ? (
         <Cover className="terminal-exited">
           <Stack gap="0.6rem" align="center">

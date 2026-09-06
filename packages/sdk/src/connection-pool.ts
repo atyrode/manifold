@@ -89,8 +89,8 @@ export interface ChannelSink {
   connectionFrame(body: ConnectionFrame): void;
   transportPhase(phase: TransportPhase): void;
   /**
-   * This channel is over. `terminal` means retrying cannot help (a 44xx refusal) — the
-   * handle reports the failure; otherwise the connection is already rejoining it.
+   * This channel is over. `terminal` means no automatic retry (a 44xx refusal or exhausted
+   * initialization deadline) — the handle reports failure; otherwise it is rejoining.
    */
   channelClosed(code: number, reason: string, terminal: boolean): void;
   /** The connection is gone for good; `error` is null for a deliberate close. */
@@ -112,7 +112,7 @@ export interface PooledChannel {
   readonly id: string;
   /** Diagnostics: identifies the connection this channel rides, for tests and logs. */
   readonly transportId: string;
-  /** Whether frames may go on the wire right now (socket open and this channel joined). */
+  /** Whether frames may go on the wire (socket open and this channel initialized). */
   isOpen(): boolean;
   send(body: ClientMessageBody): void;
   /**
@@ -145,6 +145,10 @@ const PONG_FRAME = JSON.stringify({ type: "pong" });
  * chooses is what bounds a long outage, and the base is what makes a blip invisible.
  */
 const RECONNECT_BASE_MS = 250;
+
+/** A live socket does not prove that any particular room received its initial state. */
+const CHANNEL_INIT_TIMEOUT_MS = 10_000;
+const CHANNEL_INIT_MAX_ATTEMPTS = 3;
 
 type ClassifiedFrame =
   | { kind: "message"; message: ServerMessage }
@@ -201,6 +205,9 @@ interface ChannelRecord {
   readonly prefix: string;
   /** Whether the server has this channel: joined on the wire, awaiting or holding init. */
   sent: boolean;
+  initialized: boolean;
+  initTimer: ReturnType<typeof setTimeout> | null;
+  initTimeouts: number;
   /**
    * Rejoin backoff for a channel the server dropped for a healable reason — the SAME skeleton
    * the socket itself reconnects on, per channel, because one dropped room heals while every
@@ -319,6 +326,9 @@ class PooledConnection {
       sink,
       prefix: `{"ch":"${id}",`,
       sent: false,
+      initialized: false,
+      initTimer: null,
+      initTimeouts: 0,
       rejoin: new ReconnectBackoff({
         baseMs: RECONNECT_BASE_MS,
         capMs: this.backoffCapMs,
@@ -343,7 +353,7 @@ class PooledConnection {
     return {
       id,
       transportId: this.id,
-      isOpen: () => this.socket?.readyState === 1 && record.sent,
+      isOpen: () => this.socket?.readyState === 1 && record.initialized,
       send: (body) => {
         this.sendBody(record, body);
       },
@@ -358,8 +368,34 @@ class PooledConnection {
   }
 
   private sendJoin(record: ChannelRecord): void {
+    const socket = this.socket;
+    if (record.sent || socket?.readyState !== 1) return;
+    record.rejoin.cancel();
     record.sent = true;
+    record.initialized = false;
+    const timer = setTimeout(() => {
+      if (record.initTimer !== timer || this.socket !== socket) return;
+      record.initTimer = null;
+      if (this.channels.get(record.id) !== record || !record.sent) return;
+      record.initTimeouts += 1;
+      // Join and leave are ordered synchronous server operations. Leave first: a second
+      // join on an occupied channel is a protocol error that would close every sibling.
+      this.write(record, { type: "leave" });
+      this.channelClosed(
+        record,
+        4008,
+        `channel initialization timed out after ${record.initTimeouts} attempt(s)`,
+        !this.reconnect || record.initTimeouts >= CHANNEL_INIT_MAX_ATTEMPTS,
+      );
+    }, CHANNEL_INIT_TIMEOUT_MS);
+    record.initTimer = timer;
     this.write(record, record.sink.joinBody());
+  }
+
+  private clearInit(record: ChannelRecord): void {
+    if (record.initTimer !== null) clearTimeout(record.initTimer);
+    record.initTimer = null;
+    record.initialized = false;
   }
 
   private sendBody(record: ChannelRecord, body: ClientMessageBody): void {
@@ -438,6 +474,7 @@ class PooledConnection {
     if (this.channels.get(record.id) !== record) return;
     this.channels.delete(record.id);
     record.rejoin.cancel();
+    this.clearInit(record);
     if (this.channels.size === 0) {
       // The last room left: closing the socket IS leaving everything, so a `leave` frame
       // here would be pure ceremony on a connection about to disappear.
@@ -461,6 +498,8 @@ class PooledConnection {
 
     const phase: TransportPhase = this.backoff.attempts === 0 ? "connecting" : "reconnecting";
     for (const record of this.channels.values()) {
+      this.clearInit(record);
+      record.rejoin.cancel();
       record.sent = false;
       record.sink.transportPhase(phase);
     }
@@ -513,7 +552,11 @@ class PooledConnection {
       if (this.socket !== socket) return; // superseded socket
       this.socket = null;
       this.liveness.clear();
-      for (const record of this.channels.values()) record.sent = false;
+      for (const record of this.channels.values()) {
+        record.sent = false;
+        this.clearInit(record);
+        record.rejoin.cancel();
+      }
 
       // 44xx codes are permanent terminal rejections. Retrying them cannot succeed without
       // changed credentials/input, whereas our own 4002 protocol-healing close must redial.
@@ -568,7 +611,12 @@ class PooledConnection {
     const record = this.channels.get(frame.ch);
     if (record === undefined) return; // a frame for a room this tab already released
     if (frame.type === "init" || frame.type === "resync") {
+      if (!record.sent) return; // late state for the join abandoned before backoff
+      this.clearInit(record);
+      record.initialized = true;
+      record.initTimeouts = 0;
       this.backoff.reset();
+      record.rejoin.cancel();
       record.rejoin.reset();
     }
     if (frame.type === "channel_closed") {
@@ -605,11 +653,18 @@ class PooledConnection {
    * queue, state past the transport ceiling — heals exactly as a socket close did, by
    * rejoining on backoff while every other room keeps streaming.
    */
-  private channelClosed(record: ChannelRecord, code: number, reason: string): void {
+  private channelClosed(
+    record: ChannelRecord,
+    code: number,
+    reason: string,
+    exhausted = false,
+  ): void {
     const terminal =
-      code !== MALFORMED_FRAME_CLOSE_CODE &&
-      code >= TERMINAL_CLOSE_CODE_MIN &&
-      code <= TERMINAL_CLOSE_CODE_MAX;
+      exhausted ||
+      (code !== MALFORMED_FRAME_CLOSE_CODE &&
+        code >= TERMINAL_CLOSE_CODE_MIN &&
+        code <= TERMINAL_CLOSE_CODE_MAX);
+    this.clearInit(record);
     record.sent = false;
     if (terminal) {
       this.channels.delete(record.id);
@@ -618,9 +673,9 @@ class PooledConnection {
       if (this.channels.size === 0) this.teardown(1000, null);
       return;
     }
-    record.sink.channelClosed(code, reason, false);
     if (record.rejoin.pending) return;
     record.rejoin.schedule();
+    record.sink.channelClosed(code, reason, false);
   }
 
   /**
@@ -643,6 +698,7 @@ class PooledConnection {
     this.onDead(this);
     for (const record of orphans) {
       record.rejoin.cancel();
+      this.clearInit(record);
       record.sink.transportClosed(error);
     }
   }

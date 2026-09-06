@@ -804,7 +804,7 @@ describe("machine admission and terminal continuity", () => {
     expect(legacy.closed?.code).toBe(4003);
     expect(fix.logger.events.map((event) => event.evt)).not.toContain("machine_superseded");
 
-    // The owner reattaches, reports t2 exited while it was unreachable, and is believed.
+    // The owner reattaches, reports t2 exited successfully while unreachable, and is believed.
     const original = fix.hello("original", {
       terminalHostId: "host-A",
       alive: ["t1"],
@@ -813,7 +813,7 @@ describe("machine admission and terminal continuity", () => {
     expect(original.closed).toBeNull();
     expect(fix.gateway.isOnline(fix.machineId)).toBe(true);
     expect(fix.status("t1")).toBe("running");
-    expect(fix.status("t2")).toBe("exited");
+    expect(fix.status("t2")).toBe("gone");
     fix.gateway.shutdown();
     fix.store.close();
   });
@@ -824,11 +824,11 @@ describe("machine admission and terminal continuity", () => {
     const partial = fix.hello("partial", { alive: ["t1"] });
     expect(partial.closed?.code).toBe(4003);
     expect(fix.status("t2")).toBe("running");
-    // Accounting for t2 as exited-while-offline is an account, and the exit is recorded.
+    // Accounting for t2 as successfully exited while offline permits its canonical removal.
     const complete = fix.hello("complete", { alive: ["t1"], exited: ["t2"] });
     expect(complete.closed).toBeNull();
     expect(fix.status("t1")).toBe("running");
-    expect(fix.status("t2")).toBe("exited");
+    expect(fix.status("t2")).toBe("gone");
     // A stray PTY the owner advertises alongside is its own, and is killed like before.
     const stray = fix.hello("stray", { alive: ["t1", "stray"] });
     expect(stray.closed).toBeNull();

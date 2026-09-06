@@ -274,9 +274,8 @@ describe("TerminalBroker controller lease", () => {
     expect(fixture.broker.listForContainer(fixture.container.id)).toEqual([]);
     expect(fixture.store.getTerminal(fixture.create.terminalId)).toBeNull();
     expect(fixture.store.getContainer(fixture.container.id)).toBeNull();
-    // And no EXIT is announced: an exit is what a terminal that stopped ON ITS OWN reports,
-    // and inventing one here is exactly the state this rule exists to forbid. What the home
-    // hears is the departure notice, which is what drops the row from every terminal listing.
+    // Removal reports departure, not retained error/unknown evidence. The departure notice
+    // drops the row from every terminal listing.
     expect(
       fixture.socket.messages().filter((message) => message.type === "terminal_event"),
     ).toEqual([{ type: "terminal_event", terminalId: fixture.create.terminalId, kind: "parked" }]);
@@ -541,6 +540,46 @@ describe("TerminalBroker lifecycle cleanup", () => {
     fixture.store.close();
   });
 
+  test("hello replays a successful exit once, revokes its credential, and cannot resurrect it", () => {
+    const fixture = brokerFixture();
+    const token = sessionToken(fixture.create);
+    const advertised = {
+      terminalId: fixture.create.terminalId,
+      cols: 80,
+      rows: 24,
+      seq: 0,
+      alive: false,
+      exitCode: 0,
+    };
+    // Another machine cannot claim the terminal or remove it through exit replay.
+    fixture.broker.reconcileMachineHello("not-the-owner", [advertised]);
+    fixture.broker.onExited("not-the-owner", fixture.create.terminalId, 0);
+    expect(fixture.store.getTerminal(fixture.create.terminalId)?.status).toBe("running");
+
+    fixture.broker.reconcileMachineHello(fixture.machine.machineId, [advertised]);
+    fixture.broker.reconcileMachineHello(fixture.machine.machineId, [advertised]);
+    fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, 0);
+    expect(fixture.store.getTerminal(fixture.create.terminalId)).toBeNull();
+    expect(fixture.store.getContainer(fixture.container.id)).toBeNull();
+    expect(fixture.broker.listForContainer(fixture.container.id)).toEqual([]);
+    expect(() => fixture.auth.authenticate(token)).toThrow(ServiceError);
+    expect(
+      fixture.store
+        .listEvents({ type: "terminal_exited", limit: 10 })
+        .map((event) => JSON.parse(event.payload)),
+    ).toEqual([
+      {
+        terminalId: fixture.create.terminalId,
+        machineId: fixture.machine.machineId,
+        exitCode: 0,
+      },
+    ]);
+    expect(
+      fixture.broker.adoptTerminal(fixture.machine.machineId, { ...advertised, alive: true }),
+    ).toBeFalse();
+    fixture.store.close();
+  });
+
   test("an exited terminal keeps its home leaf, so the prune leaves it alone", () => {
     const fixture = brokerFixture();
     const room = fixture.rooms.get(fixture.container.id);
@@ -548,12 +587,12 @@ describe("TerminalBroker lifecycle cleanup", () => {
     room.join(fixture.opener);
     fixture.socket.clear();
 
-    fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, 0);
+    fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, 3);
     expect(fixture.broker.listForContainer(fixture.container.id)).toMatchObject([
-      { id: fixture.create.terminalId, status: "exited", exitCode: 0 },
+      { id: fixture.create.terminalId, status: "exited", exitCode: 3 },
     ]);
 
-    // L2: nothing is deleted on exit. The leaf survives, so the exit code stays on screen
+    // L2: an error exit retains evidence. The leaf survives, so the exit code stays on screen
     // until somebody dismisses it, and the prune must not dismiss it for them.
     fixture.broker.pruneExitedUnhomedForContainer(fixture.container.id);
     expect(room.homesTerminal(fixture.create.terminalId)).toBeTrue();
@@ -565,7 +604,7 @@ describe("TerminalBroker lifecycle cleanup", () => {
 
   test("the prune collects an exited terminal whose home leaf is gone and retires the home", () => {
     const fixture = brokerFixture();
-    fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, 0);
+    fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, 3);
     const room = fixture.rooms.get(fixture.container.id);
     if (room === null) throw new Error("missing room");
 
@@ -603,7 +642,7 @@ describe("TerminalBroker lifecycle cleanup", () => {
       type: "terminal_take",
       terminalId: fixture.create.terminalId,
     });
-    fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, 0);
+    fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, 3);
     expect(fixture.rooms.introspect()).toHaveLength(0);
     fixture.store.close();
   });
@@ -612,7 +651,7 @@ describe("TerminalBroker lifecycle cleanup", () => {
 describe("TerminalBroker live stream and control contracts", () => {
   test("driving an exited terminal conflicts, but dismissing it is the kill it asked for", () => {
     const fixture = brokerFixture();
-    fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, 0);
+    fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, 3);
     fixture.socket.clear();
     fixture.machine.clear();
 

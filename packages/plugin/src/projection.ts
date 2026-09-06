@@ -129,6 +129,8 @@ export interface TerminalRendererProps {
   /** Stable placement id: a canvas element id, or a tile id inside a composition. */
   readonly elementId: string;
   readonly active: boolean;
+  /** Requests the host's occupant socket without itself taking the terminal lease. */
+  readonly onEngage?: () => void;
   readonly panelHighlighted: boolean;
   /** The terminal's machine as the wire publishes it; null before the first fetch resolves. */
   readonly machine: MachineSummary | null;

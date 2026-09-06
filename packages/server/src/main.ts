@@ -267,9 +267,13 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       drain(socket) {
         if (socket.data.endpoint === "session") sessions.drain(socket.data.id);
       },
-      close(socket) {
-        if (socket.data.endpoint === "session") sessions.close(socket.data.id);
-        else if (socket.data.endpoint === "machine") machines.close(socket.data.id);
+      close(socket, code) {
+        if (socket.data.endpoint === "session") {
+          // Peer-supplied close text can contain secrets; the numeric code is sufficient
+          // to correlate this transport with its join/init and liveness records.
+          logger.info("session_closed", { connectionId: socket.data.id, code });
+          sessions.close(socket.data.id);
+        } else if (socket.data.endpoint === "machine") machines.close(socket.data.id);
         else instances.close(socket.data.id);
       },
       maxPayloadLength: SESSION_TRANSPORT_PAYLOAD_BYTES,
