@@ -197,9 +197,16 @@ plugin() {
   container=$(cd "$PREVIEW_DEV_CHECKOUT" && MANIFOLD_DOMAIN="preview.$PREVIEW_DOMAIN" env -u MANIFOLD_OWNER_KEY docker compose ps -q manifold)
   [[ $container =~ ^[0-9a-f]{12,64}$ ]] || fail 'the integrated preview container is not running'
   log "installing $url on https://preview.$PREVIEW_DOMAIN"
-  # The kit from THIS (stable) checkout, against the dev stack's loopback port.
-  (cd "$here/../.." && bun packages/plugin-kit/src/install.ts "$url" --sha256 "$sha" \
-    --hub "http://127.0.0.1:$PREVIEW_DEV_PORT" --deliver "docker:$container")
+  # The kit from THIS (stable) checkout, against the dev stack's loopback port. The checkout is
+  # built inside Docker and has never needed node_modules on the host, so the verb installs the
+  # workspace first — frozen, quiet, a no-op once present; the whole workspace, because a
+  # `--filter` install does not link the workspace packages the kit imports — rather than
+  # depending on someone having run `bun install` here by hand (the first release install failed
+  # exactly there).
+  (cd "$here/../.." \
+    && bun install --frozen-lockfile --silent \
+    && bun packages/plugin-kit/src/install.ts "$url" --sha256 "$sha" \
+      --hub "http://127.0.0.1:$PREVIEW_DEV_PORT" --deliver "docker:$container")
 }
 case "${1:-}:$#" in
   up:3) up "$2" "$3" ;;
