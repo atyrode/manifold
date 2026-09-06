@@ -68,8 +68,6 @@ const CONCRETE_CAPS: readonly Exclude<Cap, "*">[] = CAPS.filter(
  * fire hardest on exactly the careful operator who keeps one tab open and touches it rarely.
  */
 export const INTERACTIVE_TOKEN_TTL_MS = 14 * 24 * 60 * 60 * 1000;
-/** Preview-local browser credentials are renewed through production and bound revocation drift. */
-export const PREVIEW_IDENTITY_TOKEN_TTL_MS = 15 * 60 * 1000;
 
 /**
  * HOW OFTEN THE OWNER PATH LEAVES A ROW — once an hour, at most (ADR 0019 §4).
@@ -98,7 +96,7 @@ export const OWNER_AUDIT_WINDOW_MS = 60 * 60 * 1000;
  * unexpiring credential, because an exemption a caller can select is not an exemption, it is
  * an opt-out.
  */
-type TokenExpiry = "interactive" | "preview" | "never";
+type TokenExpiry = "interactive" | "never";
 
 /**
  * ADR 0019 §2's exemption as code rather than as a comment.
@@ -651,11 +649,7 @@ export class AuthService {
       second clock read, so a token's life is exactly the declared span and not the span plus
       whatever happened between two calls to `now()`.
     */
-    const expiresAt =
-      expiry === "never"
-        ? null
-        : createdAt +
-          (expiry === "preview" ? PREVIEW_IDENTITY_TOKEN_TTL_MS : INTERACTIVE_TOKEN_TTL_MS);
+    const expiresAt = expiry === "never" ? null : createdAt + INTERACTIVE_TOKEN_TTL_MS;
     const grant: Grant | null =
       caps.length === 0
         ? null
@@ -752,7 +746,14 @@ export class AuthService {
       };
       this.store.createPrincipal(principal, this.runtime.now());
     }
-    const minted = this.persistToken(principal.id, claims.caps, null, principal.id, "preview");
+    /*
+      The SAME lifetime a production browser credential has (ADR 0028): a preview identity is
+      that credential re-homed, and a shorter lease only re-ran the production handoff under
+      the operator every quarter hour while sockets were fenced mid-work. Production revocation
+      still reaches a preview at once when the preview is opened or renewed; an already-open
+      one is bounded by this fortnight exactly as production's own browsers are.
+     */
+    const minted = this.persistToken(principal.id, claims.caps, null, principal.id, "interactive");
     this.store.addEvent(null, this.runtime.now(), principal.id, "preview_identity_accepted", {
       issuer: claims.issuer,
       sourcePrincipalId: claims.principal.id,

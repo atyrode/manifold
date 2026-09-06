@@ -53,6 +53,9 @@ Preview identity adds two opt-in server variables: `MANIFOLD_PREVIEW_DOMAIN` ena
 instance as an issuer for integrated and numbered hosts below that DNS name, while
 `MANIFOLD_IDENTITY_AUTHORITY` configures this instance as a relying preview. The signing key is
 generated at `<data>/preview-identity.key` with mode 0600; only its public half is served.
+Each preview callback fetches the authority's current public key with a three-second timeout;
+there is no process-lifetime key cache. Authority key rotation therefore does not require a
+preview restart. Missing, unavailable or invalid verification keys fail closed.
 
 Server startup log MUST include a single line `manifold ready url=<URL>`. With
 `MANIFOLD_ANNOUNCE_KEY=1` (dev/test opt-in: `dev:server`, testkit) the URL embeds the owner
@@ -238,10 +241,12 @@ equivalent. An unrestricted root remains `*`; a root affected by administered de
 other credential carry only their effective concrete capabilities at `manifold://`. Acceptance
 verifies issuer, audience, signature, browser-bound nonce, a positive lifetime of at most 60 seconds
 and assertion id, then deterministically maps `(issuer, sourcePrincipalId)` to a local principal
-with `origin: issuer` and mints a 15-minute preview-local token. The browser removes it at expiry
-and repeats the production check. Session sockets close `4403 expired` when their credential
-expires, so production revocation or grant changes reach an already-open preview within that lease
-and a new/renewed preview sees them immediately. Assertions are single-use within a server process
+with `origin: issuer` and mints a preview-local token with the ordinary interactive lifetime
+(fourteen days, the same as a production browser credential; ADR 0028). The browser removes it at
+expiry and repeats the production check. Session sockets close `4403 expired` when their credential
+expires. A new or renewed preview sees production revocation or grant changes immediately; an
+already-open preview is bounded by its own credential's expiry or by revoking that preview
+principal's sessions on the preview. Assertions are single-use within a server process
 and too short-lived to survive a useful restart replay window.
 
 `preview_identity_issued` and `preview_identity_accepted` are ordinary journal events carrying
@@ -2642,6 +2647,26 @@ build target and nothing branches on which instance is being looked at.
 
 ## Testability (agent-facing)
 
+- **Preview admission coverage** (#332): `packages/server/test/preview-identity.test.ts`
+  exercises two real servers, an initial handoff, then authority key rotation while the same
+  preview survives. It proves that the new assertion grants usable preview-local access,
+  tampered signatures are refused, and authority outage fails closed. This is HTTP-level
+  coverage, not browser navigation or first-paint coverage. The earlier stable-authority
+  handoff coverage missed the old-preview/new-key transition.
+- **Dark authentication first paint** (#334): `scripts/verify-pwa.ts` holds real shell,
+  callback, finalize and refusal documents with page scripts disabled and external assets
+  blocked, under a light system preference. It samples rendered background pixels and checks
+  text/link contrast. The signed handoff uses two throwaway local instances; this browser
+  coverage complements the rotation regression but does not claim a public deployment works.
+- **Public browser coverage**: `scripts/verify-public.ts` enters through the target origin's
+  owner-key fragment and local human first-visit gate, then exercises its workspace, embedded
+  terminal and public WebSockets; it also checks anonymous denial. It does NOT exercise
+  production-identity admission to a preview or inspect
+  transient sign-in documents. Passing it cannot close a production-to-preview sign-in incident.
+  That deployed path requires a real-browser check from production identity through preview
+  callback/finalize to the workspace, including transient-document visual inspection, on the
+  exact affected origin and build (AGENTS.md §Commands). Keep production secrets out of PR CI
+  and preview environments; isolated scripted admission checks use throwaway authorities.
 - **Debug probe** (`packages/plugin/src/debug-probe.ts`, reached by plugin code through
   `@manifold/plugin/hooks`): when `localStorage["manifold:debug"]
 === "1"`, the active container renderer installs `window.__manifold` — READ-ONLY snapshot

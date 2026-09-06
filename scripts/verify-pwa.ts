@@ -18,6 +18,8 @@
  *   3. PORTABLE. A lens served by instance A is pointed at instance B with one query
  *      parameter, and then talks to B — HTTP and WebSocket both, cross-origin, with A's
  *      credential untouched beside B's. Two servers, one bundle, no second client.
+ *   4. DARK FIRST PAINT. With scripts disabled and external assets blocked, the shell and
+ *      real preview callback, finalize and refusal documents still paint a dark canvas.
  *
  * Self-contained: builds the web bundle to a temp dir (or shares the orchestrator's),
  * spawns TWO servers with separate data dirs, cleans up. Env: MANIFOLD_CHROMIUM.
@@ -25,10 +27,13 @@
 import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inflateSync } from "node:zlib";
 import {
   ActionOutcomeSchema,
   ContainerResponseSchema,
   PROTOCOL_VERSION,
+  PreviewIdentityAssertionSchema,
+  PreviewIdentityNonceResponseSchema,
 } from "../packages/protocol/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser } from "./cdp.ts";
@@ -42,6 +47,8 @@ const portA = reserveLoopbackPort();
 const portB = reserveLoopbackPort();
 const originA = `http://127.0.0.1:${String(portA)}`;
 const originB = `http://127.0.0.1:${String(portB)}`;
+const authorityOrigin = `http://localhost:${String(portA)}`;
+const previewOrigin = `http://preview.localhost:${String(portB)}`;
 
 /*
   Both instances serve a COPY of the build. This gate is the one that simulates a deploy — it
@@ -60,6 +67,9 @@ function spawnInstance(port: number, dataDir: string): Bun.Subprocess {
       MANIFOLD_DATA_DIR: dataDir,
       MANIFOLD_WEB_DIST: serveDir,
       MANIFOLD_SPAWN_AGENT: "0",
+      MANIFOLD_PUBLIC_URL: port === portA ? authorityOrigin : previewOrigin,
+      MANIFOLD_PREVIEW_DOMAIN: "localhost",
+      MANIFOLD_IDENTITY_AUTHORITY: port === portA ? "" : authorityOrigin,
     },
     // The boot line prints the owner-key URL: never inherit it into gate logs (invariant 6).
     stdout: "ignore",
@@ -108,6 +118,60 @@ async function seenTestId(driver: Browser, testid: string): Promise<boolean> {
   );
 }
 
+/** Sample the actual canvas, not transparent computed html/body backgrounds or theme metadata. */
+async function darkCanvas(driver: Browser, label: string): Promise<void> {
+  const shot = await driver.send("Page.captureScreenshot", {
+    format: "png",
+    clip: { x: 700, y: 500, width: 1, height: 1, scale: 1 },
+  });
+  const png = Buffer.from(String(shot.result?.["data"] ?? ""), "base64");
+  // Chromium emits an 8-bit RGB(A) PNG. A one-pixel, one-row image has no preceding
+  // samples, so every PNG row filter leaves its first RGB bytes unchanged.
+  if (
+    png.readUInt32BE(16) !== 1 ||
+    png.readUInt32BE(20) !== 1 ||
+    png[24] !== 8 ||
+    (png[25] !== 2 && png[25] !== 6)
+  ) {
+    throw new Error("first-paint screenshot is not a one-pixel RGB(A) PNG");
+  }
+  const chunks: Buffer[] = [];
+  for (let offset = 8; offset < png.length;) {
+    const length = png.readUInt32BE(offset);
+    if (png.toString("ascii", offset + 4, offset + 8) === "IDAT") {
+      chunks.push(png.subarray(offset + 8, offset + 8 + length));
+    }
+    offset += length + 12;
+  }
+  const rgb = [...inflateSync(Buffer.concat(chunks)).subarray(1, 4)];
+  assert(
+    `${label} paints dark before scripts/styles`,
+    rgb.every((value) => value < 64),
+    rgb.join(","),
+  );
+  const colors = await driver.evaluate<string[]>(
+    "[document.body, ...document.querySelectorAll('h1, p, a')].map(node => getComputedStyle(node).color)",
+  );
+  const luminance = (channels: number[]): number =>
+    channels.reduce((sum, value, index) => {
+      const s = value / 255;
+      return (
+        sum +
+        (s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4) * [0.2126, 0.7152, 0.0722][index]!
+      );
+    }, 0);
+  const background = luminance(rgb);
+  assert(
+    `${label} keeps text and links readable`,
+    colors.every((color) => {
+      const foreground = luminance((color.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number));
+      return (
+        (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05) >= 4.5
+      );
+    }),
+  );
+}
+
 try {
   for (const [origin, label] of [
     [originA, "instance A"],
@@ -136,6 +200,20 @@ try {
   browser = new Browser();
   await browser.launch();
   const driver = browser;
+
+  console.log("\n0. dark first paint (light system preference, no scripts or external assets)");
+  await driver.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-color-scheme", value: "light" }],
+  });
+  await driver.send("Network.enable", {});
+  await driver.send("Network.setBlockedURLs", { urls: ["*/assets/*", "*/src/*"] });
+  await driver.send("Emulation.setScriptExecutionDisabled", { value: true });
+  await driver.goto(`${originA}/`);
+  await darkCanvas(driver, "SPA entry");
+  await driver.goto(`${authorityOrigin}/auth/preview`);
+  await darkCanvas(driver, "production sign-in shell");
+  await driver.send("Emulation.setScriptExecutionDisabled", { value: false });
+  await driver.send("Network.setBlockedURLs", { urls: [] });
 
   // ───────────────────────────────────────────────────────────── 1. installability
   console.log("\n1. installability");
@@ -194,6 +272,79 @@ try {
        .then((hit) => hit !== undefined)`,
   );
   assert("the cached generation holds the shell document", cachedShell);
+
+  // A real issuer and preview share the existing two servers. Only page scripts are
+  // disabled: DevTools can still start the nonce and submit the normal browser form.
+  // Holding BEFORE navigation preserves each transient response without editing its
+  // HTML, CSP, cookies or redirects. Manual navigation then advances the same browser.
+  const authStatuses = new Map<string, number>();
+  driver.on("Network.responseReceived", (params) => {
+    if (params["type"] !== "Document") return;
+    const response = params["response"] as { url: string; status: number };
+    if (response.url.startsWith(`${previewOrigin}/auth/preview/`)) {
+      authStatuses.set(new URL(response.url).pathname, response.status);
+    }
+  });
+  const productionToken = await driver.evaluate<string>(
+    "JSON.parse(localStorage.getItem('manifold.identity')).token",
+  );
+  await driver.send("Network.setBlockedURLs", { urls: ["*/assets/*", "*/src/*"] });
+  await driver.send("Emulation.setScriptExecutionDisabled", { value: true });
+  await driver.goto(`${previewOrigin}/auth/preview/finalize`);
+  assert(
+    "uninitiated finalize shows a refusal",
+    authStatuses.get("/auth/preview/finalize") === 403,
+  );
+  await darkCanvas(driver, "preview refusal");
+  await driver.goto(`${previewOrigin}/`);
+  const nonce = PreviewIdentityNonceResponseSchema.parse(
+    await driver.evaluate<unknown>(
+      "fetch('/api/identity/preview-start', {method: 'POST'}).then(response => response.json())",
+    ),
+  ).nonce;
+  const issued = await fetch(`${originA}/api/identity/preview-assertion`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${productionToken}`, "content-type": "application/json" },
+    body: JSON.stringify({ audience: previewOrigin, nonce }),
+  });
+  const { assertion } = PreviewIdentityAssertionSchema.parse(await issued.json());
+  await driver.evaluate(`(() => {
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/auth/preview/callback';
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = 'assertion';
+    input.value = ${JSON.stringify(assertion)};
+    form.append(input);
+    document.body.append(form);
+    form.submit();
+  })()`);
+  await until(
+    () =>
+      driver.evaluate<boolean>(
+        "location.pathname === '/auth/preview/callback' && document.readyState === 'complete'",
+      ),
+    10_000,
+    "the real preview form callback",
+  );
+  assert(
+    "the callback stages the signed admission",
+    authStatuses.get("/auth/preview/callback") === 200,
+  );
+  await darkCanvas(driver, "preview staging");
+  authStatuses.delete("/auth/preview/finalize");
+  await driver.goto(`${previewOrigin}/auth/preview/finalize`);
+  assert(
+    "the same browser finalizes the staged admission",
+    authStatuses.get("/auth/preview/finalize") === 200,
+  );
+  await darkCanvas(driver, "preview finalize");
+  await driver.goto(`${previewOrigin}/`);
+  await darkCanvas(driver, "preview SPA entry");
+  await driver.send("Emulation.setScriptExecutionDisabled", { value: false });
+  await driver.send("Network.setBlockedURLs", { urls: [] });
+  await driver.goto(`${originA}/`);
 
   // ─────────────────────────────────────────── 2. a deploy cannot pin a browser
   console.log("\n2. deploy and handover");
