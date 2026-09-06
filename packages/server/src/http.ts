@@ -302,7 +302,6 @@ export class HttpApp {
     string,
     { readonly nonce: string; readonly expiresAt: number }
   >();
-  private previewIdentityPublicKeyPromise: Promise<string> | null = null;
 
   /**
    * Handles a request without allowing auth secrets to enter logs or errors.
@@ -838,18 +837,15 @@ export class HttpApp {
     if (authority === null) {
       throw new RequestError("not_found", "production preview identity is not configured");
     }
-    this.previewIdentityPublicKeyPromise ??= (async () => {
+    // The authority can rotate independently of this preview's server lifetime.
+    try {
       const response = await fetch(`${authority}/api/identity/preview-key`, {
         headers: { accept: "application/json" },
         signal: AbortSignal.timeout(3_000),
       });
       if (!response.ok) throw new Error(`identity authority returned ${response.status}`);
       return PreviewIdentityKeySchema.parse(await response.json()).publicKey;
-    })();
-    try {
-      return await this.previewIdentityPublicKeyPromise;
     } catch {
-      this.previewIdentityPublicKeyPromise = null;
       throw new RequestError("conflict", "production identity authority is unavailable");
     }
   }

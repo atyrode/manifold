@@ -53,6 +53,9 @@ Preview identity adds two opt-in server variables: `MANIFOLD_PREVIEW_DOMAIN` ena
 instance as an issuer for integrated and numbered hosts below that DNS name, while
 `MANIFOLD_IDENTITY_AUTHORITY` configures this instance as a relying preview. The signing key is
 generated at `<data>/preview-identity.key` with mode 0600; only its public half is served.
+Each preview callback fetches the authority's current public key with a three-second timeout;
+there is no process-lifetime key cache. Authority key rotation therefore does not require a
+preview restart. Missing, unavailable or invalid verification keys fail closed.
 
 Server startup log MUST include a single line `manifold ready url=<URL>`. With
 `MANIFOLD_ANNOUNCE_KEY=1` (dev/test opt-in: `dev:server`, testkit) the URL embeds the owner
