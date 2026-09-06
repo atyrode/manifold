@@ -113,6 +113,14 @@ async function build(
     format: "esm",
     minify: false,
     plugins,
+    /*
+      A bundle is a PRODUCTION artifact whatever the packing process's NODE_ENV: the shell it
+      runs in is a production React whose shared `react/jsx-dev-runtime` exports `jsxDEV` as
+      undefined, so a member compiled with the development JSX transform (Bun's default when
+      NODE_ENV is unset — the hub's own case when it packs an unpacked directory) throws
+      `jsxDEV is not a function` at first render. This define selects `react/jsx-runtime`.
+    */
+    define: { "process.env.NODE_ENV": '"production"' },
   });
   if (!result.success || result.outputs.length === 0) {
     const detail = result.logs.map((log) => log.message).join("; ");

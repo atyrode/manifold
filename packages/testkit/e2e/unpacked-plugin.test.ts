@@ -170,6 +170,10 @@ test("a plugin authored on the instance reaches a joined view, remounts on edit,
     expect(firstModule).toContain("hello");
     expect(firstModule).toContain('Symbol.for("manifold.shared")');
     expect(firstModule).not.toMatch(/function useState\(/);
+    // The PRODUCTION transform whatever the hub's NODE_ENV: the shell's shared
+    // `react/jsx-dev-runtime` is a production React's, whose `jsxDEV` is undefined.
+    expect(firstModule).toContain('["react/jsx-runtime"]');
+    expect(firstModule).not.toContain("react/jsx-dev-runtime");
 
     // An edit: one file, the row replaced live at a new pin — the frame the shell remounts on.
     const second = await authored(server, { "web.tsx": webTsx("bonjour") });
