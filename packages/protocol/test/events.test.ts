@@ -21,6 +21,7 @@ import {
   eventVocabulary,
   formatManifoldUri,
   parseManifoldUri,
+  topicMatches,
   type ManifoldRef,
   type ServerEvent,
 } from "@manifold/protocol";
@@ -28,6 +29,7 @@ import {
 /** One of every address form, so a claim about topics is a claim about ALL of them. */
 const TOPICS: readonly ManifoldRef[] = [
   { kind: "terminal", terminalId: "t1" },
+  { kind: "machine", machineId: "m1" },
   { kind: "container", containerId: "c1" },
   { kind: "element", containerId: "c1", elementId: "e1" },
   { kind: "tile", containerId: "c1", tileId: "root" },
@@ -260,6 +262,13 @@ describe("the event frame", () => {
 });
 
 describe("topics are the addressing algebra, not a second grammar", () => {
+  test("a machine topic matches itself, not another machine or a container subtree", () => {
+    const machine: ManifoldRef = { kind: "machine", machineId: "m1" };
+    expect(topicMatches(machine, machine)).toBe(true);
+    expect(topicMatches(machine, { kind: "machine", machineId: "m2" })).toBe(false);
+    expect(topicMatches({ kind: "container", containerId: "m1" }, machine)).toBe(false);
+  });
+
   test("every topic is bijective with the URI a human pastes", () => {
     /*
       The property the plane rests on (ADR 0012 §2): the struct the frame carries and the

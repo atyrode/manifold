@@ -262,6 +262,10 @@ describe("the machine revocation door (ADR 0019 §3)", () => {
     // THE ROW SURVIVES ITS CREDENTIAL: withdrawing and forgetting are different verbs.
     expect(fix.store.getMachine(enrolled.machine.id)?.name).toBe("spoke");
     expect(fix.store.revokedMachineIds().has(enrolled.machine.id)).toBe(true);
+    const trace = fix.store.listEvents({ type: "trace", limit: 1 })[0];
+    expect(trace?.door).toBe("core.machines.revoke");
+    expect(trace?.outcome).toBe("ok");
+    expect(trace?.targets).toEqual([`manifold://machine/${enrolled.machine.id}`]);
     fix.store.close();
   });
 

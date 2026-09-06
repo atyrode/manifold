@@ -1220,8 +1220,8 @@ Five rules, and they are all mechanized:
 - **`ctx.emit` takes a REF, never a string.** `formatManifoldUri` is the one joiner in the tree,
   so the address is compiler-joined and there is no topic-string namespace to police.
 - **Address the most specific node that exists both before AND after the event.** When the
-  subject is being created or destroyed, or has no `manifold://` form at all (a machine, a
-  folder), that node is your COLLECTION: `manifold://plugin/<your id>`, built from your own
+  subject is being created or destroyed, or has no `manifold://` form at all (a folder),
+  that node is your COLLECTION: `manifold://plugin/<your id>`, built from your own
   manifest id so the address and the declaration cannot drift. The engine refuses an emission on
   another plugin's node. A collection topic is also what makes a client's whole feed one
   subscription instead of one per row.
@@ -1229,6 +1229,10 @@ Five rules, and they are all mechanized:
   successfully and its declared result schema parsed. A handler that mutates and then refuses,
   throws, or fails its own schema publishes nothing — refusals are not events, and you do not
   have to remember that.
+- **In-realm `ctx.target(ref)` names a trace target without emitting news.** Use it when
+  the action has no event-plane announcement, as `core.machines.revoke` does. Emission refs
+  already enter the same deduplicated target set; do not name them twice. Targets survive
+  handler refusals and failures in the trace, while events still publish only on success.
 - **The payload is a hint, not the state.** Flat and bounded, the same discipline an element
   payload carries. It exists so a subscriber can decide whether to re-read, not so it can skip
   the read; a receiver acting on shipped state instead of reading it back through a door is how a

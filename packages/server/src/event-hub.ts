@@ -142,6 +142,7 @@ function topicContainer(ref: ManifoldRef, terminals: TerminalHomePort): string |
       return ref.containerId;
     case "terminal":
       return terminals.placedTerminal(ref.terminalId)?.containerId ?? null;
+    case "machine":
     case "principal":
     case "plugin":
     case "action":

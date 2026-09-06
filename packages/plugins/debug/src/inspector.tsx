@@ -387,6 +387,8 @@ function addressLabel(uri: string): string {
       return `element ${ref.elementId}`;
     case "tile":
       return `tile ${ref.tileId}`;
+    case "machine":
+      return `machine ${ref.machineId}`;
     case "principal":
       return `principal ${ref.principalId}`;
     case "plugin":

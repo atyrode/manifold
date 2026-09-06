@@ -1340,6 +1340,7 @@ export function CanvasView({
             }
             return;
           }
+          case "machine":
           case "principal":
           case "plugin":
           case "action":

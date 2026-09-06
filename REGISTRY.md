@@ -1182,7 +1182,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "machine",
-      "means": "one enrolled host whose terminal host owns PTYs and whose separate agent transport dials the hub; a legacy agent combines these lifetimes",
+      "means": "one enrolled host whose terminal host owns PTYs and whose separate agent transport dials the hub; addressed by manifold://machine/<machineId> directly under the workspace root; a legacy agent combines these lifetimes",
       "banned": [],
       "allow": []
     },
