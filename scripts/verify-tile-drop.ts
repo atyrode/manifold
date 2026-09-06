@@ -527,7 +527,15 @@ try {
     browser,
     `.index-item[data-tree-id="${termC.containerId}"]`,
     ".tile-area",
-    [{ selector: `[data-tile-id="${leafB}"]`, fx: 0.5, fy: 0.85, holdMs: 250, movingTileId: leafB }],
+    [
+      {
+        selector: `[data-tile-id="${leafB}"]`,
+        fx: 0.5,
+        fy: 0.85,
+        holdMs: 250,
+        movingTileId: leafB,
+      },
+    ],
     true,
     `() => {
       const pane = document.querySelector('[data-tile-id="${leafB}"] .xterm');
@@ -652,10 +660,34 @@ try {
     `[data-tile-id="${leafA}"] [data-titlebar-draggable]`,
     ".tile-area",
     [
-      { selector: `[data-tile-id="${leafB}"]`, fx: 0.08, fy: 0.5, holdMs: 120, movingTileId: leafC },
-      { selector: `[data-tile-id="${leafB}"]`, fx: 0.92, fy: 0.5, holdMs: 120, movingTileId: leafC },
-      { selector: `[data-tile-id="${leafB}"]`, fx: 0.5, fy: 0.14, holdMs: 120, movingTileId: leafB },
-      { selector: `[data-tile-id="${leafB}"]`, fx: 0.5, fy: 0.86, holdMs: 120, movingTileId: leafB },
+      {
+        selector: `[data-tile-id="${leafB}"]`,
+        fx: 0.08,
+        fy: 0.5,
+        holdMs: 120,
+        movingTileId: leafC,
+      },
+      {
+        selector: `[data-tile-id="${leafB}"]`,
+        fx: 0.92,
+        fy: 0.5,
+        holdMs: 120,
+        movingTileId: leafC,
+      },
+      {
+        selector: `[data-tile-id="${leafB}"]`,
+        fx: 0.5,
+        fy: 0.14,
+        holdMs: 120,
+        movingTileId: leafB,
+      },
+      {
+        selector: `[data-tile-id="${leafB}"]`,
+        fx: 0.5,
+        fy: 0.86,
+        holdMs: 120,
+        movingTileId: leafB,
+      },
       { selector: `[data-tile-id="${leafB}"]`, fx: 0.5, fy: 0.5, holdMs: 120 },
       // The carry's own leaf answers nothing: the slot idles instead of lying.
       { selector: `[data-tile-id="${leafA}"]`, fx: 0.5, fy: 0.5, holdMs: 120 },
