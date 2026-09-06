@@ -106,7 +106,7 @@ import {
 import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../packages/server/src/assembly.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
-import { Browser } from "./cdp.ts";
+import { Browser, type DragPayload } from "./cdp.ts";
 import { checkInto, ownerKeyOf, settles, sleep, teardownServer, until } from "./gate-lib.ts";
 import { DECISIONS_INDEX, readDecisionRecords, renderDecisionsIndex } from "./decisions-index.ts";
 
@@ -4240,17 +4240,80 @@ try {
     const columnAbove = columnRows[1];
     const columnBelow = columnRows[2];
     const columnPalette = await paletteAt('[data-testid="palette-stack-column"]');
-    if (columnPalette !== null && columnAbove !== undefined && columnBelow !== undefined) {
-      await browser.dragAndDrop(columnPalette, {
-        x: (columnAbove.left + columnAbove.right) / 2,
-        y: (columnAbove.bottom + columnBelow.top) / 2,
-      });
+    /* Keep evidence at the native-event boundary: a sealed payload alone proves dragstart,
+       not that the rail accepted dragover or received drop after its preview repainted. */
+    await browser.evaluate<null>(
+      `(() => {
+         const source = ${JSON.stringify(columnPalette)};
+         const target = ${JSON.stringify(
+           columnAbove === undefined || columnBelow === undefined
+             ? null
+             : {
+                 x: (columnAbove.left + columnAbove.right) / 2,
+                 y: (columnAbove.bottom + columnBelow.top) / 2,
+               },
+         )};
+         const describe = (node) => node instanceof Element ? {
+           tag: node.tagName, class: node.getAttribute('class'),
+           section: node.closest('[data-section-id]')?.getAttribute('data-section-id') ?? null,
+           rail: node.closest('.sidebar-sections') !== null,
+         } : null;
+         const hit = (point) => point === null ? null
+           : describe(document.elementFromPoint(point.x, point.y));
+         const rows = () => Array.from(
+           document.querySelectorAll('.sidebar-sections > *'), (node) => {
+             const box = node.getBoundingClientRect();
+             return { ...describe(node), dir: node.getAttribute('data-dir'),
+               left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+           });
+         const trace = { source, target, sourceHit: hit(source), targetHit: hit(target),
+           rows: rows(), events: [] };
+         const types = ['pointerdown', 'dragstart', 'dragenter', 'dragover', 'dragleave', 'drop', 'dragend', 'pointerup'];
+         const note = (event) => {
+           const entry = { type: event.type, phase: event.eventPhase,
+             x: event.clientX, y: event.clientY, accepted: event.defaultPrevented,
+             target: describe(event.target), related: describe(event.relatedTarget),
+             hit: hit({ x: event.clientX, y: event.clientY }),
+             carry: document.querySelector('[data-testid="arrange-palette"]')?.getAttribute('data-carry') ?? null,
+             types: Array.from(event.dataTransfer?.types ?? []),
+             effectAllowed: event.dataTransfer?.effectAllowed ?? null,
+             dropEffect: event.dataTransfer?.dropEffect ?? null, rows: rows() };
+           trace.events.push(entry);
+         };
+         types.forEach((type) => {
+           window.addEventListener(type, note, true);
+           window.addEventListener(type, note);
+         });
+         window.__columnDropTrace = () => {
+           types.forEach((type) => {
+             window.removeEventListener(type, note, true);
+             window.removeEventListener(type, note);
+           });
+           delete window.__columnDropTrace;
+           return trace;
+         };
+         return null;
+       })()`,
+    );
+    let columnPayload: readonly DragPayload[] = [];
+    let columnTrace: unknown = null;
+    const columnCommitsBefore = commitCount();
+    try {
+      if (columnPalette !== null && columnAbove !== undefined && columnBelow !== undefined) {
+        columnPayload = await browser.dragAndDrop(columnPalette, {
+          x: (columnAbove.left + columnAbove.right) / 2,
+          y: (columnAbove.bottom + columnBelow.top) / 2,
+        });
+      }
+    } finally {
+      columnTrace = await browser.evaluate<unknown>(`window.__columnDropTrace()`);
     }
     /* By DIRECTION, never by index: the rail carries the row split the rungs above authored,
        and which of the two comes first in the DOM is a fact about where the pointer let go. */
     const columnOf = async (): Promise<RailSplit | null> =>
       (await railSplits()).find((split) => split.dir === "column") ?? null;
     const columnLanded = await settles(async () => (await columnOf()) !== null, 8_000);
+    const columnCommits = commitCount() - columnCommitsBefore;
     await sleep(1_200);
     const columnSeat = (await columnOf())?.seatBox ?? null;
     if (columnSeat !== null) await carryTopRow(columnSeat);
@@ -4274,7 +4337,7 @@ try {
       columnPalette === null
         ? "the armed toolbar painted no Stack column to drag out of"
         : !columnLanded
-          ? `dropping a Stack column between two rows authored no column split: the rail is "${await railPaint()}"`
+          ? `dropping a Stack column between two rows authored no column split: the rail is "${await railPaint()}"; ${String(columnCommits)} layout write(s); payload ${JSON.stringify(columnPayload)}; native gesture ${JSON.stringify(columnTrace)}`
           : !columnOne
             ? `the column split's seat refused the first row: the rail is "${await railPaint()}"`
             : !columnTwo
