@@ -240,6 +240,8 @@ export interface WebTerminals {
 export interface BrowserAssembly {
   readonly roster: PluginRoster;
   readonly revision: number;
+  /** The workspace's developer-mode switch, as published beside the roster (ADR 0025 §4). */
+  readonly developerMode: boolean;
   /** False for a disabled plugin AND for an id the roster does not carry. */
   enabled(id: string): boolean;
   /** The plugin's human title, for placeholders and admin UI; null when unknown. */
@@ -309,6 +311,7 @@ export function buildBrowserAssembly(
   defs: readonly WebPluginDef[],
   overrides: Readonly<Record<string, string>> = {},
   values: Readonly<Record<string, boolean | string>> = {},
+  developerMode = false,
 ): BrowserAssembly {
   const byId = new Map(defs.map((def) => [def.id, def]));
   const titles = new Map<string, string>();
@@ -514,6 +517,7 @@ export function buildBrowserAssembly(
   return {
     roster,
     revision,
+    developerMode,
     enabled: (id) => enabledIds.has(id),
     pluginTitle: (id) => titles.get(id) ?? null,
     panels,
@@ -604,12 +608,14 @@ interface AssemblyProviderProps {
 /** Roster plus revision as one unit, so a change can never bump only half of it. */
 interface RosterState {
   readonly roster: PluginRoster;
+  /** The switch that rode beside the roster; absent on the wire reads as off. */
+  readonly developerMode: boolean;
   readonly revision: number;
-  /** Serialized form of `roster`, so a replayed identical roster is not a "change". */
+  /** Serialized form of `roster` and the switch, so a replayed identical pair is not a "change". */
   readonly digest: string;
 }
 
-const INITIAL_ROSTER: RosterState = { roster: [], revision: 0, digest: "" };
+const INITIAL_ROSTER: RosterState = { roster: [], developerMode: false, revision: 0, digest: "" };
 
 /**
  * THE BOOT RECOVERY: an assembly with essential seats switched off, and the one-click offer to
@@ -642,7 +648,7 @@ function EssentialRecovery({
 }: {
   readonly identity: StoredIdentity;
   readonly roster: PluginRoster;
-  readonly onRestored: (roster: PluginRoster) => void;
+  readonly onRestored: (roster: PluginRoster, developerMode: boolean) => void;
   readonly children: ReactNode;
 }): ReactElement {
   const [restoring, setRestoring] = useState(false);
@@ -680,7 +686,8 @@ function EssentialRecovery({
         headers: { Authorization: `Bearer ${identity.token}` },
       });
       if (!response.ok) throw new Error(`plugin roster fetch failed (${response.status})`);
-      onRestored(PluginsResponseSchema.parse(await response.json()).plugins);
+      const restored = PluginsResponseSchema.parse(await response.json());
+      onRestored(restored.plugins, restored.developerMode === true);
     } catch (reason: unknown) {
       setFailure(
         reason instanceof Error ? reason.message : "Could not restore the default plugins",
@@ -810,10 +817,12 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
   /** Bumped to ask for a fresh read of the OTHER delta; its effect is keyed on it. */
   const [valuesEpoch, setValuesEpoch] = useState(0);
 
-  const publish = useCallback((roster: PluginRoster): void => {
-    const digest = JSON.stringify(roster);
+  const publish = useCallback((roster: PluginRoster, developerMode: boolean): void => {
+    const digest = JSON.stringify([developerMode, roster]);
     setState((previous) =>
-      previous.digest === digest ? previous : { roster, revision: previous.revision + 1, digest },
+      previous.digest === digest
+        ? previous
+        : { roster, developerMode, revision: previous.revision + 1, digest },
     );
   }, []);
 
@@ -826,7 +835,8 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
           signal: controller.signal,
         });
         if (!response.ok) throw new Error(`plugin roster fetch failed (${response.status})`);
-        publish(PluginsResponseSchema.parse(await response.json()).plugins);
+        const answer = PluginsResponseSchema.parse(await response.json());
+        publish(answer.plugins, answer.developerMode === true);
       } catch (reason) {
         if (controller.signal.aborted) return;
         // No notice layer exists above this provider, and a missing roster is already visible
@@ -933,6 +943,7 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
         ],
         overrides,
         values,
+        state.developerMode,
       ),
     [state, overrides, values, loadedDefs],
   );
@@ -1274,6 +1285,7 @@ export function HostServicesGate({
        */
       assembly: {
         roster: () => assembly.roster,
+        developerMode: () => assembly.developerMode,
         enabled: (id) => assembly.enabled(id),
         pluginTitle: (id) => assembly.pluginTitle(id),
         sections: composedSections,

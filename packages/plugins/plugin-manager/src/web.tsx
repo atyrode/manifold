@@ -2,6 +2,7 @@ import "./styles.css";
 import {
   ENGINE_INSTALL_ACTION,
   ENGINE_PURGE_ACTION,
+  ENGINE_SET_DEVELOPER_MODE_ACTION,
   ENGINE_SET_ENABLED_ACTION,
   ENGINE_SET_SETTING_ACTION,
   ENGINE_UNINSTALL_ACTION,
@@ -986,6 +987,7 @@ function toggleRefusal(
     case "data_migration_missing":
     case "element_type_owned":
     case "unknown_plugin":
+    case "developer_mode_off":
       return status.why;
     case "incompatible_dependency":
     case "still_enabled":
@@ -1121,6 +1123,14 @@ function PluginRow({
             {entry.install.hardened === true ? "Hardened" : "In-realm"}
           </Chip>
         )}
+        {entry.install?.mode !== "unpacked" ? null : (
+          <Chip
+            tone="muted"
+            title="Built by this hub from its directory under <data>/authored/ on every save; admitted only while developer mode is on"
+          >
+            Unpacked
+          </Chip>
+        )}
         {entry.install === undefined ? null : links?.repository === undefined ? (
           <Chip tone="publisher" title={`Published by ${publisherOf(manifest.id)}`}>
             {publisherOf(manifest.id)}
@@ -1179,6 +1189,8 @@ function PluginRow({
 export function PluginManagerSection({ host }: SectionProps): ReactElement {
   const assembly = host.assembly;
   const roster = assembly.roster();
+  /** The one switch for unpacked rows (ADR 0025 §4), read beside the roster it rides with. */
+  const developerMode = assembly.developerMode();
   /*
     THE COMPOSED SETTINGS TABLE, read exactly as the roster is: the engine's own join of every
     manifest's declarations with this principal's stored values. The sheet's settings card is a
@@ -1366,6 +1378,20 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
       }
     } finally {
       holdPending(ids, false);
+    }
+  };
+
+  /** The developer-mode switch: root only, the door's own rule; the roster frame answers. */
+  const setDeveloperMode = async (on: boolean): Promise<void> => {
+    holdPending([ENGINE_SET_DEVELOPER_MODE_ACTION], true);
+    setFailure(null);
+    try {
+      const outcome = await host.client.action(ENGINE_SET_DEVELOPER_MODE_ACTION, { on });
+      if (!outcome.ok) setFailure(outcome.denial.message);
+    } catch (reason: unknown) {
+      setFailure(reason instanceof Error ? reason.message : "Could not change developer mode");
+    } finally {
+      holdPending([ENGINE_SET_DEVELOPER_MODE_ACTION], false);
     }
   };
 
@@ -1640,6 +1666,22 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
                 >
                   <ControlIcon kind="add" size={12} /> Install from bundle
                 </button>
+              )}
+              {!def.develops || !canInstall ? null : (
+                <label className="plugin-manager-category-action">
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={developerMode}
+                    aria-checked={developerMode}
+                    data-action={ENGINE_SET_DEVELOPER_MODE_ACTION}
+                    data-testid="plugin-manager-developer-mode"
+                    title="Admit plugins authored on this instance; off locks every unpacked row"
+                    disabled={pendingIds.has(ENGINE_SET_DEVELOPER_MODE_ACTION)}
+                    onChange={(event) => void setDeveloperMode(event.target.checked)}
+                  />{" "}
+                  Developer mode
+                </label>
               )}
             </h3>
             {folded ? null : (

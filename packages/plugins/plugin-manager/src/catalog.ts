@@ -23,9 +23,9 @@ import { needsAttention, permissionCount, pluginStatus } from "./status.ts";
  * A SECTION is the answer to "where did this row come from" (#239), and the sections are ONE
  * ARRAY: each entry carries its words, its behaviour flags and the PREDICATE that claims a
  * row. The first entry whose predicate holds wins, and the array's order is the display
- * order — so a new section (ADR 0025's "Mine", the plugins authored on this instance, once
- * the roster's `install.mode` can say `"unpacked"`) is one entry placed before the band it
- * would otherwise fall into, and nothing else in this file or the component changes.
+ * order — which is how the "Unpacked" band (ADR 0025 §4: the plugins authored on this
+ * instance, `install.mode: "unpacked"`) landed as one entry placed before the band those rows
+ * would otherwise fall into, and nothing else in this file or the component changed.
  *
  * `source` alone cannot draw the bands: the protocol's closed set separates the ENGINE's
  * builtin rows from everything the composition assembled, so every shipped seat and a
@@ -55,9 +55,24 @@ interface SectionShape {
   readonly byPublisher: boolean;
   /** The install form lives under this band's heading. */
   readonly installs: boolean;
+  /** The developer-mode switch lives under this band's heading (ADR 0025 §4). */
+  readonly develops: boolean;
 }
 
 export const PLUGIN_SECTIONS = [
+  {
+    kind: "unpacked",
+    title: "Unpacked",
+    note: "Plugins written on this instance, rebuilt from their directory on every save. Admitted only while developer mode is on; off, every row here is locked by name.",
+    empty:
+      "No unpacked plugins. Turn developer mode on and ask an agent for one, or write engine.plugins.author yourself.",
+    holds: (entry: PluginRosterEntry) => entry.install?.mode === "unpacked",
+    toggleable: true,
+    collapsedByDefault: false,
+    byPublisher: true,
+    installs: false,
+    develops: true,
+  },
   {
     kind: "installed",
     title: "Installed",
@@ -69,6 +84,7 @@ export const PLUGIN_SECTIONS = [
     collapsedByDefault: false,
     byPublisher: true,
     installs: true,
+    develops: false,
   },
   {
     kind: "core",
@@ -81,6 +97,7 @@ export const PLUGIN_SECTIONS = [
     collapsedByDefault: false,
     byPublisher: false,
     installs: false,
+    develops: false,
   },
   {
     kind: "engine",
@@ -92,6 +109,7 @@ export const PLUGIN_SECTIONS = [
     collapsedByDefault: true,
     byPublisher: false,
     installs: false,
+    develops: false,
   },
 ] as const satisfies readonly SectionShape[];
 
@@ -99,10 +117,10 @@ export type PluginSectionDef = (typeof PLUGIN_SECTIONS)[number];
 export type PluginCategoryKind = PluginSectionDef["kind"];
 
 /**
- * WHICH SECTION a row belongs to: the first whose predicate holds. The three predicates above
- * partition every roster row (builtin / `core.` / the rest), so the fallback never fires; it
- * names the first band rather than throwing because a row the bands forgot is better SEEN
- * where an operator looks first than dropped from the ledger.
+ * WHICH SECTION a row belongs to: the first whose predicate holds. The four predicates above
+ * partition every roster row (unpacked / builtin / `core.` / the rest), so the fallback never
+ * fires; it names the first band rather than throwing because a row the bands forgot is
+ * better SEEN where an operator looks first than dropped from the ledger.
  */
 export function pluginSection(entry: PluginRosterEntry): PluginSectionDef {
   return PLUGIN_SECTIONS.find((section) => section.holds(entry)) ?? PLUGIN_SECTIONS[0];

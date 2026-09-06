@@ -178,20 +178,31 @@ describe("familySummary", () => {
 });
 
 describe("pluginCatalog", () => {
-  test("three sections, always present, in Installed / Built-in / Engine order", () => {
+  test("four sections, always present, in Unpacked / Installed / Built-in / Engine order", () => {
     const sections = pluginCatalog(roster, ask());
-    expect(sections.map((section) => section.def.kind)).toEqual(["installed", "core", "engine"]);
+    expect(sections.map((section) => section.def.kind)).toEqual([
+      "unpacked",
+      "installed",
+      "core",
+      "engine",
+    ]);
     expect(
       pluginCatalog([], ask()).map((section) => [section.def.kind, section.rows.length]),
     ).toEqual([
+      ["unpacked", 0],
       ["installed", 0],
       ["core", 0],
       ["engine", 0],
     ]);
+    // An unpacked row (ADR 0025 §4) lands in the first band, never among the bundles.
+    const mine = row("alex.hello", "Hello", { install: { mode: "unpacked" } });
+    const [unpacked, installed] = pluginCatalog([...roster, mine], ask());
+    expect(ids(unpacked!.rows)).toEqual(["alex.hello"]);
+    expect(ids(installed!.rows)).toEqual(["acme.charts", "atyrode.code"]);
   });
 
   test("a child is lifted out of the top level and nested under its parent", () => {
-    const [installed] = pluginCatalog(roster, ask());
+    const [, installed] = pluginCatalog(roster, ask());
     expect(ids(installed!.rows)).toEqual(["acme.charts", "atyrode.code"]);
     const family = installed!.rows.find((candidate) => candidate.entry === code);
     expect(family?.children.map((child) => child.manifest.id)).toEqual(["atyrode.code.generator"]);
@@ -202,7 +213,7 @@ describe("pluginCatalog", () => {
   });
 
   test("a peer's dependency does not nest it: core.draw is a row of its own", () => {
-    const [, core] = pluginCatalog(roster, ask());
+    const [, , core] = pluginCatalog(roster, ask());
     expect(ids(core!.rows)).toEqual([
       "core.canvas",
       "core.draw",
@@ -214,21 +225,21 @@ describe("pluginCatalog", () => {
   });
 
   test("installed rows group by publisher before the sort applies", () => {
-    const [installed] = pluginCatalog(roster, ask({ sort: "changed" }));
+    const [, installed] = pluginCatalog(roster, ask({ sort: "changed" }));
     // By time alone `atyrode.code` (900) would lead; the publisher boundary keeps acme first.
     expect(ids(installed!.rows)).toEqual(["acme.charts", "atyrode.code"]);
     expect(publisherOf("atyrode.code.generator")).toBe("atyrode");
   });
 
   test("a family survives a search through a child, and is marked as opened via the child", () => {
-    const [installed] = pluginCatalog(roster, ask({ query: "generator" }));
+    const [, installed] = pluginCatalog(roster, ask({ query: "generator" }));
     expect(ids(installed!.rows)).toEqual(["atyrode.code"]);
     expect(installed!.rows[0]!.viaChild).toBe(true);
     expect(installed!.rows[0]!.children.map((child) => child.manifest.id)).toEqual([
       "atyrode.code.generator",
     ]);
     // A parent that matches itself carries its whole family, unnarrowed.
-    const [byParent] = pluginCatalog(roster, ask({ query: "atyrode.code" }));
+    const [, byParent] = pluginCatalog(roster, ask({ query: "atyrode.code" }));
     expect(byParent!.rows[0]!.viaChild).toBe(false);
     expect(byParent!.rows[0]!.children.length).toBe(1);
   });
@@ -275,7 +286,7 @@ describe("pluginCatalog", () => {
       lifecycle: "enable_failed",
       enabled: false,
     });
-    const [installed] = pluginCatalog(
+    const [, installed] = pluginCatalog(
       [...roster, crashed, refused],
       ask({ filters: ["attention"] }),
     );
@@ -286,7 +297,7 @@ describe("pluginCatalog", () => {
     const crashed = row("core.crash", "Crash", { lifecycle: "isolate_crashed" });
     const many = [...roster, crashed];
     const core = (sort: PluginSort): readonly string[] =>
-      ids(pluginCatalog(many, ask({ sort }))[1]!.rows);
+      ids(pluginCatalog(many, ask({ sort }))[2]!.rows);
     expect(core("name")).toEqual([
       "core.canvas",
       "core.crash",
@@ -314,7 +325,7 @@ describe("pluginCatalog", () => {
     ]);
     expect(core("permissions")[0]).toBe("core.canvas");
     // An installed row counts its GRANT, not its declaration: two of Code's three caps.
-    const [installed] = pluginCatalog(many, ask({ sort: "permissions" }));
+    const [, installed] = pluginCatalog(many, ask({ sort: "permissions" }));
     expect(ids(installed!.rows)).toEqual(["acme.charts", "atyrode.code"]);
   });
 });
