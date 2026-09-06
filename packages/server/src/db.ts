@@ -5,7 +5,7 @@ import { migrateToCanonLexicon, migrateToElementRefs } from "./migrate-lexicon.t
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -536,6 +536,61 @@ INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '21');
 ALTER TABLE plugin_installs ADD COLUMN mode TEXT NOT NULL DEFAULT 'bundle';
 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '22');
 `,
+  /**
+   * Canvas draw's id cutover (#262). Move the whole namespace, including its version and
+   * ledger, together with reservations and enablement bookkeeping before composition reads
+   * either id. Payloads and principal attribution are opaque: only owning plugin ids move.
+   * Backed up because this is a one-way durable identity rewrite, including disabled plugins.
+   */
+  23: {
+    backup: true,
+    apply(db) {
+      // Separate prepared statements propagate a failed write to the transaction runner;
+      // Bun's multi-statement exec can continue past a trigger's ABORT.
+      db.query(
+        "UPDATE plugin_kv SET plugin_id = 'core.canvas.draw' WHERE plugin_id = 'core.draw'",
+      ).run();
+      db.query(
+        `
+UPDATE plugin_kv SET value = 'core.canvas.draw'
+ WHERE plugin_id GLOB 'engine.*' AND key GLOB '$owner:*' AND value = 'core.draw'
+`,
+      ).run();
+      db.query(
+        `
+UPDATE meta SET value = (
+  SELECT json_group_array(CASE WHEN value = 'core.draw' THEN 'core.canvas.draw' ELSE value END)
+  FROM json_each(meta.value)
+) WHERE key = 'plugins:disabled'
+`,
+      ).run();
+      db.query(
+        `
+UPDATE meta SET value = (
+  SELECT json_group_object(
+    CASE WHEN key = 'core.draw' THEN 'core.canvas.draw' ELSE key END, json(value))
+  FROM json_each(meta.value)
+) WHERE key = 'plugins:attribution'
+`,
+      ).run();
+      db.query(
+        `
+UPDATE meta SET value = (
+  SELECT json_group_object(key, CASE WHEN value = 'core.draw' THEN 'core.canvas.draw' ELSE value END)
+  FROM json_each(meta.value)
+) WHERE key = 'plugins:element-owners'
+`,
+      ).run();
+      db.query(
+        `
+INSERT OR IGNORE INTO plugin_kv(plugin_id, key, value)
+ VALUES ('core.canvas.draw', '$migration:core.draw-to-core.canvas.draw',
+   CAST(CAST(strftime('%s', 'now') AS INTEGER) * 1000 AS TEXT))
+`,
+      ).run();
+      db.query("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '23')").run();
+    },
+  },
 };
 
 interface TableRow {

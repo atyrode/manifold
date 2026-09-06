@@ -5,7 +5,7 @@ import { brandManifest } from "@manifold-plugin/brand";
 import { canvasManifest } from "@manifold-plugin/canvas";
 import { commandsManifest } from "@manifold-plugin/commands";
 import { compositionsManifest } from "@manifold-plugin/compositions";
-import { drawElements, drawManifest } from "@manifold-plugin/draw";
+import { drawElements, drawManifest } from "@manifold-plugin/canvas/draw";
 import { eventsActions, eventsManifest } from "@manifold-plugin/events";
 import { eventsHandlers } from "@manifold-plugin/events/server";
 import { keysActions, keysManifest } from "@manifold-plugin/keys";

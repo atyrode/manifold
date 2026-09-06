@@ -17,20 +17,19 @@ import { z } from "zod";
  * only when placement claims the inline element. Canvas draws its body without a titlebar;
  * composition supplies the titlebar and tile geometry.
  *
- * `core.canvas` is optional: the draw tool needs a canvas for authoring, but an existing
- * stroke in a composition leaf is independently useful and needs no canvas renderer.
+ * Draw is a child of `core.canvas`: its required parent edge governs the whole contribution,
+ * including strokes placed in composition leaves. Placement and stored payloads stay intact.
  */
 export const drawManifest: PluginManifest = {
-  id: "core.draw",
+  id: "core.canvas.draw",
   version: "1.0.0",
   title: "Draw",
   description: "Freehand ink: the draw tool and the stroke element renderer.",
   capabilities: ["scenes:write"],
   dependencies: {
     "core.canvas": {
-      type: "optional",
-      reason:
-        "the draw tool needs a canvas, but strokes in composition leaves render independently",
+      type: "required",
+      reason: "freehand ink belongs to the canvas family and its tool needs the canvas surface",
     },
   },
   contributes: {

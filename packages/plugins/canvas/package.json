@@ -4,7 +4,10 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./web": "./src/web.tsx"
+    "./web": "./src/web.tsx",
+    "./contract": "./src/contract.ts",
+    "./draw": "./draw/src/index.ts",
+    "./draw/web": "./draw/src/web.tsx"
   },
   "dependencies": {
     "@manifold/plugin": "workspace:*",
@@ -13,7 +16,8 @@
     "@manifold/sdk": "workspace:*",
     "@manifold/ui": "workspace:*",
     "@xyflow/react": "12.11.5",
-    "react": "19.2.8"
+    "react": "19.2.8",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/bun": "^1.3.2",

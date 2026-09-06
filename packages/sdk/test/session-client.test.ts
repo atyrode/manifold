@@ -1318,19 +1318,19 @@ describe("the plugin roster frame", () => {
       seen.push(next);
     });
 
-    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.draw", true) }));
+    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.canvas.draw", true) }));
 
     expect(seen).toHaveLength(1);
-    expect(seen[0]).toEqual(roster("core.draw", true));
+    expect(seen[0]).toEqual(roster("core.canvas.draw", true));
 
     // A disable arrives the same way, which is what makes hot enablement reload-free (D4).
-    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.draw", false) }));
+    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.canvas.draw", false) }));
     expect(seen).toHaveLength(2);
   });
 
   test("a late subscriber is replayed the last roster, so a plugin mounting late composes", () => {
     const { client, socket } = connected();
-    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.draw", false) }));
+    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.canvas.draw", false) }));
 
     const seen: unknown[] = [];
     const off = client.onPlugins((next) => {
@@ -1339,10 +1339,10 @@ describe("the plugin roster frame", () => {
 
     // The frame lands on socket open, long before a panel deep in the tree subscribes. With
     // no replay that panel would render placeholders until the next enable/disable.
-    expect(seen).toEqual([roster("core.draw", false)]);
+    expect(seen).toEqual([roster("core.canvas.draw", false)]);
 
     off();
-    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.draw", true) }));
+    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.canvas.draw", true) }));
     expect(seen).toHaveLength(1);
   });
 
@@ -1354,7 +1354,7 @@ describe("the plugin roster frame", () => {
     });
     const revBefore = client.rev;
 
-    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.draw", true) }));
+    socket.receive(JSON.stringify({ type: "plugins", roster: roster("core.canvas.draw", true) }));
 
     // A room's frame stream is its document's history; injecting workspace news into it
     // would make every consumer that switches on frame type handle a frame about no room.

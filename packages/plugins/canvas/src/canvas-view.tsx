@@ -23,7 +23,8 @@ import {
 import "@xyflow/react/dist/base.css";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { CanvasToolbar } from "./canvas-toolbar.tsx";
-import { toolFlags, toolForKey, type CanvasTool } from "./canvas-tool.ts";
+import { toolFlags, toolForKey } from "./canvas-tool.ts";
+import type { CanvasTool } from "./contract.ts";
 import {
   ContainerOverlayOutlet,
   ProjectionScopeProvider,
@@ -230,7 +231,7 @@ function pluginElementNode(Component: ComponentType<never>): ComponentType<NodeP
 
 /**
  * An element whose plugin is off — or which declares a renderer nobody registered — draws
- * the shared inert ref NAMING it. A stroke authored while `core.draw` was on must not
+ * the shared inert ref NAMING it. A stroke authored while `core.canvas.draw` was on must not
  * vanish when somebody disables the plugin: the scene still holds it, so the canvas says so
  * (D4), and enabling the plugin brings the ink back without a reload (R3).
  */
@@ -540,7 +541,7 @@ export function CanvasView({
   const nodeTypes = nodeTypesFor(projection.elements, projection.Placeholder);
   /*
     A tool the composition no longer offers cannot stay in the viewer's hand: disabling
-    `core.draw` while its tool is held would otherwise leave a pointer authoring elements
+    `core.canvas.draw` while its tool is held would otherwise leave a pointer authoring elements
     whose renderer is now a placeholder. So the held tool is a REQUEST and the tool in force
     is derived from it — the hand falls back to select the instant the tool leaves the
     vocabulary, live and without a reload (R3), and takes it back if the plugin returns.

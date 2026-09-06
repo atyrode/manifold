@@ -183,6 +183,8 @@ function seedPreV13(path: string): void {
   const db = new Database(path, { create: true, strict: true });
   db.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE plugin_kv(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+  PRIMARY KEY (plugin_id, key)) WITHOUT ROWID;
 CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT, name TEXT, color TEXT,
   created_at INTEGER, origin TEXT);
 CREATE TABLE containers(id TEXT PRIMARY KEY, name TEXT, created_at INTEGER, sort_order INTEGER,

@@ -112,7 +112,7 @@ describe("pluginStatus", () => {
 
   test("a disabled row whose requirement is off names it, and is Off rather than red", () => {
     const canvas = row("core.canvas", { enabled: false });
-    const draw = row("core.draw", {
+    const draw = row("core.canvas.draw", {
       enabled: false,
       refusal: "dependency_disabled",
       dependencies: { "core.canvas": { type: "required" } },

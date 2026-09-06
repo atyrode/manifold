@@ -1,7 +1,7 @@
 /**
  * INK, as this plugin authors it. The GEOMETRY moved to `@manifold/plugin/hooks`
  * (`polylineBounds`, `polylinePath`, `polylineViewBox`, `polylineRelativeTo`) once issue #117
- * found `core.draw`'s renderer carrying an equivalent private copy of it: a polyline is a
+ * found `core.canvas.draw`'s renderer carrying an equivalent private copy of it: a polyline is a
  * coordinate sequence and belongs to the element plane, while a STROKE — a freehand ink record
  * — is a domain noun the floor may not learn, so what is left here is exactly the part that
  * knows about ink.

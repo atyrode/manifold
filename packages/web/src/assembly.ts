@@ -5,7 +5,7 @@ import { canvasWebPlugin } from "@manifold-plugin/canvas/web";
 import { CommandsOverlay, COMMANDS_BINDINGS } from "@manifold-plugin/commands/web";
 import { compositionsWebPlugin } from "@manifold-plugin/compositions/web";
 import { debugWebPlugin } from "@manifold-plugin/debug/web";
-import { drawWebPlugin } from "@manifold-plugin/draw/web";
+import { drawWebPlugin } from "@manifold-plugin/canvas/draw/web";
 import { KeysRow } from "@manifold-plugin/keys/web";
 import { MachinesSection } from "@manifold-plugin/machines/web";
 import { notesWebPlugin } from "@manifold-plugin/notes/web";

@@ -89,7 +89,7 @@ const ELEMENTS: Readonly<Record<string, PlacementItem>> = {
 /**
  * The COMPOSED half of the algebra's vocabulary: the element kinds this world's plugins
  * contribute, with the traits their manifests declare (ADR 0013 §12). `text` is
- * `core.notes` declaring its own; `draw` is `core.draw` declaring nothing and taking the
+ * `core.notes` declaring its own; `draw` is `core.canvas.draw` declaring nothing and taking the
  * engine's default; `chart` is nobody — a kind sitting in a document whose plugin is not in
  * this build.
  *
@@ -1154,8 +1154,7 @@ describe("placement traits", () => {
   });
 
   test("the default a manifest omitting traits gets is free-floating canvas furniture", () => {
-    // `core.draw` declares no `placement` block, so this default IS how ink places — the
-    // row the floor table used to carry, now arriving through the composition instead.
+    // An element contribution without a placement block takes the engine's default.
     expect(itemTraitsFor("draw", lookup)).toEqual(DEFAULT_ELEMENT_PLACEMENT_TRAITS);
     expect(DEFAULT_ELEMENT_PLACEMENT_TRAITS).toEqual({
       groups: ["canvas_item"],

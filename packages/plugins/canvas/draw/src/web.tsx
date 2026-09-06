@@ -4,7 +4,7 @@ import type { ElementProps } from "@manifold/plugin";
 import { memo } from "react";
 
 /**
- * The stroke renderer — `core.draw`'s browser half.
+ * The stroke renderer — `core.canvas.draw`'s browser half.
  *
  * It paints and nothing else. Geometry (resize handles, selection, the commit into the scene
  * document) belongs to the mount site's element frame, so this component never learns how a
@@ -81,6 +81,6 @@ export const DrawStrokeNode = memo(DrawStrokeNodeImpl);
  * composition's tool registry, which the manifest already fills.
  */
 export const drawWebPlugin = {
-  id: "core.draw",
+  id: "core.canvas.draw",
   elements: { draw: DrawStrokeNode },
 };

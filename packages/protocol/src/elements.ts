@@ -120,7 +120,7 @@ export type SceneElementPayload = z.infer<typeof SceneElementPayloadSchema>;
  * This schema names no element type, and that is the whole point (ADR 0013 §16). It used to be
  * a `z.discriminatedUnion("type", …)` whose three members were `portal`, `text` and `draw` —
  * and two of those three are plugin-owned nouns (`text` is `core.notes`', `draw` is
- * `core.draw`'s) sitting inside the pillar whose admission verdict is "it names no plugin"
+ * `core.canvas.draw`'s) sitting inside the pillar whose admission verdict is "it names no plugin"
  * (AXIOMS.md §Foundation law, neutrality). The union also had a harder consequence than an
  * unclean registry: a `type` it did not list was REFUSED, so a canvas could not hold a record
  * whose owning plugin was merely absent from this build. That is the outcome ADR 0013 §4

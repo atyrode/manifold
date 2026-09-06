@@ -229,7 +229,7 @@ describe("PluginHost denial ladder", () => {
     const scoped = context(fixture, ["containers:read", "plugins:manage"], container);
 
     const outcome = await fixture.host.dispatch(scoped, ENGINE_SET_ENABLED_ACTION, {
-      id: "core.draw",
+      id: "core.canvas.draw",
       enabled: false,
     });
 
@@ -364,13 +364,13 @@ describe("PluginHost enablement", () => {
       leaving.push(roster);
     });
 
-    expect(await fixture.host.setEnabled("core.draw", false, "admin")).toEqual({ ok: true });
+    expect(await fixture.host.setEnabled("core.canvas.draw", false, "admin")).toEqual({ ok: true });
     expect([staying, leaving].map((seen) => seen.length)).toEqual([1, 1]);
 
     // A socket closes far more often than the roster changes; a subscription that outlived
     // its connection would push frames into a dead socket forever.
     remove();
-    expect(await fixture.host.setEnabled("core.draw", true, "admin")).toEqual({ ok: true });
+    expect(await fixture.host.setEnabled("core.canvas.draw", true, "admin")).toEqual({ ok: true });
     expect([staying, leaving].map((seen) => seen.length)).toEqual([2, 1]);
     fixture.store.close();
   });
@@ -379,13 +379,13 @@ describe("PluginHost enablement", () => {
     const fixture = await hostFixture();
     const before = fixture.host.assembly();
 
-    expect(await fixture.host.setEnabled("core.draw", false, "admin")).toEqual({ ok: true });
+    expect(await fixture.host.setEnabled("core.canvas.draw", false, "admin")).toEqual({ ok: true });
 
     // Hot enablement (D4) is a recompose, not a mutation: everything that must react reads
     // `assembly()` again (or the published roster), which is why the identity changes.
     expect(fixture.host.assembly()).not.toBe(before);
-    expect(before.enabled("core.draw")).toBe(true);
-    expect(fixture.host.assembly().enabled("core.draw")).toBe(false);
+    expect(before.enabled("core.canvas.draw")).toBe(true);
+    expect(fixture.host.assembly().enabled("core.canvas.draw")).toBe(false);
     // The vocabulary itself is untouched: a disable removes no name from the registry.
     expect([...fixture.host.assembly().actions.keys()].sort()).toEqual(
       [...before.actions.keys()].sort(),
@@ -468,11 +468,11 @@ describe("PluginHost enablement", () => {
     // buys, and it is the claim the old form of this test was really making.
     expect(
       await fixture.host.dispatch(fixture.owner, ENGINE_SET_ENABLED_ACTION, {
-        id: "core.draw",
+        id: "core.canvas.draw",
         enabled: false,
       }),
     ).toEqual({ ok: true, result: {} });
-    expect([...fixture.store.disabledPlugins()]).toEqual(["core.draw"]);
+    expect([...fixture.store.disabledPlugins()]).toEqual(["core.canvas.draw"]);
     expect(fixture.host.assembly().enabled("core.plugins")).toBe(true);
     fixture.store.close();
   });
@@ -481,9 +481,9 @@ describe("PluginHost enablement", () => {
     const fixture = await hostFixture();
     fixture.runtime.time = 1_700_000_000_000;
 
-    await fixture.host.setEnabled("core.draw", false, "principal-7");
+    await fixture.host.setEnabled("core.canvas.draw", false, "principal-7");
 
-    const entry = fixture.host.roster().find((row) => row.manifest.id === "core.draw");
+    const entry = fixture.host.roster().find((row) => row.manifest.id === "core.canvas.draw");
     // Attribution is workspace-global shared state like the flag itself: "the drawing tool
     // vanished" must be answerable by every principal, not only by whoever reads the logs.
     expect(entry?.changedBy).toBe("principal-7");

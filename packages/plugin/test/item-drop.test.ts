@@ -134,7 +134,7 @@ const ROSTER: PluginRoster = [
     guards: [],
     homed: "on_claim",
   }),
-  element("core.draw", "draw", "Stroke"),
+  element("core.canvas.draw", "draw", "Stroke"),
   disciplineEntry("core.canvas", CANVAS_DISCIPLINE),
   disciplineEntry("core.compositions", COMPOSITION_DISCIPLINE),
 ];

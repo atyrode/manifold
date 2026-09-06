@@ -864,7 +864,7 @@ describe("migration 11: the lexicon cut", () => {
           )
           .all(),
       ).toEqual([{ container_id: V10_COMPOSITION, type: "terminal.opened" }]);
-      // Plugin storage and the disabled set are namespaced state the lexicon never touched.
+      // The lexicon preserves namespaced state; migration 23 subsequently renames its owner.
       expect(
         db.query<{ value: string }, []>("SELECT value FROM plugin_kv WHERE key = 'strokes'").get()
           ?.value,
@@ -873,7 +873,7 @@ describe("migration 11: the lexicon cut", () => {
         db
           .query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'plugins:disabled'")
           .get()?.value,
-      ).toBe('["core.draw"]');
+      ).toBe('["core.canvas.draw"]');
 
       /*
         Capabilities are the reason this migration takes a backup: it rewrites the authority
@@ -1087,13 +1087,14 @@ describe("pre-migration snapshot retention", () => {
       seedPreV9(path);
       openDatabase(path).close();
 
-      // Five backed-up migrations replayed, five images, no sixth file: `VACUUM INTO` cannot
+      // Six backed-up migrations replayed, six images, no seventh file: `VACUUM INTO` cannot
       // overwrite, so the staging name has to be gone by the time the runner returns.
       expect(backupsIn(dir)).toEqual([
         "manifold.db.pre-v11.bak",
         "manifold.db.pre-v13.bak",
         "manifold.db.pre-v16.bak",
         "manifold.db.pre-v19.bak",
+        "manifold.db.pre-v23.bak",
         "manifold.db.pre-v9.bak",
       ]);
 
@@ -1104,6 +1105,7 @@ describe("pre-migration snapshot retention", () => {
       expect(snapshotVersion(`${path}.pre-v13.bak`)).toBe("12");
       expect(snapshotVersion(`${path}.pre-v16.bak`)).toBe("15");
       expect(snapshotVersion(`${path}.pre-v19.bak`)).toBe("18");
+      expect(snapshotVersion(`${path}.pre-v23.bak`)).toBe("22");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1142,13 +1144,14 @@ describe("pre-migration snapshot retention", () => {
 
       // Still one image for version 11, not two: a retried version replaces its predecessor
       // rather than leaving a full copy of the database per attempt. The retry also carries on
-      // past the migration that failed, so 13's, 16's and 17's images are written by it, not
+      // past the migration that failed, so the later images are written by it, not
       // the attempt.
       expect(backupsIn(dir)).toEqual([
         "manifold.db.pre-v11.bak",
         "manifold.db.pre-v13.bak",
         "manifold.db.pre-v16.bak",
         "manifold.db.pre-v19.bak",
+        "manifold.db.pre-v23.bak",
         "manifold.db.pre-v9.bak",
       ]);
       // And the survivor is the RETRY's image, not the failed attempt's — the stray table the
@@ -1184,6 +1187,8 @@ CREATE TABLE plugin_installs(
   granted_caps TEXT NOT NULL, installed_by TEXT NOT NULL, installed_at INTEGER NOT NULL,
   bundle_path TEXT NOT NULL
 ) WITHOUT ROWID;
+CREATE TABLE plugin_kv(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+  PRIMARY KEY (plugin_id, key)) WITHOUT ROWID;
 INSERT INTO meta(key, value) VALUES ('schema_version', '17');
 INSERT INTO plugin_installs VALUES ('vendor.elder', '${"0".repeat(64)}', '/uploads/elder',
   '["containers:read"]', 'p-owner', 1, '/data/plugins/vendor.elder/bundle.json');
@@ -1224,6 +1229,8 @@ CREATE TABLE plugin_installs(
   granted_caps TEXT NOT NULL, installed_by TEXT NOT NULL, installed_at INTEGER NOT NULL,
   bundle_path TEXT NOT NULL, actions TEXT NOT NULL DEFAULT '[]'
 ) WITHOUT ROWID;
+CREATE TABLE plugin_kv(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+  PRIMARY KEY (plugin_id, key)) WITHOUT ROWID;
 INSERT INTO meta(key, value) VALUES ('schema_version', '20');
 INSERT INTO plugin_installs VALUES ('vendor.elder', '${"0".repeat(64)}', '/uploads/elder',
   '["containers:read"]', 'p-owner', 1, '/data/plugins/vendor.elder/bundle.json', '[]');
@@ -1284,6 +1291,8 @@ CREATE TABLE plugin_installs(
   granted_caps TEXT NOT NULL, installed_by TEXT NOT NULL, installed_at INTEGER NOT NULL,
   bundle_path TEXT NOT NULL, actions TEXT NOT NULL DEFAULT '[]'
 ) WITHOUT ROWID;
+CREATE TABLE plugin_kv(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+  PRIMARY KEY (plugin_id, key)) WITHOUT ROWID;
 INSERT INTO meta(key, value) VALUES ('schema_version', '18');
 `);
   const doc = createSceneDoc();
@@ -1477,7 +1486,7 @@ describe("migration 19: contributed element refs", () => {
         .query<{ key: string; value: string }, []>("SELECT key, value FROM meta ORDER BY key")
         .all();
       // A direct retry must be a no-op even when the converted bytes are already present.
-      // Rewinding past 19 also rewinds 20's, 21's and 22's columns: `ADD COLUMN` is not
+      // Rewinding past 19 also rewinds 20's, 21's, 22's and 23's state: `ADD COLUMN` is not
       // re-runnable, and the retry under test is 19's, not a duplicate-column failure of a
       // successor.
       db.exec("UPDATE meta SET value = '18' WHERE key = 'schema_version'");
@@ -1641,4 +1650,88 @@ BEGIN SELECT RAISE(ABORT, 'fixture layout write failure'); END;
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+test("migration 23: canvas draw retains storage, reservations and disable attribution across reopen", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "manifold-db-canvas-draw-"));
+  const path = join(dir, "manifold.db");
+  let db = new Database(path, { create: true, strict: true });
+  try {
+    db.exec(`
+CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE events(id INTEGER PRIMARY KEY, container_id TEXT, ts INTEGER);
+CREATE TABLE plugin_kv(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+  PRIMARY KEY (plugin_id, key)) WITHOUT ROWID;
+INSERT INTO meta VALUES ('schema_version', '22');
+INSERT INTO meta VALUES ('plugins:disabled', '["core.draw","vendor.other"]');
+INSERT INTO meta VALUES ('plugins:attribution',
+  '{"core.draw":{"by":"p-artist","at":123},"vendor.other":{"by":"core.draw","at":456}}');
+INSERT INTO meta VALUES ('plugins:element-owners', '{"draw":"core.draw","note":"vendor.other"}');
+INSERT INTO plugin_kv VALUES ('core.draw', '$version', '1.2');
+INSERT INTO plugin_kv VALUES ('core.draw', '$migration:initial-strokes', '42');
+INSERT INTO plugin_kv VALUES ('engine.plugins', '$owner:draw', 'core.draw');
+INSERT INTO plugin_kv VALUES ('engine.plugins', '$owner:note', 'vendor.other');
+INSERT INTO plugin_kv VALUES ('vendor.other', 'reference', 'core.draw');
+`);
+    const strokes = JSON.stringify({
+      strokes: [
+        {
+          id: "stroke-1",
+          points: [
+            [1, 2],
+            [3, 4],
+          ],
+          color: "#123456",
+          by: "core.draw",
+        },
+      ],
+    });
+    db.query("INSERT INTO plugin_kv VALUES ('core.draw', 'strokes:canvas-1', ?)").run(strokes);
+    const beforeRows = db.query("SELECT * FROM plugin_kv ORDER BY plugin_id, key").all();
+    const beforeMeta = db.query("SELECT * FROM meta ORDER BY key").all();
+    db.exec(`
+CREATE TRIGGER reject_draw_ledger BEFORE INSERT ON plugin_kv
+ WHEN NEW.key = '$migration:core.draw-to-core.canvas.draw'
+ BEGIN SELECT RAISE(ABORT, 'fixture ledger write failure'); END;
+`);
+    db.close();
+    expect(() => openDatabase(path)).toThrow("fixture ledger write failure");
+    db = new Database(path, { strict: true });
+    expect(db.query("SELECT * FROM plugin_kv ORDER BY plugin_id, key").all()).toEqual(beforeRows);
+    expect(db.query("SELECT * FROM meta ORDER BY key").all()).toEqual(beforeMeta);
+    db.exec("DROP TRIGGER reject_draw_ledger");
+    db.close();
+    db = openDatabase(path);
+    const store = new ServerStore(db);
+    const storage = store.pluginStorage("core.canvas.draw");
+    expect(await storage.get("strokes:canvas-1")).toBe(strokes);
+    expect(await storage.dataVersion()).toEqual({ major: 1, minor: 2 });
+    expect(await storage.appliedMigrations()).toEqual([
+      "core.draw-to-core.canvas.draw",
+      "initial-strokes",
+    ]);
+    expect(await store.pluginStorage("core.draw").count()).toBe(0);
+    expect(await store.pluginStorage("engine.plugins").get("$owner:draw")).toBe("core.canvas.draw");
+    expect(await store.pluginStorage("engine.plugins").get("$owner:note")).toBe("vendor.other");
+    expect(await store.pluginStorage("vendor.other").get("reference")).toBe("core.draw");
+    expect([...store.disabledPlugins()]).toEqual(["core.canvas.draw", "vendor.other"]);
+    expect(Object.fromEntries(store.pluginAttribution())).toEqual({
+      "core.canvas.draw": { by: "p-artist", at: 123 },
+      "vendor.other": { by: "core.draw", at: 456 },
+    });
+    expect(Object.fromEntries(store.elementOwners())).toEqual({
+      draw: "core.canvas.draw",
+      note: "vendor.other",
+    });
+    expect(store.getMeta("schema_version")).toBe(String(SCHEMA_VERSION));
+    const rows = db.query("SELECT * FROM plugin_kv ORDER BY plugin_id, key").all();
+    const metadata = db.query("SELECT * FROM meta ORDER BY key").all();
+    db.close();
+    db = openDatabase(path);
+    expect(db.query("SELECT * FROM plugin_kv ORDER BY plugin_id, key").all()).toEqual(rows);
+    expect(db.query("SELECT * FROM meta ORDER BY key").all()).toEqual(metadata);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

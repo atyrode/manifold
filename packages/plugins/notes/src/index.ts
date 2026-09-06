@@ -8,7 +8,7 @@ import { z } from "zod";
  * every mutation is a per-character edit of a `Y.Text` inside the room's scene document: its
  * legality depends on nothing the author cannot see, its worst-case merge is two people's
  * characters both surviving, and no other principal's authority is consulted. So it is
- * DOCUMENT traffic, exactly like `core.draw`'s strokes, and `scenes:write` is declared for the
+ * DOCUMENT traffic, exactly like `core.canvas.draw`'s strokes, and `scenes:write` is declared for the
  * same reason draw declares it — it is the capability a viewer needs to author one, even
  * though nothing here dispatches. The transaction is the door; an action would be a second
  * one (invariant 14).

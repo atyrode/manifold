@@ -1,7 +1,7 @@
 import type { CarriedItem, MachineSummary, PlacementDestination } from "@manifold/protocol";
 import type { SessionClient } from "@manifold/sdk";
 import { createContext, useContext, useMemo } from "react";
-import type { CanvasTool } from "./canvas-tool.ts";
+import type { CanvasTool } from "./contract.ts";
 import {
   ElementHostProvider,
   type CarryController,

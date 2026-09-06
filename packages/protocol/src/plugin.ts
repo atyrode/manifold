@@ -273,7 +273,7 @@ export type SeatDef = z.infer<typeof SeatDefSchema>;
  * into different toolbars is not a collision (D5 still refuses two plugins claiming the same
  * `id` WITHIN one toolbar).
  *
- * `canvas` is the freeform discipline's tool strip (`core.canvas`'s own two modes, `core.draw`'s
+ * `canvas` is the freeform discipline's tool strip (`core.canvas`'s own two modes, `core.canvas.draw`'s
  * pen — {@link CanvasToolbar}). `arrange` is `core.arrange`'s floating F8 editor toolbar
  * (issue #89) — a workspace-level toolbar, unrelated to any one container.
  *

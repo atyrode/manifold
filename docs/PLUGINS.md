@@ -36,13 +36,14 @@ vantage presence, the shell — is plugin territory, and the shipped ones are yo
 
 ## 1. Anatomy
 
-A plugin is a workspace package under `packages/plugins/<name>`, published as
-`@manifold-plugin/<name>`, exporting up to three halves:
+A peer plugin is a workspace package under `packages/plugins/<name>`, published as
+`@manifold-plugin/<name>`, exporting up to three halves. A child instead lives inside its
+parent's package (below); it has no separate `package.json` or `tsconfig.json`.
 
 ```jsonc
-// packages/plugins/draw/package.json
+// packages/plugins/<name>/package.json — a peer with both runtime halves
 {
-  "name": "@manifold-plugin/draw",
+  "name": "@manifold-plugin/<name>",
   "exports": {
     ".": "./src/index.ts", // the manifest + action definitions (shared)
     "./server": "./src/server.ts", // action handlers (omit if the plugin has no server half)
@@ -166,7 +167,8 @@ A part is a DIRECTORY inside its parent's package, never a package of its own:
 
 npm allows one slash in a package name, so `@manifold-plugin/canvas/draw` can only ever be a
 subpath; the workspace glob does not change and no hyphenated package appears. The parent's
-`tsconfig.json#include` widens to the part's directories, and the part's third-party dependencies
+`tsconfig.json#include` widens to the part's source and test directories; the child has no
+`tsconfig.json` and no separate typecheck entry in `scripts/gate.ts`. The part's third-party dependencies
 — which a plugin may not have beyond the four floor packages anyway — would live in the parent's
 `package.json`, which is a signal you may be a peer. Registration is unchanged: a part is its own
 plugin def in both `assembly.ts` files, reached through the parent's subpath.
@@ -220,7 +222,7 @@ server validates it with a strict schema (unknown keys are rejected).
 import type { PluginManifest } from "@manifold/protocol";
 
 export const manifest: PluginManifest = {
-  id: "core.draw", // /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/, max 64 chars
+  id: "core.canvas.draw", // /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/, max 64 chars
   version: "1.0.0", // display only
   title: "Draw",
   description: "Freehand strokes on the canvas.",
@@ -229,8 +231,8 @@ export const manifest: PluginManifest = {
   dataVersion: { major: 1, minor: 0 }, // the shape of the data you store
   dependencies: {
     "core.canvas": {
-      type: "optional",
-      reason: "the drawing tool needs a canvas; a drawing in a composition renders independently",
+      type: "required",
+      reason: "drawing is part of the canvas",
     },
   },
   after: ["core.shell"], // soft ordering only; a missing target is ignored
@@ -265,7 +267,7 @@ export const manifest: PluginManifest = {
     // A row on the `arrange` bar may be painted as a DRAG SOURCE rather than a button:
     // that is core.arrange's own reading of its own tool rows, not a field you declare.
     tools: [{ id: "draw", title: "Draw", toolbar: "canvas" }],
-    events: [], // event kinds THIS plugin originates (§6b); core.draw emits none — a stroke is a document edit
+    events: [], // event kinds THIS plugin originates (§6b); core.canvas.draw emits none — a stroke is a document edit
   },
   // entry: { web: "...", server: true }, // reserved: dynamic distribution, a later wave
 };
@@ -649,7 +651,7 @@ offenders it names: the class verbatim when there is nothing to name, otherwise
 ```
 essential
 builtin: engine.plugins
-still_enabled: core.draw
+still_enabled: core.canvas.draw
 unknown_plugin: core.ghost
 missing_dependency: test.leaf
 dependency_disabled: test.base
@@ -851,11 +853,15 @@ there.
 
 ---
 
-## 6. Contributions, with `core.draw` as the worked example
+## 6. Contributions, with `core.canvas.draw` as the worked example
 
-`core.draw` is deliberately the smallest complete plugin: it contributes one element renderer
+`core.canvas.draw` is deliberately the smallest complete plugin: it contributes one element renderer
 and one tool, and it has no server half at all, because drawing a stroke is a document-plane
-edit.
+edit. It lives at `packages/plugins/canvas/draw/`, with its manifest and web half exported as
+`@manifold-plugin/canvas/draw` and `@manifold-plugin/canvas/draw/web` by the canvas package.
+Canvas owns the package manifest and typecheck; the child's source and tests are included
+by `packages/plugins/canvas/tsconfig.json`. Any import of the parent's vocabulary uses
+`@manifold-plugin/canvas/contract`, never its runtime; the parent never imports the child.
 
 The web half exports the renderers, keyed by the ids the manifest declared; the shape is the
 one `packages/web/src/assembly.ts` registers, so let inference type it rather than naming a
@@ -863,7 +869,7 @@ type you have not read (a maintainer-only exception to the opening promise: the 
 the engine's source while the only authoring channel is in-tree, #151/#152):
 
 ```tsx
-// packages/plugins/draw/src/web.tsx
+// packages/plugins/canvas/draw/src/web.tsx
 import { manifest } from "./index";
 
 export const webDef = {
@@ -923,7 +929,7 @@ the one genuine disagreement between the two disciplines rather than a preferenc
 `HostServices.client` uses, so the SDK's `SessionClient` satisfies the interface without a plugin
 ever importing web internals. The load-bearing point: **an element renderer edits its document
 directly and declares no action at all.** A per-element edit whose worst-case merge a human accepts
-is document traffic (§5), so `core.notes` and `core.draw` both ship with zero actions. If you find
+is document traffic (§5), so `core.notes` and `core.canvas.draw` both ship with zero actions. If you find
 yourself wanting an action for a keystroke, re-read the plane table.
 
 **You implement nothing for dormancy, and there is no seam for it.** Both mount sites decide before

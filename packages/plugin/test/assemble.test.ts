@@ -850,7 +850,7 @@ describe("assembleRoster dependencies and order", () => {
 describe("assembleRoster reservations, builtins and stored data", () => {
   const drawing: PluginDef = {
     manifest: manifest({
-      id: "core.draw",
+      id: "core.ink",
       contributes: { elements: [{ type: "draw", title: "Drawing" }] },
     }),
     actions: [],
@@ -867,7 +867,7 @@ describe("assembleRoster reservations, builtins and stored data", () => {
 
     let thrown: unknown = null;
     try {
-      assembleRoster([squatter], NONE, { elementOwners: new Map([["draw", "core.draw"]]) });
+      assembleRoster([squatter], NONE, { elementOwners: new Map([["draw", "core.ink"]]) });
     } catch (reason) {
       thrown = reason;
     }
@@ -881,12 +881,12 @@ describe("assembleRoster reservations, builtins and stored data", () => {
      */
     expect(thrown).toBeInstanceOf(AssemblyError);
     expect((thrown as AssemblyError).problems).toEqual([
-      'element type "draw" is reserved by "core.draw"; "vendor.sketch" cannot claim it',
+      'element type "draw" is reserved by "core.ink"; "vendor.sketch" cannot claim it',
     ]);
 
     // The rightful owner composes against its own reservation without complaint.
     expect(() =>
-      assembleRoster([drawing], NONE, { elementOwners: new Map([["draw", "core.draw"]]) }),
+      assembleRoster([drawing], NONE, { elementOwners: new Map([["draw", "core.ink"]]) }),
     ).not.toThrow();
   });
 
@@ -947,7 +947,7 @@ describe("assembleRoster reservations, builtins and stored data", () => {
     const vendor: PluginDef = { manifest: manifest({ id: "vendor.impostor" }), actions: [] };
     const assembly = assembleRoster([drawing, vendor], NONE, { distribution });
     expect(assembly.roster.map((entry) => entry.manifest.id)).toEqual([
-      "core.draw",
+      "core.ink",
       "vendor.impostor",
     ]);
 
@@ -963,13 +963,13 @@ describe("assembleRoster reservations, builtins and stored data", () => {
   test("roster rows carry lifecycle state, attribution, and the essential refusal class", () => {
     // Deliberately WITHOUT the element contribution: `shell` already claims `draw`, and a
     // duplicate claim is its own refusal (D5) with nothing to say about roster fields.
-    const bare: PluginDef = { manifest: manifest({ id: "core.draw" }), actions: [] };
-    const assembly = assembleRoster([shell, bare], new Set(["core.draw"]), {
-      lifecycle: new Map([["core.draw", "disable_failed" as const]]),
-      attribution: new Map([["core.draw", { by: "principal-3", at: 42 }]]),
+    const bare: PluginDef = { manifest: manifest({ id: "core.ink" }), actions: [] };
+    const assembly = assembleRoster([shell, bare], new Set(["core.ink"]), {
+      lifecycle: new Map([["core.ink", "disable_failed" as const]]),
+      attribution: new Map([["core.ink", { by: "principal-3", at: 42 }]]),
     });
 
-    const draw = assembly.roster.find((entry) => entry.manifest.id === "core.draw");
+    const draw = assembly.roster.find((entry) => entry.manifest.id === "core.ink");
     expect(draw?.lifecycle).toBe("disable_failed");
     expect(draw?.changedBy).toBe("principal-3");
     expect(draw?.changedAt).toBe(42);

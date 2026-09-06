@@ -51,11 +51,11 @@ describe("what one element declares", () => {
   });
 
   test("data-plugin ALONE is a plugin node, and owns itself", () => {
-    expect(declarationOf(element({ "data-plugin": "core.draw" }))).toEqual({
+    expect(declarationOf(element({ "data-plugin": "core.canvas.draw" }))).toEqual({
       kind: "plugin",
-      id: "core.draw",
+      id: "core.canvas.draw",
       attribute: "data-plugin",
-      owner: "core.draw",
+      owner: "core.canvas.draw",
       tree: null,
     });
   });
