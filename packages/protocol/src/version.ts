@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 24;
+export const PROTOCOL_VERSION = 25;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -254,9 +254,20 @@ export const PROTOCOL_VERSION = 24;
  * Machine compatibility ADDS 24; instance frames are unchanged and ADD 24.
  * Publish first, promote the target hub deliberately, then install the new
  * two-process agent topology. Publication never authorizes fleet activation.
+ *
+ * v24 -> v25: MACHINE ADDRESSES AND SHARED SETTINGS (issues #157, #158). The
+ * `manifold://` grammar gains its eighth form, `machine/<machineId>`, so a
+ * resolve answer, a trace target and a spotlight can name an enrolled spoke;
+ * plugin setting declarations gain `scope: "workspace"` and the `enum` kind,
+ * and `GET /api/settings` answers string values beside booleans. Old browser
+ * decoders are strict, so the session version bumps. The machine wire is
+ * byte-identical and a guest instance only ever receives container refs
+ * (shares stay container-only, ADR 0014), so both compatibility sets ADD 25.
+ * Upgrade a hub before installing newer agent binaries; publication does not
+ * promote a hub.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  16, 17, 18, 19, 20, 21, 22, 23, 24,
+  16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
 ]);
 
 /**
@@ -298,9 +309,11 @@ export const TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION = 22;
  * and the version is ADDED.
  * v23: session presence and element presentation (issues #216/#222); instance wire unchanged.
  * v24: terminal-host identity and drain on the machine channel; instance wire unchanged.
+ * v25: machine references and shared settings on the session/HTTP wire (#157/#158); a guest
+ * never receives a machine ref, so the instance wire is unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  18, 19, 20, 21, 22, 23, 24,
+  18, 19, 20, 21, 22, 23, 24, 25,
 ]);
 
 /**
