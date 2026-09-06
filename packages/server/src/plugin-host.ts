@@ -1,4 +1,3 @@
-import "./shared-modules.ts";
 import {
   AssemblyError,
   ENGINE_INSTALLED_EVENT,
