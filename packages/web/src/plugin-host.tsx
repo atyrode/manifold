@@ -758,8 +758,13 @@ async function importWebPlugin(
 
 export function AssemblyProvider({ identity, children }: AssemblyProviderProps): ReactElement {
   const [state, setState] = useState<RosterState>(INITIAL_ROSTER);
+  /*
+    The effect's own bookkeeping: what is held and at which hash. It is a ref because the
+    effect prunes and fills it without re-running; render never reads it. `loadedDefs` is the
+    snapshot render sees, republished whenever the ref changes.
+  */
   const loaded = useRef(new Map<string, LoadedWebPlugin>());
-  const [loadedEpoch, setLoadedEpoch] = useState(0);
+  const [loadedDefs, setLoadedDefs] = useState<ReadonlyMap<string, LoadedWebPlugin>>(new Map());
   useEffect(() => {
     const controller = new AbortController();
     const wanted = new Map(
@@ -774,16 +779,21 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
         )
         .map((row) => [row.manifest.id, row.install!.sha256]),
     );
+    let pruned = false;
     for (const [id, held] of loaded.current) {
-      if (wanted.get(id) !== held.sha256) loaded.current.delete(id);
+      if (wanted.get(id) !== held.sha256) {
+        loaded.current.delete(id);
+        pruned = true;
+      }
     }
+    if (pruned) setLoadedDefs(new Map(loaded.current));
     for (const [id, sha256] of wanted) {
       if (loaded.current.has(id)) continue;
       void importWebPlugin(id, identity.token, controller.signal).then(
         (def) => {
           if (controller.signal.aborted) return;
           loaded.current.set(id, { sha256, def });
-          setLoadedEpoch((epoch) => epoch + 1);
+          setLoadedDefs(new Map(loaded.current));
         },
         () => {
           // A browser-local import failure leaves this row's named missing-web placeholder.
@@ -912,7 +922,7 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
         [
           ...WEB_PLUGIN_DEFS,
           ...state.roster.flatMap((row) => {
-            const held = loaded.current.get(row.manifest.id);
+            const held = loadedDefs.get(row.manifest.id);
             return row.enabled &&
               row.install?.hardened !== true &&
               held?.sha256 === row.install?.sha256 &&
@@ -924,7 +934,7 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
         overrides,
         values,
       ),
-    [state, overrides, values, loadedEpoch],
+    [state, overrides, values, loadedDefs],
   );
 
   return (
