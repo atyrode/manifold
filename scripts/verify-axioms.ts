@@ -82,6 +82,7 @@ import {
   ContainerResponseSchema,
   IndexResponseSchema,
   MAX_TILE_CHILDREN,
+  PluginManifestSchema,
   PluginRosterSchema,
   PluginsResponseSchema,
   ROOT_TILE_ID,
@@ -89,7 +90,11 @@ import {
   SceneElementSchema,
   TokenGrantSchema,
   UI_NODE_TYPES,
+  anchorOf,
+  cssRules,
+  everyCompound,
   formatManifoldUri,
+  unscopedRule,
   validateTileLayout,
   type LogEvent,
   type ManifoldRef,
@@ -1044,6 +1049,7 @@ const ROUTE_ALLOWLIST: readonly string[] = [
   "/api/attendance",
   "/api/plugins",
   "/api/plugins/:id/web.js",
+  "/api/plugins/:id/styles.css",
   "/api/protocol",
   "/api/resolve",
   "/auth/preview/callback",
@@ -1736,7 +1742,10 @@ function scanTree(dir: string, out: string[]): void {
  *
  * So the split is registered rather than remembered: §Lexicon's `cssFamilies` names one owning
  * stylesheet per selector family, and this check reads every `.css` file under `packages/` back
- * against it, in both directions like every registry here.
+ * against it, in both directions like every registry here. The selector walk itself —
+ * `cssRules`, `everyCompound`, `anchorOf` — is `@manifold/protocol`'s `stylesheet.ts`, shared
+ * with the hub's load-time twin of this rule for installed and unpacked sheets (ADR 0025 §7,
+ * #258): one parser, so "leftmost compound" means the same thing in the tree and at the door.
  *
  * Three decisions make the check mechanical rather than approximate:
  *
@@ -1761,9 +1770,6 @@ function scanTree(dir: string, out: string[]): void {
  */
 {
   const SHARED = "shared";
-  const CSS_COMMENTS = /\/\*[\s\S]*?\*\//g;
-  const FUNCTIONAL_PSEUDO = /:(?:is|not|where|has)\(([^()]*)\)/g;
-  const FIRST_CLASS = /\.(-?[_a-zA-Z][-\w]*)/;
 
   const owners = new Map<string, string>(
     registries.cssFamilies.map((row) => [row.family, row.owner]),
@@ -1780,135 +1786,41 @@ function scanTree(dir: string, out: string[]): void {
     return null;
   };
 
-  /** Splits on commas / combinators that are not inside `(…)` or `[…]`. */
-  const splitTop = (text: string, breaks: string): readonly string[] => {
-    const parts: string[] = [];
-    let depth = 0;
-    let current = "";
-    for (const ch of text) {
-      if (ch === "(" || ch === "[") depth++;
-      if (ch === ")" || ch === "]") depth--;
-      if (depth === 0 && breaks.includes(ch)) {
-        parts.push(current);
-        current = "";
-        continue;
-      }
-      current += ch;
-    }
-    parts.push(current);
-    return parts.map((part) => part.trim()).filter((part) => part !== "");
-  };
-
-  /** The class a compound is ABOUT, ignoring the ones that merely qualify it. */
-  const anchorOf = (compound: string): string | null =>
-    FIRST_CLASS.exec(compound.replace(FUNCTIONAL_PSEUDO, ""))?.[1] ?? null;
-
-  /** Every compound a selector mentions, the arguments of functional pseudos included. */
-  const everyCompound = (selector: string): readonly string[] => {
-    const found: string[] = [];
-    for (const compound of splitTop(selector, " \t\n>+~")) {
-      found.push(compound);
-      for (;;) {
-        const inner = FUNCTIONAL_PSEUDO.exec(compound);
-        if (inner === null) break;
-        for (const one of splitTop(inner[1] ?? "", ",")) {
-          found.push(...splitTop(one, " \t\n>+~"));
-        }
-      }
-    }
-    return found;
-  };
-
-  interface CssRule {
-    readonly selectors: readonly string[];
-    readonly line: number;
-  }
-
-  /**
-   * Selector lists and `@keyframes` names, one level of at-rule nesting followed. A keyframes
-   * name is reported as its own pseudo-selector so the animation vocabulary is owned too — a
-   * plugin cannot mint `@keyframes terminal-blink` in somebody else's file either.
-   */
-  const cssRules = (text: string): readonly CssRule[] => {
-    const lineStarts = [0];
-    for (let i = 0; i < text.length; i++) if (text[i] === "\n") lineStarts.push(i + 1);
-    const lineAt = (index: number): number => {
-      let low = 0;
-      let high = lineStarts.length - 1;
-      while (low < high) {
-        const mid = (low + high + 1) >> 1;
-        if ((lineStarts[mid] ?? 0) <= index) low = mid;
-        else high = mid - 1;
-      }
-      return low + 1;
-    };
-    const rules: CssRule[] = [];
-    const scan = (from: number, to: number): void => {
-      let start = from;
-      let depth = 0;
-      let preludeEnd = -1;
-      let quote = "";
-      let inComment = false;
-      for (let i = from; i < to; i++) {
-        const ch = text[i];
-        if (inComment) {
-          if (ch === "*" && text[i + 1] === "/") {
-            inComment = false;
-            i++;
-          }
-          continue;
-        }
-        if (quote !== "") {
-          if (ch === "\\") i++;
-          else if (ch === quote) quote = "";
-          continue;
-        }
-        if (ch === "/" && text[i + 1] === "*") {
-          inComment = true;
-          i++;
-          continue;
-        }
-        if (ch === '"' || ch === "'") {
-          quote = ch;
-          continue;
-        }
-        if (ch === "{") {
-          if (depth === 0) preludeEnd = i;
-          depth++;
-          continue;
-        }
-        if (ch === "}") {
-          depth--;
-          if (depth > 0) continue;
-          const prelude = text.slice(start, preludeEnd).replace(CSS_COMMENTS, "").trim();
-          const line = lineAt(preludeEnd);
-          if (/^@(?:media|supports|container|layer)\b/.test(prelude)) {
-            scan(preludeEnd + 1, i);
-          } else if (prelude.startsWith("@keyframes")) {
-            rules.push({ selectors: [`.${prelude.slice("@keyframes".length).trim()}`], line });
-          } else if (!prelude.startsWith("@")) {
-            rules.push({ selectors: splitTop(prelude, ","), line });
-          }
-          start = i + 1;
-          continue;
-        }
-        if (ch === ";" && depth === 0) start = i + 1;
-      }
-    };
-    scan(0, text.length);
-    return rules;
-  };
-
+  /*
+    A sheet under a kit fixture is an INSTALLED plugin's, not the tree's: the hub admits it
+    under the root-class rule (ADR 0025 §7, #258), so it is read here the way the hub reads
+    it — with the one walk both import — rather than against the registry, and it registers no
+    family. The manifest beside it says whose root it must hang from.
+  */
   const stylesheets: string[] = [];
+  const fixtureSheets: string[] = [];
   for (const hit of new Bun.Glob("packages/**/*.css").scanSync({
     cwd: repoRoot,
     onlyFiles: true,
   })) {
     const path = hit.split("\\").join("/");
     if (path.includes("node_modules/") || path.includes("dist/")) continue;
-    stylesheets.push(path);
+    (path.includes("/test/fixtures/") ? fixtureSheets : stylesheets).push(path);
   }
   stylesheets.sort();
+  fixtureSheets.sort();
+
+  const unrooted: string[] = [];
+  for (const path of fixtureSheets) {
+    const manifest = PluginManifestSchema.parse(
+      JSON.parse(readFileSync(join(repoRoot, dirname(path), "manifest.json"), "utf8")),
+    );
+    const offender = unscopedRule(readFileSync(join(repoRoot, path), "utf8"), manifest.id);
+    if (offender === null) continue;
+    unrooted.push(`${path}:${String(offender.line)} ${offender.reason} (${offender.selector})`);
+  }
+  check(
+    "S13 css ownership at load",
+    unrooted.length === 0,
+    unrooted.length === 0
+      ? `${String(fixtureSheets.length)} fixture sheet(s), every selector rooted at its plugin's own class by the walk the hub shares`
+      : `fixture sheets reaching past their root: ${list(unrooted)}`,
+  );
 
   const unregistered: string[] = [];
   const misowned: string[] = [];
