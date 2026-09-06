@@ -40,7 +40,10 @@ const MANIFEST: PluginManifest = {
   entry: { server: true, web: "web.js" },
 };
 
-function bundleBytes(manifest: PluginManifest = MANIFEST, files?: Record<string, string>): Buffer {
+function bundleBytes(
+  manifest: PluginManifest = MANIFEST,
+  files?: Record<string, string>,
+): Buffer<ArrayBuffer> {
   const members = files ?? { "server.js": "export const half = 'server';", "web.js": "export {};" };
   return Buffer.from(
     JSON.stringify({

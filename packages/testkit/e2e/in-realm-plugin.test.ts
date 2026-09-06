@@ -48,12 +48,14 @@ test("in-realm install appears in a second open browser; disable drops it and re
     await second.clickTestId("identity-enter");
     await waitFor(
       () => second.evaluate<boolean>("document.querySelector('#identity-name') === null"),
-      10_000, 50,
+      10_000,
+      50,
     );
     const container = await createContainer(server, "Loader test");
     // Reserve the panel in this principal's layout before installation, as a missing-plugin
     // placeholder. Installation must replace it in-place, not require navigation or rejoin.
-    expect(await second.evaluate<boolean>(`(async () => {
+    expect(
+      await second.evaluate<boolean>(`(async () => {
       const identity = JSON.parse(localStorage.getItem("manifold.identity"));
       const headers = { Authorization: "Bearer " + identity.token, "Content-Type": "application/json" };
       const { layout } = await (await fetch("/api/layout", { headers })).json();
@@ -65,7 +67,8 @@ test("in-realm install appears in a second open browser; disable drops it and re
       return (await (await fetch("/api/actions/core.space.setLayout", {
         method: "POST", headers, body: JSON.stringify({ layout }),
       })).json()).ok;
-    })()`)).toBe(true);
+    })()`),
+    ).toBe(true);
     await first.goto(`${server.httpUrl}/p/${container.id}`);
     await second.goto(`${server.httpUrl}/p/${container.id}`);
     await second.evaluate("globalThis.__inRealmNoReload = 'open-before-install'");
@@ -78,7 +81,9 @@ test("in-realm install appears in a second open browser; disable drops it and re
       hardened: false,
     });
     await waitFor(visible, 15_000, 50);
-    expect(await second.evaluate("globalThis.__inRealmNoReload")).toBe("open-before-install");
+    expect(await second.evaluate<string>("globalThis.__inRealmNoReload")).toBe(
+      "open-before-install",
+    );
     await ownerAction(server, "engine.plugins.setEnabled", {
       id: "example.counter",
       enabled: false,
@@ -89,7 +94,9 @@ test("in-realm install appears in a second open browser; disable drops it and re
       enabled: true,
     });
     await waitFor(visible, 10_000, 50);
-    expect(await second.evaluate("globalThis.__inRealmNoReload")).toBe("open-before-install");
+    expect(await second.evaluate<string>("globalThis.__inRealmNoReload")).toBe(
+      "open-before-install",
+    );
   } catch (error) {
     console.error(await second.evaluate("document.body.innerText"), second.drainMessages());
     throw error;

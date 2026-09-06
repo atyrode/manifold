@@ -756,8 +756,8 @@ web halves — and both run `assembleRoster` from `@manifold/plugin`, which refu
 plugin ids, action names, panel ids, element types and tool ids by NAMING every offender.
 Manifests are inert DATA: no executable fields; `entry` names which halves an INSTALLED bundle
 runs and is absent on every in-tree manifest (§Hardened plugins). Plugins are trusted in-process
-code (ADR 0010, ADR 0025) and hardened only when their installer chose it (ADR 0016; today every
-installed row, until the in-realm loader lands — §Hardened plugins); the
+code (ADR 0010, ADR 0025) and hardened only when their installer chose `hardened: true`
+(ADR 0016; §Hardened plugins); the
 wire is the security boundary and every authority decision happens at a door. What happens to a
 plugin's data, contributions and neighbours across an enable/disable is the **behavioral contract**
 (`docs/decisions/0013-plugin-behavioral-contract.md`, per-kind table in `REGISTRY.md`
@@ -774,7 +774,7 @@ plugin's data, contributions and neighbours across an enable/disable is the **be
            | "isolate_starting" | "isolate_crashed",   // absent ≡ ok; the isolate_ pair is the runner's
   refusal?: PluginRefusalReason,              // why this row cannot be toggled right now
   changedBy?: string | null, changedAt?: number | null,    // who last flipped it, and when
-  install?: { sha256, source, grantedCaps, installedBy, installedAt, refusal? }  // present iff INSTALLED (§Hardened plugins)
+  install?: { sha256, source, grantedCaps, installedBy, installedAt, hardened?, builtAgainst?, refusal? }  // present iff INSTALLED (§Hardened plugins)
 }
 ```
 
@@ -799,15 +799,15 @@ fan-out order.
 object; the answer is always HTTP 200 carrying `ActionOutcome`. The ladder is MONOTONIC and
 stops at the first rule that fires:
 
-| Order | `rule`            | Fires when                                                                                                                                                                                                                                                                                    |
-| ----- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | `unknown_action`  | no assembled action carries that name                                                                                                                                                                                                                                                         |
-| 2     | `plugin_disabled` | the owning plugin is disabled in this workspace — SKIPPED for actions declared `cleanup: true` (D12: removal survives a disable; `core.terminals.kill` is the wave-1 occupant)                                                                                                                |
-| 3     | `forbidden`       | the caller is container-scoped (`containerScope !== null`) AND the action declares `scope: "workspace"` (the default) — message "scoped tokens cannot invoke workspace actions". An action declaring `scope: "container"` skips this rung; its handler MUST honour `ctx.containerScope`       |
-| 4     | `forbidden`       | the caller lacks one of the action's DECLARED caps (intersection at the door, not inside the handler)                                                                                                                                                                                         |
-| 5     | `invalid_args`    | the body fails the action's `input` schema                                                                                                                                                                                                                                                    |
-| 6     | `refused`         | the handler refused on domain grounds, or the engine refused by CLASS — the message is a refusal class, optionally naming offenders (below)                                                                                                                                                   |
-| 7     | `unavailable`     | the isolate that holds the handler is not running (crashed past `ISOLATE_CRASH_BUDGET`) or did not answer within `ISOLATE_DISPATCH_DEADLINE_MS` (ADR 0016 §6, §Hardened plugins below). Only a hardened row — today every row carrying `install` — can answer it; an in-realm door never does |
+| Order | `rule`            | Fires when                                                                                                                                                                                                                                                                              |
+| ----- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | `unknown_action`  | no assembled action carries that name                                                                                                                                                                                                                                                   |
+| 2     | `plugin_disabled` | the owning plugin is disabled in this workspace — SKIPPED for actions declared `cleanup: true` (D12: removal survives a disable; `core.terminals.kill` is the wave-1 occupant)                                                                                                          |
+| 3     | `forbidden`       | the caller is container-scoped (`containerScope !== null`) AND the action declares `scope: "workspace"` (the default) — message "scoped tokens cannot invoke workspace actions". An action declaring `scope: "container"` skips this rung; its handler MUST honour `ctx.containerScope` |
+| 4     | `forbidden`       | the caller lacks one of the action's DECLARED caps (intersection at the door, not inside the handler)                                                                                                                                                                                   |
+| 5     | `invalid_args`    | the body fails the action's `input` schema                                                                                                                                                                                                                                              |
+| 6     | `refused`         | the handler refused on domain grounds, or the engine refused by CLASS — the message is a refusal class, optionally naming offenders (below)                                                                                                                                             |
+| 7     | `unavailable`     | the hardened runner that holds the handler is not running (crashed past `ISOLATE_CRASH_BUDGET`) or did not answer within `ISOLATE_DISPATCH_DEADLINE_MS`; a bundle that failed verification also refuses here before any code is loaded (ADR 0016 §6, §Hardened plugins below)           |
 
 Order matters: a caller must not learn that an action exists and is forbidden before the cheaper
 facts (existence, enablement) are settled, and a handler never sees unvalidated arguments. A

@@ -1724,7 +1724,7 @@ describe("PluginHost install doors", () => {
     expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256 })).ok).toBe(
       true,
     );
-    const result = (calls: number) => ({
+    const result = (calls: number): ActionOutcome => ({
       ok: true,
       result: { calls, owner: fixture.owner.principal.id, principal: fixture.owner.principal.id },
     });

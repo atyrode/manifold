@@ -320,7 +320,7 @@ function unverifiedDef(row: PluginInstallRow, refusal: PluginInstallRefusal): Se
 }
 
 /** The worker module's bytes, decoded once at load so the route serves without re-decoding. */
-function webModuleOf(bundle: PluginBundle): Uint8Array | null {
+function webModuleOf(bundle: PluginBundle): Uint8Array<ArrayBuffer> | null {
   const name = bundle.manifest.entry.web;
   if (name === undefined) return null;
   const encoded = bundle.files[name];
@@ -369,7 +369,7 @@ export interface IsolateDeps {
 interface InstalledPlugin {
   readonly row: PluginInstallRow;
   readonly bundle: PluginBundle | null;
-  readonly web: Uint8Array | null;
+  readonly web: Uint8Array<ArrayBuffer> | null;
   readonly refusal?: PluginInstallRefusal;
 }
 
@@ -1571,7 +1571,9 @@ export class PluginHost {
    * Null for everything else, which the route answers as 404 — a disabled plugin's code is not
    * fetched by anyone, and a refused bundle's never is.
    */
-  webModule(id: string): { readonly sha256: string; readonly bytes: Uint8Array } | null {
+  webModule(
+    id: string,
+  ): { readonly sha256: string; readonly bytes: Uint8Array<ArrayBuffer> } | null {
     const entry = this.installed.get(id);
     if (entry === undefined || entry.web === null || !this.assembled.enabled(id)) return null;
     return { sha256: entry.row.sha256, bytes: entry.web };
