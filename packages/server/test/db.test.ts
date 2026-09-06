@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -13,8 +13,10 @@ import {
   readElement,
   readTileLayout,
 } from "@manifold/scene";
+import { AuthService, ServiceError } from "../src/auth.ts";
 import { openDatabase, SCHEMA_VERSION } from "../src/db.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
+import { FakeRuntime } from "./helpers.ts";
 
 test("an event write survives a competing SQLite write lock", async () => {
   const dir = mkdtempSync(join(tmpdir(), "manifold-db-busy-"));
@@ -1087,13 +1089,13 @@ describe("pre-migration snapshot retention", () => {
       seedPreV9(path);
       openDatabase(path).close();
 
-      // Five backed-up migrations replayed, five images, no sixth file: `VACUUM INTO` cannot
-      // overwrite, so the staging name has to be gone by the time the runner returns.
+      // Every backed-up migration has one image; no partial staging file survives.
       expect(backupsIn(dir)).toEqual([
         "manifold.db.pre-v11.bak",
         "manifold.db.pre-v13.bak",
         "manifold.db.pre-v16.bak",
         "manifold.db.pre-v19.bak",
+        "manifold.db.pre-v21.bak",
         "manifold.db.pre-v9.bak",
       ]);
 
@@ -1104,6 +1106,7 @@ describe("pre-migration snapshot retention", () => {
       expect(snapshotVersion(`${path}.pre-v13.bak`)).toBe("12");
       expect(snapshotVersion(`${path}.pre-v16.bak`)).toBe("15");
       expect(snapshotVersion(`${path}.pre-v19.bak`)).toBe("18");
+      expect(snapshotVersion(`${path}.pre-v21.bak`)).toBe("20");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1142,13 +1145,13 @@ describe("pre-migration snapshot retention", () => {
 
       // Still one image for version 11, not two: a retried version replaces its predecessor
       // rather than leaving a full copy of the database per attempt. The retry also carries on
-      // past the migration that failed, so 13's, 16's and 17's images are written by it, not
-      // the attempt.
+      // past the migration that failed, so later images are written by it, not the attempt.
       expect(backupsIn(dir)).toEqual([
         "manifold.db.pre-v11.bak",
         "manifold.db.pre-v13.bak",
         "manifold.db.pre-v16.bak",
         "manifold.db.pre-v19.bak",
+        "manifold.db.pre-v21.bak",
         "manifold.db.pre-v9.bak",
       ]);
       // And the survivor is the RETRY's image, not the failed attempt's — the stray table the
@@ -1176,6 +1179,9 @@ describe("migration 18: an install row's published doors", () => {
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER);
 CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER);
+CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT);
+CREATE TABLE tokens(id TEXT PRIMARY KEY, principal_id TEXT, revoked_at INTEGER, expires_at INTEGER);
+CREATE TABLE terminals(agent_principal_id TEXT, status TEXT);
 CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INTEGER NOT NULL,
   ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
   PRIMARY KEY (container_id, epoch, rev));
@@ -1219,6 +1225,9 @@ CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INT
   PRIMARY KEY (container_id, epoch, rev));
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER);
+CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT);
+CREATE TABLE tokens(id TEXT PRIMARY KEY, principal_id TEXT, revoked_at INTEGER, expires_at INTEGER);
+CREATE TABLE terminals(agent_principal_id TEXT, status TEXT);
 INSERT INTO meta(key, value) VALUES ('schema_version', '18');
 `);
   const doc = createSceneDoc();
@@ -1572,4 +1581,211 @@ BEGIN SELECT RAISE(ABORT, 'fixture layout write failure'); END;
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+describe("migration 21: legacy credential grace", () => {
+  test("bounds historical bearers once while preserving authority and lifecycle credentials", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-db-credential-grace-"));
+    const path = join(dir, "manifold.db");
+    const migratedAt = 1_900_000_000_000;
+    const humanDeadline = migratedAt + 14 * 24 * 60 * 60 * 1000;
+    const agentDeadline = migratedAt + 60 * 60 * 1000;
+    const ownerKey = "migration-owner-secret";
+    const runtime = new FakeRuntime();
+    runtime.time = migratedAt;
+    let db: Database | undefined;
+    const now = spyOn(Date, "now").mockReturnValue(migratedAt);
+    try {
+      // 21 changes data only: an empty migrated schema is also the complete v20 schema.
+      // Insert historical rows directly, never through today's credential minting policy.
+      db = openDatabase(path);
+      const owner = new AuthService(new ServerStore(db), ownerKey, runtime).ownerPrincipal;
+      db.exec("UPDATE meta SET value = '20' WHERE key = 'schema_version'");
+      const fixtures = [
+        { id: "human", kind: "human", name: "machine", expires: null, revoked: null },
+        { id: "agent", kind: "agent", name: "terminal-looking-name", expires: null, revoked: null },
+        {
+          id: "bounded",
+          kind: "agent",
+          name: "bounded",
+          expires: humanDeadline + 1000,
+          revoked: null,
+        },
+        { id: "expired", kind: "human", name: "expired", expires: migratedAt - 1, revoked: null },
+        {
+          id: "revoked",
+          kind: "human",
+          name: "revoked",
+          expires: null,
+          revoked: migratedAt - 1000,
+        },
+        {
+          id: "running",
+          kind: "agent",
+          name: "ordinary-looking-name",
+          expires: null,
+          revoked: null,
+        },
+        { id: "exited", kind: "agent", name: "exited", expires: null, revoked: null },
+        { id: "machine-id", kind: "agent", name: "machine identity", expires: null, revoked: null },
+        {
+          id: "machine-token",
+          kind: "human",
+          name: "machine credential",
+          expires: null,
+          revoked: null,
+        },
+        {
+          id: "enrolled-machine",
+          kind: null,
+          name: "no principal row",
+          expires: null,
+          revoked: null,
+        },
+      ];
+      for (const fixture of fixtures) {
+        if (fixture.kind !== null) {
+          db.query(
+            "INSERT INTO principals(id, kind, name, color, created_at) VALUES (?, ?, ?, '#123456', 1)",
+          ).run(fixture.id, fixture.kind, fixture.name);
+        }
+        db.query(
+          `
+INSERT INTO tokens(id, hash, principal_id, caps, container_id, created_at, revoked_at, minted_by, grant_id, expires_at)
+VALUES (?, ?, ?, '["containers:read"]', NULL, 1, ?, ?, ?, ?)
+`,
+        ).run(
+          fixture.id,
+          sha256Hex(`secret-${fixture.id}`),
+          fixture.id,
+          fixture.revoked,
+          owner.id,
+          `grant-${fixture.id}`,
+          fixture.expires,
+        );
+        if (fixture.revoked === null) {
+          db.query(
+            `
+INSERT INTO grants(id, principal_kind, principal_id, node, caps, effect, reach, created_by, created_at)
+VALUES (?, 'principal', ?, 'manifold://', '["containers:read"]', 'allow', 'subtree', ?, 1)
+`,
+          ).run(`grant-${fixture.id}`, fixture.id, owner.id);
+        }
+      }
+      db.exec(`
+INSERT INTO terminals(id, agent_principal_id, status) VALUES
+  ('live-terminal', 'running', 'running'), ('dead-terminal', 'exited', 'exited');
+INSERT INTO machines(id, name, token_id, last_seen) VALUES
+  ('machine-id', 'one', 'machine-token', 1),
+  ('enrolled-machine', 'two', 'enrolled-machine', 1);
+`);
+      const before = db
+        .query<Record<string, unknown>, []>("SELECT * FROM tokens ORDER BY id")
+        .all();
+      const grantsBefore = db.query("SELECT * FROM grants ORDER BY id").all();
+      db.close();
+      db = openDatabase(path);
+      const auth = new AuthService(new ServerStore(db), ownerKey, runtime);
+      const deadlines: Record<string, number> = {
+        human: humanDeadline,
+        agent: agentDeadline,
+        exited: agentDeadline,
+      };
+      expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(
+        before.map((row) => ({
+          ...row,
+          expires_at: deadlines[row.id as string] ?? row.expires_at,
+        })),
+      );
+      expect(db.query("SELECT * FROM grants ORDER BY id").all()).toEqual(grantsBefore);
+      const backup = new Database(`${path}.pre-v21.bak`, { readonly: true, strict: true });
+      try {
+        expect(backup.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(before);
+        expect(backup.query("SELECT * FROM grants ORDER BY id").all()).toEqual(grantsBefore);
+        expect(backup.query("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
+          value: "20",
+        });
+      } finally {
+        backup.close();
+      }
+      function refused(id: string, message: string): void {
+        try {
+          auth.authenticate(`secret-${id}`);
+          throw new Error("expected authentication refusal");
+        } catch (error) {
+          expect(error).toBeInstanceOf(ServiceError);
+          if (error instanceof ServiceError) {
+            expect(error.code).toBe("forbidden");
+            expect(error.message).toBe(message);
+          }
+        }
+      }
+      refused("revoked", "revoked");
+      refused("expired", "expired");
+      for (const [id, deadline] of Object.entries(deadlines)) {
+        runtime.time = deadline - 1;
+        expect(auth.authenticate(`secret-${id}`)).toMatchObject({
+          principal: { id },
+          caps: ["containers:read"],
+          grantId: `grant-${id}`,
+          expiresAt: deadline,
+        });
+        expect(auth.allows(auth.authenticate(`secret-${id}`), "containers:read")).toBeTrue();
+        expect(auth.allows(auth.authenticate(`secret-${id}`), "tokens:mint")).toBeFalse();
+        runtime.time = deadline;
+        refused(id, "expired");
+      }
+      runtime.time = humanDeadline + 1;
+      expect(auth.authenticate("secret-bounded").principal.id).toBe("bounded");
+      expect(auth.authenticate(ownerKey)).toMatchObject({ principal: owner, tokenId: null });
+      expect(auth.authenticateMachine("secret-enrolled-machine").id).toBe("enrolled-machine");
+      expect(auth.authenticateMachine("secret-machine-token").id).toBe("machine-id");
+      expect(auth.authenticate("secret-running").principal.id).toBe("running");
+      expect(auth.revokePrincipal("running", auth.authenticate(ownerKey))).toBe(1);
+      refused("running", "revoked");
+      const after = db.query("SELECT * FROM tokens ORDER BY id").all();
+      db.close();
+      now.mockReturnValue(humanDeadline + 100_000);
+      db = openDatabase(path);
+      expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(after);
+      const reopenedAuth = new AuthService(new ServerStore(db), ownerKey, runtime);
+      expect(() => reopenedAuth.authenticate("secret-human")).toThrow("expired");
+      expect(reopenedAuth.authenticate(ownerKey).tokenId).toBeNull();
+    } finally {
+      now.mockRestore();
+      db?.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("migration 21 refuses to rewrite credentials when its backup cannot be published", () => {
+  const dir = mkdtempSync(join(tmpdir(), "manifold-db-credential-backup-"));
+  const path = join(dir, "manifold.db");
+  try {
+    const seed = openDatabase(path);
+    seed.exec(`
+UPDATE meta SET value = '20' WHERE key = 'schema_version';
+INSERT INTO principals(id, kind, name, created_at) VALUES ('human', 'human', 'reader', 1);
+INSERT INTO tokens(id, hash, principal_id, caps, created_at)
+VALUES ('legacy', 'historical-hash', 'human', '["containers:read"]', 1);
+`);
+    const before = seed.query("SELECT * FROM tokens").all();
+    seed.close();
+    // A directory cannot be replaced by the snapshot file. Failure to publish the required
+    // image must stop the migration before any credential deadline or schema marker moves.
+    mkdirSync(`${path}.pre-v21.bak`);
+    expect(() => openDatabase(path)).toThrow();
+    const unchanged = new Database(path, { readonly: true, strict: true });
+    try {
+      expect(unchanged.query("SELECT * FROM tokens").all()).toEqual(before);
+      expect(unchanged.query("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
+        value: "20",
+      });
+    } finally {
+      unchanged.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -18,8 +18,10 @@ import {
   ContainerResponseSchema,
   CredentialsResponseSchema,
   RevokeResultSchema,
+  TerminalInfoSchema,
   TerminalsResponseSchema,
   type PrincipalCredentials,
+  type TerminalInfo,
   type TerminalSummary,
 } from "../packages/protocol/src/index.ts";
 import { SessionClient, base64ToText } from "../packages/sdk/src/index.ts";
@@ -48,7 +50,7 @@ const results: { name: string; ok: boolean; detail: string }[] = [];
  * with a 14-day credential, and the deal for keeping it human is that this run revokes it
  * before exiting (issue #140; the rule is in docs/CONTRACTS.md §Identity).
  */
-const VERIFY_NAME = "verify";
+const VERIFY_NAME = `verify-${crypto.randomUUID()}`;
 const TEARDOWN_STEP = "verify principal revoked on teardown";
 
 /** One dispatch through the action door as the owner: the result, or the denial as an error. */
@@ -70,6 +72,21 @@ async function act(name: string, args: unknown): Promise<unknown> {
  */
 async function listTerminals(): Promise<readonly TerminalSummary[]> {
   return TerminalsResponseSchema.parse(await act("core.terminals.listAll", {})).terminals;
+}
+
+/** Ownership, not a global before/after census: other users may spawn during this run. */
+async function listOwnedTerminals(
+  principalIds: readonly string[],
+): Promise<readonly TerminalInfo[]> {
+  const response = await fetch(`${origin}/api/introspect`, { headers: httpHeaders });
+  if (!response.ok) throw new Error(`terminal ownership inspection failed: ${response.status}`);
+  const state: unknown = await response.json();
+  if (typeof state !== "object" || state === null || !("terminals" in state)) {
+    throw new Error("terminal ownership inspection returned no terminal state");
+  }
+  return TerminalInfoSchema.array()
+    .parse(state.terminals)
+    .filter((terminal) => principalIds.includes(terminal.createdBy));
 }
 
 /** Every principal and its live credentials, through `core.access.listCredentials`. */
@@ -105,9 +122,39 @@ async function revokeVerifyPrincipal(): Promise<string> {
           .map((row) => row.principal.id);
   if (ids.length === 0)
     return "gate submitted, no new 'verify' principal found — nothing to revoke";
+  await step("verification terminals removed", async () => {
+    const terminals = await listOwnedTerminals(ids);
+    const results = await Promise.allSettled(
+      terminals.map((terminal) => act("core.terminals.kill", { terminalId: terminal.id })),
+    );
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures.map((result) => result.reason),
+        `failed to remove ${failures.length} verification terminal(s)`,
+      );
+    }
+    if ((await listOwnedTerminals(ids)).length > 0) {
+      throw new Error("verification terminals remain after removal");
+    }
+    return `${terminals.length} run-owned terminal(s) removed`;
+  });
+  const revocations = await Promise.allSettled(
+    ids.map(async (principalId) =>
+      RevokeResultSchema.parse(await act("core.access.revoke", { principalId })),
+    ),
+  );
   let revoked = 0;
-  for (const principalId of ids) {
-    revoked += RevokeResultSchema.parse(await act("core.access.revoke", { principalId })).revoked;
+  const failures: unknown[] = [];
+  for (const revocation of revocations) {
+    if (revocation.status === "fulfilled") revoked += revocation.value.revoked;
+    else failures.push(revocation.reason);
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      `failed to revoke ${failures.length} verification identity(s)`,
+    );
   }
   const live = (await listCredentials()).filter(
     (row) => ids.includes(row.principal.id) && row.sessions.length > 0,
@@ -121,21 +168,10 @@ async function revokeVerifyPrincipal(): Promise<string> {
 }
 
 /** Every run creates a container on the PRODUCTION origin; never leave it behind. */
-async function cleanupContainer(): Promise<void> {
-  if (containerId === "") return;
-  try {
-    const res = await fetch(`${origin}/api/actions/core.index.deleteContainer`, {
-      method: "POST",
-      headers: httpHeaders,
-      body: JSON.stringify({ containerId }),
-    });
-    if (!res.ok) console.log(`WARN  evt=verify_container_cleanup_failed status=${res.status}`);
-  } catch (error) {
-    // A failed cleanup must not mask the gate verdict — but never hide it either.
-    console.log(
-      `WARN  evt=verify_container_cleanup_failed ${error instanceof Error ? error.message : "error"}`,
-    );
-  }
+async function cleanupContainer(): Promise<string> {
+  if (containerId === "") return "no container created";
+  await act("core.index.deleteContainer", { containerId });
+  return `container ${containerId} removed`;
 }
 
 async function step(name: string, run: () => Promise<string>): Promise<void> {
@@ -257,20 +293,17 @@ try {
       30_000,
       "online machine terminal action",
     );
-    // The census BEFORE the click names the terminal this run spawns, by difference. A real
-    // workspace's first running row is routinely a stale one — a machine whose agent never
-    // dialed back, so the hub cannot know its PTYs died — and aiming the viewer steps at it
-    // times them out on data the browser step just passed on.
-    const before = new Set((await listTerminals()).map((terminal) => terminal.id));
+    // The browser has a run-owned identity; a concurrent user's terminal is never this run's.
+    if (verifyPrincipalId === "") throw new Error("verification browser identity is unknown");
     await browser.evaluate("document.querySelector('[aria-label^=\"New terminal on \"]').click()");
     await until(
       () => browser.evaluate<boolean>("document.querySelector('.xterm') !== null"),
       30_000,
       "xterm mount",
     );
-    const spawned = (await listTerminals())
-      .filter((terminal) => terminal.status === "running" && !before.has(terminal.id))
-      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    const spawned = (await listOwnedTerminals([verifyPrincipalId])).filter(
+      (terminal) => terminal.status === "running",
+    )[0];
     if (spawned === undefined) throw new Error("the terminal the browser opened is not listed");
     terminalId = spawned.id;
     // Focus = engage: a real user's click both focuses xterm and escalates the mono
@@ -391,7 +424,7 @@ try {
   // success, failure, and throw alike. The browser goes first so the grant it holds is
   // never in use when its token dies.
   await browser.close().catch(() => console.log("WARN  evt=verify_browser_close_failed"));
-  await cleanupContainer();
+  await step("verification container removed", cleanupContainer);
   await step(TEARDOWN_STEP, revokeVerifyPrincipal);
 }
 
