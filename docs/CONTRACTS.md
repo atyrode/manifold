@@ -178,12 +178,12 @@ There is no `core.social` seat. The five responsibilities redistributed by ADR 0
 belong to the existing owners and roadmap waves below, not to a new plugin in the default
 distribution. `AXIOMS.md` §Roadmap's Social-layer bullet summarizes this allocation.
 
-| Roadmap noun                   | Owner and delivery contract                                                                                                                                                    |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Roadmap noun                   | Owner and delivery contract                                                                                                                                                       |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | identity beyond a device grant | `Principal` and `Principal.origin` (ADR 0014) supply the landed identity shape; identity development follows #58 and ADR 0019's posture.                                          |
 | share-invitation signaling     | `core.access.mintShare` / `revokeShare` / `listShares` and the instance channel's `ticket_request` / `ticket` exchange (ADR 0014), already shipped.                               |
-| friends / contacts             | A local, asymmetric contacts ledger on `core.access`, keyed by `(origin, ref)` and granting no authority (ADR 0015 §3); a roadmap obligation, not a new seat.                      |
-| agent chat / DM                | The Notifications wave's durable addressed message (ADR 0015 §4); not an event, not a new plane, and not a separate chat seat.                                                  |
+| friends / contacts             | A local, asymmetric contacts ledger on `core.access`, keyed by `(origin, ref)` and granting no authority (ADR 0015 §3); a roadmap obligation, not a new seat.                     |
+| agent chat / DM                | The Notifications wave's durable addressed message (ADR 0015 §4); not an event, not a new plane, and not a separate chat seat.                                                    |
 | presence on a shared node      | `core.presence`, unchanged: guests participate on the host's session channel, so vantage and attendance already cross origins; ADR 0015 §5 records the separate consent question. |
 
 ### Production identity handoff to disposable previews (ADR 0027)
