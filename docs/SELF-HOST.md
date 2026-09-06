@@ -388,6 +388,21 @@ the fleet-pin reminder. Production is the GitHub Environment `production`; its d
 history is the ledger of what production ran, and protection rules attach there. Promotion is
 never a side effect of a release or of a green `main`.
 
+**Fleet pin after promotion.** Once the hub answers with the promoted build, `deploy-hub.yml`
+dispatches `update-pins.yml` in atyrode/dotfiles so the spokes follow the hub in that order
+(invariant 10) instead of racing it on the pin cron. The step runs only when the repository
+secret `DOTFILES_DISPATCH_TOKEN` exists; absent or expired, it is skipped and the dotfiles cron
+with its `/healthz` hold remains the floor, so promotion itself never fails on it. The token is
+a fine-grained PAT named `manifold-cicd` on the operator's account, scoped to the single
+repository atyrode/dotfiles with Actions: read and write and nothing else; the current one
+**expires 2026-12-05**. Renewal: mint the same-shaped token at
+`github.com/settings/personal-access-tokens`, then on an operator device
+`gh secret set DOTFILES_DISPATCH_TOKEN --repo atyrode/manifold < <file>` and shred the file —
+the value never enters argv, a log or a chat. An agent that sees the "Dispatch the fleet pin"
+step skipped or failing on a promotion run, or that reads this paragraph within a month of the
+expiry date, tells the operator to renew; the date above is updated in the same commit as the
+renewal.
+
 **Development** is the operator's second instance, and it runs every green `main`:
 `.github/workflows/deploy-dev.yml` follows the CI workflow, hands the commit sha to the host over a
 forced-command SSH key, derives the expected `build` from the same checkout with the same script,

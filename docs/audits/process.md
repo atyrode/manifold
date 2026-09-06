@@ -51,6 +51,12 @@ number,title,body,labels,files`: every body links an issue with `Closes #N`; eve
    and `generate-web-changelog.ts`: their inputs (`CHANGELOG.md`, `changes/`, the version) must be
    the ones the doc names; the `-dev` branch in `generate-web-changelog.ts:12` must be reachable
    from some documented path or is a `dead-code.md` finding (say so, do not file it here).
+   **Credentials with a date.** `docs/SELF-HOST.md` §Fleet pin after promotion names the
+   expiry of `DOTFILES_DISPATCH_TOKEN`; the latest `deploy-hub.yml` run (`gh run list --workflow
+deploy-hub.yml --limit 1`, then `gh run view <id>`) shows whether "Dispatch the fleet pin"
+   ran, was skipped or failed. Expiry within 30 days of the run date, or a skipped/failed step
+   while the secret is listed by `gh secret list --repo atyrode/manifold`, is a finding
+   addressed to the operator (`needs-operator`): only they can mint the replacement.
 6. **The audits themselves.** `docs/audits/LOG.md` against the cadence in `AGENTS.md` §Audits:
    every brief run at least once per release train (`git tag -l 'v*' --sort=-creatordate` gives the
    trains) or per 20 merged PRs, `process` within the last month. A brief that has never been run

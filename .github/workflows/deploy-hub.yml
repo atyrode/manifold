@@ -93,7 +93,8 @@ jobs:
       - name: Dispatch the fleet pin
         # Hub first, then the fleet (invariant 10), as a SEQUENCE rather than a cron racing a
         # guard: the dotfiles pin workflow bumps the agent to this release. Skipped when the
-        # token is absent; the dotfiles cron and its /healthz hold stay as the floor.
+        # token is absent; the dotfiles cron and its /healthz hold stay as the floor. The token,
+        # its scope and its expiry: docs/SELF-HOST.md §Fleet pin after promotion.
         if: env.GH_TOKEN != ''
         env:
           GH_TOKEN: ${{ secrets.DOTFILES_DISPATCH_TOKEN }}
