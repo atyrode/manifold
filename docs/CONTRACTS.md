@@ -2604,7 +2604,7 @@ server/client build; the old parser cannot read upgraded `element` refs, and the
 cannot read unconverted `text` refs. Preserve any later writes separately before restoring:
 the backup is the state before migration, not a reverse transform of subsequent edits.
 For the drawing identity cutover, stop the server before rollback and restore
-`manifold.db.pre-v21.bak` with a compatible pre-rename build. Preserve later writes separately;
+`manifold.db.pre-v23.bak` with a compatible pre-rename build. Preserve later writes separately;
 the backup does not reverse edits made after the upgrade.
 
 The server snapshots a full encoded Yjs document 1.5s after the last change, at least every
