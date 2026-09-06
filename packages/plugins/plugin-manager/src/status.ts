@@ -58,6 +58,7 @@ const INSTALL_REFUSAL_WORDS: Readonly<Record<PluginInstallRefusal, string>> = {
   still_enabled: "it was still on",
   storage_retained: "its stored data has not been purged",
   no_entry: "its bundle names nothing to run",
+  stylesheet_unscoped: "its stylesheet reaches past its own root class",
 };
 
 /**
@@ -77,6 +78,7 @@ const INSTALL_DOOR_WORDS: Readonly<Record<PluginInstallRefusal, string>> = {
   still_enabled: "Switch it off first",
   storage_retained: "Purge its retained data before uninstalling",
   no_entry: "The bundle names nothing to run",
+  stylesheet_unscoped: "The stylesheet reaches past the plugin's own root class",
 };
 
 /**
@@ -111,6 +113,7 @@ const REFUSAL_WORDS: Readonly<Record<PluginRefusalReason, string>> = {
   element_type_owned: "another plugin owns an element type it declares",
   still_enabled: "it is still on",
   developer_mode_off: "unpacked: developer mode is off",
+  stylesheet_unscoped: "its stylesheet reaches past its own root class",
 };
 
 /** The two lifecycle failures that are not a status word of their own, as sentences. */
@@ -199,6 +202,7 @@ export function refusalWords(
     case "element_type_owned":
     case "still_enabled":
     case "developer_mode_off":
+    case "stylesheet_unscoped":
       return REFUSAL_WORDS[reason];
     default: {
       const exhaustive: never = reason;

@@ -51,6 +51,7 @@ import {
   DEFAULT_SECTION_PRESENTATION,
   DEFAULT_TOOLBAR,
   MANIFOLD_URI_SCHEME,
+  PLUGIN_BUNDLE_STYLES_FILE,
   parseManifoldUri,
   PluginsResponseSchema,
   SettingsResponseSchema,
@@ -740,6 +741,8 @@ function EssentialRecovery({
 interface LoadedWebPlugin {
   readonly sha256: string;
   readonly def: WebPluginDef;
+  /** Removes the injected `<style>`; null when the bundle declared no sheet. */
+  readonly unmountStyles: (() => void) | null;
 }
 
 /** Fetch authority stays in the header; module evaluation only sees a local Blob URL. */
@@ -763,6 +766,55 @@ async function importWebPlugin(
   }
 }
 
+/** Where an installed plugin's admitted sheet is served, beside its module (CONTRACTS.md). */
+export function pluginStylesheetPath(pluginId: string): string {
+  return `/api/plugins/${encodeURIComponent(pluginId)}/${PLUGIN_BUNDLE_STYLES_FILE}`;
+}
+
+async function fetchPluginStylesheet(
+  id: string,
+  token: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const response = await fetch(instanceUrl(pluginStylesheetPath(id)), {
+    headers: { Authorization: `Bearer ${token}` },
+    signal,
+  });
+  if (!response.ok) throw new Error(`plugin stylesheet fetch failed (${response.status})`);
+  return response.text();
+}
+
+/** The slice of `Document` the injector touches, so a test can hand it a fake. */
+export interface StyleDocument<Node extends StyleNode> {
+  createElement(tag: "style"): Node;
+  readonly head: { append(node: Node): void };
+}
+export interface StyleNode {
+  textContent: string | null;
+  setAttribute(name: string, value: string): void;
+  remove(): void;
+}
+
+/**
+ * THE INK ARRIVES WITH THE CODE (ADR 0025 §7, #258): a bundle's admitted `styles.css` is
+ * injected as `<style data-plugin="<id>">` when its module is imported and removed when the
+ * row leaves the wanted set — disabled, uninstalled or replaced at a new pin — so a disabled
+ * plugin paints nothing (D4′) exactly as it renders nothing. The sheet reaches only the
+ * plugin's own root class by the rule the hub admitted it under, which is why it can sit in
+ * the document head beside the shell's without a second writer for any shell family.
+ */
+export function mountPluginStylesheet<Node extends StyleNode>(
+  id: string,
+  css: string,
+  doc: StyleDocument<Node>,
+): () => void {
+  const node = doc.createElement("style");
+  node.setAttribute("data-plugin", id);
+  node.textContent = css;
+  doc.head.append(node);
+  return () => node.remove();
+}
+
 export function AssemblyProvider({ identity, children }: AssemblyProviderProps): ReactElement {
   const [state, setState] = useState<RosterState>(INITIAL_ROSTER);
   /*
@@ -784,22 +836,34 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
             row.install.refusal === undefined &&
             row.manifest.entry?.web !== undefined,
         )
-        .map((row) => [row.manifest.id, row.install!.sha256]),
+        .map((row) => [
+          row.manifest.id,
+          { sha256: row.install!.sha256, styles: row.manifest.entry?.styles === true },
+        ]),
     );
     let pruned = false;
     for (const [id, held] of loaded.current) {
-      if (wanted.get(id) !== held.sha256) {
+      if (wanted.get(id)?.sha256 !== held.sha256) {
         loaded.current.delete(id);
+        held.unmountStyles?.();
         pruned = true;
       }
     }
     if (pruned) setLoadedDefs(new Map(loaded.current));
-    for (const [id, sha256] of wanted) {
+    for (const [id, { sha256, styles }] of wanted) {
       if (loaded.current.has(id)) continue;
-      void importWebPlugin(id, identity.token, controller.signal).then(
-        (def) => {
+      void Promise.all([
+        importWebPlugin(id, identity.token, controller.signal),
+        styles ? fetchPluginStylesheet(id, identity.token, controller.signal) : null,
+      ]).then(
+        ([def, css]) => {
           if (controller.signal.aborted) return;
-          loaded.current.set(id, { sha256, def });
+          loaded.current.set(id, {
+            sha256,
+            def,
+            unmountStyles:
+              css === null ? null : mountPluginStylesheet<HTMLStyleElement>(id, css, document),
+          });
           setLoadedDefs(new Map(loaded.current));
         },
         () => {
@@ -810,6 +874,13 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
     }
     return () => controller.abort();
   }, [state.roster, identity.token]);
+  // The provider leaving takes every injected sheet with it, as it takes every panel.
+  useEffect(() => {
+    const held = loaded.current;
+    return () => {
+      for (const plugin of held.values()) plugin.unmountStyles?.();
+    };
+  }, []);
   const [overrides, setOverrides] = useState<Readonly<Record<string, string>>>({});
   /** Bumped to ask for a fresh read; the effect below is keyed on it. */
   const [overridesEpoch, setOverridesEpoch] = useState(0);

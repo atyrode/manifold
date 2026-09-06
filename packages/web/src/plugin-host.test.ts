@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { AssemblyError } from "@manifold/plugin";
 import type { PluginManifest, PluginRoster, PluginRosterEntry } from "@manifold/protocol";
 import { WEB_PLUGIN_DEFS } from "./assembly.ts";
-import { buildBrowserAssembly, type WebPluginDef } from "./plugin-host.tsx";
+import {
+  buildBrowserAssembly,
+  mountPluginStylesheet,
+  pluginStylesheetPath,
+  type StyleNode,
+  type WebPluginDef,
+} from "./plugin-host.tsx";
 
 /**
  * THE JOIN: the server's vocabulary meets the browser's registrations.
@@ -570,5 +576,59 @@ describe("buildBrowserAssembly bindings", () => {
     // Every registered plugin's rows go through one refusal-checking composition, so a second
     // plugin claiming F9 or F10 would fail this build rather than shadow the diagnostics.
     expect(assembly.bindings.filter((binding) => binding.key === "F10")).toHaveLength(1);
+  });
+});
+
+/**
+ * THE INK ARRIVES WITH THE CODE (ADR 0025 §7, #258): an admitted sheet is one `<style>` in the
+ * head, named for its plugin, and it leaves when the row does (D4′). The document is a fake
+ * because the contract is what the loader does to it, not what a browser renders.
+ */
+describe("mountPluginStylesheet", () => {
+  interface FakeStyle extends StyleNode {
+    readonly attributes: Record<string, string>;
+    attached: boolean;
+  }
+
+  test("injects `<style data-plugin>` with the sheet and removes exactly it", () => {
+    const head: FakeStyle[] = [];
+    const doc = {
+      createElement(): FakeStyle {
+        const node: FakeStyle = {
+          attributes: {},
+          attached: false,
+          textContent: null,
+          setAttribute(name, value) {
+            node.attributes[name] = value;
+          },
+          remove() {
+            node.attached = false;
+            head.splice(head.indexOf(node), 1);
+          },
+        };
+        return node;
+      },
+      head: {
+        append(node: FakeStyle) {
+          node.attached = true;
+          head.push(node);
+        },
+      },
+    };
+    const unmountA = mountPluginStylesheet("acme.a", ".plugin-acme_a { color: red }", doc);
+    const unmountB = mountPluginStylesheet("acme.b", ".plugin-acme_b { color: blue }", doc);
+    expect(head.map((node) => [node.attributes["data-plugin"], node.textContent])).toEqual([
+      ["acme.a", ".plugin-acme_a { color: red }"],
+      ["acme.b", ".plugin-acme_b { color: blue }"],
+    ]);
+    unmountA();
+    expect(head.map((node) => node.attributes["data-plugin"])).toEqual(["acme.b"]);
+    unmountB();
+    expect(head).toEqual([]);
+  });
+
+  test("the sheet is fetched beside the module, the id escaped the same way", () => {
+    expect(pluginStylesheetPath("acme.counter")).toBe("/api/plugins/acme.counter/styles.css");
+    expect(pluginStylesheetPath("acme/x")).toBe("/api/plugins/acme%2Fx/styles.css");
   });
 });
