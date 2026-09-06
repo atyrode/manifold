@@ -32,6 +32,7 @@ import {
   CORE_NAMESPACE_PREFIX,
   ENGINE_NAMESPACE_PREFIX,
   PLUGIN_BUNDLE_SERVER_FILE,
+  PLUGIN_BUNDLE_STYLES_FILE,
   formatManifoldUri,
   TRACE_AUTHORITY_OPEN,
   TRACE_AUTHORITY_ROOT,
@@ -330,6 +331,13 @@ function webModuleOf(bundle: PluginBundle): Uint8Array<ArrayBuffer> | null {
   return encoded === undefined ? null : Buffer.from(encoded, "base64");
 }
 
+/** The declared sheet's bytes, on the same terms; a sheet nobody declared is never served. */
+function stylesheetOf(bundle: PluginBundle): Uint8Array<ArrayBuffer> | null {
+  if (bundle.manifest.entry.styles !== true) return null;
+  const encoded = bundle.files[PLUGIN_BUNDLE_STYLES_FILE];
+  return encoded === undefined ? null : Buffer.from(encoded, "base64");
+}
+
 /**
  * The ONE wording every scope violation gives, exported so a plugin's tests and a client's
  * switch both name it instead of retyping it.
@@ -373,13 +381,14 @@ export interface IsolateDeps {
 
 /**
  * One installed plugin as the host holds it: the row (the installer's consent), the bundle
- * when the stored file re-hashed to the pin, the decoded web module the route serves, and the
- * refusal when it did not.
+ * when the stored file re-hashed to the pin, the decoded web module and sheet the routes
+ * serve, and the refusal when it did not.
  */
 interface InstalledPlugin {
   readonly row: PluginInstallRow;
   readonly bundle: PluginBundle | null;
   readonly web: Uint8Array<ArrayBuffer> | null;
+  readonly styles: Uint8Array<ArrayBuffer> | null;
   readonly refusal?: PluginInstallRefusal;
 }
 
@@ -923,6 +932,7 @@ export class PluginHost {
           row,
           bundle: null,
           web: null,
+          styles: null,
           refusal: verdict.refusal,
         });
         this.installedDefs.set(row.pluginId, unverifiedDef(row, verdict.refusal));
@@ -938,6 +948,7 @@ export class PluginHost {
         row,
         bundle: verdict.bundle,
         web: webModuleOf(verdict.bundle),
+        styles: stylesheetOf(verdict.bundle),
       });
       try {
         this.installedDefs.set(
@@ -1245,6 +1256,10 @@ export class PluginHost {
       }
       if (installed !== undefined && installed.row.hardened !== true) {
         const verdict = verifyInstalledBundle(installed.row);
+        // The sheet's rule is the toggle's own class (ADR 0025 §7): an author reads a selector.
+        if (!verdict.ok && verdict.refusal === "stylesheet_unscoped") {
+          return refused("stylesheet_unscoped", [verdict.detail]);
+        }
         if (!verdict.ok) return installRefused(verdict.refusal, verdict.detail);
         try {
           this.installedDefs.set(id, await this.loadBundle(verdict.bundle, verdict.dir, false));
@@ -1493,6 +1508,7 @@ export class PluginHost {
       ...(unpacked === undefined ? {} : { mode: "unpacked" as const }),
     };
     const web = webModuleOf(bundle);
+    const styles = stylesheetOf(bundle);
     const wasEnabled = new Set(
       this.assembled.roster.filter((entry) => entry.enabled).map((entry) => entry.manifest.id),
     );
@@ -1505,7 +1521,7 @@ export class PluginHost {
     }
     // A replace retires the running child first: two children for one id is two doors.
     if (previous?.row.hardened === true) await isolates.runner.unload(id);
-    this.installed.set(id, { row: consent, bundle, web });
+    this.installed.set(id, { row: consent, bundle, web, styles });
     this.lifecycleStates.delete(id);
     try {
       this.installedDefs.set(
@@ -1530,7 +1546,7 @@ export class PluginHost {
       actions: this.assembled.roster.find((entry) => entry.manifest.id === id)?.actions ?? [],
     };
     this.store.putPluginInstall(row);
-    this.installed.set(id, { row, bundle, web });
+    this.installed.set(id, { row, bundle, web, styles });
     if (previous !== undefined && previous.row.sha256 !== sha256) removeInstall(previous.row);
     const types = bundle.manifest.contributes.elements.map((element) => element.type);
     if (types.length > 0) this.store.claimElementTypes(id, types);
@@ -1754,6 +1770,20 @@ export class PluginHost {
     const entry = this.installed.get(id);
     if (entry === undefined || entry.web === null || !this.assembled.enabled(id)) return null;
     return { sha256: entry.row.sha256, bytes: entry.web };
+  }
+
+  /**
+   * The sheet `GET /api/plugins/:id/styles.css` serves, on exactly the module's terms (ADR
+   * 0025 §7): the declared `styles.css` of an installed, verified, ENABLED plugin — admitted
+   * under the root-class rule when it was installed and again when it was verified — tagged
+   * with the same pin. Null for everything else.
+   */
+  stylesheet(
+    id: string,
+  ): { readonly sha256: string; readonly bytes: Uint8Array<ArrayBuffer> } | null {
+    const entry = this.installed.get(id);
+    if (entry === undefined || entry.styles === null || !this.assembled.enabled(id)) return null;
+    return { sha256: entry.row.sha256, bytes: entry.styles };
   }
 
   private lifecycleCtx(pluginId: string): LifecycleCtx {

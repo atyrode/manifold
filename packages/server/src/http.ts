@@ -630,6 +630,28 @@ export class HttpApp {
       });
     }
 
+    /*
+      THE SHEET of an installed plugin (ADR 0025 §7, #258), on the module's exact terms: the
+      verified bundle's `styles.css`, admitted under the root-class rule, served only while the
+      row is enabled, `no-store` with the pin as ETag. The loader injects it beside the module
+      and removes it on disable (D4′): a disabled plugin's ink is not fetched by anyone.
+    */
+    const stylesheetMatch = /^\/api\/plugins\/([^/]+)\/styles\.css$/.exec(pathname);
+    if (stylesheetMatch !== null && request.method === "GET") {
+      const id = decodePathSegment(stylesheetMatch[1], "plugin id");
+      const context = this.authenticate(request);
+      this.requireCap(context, "containers:read");
+      const sheet = this.plugins.stylesheet(id);
+      if (sheet === null) throw new RequestError("not_found", "no installed stylesheet");
+      return new Response(sheet.bytes, {
+        headers: {
+          "content-type": "text/css; charset=utf-8",
+          "cache-control": "no-store",
+          etag: `"${sheet.sha256}"`,
+        },
+      });
+    }
+
     if (request.method === "GET" && pathname === "/api/layout") {
       // Self-scoped by construction: a workspace tree belongs to one principal, so the door
       // takes no id and answers the caller's own — the default until they write one.
