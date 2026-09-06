@@ -211,7 +211,7 @@ function callbackHtml(grant: TokenGrant, now: number): Response {
     (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
   const response = new Response(
-    `<!doctype html><meta charset="utf-8"><title>Opening preview</title><body>Opening preview…</body><script>
+    `<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="dark"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Opening preview</title><body>Opening preview…</body><script>
 const identity=${identity};
 identity.receivedAt=Date.now();
 sessionStorage.removeItem("manifold.previewNonce");
@@ -239,7 +239,7 @@ location.replace("/");
 
 function callbackPendingHtml(ticket: string, secure: boolean): Response {
   return new Response(
-    `<!doctype html><meta charset="utf-8"><title>Opening preview</title><body>Opening preview…</body><script>location.replace("/auth/preview/finalize")</script>`,
+    `<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="dark"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Opening preview</title><body>Opening preview…</body><script>location.replace("/auth/preview/finalize")</script>`,
     {
       headers: {
         "content-type": "text/html; charset=utf-8",
@@ -262,7 +262,7 @@ function callbackErrorHtml(error: RequestError): Response {
     return "&quot;";
   });
   const response = new Response(
-    `<!doctype html><meta charset="utf-8"><title>Preview sign-in failed</title><h1>Preview sign-in failed</h1><p>${message}</p><p><a href="/">Return to the preview and try again</a>.</p>`,
+    `<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="dark"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Preview sign-in failed</title><h1>Preview sign-in failed</h1><p>${message}</p><p><a href="/">Return to the preview and try again</a>.</p>`,
     {
       status: STATUS_BY_CODE[error.code],
       headers: {
