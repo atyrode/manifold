@@ -144,8 +144,8 @@ describe("parentOf", () => {
   });
 
   test("a peer with a required dependency stays a peer: two segments claim nothing", () => {
-    expect(parentOf(roster, draw)).toBeNull();
-    expect(childrenOf(roster, "core.canvas")).toEqual([]);
+    expect(parentOf(roster, terminals)).toBeNull();
+    expect(childrenOf(roster, "core.space")).toEqual([]);
   });
 
   test("a three-segment id without a registered parent stays a peer", () => {
