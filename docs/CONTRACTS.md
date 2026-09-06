@@ -796,9 +796,7 @@ at a door where an actor can act and nobody can act on this. A parent absent fro
 existing `requires plugin X, which is not composed`, so `orphan_child` only ever means the missing
 edge. Depth stops at three: `PLUGIN_ID_PATTERN` is `^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,2}$`,
 `BINDING_ID_PATTERN`'s prefix follows it, and `SettingRefSchema` and the published manifest JSON
-Schema tighten with them — protocol vocabulary, no `PROTOCOL_VERSION` bump. _(Ratified, not yet
-enforced: `orphan_child` and the depth cap land with
-[#261](https://github.com/atyrode/manifold/issues/261); every shipped id is two segments today.)_
+Schema tighten with them — protocol vocabulary, no `PROTOCOL_VERSION` bump.
 
 The engine knows nothing else about the tree. The edge is the ONLY mechanism it acts on — order,
 build refusal, door refusal — and nesting is data on the roster that a principal, an agent and the
@@ -816,7 +814,7 @@ refusal with its message shown, no new door and no cascade the ledger cannot see
 the manager also groups parts under their parent's row). The code layout that goes with a nested
 id — a directory inside the parent's package, subpath exports, the `contract` import direction —
 is an authoring rule and lives in `docs/PLUGINS.md` §1; its gate check is S18 (`REGISTRY.md`
-§Gates), reserved until #261.
+§Gates).
 
 **Disable RETAINS. Destruction is a separate verb.** Disabling gates a plugin's active surface and
 destroys nothing: scene records, `plugin_kv` rows, panel leaves in stored layouts, section slots and

@@ -138,9 +138,8 @@ parent's vocabulary without reaching its runtime state or components. The parent
 part: that is what makes "canvas without draw" literally true. Parts never import each other and
 peers never import each other — doors only, as today. The `contract` module itself imports only the
 four floor packages and names no React or DOM type, so it cannot smuggle runtime either way. The
-gate check for this is S18 (`REGISTRY.md` §Gates) — ratified, not yet enforced: it lands with
-[#261](https://github.com/atyrode/manifold/issues/261), and until then S2's budget (above) is the
-check that runs. Out-of-tree plugins (§9) are untouched at runtime — their bundles import no in-tree
+gate check for this is S18 (`REGISTRY.md` §Gates).
+Out-of-tree plugins (§9) are untouched at runtime — their bundles import no in-tree
 code — and the same directory convention applies in their own repositories.
 
 ### Your skin ships with you
@@ -243,8 +242,7 @@ Rules worth knowing before you write one:
   manifest must prove it with `dependencies: { "example.notes": { type: "required" } }` or assembly
   refuses it (§1, "A part lives inside its parent's package"; §7). **Depth stops at three**:
   `publisher.product.part`, no fourth segment — `PLUGIN_ID_PATTERN` is
-  `^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,2}$` (ratified; the schema still admits any depth until
-  [#261](https://github.com/atyrode/manifold/issues/261) lands, so treat the cap as binding now).
+  `^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,2}$`.
 - **Contribution ids are local names** (`^[a-z][a-zA-Z0-9-]*$` — interior capitals are allowed
   where the name is a verb phrase, as in `setEnabled`), with two exceptions that are WIRE kinds
   and therefore globally unique on their own: element `type`, and event `id`, which is
@@ -1301,8 +1299,7 @@ discipline is tiled. One word per concept (`AXIOMS.md` §Lexicon law, `REGISTRY.
   `example.notes`; a manifest that says so without `dependencies: { "example.notes": { type: "required" } }`
   fails assembly as `orphan_child`, naming the plugin and the parent (§1). It sits with the
   duplicates, squats and cycles — a structural fact no toggle can change, so it is NOT one of the
-  door's refusal classes. Ratified, not yet enforced: the check lands with
-  [#261](https://github.com/atyrode/manifold/issues/261); write the edge now.
+  door's refusal classes.
 
 ### Three orthogonal facts about a plugin
 
@@ -1603,11 +1600,9 @@ are the checks that will fail _your_ plugin:
 - **Import boundary** (walked with the TypeScript parser, not regex): floor files must not
   import `@manifold-plugin/*` — the two `assembly.ts` files are the only exceptions — and
   plugin packages may import only `@manifold/{protocol,scene,sdk,plugin}`.
-- **Import direction follows the plugin tree** (S18, ratified 2026-09-05 and not yet enforced —
-  it lands with [#261](https://github.com/atyrode/manifold/issues/261)): a parent never imports a
+- **Import direction follows the plugin tree** (S18): a parent never imports a
   part, a part imports only its parent's `contract` subpath, and the `contract` module imports only
-  the four floor packages (§1, "A part lives inside its parent's package"). Until then S2 above is
-  the check that runs, and it cannot see a part's files.
+  the four floor packages (§1, "A part lives inside its parent's package").
 - **Every `data-action` literal names an assembled action.**
 - **Every `localStorage` key in `packages/{web,plugins}` is listed in the `REGISTRY.md`
   device-local register.**
