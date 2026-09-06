@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.0] - 2026-09-06
+
+### Added
+
+- Enrolled machines now have canonical `manifold://machine/<machineId>` addresses for resolution, event topics, and per-machine grant rows. Withdrawing a machine's credential names that machine in the authority trace; machine-scoped door admission remains unchanged. (#157, #313)
+- Plugins can declare shared workspace settings and closed-choice enum settings. The plugin manager renders choices as a select, identifies settings shared by everyone, and explains when plugin-management authority is required; changes reach connected readers through the event plane. (#158, #317)
+- Revoked machines can now be forgotten from the Machines roster. Forget removes the machine and its credentials while preserving history, and refuses until retained terminals and pending maintenance drains are cleared. (#184, #316)
+
 ## [0.9.0] - 2026-09-06
 
 ### Added
