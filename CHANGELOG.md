@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.10.1] - 2026-09-06
+
+### Added
+
+- Out-of-tree plugin authors get a development loop and a delivery path: the plugin kit gains `dev` (pack, install on a hub, watch and reinstall on change), `verify` (install packed bundles on a real spawned engine, knock on every door, uninstall) and `install` (idempotent install or replace of one bundle, delivered by path or into a container's drop box, the owner key read from a file or the container and never printed); a reusable GitHub workflow runs check, test, pack and verify for an author repository against the manifold revision it pins; and the preview receiver accepts `plugin <url> <sha256>` so a release of an author repository installs itself on the integrated preview. (#319, #325)
+
+### Changed
+
+- Plugin ids now stop at three segments: a child such as `publisher.product.part` must declare a required dependency on `publisher.product`, or assembly refuses it as `orphan_child`; four-segment ids are refused by the schema. The authoring gate enforces parent-to-child import isolation and permits a child to import only its parent's published contract. (#261, #347)
+
 ## [0.10.0] - 2026-09-06
 
 ### Added
