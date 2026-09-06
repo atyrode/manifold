@@ -1628,9 +1628,9 @@ export class PlaceExecutor {
   }
 
   /**
-   * Removes a terminal from the world. `core.terminals.kill`, `terminal_kill` and a
-   * titlebar close all land here, and all three mean the same thing: a DELIBERATE kill is
-   * total and it is one step — every leaf its home holds for it, its row and its PTY,
+   * Removes a terminal from the world. `core.terminals.kill`, `terminal_kill`, a
+   * titlebar close and a successful natural exit all land here. Removal is total and
+   * it is one step — every leaf its home holds for it, its row and its PTY,
    * and, when the terminal was the last thing its home held, the home itself along with
    * every portal onto that home, on every canvas, whether or not anybody has it open.
    *

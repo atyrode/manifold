@@ -1180,21 +1180,10 @@ export class TerminalBroker implements TerminalPlacementPort {
   }
 
   /**
-   * A terminal stops in exactly one of two ways, and the whole difference is INTENT.
-   *
-   *   KILLED — somebody ASKED for it to stop: `terminal_kill`, `core.terminals.kill`,
-   *     or closing its last tile. The request is the intent, so the terminal leaves the
-   *     world: the PTY, the terminal row, its home composition and every portal onto that
-   *     home go together and at once. Afterwards there is no exited row to find and no exit
-   *     code to report, because nothing is left to report it on.
-   *   EXITED — the PTY stopped on its own (`onExited`). That is INFORMATION the operator may
-   *     want, so NOTHING is deleted: the row keeps its real exit code, its home keeps its
-   *     leaf, and every portal onto that home keeps rendering it until somebody kills it.
-   *
-   * The predicate is structural rather than a flag: a killed terminal is out of
-   * `this.terminals` before the machine's `exit` frame can arrive, so `onExited` finds
-   * nothing and is a no-op for it. Nothing has to remember which door was used, and no third
-   * status exists to propagate — a terminal is running, exited on its own, or gone.
+   * Explicit removal and successful natural exit share one canonical sweep. A natural
+   * nonzero or unknown exit retains its row, real exit code, leaf and references until
+   * dismissed. Removed terminals are absent from `this.terminals`, so duplicate or late
+   * exit frames cannot resurrect them.
    *
    * THE kill: `core.terminals.kill` is the only door, for the session channel's
    * `terminal_kill` frame as much as for the workspace index, so the lease rule and the
@@ -1210,7 +1199,7 @@ export class TerminalBroker implements TerminalPlacementPort {
   }
 
   /**
-   * The KILLED half of the predicate above. Containers are `placement.ts`'s business and a
+   * The shared removal path. Containers are `placement.ts`'s business and a
    * home IS a container, so the removal is authored there: pulling the terminal's leaves is
    * what empties its home, and an emptied home takes every portal onto it along. The PTY and
    * the row come back through `reapTerminal`, so the two halves cannot drift apart.
@@ -1238,20 +1227,32 @@ export class TerminalBroker implements TerminalPlacementPort {
   }
 
   /**
-   * The EXITED half of the predicate: a PTY that stopped on its own. Persists and broadcasts
-   * it without storing terminal bytes, and deletes nothing.
+   * A successful PTY exit removes the terminal through the same sweep as explicit removal.
+   * Nonzero and unknown exits persist evidence for the operator to inspect and dismiss.
    */
   onExited(machineId: string, terminalId: string, exitCode: number | null): void {
     const terminal = this.terminals.get(terminalId);
     if (terminal === undefined || terminal.info.machineId !== machineId) return;
     if (terminal.info.status === "exited") return;
+    if (exitCode === 0) {
+      // The PTY is already stopped: reaping must not send it a redundant kill.
+      terminal.info = { ...terminal.info, status: "exited", exitCode, controllerId: null };
+      this.destroyTerminal(terminalId);
+      // Retiring an empty home clears its old history. Record success after that sweep,
+      // retaining the former home identity without retaining the terminal or container.
+      this.announce(terminal.info.containerId, "terminal_exited", terminal.info.createdBy, {
+        terminalId,
+        machineId,
+        exitCode,
+      });
+      return;
+    }
     for (const viewer of terminal.viewers.values()) viewer.cancelSnapshotDeadline?.();
     terminal.viewers.clear();
     terminal.info = { ...terminal.info, status: "exited", exitCode, controllerId: null };
     this.store.markTerminalExited(terminalId, exitCode);
     // The exit is announced in the terminal's HOME, the room every viewer of it is joined
-    // to. Nothing is deleted: the leaf stays, the portals onto the home stay, and the exit
-    // code stays visible until somebody deliberately kills the terminal.
+    // to. Error/unknown evidence stays visible until somebody deliberately dismisses it.
     const containerId = terminal.info.containerId;
     this.rooms.live(containerId)?.broadcast({
       type: "terminal_event",
@@ -1352,10 +1353,9 @@ export class TerminalBroker implements TerminalPlacementPort {
   }
 
   /**
-   * `TerminalPlacementPort`: the terminal half of a deliberate kill — the PTY is asked to
-   * stop and the row is forgotten. Called for a terminal whose last home leaf is gone, which
-   * is the same event however it was addressed: closing its tile, killing it by id, or
-   * deleting the composition it lived in.
+   * `TerminalPlacementPort`: the terminal half of removal — a running PTY is asked to
+   * stop and the row is forgotten. Closing its tile, killing it by id, successful natural
+   * exit and deleting the composition it lived in all use this sweep.
    *
    * No exit is persisted on the way out. The row is being deleted, so an exit record would
    * exist for the length of one statement and, worse, would broadcast an `exited` event for
@@ -1374,19 +1374,17 @@ export class TerminalBroker implements TerminalPlacementPort {
     this.rooms
       .live(terminal.info.containerId)
       ?.broadcast({ type: "terminal_event", terminalId, kind: "parked" });
-    // The injected agent token is scoped to this terminal, so it dies with it. A natural exit
-    // revokes in `onExited`; a kill never goes through there, and a live token for a terminal
-    // that no longer exists would be the one piece of it left in the world.
+    // The injected agent token dies with the terminal. Retained error/unknown exits revoke
+    // in `onExited`; all removals revoke here, including successful natural exits.
     const stored = this.store.getTerminal(terminalId);
     if (stored !== null && stored.agentPrincipalId !== null) {
       this.auth.revokeIssuedPrincipal(stored.agentPrincipalId, terminal.info.createdBy);
     }
     this.store.deleteTerminal(terminalId);
     /*
-      THE KILL, announced here rather than at `killById`, because this is the one place every
-      kill passes through: closing the last tile, killing by id, and deleting the composition
-      the terminal lived in all arrive at this method, and announcing at each door instead
-      would be three chances to disagree about one event (invariant 14).
+      Removal is announced here rather than at its callers: closing the last tile, killing
+      by id, successful natural exit and deleting the composition all arrive here. The
+      existing `terminal_killed` event names this canonical removal, not a retained exit.
 
       The topic is the HOME CONTAINER, not the terminal. A killed terminal has no node left to
       be a topic — its address stops resolving the instant the row is gone, and `/api/resolve`

@@ -8,7 +8,7 @@ import {
   type Container,
 } from "@manifold/protocol";
 import { LOCAL_ORIGIN, Y, createSceneDoc, encodeUpdate, writeElement } from "@manifold/scene";
-import { AuthService, PREVIEW_IDENTITY_TOKEN_TTL_MS } from "../src/auth.ts";
+import { AuthService, INTERACTIVE_TOKEN_TTL_MS } from "../src/auth.ts";
 import type { EventHub } from "../src/event-hub.ts";
 import { silentLogger } from "../src/log.ts";
 import type { PluginHost } from "../src/plugin-host.ts";
@@ -655,12 +655,14 @@ describe("SessionGateway liveness", () => {
     }).token;
     join(fixture.gateway, "preview", socket, fixture.container.id, token);
 
-    const rounds = PREVIEW_IDENTITY_TOKEN_TTL_MS / DIAL_PING_INTERVAL_MS;
+    // Answered ping by ping rather than in one jump: an unanswered interval is the liveness
+    // verdict (4008), and the claim here is that the CREDENTIAL fences a socket that is alive.
+    const rounds = INTERACTIVE_TOKEN_TTL_MS / DIAL_PING_INTERVAL_MS;
     for (let round = 1; round < rounds; round += 1) {
       fixture.clock.advance(DIAL_PING_INTERVAL_MS);
       fixture.gateway.message("preview", JSON.stringify({ type: "pong" }));
-      expect(socket.closed).toBeNull();
     }
+    expect(socket.closed).toBeNull();
     fixture.clock.advance(DIAL_PING_INTERVAL_MS);
     expect(socket.closed).toEqual({ code: 4403, reason: "expired" });
 

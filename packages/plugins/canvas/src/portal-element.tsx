@@ -268,9 +268,9 @@ function PortalTerminalTile({
       onClickCapture={engage}
       onFocusCapture={engage}
       onDoubleClick={(event) => {
-        // A live terminal owns double-click (word selection), so it must not also reach
-        // the portal root's navigate-into handler.
-        if (interactive) event.stopPropagation();
+        // Terminal content owns double-click even while its occupant join is pending.
+        // It must never also navigate into the portal.
+        event.stopPropagation();
       }}
     >
       {/*
@@ -279,6 +279,7 @@ function PortalTerminalTile({
         paints the engine's named placeholder in the same box.
       */}
       <TerminalRenderer
+        host={container.host}
         client={client}
         terminalId={terminalId}
         elementId={tileId}
@@ -286,6 +287,7 @@ function PortalTerminalTile({
         frame={mono === null ? "tile" : "window"}
         titlebarDragProps={mono === null ? dragProps : { draggable: false }}
         active={active}
+        onEngage={() => onEngage(tileId)}
         panelHighlighted={false}
         machine={
           machineId === undefined
@@ -430,7 +432,7 @@ function PortalLeaf({
           tileId={node.id}
           terminalId={ref.terminalId}
           interactive={interactive}
-          active={interactive && engagedTileId === node.id}
+          active={engagedTileId === node.id}
           onEngage={onEngage}
           // Only a mono container hands this down; inside a multi-tile preview the
           // portal keeps its own bar and each tile keeps its preview chrome.

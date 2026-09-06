@@ -314,7 +314,7 @@ describe("core.terminals doors", () => {
     // An exited terminal has no lease to take, and the refusal says so rather than saying
     // "not found": the row is still there, and a client that cannot tell those apart cannot
     // tell the operator what happened.
-    base.broker.onExited(base.machine.machineId, terminalId, 0);
+    base.broker.onExited(base.machine.machineId, terminalId, 3);
     expect(
       denial(await base.host.dispatch(base.owner, "core.terminals.take", { terminalId })),
     ).toEqual({ rule: "refused", message: "terminal has exited" });

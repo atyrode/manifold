@@ -1766,11 +1766,6 @@ prefix, never a scope root, and belongs to no stylesheet.
       "why": "the xterm host and the two vendor classes it has to reach — the only stylesheet that embeds a terminal"
     },
     {
-      "family": "view-only-ribbon",
-      "owner": "packages/plugins/terminals/src/styles.css",
-      "why": "the ribbon a spectator's terminal wears"
-    },
-    {
       "family": "canvas",
       "owner": "packages/plugins/canvas/src/styles.css",
       "why": "the freeform discipline's renderer: the canvas, its shared titlebar mount, toolbar, coordinate-space cursor/selection layer and skeletonless empty"
@@ -1981,6 +1976,11 @@ string" is the question a broken gate actually asks.
 ```json
 {
   "gateContracts": [
+    {
+      "testid": "plugin-manager-row-open",
+      "renderer": "packages/plugins/plugin-manager/src/web.tsx",
+      "why": "the terminal-selection gate opens the Terminals settings through the same plugin detail affordance as a person, then proves each default-off clipboard gesture and its live opt-in transition"
+    },
     {
       "testid": "identity-enter",
       "renderer": "packages/web/src/identity.tsx",

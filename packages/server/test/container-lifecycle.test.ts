@@ -60,11 +60,11 @@ import {
  *
  *   L1 BIRTH      a terminal and its home are created together; a canvas opener authors its
  *                 own portal and the server authors nothing on the canvas.
- *   L2 EXIT       a terminal that exited ON ITS OWN keeps its leaf, its home and every portal
- *                 onto that home, so the real exit code stays visible.
+ *   L2 EXIT       successful exits are removed; nonzero/unknown exits keep their leaf, home
+ *                 and every portal onto that home, so the real exit code stays visible.
  *   L3 REAP       removing a terminal's last home leaf kills the PTY and forgets the row —
- *                 the leaf addressed as a tile, or the terminal addressed by identity, which
- *                 is what a DELIBERATE kill is. Killing is the only thing that destroys.
+ *                 the leaf addressed as a tile, or the terminal addressed by identity.
+ *                 Successful exit uses this same canonical removal.
  *   L4 EMPTIED    a composition that just LOST its last item is deleted; one that never held
  *                 anything is not.
  *   L5 MERGE      a terminal joining another composition moves, and every reference to its
@@ -512,14 +512,14 @@ describe("L1 birth: a terminal and its home are created together", () => {
 
     const born = bornOnCanvas(fixture, "ref-1");
     const inHome = joinPeer(fixture, born.homeId);
-    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
+    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 3);
 
     // Nothing about a terminal is canvas state after the cutover: a canvas learns about the
     // terminal the same way it learns about anything else, through its own document.
     expect(bodiesOfType(onCanvas.socket, "terminal_opened")).toEqual([]);
     expect(bodiesOfType(onCanvas.socket, "terminal_event")).toEqual([]);
     expect(bodiesOfType(inHome.socket, "terminal_event")).toEqual([
-      { type: "terminal_event", terminalId: born.terminalId, kind: "exited", exitCode: 0 },
+      { type: "terminal_event", terminalId: born.terminalId, kind: "exited", exitCode: 3 },
     ]);
   });
 
@@ -546,11 +546,11 @@ describe("L1 birth: a terminal and its home are created together", () => {
   });
 });
 
-describe("L2 exit: an exited terminal keeps its leaf and its home", () => {
-  test("a natural exit deletes nothing, so the real code stays visible where the terminal lives", async () => {
+describe("L2 exit: success removes terminals; error and unknown exits retain evidence", () => {
+  test("an error exit deletes nothing, so the real code stays visible where the terminal lives", async () => {
     const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
-    // Two canvases point at the home, because "an exit deletes nothing" has to hold for
+    // Two canvases point at the home, because retaining error evidence has to hold for
     // EVERY reference and not merely for the one the opener happened to author.
     const other = canvasContainer(fixture, "second canvas");
     writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 40, 40), LOCAL_ORIGIN);
@@ -560,8 +560,10 @@ describe("L2 exit: an exited terminal keeps its leaf and its home", () => {
       LOCAL_ORIGIN,
     );
 
-    // The PTY stopped on its own. Nobody asked for it, so this is information, not a request.
+    // The PTY failed on its own. Its nonzero code is evidence to retain.
     fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 3);
+    // Duplicate or contradictory late frames cannot erase already-recorded error evidence.
+    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
 
     expect(fixture.store.getContainer(born.homeId)).not.toBeNull();
     expect(soleRef(fixture, born.homeId)).toEqual({
@@ -584,6 +586,7 @@ describe("L2 exit: an exited terminal keeps its leaf and its home", () => {
     // No code was observed, so none is reported. Null is the honest answer and it is not a
     // third lifecycle state: the terminal exited, and what it exited with is unknown.
     fixture.broker.onExited(fixture.machine.machineId, born.terminalId, null);
+    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
 
     expect(fixture.store.getTerminal(born.terminalId)).toMatchObject({
       status: "exited",
@@ -593,21 +596,75 @@ describe("L2 exit: an exited terminal keeps its leaf and its home", () => {
     expect(fixture.store.getContainer(born.homeId)).not.toBeNull();
   });
 
-  test("the prune that collects unhomed exits never fires on a natural exit", async () => {
+  test("the prune that collects unhomed exits never fires on a homed error exit", async () => {
     const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 40, 40), LOCAL_ORIGIN);
 
     fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 7);
-    // The reaper's whole predicate is "exited AND its home holds no leaf for it". A natural
-    // exit touches no leaf, so running the prune on both the home and the canvas that
-    // references it must be a no-op — otherwise dying would quietly mean being deleted.
+    // An error exit touches no leaf, so pruning both the home and referencing canvas must
+    // leave the evidence available for inspection.
     fixture.broker.pruneExitedUnhomedForContainer(born.homeId);
     fixture.broker.pruneExitedUnhomedForContainer(fixture.canvas.id);
 
     expect(fixture.store.getTerminal(born.terminalId)?.exitCode).toBe(7);
     expect(fixture.store.getContainer(born.homeId)).not.toBeNull();
     expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual(["portal-a"]);
+  });
+
+  test("a successful exit removes every mirror, including persisted portals, for every viewer", async () => {
+    const fixture = await lifecycleFixture();
+    const born = bornOnCanvas(fixture, "ref-1");
+    const first = joinPeer(fixture, born.homeId);
+    const second = joinPeer(fixture, born.homeId);
+    const other = canvasContainer(fixture, "unloaded canvas");
+    writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 10, 10), LOCAL_ORIGIN);
+    writeElement(
+      room(fixture, other.id).doc,
+      portalElement("portal-b", born.homeId, 20, 20),
+      LOCAL_ORIGIN,
+    );
+    fixture.rooms.evictIfIdle(other.id);
+    fixture.machine.clear();
+
+    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
+    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
+
+    expect(fixture.store.getTerminal(born.terminalId)).toBeNull();
+    expect(fixture.store.getContainer(born.homeId)).toBeNull();
+    expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual([]);
+    expect(room(fixture, other.id).portalIdsTo(born.homeId)).toEqual([]);
+    expect(await indexRows(fixture)).toEqual([]);
+    expect(fixture.machine.sent).toEqual([]);
+    for (const viewer of [first, second]) {
+      expect(bodiesOfType(viewer.socket, "terminal_event")).toEqual([
+        { type: "terminal_event", terminalId: born.terminalId, kind: "parked" },
+      ]);
+    }
+  });
+
+  test("a successful exit removes all its leaves without deleting other composition occupants", async () => {
+    const fixture = await lifecycleFixture();
+    const composition = compositionContainer(fixture, "shared composition");
+    const inside = joinPeer(fixture, composition.id);
+    const finished = bornInComposition(fixture, inside, "finished");
+    const survivor = bornInComposition(fixture, inside, "survivor");
+    const home = room(fixture, composition.id);
+    expect(home.placeTerminalTile(finished.terminalId, null, null)).not.toBeNull();
+    writeElement(canvasDoc(fixture), portalElement("portal", composition.id, 10, 10), LOCAL_ORIGIN);
+    fixture.machine.clear();
+
+    fixture.broker.onExited(fixture.machine.machineId, finished.terminalId, 0);
+
+    expect(fixture.store.getTerminal(finished.terminalId)).toBeNull();
+    expect(fixture.store.getTerminal(survivor.terminalId)?.status).toBe("running");
+    expect(fixture.store.getContainer(composition.id)).not.toBeNull();
+    expect(soleRef(fixture, composition.id)).toEqual({
+      kind: "terminal",
+      terminalId: survivor.terminalId,
+    });
+    expect(room(fixture, fixture.canvas.id).portalIdsTo(composition.id)).toEqual(["portal"]);
+    expect(fixture.machine.sent).toEqual([]);
   });
 });
 

@@ -33,6 +33,20 @@ export const terminalsManifest: PluginManifest = {
   contributes: {
     panels: [],
     sections: [],
+    settings: [
+      {
+        id: "copy-on-select",
+        title: "Copy selection automatically",
+        kind: "boolean",
+        default: false,
+      },
+      {
+        id: "paste-on-right-click",
+        title: "Paste on right-click",
+        kind: "boolean",
+        default: false,
+      },
+    ],
     elements: [],
     tools: [],
     /*

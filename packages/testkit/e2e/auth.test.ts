@@ -435,7 +435,7 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
       5_000,
       (message) => message.terminalId === terminal.id && message.kind === "exited",
     );
-    machine.send({ type: "exited", terminalId: terminal.id, exitCode: 0 });
+    machine.send({ type: "exited", terminalId: terminal.id, exitCode: 7 });
     expect((await exited).kind).toBe("exited");
   } catch (error) {
     throw e2eFailure(error, servers);

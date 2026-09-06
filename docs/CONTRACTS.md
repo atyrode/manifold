@@ -53,6 +53,9 @@ Preview identity adds two opt-in server variables: `MANIFOLD_PREVIEW_DOMAIN` ena
 instance as an issuer for integrated and numbered hosts below that DNS name, while
 `MANIFOLD_IDENTITY_AUTHORITY` configures this instance as a relying preview. The signing key is
 generated at `<data>/preview-identity.key` with mode 0600; only its public half is served.
+Each preview callback fetches the authority's current public key with a three-second timeout;
+there is no process-lifetime key cache. Authority key rotation therefore does not require a
+preview restart. Missing, unavailable or invalid verification keys fail closed.
 
 Server startup log MUST include a single line `manifold ready url=<URL>`. With
 `MANIFOLD_ANNOUNCE_KEY=1` (dev/test opt-in: `dev:server`, testkit) the URL embeds the owner
@@ -238,10 +241,12 @@ equivalent. An unrestricted root remains `*`; a root affected by administered de
 other credential carry only their effective concrete capabilities at `manifold://`. Acceptance
 verifies issuer, audience, signature, browser-bound nonce, a positive lifetime of at most 60 seconds
 and assertion id, then deterministically maps `(issuer, sourcePrincipalId)` to a local principal
-with `origin: issuer` and mints a 15-minute preview-local token. The browser removes it at expiry
-and repeats the production check. Session sockets close `4403 expired` when their credential
-expires, so production revocation or grant changes reach an already-open preview within that lease
-and a new/renewed preview sees them immediately. Assertions are single-use within a server process
+with `origin: issuer` and mints a preview-local token with the ordinary interactive lifetime
+(fourteen days, the same as a production browser credential; ADR 0028). The browser removes it at
+expiry and repeats the production check. Session sockets close `4403 expired` when their credential
+expires. A new or renewed preview sees production revocation or grant changes immediately; an
+already-open preview is bounded by its own credential's expiry or by revoking that preview
+principal's sessions on the preview. Assertions are single-use within a server process
 and too short-lived to survive a useful restart replay window.
 
 `preview_identity_issued` and `preview_identity_accepted` are ordinary journal events carrying
@@ -624,8 +629,8 @@ anybody.
   releases that one; naming the item by identity releases all of them. Nothing is destroyed,
   which is the whole difference from the park it replaced: there is no pool to move into
   because there is nowhere else to be.
-- **Reaping, and the ONE lifecycle predicate.** A terminal stops in exactly one of two ways,
-  and the whole difference is INTENT.
+- **Reaping, and the ONE removal path.** Explicit removal and successful natural exit
+  remove a terminal; nonzero and unknown natural exits retain evidence.
   - **KILLED** — somebody asked for it: `terminal_kill`, the action
     `core.terminals.kill { terminalId }`, or `core.space.removeTile { containerId, tileId }` on
     its last
@@ -636,16 +641,25 @@ anybody.
     nothing is left to report it on. The tile door is the one tile gesture that is NOT a
     placement (nothing accepts "nowhere" as a destination for a LEAF); a note's leaf is its
     only placement, so its element goes with it.
-  - **EXITED** — the PTY stopped on its own. That is INFORMATION, so nothing at all is
-    deleted: the row keeps its REAL exit code (`null` only when none was observed, e.g. an
-    agent-disconnected exit), its home keeps its leaf, and every portal onto that home keeps
-    rendering it until somebody kills it. Killing an already-exited terminal sweeps it exactly
-    like a running one — dismissing a dead terminal is the same verb, not a second path.
+  - **SUCCESSFUL EXIT** — the PTY stopped on its own with `exitCode === 0` (including shell
+    Ctrl+D). Operator-ratified 2026-09-06: it uses the SAME canonical removal as a kill —
+    every terminal leaf and row disappears for every viewer, its credential is revoked,
+    and an emptied home plus every reference to it retires. Other occupants of a shared
+    composition and references to that surviving composition remain. No retained exit row
+    or client-side hiding is involved.
+    The durable `terminal_exited` event records code zero after the removal sweep, with the
+    former home identity, so retiring an empty home does not erase the successful outcome.
+  - **ERROR OR UNKNOWN EXIT** — the PTY stopped with a nonzero code or `null`. Its row keeps
+    the REAL exit code (`null` only when none was observed), its home keeps its leaf, and
+    every portal keeps rendering it until somebody dismisses it. Its credential is revoked.
+    Dismissing it uses the same removal path as killing a running terminal.
 
-  The predicate is structural, not a stored flag: a killed terminal is gone before the
-  machine's `exited` frame can arrive, so that frame finds nothing and no third status can
-  propagate. An undeliverable kill (machine offline) still removes everything; the PTY that
-  outlived it is killed by `hello` reconciliation, which finds no row to adopt it against.
+  The predicate is structural, not a stored flag: a removed terminal is gone before any
+  duplicate or late `exited` frame arrives, so no row can be resurrected. Owner-admitted hello
+  reconciliation applies the same exit rule to replayed exits; an absent PTY has unknown
+  status and is retained with `null`, never treated as success. An undeliverable kill
+  (machine offline) still removes everything; a PTY that outlived it is killed by `hello`
+  reconciliation, which finds no row to adopt it against. Machine-owner admission is unchanged.
 
 - **Emptying and deletion.** A composition that just lost its last occupant retires: it is
   the DEPARTURE, not the emptiness, that retires a container, so a deliberately empty
@@ -1918,6 +1932,19 @@ Throttle state (cursor, gesture, resync cadence) is per channel because the cade
 enforces are per room, and Bun's drain callback flushes channels in rotation so one chatty
 room cannot monopolize the shared socket buffer.
 
+**Channel initialization.** Sending `join` does not initialize a channel. Only its
+`init` or `resync` satisfies the SDK's ten-second initialization deadline. A healthy
+sibling channel's heartbeats cannot extend that deadline. With reconnect enabled, a
+missing initialization leaves and rejoins only the affected channel using the existing
+backoff, retaining queued intent and leaving siblings alone. Three timed-out attempts
+end that channel with a named initialization failure; reconnect-disabled clients fail
+after one. Release, refusal and socket replacement cancel outstanding deadlines.
+
+Session diagnostics record connection/channel/container identifiers, join role,
+whether initialization was accepted for sending, elapsed join time and numeric socket
+close codes. They do not log credentials, join bodies or peer-supplied close text;
+`initQueued` is a send outcome, not proof that the browser rendered the view.
+
 **Spectators.** `spectator: true` joins a channel that WATCHES the room without occupying
 it (absent ≡ occupant) — the two members of `ChannelRole`. A portal's resting preview uses it:
 the portal IS a real
@@ -2094,12 +2121,15 @@ aim?: CarryAim, denied?: boolean }`. `useTileDeparture(sourceContainerId, overri
   it never changes the carried item's kind, its payload, or durable layout.
   Incoming target arbitration wins. Preview and pre-mutation FLIP settlement transform stable
   `tile-content-host` elements, not ancestor pane boxes; composing both transforms would move
-  live content twice. Commits settle from captured visual geometry to authoritative layout;
+  live content twice. Structural commits settle from captured visual geometry to authoritative layout;
   cancellation/refusal restores projection and end/expiry clears departure. Content is neither
   cloned nor additionally reparented for animation. A removed tile may leave a bounded empty
   `tile-departure-shell`; keep `TileTree` mounted for an empty layout to retain that exit.
   Existing `--preview-pane-transition` / `--carry-fade-transition` tokens govern timing;
   reduced motion skips movement and cancels active animations.
+  Ratio-only updates are continuous layout, not placement transitions: the canonical structural
+  revision excludes proportions, so divider changes neither start a FLIP nor leave an earlier
+  settlement stretching live contents. This policy is identical for local and remote producers.
 - **Cursor coordinate space is the room's discipline.** Cursors are container-scoped
   (per-room, like all presence): canvas rooms carry React-Flow scene coordinates; composition
   rooms carry fractions of the container's tile area in `[0,1]²` (ratios are shared CRDT
@@ -2129,6 +2159,7 @@ aim?: CarryAim, denied?: boolean }`. `useTileDeparture(sourceContainerId, overri
 
 `TerminalRendererProps` and `ContainerRendererProps` accept `projectionScope?`,
 `frame?: "window" | "tile"`, `titlebarMiddle?`, `titlebarExtras?`, and `titlebarDragProps?`.
+Both receive `host: HostServices`, including the authoritative composed plugin settings.
 The mounted renderer owns its bar and forwards these slots rather than receiving a duplicate
 host-drawn bar. `NodeTitleBar.dragProps: TitlebarDragProps` opts the whole bar into dragging;
 interactive descendants and rename input remain controls, never drag sources.
@@ -2168,6 +2199,23 @@ share that local preference; other devices do not. This is local readability, no
 document edit or an action. Spectators can adjust their own font; a resulting PTY resize is
 still controller-only, post-snapshot and non-preview. Zoom updates the existing xterm instance,
 not the socket or terminal lifecycle.
+
+The terminal's visual inset is outside the FitAddon measurement box, so the measured host
+is usable cell space rather than padding counted as rows. After snapshot replay, fitting
+schedules at most one pending animation-frame publication; unchanged geometry is not sent.
+Publication re-measures the current host before reading the grid, because an earlier resize
+echo may have changed xterm's dimensions since the scheduling fit. This removes the trailing
+quiet-period delay without changing controller/preview authority or the terminal wire.
+
+`core.terminals` declares two independent **principal-scoped**, default-off boolean settings:
+`copy-on-select` ("Copy selection automatically") and `paste-on-right-click` ("Paste on
+right-click"). They use the existing plugin settings door and appear in the Terminals plugin's
+settings pane. Changes apply to already-mounted terminal views without recreating xterm or
+reconnecting the PTY. With automatic copy off, selection remains highlighted and does not touch
+the clipboard; when on, a completed selection copies and clears only after clipboard success.
+With right-click paste off, the normal context menu is untouched; when on, Shift-right-click and
+mouse-reporting applications retain their existing behavior. Disabling a preference also prevents
+its pending clipboard completion from clearing a selection or pasting into the terminal.
 
 ### Terminals over the session channel
 
@@ -2283,17 +2331,18 @@ not the socket or terminal lifecycle.
   the home as `terminal_event { kind:"renamed", name }`, where every titlebar and index row picks
   it up without a refetch. Labels everywhere are `name ?? machine name`.
 - `output { terminalId, seq, data }` streams to all LIVE viewers; `terminal_event
-{ kind:"exited", exitCode }` on a PTY that stopped ON ITS OWN. Such a terminal stays listed
-  (status `exited`, real code) with its leaf and every portal onto its home intact, so the
-  exit code stays readable until somebody kills it. A KILL broadcasts no `exited` event: the
-  leaf and the portals vanish through the documents instead, which is how viewers learn the
-  terminal is gone rather than dead.
+{ kind:"exited", exitCode }` retains a PTY's nonzero or unknown natural exit. Such a terminal
+  stays listed (status `exited`, real code) with its leaf and portals intact until dismissed.
+  A successful natural exit (`exitCode === 0`) and an explicit kill instead share canonical
+  removal: no `exited` frame or retained row, and leaves and retired-home references vanish
+  through their persisted documents. The existing `terminal_killed` collection event
+  announces canonical removal, including successful natural exits.
 - `terminal_event { kind:"parked" }` keeps its pre-cutover kind name and now means exactly "this
   terminal left THIS room": it fires in the OLD home when a merge or an extraction re-homes
   the terminal, paired with `terminal_opened` carrying the new leaf in the new home, and
-  UNPAIRED when a kill reaps the terminal — it left every room. Clients drop the row from
-  their terminal listing on it, which is what makes a kill visible at once rather than at the
-  next resync. Nothing is parked anywhere — the frame is a departure notice, not a state.
+  UNPAIRED when canonical removal reaps the terminal — it left every room. Clients drop the
+  row from their terminal listing on it, making explicit kills and successful exits visible
+  at once rather than at resync. Nothing is parked anywhere: this is a departure notice.
 - Terminal ids are opaque. A terminal's placements are read from live containers (portal
   elements and tile leaves), never from the terminal row: one terminal can be referenced from
   many canvases at once, so no single `elementId` could describe it. Text and draw elements
@@ -2704,6 +2753,26 @@ build target and nothing branches on which instance is being looked at.
 
 ## Testability (agent-facing)
 
+- **Preview admission coverage** (#332): `packages/server/test/preview-identity.test.ts`
+  exercises two real servers, an initial handoff, then authority key rotation while the same
+  preview survives. It proves that the new assertion grants usable preview-local access,
+  tampered signatures are refused, and authority outage fails closed. This is HTTP-level
+  coverage, not browser navigation or first-paint coverage. The earlier stable-authority
+  handoff coverage missed the old-preview/new-key transition.
+- **Dark authentication first paint** (#334): `scripts/verify-pwa.ts` holds real shell,
+  callback, finalize and refusal documents with page scripts disabled and external assets
+  blocked, under a light system preference. It samples rendered background pixels and checks
+  text/link contrast. The signed handoff uses two throwaway local instances; this browser
+  coverage complements the rotation regression but does not claim a public deployment works.
+- **Public browser coverage**: `scripts/verify-public.ts` enters through the target origin's
+  owner-key fragment and local human first-visit gate, then exercises its workspace, embedded
+  terminal and public WebSockets; it also checks anonymous denial. It does NOT exercise
+  production-identity admission to a preview or inspect
+  transient sign-in documents. Passing it cannot close a production-to-preview sign-in incident.
+  That deployed path requires a real-browser check from production identity through preview
+  callback/finalize to the workspace, including transient-document visual inspection, on the
+  exact affected origin and build (AGENTS.md §Commands). Keep production secrets out of PR CI
+  and preview environments; isolated scripted admission checks use throwaway authorities.
 - **Debug probe** (`packages/plugin/src/debug-probe.ts`, reached by plugin code through
   `@manifold/plugin/hooks`): when `localStorage["manifold:debug"]
 === "1"`, the active container renderer installs `window.__manifold` — READ-ONLY snapshot

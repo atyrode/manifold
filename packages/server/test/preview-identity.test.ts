@@ -46,7 +46,7 @@ afterEach(async () => {
 });
 
 describe("production preview identity", () => {
-  test("exchanges a restricted production identity without transferring its credential", async () => {
+  test("exchanges restricted identities across issuer key rotation without transferring credentials", async () => {
     const productionConfig = loadConfig({
       MANIFOLD_PORT: "0",
       MANIFOLD_DATA_DIR: dataDirectory("production"),
@@ -188,5 +188,64 @@ describe("production preview identity", () => {
       body: JSON.stringify({ audience: previewConfig.publicUrl, nonce }),
     });
     expect(scopedIssue.status).toBe(403);
+
+    // The authority changes keys while the preview stays alive with its earlier verification.
+    const rotatedConfig = loadConfig({
+      MANIFOLD_DATA_DIR: dataDirectory("rotated-authority"),
+      MANIFOLD_OWNER_KEY: OWNER_KEY,
+    });
+    productionConfig.previewIdentityPrivateKey = rotatedConfig.previewIdentityPrivateKey;
+    productionConfig.previewIdentityPublicKey = rotatedConfig.previewIdentityPublicKey;
+    const rotatedStart = await fetch(`${preview.publicUrl}/api/identity/preview-start`, {
+      method: "POST",
+    });
+    const rotatedNonce = PreviewIdentityNonceResponseSchema.parse(await rotatedStart.json());
+    const rotatedNonceCookie = rotatedStart.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
+    const rotatedIssue = await fetch(`${production.publicUrl}/api/identity/preview-assertion`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${productionGrant.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ audience: previewConfig.publicUrl, nonce: rotatedNonce.nonce }),
+    });
+    expect(rotatedIssue.status).toBe(200);
+    const rotatedIssued = PreviewIdentityAssertionSchema.parse(await rotatedIssue.json());
+    const tamperedParts = rotatedIssued.assertion.split(".");
+    const tamperedSignature = Buffer.from(tamperedParts[2] ?? "", "base64url");
+    tamperedSignature[0] = (tamperedSignature[0] ?? 0) ^ 1;
+    tamperedParts[2] = tamperedSignature.toString("base64url");
+    const tamperedStage = await fetch(`${preview.publicUrl}/auth/preview/callback`, {
+      method: "POST",
+      body: new URLSearchParams({ assertion: tamperedParts.join(".") }),
+    });
+    expect(tamperedStage.status).toBe(403);
+    const rotatedStage = await fetch(`${preview.publicUrl}/auth/preview/callback`, {
+      method: "POST",
+      body: new URLSearchParams({ assertion: rotatedIssued.assertion }),
+    });
+    expect(rotatedStage.status).toBe(200);
+    const rotatedCallbackCookie = rotatedStage.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
+    const rotatedAccept = await fetch(`${preview.publicUrl}/auth/preview/finalize`, {
+      headers: { cookie: `${rotatedNonceCookie}; ${rotatedCallbackCookie}` },
+    });
+    expect(rotatedAccept.status).toBe(200);
+    const rotatedToken = /"token":"([^"]+)"/.exec(await rotatedAccept.text())?.[1];
+    if (rotatedToken === undefined) throw new Error("rotated assertion delivered no local token");
+    expect(
+      (
+        await fetch(`${preview.publicUrl}/api/layout`, {
+          headers: { authorization: `Bearer ${rotatedToken}` },
+        })
+      ).status,
+    ).toBe(200);
+
+    await production.stop();
+    runningServers.splice(runningServers.indexOf(production), 1);
+    const unavailable = await fetch(`${preview.publicUrl}/auth/preview/callback`, {
+      method: "POST",
+      body: new URLSearchParams({ assertion: rotatedIssued.assertion }),
+    });
+    expect(unavailable.status).toBe(409);
   });
 });

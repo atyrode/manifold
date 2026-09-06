@@ -250,6 +250,7 @@ export class SessionGateway {
     };
     this.armJoinDeadline(connection);
     this.connections.set(id, connection);
+    this.logger.info("session_open", { connectionId: id });
     /*
       The roster, before anything else and before any join. It is CONNECTION-level state:
       it describes the workspace's vocabulary rather than any one room, so it is written
@@ -292,7 +293,10 @@ export class SessionGateway {
       connection.cancelPing = null;
       if (connection.closed) return;
       if (connection.awaitingPong) {
-        this.logger.warn("session_liveness_timeout", { connectionId: connection.id });
+        this.logger.warn("session_liveness_timeout", {
+          connectionId: connection.id,
+          channelIds: [...connection.channels.keys()],
+        });
         connection.socket.close(4008, "liveness timeout");
         return;
       }
@@ -385,6 +389,12 @@ export class SessionGateway {
     code: number,
     reason: string,
   ): void {
+    this.logger.warn("session_channel_refused", {
+      connectionId: connection.id,
+      channelId: ch,
+      code,
+      reason,
+    });
     const frame = serializeServerMessage({ type: "channel_closed", code, reason });
     connection.socket.send(`{"ch":"${ch}",${frame.body.slice(1)}`);
   }
@@ -395,6 +405,13 @@ export class SessionGateway {
    * channel, so a portal pointing at a deleted container never takes a tab down with it.
    */
   private joinChannel(connection: SessionConnection, message: JoinMessage): void {
+    const startedAt = this.runtime.now();
+    this.logger.info("session_channel_join", {
+      connectionId: connection.id,
+      channelId: message.ch,
+      containerId: message.containerId,
+      spectator: message.spectator === true,
+    });
     if (message.protocolVersion !== PROTOCOL_VERSION) {
       connection.socket.close(4409, "protocol version mismatch");
       return;
@@ -501,7 +518,15 @@ export class SessionGateway {
     connection.channels.set(message.ch, channel);
     // A refused join already closed the peer, and `retireChannel` cleaned its record —
     // including re-arming the join deadline when nothing is left on this socket.
-    room.join(peer);
+    const initQueued = room.join(peer);
+    this.logger.info("session_channel_init", {
+      connectionId: connection.id,
+      channelId: message.ch,
+      containerId: message.containerId,
+      principalId: context.principal.id,
+      initQueued,
+      elapsedMs: this.runtime.now() - startedAt,
+    });
   }
 
   /** Frees one channel's room membership, terminal viewers, and pending throttles. */
@@ -509,6 +534,12 @@ export class SessionGateway {
     const channel = connection.channels.get(ch);
     if (channel === undefined) return;
     connection.channels.delete(ch);
+    channel.peer.dispose();
+    this.logger.info("session_channel_released", {
+      connectionId: connection.id,
+      channelId: ch,
+      containerId: channel.peer.containerId,
+    });
     channel.pendingCursor = null;
     channel.cancelCursorFlush?.();
     channel.cancelCursorFlush = null;

@@ -1,0 +1,1490 @@
+{
+  "experiment": "live-divider-glyph-distortion",
+  "condition": "Complete beta: ratio-only layout changes do not start FLIP, and interrupt earlier settlement",
+  "bundle": "index-NBScF-9-.js",
+  "method": "Same real 20-step mouse drag and rAF glyph/transform sampler as stretch-before.json; one screenshot mid-drag; not a cadence performance benchmark.",
+  "frames": [
+    {
+      "timeMs": 30990.300000071526,
+      "phase": "before",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31018.300000071526,
+      "phase": "before",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31037.800000071526,
+      "phase": "before",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31065.300000071526,
+      "phase": "before",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31076.5,
+      "phase": "before",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31085.800000071526,
+      "phase": "before",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31127.700000047684,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31128.800000071526,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 557,
+          "paintedWidth": 556.625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31150.399999976158,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 566,
+          "paintedWidth": 565.578125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 548,
+          "paintedWidth": 547.671875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31228,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 566,
+          "paintedWidth": 565.578125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 548,
+          "paintedWidth": 547.671875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31275.899999976158,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 566,
+          "paintedWidth": 565.578125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 548,
+          "paintedWidth": 547.671875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31289.399999976158,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 575,
+          "paintedWidth": 574.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 539,
+          "paintedWidth": 538.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31368.399999976158,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 575,
+          "paintedWidth": 574.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 539,
+          "paintedWidth": 538.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31402.300000071526,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 575,
+          "paintedWidth": 574.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 539,
+          "paintedWidth": 538.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31465.5,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 575,
+          "paintedWidth": 574.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 539,
+          "paintedWidth": 538.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31604.600000023842,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 592,
+          "paintedWidth": 592.4375,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 521,
+          "paintedWidth": 520.8125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31772.899999976158,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 601,
+          "paintedWidth": 601.40625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 512,
+          "paintedWidth": 511.84375,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31852.899999976158,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 610,
+          "paintedWidth": 610.359375,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 503,
+          "paintedWidth": 502.890625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 31985.300000071526,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 619,
+          "paintedWidth": 619.3125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 494,
+          "paintedWidth": 493.9375,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 32127.800000071526,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 628,
+          "paintedWidth": 628.265625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 485,
+          "paintedWidth": 484.984375,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 32307.800000071526,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 637,
+          "paintedWidth": 637.21875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 476,
+          "paintedWidth": 476.03125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 32413.300000071526,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 32518.399999976158,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 32587.800000071526,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 32621.700000047684,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 32648.800000071526,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 32691.800000071526,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 32710.800000071526,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 32721.899999976158,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 32771.89999997616,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 646,
+          "paintedWidth": 646.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 467,
+          "paintedWidth": 467.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 32844.89999997616,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 655,
+          "paintedWidth": 655.125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 458,
+          "paintedWidth": 458.125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 32947.700000047684,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 664,
+          "paintedWidth": 664.078125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 449,
+          "paintedWidth": 449.171875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 33070.39999997616,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 673,
+          "paintedWidth": 673.046875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 440,
+          "paintedWidth": 440.203125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 33160.800000071526,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 682,
+          "paintedWidth": 682,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 431,
+          "paintedWidth": 431.25,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 33314,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 691,
+          "paintedWidth": 690.953125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 422,
+          "paintedWidth": 422.296875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 33406,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 700,
+          "paintedWidth": 699.90625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 413,
+          "paintedWidth": 413.34375,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 33534.60000002384,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 709,
+          "paintedWidth": 708.859375,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 404,
+          "paintedWidth": 404.390625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 33687,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 718,
+          "paintedWidth": 717.8125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 395,
+          "paintedWidth": 395.4375,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 33817.700000047684,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 727,
+          "paintedWidth": 726.765625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 386,
+          "paintedWidth": 386.484375,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 33915.700000047684,
+      "phase": "held",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 727,
+          "paintedWidth": 726.765625,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 386,
+          "paintedWidth": 386.484375,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34024.300000071526,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34085.200000047684,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34116,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34128.200000047684,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34138.60000002384,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34154.800000071526,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34170.300000071526,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34185.10000002384,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34204.89999997616,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34220.700000047684,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34236.10000002384,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34250.800000071526,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34268.60000002384,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34289.300000071526,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34301.300000071526,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34320,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    },
+    {
+      "timeMs": 34333,
+      "phase": "after",
+      "hosts": [
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 736,
+          "paintedWidth": 735.71875,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        },
+        {
+          "scaleX": 1,
+          "scaleY": 1,
+          "layoutWidth": 378,
+          "paintedWidth": 377.53125,
+          "glyph": {
+            "width": 8,
+            "height": 16
+          }
+        }
+      ]
+    }
+  ]
+}
