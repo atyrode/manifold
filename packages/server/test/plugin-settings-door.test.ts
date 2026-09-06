@@ -49,18 +49,46 @@ async function fixture(): Promise<Fixture> {
   );
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
-  return { store, owner, auth, host: await testPluginHost(store, auth, rooms, broker, runtime, {
-    settingsPlugins: [{
-      manifest: {
-        id: "example.settings", version: "1.0.0", title: "Settings fixture",
-        description: "Exercises settings authority and shared storage.",
-        capabilities: [], contributes: { panels: [], sections: [], elements: [], tools: [], events: [], settings: [{
-          id: "mode", title: "Mode", kind: "enum", scope: "workspace",
-          values: [{ id: "one", title: "One" }, { id: "two", title: "Two" }], default: "one",
-        }] },
-      }, actions: [], handlers: {},
-    }],
-  }) };
+  return {
+    store,
+    owner,
+    auth,
+    host: await testPluginHost(store, auth, rooms, broker, runtime, {
+      settingsPlugins: [
+        {
+          manifest: {
+            id: "example.settings",
+            version: "1.0.0",
+            title: "Settings fixture",
+            description: "Exercises settings authority and shared storage.",
+            capabilities: [],
+            contributes: {
+              panels: [],
+              sections: [],
+              elements: [],
+              tools: [],
+              events: [],
+              settings: [
+                {
+                  id: "mode",
+                  title: "Mode",
+                  kind: "enum",
+                  scope: "workspace",
+                  values: [
+                    { id: "one", title: "One" },
+                    { id: "two", title: "Two" },
+                  ],
+                  default: "one",
+                },
+              ],
+            },
+          },
+          actions: [],
+          handlers: {},
+        },
+      ],
+    }),
+  };
 }
 /**
  * The least-authority token the mint will issue — `containers:read` is its floor, so this is a
@@ -94,17 +122,29 @@ describe("engine.plugins.setSetting", () => {
     const visitor = guest(target);
     const args = { plugin: "example.settings", setting: "mode", value: "two" };
     const ref = "example.settings.mode";
-    expect(refusal(await target.host.dispatch(visitor, ENGINE_SET_SETTING_ACTION, args)))
-      .toContain("plugins:manage");
+    expect(refusal(await target.host.dispatch(visitor, ENGINE_SET_SETTING_ACTION, args))).toContain(
+      "plugins:manage",
+    );
     expect(target.store.workspacePluginSetting(ref)).toBeUndefined();
-    expect((await target.host.dispatch(target.owner, ENGINE_SET_SETTING_ACTION, args)).ok).toBe(true);
-    expect(target.store.effectivePluginSettings(visitor.principal.id, [ref])).toEqual({ [ref]: "two" });
+    expect((await target.host.dispatch(target.owner, ENGINE_SET_SETTING_ACTION, args)).ok).toBe(
+      true,
+    );
+    expect(target.store.effectivePluginSettings(visitor.principal.id, [ref])).toEqual({
+      [ref]: "two",
+    });
     expect(target.store.listEvents({ type: "plugin_setting_changed", limit: 10 })).toHaveLength(1);
     await target.host.dispatch(target.owner, ENGINE_SET_SETTING_ACTION, args);
     expect(target.store.listEvents({ type: "plugin_setting_changed", limit: 10 })).toHaveLength(1);
     expect(target.store.pluginSettings(visitor.principal.id)).toEqual({});
     expect(target.store.pluginSettings(target.owner.principal.id)).toEqual({});
-    expect((await target.host.dispatch(target.owner, ENGINE_SET_SETTING_ACTION, { ...args, value: "missing" })).ok).toBe(false);
+    expect(
+      (
+        await target.host.dispatch(target.owner, ENGINE_SET_SETTING_ACTION, {
+          ...args,
+          value: "missing",
+        })
+      ).ok,
+    ).toBe(false);
     expect(target.store.workspacePluginSetting(ref)).toBe("two");
     await target.host.dispatch(target.owner, ENGINE_SET_SETTING_ACTION, { ...args, value: null });
     expect(target.store.effectivePluginSettings(visitor.principal.id, [ref])).toEqual({});

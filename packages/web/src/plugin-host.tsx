@@ -822,11 +822,18 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
   const attachPluginsClient = useCallback(
     (client: SessionClient): (() => void) => {
       const offRoster = client.onPlugins(publish);
-      const offSettings = client.subscribe([{ kind: "plugin", pluginId: "engine.plugins" }], (event) => {
-        if (event.kind === "plugin_setting_changed") setValuesEpoch((epoch) => epoch + 1);
-      });
+      const offSettings = client.subscribe(
+        [{ kind: "plugin", pluginId: "engine.plugins" }],
+        (event) => {
+          if (event.kind === "plugin_setting_changed") setValuesEpoch((epoch) => epoch + 1);
+        },
+      );
       const offStatus = client.on("status", () => setValuesEpoch((epoch) => epoch + 1));
-      return () => { offRoster(); offSettings(); offStatus(); };
+      return () => {
+        offRoster();
+        offSettings();
+        offStatus();
+      };
     },
     [publish],
   );

@@ -532,7 +532,10 @@ export type ServerPluginDef = PluginDef & {
 interface EngineDoorCtx {
   readonly principal: Principal;
   readonly host: HostControl;
-  readonly store: Pick<ServerStore, "pluginSettings" | "setPluginSettings" | "workspacePluginSetting" | "setWorkspacePluginSetting">;
+  readonly store: Pick<
+    ServerStore,
+    "pluginSettings" | "setPluginSettings" | "workspacePluginSetting" | "setWorkspacePluginSetting"
+  >;
   readonly auth: ActionAuth;
   readonly emit: EmitEvent;
 }
@@ -594,19 +597,27 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
         const refusal = settingWriteRefusal(ctx.host.roster(), args.plugin, args.setting);
         if (refusal !== null) return { refused: refusal };
         const ref = settingRefId(args.plugin, args.setting);
-        const setting = ctx.host.roster().find((entry) => entry.manifest.id === args.plugin)!
+        const setting = ctx.host
+          .roster()
+          .find((entry) => entry.manifest.id === args.plugin)!
           .manifest.contributes.settings!.find((setting) => setting.id === args.setting)!;
         if (setting.scope === "workspace" && !ctx.auth.allows("plugins:manage"))
           return { refused: "plugins:manage capability required" };
-        if (args.value !== null && !(setting.kind === "boolean"
-          ? typeof args.value === "boolean"
-          : setting.values.some((value) => value.id === args.value)))
+        if (
+          args.value !== null &&
+          !(setting.kind === "boolean"
+            ? typeof args.value === "boolean"
+            : setting.values.some((value) => value.id === args.value))
+        )
           return { refused: `invalid_setting_value: ${ref}` };
         if (setting.scope === "workspace") {
           if ((ctx.store.workspacePluginSetting(ref) ?? null) === args.value) return {};
           ctx.store.setWorkspacePluginSetting(ref, args.value);
-          ctx.emit({ kind: "plugin", pluginId: enginePluginsManifest.id },
-            "plugin_setting_changed", { plugin: args.plugin, setting: args.setting });
+          ctx.emit(
+            { kind: "plugin", pluginId: enginePluginsManifest.id },
+            "plugin_setting_changed",
+            { plugin: args.plugin, setting: args.setting },
+          );
           return {};
         }
         const current = ctx.store.pluginSettings(ctx.principal.id);

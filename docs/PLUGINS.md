@@ -836,8 +836,8 @@ their work invisible without deleting it, which is the one outcome worse than a 
   and `enum` (a select). An enum adds `values: [{ id, title }]`: one to 32 choices with unique,
   non-empty ids; `default` must name one. Invalid choices refuse manifest admission with
   `invalid_setting_enum`. For example, `{ id: "storage", title: "Storage", kind: "enum",
-  values: [{ id: "local", title: "Local" }, { id: "external", title: "External" }],
-  default: "local", scope: "workspace" }`.
+values: [{ id: "local", title: "Local" }, { id: "external", title: "External" }],
+default: "local", scope: "workspace" }`.
   Omitted scope means `principal`: server-saved preferences follow the reader across devices.
   `workspace` means one shared value for everyone; writing it requires `plugins:manage`.
   The generic pane names this scope in words and disables writes with the refusal when the

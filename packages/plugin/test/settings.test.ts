@@ -231,27 +231,73 @@ describe("assembleRoster settings", () => {
   }
 
   test("refuses enum defaults outside the closed values at manifest admission", () => {
-    expect(() => assembleRoster([def({ id: "core.example", settings: [{
-      id: "mode", title: "Mode", kind: "enum", values: [{ id: "one", title: "One" }],
-      default: "missing",
-    }] })], new Set())).toThrow("invalid_setting_enum");
+    expect(() =>
+      assembleRoster(
+        [
+          def({
+            id: "core.example",
+            settings: [
+              {
+                id: "mode",
+                title: "Mode",
+                kind: "enum",
+                values: [{ id: "one", title: "One" }],
+                default: "missing",
+              },
+            ],
+          }),
+        ],
+        new Set(),
+      ),
+    ).toThrow("invalid_setting_enum");
   });
 
   test("refuses duplicate enum values at manifest admission", () => {
-    expect(() => assembleRoster([def({ id: "core.example", settings: [{
-      id: "mode", title: "Mode", kind: "enum",
-      values: [{ id: "one", title: "One" }, { id: "one", title: "Also one" }],
-      default: "one",
-    }] })], new Set())).toThrow("invalid_setting_enum");
+    expect(() =>
+      assembleRoster(
+        [
+          def({
+            id: "core.example",
+            settings: [
+              {
+                id: "mode",
+                title: "Mode",
+                kind: "enum",
+                values: [
+                  { id: "one", title: "One" },
+                  { id: "one", title: "Also one" },
+                ],
+                default: "one",
+              },
+            ],
+          }),
+        ],
+        new Set(),
+      ),
+    ).toThrow("invalid_setting_enum");
   });
 
   test("refuses an enum as a boolean sidebar gate", () => {
-    expect(() => assembleRoster([def({
-      id: "core.example",
-      settings: [{ id: "mode", title: "Mode", kind: "enum",
-        values: [{ id: "one", title: "One" }], default: "one" }],
-      sections: [{ id: "row", title: "Row", order: 1, setting: "mode" }],
-    })], new Set())).toThrow("as a boolean");
+    expect(() =>
+      assembleRoster(
+        [
+          def({
+            id: "core.example",
+            settings: [
+              {
+                id: "mode",
+                title: "Mode",
+                kind: "enum",
+                values: [{ id: "one", title: "One" }],
+                default: "one",
+              },
+            ],
+            sections: [{ id: "row", title: "Row", order: 1, setting: "mode" }],
+          }),
+        ],
+        new Set(),
+      ),
+    ).toThrow("as a boolean");
   });
   test("refuses a section gating on an undeclared setting, naming the plugin and the setting", () => {
     let thrown: unknown = null;

@@ -106,7 +106,6 @@ describe("the declared-topics index", () => {
     expect(refused?.problems.join("\n")).toContain("core.terminals");
     expect(refused?.problems.join("\n")).toContain("third.party");
   });
-
 });
 
 describe("emission is refused unless it was declared", () => {

@@ -131,17 +131,25 @@ const settingFields = {
 };
 export const SettingDefSchema = z.discriminatedUnion("kind", [
   z.strictObject({ ...settingFields, kind: z.literal("boolean"), default: z.boolean() }),
-  z.strictObject({
-    ...settingFields,
-    kind: z.literal("enum"),
-    values: z.array(z.strictObject({ id: z.string().min(1).max(128), title: TitleSchema })).min(1).max(32),
-    default: z.string().min(1).max(128),
-  }).superRefine((setting, ctx) => {
-    if (new Set(setting.values.map((value) => value.id)).size !== setting.values.length)
-      ctx.addIssue({ code: "custom", message: "invalid_setting_enum: duplicate values" });
-    if (!setting.values.some((value) => value.id === setting.default))
-      ctx.addIssue({ code: "custom", message: "invalid_setting_enum: default is outside values" });
-  }),
+  z
+    .strictObject({
+      ...settingFields,
+      kind: z.literal("enum"),
+      values: z
+        .array(z.strictObject({ id: z.string().min(1).max(128), title: TitleSchema }))
+        .min(1)
+        .max(32),
+      default: z.string().min(1).max(128),
+    })
+    .superRefine((setting, ctx) => {
+      if (new Set(setting.values.map((value) => value.id)).size !== setting.values.length)
+        ctx.addIssue({ code: "custom", message: "invalid_setting_enum: duplicate values" });
+      if (!setting.values.some((value) => value.id === setting.default))
+        ctx.addIssue({
+          code: "custom",
+          message: "invalid_setting_enum: default is outside values",
+        });
+    }),
 ]);
 export type SettingDef = z.infer<typeof SettingDefSchema>;
 

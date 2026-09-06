@@ -79,9 +79,13 @@ export function composeSettings(
         ref,
         plugin: entry.manifest.id,
         declared: setting.default,
-        value: (setting.kind === "boolean"
-          ? typeof stored === "boolean"
-          : setting.values.some((value) => value.id === stored)) ? stored! : setting.default,
+        value: (
+          setting.kind === "boolean"
+            ? typeof stored === "boolean"
+            : setting.values.some((value) => value.id === stored)
+        )
+          ? stored!
+          : setting.default,
       });
     }
   }

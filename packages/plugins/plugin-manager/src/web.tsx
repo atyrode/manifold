@@ -253,35 +253,53 @@ function SettingsPane({
         <div className="plugin-manager-setting" key={setting.ref}>
           <span className="plugin-manager-setting-label">
             <strong>{setting.title}</strong>
-            <small>{setting.scope === "workspace" ? "Workspace setting — shared by everyone" : "Your own preference"}</small>
-            {setting.scope === "workspace" && !canManage ? <small>plugins:manage capability required</small> : null}
+            <small>
+              {setting.scope === "workspace"
+                ? "Workspace setting — shared by everyone"
+                : "Your own preference"}
+            </small>
+            {setting.scope === "workspace" && !canManage ? (
+              <small>plugins:manage capability required</small>
+            ) : null}
             {setting.value === setting.declared ? null : (
               <small className="plugin-manager-setting-moved">Changed from default</small>
             )}
           </span>
           {setting.kind === "enum" ? (
-            <select aria-label={setting.title} value={String(setting.value)}
-              data-action={ENGINE_SET_SETTING_ACTION} data-setting={setting.ref}
+            <select
+              aria-label={setting.title}
+              value={String(setting.value)}
+              data-action={ENGINE_SET_SETTING_ACTION}
+              data-setting={setting.ref}
               disabled={pending === setting.ref || (setting.scope === "workspace" && !canManage)}
-              onChange={(event) => onSet(setting, event.target.value)}>
-              {setting.values.map((value) => <option key={value.id} value={value.id}>{value.title}</option>)}
+              onChange={(event) => onSet(setting, event.target.value)}
+            >
+              {setting.values.map((value) => (
+                <option key={value.id} value={value.id}>
+                  {value.title}
+                </option>
+              ))}
             </select>
           ) : (
-          <button
-            className="plugin-manager-setting-toggle"
-            type="button"
-            role="switch"
-            aria-checked={setting.value === true}
-            aria-label={`${setting.value ? "Turn off" : "Turn on"} ${setting.title}`}
-            title={setting.scope === "workspace" ? "Shared by everyone in this workspace" : "Your own preference, on every device"}
-            data-action={ENGINE_SET_SETTING_ACTION}
-            data-testid="plugin-manager-setting-toggle"
-            data-setting={setting.ref}
-            disabled={pending === setting.ref || (setting.scope === "workspace" && !canManage)}
-            onClick={() => onSet(setting, !setting.value)}
-          >
-            {setting.value ? "On" : "Off"}
-          </button>
+            <button
+              className="plugin-manager-setting-toggle"
+              type="button"
+              role="switch"
+              aria-checked={setting.value === true}
+              aria-label={`${setting.value ? "Turn off" : "Turn on"} ${setting.title}`}
+              title={
+                setting.scope === "workspace"
+                  ? "Shared by everyone in this workspace"
+                  : "Your own preference, on every device"
+              }
+              data-action={ENGINE_SET_SETTING_ACTION}
+              data-testid="plugin-manager-setting-toggle"
+              data-setting={setting.ref}
+              disabled={pending === setting.ref || (setting.scope === "workspace" && !canManage)}
+              onClick={() => onSet(setting, !setting.value)}
+            >
+              {setting.value ? "On" : "Off"}
+            </button>
           )}
         </div>
       ))}
