@@ -2519,14 +2519,15 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- layout:<principalId>
 ```
 
-Schema version 20 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
+Schema version 21 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
 — `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
 `grants` substrate; 14 is the trace ledger — five nullable columns on `events`; 15 is credential
 expiry — `tokens.expires_at`; 16 retires the grant rows of already-revoked tokens, the same rule
 `revokeTokensWhere` now applies at revocation, applied to history; 17 adds `plugin_installs`, one
 new table and nothing rewritten; 18 adds `plugin_installs.actions`, defaulted to `'[]'`;
 19 renames contributed-element TileRef discriminants from `text` to `element`;
-20 adds `machines.owner_host_id` and `machines.draining`, default NULL and 0).
+20 adds `machines.owner_host_id` and `machines.draining`, default NULL and 0;
+21 moves the drawing plugin's durable identity to `core.canvas.draw`).
 Migrations 12, 14, 15, 17, 18 and 20 are plain SQL for the same reason: none touches a stored
 document and existing rows need no backfill, since absence already means the right thing — a
 NULL origin means "this instance", a NULL `door` means "this row is an event, not a trace", a
@@ -2534,11 +2535,10 @@ NULL `expires_at` means "never", and an empty `actions` list is the doorless row
 already composed. A NULL machine owner means no persisted host identity; `draining=0`
 means admission is open. Migration 20 does not infer terminal loss or rewrite inventory.
 None takes a pre-migration snapshot, and that is the house rule rather than an exception to it:
-the snapshot belongs to a one-way DATA move (9, 11, 13, 16, and 19 — 16 is SQL, but a DELETE
+the snapshot belongs to a one-way DATA move (9, 11, 13, 16, 19 and 21 — 16 is SQL, but a DELETE
 nothing can run backwards), and adding nullable columns is reversible by a later migration
-that drops them. A migration is SQL, or CODE
-when the move is not
-expressible as SQL:
+that drops them. A migration is SQL, or CODE when it rewrites documents or must propagate each
+statement's failure separately:
 migration 9 (solo compositions) rewrites Yjs documents — every `terminal` element becomes a
 `portal` onto a newly created solo composition, keeping id, geometry and z-order so
 collaborators' element references survive; a terminal already living in a composition was
@@ -2570,13 +2570,20 @@ bytes remain untouched for fallback loading and operator recovery; this migratio
 empties an unreadable leaf. The current TileSchema accepts only `element`, not a compatibility
 alias for `text`, so this rewrite completes before any room or workspace layout is read.
 The document and metadata changes and `schema_version=19` commit in one transaction.
+Migration 21 is the attended drawing identity cutover (ADR 0023 §10). It atomically moves the
+old drawing namespace to `core.canvas.draw`, including existing version and migration stamps;
+renames its disabled-set entry, attribution key and element-type reservations; and records
+`$migration:core.draw-to-core.canvas.draw` under the new namespace. Principal ids and payload
+bytes are not rewritten, and disabled plugins migrate too. Separate prepared statements run
+inside the existing transaction so any failed write rolls back the entire cutover. The schema
+stamp and named ledger make the next boot a no-op. There is no old-id alias or fallback reader.
 A code migration declares whether it is recoverable, and
-a one-way data move is not: 9, 11, 13, 16 and 19 each take a consistent `VACUUM INTO` snapshot BEFORE the
+a one-way data move is not: 9, 11, 13, 16, 19 and 21 each take a consistent `VACUUM INTO` snapshot BEFORE the
 transaction opens (a VACUUM cannot run inside one, which is also what
 makes it a true pre-migration image), skipped only for an in-memory or not-yet-existing
 database.
 The snapshot lands beside the database as `<db>.pre-v<version>.bak`, so a `manifold.db` opened
-at schema 8 leaves the images for 9, 11, 13, 16 and 19 once the replay finishes, and
+at schema 8 leaves the images for 9, 11, 13, 16, 19 and 21 once the replay finishes, and
 **the operator prunes them**. The server never deletes an elder VERSION's
 snapshot: that set is the recovery path for moves nothing can run backwards, and a process
 that silently deletes a recovery image is a worse failure than a full disk. The one exception
@@ -2596,6 +2603,9 @@ server and restoring that pre-v19 database image together with a compatible pre-
 server/client build; the old parser cannot read upgraded `element` refs, and the new parser
 cannot read unconverted `text` refs. Preserve any later writes separately before restoring:
 the backup is the state before migration, not a reverse transform of subsequent edits.
+For the drawing identity cutover, stop the server before rollback and restore
+`manifold.db.pre-v21.bak` with a compatible pre-rename build. Preserve later writes separately;
+the backup does not reverse edits made after the upgrade.
 
 The server snapshots a full encoded Yjs document 1.5s after the last change, at least every
 10s under sustained edits, on room eviction, and on graceful shutdown. Loading scans the
