@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.12.0] - 2026-09-06
+
+### Added
+
+- Unpacked plugins: a directory under `<data>/authored/<id>/` the hub watches and rebuilds with the kit's own bundler, installed through the one install path as `install.mode: "unpacked"` and published without a reload — its panels remount in every joined browser on each save. Root turns the loop on with `engine.plugins.setDeveloperMode { on }` (published as `developerMode` beside the roster; off, every unpacked row refuses enable as `developer_mode_off`) and writes a plugin in one call with `engine.plugins.author { id, files }`. The plugin manager gains an Unpacked band with the developer-mode switch and marks each such row. (#257, #360)
+- An installed or unpacked plugin can now ship its own stylesheet: a `styles.css` beside the manifest, declared with `"entry": { "styles": true }`, is carried in the bundle, served at `GET /api/plugins/<id>/styles.css` and injected into every joined browser while the plugin is enabled — removed the moment it is switched off. The hub admits a sheet only when every selector is rooted at the plugin's own class, `.plugin-<id with "." as "_">`, and refuses one that reaches past it by name (`stylesheet_unscoped`, naming the selector and its line) at install, at authoring and on enable, so no plugin can restyle the shell or another plugin from its sheet. (#258, #361)
+
+### Changed
+
+- Drawing is now the canvas child plugin `core.canvas.draw`, shown under Canvas in the plugin roster. Use the new id in plugin-management action arguments and the deep link `manifold://plugin/core.canvas.draw`; the old id is not an alias. Existing drawing data and plugin state migrate to the new identity, while the `draw` element and tool ids stay unchanged. Canvas is now a required dependency: its family toggle includes drawing, including strokes placed in compositions, without deleting their data. In-tree imports now use `@manifold-plugin/canvas/draw` from `packages/plugins/canvas/draw`, inside the canvas package. (#262, #353)
+
 ## [0.11.0] - 2026-09-06
 
 ### Added
