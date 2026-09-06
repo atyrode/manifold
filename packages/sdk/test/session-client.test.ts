@@ -410,12 +410,14 @@ describe("shared transport", () => {
   test("persistent missing init rejects after bounded attempts without resetting its sibling", async () => {
     vi.useFakeTimers();
     const { first, second, socket, firstConnect, secondConnect } = twoRooms({ reconnect: true });
-    const failed = expect(firstConnect).rejects.toThrow("channel initialization timed out");
+    const failed = firstConnect.catch((error: unknown) => error);
     socket.open();
     receiveOn(socket, second, initFor(second, "healthy", "in-b"));
     await secondConnect;
     keepPinging(socket, 40_000);
-    await failed;
+    expect(await failed).toMatchObject({
+      message: expect.stringContaining("channel initialization timed out"),
+    });
     expect(first.status).toBe("closed");
     expect(first.channelId).toBeNull();
     expect(
@@ -431,20 +433,24 @@ describe("shared transport", () => {
   test("release cancels a pending init deadline and an already scheduled rejoin", async () => {
     vi.useFakeTimers();
     const { first, second, socket, firstConnect, secondConnect } = twoRooms({ reconnect: true });
-    const failed = expect(firstConnect).rejects.toThrow("closed before initialization");
+    const failed = firstConnect.catch((error: unknown) => error);
     socket.open();
     receiveOn(socket, second, initFor(second, "healthy", "in-b"));
     await secondConnect;
     first.close();
-    await failed;
+    expect(await failed).toMatchObject({
+      message: expect.stringContaining("closed before initialization"),
+    });
     keepPinging(socket, 20_000);
     expect(framesOfType(socket, "join")).toHaveLength(2);
     const reconnect = first.connect();
-    const stopped = expect(reconnect).rejects.toThrow("closed before initialization");
+    const stopped = reconnect.catch((error: unknown) => error);
     keepPinging(socket, 10_000);
     expect(first.status).toBe("reconnecting");
     first.close();
-    await stopped;
+    expect(await stopped).toMatchObject({
+      message: expect.stringContaining("closed before initialization"),
+    });
     keepPinging(socket, 20_000);
     expect(framesOfType(socket, "join")).toHaveLength(3);
     expect(second.status).toBe("open");
@@ -454,7 +460,7 @@ describe("shared transport", () => {
   test("a channel refusal cancels init recovery rather than retrying the refusal", async () => {
     vi.useFakeTimers();
     const { first, second, socket, firstConnect, secondConnect } = twoRooms({ reconnect: true });
-    const failed = expect(firstConnect).rejects.toThrow("container not found");
+    const failed = firstConnect.catch((error: unknown) => error);
     socket.open();
     receiveOn(socket, second, initFor(second, "healthy", "in-b"));
     await secondConnect;
@@ -464,7 +470,7 @@ describe("shared transport", () => {
       code: 4404,
       reason: "container not found",
     });
-    await failed;
+    expect(await failed).toMatchObject({ message: expect.stringContaining("container not found") });
     keepPinging(socket, 40_000);
     expect(framesOfType(socket, "join")).toHaveLength(2);
     expect(second.status).toBe("open");
@@ -474,12 +480,14 @@ describe("shared transport", () => {
   test("reconnect disabled bounds missing init without a retry", async () => {
     vi.useFakeTimers();
     const { first, second, socket, firstConnect, secondConnect } = twoRooms();
-    const failed = expect(firstConnect).rejects.toThrow("channel initialization timed out");
+    const failed = firstConnect.catch((error: unknown) => error);
     socket.open();
     receiveOn(socket, second, initFor(second, "healthy", "in-b"));
     await secondConnect;
     keepPinging(socket, 20_000);
-    await failed;
+    expect(await failed).toMatchObject({
+      message: expect.stringContaining("channel initialization timed out"),
+    });
     expect(first.status).toBe("closed");
     expect(framesOfType(socket, "join")).toHaveLength(2);
     expect(second.status).toBe("open");

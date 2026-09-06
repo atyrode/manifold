@@ -94,6 +94,12 @@ export const LOG_EVENTS = [
   "instance_version_rejected",
 
   // Server: session transport — channel multiplexing and connection-level frames.
+  "session_open",
+  "session_closed",
+  "session_channel_join",
+  "session_channel_init",
+  "session_channel_refused",
+  "session_channel_released",
   "session_channel_limit",
   "session_liveness_timeout",
   "session_malformed_frame",
