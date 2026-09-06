@@ -709,7 +709,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "seat",
-      "means": "a place in an arranged tree whose content is something else's address, rendered by rendering its referent (ADR 0017 §3): a tile leaf is one, and a manifest's contributes.seats is its declared intent to occupy one in the default workspace",
+      "means": "a place in an arranged tree whose content is something else's address, rendered by rendering its referent (docs/CONTRACTS.md §Reference nodes, including implementation and deferral status): a tile leaf is one, and a manifest's contributes.seats is its declared intent to occupy one in the default workspace",
       "banned": [],
       "allow": []
     },

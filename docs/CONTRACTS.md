@@ -608,6 +608,100 @@ anybody.
   PTY still homed in it, then drops its room and row. A reference never outlives what it
   references, which is why a portal pointing at nothing is not a state this server can reach.
 
+## Reference nodes
+
+This is the spec of record for the model ratified on 2026-09-01.
+[ADR 0017](decisions/0017-reference-nodes-and-the-workspace-as-a-node.md) records the reasoning,
+dependency order and split-screen acceptance scenario. Ratification is not implementation:
+the five primitives below define the target model; the R1–R5 ledger distinguishes today's
+contracts from the remaining migration. A **portal** remains a canvas element projecting another
+container, not a synonym for a reference node. A **workspace** remains one instance's whole
+arrangement, with a layout per principal.
+
+### Five primitives
+
+1. **Node.** An addressable entity has a canonical `manifold://` address. Grants, presence and
+   events operate over the same ownership tree rather than introducing separate identities.
+2. **Kind + renderer.** A node's kind selects its plugin-owned renderer through the projection
+   registry. Ownership is unique; collisions refuse assembly (D5), and disabled contributions
+   obey the named-placeholder or hide contract (D4′), not another renderer's fallback.
+3. **Reference node (seat).** A seat is a node whose content is another node's address. Rendering
+   it renders its referent transitively. Arrangement specific to that seat belongs to the seat,
+   not the referent. A reference chain MUST detect cycles and render a named refusal; a referent
+   for which the viewer lacks a grant MUST likewise render a named refusal, never blank.
+4. **Cursor.** A cursor is a per-principal reference node whose referent navigation writes through
+   an action door. Index navigation, deep links and spotlight MUST write that same cursor.
+   This navigation node is not the ephemeral pointer coordinates carried by presence.
+5. **Composition.** A composition is an arranged tree of seats and is itself a node. In the
+   target model each principal's workspace layout is their root composition, addressable,
+   grantable and shareable as an ordinary node.
+
+The viewport is derived: a seat referencing a cursor, not a sixth primitive. Referencing another
+principal's cursor makes that seat live as the principal navigates; follow repoints one's own
+cursor rather than adding a seat binding mode. Guest cursors and workspaces on foreign instances
+use the same primitives. These behaviors, general reference-chain resolution and its cycle/grant
+refusals are **ratified, not yet implemented** under S17-C/S17-E; existing container projections
+are not evidence that arbitrary reference nodes work.
+
+### Implementation and deferral ledger
+
+Here **ADR R1–R5** name decisions, not the similarly numbered runtime checks in
+`scripts/verify-axioms.ts`. Gate ids below name only the implemented behavior they actually
+exercise; **no existing gate proves the deferred R1–R5 end state**. Deferred stages link to
+[ADR 0017's migration ledger](decisions/0017-reference-nodes-and-the-workspace-as-a-node.md#migration-stages-each-independently-green-each-behind-the-gate);
+there is no dedicated implementation issue for S17-C, S17-D or S17-E.
+
+- **ADR R1 — Workspace as an ordinary composition node: ratified, not yet implemented
+  (S17-D, after S17-C; no tracker).** The workspace MUST become a composition node, and
+  `core.space.setLayout` and the placement algebra MUST converge on one mutation door, deleting
+  the losing door and migrating its callers in the same change.
+  **Implemented today:** each principal's workspace is a separate stored `TileLayout`, not an
+  ordinary composition node. `packages/plugins/shell/src/server.ts` keeps distinct
+  `spaceHandlers.setLayout` and `spaceHandlers.place` implementations; the former calls
+  `setWorkspaceLayout(ctx.principal.id, ...)`. The existing §Workspace layout contract below
+  remains in force during migration. Gate **R4 layouts are per principal** proves isolation of
+  these layouts; **R4 divider drag commits once** proves the current writer's commit boundary,
+  not door convergence.
+- **ADR R2 — Addressable cursors: ratified, not yet implemented (S17-C; no tracker).**
+  Navigation MUST write a per-principal cursor node through a door, so another seat can address
+  that node. **Implemented today:** `navigateUri` in `packages/web/src/plugin-host.tsx` changes
+  browser routes, and `packages/plugins/uri/src/web.tsx` resolves deep links through
+  `host.navigate` and viewport centering. `ManifoldRefSchema` in
+  `packages/protocol/src/uri.ts` has no cursor address form. Gate **R5 view presence** checks
+  published view state, not addressable navigation; there is **no cursor-node gate**.
+- **ADR R3 — Seats carry addresses: ratified, not yet implemented (S17-C; no tracker).**
+  The panel leaf MUST become a seat holding a `manifold://` address; panel ids become plugin-node
+  addresses and stored trees migrate mechanically. The wire change requires a dedicated
+  protocol-version change, not an unversioned reinterpretation of existing leaves.
+  **Implemented today:** `TileRefSchema` in `packages/protocol/src/layout.ts` still enumerates
+  terminal, container, element, panel and spacer forms; a panel carries `panelId`, not an address.
+  `spaceHandlers.setLayout` accepts only panel, spacer and vacant workspace leaves and names a
+  refusal for other kinds. Gate **R4 workspace panel leaves** checks this current shape, and
+  **S1 default workspace** checks that manifest-declared seats compose a valid tree whose panel
+  leaves resolve. S17-B's manifest seeding has therefore landed as well as S17-A; neither is R3.
+- **ADR R4 — Viewport as seat → cursor: ratified, not yet implemented (S17-C, after R2/R3;
+  no tracker).** The main area MUST reference the principal's cursor, with the referent's owner
+  rendering it; the separate viewport/container-view panel kind MUST disappear.
+  **Implemented today:** `packages/plugins/shell/src/container-view-panel.tsx` still exports
+  `ContainerViewPanel`, reads `useContainerRoute()` and dispatches to `ContainerRenderer` through
+  the projection registry. Renderer ownership is already shared with composition leaves, but
+  routing is not a cursor seat. Gate **S1 web attachments** checks that attached components
+  answer declared contributions; **R4 workspace panel leaves** checks the panel-based workspace.
+  There is **no seat-to-cursor rendering gate**.
+- **ADR R5 — Presence on shared seats: ratified, not yet implemented (S17-E, after cursor
+  seats, workspace nodes and grants scope; no tracker).** A rail or workspace seated in a shared
+  container MUST carry presence like other shared renderers. Arrangement belongs to the tree
+  seating it: a personal workspace's rail arrangement is per principal; a rail seated in a
+  shared composition uses that container's document.
+  **Implemented today:** `ContainerViewPanel` passes the routed container's presence to its
+  renderer; `packages/server/src/room.ts` keeps spotlight delivery and shared-container
+  membership at room connections (`writeSpotlight`, `sharedContainerIds`). Gate **R5 mounted
+  titlebar presence** checks attendance in a shared canvas, **R5 location null clears titlebar
+  presence** checks its removal, and **R5 disabling presence removes titlebar chrome** /
+  **R5 enabling presence restores mounted attendance** check the painter's lifecycle. None seats
+  another principal's rail or workspace or proves cross-instance cursor following; that remains
+  S17-E's two-instance acceptance scenario.
+
 ## Plugins, actions, and the workspace layout
 
 Everything above the foundation floor is a plugin (`AXIOMS.md` axiom A1); this section is what
