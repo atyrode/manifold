@@ -9,6 +9,7 @@
   "dependencies": {
     "@manifold/plugin": "workspace:*",
     "@manifold/protocol": "workspace:*",
+    "@manifold/ui": "workspace:*",
     "@rjsf/core": "6.8.0",
     "@rjsf/utils": "6.8.0",
     "@rjsf/validator-ajv8": "6.8.0",

@@ -1,6 +1,6 @@
 import { HealthResponseSchema, PROTOCOL_VERSION } from "@manifold/protocol";
 import { instanceOrigin, instanceUrl, isForeignInstance } from "@manifold/plugin/hooks";
-import { Cover } from "@manifold/plugin/ui";
+import { Cover } from "@manifold/ui";
 import { useCallback, useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { WEB_BUILD } from "./web-version.ts";
 

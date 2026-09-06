@@ -1,13 +1,16 @@
 /**
- * The engine's browser PLANE mechanism: what a plugin needs in order to participate in a
- * plane the engine already owns — the carry/drop vocabulary, the element host, polling. Its
- * sibling `@manifold/plugin/ui` is the other browser entry and answers a different question:
- * how a plugin LOOKS like manifold (glyphs, the one titlebar, the notice hook, view state).
+ * The engine's browser half: what a plugin needs in order to PARTICIPATE in a plane the engine
+ * already owns — the carry/drop vocabulary, the element host, polling, the one tile tree and
+ * its drop chrome, the notice consumer half, this device's published view state. How a plugin
+ * LOOKS like manifold is the other package's question (`@manifold/ui`: glyphs, the titlebar,
+ * the layout algebra, the tokens), and the engine wears that design system itself — the tile
+ * renderer below imports its glyphs and its motion primitive from there like any plugin does.
  *
- * Both are subpaths rather than part of `@manifold/plugin` itself because that entry is what
- * the server composes through, which is what lets the shell and a plugin share one drag
+ * A subpath rather than part of `@manifold/plugin` itself because that entry is what the
+ * server composes through, which is what lets the shell and a plugin share one drag
  * vocabulary without dragging `DataTransfer` into the server's type graph.
  */
+import "./styles.css";
 export {
   ITEM_MIME,
   beginCarry,
@@ -200,7 +203,74 @@ export {
   type RoomPipeRegistration,
   type TerminalFacet,
 } from "./projection.ts";
-export { publishLocation } from "./ui/vantage.ts";
+/**
+ * THE tile tree and its drop chrome. One renderer for every tile layout in the product — the
+ * workspace shell's own panes, a composition's leaves, a portal's preview — because
+ * "one tree vocabulary everywhere" is a ratified decision (D2) and a second tile renderer
+ * would be a second answer to what a divider drag means.
+ */
+export {
+  PORTAL_TREE_CLASSES,
+  COMPOSITION_TREE_CLASSES,
+  TileTree,
+  WORKSPACE_TREE_CLASSES,
+  type TileTreeClasses,
+  type TileTreeProps,
+} from "./tile-tree.tsx";
+export {
+  TilePreviewOverlay,
+  useTileDeparture,
+  type TileDeparture,
+  type TilePreviewOverlayProps,
+} from "./tile-preview-overlay.tsx";
+export { TileZoneDebug, toggleZoneProbe } from "./tile-zone-debug.tsx";
+/**
+ * The words a keycap wears: the platform-bound half of the engine's keystroke grammar, asked
+ * once (`./keycap-label.ts`). The box is `KeyCap` in `@manifold/ui`.
+ */
+export { keyCapLabel } from "./keycap-label.ts";
+/**
+ * The consumer half of the one notice ref (`./notice.ts`), and this device's published view
+ * state (`./vantage.ts`). Neither decides anything about a domain noun, and each is addressed
+ * by two parties that may not import each other — a floor renderer and a plugin, or two
+ * plugins — which is the litmus that puts a thing here instead of in the package that happens
+ * to use it first.
+ */
+export {
+  NoticeContext,
+  useNotice,
+  type NoticeApi,
+  type NoticeLifetime,
+  type NoticeOptions,
+} from "./notice.ts";
+export {
+  currentVantage,
+  publishLocation,
+  setVantage,
+  subscribeVantage,
+  toggleArranging,
+  useVantage,
+  type Vantage,
+} from "./vantage.ts";
+/**
+ * THE handoff between a surface that LISTS a key and the one that EDITS it. Same litmus as
+ * the store above and a different lifetime: a rebind request is consumed and gone, so it is
+ * device-local memory rather than published view state (`./rebind.ts`).
+ */
+export {
+  clearRebindRequest,
+  currentRebindRequest,
+  requestRebind,
+  useRebindRequest,
+} from "./rebind.ts";
+/** The rebind slot's sibling: a picked-up structure, handed to the palette (`./held.ts`, #148). */
+export {
+  heldStructure,
+  holdStructure,
+  releaseStructure,
+  useHeldStructure,
+  type HeldStructure,
+} from "./held.ts";
 /**
  * WHICH INSTANCE the lens looks at, and the doors derived from it. Browser-only (it reads
  * `window.location` and this device's memory), so it rides this subpath with the rest of the

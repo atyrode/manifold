@@ -20,7 +20,7 @@ import {
   type PluginRosterEntry,
 } from "@manifold/protocol";
 import { useWorkspaceShell } from "@manifold/plugin/hooks";
-import { Cluster, ControlIcon, ScrollRegion, Stack } from "@manifold/plugin/ui";
+import { Cluster, ControlIcon, ScrollRegion, Stack } from "@manifold/ui";
 import {
   useCallback,
   useEffect,

@@ -29,7 +29,7 @@ const SHARED: Record<string, true> = {
   "react/jsx-dev-runtime": true,
   "@manifold/plugin": true,
   "@manifold/plugin/hooks": true,
-  "@manifold/plugin/ui": true,
+  "@manifold/ui": true,
   "@manifold/protocol": true,
   "@manifold/sdk": true,
   "@manifold/scene": true,

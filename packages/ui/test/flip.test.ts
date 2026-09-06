@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { FLIP_EPSILON, flipKeyframes, flipShifts, type FlipRect } from "../src/ui/flip.ts";
+import { FLIP_EPSILON, flipKeyframes, flipShifts, type FlipRect } from "../src/flip.ts";
 
 /**
  * THE ARITHMETIC OF MOTION, with no browser in the room.

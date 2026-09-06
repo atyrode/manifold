@@ -1,5 +1,5 @@
 import { useWorkspaceShell } from "@manifold/plugin/hooks";
-import { ItemIcon } from "@manifold/plugin/ui";
+import { ItemIcon } from "@manifold/ui";
 import type { ReactElement } from "react";
 
 /**

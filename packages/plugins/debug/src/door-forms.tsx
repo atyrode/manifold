@@ -1,5 +1,5 @@
 import type { HostServices } from "@manifold/plugin";
-import { Chip, Popover } from "@manifold/plugin/ui";
+import { Chip, Popover } from "@manifold/ui";
 import type { ActionSummary } from "@manifold/protocol";
 import { Suspense, lazy, useState, type ReactElement } from "react";
 

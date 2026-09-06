@@ -26,24 +26,18 @@ import {
 import {
   SectionOutlet,
   carriesItem,
+  holdStructure,
   readEnvelope,
+  releaseStructure,
   resolveTileAim,
   tileRects,
+  useNotice,
+  useVantage,
   useWorkspaceShell,
   type TileAim,
   type UnitRect,
 } from "@manifold/plugin/hooks";
-import {
-  ControlIcon,
-  Disclosure,
-  ScrollRegion,
-  Stack,
-  holdStructure,
-  releaseStructure,
-  useFlipStack,
-  useNotice,
-  useVantage,
-} from "@manifold/plugin/ui";
+import { ControlIcon, Disclosure, ScrollRegion, Stack, useFlipStack } from "@manifold/ui";
 import { railTree, type RailNode } from "./rail-rows.ts";
 import { railExtents, railPoint, stackPoint, type RailBox } from "./rail-aim.ts";
 import { shellManifest } from "./index.ts";
@@ -867,7 +861,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
    * not necessarily cause — their own arrange commit or nudge, and a roster change that adds
    * or removes somebody else's row — and a re-render teleports. FLIP plays the difference,
    * keyed on the visible tree, so a nudge shows which row moved and a disabled plugin's row is
-   * seen to leave (`@manifold/plugin/ui`'s `useFlipStack`; `prefers-reduced-motion: reduce`
+   * seen to leave (`@manifold/ui`'s `useFlipStack`; `prefers-reduced-motion: reduce`
    * turns every transform off, which is the plain re-render this had before).
    *
    * A LIVE GESTURE IS THE EXCEPTION, and it is not a taste call. The preview used to animate

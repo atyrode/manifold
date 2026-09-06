@@ -3,10 +3,13 @@ import type { WebBinding } from "@manifold/plugin";
 import {
   FALLBACK_POLL_MS,
   INDEX_RESOURCE,
+  keyCapLabel,
+  requestRebind,
+  useNotice,
   usePolledResource,
   type WorkspaceOverlayProps,
 } from "@manifold/plugin/hooks";
-import { KeyCap, ScrollRegion, keyCapLabel, requestRebind, useNotice } from "@manifold/plugin/ui";
+import { KeyCap, ScrollRegion } from "@manifold/ui";
 import { formatManifoldUri, type Cap, type IndexEntry } from "@manifold/protocol";
 import { Command } from "cmdk";
 import { useCallback, useEffect, useMemo, useRef, type ReactElement } from "react";
@@ -204,7 +207,7 @@ export function CommandsOverlay({ host }: WorkspaceOverlayProps): ReactElement |
             placeholder="Search doors, keys and containers…"
             data-testid="commands-input"
           />
-          <KeyCap stroke="Mod+k" />
+          <KeyCap label={keyCapLabel("Mod+k")} />
         </div>
         <ScrollRegion className="commands-body">
           <Command.List>
@@ -232,7 +235,7 @@ export function CommandsOverlay({ host }: WorkspaceOverlayProps): ReactElement |
                           {row.refusal === null ? "" : ` · ${row.refusal}`}
                         </small>
                       </span>
-                      {row.stroke === null ? null : <KeyCap stroke={row.stroke} />}
+                      {row.stroke === null ? null : <KeyCap label={keyCapLabel(row.stroke)} />}
                       <span className="commands-verb">{VERBS[kind]}</span>
                     </Command.Item>
                   ))}

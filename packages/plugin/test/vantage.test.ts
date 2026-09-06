@@ -5,7 +5,7 @@ import {
   subscribeVantage,
   toggleArranging,
   type Vantage,
-} from "../src/ui/vantage.ts";
+} from "../src/vantage.ts";
 
 /**
  * VIEW STATE IS PUBLISHED STATE (A2).

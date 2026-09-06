@@ -5,16 +5,13 @@ import {
   type ComposedBinding,
   type SectionProps,
 } from "@manifold/plugin";
-import { useWorkspaceShell } from "@manifold/plugin/hooks";
 import {
-  ControlIcon,
-  KeyCap,
-  ScrollRegion,
-  Stack,
   clearRebindRequest,
   keyCapLabel,
   useRebindRequest,
-} from "@manifold/plugin/ui";
+  useWorkspaceShell,
+} from "@manifold/plugin/hooks";
+import { ControlIcon, KeyCap, ScrollRegion, Stack } from "@manifold/ui";
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 import { KEYS_RESET_ACTION, KEYS_SET_ACTION } from "./index.ts";
@@ -54,7 +51,7 @@ import { KEYS_RESET_ACTION, KEYS_SET_ACTION } from "./index.ts";
  *
  * AND IT ANSWERS A REQUEST FROM OUTSIDE. Any surface may PRINT a binding — the composed table
  * is the engine's read — so any surface may want to send a reader here to change one. That
- * handoff is the engine's neutral slot (`requestRebind`, `@manifold/plugin/ui`): a request
+ * handoff is the engine's neutral slot (`requestRebind`, `@manifold/plugin/hooks`): a request
  * names a binding id and nothing else, this editor opens on it, arms it and clears the slot.
  * The asker never learns who answered, which is what lets a stranger's editor answer instead.
  */
@@ -278,7 +275,7 @@ export function KeysRow({ host }: SectionProps): ReactElement {
                               {armed === binding.id ? (
                                 <span className="keys-arming">press a key…</span>
                               ) : (
-                                <KeyCap stroke={binding.key} overridden={overridden} />
+                                <KeyCap label={keyCapLabel(binding.key)} overridden={overridden} />
                               )}
                               <button
                                 className="keys-action"

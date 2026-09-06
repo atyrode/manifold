@@ -10,6 +10,7 @@
     "@manifold/plugin": "workspace:*",
     "@manifold/protocol": "workspace:*",
     "@manifold/scene": "workspace:*",
+    "@manifold/ui": "workspace:*",
     "react": "19.2.8"
   },
   "devDependencies": {

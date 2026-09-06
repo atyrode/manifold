@@ -1,5 +1,5 @@
 import { createElement, useState } from "react";
-import { Stack } from "@manifold/plugin/ui";
+import { Stack } from "@manifold/ui";
 import { panelRefId } from "@manifold/plugin";
 
 /** A live React panel; packing shares the shell's React and UI rather than copying either. */

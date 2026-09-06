@@ -10,13 +10,13 @@ import {
   type ReactNode,
 } from "react";
 
-import { ControlIcon, ItemIcon } from "./icons.tsx";
-import type { TileDropSignal, TileDropStore } from "../tile-drop-store.ts";
-import { areaUnits, type TileDropPipeline, type TileDropState } from "../use-tile-drop.ts";
-import { paneShifts, type PaneShift } from "../tile-geometry.ts";
+import { ControlIcon, ItemIcon } from "@manifold/ui";
+import type { TileDropSignal, TileDropStore } from "./tile-drop-store.ts";
+import { areaUnits, type TileDropPipeline, type TileDropState } from "./use-tile-drop.ts";
+import { paneShifts, type PaneShift } from "./tile-geometry.ts";
 import { projectTileMotion, resetTileMotion } from "./tile-tree.tsx";
-import { carriedSnapshot, subscribeCarry } from "../item-envelope.ts";
-import type { GestureOverride } from "../presence/remote-gestures.ts";
+import { carriedSnapshot, subscribeCarry } from "./item-envelope.ts";
+import type { GestureOverride } from "./presence/remote-gestures.ts";
 
 /**
  * The live split preview. Subscribes to the host's drop store — the ONLY consumer of

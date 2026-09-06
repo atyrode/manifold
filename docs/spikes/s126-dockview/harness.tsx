@@ -28,7 +28,7 @@ import {
 import type { TileAim } from "../../../packages/plugin/src/tile-geometry.ts";
 import { releasedTileLayout } from "../../../packages/plugin/src/tile-release.ts";
 import { projectSectionArrangement } from "../../../packages/plugin/src/layout.ts";
-import { TileTree, COMPOSITION_TREE_CLASSES } from "../../../packages/plugin/src/ui/tile-tree.tsx";
+import { TileTree, COMPOSITION_TREE_CLASSES } from "../../../packages/plugin/src/tile-tree.tsx";
 
 import { DockviewComponent, GridviewComponent, GridviewPanel, Orientation } from "dockview-core";
 import type {

@@ -2,7 +2,7 @@
   DISPOSABLE SPIKE — issue #126. Spike-local chrome only.
 
   The CONTROL's skin is not here: `run.ts` serves the real
-  `packages/plugin/src/ui/styles.css`, so `.composition-split/-pane/-divider` are exactly
+  `packages/plugin/src/styles.css`, so `.composition-split/-pane/-divider` are exactly
   the rules the application paints (`.composition-divider` is `flex: 0 0 0.35rem` = 5.6px,
   which is the `dividerPx` the drop kernel subtracts). Duplicating them here would make the
   control a replica instead of the real renderer.

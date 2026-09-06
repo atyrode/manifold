@@ -1,6 +1,6 @@
 import "./styles.css";
 import type { WebBinding } from "@manifold/plugin";
-import { toggleArranging } from "@manifold/plugin/ui";
+import { toggleArranging } from "@manifold/plugin/hooks";
 import { arrangeManifest } from "./index.ts";
 
 export { ArrangeOverlay } from "./arrange-overlay.tsx";

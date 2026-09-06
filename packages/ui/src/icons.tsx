@@ -67,7 +67,7 @@ import {
  *
  *                                CLOSED TO ADDITIONS, NOT TO CALLERS, and #116 exists because
  *                                the difference was left implicit. `ControlIcon` ships through
- *                                `@manifold/plugin/ui` precisely so a plugin's chrome wears the
+ *                                `@manifold/ui` precisely so a plugin's chrome wears the
  *                                same mark for the same verb the engine's chrome does; what a
  *                                plugin may not do is grow this union. The litmus is therefore
  *                                on the NAME, not on the consumer: zero domain nouns, so the

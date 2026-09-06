@@ -168,6 +168,13 @@ must never be taught one.
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {
+      "id": "design-system",
+      "globs": ["packages/ui/src/**"],
+      "litmus": ["bootstrap", "neutrality", "arbitration"],
+      "verdict": "how a thing LOOKS like manifold: the components (the layout algebra, the glyph vocabulary, the one titlebar, the disclosure, the scroll region, the popover, the chip, the key-value list, the keycap), the tokens and the ground (`:root`, the reset, the element defaults) and the one motion primitive (FLIP). BOOTSTRAP: the identity gate, the lens gate and the engine's own tile renderer paint with it before any plugin is enabled, so the shell cannot draw a first frame without it. NEUTRALITY: it names no plugin and no domain noun — `ItemIcon` takes an open kind string precisely because the set is the assembly's, and `ControlKind` is a vocabulary of neutral verbs closed to additions. ARBITRATION: it is the single definition every surface is measured against — one titlebar, one glyph per verb, one set of tokens — so two plugins that may not import each other still wear the same mark for the same thing, and S13 holds every family here to this one sheet. It imports nothing from the engine; the engine imports it (#240, ADR 0025 §8).",
+      "adr": "docs/decisions/0025-plugins-are-mods.md"
+    },
+    {
       "id": "gate-and-registries",
       "globs": [
         "AXIOMS.md",
@@ -224,7 +231,11 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/plugin/src/**",
-      "why": "the registry itself: manifests, assembly, action definitions, host contracts, the default workspace layout — plus the plugin-facing standard library behind @manifold/plugin/hooks (plane mechanism: the carry/drop and tile vocabulary, the presence plane's browser half, the element host, the ELEMENT plane's polyline geometry — what a flat coordinate payload extends to and the SVG strings that paint it, neutral over producers so no plugin carries a private copy — the projection registry through which one renderer paints another plugin's occupant, the routed-container context, polling, WHICH INSTANCE the lens looks at and the session URL derived from it, the debug probe) and @manifold/plugin/ui (neutral chrome: glyphs, the one titlebar, THE one tile-tree renderer with its drop preview and zone debug, the notice consumer half, the published vantage store, and the two device-local handoff slots two plugins that may not import each other pass a gesture through — a rebind request, and the placed structure a grip has in hand for the palette it goes back to (issue #148))"
+      "why": "the registry itself: manifests, assembly, action definitions, host contracts, the default workspace layout — plus the plugin-facing standard library behind @manifold/plugin/hooks (plane mechanism: the carry/drop and tile vocabulary, the presence plane's browser half, the element host, the ELEMENT plane's polyline geometry — what a flat coordinate payload extends to and the SVG strings that paint it, neutral over producers so no plugin carries a private copy — the projection registry through which one renderer paints another plugin's occupant, the routed-container context, polling, WHICH INSTANCE the lens looks at and the session URL derived from it, the debug probe, THE one tile-tree renderer with its drop preview and zone debug, the words a keycap wears, the notice consumer half, the published vantage store, and the two device-local handoff slots two plugins that may not import each other pass a gesture through — a rebind request, and the placed structure a grip has in hand for the palette it goes back to (issue #148)). The design system is NOT here: it is `@manifold/ui` (#240), and this package re-exports nothing from it"
+    },
+    {
+      "glob": "packages/ui/src/**",
+      "why": "the design system, `@manifold/ui` (#240, ADR 0025 §8): how a thing LOOKS like manifold — the layout algebra, the glyph vocabulary, the one titlebar, the disclosure, the scroll region, the popover, the chip, the key-value list, the keycap, the FLIP motion primitive, and the ground stylesheet (tokens, reset, element defaults) every owner's skin composes over. Dogfooded by the shell and every core.* panel, imported by every mod, and never importing the engine"
     },
     {
       "glob": "packages/agent/src/**",
@@ -384,7 +395,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/web/src/notice.tsx",
-      "why": "the one notice stack's PROVIDER: the queue, its two lifetimes, eviction order and the layer it paints into. The consumer half — the context, NoticeApi, useNotice — is @manifold/plugin/ui, because a plugin may not import a floor module and every plugin raises notices into this same stack"
+      "why": "the one notice stack's PROVIDER: the queue, its two lifetimes, eviction order and the layer it paints into. The consumer half — the context, NoticeApi, useNotice — is @manifold/plugin/hooks, because a plugin may not import a floor module and every plugin raises notices into this same stack"
     },
     {
       "glob": "packages/web/src/styles.css",
@@ -422,22 +433,27 @@ Everything not floor-matched is plugin territory. The authoritative list of core
 is a second door onto the concept "which plugins exist", and by invariant 14 that is a bug.
 
 A plugin package holds a manifest, its actions (server half) and its contributions (web half),
-and it imports only `@manifold/protocol`, `@manifold/scene`, `@manifold/sdk` and
-`@manifold/plugin`. The engine ships three entry points on purpose. `@manifold/plugin` is
-platform-free (manifests, action definitions, assembly, host contracts) and is what the
-server imports. `@manifold/plugin/hooks` carries the plane mechanism a plugin needs in a
-browser (the carry/drop vocabulary, the element host, `usePolledResource`), so a server
-typecheck never pulls React and a DOM lib into its type graph. `@manifold/plugin/ui` is the
-plugin-facing standard library: the glyph vocabulary, the one node titlebar, the consumer half
-of the one notice stack, and this device's published vantage store — neutral chrome
-MECHANISM, every piece of it addressed by two parties that may not import each other, which is
-the litmus that puts a thing there rather than in whichever package used it first. A plugin
-reaches the host through `HostServices` and nothing else. `docs/PLUGINS.md` is the authoring
-guide.
+and it imports only the three named layers (ADR 0025 §8, #240): the SDK — `@manifold/protocol`,
+`@manifold/sdk` (and `@manifold/scene`), talking to the hub; the ENGINE API — `@manifold/plugin`,
+being a plugin; and the DESIGN SYSTEM — `@manifold/ui`, looking like manifold. The engine ships
+two entry points on purpose. `@manifold/plugin` is platform-free (manifests, action definitions,
+assembly, host contracts) and is what the server imports. `@manifold/plugin/hooks` carries the
+plane mechanism a plugin needs in a browser (the carry/drop vocabulary, the element host,
+`usePolledResource`, THE tile tree, the consumer half of the one notice stack, this device's
+published vantage store — neutral MECHANISM, every piece of it addressed by two parties that may
+not import each other, which is the litmus that puts a thing there rather than in whichever
+package used it first), so a server typecheck never pulls React and a DOM lib into its type
+graph. `@manifold/ui` is the components, the tokens and the motion and layout rules: the glyph
+vocabulary, the one node titlebar, the layout algebra, the keycap, the chip, the key-value list,
+the disclosure, the scroll region, the popover, FLIP. The shell and every `core.*` panel render
+with it, so it is real; a mod imports the same package; and `@manifold/plugin` re-exports
+nothing from it. Components are optional; contracts (tile geometry, D4′, `data-action`) are not
+and come from the engine API regardless. A plugin reaches the host through `HostServices` and
+nothing else. `docs/PLUGINS.md` is the authoring guide.
 
 A plugin also imports NO DRAWING. `lucide-react` is named in
-`packages/plugin/src/ui/icons.tsx` and nowhere else in the tree (ADR 0009 and its #116
-addendum): a plugin asks `@manifold/plugin/ui` for a KIND — `<ControlIcon kind="discard" />`,
+`packages/ui/src/icons.tsx` and nowhere else in the tree (ADR 0009 and its #116
+addendum): a plugin asks `@manifold/ui` for a KIND — `<ControlIcon kind="discard" />`,
 `<ItemIcon kind={container.discipline} />` — so re-drawing the set stays a change to one file,
 and S2 checks it rather than remembering it. `ControlKind` is closed to ADDITIONS and not to
 callers: a plugin may not grow the union, and is expected to call it, because a plugin's chrome
@@ -656,7 +672,7 @@ element types, and that every value's canonical word is the key's registry term.
 `ITEM_NOUNS` in `packages/plugin/src/item-noun.ts`, where a floor kind takes the floor's word and
 a contributed kind takes its manifest element `title` — so the table stays closed while the kind
 vocabulary stays open. The three that disagreed are gone: `carry.ts`'s label map is deleted,
-`item-drop.ts` derives its prose from `ITEM_NOUNS`, and `ui/icons.tsx` names glyphs directly
+`item-drop.ts` derives its prose from `ITEM_NOUNS`, and `@manifold/ui`'s `icons.tsx` names glyphs directly
 instead of translating kinds into words a second time. Invariant 14,
 applied to vocabulary: one door onto "what do we call this kind".
 
@@ -1030,7 +1046,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "cluster",
-      "means": "a set of sidebar rows that declared the same contributes.sections[].cluster word: they paint side by side as ONE unit of the rail's stack, placed where the cluster's earliest member sits in the live order (clusteredSections). Membership is declared, never positional, and no floor file, panel or registry holds a list of a cluster's members — core.keys and core.plugins sit together at the rail's foot because both manifests say \"utility\". NOT group: that word is the placement algebra's capability set, and one concept per word is the law. The Cluster box in @manifold/plugin/ui is a layout primitive that happens to paint one, exactly as the layout family's components are named for the shape they draw",
+      "means": "a set of sidebar rows that declared the same contributes.sections[].cluster word: they paint side by side as ONE unit of the rail's stack, placed where the cluster's earliest member sits in the live order (clusteredSections). Membership is declared, never positional, and no floor file, panel or registry holds a list of a cluster's members — core.keys and core.plugins sit together at the rail's foot because both manifests say \"utility\". NOT group: that word is the placement algebra's capability set, and one concept per word is the law. The Cluster box in @manifold/ui is a layout primitive that happens to paint one, exactly as the layout family's components are named for the shape they draw",
       "banned": [],
       "allow": []
     },
@@ -1264,7 +1280,7 @@ applied to vocabulary: one door onto "what do we call this kind".
     },
     {
       "term": "flip",
-      "means": "the ONE way a stack whose order is DATA animates a reflow: measure the rows' boxes, let the new order commit, measure again, invert each row with a transform and play it out (First-Last-Invert-Play). The engine's `@manifold/plugin/ui` owns the arithmetic (`flipShifts`, `useFlipStack`); `prefers-reduced-motion: reduce` disables it entirely rather than shortening it. Named because the sidebar's row stack reflows for three unrelated reasons — an arrange commit, a keyboard nudge, a plugin being enabled or disabled — and a re-render teleports: motion is what says which row went where",
+      "means": "the ONE way a stack whose order is DATA animates a reflow: measure the rows' boxes, let the new order commit, measure again, invert each row with a transform and play it out (First-Last-Invert-Play). The design system's `@manifold/ui` owns the arithmetic (`flipShifts`, `useFlipStack`); `prefers-reduced-motion: reduce` disables it entirely rather than shortening it. Named because the sidebar's row stack reflows for three unrelated reasons — an arrange commit, a keyboard nudge, a plugin being enabled or disabled — and a re-render teleports: motion is what says which row went where",
       "banned": [],
       "allow": []
     },
@@ -1423,9 +1439,12 @@ are FLOOR files (§Foundation), and a floor file may not import `@manifold-plugi
 is no shell package to put them in. `packages/web/src/shell.css` is therefore a second owner
 inside `packages/web`, registered as its own stylesheet rather than folded back into the floor
 sheet — the check enforces the FILE, so a separate owner in the same directory costs nothing
-and saying "the shell owns this" out loud is worth something. The neutral chrome has no such
-problem: `packages/plugin/src/ui/styles.css` sits with the components that emit those classes,
-because `packages/plugin` is floor that everything already imports.
+and saying "the shell owns this" out loud is worth something. The design system and the engine's
+chrome have no such problem: `packages/ui/src/styles.css` sits with the components that emit
+those classes (and carries the GROUND — tokens, reset, element defaults — as the `*` row's
+owner, since every skin composes over it), and `packages/plugin/src/styles.css` sits with the
+tile tree whose divider pixels it asserts, because both packages are floor that everything
+already imports.
 
 Rows are live or they are gone. A row whose stylesheet does not exist, or which no rule in that
 stylesheet defines, fails exactly as a stale floor glob fails S6 and a stale exemption fails
@@ -1437,8 +1456,8 @@ prefix, never a scope root, and belongs to no stylesheet.
   "cssFamilies": [
     {
       "family": "*",
-      "owner": "packages/web/src/styles.css",
-      "why": "not a prefix: the rules with no class at all. The reset, `:root`, the element defaults and `[data-drop-denial]` reach every node in the document, which is exactly the reach a plugin must not have — so they live in the floor's sheet and the check refuses them anywhere else"
+      "owner": "packages/ui/src/styles.css",
+      "why": "not a prefix: the rules with no class at all. The reset, `:root` (the tokens), the element defaults and `[data-drop-denial]` reach every node in the document, which is exactly the reach a plugin must not have — so they live in the design system's GROUND (`@manifold/ui`, the sheet every owner's skin composes over, #240) and the check refuses them anywhere else. Tokens are the theming seam: a mod reads them for free coherence or sets its own under its root"
     },
     {
       "family": "gate",
@@ -1483,7 +1502,7 @@ prefix, never a scope root, and belongs to no stylesheet.
     {
       "family": "notice",
       "owner": "packages/web/src/styles.css",
-      "why": "the one notice stack. The PROVIDER is floor (`notice.tsx`) and every plugin raises into it through `@manifold/plugin/ui`, so the layer's skin is the floor's"
+      "why": "the one notice stack. The PROVIDER is floor (`notice.tsx`) and every plugin raises into it through `@manifold/plugin/hooks`, so the layer's skin is the floor's"
     },
     {
       "family": "plugin-placeholder",
@@ -1512,8 +1531,8 @@ prefix, never a scope root, and belongs to no stylesheet.
     },
     {
       "family": "keycap",
-      "owner": "packages/plugin/src/ui/styles.css",
-      "why": "THE keycap: one keystroke drawn as a key, and the one place `Mod` becomes ⌘ or Ctrl — `keycap.tsx`. It was `.keys-cap` and its sheet called it \"the one keycap in the product\", which held exactly as long as one seat printed the composed key table; the table is the engine's read (`host.assembly.bindings`), so any plugin may print a row and the shape belongs to the stdlib rather than to whichever tenant drew it first (issue #129)"
+      "owner": "packages/ui/src/styles.css",
+      "why": "THE keycap: one key label drawn as a key — `keycap.tsx`; which words a stroke wears (`Mod` as ⌘ or Ctrl) is the engine's `keyCapLabel`. It was `.keys-cap` and its sheet called it \"the one keycap in the product\", which held exactly as long as one seat printed the composed key table; the table is the engine's read (`host.assembly.bindings`), so any plugin may print a row and the shape belongs to the stdlib rather than to whichever tenant drew it first (issue #129)"
     },
     {
       "family": "commands",
@@ -1557,32 +1576,32 @@ prefix, never a scope root, and belongs to no stylesheet.
     },
     {
       "family": "node-titlebar",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/ui/src/styles.css",
       "why": "the one titlebar a container node wears, `node-titlebar.tsx`"
     },
     {
       "family": "layout",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/ui/src/styles.css",
       "why": "the layout algebra (`layout.tsx`): Stack, Cluster, Sidebar, Switcher, Cover, Frame — the intrinsic boxes plugin bodies and the shell compose. Named for what a COMPONENT paints; the canon term `layout` (a tile tree) is untouched, and the prefix keeps the two apart in CSS the way the doc comment does in prose"
     },
     {
       "family": "disclosure",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/ui/src/styles.css",
       "why": "the one disclosure — a header button that folds the body under it (`disclosure.tsx`); its behavior engine is Radix Collapsible, an internals decision (docs/decisions/2026-08-31-radix-behavior-primitives.md)"
     },
     {
       "family": "chip",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/ui/src/styles.css",
       "why": "the one chip — a small bordered token that is a button exactly when it acts and an inert span otherwise, one box for both forms (`chip.tsx`). The box (border, radius, padding, type size) is the stdlib's; the tint is the adopter's, written in its own family's sheet"
     },
     {
       "family": "kv",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/ui/src/styles.css",
       "why": "the one key-value list — a labelled reading of one thing as the definition list it is (`kv.tsx`): the list's rhythm, the row's two columns, the wrap-not-scroll value contract, and the `--kv-label` width knob"
     },
     {
       "family": "popover",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/ui/src/styles.css",
       "why": "the one popover's floating layer (`popover.tsx`), portaled to the body above every pointer-transparent overlay; its behavior engine is Radix Popover, an internals decision (docs/decisions/2026-09-01-radix-popover.md)"
     },
     {
@@ -1592,37 +1611,37 @@ prefix, never a scope root, and belongs to no stylesheet.
     },
     {
       "family": "scroll-region",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/ui/src/styles.css",
       "why": "the one scroll container — vertical only, slim overlay thumb (`scroll-region.tsx`); its behavior engine is Radix ScrollArea, an internals decision (docs/decisions/2026-08-31-radix-behavior-primitives.md)"
     },
     {
       "family": "tile",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/plugin/src/styles.css",
       "why": "the tile area, the live drop preview and its glyphs, the content host a pane's content rides in, and the F9 zone probe — `tile-tree.tsx`, `tile-preview-overlay.tsx`, `tile-zone-debug.tsx`"
     },
     {
       "family": "tile-departure-shell",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/plugin/src/styles.css",
       "why": "bounded empty exit geometry owned by TileTree after an authoritative tile removal; live content stays on its stable content host, never cloned into the shell"
     },
     {
       "family": "carry-ghost",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/plugin/src/styles.css",
       "why": "the ghost that follows a carry, plus the ease-away the held item rides — `carry.ts`"
     },
     {
       "family": "drop-denial-note",
-      "owner": "packages/plugin/src/ui/styles.css",
-      "why": "the prose half of a refused drop; the machine half is the floor's `[data-drop-denial]`"
+      "owner": "packages/plugin/src/styles.css",
+      "why": "the prose half of a refused drop; the machine half is the ground's `[data-drop-denial]` (`@manifold/ui`)"
     },
     {
       "family": "container-overlay-slot",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/plugin/src/styles.css",
       "why": "where one plugin's renderer paints another plugin's occupant — `projection.ts`"
     },
     {
       "family": "workspace-overlay-slot",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/plugin/src/styles.css",
       "why": "the same slot one host up: where a plugin paints chrome over the WORKSPACE rather than over a container — the inspector chip, the arrange toolbar — `projection.ts`"
     },
     {
@@ -1637,7 +1656,7 @@ prefix, never a scope root, and belongs to no stylesheet.
     },
     {
       "family": "mf-icon",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/ui/src/styles.css",
       "why": "the glyph vocabulary, `icons.tsx`"
     },
     {
@@ -1647,47 +1666,47 @@ prefix, never a scope root, and belongs to no stylesheet.
     },
     {
       "family": "composition-split",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/plugin/src/styles.css",
       "why": "tile-tree skin (`COMPOSITION_TREE_CLASSES`)"
     },
     {
       "family": "composition-pane",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/plugin/src/styles.css",
       "why": "tile-tree skin (`COMPOSITION_TREE_CLASSES`)"
     },
     {
       "family": "composition-divider",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/plugin/src/styles.css",
       "why": "tile-tree skin (`COMPOSITION_TREE_CLASSES`); `dividerPx: 5.6` in `tile-tree.tsx` is this rule's `flex-basis` read back in px"
     },
     {
       "family": "portal-split",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/plugin/src/styles.css",
       "why": "tile-tree skin (`PORTAL_TREE_CLASSES`)"
     },
     {
       "family": "portal__slot",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/plugin/src/styles.css",
       "why": "tile-tree skin (`PORTAL_TREE_CLASSES`) — the portal's pane"
     },
     {
       "family": "portal-divider",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/plugin/src/styles.css",
       "why": "tile-tree skin (`PORTAL_TREE_CLASSES`); `dividerPx: 11.2` in `tile-tree.tsx` is this rule's `flex-basis` read back in px"
     },
     {
       "family": "workspace-split",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/plugin/src/styles.css",
       "why": "tile-tree skin (`WORKSPACE_TREE_CLASSES`)"
     },
     {
       "family": "workspace-pane",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/plugin/src/styles.css",
       "why": "tile-tree skin (`WORKSPACE_TREE_CLASSES`)"
     },
     {
       "family": "workspace-divider",
-      "owner": "packages/plugin/src/ui/styles.css",
+      "owner": "packages/plugin/src/styles.css",
       "why": "tile-tree skin (`WORKSPACE_TREE_CLASSES`); `dividerPx: 5.6` in `tile-tree.tsx` is this rule's `flex-basis` read back in px"
     },
     {
@@ -2199,7 +2218,7 @@ parser over the dispatch ladder; its live half dispatches every registered door.
 | S13   | **CSS ownership**: every selector family in every stylesheet under `packages/` resolves to a §Lexicon `cssFamilies` row, and every rule is defined by the owner of the leftmost family it scopes into. A family painted from another package's sheet, a family with no row, a row whose stylesheet defines nothing, or a classless rule outside the floor sheet — each is RED, named by file and selector.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | S14   | **Log-event vocabulary**: every `evt` a producer passes to `Logger.info/warn/error` in `packages/server/src` or to the agent's log sink, and every `"evt":"…"` literal a `packages/testkit` e2e or a `scripts/` gate matches inside raw stdout, is a member of `LOG_EVENTS` — and every member has a live producer, so a name nobody emits is a stale row. The producer half is also a compile error (`LogEvent`); the CONSUMER half is why the check exists, because no type reaches inside a string literal.                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | S15   | **Gate contracts**: every `[data-testid=…]` literal and every `clickTestId(…)` argument in `scripts/` resolves to a §Gate-contracts row AND to a live `data-testid=` attribute in that row's renderer (templated attributes match by shape), and every row is queried by some script. A gate keyed off button copy, or off a test-id nobody declared, fails.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| S16   | **The floor's budget**: `packages/plugin/src` (source only, tests excluded) stays inside a declared line ceiling — a printed WARN at 9,000 and RED above 13,233. Every other static check asks whether a boundary is clean; this one asks how big the engine got, which is the failure mode the litmus test cannot see because it governs each addition and never the aggregate. `packages/plugin/src` is where growth lands first: every plugin imports it, so a helper put there is reachable by everything without justifying itself to a second party. Raising a threshold is a diff somebody defends; [ADR 0024](docs/decisions/0024-mounted-projection-and-tile-motion.md) records this change's bounded admission.                                                                                                                                                                                                                           |
+| S16   | **The floor's budget**: `packages/plugin/src` (source only, tests excluded) stays inside a declared line ceiling — a printed WARN at 9,000 and RED above 12,000. Every other static check asks whether a boundary is clean; this one asks how big the engine got, which is the failure mode the litmus test cannot see because it governs each addition and never the aggregate. `packages/plugin/src` is where growth lands first: every plugin imports it, so a helper put there is reachable by everything without justifying itself to a second party. Raising a threshold is a diff somebody defends; [ADR 0024](docs/decisions/0024-mounted-projection-and-tile-motion.md) records this change's bounded admission.                                                                                                                                                                                                                           |
 | S17   | **Hosting neutrality**: no file a self-hoster ships or runs — `Dockerfile`, `compose.yaml`, `flake.nix`, `infra/**`, `packages/**`, `scripts/**`, `.github/workflows/**` — names a hosting provider or carries its env prefix; the one exemption is the operator's own deployment workflow, `.github/workflows/deploy-hub.yml`, which is gated on a repository variable so a fork never runs it (ADR 0022). A hit is reworded, never allow-listed: the exemption list is that one path.                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | S18   | **Import direction follows the plugin tree** (ADR 0023 §5). Every source under a plugin package is walked, and the tree is read off the paths: a file under a parent's `src/**` never imports a part's directory, by path or by subpath specifier; a file under a part's directory imports, of its parent, only the `contract` subpath (`@manifold-plugin/<parent>/contract`); the `contract` module itself imports only the four floor packages and no React or DOM name, so it cannot smuggle runtime; any other `@manifold-plugin/*` edge stays S2's offence. RED names file and line, as S2 does. S2's own-name rule is a path rule (ADR 0023 T5).                                                                                                                                                                                                                                                                                              |
 | S19   | **Decision records**: every `docs/decisions/*.md` carries the status block directly under its title — `Date`, `Status` from `proposed \| accepted \| superseded \| rejected`, `Superseded-by` present exactly when the status is `superseded` and naming a file in the directory, optional `Ratified` — in that order; every `00NN` number is taken by one file; and `docs/decisions/README.md` equals what `bun scripts/decisions-index.ts` renders, byte for byte, with the first drifting line named. The check reads the block with the generator's own parser, so a block the index cannot render is RED rather than a blank row (`AXIOMS.md` §Change control: a record is reasoning, the spec is law).                                                                                                                                                                                                                                        |

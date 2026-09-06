@@ -1,22 +1,23 @@
 /**
- * `@manifold/plugin/ui` — the PLUGIN-FACING STANDARD LIBRARY.
+ * `@manifold/ui` — THE DESIGN SYSTEM: how a thing LOOKS like manifold.
  *
- * Everything behind this subpath is neutral chrome MECHANISM: the glyph vocabulary, the one
- * titlebar a container node wears, the consumer half of the one notice ref, and this
- * device's published view-state store. Not one of them decides anything about a domain noun,
- * and every one of them is addressed by two parties that may not import each other — a floor
- * renderer and a plugin, or two plugins — which is the litmus that puts a thing here instead
- * of in the package that happens to use it first.
+ * The third of three named layers (ADR 0025 §8, issue #240). `@manifold/protocol` and
+ * `@manifold/sdk` are the SDK — talking to the hub. `@manifold/plugin` is the engine API —
+ * being a plugin: HostServices, hooks, tile geometry, projection. This package is the
+ * components, the tokens and the motion and layout rules the shell, every `core.*` panel and
+ * every mod render with, so that one component set exists and the shell is built on the same
+ * toolkit a mod imports (the precedent is Unity UI Toolkit and Unreal Slate: the editor is
+ * built on the toolkit mods use). Nothing here touches the wire, a plane, or the composition,
+ * and nothing here imports the engine: the dependency runs the other way, the engine's own
+ * tile renderer wears these glyphs like any plugin does.
  *
- * The boundary against the other two entries of this package is a real one:
+ * Components are OPTIONAL; contracts are not. Tile geometry, D4′ disable semantics and
+ * `data-action` come from `@manifold/plugin` whether or not a panel paints with `<Stack>`.
  *
- *   `@manifold/plugin`        the registry and the contracts. Platform-free, because the
- *                             SERVER composes through it.
- *   `@manifold/plugin/hooks`  the engine's own browser half — the carry/drop vocabulary, the
- *                             element host, polling — mechanism a plugin USES to participate
- *                             in an engine plane.
- *   `@manifold/plugin/ui`     mechanism a plugin uses to LOOK like manifold. Nothing here
- *                             touches the wire, a plane, or the composition.
+ * TOKENS ARE THE THEMING SEAM. `styles.css` is the ground — the reset, the type and colour
+ * ground, the CSS variables two owners read — so a surface that uses them coheres for free
+ * and a surface that sets its own under its root diverges on purpose. The gate's S13 keeps
+ * every family here painted from here and nowhere else.
  *
  * Being a standard library, not a component kit, has one consequence worth stating: a plugin
  * extends this chrome by passing nodes into its slots (`icon`, `middle`, `extraActions`), never
@@ -38,10 +39,11 @@ export {
   type IconProps,
 } from "./icons.tsx";
 /**
- * THE keycap: one keystroke drawn as a key, and the one place `Mod` becomes ⌘ or Ctrl. Stdlib
- * because the composed key table is the ENGINE's read, so more than one surface prints it.
+ * THE keycap: one key label drawn as a key. Which words a keystroke wears — what `Mod`
+ * becomes on this keyboard — is the engine's read (`keyCapLabel`, `@manifold/plugin/hooks`);
+ * this is the box.
  */
-export { KeyCap, keyCapLabel, type KeyCapProps } from "./keycap.tsx";
+export { KeyCap, type KeyCapProps } from "./keycap.tsx";
 export {
   NodeTitleBar,
   TITLEBAR_ACTIONS_CLASS,
@@ -113,58 +115,3 @@ export {
   type FlipRect,
   type FlipShift,
 } from "./flip.ts";
-/**
- * THE tile tree and its drop chrome. One renderer for every tile layout in the product — the
- * workspace shell's own panes, a composition's leaves, a portal portal's preview — because
- * "one tree vocabulary everywhere" is a ratified decision (D2) and a second tile renderer
- * would be a second answer to what a divider drag means.
- */
-export {
-  PORTAL_TREE_CLASSES,
-  COMPOSITION_TREE_CLASSES,
-  TileTree,
-  WORKSPACE_TREE_CLASSES,
-  type TileTreeClasses,
-  type TileTreeProps,
-} from "./tile-tree.tsx";
-export {
-  TilePreviewOverlay,
-  useTileDeparture,
-  type TileDeparture,
-  type TilePreviewOverlayProps,
-} from "./tile-preview-overlay.tsx";
-export { TileZoneDebug, toggleZoneProbe } from "./tile-zone-debug.tsx";
-export {
-  NoticeContext,
-  useNotice,
-  type NoticeApi,
-  type NoticeLifetime,
-  type NoticeOptions,
-} from "./notice.ts";
-export {
-  currentVantage,
-  setVantage,
-  subscribeVantage,
-  toggleArranging,
-  useVantage,
-  type Vantage,
-} from "./vantage.ts";
-/**
- * THE handoff between a surface that LISTS a key and the one that EDITS it. Same litmus as
- * the store above and a different lifetime: a rebind request is consumed and gone, so it is
- * device-local memory rather than published view state (`./rebind.ts`).
- */
-export {
-  clearRebindRequest,
-  currentRebindRequest,
-  requestRebind,
-  useRebindRequest,
-} from "./rebind.ts";
-/** The rebind slot's sibling: a picked-up structure, handed to the palette (`./held.ts`, #148). */
-export {
-  heldStructure,
-  holdStructure,
-  releaseStructure,
-  useHeldStructure,
-  type HeldStructure,
-} from "./held.ts";

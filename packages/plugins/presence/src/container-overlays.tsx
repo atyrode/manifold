@@ -1,5 +1,8 @@
-import type { ContainerOverlayProps } from "@manifold/plugin/hooks";
-import { currentVantage, subscribeVantage } from "@manifold/plugin/ui";
+import {
+  currentVantage,
+  subscribeVantage,
+  type ContainerOverlayProps,
+} from "@manifold/plugin/hooks";
 import { useEffect, useState, type ReactElement } from "react";
 import { PresenceIsland } from "./presence-island.tsx";
 import { deriveLocationAttendanceRows, type AttendanceRow } from "./attendance-model.ts";

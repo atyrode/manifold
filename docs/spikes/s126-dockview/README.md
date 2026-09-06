@@ -14,8 +14,8 @@ never touches the shipped dependency set: Dockview is pinned **here** and nowher
 ## What it does
 
 Renders **one** `TileLayout` fixture twice — once through our own `TileTree`
-(`packages/plugin/src/ui/tile-tree.tsx`, the control, painted with the real
-`packages/plugin/src/ui/styles.css`) and once through Dockview's `GridviewComponent` — then
+(`packages/plugin/src/tile-tree.tsx`, the control, painted with the real
+`packages/plugin/src/styles.css`) and once through Dockview's `GridviewComponent` — then
 runs eight probes against both DOMs and writes the answers to `findings.json` plus four
 screenshots.
 

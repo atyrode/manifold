@@ -1,5 +1,5 @@
 import { useProjection } from "@manifold/plugin/hooks";
-import { Cluster } from "@manifold/plugin/ui";
+import { Cluster } from "@manifold/ui";
 import { useMemo } from "react";
 import { CANVAS_TOOLS, type CanvasTool } from "./canvas-tool.ts";
 

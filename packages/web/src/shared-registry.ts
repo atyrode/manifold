@@ -4,7 +4,7 @@ import * as JSXRuntime from "react/jsx-runtime";
 import * as JSXDevRuntime from "react/jsx-dev-runtime";
 import * as Plugin from "@manifold/plugin";
 import * as Hooks from "@manifold/plugin/hooks";
-import * as UI from "@manifold/plugin/ui";
+import * as UI from "@manifold/ui";
 import * as Protocol from "@manifold/protocol";
 import * as SDK from "@manifold/sdk";
 import * as Scene from "@manifold/scene";
@@ -19,7 +19,7 @@ Object.defineProperty(globalThis, Symbol.for("manifold.shared"), {
     "react/jsx-dev-runtime": JSXDevRuntime,
     "@manifold/plugin": Plugin,
     "@manifold/plugin/hooks": Hooks,
-    "@manifold/plugin/ui": UI,
+    "@manifold/ui": UI,
     "@manifold/protocol": Protocol,
     "@manifold/sdk": SDK,
     "@manifold/scene": Scene,

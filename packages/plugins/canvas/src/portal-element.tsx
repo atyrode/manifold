@@ -11,30 +11,23 @@ import {
 import type { SessionClient } from "@manifold/sdk";
 import { NodeResizer, type NodeProps } from "@xyflow/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Cover, ItemIcon, NodeTitleBar, Stack, type TitlebarDragProps } from "@manifold/ui";
 import {
-  Cover,
-  ItemIcon,
-  NodeTitleBar,
   PORTAL_TREE_CLASSES,
-  Stack,
-  TilePreviewOverlay,
-  TileTree,
-  TileZoneDebug,
-  setVantage,
-  currentVantage,
-  useTileDeparture,
-  type TilePreviewOverlayProps,
-} from "@manifold/plugin/ui";
-import type { TitlebarDragProps } from "@manifold/plugin/ui";
-import {
   TerminalRenderer,
   ElementOutlet,
   ProjectionScopeProvider,
+  TilePreviewOverlay,
+  TileTree,
+  TileZoneDebug,
   TitlebarOutlet,
+  currentVantage,
   extendProjectionScope,
   publishLocation,
+  setVantage,
   useProjectionScope,
   usePublishLocation,
+  useTileDeparture,
   type ProjectionScope,
   countRender,
   remoteTileCarries,
@@ -43,6 +36,7 @@ import {
   useTileDrop,
   type ItemEnvelope,
   type TileDropHost,
+  type TilePreviewOverlayProps,
 } from "@manifold/plugin/hooks";
 import {
   MIN_TERMINAL_HEIGHT,

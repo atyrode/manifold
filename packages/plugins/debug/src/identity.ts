@@ -38,7 +38,7 @@ export type DeclarationKind = keyof typeof IDENTITY_ATTRIBUTES;
 
 /**
  * WHICH TILE TREE a `data-tile-id` belongs to, read off the skin its box wears. The three
- * skins are `@manifold/plugin/ui`'s three published class families (`TileTreeClasses`), and the
+ * skins are `@manifold/plugin/hooks`' three published class families (`TileTreeClasses`), and the
  * distinction is load-bearing rather than cosmetic: a `workspace` tile is a leaf of the
  * reader's own layout and has no address in any container, a `composition` tile belongs to the
  * routed container and therefore does, and a `portal` tile belongs to a container embedded in a

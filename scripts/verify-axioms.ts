@@ -715,10 +715,10 @@ for (const row of registries.floor) {
 
 {
   /**
-   * The four packages a plugin may name, plus the engine's two browser subpaths — `/hooks`
-   * (plane mechanism: carry, drop, element host, polling) and `/ui` (the plugin-facing
-   * standard library: glyphs, titlebar, the notice consumer half, view state). See
-   * `REGISTRY.md` §Plugin layer.
+   * The packages a plugin may name: the four engine packages, the engine's browser subpath
+   * `/hooks` (plane mechanism: carry, drop, element host, polling, the tile tree, view state)
+   * and the design system `@manifold/ui` (how a plugin LOOKS like manifold: glyphs, the
+   * titlebar, the layout algebra, tokens — ADR 0025 §8, #240). See `REGISTRY.md` §Plugin layer.
    */
   const ENGINE: Readonly<Record<string, true>> = {
     "@manifold/protocol": true,
@@ -726,16 +726,16 @@ for (const row of registries.floor) {
     "@manifold/sdk": true,
     "@manifold/plugin": true,
     "@manifold/plugin/hooks": true,
-    "@manifold/plugin/ui": true,
+    "@manifold/ui": true,
   };
   /**
-   * A DRAWING IS NOT A DEPENDENCY A PLUGIN MAY NAME. `@manifold/plugin/ui` is THE icon
+   * A DRAWING IS NOT A DEPENDENCY A PLUGIN MAY NAME. `@manifold/ui` is THE icon
    * vocabulary's one door (`ControlIcon`, `ItemIcon`), and the whole value of that door is
    * that re-drawing the set is a change to one file: a plugin that imports `lucide-react`
    * itself owns a mark that stops moving when the set moves, and re-types the wrapper's four
    * props for the privilege. #116 found three packages doing it — `core.pluginManager` even
    * re-drew `discard`, a kind the vocabulary already maps — so the sweep is a check rather
-   * than a memory. The floor's `packages/plugin/src/ui/icons.tsx` is not scanned here and is
+   * than a memory. The floor's `packages/ui/src/icons.tsx` is not scanned here and is
    * the one place the name may appear.
    */
   const DRAWINGS = "lucide-react";
@@ -797,9 +797,7 @@ for (const row of registries.floor) {
         }
         if (
           isContract &&
-          (ENGINE[text] !== true ||
-            text === "@manifold/plugin/hooks" ||
-            text === "@manifold/plugin/ui")
+          (ENGINE[text] !== true || text === "@manifold/plugin/hooks" || text === "@manifold/ui")
         ) {
           directionOffenders.push(`${path}:${String(specifier.line)} contract imports ${text}`);
         } else if (targetOwner === owner || ownSpecifier) {
@@ -822,7 +820,7 @@ for (const row of registries.floor) {
         }
         if (text === DRAWINGS || text.startsWith(`${DRAWINGS}/`)) {
           offenders.push(
-            `${path}:${String(specifier.line)} imports ${text}; ask @manifold/plugin/ui for a kind`,
+            `${path}:${String(specifier.line)} imports ${text}; ask @manifold/ui for a kind`,
           );
         }
       }
@@ -2305,9 +2303,21 @@ function scanTree(dir: string, out: string[]): void {
  * contract; the integrated base was 12,742 lines. This admits exactly 13,233, without moving WARN,
  * excluding more files, trimming explanations, or relaxing any behavior gate. ADR 0024 applies
  * all three admission criteria and records the rejected alternatives.
+ *
+ * RED LOWERED 13,233 → 12,000 on 2026-09-06 (#240, ADR 0025 §8). The design system left:
+ * `layout.tsx`, `icons.tsx`, `node-titlebar.tsx`, `flip.ts`, the disclosure, the scroll region,
+ * the popover, the chip, the key-value list and the keycap are `packages/ui/src` now
+ * (`@manifold/ui`, its own pillar), and `packages/plugin/src` fell from 13,204 to 11,633 lines
+ * — which is what the raises above were really measuring: design-system code sitting in the
+ * engine package because that was where everything already imported from. A lowering needs no
+ * smallest-amount defence; it is the extraction cashing in, and it lands on a round number on
+ * purpose so the next raise argues from 12,000 rather than from wherever the count happened to
+ * be. The WARN line still does not move, and the count is still 2,633 past it:
+ * `tile-geometry.ts` (962) and `projection.ts` are the next candidates for the question the
+ * WARN exists to provoke.
  */
 const PLUGIN_SRC_WARN_LINES = 9_000;
-const PLUGIN_SRC_MAX_LINES = 13_233;
+const PLUGIN_SRC_MAX_LINES = 12_000;
 
 {
   const files = sourcesMatching("packages/plugin/src/**");
@@ -4918,7 +4928,7 @@ try {
   {
     /*
       THE LAYOUT SYSTEM'S GATE. The sidebar, the plugin manager and a canvas terminal
-      node are recomposed on `@manifold/plugin/ui`'s layout primitives, and the claim that
+      node are recomposed on `@manifold/ui`'s layout primitives, and the claim that
       recomposition makes is checkable: under ADVERSARIAL content (unbroken 60+ character
       names, eight containers, a three-deep folder chain, a long terminal name) and a
       bounded sweep of sidebar widths, four invariant classes hold in every audited

@@ -6,9 +6,9 @@
  * answer a principal could argue with: which controls a viewer is offered, what a rename
  * dispatches, when a spectator socket may not write, and what an exited shell looks like.
  *
- * Chrome comes from `@manifold/plugin/ui` — the titlebar, the glyphs, the one notice ref,
- * the published view-state store — so this file owns no drawing and no notification mechanism
- * of its own.
+ * Chrome comes from `@manifold/ui` — the titlebar, the glyphs — and the one notice ref and the
+ * published view-state store from `@manifold/plugin/hooks`, so this file owns no drawing and
+ * no notification mechanism of its own.
  */
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
@@ -16,6 +16,8 @@ import "@xterm/xterm/css/xterm.css";
 import { base64ToBytes } from "@manifold/sdk";
 import {
   TitlebarOutlet,
+  currentVantage,
+  useNotice,
   usePublishLocation,
   type TerminalRendererProps,
 } from "@manifold/plugin/hooks";
@@ -37,9 +39,7 @@ import {
   NodeTitleBar,
   Stack,
   TITLEBAR_ACTIONS_CLASS,
-  currentVantage,
-  useNotice,
-} from "@manifold/plugin/ui";
+} from "@manifold/ui";
 import { loadTerminalFont, TERMINAL_FONT_FAMILY, TERMINAL_FONT_SIZE } from "./terminal-font";
 import {
   MAX_TERMINAL_FONT_SIZE,
@@ -471,7 +471,7 @@ export function TerminalView({
     publishLocation();
     if (focusedRef.current) return;
     focusedRef.current = true;
-    // The view rides every presence payload (`@manifold/plugin/ui` view state), so a focus
+    // The view rides every presence payload (`@manifold/plugin/hooks` view state), so a focus
     // re-publishes what this device is holding.
     client.sendPresence({ focus: { elementId }, vantage: currentVantage() });
   };

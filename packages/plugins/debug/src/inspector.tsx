@@ -1,17 +1,13 @@
 import {
-  useProjection,
-  type ProjectionRegistry,
-  type WorkspaceOverlayProps,
-} from "@manifold/plugin/hooks";
-import {
-  Chip,
-  KeyValueList,
-  KeyValueRow,
   currentVantage,
   setVantage,
   useNotice,
+  useProjection,
   useVantage,
-} from "@manifold/plugin/ui";
+  type ProjectionRegistry,
+  type WorkspaceOverlayProps,
+} from "@manifold/plugin/hooks";
+import { Chip, KeyValueList, KeyValueRow } from "@manifold/ui";
 import {
   GrantsSchema,
   MANIFOLD_ROOT_URI,
@@ -850,7 +846,7 @@ function Highlight({
  * THE CARD'S OWN CONTENT, for the press handler that suppresses everything else.
  *
  * A LIST rather than one selector, because a portal breaks the DOM ancestry a subtree test
- * relies on. `.popover__content` is `@manifold/plugin/ui`'s portalled layer: content opened
+ * relies on. `.popover__content` is `@manifold/ui`'s portalled layer: content opened
  * from inside the card is rendered at the end of `body`, so a press in it is a press "outside"
  * the card by every containment test there is — and the pin it would otherwise take is a pin of
  * the very control the reader is using. Named here rather than styled here: this file paints

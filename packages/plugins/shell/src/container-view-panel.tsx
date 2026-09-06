@@ -1,6 +1,6 @@
 import type { PanelProps } from "@manifold/plugin";
 import { ContainerRenderer, useContainerRoute, useProjection } from "@manifold/plugin/hooks";
-import { Cover, Stack } from "@manifold/plugin/ui";
+import { Cover, Stack } from "@manifold/ui";
 import type { ReactElement } from "react";
 
 /**
