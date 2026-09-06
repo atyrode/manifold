@@ -22,6 +22,13 @@
  *   S6 registry liveness: every floor glob still matches a file
  *   S7 route allowlist: no bespoke feature route grew beside the action door
  *   S8 every scene element type is a floor kind or a composed contribution
+ *   S9 pillar exhaustiveness: every floor file has exactly one owner
+ *   S10 cleanup actions are removal doors owned by plugins, not engine doors
+ *   S11 lexicon: banned words stay absent, and terms and exemptions stay live
+ *   S12 one label vocabulary: ITEM_NOUNS is the only kind-to-noun table
+ *   S13 CSS ownership: every selector family is painted by its registered owner
+ *   S14 log vocabulary: producers and stdout matchers name live LOG_EVENTS
+ *   S15 gate contracts: every test-id query is registered, painted and live
  *   S16 the floor's own size: `packages/plugin/src` stays inside its declared line budget
  *   S17 hosting neutrality: no shipped file names a hosting provider (ADR 0022)
  *   S19 decision records: every record's status block parses, successors exist, numbers are

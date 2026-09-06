@@ -1,3 +1,4 @@
+import { CORE_NAMESPACE_PREFIX } from "@manifold/protocol";
 import type { PluginRosterEntry } from "@manifold/protocol";
 import { needsAttention, permissionCount, pluginStatus } from "./status.ts";
 
@@ -55,8 +56,6 @@ interface SectionShape {
   /** The install form lives under this band's heading. */
   readonly installs: boolean;
 }
-
-const CORE_NAMESPACE_PREFIX = "core.";
 
 export const PLUGIN_SECTIONS = [
   {
