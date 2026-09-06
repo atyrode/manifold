@@ -304,7 +304,6 @@ describe("core.machines.list", () => {
     });
     fix.store.close();
   });
-
 });
 
 describe("core.machines.forget", () => {
@@ -337,13 +336,17 @@ describe("core.machines.forget", () => {
     const fix = await fixture();
     const { machine } = fix.auth.enrollMachine("retained", fix.owner);
     fix.auth.revokeMachine(machine.id, fix.owner);
-    const forget = () => fix.host.dispatch(fix.owner, "core.machines.forget", { machineId: machine.id });
+    const forget = () =>
+      fix.host.dispatch(fix.owner, "core.machines.forget", { machineId: machine.id });
     fix.store.setMachineDraining(machine.id, true);
     expect(denial(await forget()).message).toBe("drain_pending");
     fix.store.setMachineDraining(machine.id, false);
     fix.store.createTerminal({
-      id: "retained-terminal", machineId: machine.id, containerId: container(fix),
-      createdBy: fix.owner.principal.id, agentPrincipalId: fix.owner.principal.id,
+      id: "retained-terminal",
+      machineId: machine.id,
+      containerId: container(fix),
+      createdBy: fix.owner.principal.id,
+      agentPrincipalId: fix.owner.principal.id,
       createdAt: fix.runtime.now(),
     });
     expect(denial(await forget()).message).toBe("terminals_retained");
@@ -364,9 +367,13 @@ describe("core.machines.forget", () => {
       context(fix, ["containers:read"]),
       context(fix, ["machines:mint"], container(fix)),
     ]) {
-      expect(denial(await fix.host.dispatch(actor, "core.machines.forget", {
-        machineId: machine.id,
-      })).rule).toBe("forbidden");
+      expect(
+        denial(
+          await fix.host.dispatch(actor, "core.machines.forget", {
+            machineId: machine.id,
+          }),
+        ).rule,
+      ).toBe("forbidden");
     }
     expect(fix.store.getMachine(machine.id)).not.toBeNull();
     fix.store.close();

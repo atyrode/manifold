@@ -2137,9 +2137,11 @@ export class ServerStore {
   }
 
   hasMachineTerminals(machineId: string): boolean {
-    return this.db
-      .query<{ id: string }, [string]>("SELECT id FROM terminals WHERE machine_id = ? LIMIT 1")
-      .get(machineId) !== null;
+    return (
+      this.db
+        .query<{ id: string }, [string]>("SELECT id FROM terminals WHERE machine_id = ? LIMIT 1")
+        .get(machineId) !== null
+    );
   }
 
   /** Includes old rotated credentials; journal and trace references deliberately survive. */

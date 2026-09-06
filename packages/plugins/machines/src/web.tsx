@@ -119,7 +119,9 @@ export function MachinesSection({ host }: SectionProps): ReactElement {
                 <button
                   className="machine-revoke"
                   type="button"
-                  data-action={machine.revoked === true ? MACHINES_FORGET_ACTION : MACHINES_REVOKE_ACTION}
+                  data-action={
+                    machine.revoked === true ? MACHINES_FORGET_ACTION : MACHINES_REVOKE_ACTION
+                  }
                   data-testid={machine.revoked === true ? "machine-forget" : "machine-revoke"}
                   data-confirming={armedId === machine.id}
                   aria-label={
@@ -148,7 +150,11 @@ export function MachinesSection({ host }: SectionProps): ReactElement {
                     void administer(machine);
                   }}
                 >
-                  {machine.revoked === true ? "Forget" : <ControlIcon kind="revoke" size={ROW_ICON_SIZE} />}
+                  {machine.revoked === true ? (
+                    "Forget"
+                  ) : (
+                    <ControlIcon kind="revoke" size={ROW_ICON_SIZE} />
+                  )}
                 </button>
               ) : null}
             </div>
