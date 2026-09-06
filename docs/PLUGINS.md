@@ -210,6 +210,7 @@ export const manifest: PluginManifest = {
     //            is "disclosure" (default: a titled block that folds) or "plain" (you draw the
     //            whole row). `cluster` is a bare word: rows sharing it paint side by side as one
     //            unit at the earliest member's place. One registry, one reader-arranged order.
+    disciplines: [], // { id, title, item, accepts, guards, destinations } — container renderers (below)
     elements: [
       {
         type: "draw",
@@ -246,8 +247,8 @@ Rules worth knowing before you write one:
   `^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,2}$` (ratified; the schema still admits any depth until
   [#261](https://github.com/atyrode/manifold/issues/261) lands, so treat the cap as binding now).
 - **Contribution ids are local names** (`^[a-z][a-zA-Z0-9-]*$` — interior capitals are allowed
-  where the name is a verb phrase, as in `setEnabled`), with two exceptions that are WIRE kinds
-  and therefore globally unique on their own: element `type`, and event `id`, which is
+  where the name is a verb phrase, as in `setEnabled`), with exceptions that are WIRE kinds
+  and therefore globally unique on their own: discipline `id` (below), element `type`, and event `id`, which is
   `snake_case` (`^[a-z][a-z0-9_]*$`, max 48) because the audit log has spelled its kinds that way
   since before the plane existed and one concept gets one spelling.
 - **`panels[].arranges` declares an inner arrangement**, and it is the whole of what the floor
@@ -346,6 +347,108 @@ Rules worth knowing before you write one:
 - **`events` declares the event kinds you originate** (§6b). The id is `snake_case` and globally
   unique: a kind belongs to one plugin, and the engine refuses an emission of a kind another
   manifest declared. `entry` is still reserved — write it if you like; nothing reads it this wave.
+
+### Disciplines
+
+**`contributes.disciplines` declares the containers your plugin renders**, not element types or
+leaf kinds. The optional array holds at most four declarations; absent means you render no
+container of your own ([manifest schema](../packages/protocol/src/plugin.ts),
+`ContributesSchema.disciplines`). A discipline is the value stored in
+`Container.discipline` and the key your web half uses in `renderers`.
+
+Every field below is required on each row; unknown fields are refused. The shape and the closed
+placement vocabulary are
+[`DisciplineDefSchema` and `PlacementTraitsSchema`](../packages/protocol/src/placement.ts):
+
+| Field | Meaning |
+| ----- | ------- |
+| `id` | Global discipline id, matching `^[a-z][a-z0-9-]*$`, at most 32 characters ([`ContainerDisciplineSchema`](../packages/protocol/src/layout.ts)). It is not prefixed by the plugin id and need not equal its last segment. |
+| `title` | Display noun, 1–64 characters. |
+| `item` | Placement traits of a container of this discipline when that container is itself the item being placed; all three fields below are required. |
+| `item.groups` | Groups the container belongs to: `tileable`, `mergeable`, `unplaceable`, `embeddable`, `canvas_item`, `canvas_item_as_portal`, `extractable`; at most seven entries. |
+| `item.guards` | Item-site guards: `no_self_embed` (refuse self-embedding), `solo_only` (only a single occupant merges), `tree_only` (structure needs an existing tree); at most three entries. |
+| `item.homed` | `eager` (home born with the item), `on_claim` (home materializes when placement first needs it), `inline` (exists in its document or row), or `null` (no home applies). |
+| `accepts` | Groups this container accepts as a destination, from the same seven-value vocabulary as `item.groups`; at most seven entries. |
+| `guards` | Container-site guards: only `discipline_match` is available, so at most one entry. It checks that the destination form appears in `destinations`; omitting this guard does not enforce that list. |
+| `destinations` | Destination forms that may address this discipline: `canvas`, `tile`, `compose`, `unplaced`; at most four entries. These are the existing wire forms, not new discipline ids or leaf kinds. |
+
+The shipped [`core.compositions` manifest](../packages/plugins/compositions/src/index.ts)
+declares this row:
+
+```ts
+disciplines: [
+  {
+    id: "composition",
+    title: "Composition",
+    item: {
+      groups: ["mergeable", "unplaceable", "canvas_item_as_portal"],
+      guards: ["no_self_embed", "solo_only"],
+      homed: "inline",
+    },
+    accepts: ["tileable", "mergeable"],
+    guards: ["discipline_match"],
+    destinations: ["tile"],
+  },
+];
+```
+
+Here `core.compositions` owns `composition`: the spelling is deliberately not a last-segment
+rule. [`assembleRoster`](../packages/plugin/src/assemble.ts) claims every discipline id globally
+and refuses duplicates with an `AssemblyError` naming the claimants, including disabled plugins;
+turning a plugin off does not make its name available. Choose an unclaimed id for your own row.
+
+**Register who draws it in the web half**, under that exact discipline id. The shipped
+[`compositionsWebPlugin`](../packages/plugins/compositions/src/web.tsx) registers
+`{ id: "core.compositions", renderers: { composition: CompositionView } }`.
+For your own plugin, substitute your plugin id, your declared discipline id and your component,
+and register both halves through the assembly files (§1). This is the in-realm authoring channel;
+the isolated web kit currently serves panels only (§9), not container renderers.
+
+Your component receives
+[`ContainerRendererProps`](../packages/plugin/src/projection.ts), imported from
+`@manifold/plugin/hooks`, whether routed or embedded in another container:
+
+| Field | Meaning |
+| ----- | ------- |
+| `host` | Required `HostServices`: the mounting host's client, principal, token and assembly (§6 Host services). |
+| `containerId` | Required string identifying the container to project. Use this address, not the host's routed container id, for an embedded renderer. |
+| `containers` | Required `readonly Container[]`: all containers the index knows, for local placement resolution. |
+| `presence` | Required `readonly Attendance[]`: attendance supplied by the mount site. |
+| `soloOccupants?` | `ReadonlyMap<string, PlacementItem>`: the index's single-occupant composition fold, which an embedded renderer cannot compute itself. |
+| `navigate` | Required `(path: string) => void` navigation callback. |
+| `depth?` | Container nesting depth: 1 when routed, 2 when embedded one level down. |
+| `projectionScope?` | `ProjectionScope \| null`: mounted ancestry and its root attendance client (§6 Mounted location and shared titlebars). |
+| `frame?` | `"window"` (default, outer frame) or `"tile"` (square seams against adjacent leaves). |
+| `titlebarDragProps?` | `TitlebarDragProps`: drag affordance to forward to the shared titlebar. |
+| `titlebarExtras?` | `ReactNode`: extra titlebar actions. |
+| `titlebarMiddle?` | `ReactNode`: middle titlebar content. |
+
+The shipped [`CompositionView`](../packages/plugins/compositions/src/composition-view.tsx)
+opens its own room pipe with `host.token` and registers it through `useRoomPipeRegistration`
+(§6 Terminals through the handle); route-only services come from `useContainerRoute`, not extra
+renderer props. The [`ContainerRenderer` outlet](../packages/plugin/src/projection.ts) selects by
+`layout={container.discipline}` and forwards the props above. A missing registration paints
+`unknown`, a disabled registrant paints `disabled`, and a registered row with no component paints
+`unavailable`, using the engine's placeholder rather than asking your component to draw its absence.
+
+**Create and place through the existing doors.** `core.index.createContainer` takes
+`{ name, discipline }` ([action declaration](../packages/plugins/index/src/index.ts),
+[`CreateContainerRequestSchema`](../packages/protocol/src/http.ts)); pass your declared id
+explicitly. To land an item, call `host.client.place({ ref, destination })`, the same envelope as
+`core.space.place` ([shipped action](../packages/plugins/shell/src/index.ts),
+[`PlaceRequestSchema`](../packages/protocol/src/placement.ts)). `destination.kind` is an existing
+form, not your discipline id: `canvas` names a container and coordinates; `tile` names a container,
+tile and edge. The placement algebra reads the target's declaration, matches the item's groups
+against `accepts`, and applies item/container guards. `compose` creates a composition from canvas
+elements and `unplaced` enters no container; neither invents a new destination form for your plugin.
+
+> **Current limitation — [#134](https://github.com/atyrode/manifold/issues/134).** Declaring
+> `destinations: ["tile"]` does not yet make a third-party discipline a working tile tree.
+> The [placement executor](../packages/server/src/placement.ts) still decides tile-tree-ness by
+> the literal `"composition"` in execution/lifecycle paths and mints homes with that discipline;
+> the census also reports the shipped composition kind. A custom declaration and renderer can
+> register, but tile placement, removal and retirement are not an end-to-end third-party
+> contract yet. Do not copy the composition row above under a new id expecting a working tile tree.
 
 ---
 
@@ -1415,21 +1518,21 @@ what all six are keyed by, and which of them the manifest declares:
 
 | Channel               | Keyed by                                                                  | Manifest row                         |
 | --------------------- | ------------------------------------------------------------------------- | ------------------------------------ |
-| **renderers**         | a container DISCIPLINE (`canvas`, `composition`)                          | no                                   |
+| **renderers**         | a container DISCIPLINE declared by the plugin                          | **`contributes.disciplines`** (§2)   |
 | **overlays**          | a mounted overlay SLOT (`titlebar`, `container-spotlight`)                | no                                   |
 | **workspaceOverlays** | a workspace overlay SLOT (`commands`, `inspector`, `toolbar`)             | no                                   |
 | **terminal facet**    | nothing: one viewer per workspace, published for other renderers to mount | no                                   |
 | **bindings**          | a KEYSTROKE (`F6`, `Mod+k`), claimed globally                             | no — declaration IS the registration |
 | **routes**            | a path SEGMENT you invent (`uri` serves `/uri/<rest>`)                    | **`contributes.routes`**             |
 
-**Only `routes` has a manifest counterpart, and the key column says why.** The first four are
-keyed by CLOSED vocabularies the engine owns, so there is nothing for a manifest to publish
-that `GET /api/protocol` does not already publish — and none of them is a ref the WORKSPACE
-composes, so no layout and no sidebar order can name one. A path segment is the opposite: a
-name its author invents in a space every plugin shares, which is why it is `contributes.routes`
-(§6) and why the browser's route table is keyed off the CLAIM rather than off whatever a web
-half exported. Declaring it is what lets the roster publish the paths a build answers on, and
-what makes a registration for an undeclared segment contribute nothing.
+**`renderers` and `routes` have manifest counterparts.** A discipline declaration carries the
+placement rules for the container your renderer draws (§2); the shipped
+[`core.compositions`](../packages/plugins/compositions/src/index.ts) is the worked example.
+Overlay slots and the terminal facet remain engine-owned vocabularies rather than workspace refs.
+A path segment is a name its author invents in a space every plugin shares, which is why it is
+`contributes.routes` (§6) and why the browser's route table is keyed off the CLAIM rather than
+off whatever a web half exported. Declaring it lets the roster publish the paths a build answers
+on, and a registration for an undeclared segment contributes nothing.
 
 **A duplicate on any of the six is a refusal naming both offenders** — the four projection
 channels and routes in `buildBrowserAssembly` (`packages/web/src/plugin-host.tsx`), bindings in
