@@ -131,7 +131,9 @@ you. Every rule here follows from that.
   the next ADR number is taken by an OPEN PR as much as by `main` (on 2026-09-05 two branches both
   created `0024`). Check both before numbering.
 - **The claim on an issue is a draft PR whose body says `Closes #N`.** Before starting on N, look
-  for one (`gh pr list --state open --search "Closes #N"`); if it exists, the issue is taken.
+  for one with an exact body match — GitHub's `--search` also returns PRs that merely mention N:
+  `gh pr list --state open --json number,body --jq '.[] | select(.body | test("Closes #N\\b")) | .number'`.
+  A hit means the issue is taken; re-run it right before you start, not only when you plan.
   Open yours before the first substantive commit, so the claim exists from the first push. There
   is no label and no assignee for this: every agent is the same GitHub account, and a label
   cannot show when it went stale. Work that produces no branch — triage, a diagnosis, an audit
