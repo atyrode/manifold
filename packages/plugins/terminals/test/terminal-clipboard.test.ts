@@ -50,6 +50,9 @@ function fixture(entries: Record<string, Blob> = { "text/plain": new Blob(["hell
     paste: (text: string) => {
       pasted.push(text);
     },
+    focus: () => {
+      focused = true;
+    },
   };
   const clipboard = installTerminalClipboard(
     terminal as unknown as Terminal,
@@ -98,7 +101,7 @@ function fixture(entries: Record<string, Blob> = { "text/plain": new Blob(["hell
       focused = value;
     },
     osc: (code: number, value: string) => handlers.get(code)?.(value),
-    token: () => sent.find((frame) => frame.includes(":pw="))!.match(/:pw=([^\x1b:;]+)/)![1]!,
+    token: () => sent.find((frame) => frame.includes(":pw="))!.match(/:pw=([A-Za-z0-9+/=]+)/)![1]!,
   };
 }
 

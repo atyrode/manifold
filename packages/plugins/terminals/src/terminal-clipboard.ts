@@ -28,7 +28,15 @@ const SUPPORTED_TYPES = new Set([
 ]);
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
-const mimePattern = /^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+(?:;[^\s\x00-\x1f\x7f]+)*$/;
+const mimePattern = /^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+(?:;\S+)*$/;
+
+function hasControl(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code < 32 || code === 127) return true;
+  }
+  return false;
+}
 
 function encode(bytes: Uint8Array): string {
   let binary = "";
@@ -59,7 +67,9 @@ function mimeList(value: string): string[] {
     .split(/[\t\n\r\f ]+/);
   if (
     types.length > MAX_TYPES ||
-    types.some((type) => type !== "." && (type.length > 255 || !mimePattern.test(type)))
+    types.some(
+      (type) => type !== "." && (type.length > 255 || hasControl(type) || !mimePattern.test(type)),
+    )
   ) {
     throw new Error("EINVAL");
   }
@@ -197,9 +207,11 @@ export function installTerminalClipboard(
       const value = await text.text();
       if (!current(operation)) return;
       terminal.paste(value);
+      terminal.focus();
       clear();
       return;
     }
+    terminal.focus();
     // Base64 encodes a UTF-8 password, not arbitrary invalid UTF-8 bytes.
     const random = window.crypto.getRandomValues(new Uint8Array(24));
     operation.password = btoa(encode(random));
@@ -236,7 +248,7 @@ export function installTerminalClipboard(
       const snapshot: Snapshot = new Map();
       operation.release = () => snapshot.clear();
       const api = clipboard();
-      if (api?.read) {
+      if (api?.read && (mode || !api.readText)) {
         const items = await api.read();
         if (!current(operation)) return;
         for (const item of items) {
@@ -250,6 +262,7 @@ export function installTerminalClipboard(
       } else if (api?.readText) {
         const text = await api.readText();
         if (!current(operation)) return;
+        if (!text) throw new Error("No usable clipboard formats were available.");
         add(snapshot, "text/plain", new Blob([text], { type: "text/plain" }));
       } else throw new Error("unavailable");
       await publish(operation, snapshot);
@@ -283,7 +296,8 @@ export function installTerminalClipboard(
       if (data) {
         // A file MIME may also appear in types with no string payload. Keep its
         // actual bytes before adding text representations of the same clipboard.
-        for (const item of data.items) {
+        for (let index = 0; index < data.items.length; index++) {
+          const item = data.items[index]!;
           if (item.kind !== "file" || !SUPPORTED_TYPES.has(item.type)) continue;
           const file = item.getAsFile();
           if (file) add(snapshot, file.type, file);
@@ -372,7 +386,7 @@ export function installTerminalClipboard(
       }
     }
     const type = metadata.get("type");
-    const id = (metadata.get("id") ?? "").replace(/[^a-zA-Z0-9_+.\-]/g, "").slice(0, 256);
+    const id = (metadata.get("id") ?? "").replace(/[^a-zA-Z0-9_+.-]/g, "").slice(0, 256);
     const error = (status: string): void => send(type === "read" ? "read" : "write", status, id);
     if (!authorized()) {
       clear();
@@ -401,7 +415,7 @@ export function installTerminalClipboard(
       }
       try {
         const name = decoder.decode(decode(metadata.get("name") ?? "", 256));
-        if (!name.trim() || /[\x00-\x1f\x7f]/.test(name)) throw new Error("EPERM");
+        if (!name.trim() || hasControl(name)) throw new Error("EPERM");
         const requested = mimeList(payload || metadata.get("mime") || "");
         const selected = requested.filter((mime) => mime === "." || operation.snapshot!.has(mime));
         operation.password = undefined; // Consume before the first asynchronous read.

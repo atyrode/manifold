@@ -2238,8 +2238,10 @@ The explicit paste creates one 15-second, one-use grant bound to that view and i
 write authority. A Kitty-dot MIME listing is sent through the SDK's existing terminal-input path.
 The application's OSC 5522 read request must echo that grant and a non-empty application name;
 both payload and `mime=` request forms are accepted. Only captured bytes are returned, in
-4096-byte decoded chunks, bounded to **16 MiB and 32 MIME formats**. Another viewer ignores a
-grant it did not issue, rather than racing to refuse the initiating viewer. Grants and captured
+4096-byte decoded chunks, bounded to **16 MiB**, with at most **32 requested MIME entries**.
+Only OMP's five supported MIME types are captured and advertised; unsupported-only clipboard
+contents are refused without issuing a grant. Another viewer ignores a grant it did not issue,
+rather than racing to refuse the initiating viewer. Grants and captured
 bytes are discarded on completion, expiry, blur, deactivation, authority loss, snapshot replacement,
 disconnect and disposal. Unsupported locations/formats, invalid requests and denied browser
 permissions do not become terminal text or execute commands.
