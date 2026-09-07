@@ -1360,7 +1360,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
    * and a cascade would be other principals' plugins vanishing without consent — so the
    * manager turns a family off by pressing the parts' toggles and then the parent's, and on
    * in the reverse order: N+1 traced dispatches through the one enablement door, no new door
-   * (invariant 14). A part that already reads the asked state is skipped, and the first
+   * (docs/CONTRACTS.md §One authoritative implementation). A part that already reads the asked state is skipped, and the first
    * refusal stops the sequence with its message shown, so a half-turned family is never
    * silent.
    */

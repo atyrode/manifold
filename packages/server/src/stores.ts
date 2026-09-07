@@ -1543,7 +1543,7 @@ export class ServerStore {
    * Every token row for one principal, oldest first — the credential list's substrate
    * (ADR 0019 §3). Revoked and expired rows come back too: what is live is a question about
    * the CLOCK, and a store read that answered it would have to be handed a clock and would
-   * then be a second place the liveness rule is written (invariant 14). The reader filters.
+   * then be a second place the liveness rule is written (docs/CONTRACTS.md §One authoritative implementation). The reader filters.
    *
    * A machine's token has the MACHINE's id in `principal_id` and no principal row behind it,
    * so no machine credential is ever reachable through this read: the fleet is
@@ -1921,7 +1921,7 @@ export class ServerStore {
    * ONE JOURNAL, ONE INSERT. Both row families land here — an event through `addEvent`, a
    * trace through `appendTrace` — because retention, the per-container cap and the count cache
    * are properties of the TABLE and a second copy of them would drift the first time either
-   * policy changed (invariant 14).
+   * policy changed (docs/CONTRACTS.md §One authoritative implementation).
    *
    * Returns the row's id, which the trace ledger needs and the event path ignores: a trace is
    * written before its outcome is known and settled afterwards by id (ADR 0018 §3).

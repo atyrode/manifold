@@ -12,14 +12,14 @@
  * It lives here because its parties may not import each other. A view PAINTS remote intent
  * into its own coordinate space — the canvas projects cursors through React Flow's transform,
  * a composition projects fractions onto its view root, and a future host chrome will do
- * something else again — which is AGENTS.md invariant 11 working rather than a leak: a
+ * something else again — which is docs/CONTRACTS.md §Producer-neutral behavior working rather than a leak: a
  * renderer consuming a peer's frame is the same act as consuming its own normalized input.
  * `core.presence` owns what the floor must not: putting this device's state ON the wire, the
  * `focus` door, and its own chrome (the roster island, the spotlight chip), all of which reach
  * views as registered overlays instead of as imports.
  *
  * The one non-cursor member, {@link projectLocalPresence}, is here for the same reason and is
- * the plainest statement of invariant 11 in the tree: it normalizes THIS principal into the
+ * the plainest statement of docs/CONTRACTS.md §Producer-neutral behavior in the tree: it normalizes THIS principal into the
  * wire shape the poll will report a moment later, so every renderer downstream consumes one
  * producer-agnostic row set and never learns which principal is local.
  */

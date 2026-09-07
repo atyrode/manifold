@@ -22,7 +22,7 @@ import { ManifoldRefSchema } from "./uri.ts";
  *   PROJECTION  the host's EXISTING session channel. The guest USER's own lens dials the host
  *               with a ticket and joins the shared container's room as an ordinary participant,
  *               so the room, the document, attendance and every door are the machinery a local
- *               viewer uses (invariant 14; `AXIOMS.md` §The portable lens is what licenses a
+ *               viewer uses (docs/CONTRACTS.md §One authoritative implementation; `AXIOMS.md` §The portable lens is what licenses a
  *               lens pointed at a second instance).
  *
  * A TICKET is therefore not a new credential kind: it is an ordinary attenuated token the host
@@ -95,7 +95,7 @@ export type Dial = z.infer<typeof DialSchema>;
 /**
  * What `core.access.listShares` answers: BOTH directions through one door, because the concept
  * is "the cross-instance relationships this instance has" and two list doors would be two
- * answers to one question (invariant 14).
+ * answers to one question (docs/CONTRACTS.md §One authoritative implementation).
  */
 export const ShareInventorySchema = z.strictObject({
   shares: z.array(ShareSchema),
@@ -105,7 +105,7 @@ export type ShareInventory = z.infer<typeof ShareInventorySchema>;
 
 /**
  * Minting names the node by `manifold://` reference rather than by a bare container id, because
- * invariant 13 makes that form canonical for anything addressable — a grant naming a container
+ * docs/CONTRACTS.md §Reference nodes makes that form canonical for anything addressable — a grant naming a container
  * by id would be the second address system it forbids — and because ADR 0011 widens this exact
  * field to subtree grants without changing its shape.
  *

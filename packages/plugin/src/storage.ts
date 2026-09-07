@@ -13,8 +13,7 @@ import type { PluginDataVersion } from "@manifold/protocol";
  * purpose — Bun's SQLite is synchronous, and a promise per read over it bought no
  * concurrency — and that ruling is reversed by ADR 0016 §4 (ratified, R3): an isolated
  * plugin's storage calls cross a process boundary, so they are promises, and two storage
- * contracts — sync in-realm, async isolated — would be two doors onto one concept (invariant
- * 14) that every plugin author would have to tell apart. One contract, first-party plugins
+ * contracts — sync in-realm, async isolated — would be two doors onto one concept (docs/CONTRACTS.md §One authoritative implementation) that every plugin author would have to tell apart. One contract, first-party plugins
  * included, is the T2 cost the ADR states plainly: an in-realm plugin pays a promise per
  * read over a synchronous SQLite call, and every handler that reads storage gains an
  * `await`. The in-realm implementation stays synchronous inside and resolves immediately —

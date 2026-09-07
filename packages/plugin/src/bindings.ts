@@ -20,7 +20,7 @@ import type { HostServices } from "./host.ts";
  * the surface a key belongs to is the owner's own knowledge, so the row PUBLISHES the scope —
  * the help table prints it, a reader learns it — and the handler is what honours it. An engine
  * that guessed the current surface would need a second scope oracle beside the mounted
- * renderer, which is the kind of parallel answer invariant 14 forbids.
+ * renderer, which is the kind of parallel answer docs/CONTRACTS.md §One authoritative implementation forbids.
  */
 export type BindingScope = "always" | "canvas" | "composition";
 
@@ -64,7 +64,7 @@ export function formatKeystroke(stroke: Keystroke): string {
 /**
  * Does this event produce that keystroke? The one comparison, shared by the dispatcher that
  * answers a key and the editor that captures one, so "what the table says" and "what fires"
- * cannot drift (invariant 14).
+ * cannot drift (docs/CONTRACTS.md §One authoritative implementation).
  *
  * A single character compares case-insensitively because Shift is already in `event.key`:
  * a reader holding Mod and pressing K sends `k` on one platform and `K` on another, and a
@@ -180,7 +180,7 @@ export function bindingRebindRefusal(
 /**
  * THE EFFECTIVE TABLE: declared rows with one principal's overrides applied.
  *
- * Applied HERE, at composition, and nowhere else — the seam invariant 14 asks for. A row whose
+ * Applied HERE, at composition, and nowhere else — the seam docs/CONTRACTS.md §One authoritative implementation asks for. A row whose
  * override lands carries the new key in `key` and its shipped key in `declaredKey`; every
  * reader downstream sees one table and never learns an override existed.
  *

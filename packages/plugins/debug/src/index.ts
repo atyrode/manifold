@@ -4,15 +4,14 @@ import { type PluginManifest } from "@manifold/protocol";
  * `core.debug` — THE DIAGNOSTIC SEAT: one plugin holding the family of probes this workspace
  * can be looked at through, and — from a pinned reading — acted on through (#128).
  *
- * ONE SEAT, not one per probe, and that is roster restraint rather than tidiness (AGENTS.md
- * §Conventions): every seat in the box is a thing a stranger's agent must read before it can
+ * ONE SEAT, not one per probe, and that is roster restraint rather than tidiness (docs/CONTRACTS.md §Roster restraint): every seat in the box is a thing a stranger's agent must read before it can
  * tell what manifold is, so "the diagnostics" is one line in that list however many instruments
  * hang off it. Two hang off it today:
  *
  *   the INSPECTOR (F10) — point at anything and be told what it is, where it lives
  *     (`manifold://`), who owns it, which doors it reaches, who is in it, what authority
  *     reaches it and what the ledger last said about it. A join of things the page already
- *     holds: the DOM's own `data-*` declarations (invariant 12), the live assembly, and doors
+ *     holds: the DOM's own `data-*` declarations (AXIOMS.md §Foundation law and REGISTRY.md §Foundation), the live assembly, and doors
  *     others published. Pinned, each composed door under the reading opens into a form
  *     GENERATED from its published input schema, dispatched through the one action door —
  *     the no-code console (#128, docs/decisions/2026-09-01-rjsf-door-forms.md).

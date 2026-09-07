@@ -18,7 +18,7 @@ import { ManifoldRefSchema } from "./uri.ts";
  *
  * An INSTALLED plugin runs its server half in its own OS process and its web half in its own
  * dedicated Worker (ADR 0016 §1). Both boundaries are message boundaries, so what crosses them
- * is wire, and wire lives here (invariant 2): the frames a supervisor and a child exchange over
+ * is wire, and wire lives here (docs/CONTRACTS.md §Protocol and compatibility): the frames a supervisor and a child exchange over
  * `Bun.spawn` ipc, the frames a panel host and a Worker exchange over `postMessage`, the closed
  * component vocabulary an isolated web half renders with (§3), the artifact a plugin is
  * installed from (§8 stage 2), and the numbers that bound a runner's patience (§6).
@@ -104,7 +104,7 @@ export interface UiListItem {
 /**
  * One node of an isolated panel's tree. `button.action` is the FULL action name the button's
  * event ultimately dispatches: the renderer paints it as `data-action`, so a stranger's
- * affordance names the door it opens exactly as a first-party one does (invariant 12, S4).
+ * affordance names the door it opens exactly as a first-party one does (AXIOMS.md §Foundation law and REGISTRY.md §Foundation, S4).
  */
 export type UiNode =
   | {
@@ -587,7 +587,7 @@ export type WebIsolateWorkerFrame = z.infer<typeof WebIsolateWorkerFrameSchema>;
 /**
  * The artifact format an install door reads: ONE JSON document, `<id>.manifold-plugin.json`.
  * JSON rather than a tarball because the protocol package's whole runtime dependency budget is
- * zod (invariant 8) and a hand-rolled tar reader is a worse artifact than base64. `sha256` on
+ * zod (docs/CONTRACTS.md §Dependency decisions) and a hand-rolled tar reader is a worse artifact than base64. `sha256` on
  * the roster row is over the file's exact BYTES, never over this parsed form, so re-hashing at
  * boot compares what was installed with what is on disk (ADR 0016 §8 stage 3, R8: fail-closed).
  * The literal is the whole versioning story: a reader that meets a format it does not know
@@ -614,7 +614,7 @@ export const PLUGIN_BUNDLE_STYLES_FILE = "styles.css";
 /**
  * A member's name inside the bundle: FLAT, one path segment, no leading dot. The files are
  * extracted beside the artifact into `<sha256>/`, so a name that could climb (`../`), nest, or
- * hide (`.env`) is refused at the schema rather than trusted to the extractor (invariant 6).
+ * hide (`.env`) is refused at the schema rather than trusted to the extractor (docs/CONTRACTS.md §Data and credential boundaries).
  */
 export const PLUGIN_BUNDLE_FILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 export const PluginBundleFileSchema = z.string().regex(PLUGIN_BUNDLE_FILE_PATTERN);

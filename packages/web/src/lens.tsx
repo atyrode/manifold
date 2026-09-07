@@ -15,7 +15,7 @@ import { WEB_BUILD } from "./web-version.ts";
  * offline shell in one sentence. There is no spinner here to be indefinite, and no blank page to
  * mistake for a slow one.
  *
- * IT REFUSES EXACTLY ONE THING. A protocol mismatch (`AGENTS.md` invariant 10) is the one
+ * IT REFUSES EXACTLY ONE THING. A protocol mismatch (docs/CONTRACTS.md §Protocol and compatibility) is the one
  * condition where carrying on would be the lie: a stale cached bundle in front of a newer server
  * would dial `/ws/session`, be closed 4409 by version negotiation, and reconnect forever while
  * every panel looked ordinary. `v0.5.0` is the worked example of that failure mode being invisible

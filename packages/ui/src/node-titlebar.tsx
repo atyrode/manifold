@@ -82,7 +82,7 @@ export interface NodeTitleBarProps {
   readonly onRenameTitle?: ((name: string) => void) | undefined;
   /**
    * The FULL composed action name {@link NodeTitleBarProps.onRenameTitle} fires, marked into
-   * the DOM as `data-action` (AGENTS invariant 12; gate S4/R7 checks every marker against the
+   * the DOM as `data-action` (AXIOMS.md §Foundation law and REGISTRY.md §Foundation; gate S4/R7 checks every marker against the
    * live roster). Supplied by the adopter because the same bar renames containers and compositions
    * too, and those doors are not actions yet.
    */

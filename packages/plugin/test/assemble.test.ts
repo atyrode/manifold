@@ -920,7 +920,7 @@ describe("assembleRoster reservations, builtins and stored data", () => {
 
   test("the core namespace is reserved: only the shipped distribution's own ids may claim it", () => {
     // The distribution, as its registration file yields it: derived from what is registered,
-    // never a hand-kept list of "our" plugins (invariant 14).
+    // never a hand-kept list of "our" plugins (docs/CONTRACTS.md §One authoritative implementation).
     const distribution = new Set([drawing.manifest.id]);
     const impostor: PluginDef = { manifest: manifest({ id: "core.impostor" }), actions: [] };
 

@@ -11,7 +11,7 @@ import type { ReactElement } from "react";
  * container renderer is reached by LAYOUT through the projection's container-ref registry: this
  * panel resolves the route to a discipline and asks for that discipline's ref. The routed
  * shell and a composition's tile leaf make the same call with a different `layout`, which is
- * the whole of why one door is enough (invariant 14) and why a canvas can hold a composition
+ * the whole of why one door is enough (docs/CONTRACTS.md §One authoritative implementation) and why a canvas can hold a composition
  * and a composition a canvas without either plugin importing the other.
  *
  * So what is left here is exactly the shell's own three answers, and nothing that knows how a

@@ -40,7 +40,7 @@ import {
  *    three fails rather than passes quietly.
  * 2. NO SECRET IS LOGGED. A door whose result IS a credential has to be checked, not
  *    assumed, so the last case drives a real dispatch through a capturing logger and asserts
- *    the minted token appears nowhere in what was recorded (invariant 6).
+ *    the minted token appears nowhere in what was recorded (docs/CONTRACTS.md §Data and credential boundaries).
  */
 
 const OWNER_KEY = "a".repeat(64);
@@ -392,7 +392,7 @@ describe("core.access ladder", () => {
  * A share is a token bound to a node, so what has to be pinned is that it is TREATED as one:
  * the caps rung is `mint`'s, the attenuation refusals are `mintToken`'s words, the scope rung
  * admits a container-scoped minter to its own container and no further, and the secret it
- * produces is subject to invariant 6 like every other. The two GUEST doors are the exception
+ * produces is subject to docs/CONTRACTS.md §Data and credential boundaries like every other. The two GUEST doors are the exception
  * that proves the rule — they are `scope: "workspace"` because a dial names a node at another
  * instance, which no local container scope can describe.
  */
@@ -956,8 +956,7 @@ describe("core.access grant ladder", () => {
       id: subject.principal.id,
     });
     expect(there.grants.some((row) => row.node === containerNodeUri(container))).toBe(false);
-    // A node that is not a `manifold://` address is invalid ARGUMENTS, not a refusal: invariant
-    // 13 says authority names nodes the one way everything else does, and a bare container id
+    // A node that is not a `manifold://` address is invalid ARGUMENTS, not a refusal: docs/CONTRACTS.md §Reference nodes says authority names nodes the one way everything else does, and a bare container id
     // would be a second address system entering through the one door that decides everything.
     expect(denial(notAUri).rule).toBe("invalid_args");
     // Neither closed pair has a default. A row that meant `deny` and got `allow` by omission is

@@ -241,7 +241,7 @@ export const TileSchema = z.strictObject({
    * It sits on the TILE rather than beside the tree because a workspace tree is already
    * the one per-principal arrangement document (`core.space.setLayout` is its only door),
    * and "which panel" is the leaf itself. A second per-principal store for the same
-   * question would be a second door onto one concept (AGENTS.md invariant 14) — which is
+   * question would be a second door onto one concept (docs/CONTRACTS.md §One authoritative implementation) — which is
    * also why the palette drops structure into THIS field rather than minting one of its
    * own for the rail.
    *

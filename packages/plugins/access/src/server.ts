@@ -53,7 +53,7 @@ interface AccessCtx {
     /*
       The share trio sits on the identity door because a share IS a token bound to a node: the
       attenuation ladder it runs is `mintToken`'s, and putting it anywhere else would be a
-      second place authority is handed out (invariant 14).
+      second place authority is handed out (docs/CONTRACTS.md §One authoritative implementation).
     */
     mintShare(input: MintShareRequest): IdentityAnswer<ShareGrant>;
     revokeShare(shareId: string): IdentityAnswer<number>;
@@ -94,7 +94,7 @@ type Outcome<T> = { refused: string } | T;
  *
  * Nothing here logs, and nothing here formats a secret into a message. The raw token exists
  * in one place — the result handed to the caller who asked for it — and the dispatcher logs
- * an action's NAME, principal and outcome, never its arguments or its result (invariant 6).
+ * an action's NAME, principal and outcome, never its arguments or its result (docs/CONTRACTS.md §Data and credential boundaries).
  */
 export const accessHandlers = {
   async createPrincipal(

@@ -5,7 +5,7 @@
  * THE PANELS LIVE HERE NOW, and that is the shell's carve-out ending rather than a file move.
  * Both were floor while the sidebar needed a read of the live composition that no plugin had a
  * door for; `host.assembly` is that door, declared and read-only, so the argument for the
- * exception expired and the components followed their manifest (A1, invariant 12). The floor
+ * exception expired and the components followed their manifest (A1, AXIOMS.md §Foundation law and REGISTRY.md §Foundation). The floor
  * keeps only what a shell genuinely owns — the tile layout, the workspace index, and the two
  * contexts it publishes above the tree.
  *

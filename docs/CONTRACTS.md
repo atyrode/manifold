@@ -1,9 +1,132 @@
 # Cross-package contracts
 
-This file is the integration authority for manifold's packages. Any change here requires
+This file is the integration authority for manifold's packages. Wire-contract changes require
 updating `@manifold/protocol` first, then every consumer, in the same change.
 Wire message shapes live in `packages/protocol/src` (zod schemas are the source of truth;
 this document explains semantics the schemas cannot).
+
+## Engineering constraints
+
+These engineering laws complement, and do not amend, [AXIOMS.md](../AXIOMS.md).
+The [Foundation law](../AXIOMS.md#foundation-law), [plane rule](../AXIOMS.md#the-plane-rule)
+and [Lexicon law](../AXIOMS.md#lexicon-law) retain their constitutional ownership;
+[REGISTRY.md](../REGISTRY.md) owns their enforcement data. Conflicts follow
+[AXIOMS.md §Change control](../AXIOMS.md#change-control).
+
+Older, immutable ADRs cite numbered `AGENTS.md` invariants. Those citations refer to the
+[historical root](https://github.com/atyrode/manifold/blob/5461d479503a5718dcc0f224dfd6d93b35060c6d/AGENTS.md#invariants-violations-are-bugs-not-style),
+not today's operating guide. Their current owners are: 1, [Clean room](#clean-room);
+2–4 and 10, [Protocol and compatibility](#protocol-and-compatibility); 5–6,
+[Data and credential boundaries](#data-and-credential-boundaries); 7 and 9,
+[Testability](#testability-agent-facing); 8, [Dependency decisions](#dependency-decisions);
+11, [Producer-neutral behavior](#producer-neutral-behavior); 12 and 15, the Foundation law
+and registry; 13, the plane rule and this file's addressing/commit contracts; 14,
+[One authoritative implementation](#one-authoritative-implementation); 16, the Lexicon law
+and registry. Historical citations preserve reasoning, not a second source of current law.
+
+### Clean room
+
+Never copy code, schemas, CSS or config from pad.ws, the predecessor repository.
+Concepts are documented in [PLAN.md](PLAN.md); re-derive everything else.
+
+### One authoritative implementation
+
+Every concept has exactly one authoritative implementation and every consumer goes through it.
+A second parallel implementation — a placement executor, WebSocket state machine, plugin list
+or terminal rename path — is a bug, not a style choice. When a concept genuinely needs a new
+door, delete the old one in the same change: no aliases, dual paths or fallback readers.
+
+Apply that implementation replacement only after the owning public or persistent contract's
+coordinated compatibility transition is complete. This law does not authorize deleting support
+still required by separately released consumers, migration or rollback; it also does not grant
+permission for a second authoritative implementation during the transition. Resolve an actual
+contract conflict through [Change control](../AXIOMS.md#change-control), not by silently
+dropping either requirement.
+
+### Protocol and compatibility
+
+To change a message, edit `packages/protocol` first, run `bun run check`, and fix every consumer
+in the same change. `@manifold/protocol` is the only place wire types exist; no inline message
+types outside it. No package imports another package's internals — only workspace package roots.
+
+Every message handler validates with the zod schema before acting, except that the SDK
+MAY structurally validate inbound `terminal_output`/`terminal_snapshot` (type tag,
+nonempty `terminalId`, nonnegative integer `seq`, and string `data` bounded to 700,000
+characters) instead of rerunning zod's base64-alphabet check. The SDK MAY likewise skip
+full zod parsing for the SDK-constructed outbound `cursor` and `terminal_input` hot
+paths. The server still performs full schema validation at the untrusted boundary, and
+every other frame keeps full schema validation on both sides. Unknown message types are
+logged and ignored (forward compatibility); malformed frames of KNOWN types close the
+socket (server: policy close; client: 4002 + reconnect into a fresh init).
+
+The [SDK topology](#topology) owns the one-client rule and its adversarial-test exemption.
+The [terminal attach contract](#terminals-over-the-session-channel) owns the no-gap
+snapshot-plus-output invariant and its e2e proof; do not weaken that proof.
+`PROTOCOL_VERSION` bumps ship as dedicated `protocol:` commits, never inside feature commits.
+The [machine channel](#ws-wsmachine--machine-channel-json-data-fields-base64) owns the
+compatibility-set add/reset rule, coordinated fleet restart and hub-before-agent upgrade order;
+the [instance channel](#ws-wsinstance--instance-channel-json-text-frames-adr-0014) applies it to
+its own wire. Publishing a release does not authorize a hub upgrade, promotion or fleet change.
+Preserve the production compatibility hold for a development-only release; the explicit
+promotion procedure is [SELF-HOST.md §Environments](SELF-HOST.md#environments).
+
+### Producer-neutral behavior
+
+**Identity is data, never a branch** (multiplayer-first, operator-ratified 2026-08-30).
+Every shared behavior — previews, motion, fades, cues — is one producer-agnostic pipeline.
+Local input normalizes into the wire form first and is consumed as if received, so
+single-player is a special case of multiplayer, never the reverse. A wire form that cannot
+express something must break locally and visibly, not only for spectators. The one legitimate
+local-versus-remote decision is arbitration: which intent wins a surface. No code downstream
+of arbitration may ask whose intent it renders. A second remote flavor of an existing behavior,
+with its own styling, state derivation or fallbacks, is a defect even when it looks deliberate.
+
+### Data and credential boundaries
+
+Never persist presence, cursor traffic or terminal bytes. Always persist scene snapshots,
+principals, hashed tokens, session lifecycle events and traces: dispatches at a door, granted
+or refused, write-ahead under [axiom A6](../AXIOMS.md#axioms).
+The [persistence contract](#persistence-sqlite-wal-server-only) owns storage and the
+[logging contract](#logging--introspection) owns the shared log/trace redaction rule.
+Owner keys and tokens never appear in logs, URLs, errors or committed files; the bootstrap
+fragment `#key=` is the one allowed URL carrier, under the opt-in
+[runtime contract](#runtime-contracts). It is not permission to disclose a key-bearing URL.
+
+### Dependency decisions
+
+No new runtime dependency without a dated entry in `docs/decisions/` justifying it against
+"boring, small, pinned". The converse duty to evaluate a named library before hand-rolling a
+non-manifold-specific pattern remains owned by [AXIOMS.md §Change control](../AXIOMS.md#change-control).
+
+### Roster restraint
+
+The default distribution stays small and non-opinionated. A new core plugin needs the same
+justification discipline as a new pillar ([Foundation law](../AXIOMS.md#foundation-law)):
+extending an existing seat beats adding one. An opinionated feature belongs on the roadmap or
+in a third-party plugin, never in the box by default. "Everything is a plugin" (A1) describes
+mechanism, not permission to ship more seats: every seat is something a stranger's agent must
+read before it can tell what manifold is. The [registry](../REGISTRY.md#plugin-layer), not a
+prose roster, owns which plugins exist.
+
+### Automation credential lifecycle
+
+On a persistent instance, automation uses dedicated, clearly named, run-owned `kind: "agent"`
+principals with minimal capabilities and scope. Never impersonate an operator or mint test
+credentials into an existing human or fleet principal. A test deliberately exercising the
+human sign-in form uses a unique verification name instead.
+
+Track the principal IDs and resources created by the run. On success and failure, revoke every
+run-owned credential through `core.access.revoke`, verify no live credentials remain, close test
+PTYs and remove test containers; removing a canvas need not destroy its referenced terminals.
+One cleanup failure must not skip the other cleanup. Supplied operator credentials and unrelated
+principals are never cleanup targets. A cleanup failure is a failed run: report the instance,
+non-secret resource IDs and failed operation, never call it clean.
+
+Expiry is a backstop, not teardown. Ordinary lifetimes and internal exceptions remain owned by
+[Identity, tokens, capabilities](#identity-tokens-capabilities). Long-running automation obtains
+a fresh authorized credential, not an unbounded one; tests cannot claim internal lifecycle
+exceptions to avoid cleanup. Tests whose entire throwaway server and data directory are
+destroyed need no additional credential revocation.
 
 ## Topology
 
@@ -38,6 +161,8 @@ viewer uses. There is no relay and no second sync path (ADR 0014).
   per (WebSocket factory, url, token) and a `SessionClient` is a channel handle on it, so a
   tab holds one connection no matter how many rooms it renders; the pool owns dialing,
   liveness, reconnect-with-rejoin-every-channel, and demultiplexing.
+  The sole exemption is testkit's clearly marked adversarial harness, which crafts raw invalid
+  frames to prove server rejection paths and is never usable as a production client.
 - **testkit** (`packages/testkit`): spawn-real-processes helpers + e2e suites.
 
 ## Runtime contracts
@@ -60,7 +185,7 @@ preview restart. Missing, unavailable or invalid verification keys fail closed.
 Server startup log MUST include a single line `manifold ready url=<URL>`. With
 `MANIFOLD_ANNOUNCE_KEY=1` (dev/test opt-in: `dev:server`, testkit) the URL embeds the owner
 key as `#key=<hex>` (fragment, never query — fragments don't hit request logs). The default
-omits the fragment so the owner key never enters log streams (AGENTS invariant 6);
+omits the fragment so the owner key never enters log streams ([Data and credential boundaries](#data-and-credential-boundaries));
 operators read the key from `<data>/owner.key` instead.
 Auto-spawned local machine: server mints a machine token (raw copy kept at
 `<data>/agent.token`, mode 600, for transport respawns — DB stores only the hash).
@@ -77,7 +202,7 @@ the data directory. This destructive teardown is for owned test processes, never
 instance's ORIGIN — the identity a share is minted for, the string a `hello` declares and a
 host compares, the value a remote principal carries — is `MANIFOLD_PUBLIC_URL`'s origin and
 nothing else. A `MANIFOLD_INSTANCE_ORIGIN` beside it would be a second door onto "how this
-instance is addressed", which is invariant 14 in the one place it would be most tempting to
+instance is addressed", violating [One authoritative implementation](#one-authoritative-implementation) where it is most tempting to
 fudge; a deployment behind a proxy configures the URL it already configures. There is no
 dial on/off switch either: disabling `core.access` stops new dials, and live ones surviving
 that is D4′'s "creation dies, cleanup survives" applying exactly as written.
@@ -165,14 +290,8 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   grant at `manifold://container/<id>`, which is what it always meant; the field did not move.
 - Revocation: durable; server closes live sockets of revoked tokens with code 4403 and
   message `revoked`.
-- **Automation owns its teardown** (issues #140, #326): scripts and helpers mint dedicated,
-  clearly named `kind: "agent"` principals with minimal authority on persistent origins. A test
-  deliberately exercising the human form (`scripts/verify-public.ts`, a unique `verify-*` name)
-  retains `human`. Both revoke every run-owned credential on success and failure, verify no live
-  credentials remain, and close their test PTYs as well as removing test containers. A cleanup
-  failure is a failed run, not a warning hidden behind successful checks. Supplied operator
-  credentials and unrelated principals are never cleanup targets. Throwaway-server tests whose
-  data directory is destroyed are exempt; expiry never substitutes for cleanup on a real instance.
+- Automation principal isolation and teardown are specified in
+  [Automation credential lifecycle](#automation-credential-lifecycle).
 - **Expiry** (ADR 0019 §2, amended by operator request #326). A token row carries `expires_at`;
   NULL is reserved for the explicit internal lifecycle exceptions below. Ordinary human credentials,
   including preview browser credentials, expire after **14 days**; ordinary agent credentials expire
@@ -366,7 +485,7 @@ It rides the principal and nothing else. Attendance carries it because an attend
 principal, and a ticket carries it because a ticket carries a principal; no frame grows a second
 origin field. A remote participant is otherwise ORDINARY: the host mints its ticket through the
 same attenuation ladder, fences it through the same revocation fanout, and rooms it through the
-same `Room`. Invariant 11 across instances — origin is DATA, and nothing downstream of
+same `Room`. [Producer-neutral behavior](#producer-neutral-behavior) across instances — origin is DATA, and nothing downstream of
 arbitration may branch on it. Rendering a peer's origin beside its name and color is
 presentation of a datum; a "remote flavor" of a cursor, a roster row or a projection is a defect.
 The SDK's channel pool keys connections by (factory, url, token), which is the
@@ -466,7 +585,7 @@ still "whoever holds a valid token".
 **`GET /healthz` is the protocol handshake for the browser too.** A client compares its own
 compiled-in `PROTOCOL_VERSION` against the `protocolVersion` in that answer and REFUSES to
 compose when they disagree, in both directions, rather than dialing a socket that would be closed
-4409 forever (`AGENTS.md` invariant 10; `packages/web/src/lens.tsx`). This is what keeps a cached
+4409 forever ([Protocol and compatibility](#protocol-and-compatibility); `packages/web/src/lens.tsx`). This is what keeps a cached
 bundle honest about protocol skew.
 
 ## Containers, placement, and the index
@@ -1058,7 +1177,7 @@ carry `terminals:write` at `scope: "container"` — the authority the session ch
 verb has always enforced, and the one the browser's `canKill` rule is computed from. The deleted
 routes asked for `containers:write` instead: two doors onto one concept answering differently,
 which is
-exactly what invariant 14 forbids, so the cutover took the channel's answer rather than the route's.
+exactly what [One authoritative implementation](#one-authoritative-implementation) forbids, so the cutover took the channel's answer rather than the route's.
 `kill` is `cleanup: true` (removal survives a disable), the rename broadcasts
 `terminal_event { kind:"renamed", name }` into the home, and the kill sweeps the terminal, its home,
 and every portal onto that home. `open { containerId, elementId, cols, rows, machineId?,
@@ -1187,7 +1306,7 @@ rides — and it mints nothing, which is the difference from a rotation. **The i
 survives**: withdrawing a credential and forgetting a box are different verbs, so the machine
 stays listed with `revoked: true` and comes back through `enroll { rotateToken: true }`. One
 door, one concept — there is no second spelling of "revoke this machine's credential"
-(invariant 14) — and it carries `machines:mint` rather than a new cap because minting and
+([One authoritative implementation](#one-authoritative-implementation)) — and it carries `machines:mint` rather than a new cap because minting and
 withdrawing a machine credential are one authority.
 
 A machine summary carries an optional **`revoked`** (absent ≡ live, so a pre-v20 row parses
@@ -1264,7 +1383,7 @@ No new capability: a share hands authority out, so it declares the cap that alre
 | `core.access.dialShare`   | `containers:write` | workspace | `{ origin, token }` → `Dial`; BLOCKS on the host's welcome              |
 | `core.access.openDial`    | `containers:read`  | workspace | `{ dialId }` → `DialTicket { origin, ref, caps, token }`                |
 
-`node` is a `manifold://` reference, never a bare container id (invariant 13); a ref that is not
+`node` is a `manifold://` reference, never a bare container id ([Reference nodes](#reference-nodes)); a ref that is not
 a container is refused `only a container can be shared`, which is the one rung these handlers
 own — everything else is `mint`'s ladder, run by the mechanism on the real caller. The two guest
 doors are `scope: "workspace"` because a dial names a node at ANOTHER instance, so a
@@ -1318,7 +1437,7 @@ attenuating a denial, so the unwritten rule is read narrowly until the operator 
 these `tokens:mint` later widens the door without moving it, since no argument, result or
 refusal changes shape. The mechanism closes the same hole independently
 (`cannot deny the workspace owner`), because a door and a mechanism disagreeing about who may
-write authority is invariant 14 failing.
+write authority violates [One authoritative implementation](#one-authoritative-implementation).
 
 `scope: "workspace"` is FORCED, exactly as it is for the two guest doors: the argument is a
 `manifold://` node URI that may be the root itself, and a container-scoped token is scoped to a
@@ -1376,7 +1495,7 @@ meaning the HTTP action door. The `payload` of a trace row is the ARGUMENTS as r
 through the same field redaction the JSONL log applies (case-insensitive substrings
 `token`/`key`/`authorization`/`secret`/`password`/`passwd`/`credential`/`passphrase`,
 plus exact field names `data`/`env`/`payload`/`terminalData`, also case-insensitive —
-invariants 5 and 6) and bounded at 4 KiB, past which the row keeps
+[Data and credential boundaries](#data-and-credential-boundaries)) and bounded at 4 KiB, past which the row keeps
 `{ oversize, keys }` instead of the bytes.
 
 Every action handler receives `ctx.traceId: number`, the id of its already-durable write-ahead
@@ -1402,7 +1521,7 @@ Schema; reading past 500 rows needs paging, and paging needs a cursor this wave 
 
 The ledger inherits that ruling verbatim, which is half the reason it is a row family here
 rather than a table with a door of its own: a trace names who exercised what, so a second read
-door would be a second place to get the authority question wrong (invariant 14). Traces are also
+door would be a second place to get the authority question wrong ([One authoritative implementation](#one-authoritative-implementation)). Traces are also
 deliberately NOT subscribable — the event plane carries what a door announced, not the record of
 its being allowed to.
 
@@ -1491,7 +1610,7 @@ the plugin's own subtree and are not judged, exactly as `verify:axioms` S13 read
 tree — the leftmost family is the one whose removal makes the rule dead. A shell family wrapped in
 `:is()` / `:where()` as the leftmost compound is still the shell's. The walk is ONE module,
 `@manifold/protocol`'s `stylesheet.ts` (`cssRules`, `everyCompound`, `anchorOf`, `unscopedRule`),
-imported by the gate for the tree's sheets and by the hub for a bundle's (invariant 14). The
+imported by the gate for the tree's sheets and by the hub for a bundle's ([One authoritative implementation](#one-authoritative-implementation)). The
 refusal is `stylesheet_unscoped: styles.css:<line> <why> (<selector>)` — from `engine.plugins.install`
 for a bundle and from `engine.plugins.author` / the rebuild loop for an unpacked directory (both
 through the one install path, before anything is written, the working row standing), and from
@@ -1619,7 +1738,7 @@ next dispatch respawns it (`isolate_evicted`). A `call` names the request it bel
 prefix: its `id` is `<request id>:<n>`, where `<request id>` is the `dispatch`/`hook` frame's
 own `id` (host-chosen, never containing `:`) — that is how the host finds the ctx that grades
 it. The child runs under the server's own `bun` with an environment of exactly `PATH`, `HOME`
-and `MANIFOLD_PLUGIN_ID` (invariant 6); its stdout and stderr reach the server log line by line
+and `MANIFOLD_PLUGIN_ID` ([Data and credential boundaries](#data-and-credential-boundaries)); its stdout and stderr reach the server log line by line
 as `isolate_output`, capped. Log events: `isolate_spawned`, `isolate_exited`, `isolate_crashed`,
 `isolate_evicted`, `isolate_call_failed`, `isolate_output`, `plugin_installed`,
 `plugin_uninstalled`, `plugin_authored`, `plugin_authored_build_failed`,
@@ -1693,7 +1812,7 @@ The second way an installed row lands (ADR 0025 §4, #257): the hub builds it. `
 holds the files (`manifest.json` plus the halves `entry` names; `web.tsx` is accepted beside
 `web.ts`); `<data>/authored/.build/<id>.manifold-plugin.json` is what the hub packed them into, with
 the kit's own `packPlugin` (`@manifold/plugin-kit/pack`: the same `Bun.build` and shared-specifier
-rewrite `manifold-pack` runs — one bundler, invariant 14). The hub watches the directory
+rewrite `manifold-pack` runs — one bundler, [One authoritative implementation](#one-authoritative-implementation)). The hub watches the directory
 (`node:fs` `watch`, no dependency; a change debounces into one rebuild; every directory is rebuilt
 once at start) and installs the build through the ONE `install` path as `{ source: <that .build
 file>, sha256: <hash of the bytes it wrote>, replace: true }`, so `authored/` is the second box a
@@ -1883,7 +2002,7 @@ gate UI affordances without a separate introspection round-trip. Presence is car
 `attendance`, whose entries are `PresenceState`; there is no separate `presences` field.
 
 **Liveness (v19, issue #55).** The session channel is a DIAL like the machine and instance
-channels, so it runs their one scheme rather than a second (invariant 14) off the same
+channels, so it runs their one scheme rather than a second ([One authoritative implementation](#one-authoritative-implementation)) off the same
 constants. After a socket's FIRST surviving join the server sends `ping` every
 `DIAL_PING_INTERVAL_MS` (30s) and closes 4008 `liveness timeout` when a ping is still
 unanswered as the next one fires, bounding detection at two intervals; the close runs the
@@ -2557,14 +2676,14 @@ guest holds a share, liveness, and per-principal tickets. **No scene, presence o
 ever cross it.** A guest's users project by pointing their own lens at the HOST's
 `/ws/session` with a ticket obtained here, which is why a shared container renders through
 the same room, document, attendance roster and PTY broker a local viewer uses — one door per
-concept (invariant 14), and no second sync path.
+concept ([One authoritative implementation](#one-authoritative-implementation)), and no second sync path.
 
 Handshake: guest sends `hello { protocolVersion, origin, instanceVersion, token, tickets? }`.
 `token` is the raw share secret (the host stores only its SHA-256). `origin` is the guest's
 own `MANIFOLD_PUBLIC_URL` origin and MUST equal the origin the share was minted for —
 mismatch closes 4401 `origin mismatch`, because the credential is not valid as presented.
 That comparison is what makes a principal's `origin` trustworthy DATA rather than a claim,
-which invariant 11 depends on. `tickets` is RESUME, carried on the hello exactly as a machine
+which [Producer-neutral behavior](#producer-neutral-behavior) depends on. `tickets` is RESUME, carried on the hello exactly as a machine
 hello advertises retained PTYs: the host-side ticket principals the guest believes it still
 holds. There is no separate resume frame.
 
@@ -2575,7 +2694,7 @@ still live, and the guest drops the rest. Or the host closes: 4401 unauthorized 
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
 `INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{18, 19, 20, 21, 22, 23, 24, 25}` — its own wire, its own set, the
-same invariant-10 discipline the machine channel follows.
+same [Protocol and compatibility](#protocol-and-compatibility) discipline the machine channel follows.
 
 Guest→host: `pong`, `ticket_request { requestId, principal }` — the guest's OWN principal
 verbatim; the host mints its own mirror id and never adopts a foreign one, because two
@@ -2813,6 +2932,24 @@ build target and nothing branches on which instance is being looked at.
 
 ## Testability (agent-facing)
 
+- **Determinism**: unit tests need no network, real PTYs or fixed ports; agent PTY tests alone
+  may spawn real shells. Server/agent take `RuntimeDeps { newId, now }` from
+  `@manifold/protocol` (default random/wall-clock); testkit injects seeded/fake implementations
+  and uses port 0.
+- **State and policy**: React uses function components and hooks; server/socket state lives
+  in stores, not components. Effects synchronize, never derive state. Nontrivial sync policy
+  (merge, throttle, version bookkeeping) lives in pure, unit-tested modules, not component
+  callbacks.
+- **Necessity and lifecycle evidence**: code that is neither tested nor documented is a defect;
+  delete unneeded behavior rather than making it permanent with a test. For independent process
+  lifetimes, establish use before replacing authority state, keep the old consumer alive, then
+  exercise the same boundary again, including invalid-input and authority-unavailable refusals.
+  Fresh-start success cannot prove that transition.
+- **UI boundaries**: user-visible interactions get tests at the interaction boundary; wire-level
+  green does not prove the UI works. Gate green does not prove a surface feels finished:
+  UI-touching changes require vision-model inspection of real screenshots from a real browser
+  before shipping.
+
 - **Preview admission coverage** (#332): `packages/server/test/preview-identity.test.ts`
   exercises two real servers, an initial handoff, then authority key rotation while the same
   preview survives. It proves that the new assertion grants usable preview-local access,
@@ -2831,7 +2968,7 @@ build target and nothing branches on which instance is being looked at.
   transient sign-in documents. Passing it cannot close a production-to-preview sign-in incident.
   That deployed path requires a real-browser check from production identity through preview
   callback/finalize to the workspace, including transient-document visual inspection, on the
-  exact affected origin and build (AGENTS.md §Commands). Keep production secrets out of PR CI
+  exact affected origin and build. Keep production secrets out of PR CI
   and preview environments; isolated scripted admission checks use throwaway authorities.
 - **Debug probe** (`packages/plugin/src/debug-probe.ts`, reached by plugin code through
   `@manifold/plugin/hooks`): when `localStorage["manifold:debug"]
@@ -2860,6 +2997,8 @@ build target and nothing branches on which instance is being looked at.
 - **Ownership rule**: never mutate or hand a mutating renderer an object owned by
   `client.elements` or `client.doc`. Project renderer-owned objects at the paint boundary
   and publish edits through `client.transact`.
+  React Flow mutates `measured` and `selected` in place: project fresh node objects, then
+  reconcile them into live node state so equivalent nodes retain their identity.
 
 ## Logging & introspection
 
@@ -2871,21 +3010,3 @@ what is the journal's trace family, read through `core.events.list` (axiom A6, �
 its two families). The two say the same word for the same dispatch — the `action` line's
 `outcome` and the trace row's `outcome` are the same vocabulary — and one field rule redacts both
 (`redactFields`, `packages/server/src/log.ts`), so a secret cannot reach either.
-
-## Hard rules
-
-1. Clean room: no code, schemas, CSS, or config copied from pad.ws — concepts only.
-2. `@manifold/protocol` is the only place wire types exist. No inline message types.
-3. Every message handler validates with the zod schema before acting, except that the SDK
-   MAY structurally validate inbound `terminal_output`/`terminal_snapshot` (type tag,
-   nonempty `terminalId`, nonnegative integer `seq`, and string `data` bounded to 700,000
-   characters) instead of rerunning zod's base64-alphabet check. The SDK MAY likewise skip
-   full zod parsing for the SDK-constructed outbound `cursor` and `terminal_input` hot
-   paths. The server still performs full schema validation at the untrusted boundary, and
-   every other frame keeps full schema validation on both sides. Unknown message types are
-   logged and ignored (forward compatibility); malformed frames of KNOWN types close the
-   socket (server: policy close; client: 4002 + reconnect into a fresh init).
-4. No package imports another package's internals — only workspace package roots.
-5. Determinism in tests: server/agent take `RuntimeDeps { newId, now }` from
-   `@manifold/protocol` (default random/wall-clock); testkit injects seeded/fake
-   implementations. Port 0 (random) in tests.

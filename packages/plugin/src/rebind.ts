@@ -8,8 +8,7 @@ import { useSyncExternalStore } from "react";
  * the engine's read (`host.assembly.bindings`), so anything may print a row — a command
  * surface, a tooltip, a menu — while the write is one plugin's door and the editor around it
  * is that plugin's chrome. Without a slot like this, "rebind that" is either a private import
- * across the plugin boundary or a second editor, and both are the same bug (invariants 12 and
- * 14). With it, the lister names a BINDING ID — engine vocabulary, no plugin's noun — and
+ * across the plugin boundary or a second editor, and both are the same bug (AXIOMS.md §Foundation law and REGISTRY.md §Foundation and docs/CONTRACTS.md §One authoritative implementation). With it, the lister names a BINDING ID — engine vocabulary, no plugin's noun — and
  * whoever owns the editor answers.
  *
  * NOT A {@link Vantage} FACET, and the line is worth stating: vantage is this device's view

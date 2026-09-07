@@ -141,7 +141,7 @@ export const FEED_TOPICS: FeedTopics = {
  *     renderers imported.
  *   `core.presence` registers OVERLAYS: who is here, and the spotlight consent chip. What a
  *     ref paints in its own coordinate space (cursors, carry ghosts, selection outlines)
- *     it paints from engine plane mechanism, which is invariant 11 rather than a registration.
+ *     it paints from engine plane mechanism, which is docs/CONTRACTS.md §Producer-neutral behavior rather than a registration.
  *
  * `core.shell` REGISTERS ITS OWN TWO PANELS NOW, and that row is the last carve-out closing.
  * Both components were floor until this wave, on the argument that the sidebar's chrome has to

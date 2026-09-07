@@ -56,7 +56,7 @@ const CONCRETE_CAPS: readonly Exclude<Cap, "*">[] = CAPS.filter(
  *
  *   TOO SHORT is worse than no expiry, and this is the half a security review usually
  *   misses. Re-bootstrapping means pasting the OWNER KEY into an address bar again. A bound
- *   that fires while somebody is still working therefore trains the one habit invariant 6
+ *   that fires while somebody is still working therefore trains the one habit docs/CONTRACTS.md §Data and credential boundaries
  *   and issue #56 both exist to discourage, and it trains it on the credential that is root
  *   everywhere. An expiry that makes the root secret travel more often has made the posture
  *   worse while looking like it improved it.
@@ -171,7 +171,7 @@ function secretsEqual(left: string, right: string): boolean {
 
 /**
  * The durable row as the wire says it. `ref` is the canonical `manifold://` addressing form
- * rather than a bare container id (invariant 13) — a grant that named its node any other way
+ * rather than a bare container id (docs/CONTRACTS.md §Reference nodes) — a grant that named its node any other way
  * would be a second address system, and ADR 0011 widens exactly this field to subtree grants.
  */
 function toShare(record: ShareRecord): Share {
@@ -440,7 +440,7 @@ export class AuthService {
    *
    * THE ROW CARRIES NO SECRET AND NO FRAGMENT OF ONE. What is auditable is that the owner
    * path was taken and when; the key itself is not a fact about the workspace, it is the
-   * thing the workspace must never write down (invariant 6). `window` is on the row so a
+   * thing the workspace must never write down (docs/CONTRACTS.md §Data and credential boundaries). `window` is on the row so a
    * reader knows what the row means: at least one owner-key authentication in the window
    * beginning at `ts`, not exactly one.
    */
@@ -931,7 +931,7 @@ export class AuthService {
    * job is to withdraw authority must not hand one out.
    *
    * THE ROW SURVIVES ITS CREDENTIAL. Revoking a machine is revoking that machine's
-   * credential (invariant 14: one concept, one spelling) — the inventory keeps the row, so an
+   * credential (docs/CONTRACTS.md §One authoritative implementation: one concept, one spelling) — the inventory keeps the row, so an
    * operator can still see the box they just cut off, and re-enrolling by name with
    * `rotateToken: true` is how it comes back. Deleting the row would make withdrawal and
    * forgetting the same verb, which they are not.
@@ -1116,7 +1116,7 @@ export class AuthService {
    *
    * The origin is recorded HERE, at mint time, rather than believed later at the handshake.
    * That is what makes a principal's `origin` trustworthy data instead of a claim, and
-   * invariant 11 depends on the difference: nothing downstream of arbitration may branch on
+   * docs/CONTRACTS.md §Producer-neutral behavior depends on the difference: nothing downstream of arbitration may branch on
    * origin, which is only safe while origin is something this instance decided.
    *
    * A share's caps also become a GRANT ROW at the shared node (ADR 0011: "a share is a token
@@ -1388,7 +1388,7 @@ export class AuthService {
    * limitation: that row IS a credential's issued authority, so deleting it would leave a
    * bearer that authenticates and may then do nothing, with no record of why. Taking a token's
    * authority back has a verb already, and it is the one that also closes the token's live
-   * sockets. One door onto "revoke a credential" (invariant 14).
+   * sockets. One door onto "revoke a credential" (docs/CONTRACTS.md §One authoritative implementation).
    */
   revokeGrant(grantId: string, actor: AuthContext): number {
     if (!this.allows(actor, "tokens:mint")) {

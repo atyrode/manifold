@@ -76,7 +76,7 @@ function classifyGuestFrame(data: unknown): ClassifiedFrame {
  * What it is NOT is a data path. No scene bytes, no presence, no terminal output ever cross
  * this socket. The guest's own lens dials the host's `/ws/session` with a ticket minted
  * here, so a shared container projects through the SAME room, the same sync, the same doors
- * a local viewer uses (invariant 14). This channel exists to answer one question — "may this
+ * a local viewer uses (docs/CONTRACTS.md §One authoritative implementation). This channel exists to answer one question — "may this
  * principal from that instance have a pipe, and is the grant still alive?" — and it carries
  * exactly the frames that question needs.
  */
@@ -193,7 +193,7 @@ export class InstanceGateway {
       The declared origin is CHECKED against the recorded one rather than believed. A share
       is minted for a named instance (ADR 0014), so this comparison is what turns the
       guest's `origin` from a claim into the datum every ticket principal carries — and
-      invariant 11 needs it to be a datum, because nothing downstream of arbitration is
+      docs/CONTRACTS.md §Producer-neutral behavior needs it to be a datum, because nothing downstream of arbitration is
       allowed to re-decide it. 4401 rather than 4403: the credential is not valid AS
       PRESENTED, which is unauthorized; 4403 stays the revocation code it is on every other
       channel.

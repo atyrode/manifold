@@ -11,7 +11,7 @@ import { z } from "zod";
  * DOCUMENT traffic, exactly like `core.canvas.draw`'s strokes, and `scenes:write` is declared for the
  * same reason draw declares it — it is the capability a viewer needs to author one, even
  * though nothing here dispatches. The transaction is the door; an action would be a second
- * one (invariant 14).
+ * one (docs/CONTRACTS.md §One authoritative implementation).
  *
  * `placement` carries the traits the closed `ITEM_KINDS.text` row used to hold, byte for byte:
  * a note is `tileable` (a composition leaf may BE a note) as well as `canvas-item`, and it is

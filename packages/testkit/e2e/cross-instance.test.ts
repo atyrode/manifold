@@ -221,7 +221,7 @@ test("a share projects a host container into a guest instance, and revoking it s
     expect(seen.principal.origin).toBe(instanceOrigin(guest));
     expect(seen.principal.name).toBe("Guest Visitor");
     // The host's own viewer has NO origin: absence is how "local" is spelled, and a local
-    // principal that acquired an origin field would break invariant 11's premise.
+    // principal that acquired an origin field would break docs/CONTRACTS.md §Producer-neutral behavior's premise.
     const hostSelf = canvas.self;
     if (hostSelf === null) throw new Error("the host viewer has no self");
     expect(hostSelf.origin).toBeUndefined();

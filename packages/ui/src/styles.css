@@ -46,7 +46,7 @@
 
      ONE DURATION FOR BOTH PRODUCERS, deliberately. The alternative considered — easing a
      REMOTE slot differently so it pairs with the sender's eased ghost — is exactly the
-     "second remote flavor" invariant 11 forbids: the ghost is a peer's POINTER, resampled
+     "second remote flavor" docs/CONTRACTS.md §Producer-neutral behavior forbids: the ghost is a peer's POINTER, resampled
      at the send cadence and smoothed by `GESTURE_HALF_LIFE_MS` because it arrives as
      samples, while a slot is a resolved ZONE that snaps to tile boundaries for everyone.
      Different objects, different jobs; the pairing was never the missing thing. */

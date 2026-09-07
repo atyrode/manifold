@@ -181,7 +181,7 @@ export const spaceActions = [
    * the one mutation left standing outside the dispatch ladder: it committed workspace state
    * and wrote no trace row, and it fits none of A6's three named exemptions — it is neither
    * presence, nor a continuous stream, nor a document-plane delta discharged at `doc_update`.
-   * A discrete authority-bearing mutation is an action (invariant 13), so it is one, and the
+   * A discrete authority-bearing mutation is an action (AXIOMS.md §The plane rule), so it is one, and the
    * T3 completeness gate covers it from here on rather than a reviewer having to remember it.
    *
    * Removal is NOT a placement, which is why it is a SECOND door on this plugin rather than a

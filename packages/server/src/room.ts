@@ -220,7 +220,7 @@ export class Room {
      * Whether THIS container holds a tile tree — the declared fact (`TileTreeDisciplines`),
      * resolved by the manager, which already read the row it answers for. A bit rather than
      * the lookup, because a room is ONE container: reading the discipline a second time here
-     * would be a second chance to disagree about one fact (invariant 14).
+     * would be a second chance to disagree about one fact (docs/CONTRACTS.md §One authoritative implementation).
      */
     holdsTileTree: boolean,
   ) {

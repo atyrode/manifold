@@ -156,7 +156,7 @@ export const accessManifest: PluginManifest = {
 /**
  * The two door names this plugin's own section dispatches, built from the manifest id rather
  * than spelled: a full action name is the pair `${manifest.id}.${local}`, so the chrome that
- * calls one and the `data-action` attribute that names it in the DOM (invariant 12) cannot
+ * calls one and the `data-action` attribute that names it in the DOM (AXIOMS.md §Foundation law and REGISTRY.md §Foundation) cannot
  * drift from the declaration below. `core.keys` set this precedent.
  */
 export const ACCESS_LIST_CREDENTIALS_ACTION = `${accessManifest.id}.listCredentials`;
@@ -180,7 +180,7 @@ export const ACCESS_REVOKE_ACTION = `${accessManifest.id}.revoke`;
  * prove attenuation rather than a route guard. The confinement obligation `scope: "container"`
  * places on the handler is discharged by the mechanism, on the real caller: a mint may not
  * widen its minter's container scope, and a scoped revocation reaches only that container's tokens.
- * Re-checking it here would be a second implementation of one rule (invariant 14), so it is
+ * Re-checking it here would be a second implementation of one rule (docs/CONTRACTS.md §One authoritative implementation), so it is
  * proved by test instead.
  */
 export const accessActions = [
@@ -317,7 +317,7 @@ export const accessActions = [
     /*
       BOTH directions through one door, because the concept is "the cross-instance
       relationships this instance has" and two list doors would be two answers to one question
-      (invariant 14). Neither collection carries a secret: `Share` cannot hold one by
+      (docs/CONTRACTS.md §One authoritative implementation). Neither collection carries a secret: `Share` cannot hold one by
       construction, and a `Dial` publishes the host, the node and the status — never the
       secret this instance holds to reach it.
     */
@@ -372,7 +372,7 @@ export const accessActions = [
     root writes grants until the operator rules otherwise. The mechanism closes the same hole a
     second time — `AuthService.grant` refuses any deny row matching the workspace owner at any
     node — because a door and a mechanism disagreeing about who may do this is exactly the
-    failure mode invariant 14 is about. Grading these `tokens:mint` later widens the door
+    failure mode docs/CONTRACTS.md §One authoritative implementation is about. Grading these `tokens:mint` later widens the door
     without moving it: no argument, result or refusal changes shape.
 
     `scope: "workspace"` is FORCED, not chosen, and it is `dialShare`/`openDial`'s reasoning

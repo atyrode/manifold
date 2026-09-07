@@ -42,7 +42,7 @@ import { carriedPlacement, envelopeRef, readEnvelope, type ItemEnvelope } from "
  * It lives in the ENGINE, beside the envelope it reads, because "a sidebar container row"
  * in that list is now a plugin and "the canvas pane" is still floor. Both must judge the
  * same drag by the same rules; a plugin-side copy of the assessment would be a second
- * answer to a question the protocol already answers once (AGENTS.md invariant 14).
+ * answer to a question the protocol already answers once (docs/CONTRACTS.md §One authoritative implementation).
  */
 
 /**

@@ -16,7 +16,7 @@ import { type PluginManifest } from "@manifold/protocol";
  * is DOCUMENT traffic. Everything the canvas does that ISN'T a document edit already belongs
  * to somebody else's door and is dispatched by name: `core.terminals.rename` from a portal
  * titlebar, `core.views` for a container's life, `core.space.place` for every placement. A
- * canvas action would be a second door onto one of those (invariant 14).
+ * canvas action would be a second door onto one of those (docs/CONTRACTS.md §One authoritative implementation).
  *
  * `scenes:write` is declared for the same reason `core.canvas.draw` and `core.notes` declare it: it is
  * the capability a viewer needs in order to author into a room, even though nothing here

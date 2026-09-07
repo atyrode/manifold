@@ -22,7 +22,7 @@ import type { WorkspaceSidebarState } from "./container-route.ts";
  * remembered on this device, refresh the index and LAND the viewer inside it, none of which is
  * a row's business). A row that needs neither never touches this context; a row that does
  * reads it HERE, because a second channel for "is the sidebar collapsed" would be a second
- * answer to it (invariant 14). Everything else a section does still goes through
+ * answer to it (docs/CONTRACTS.md §One authoritative implementation). Everything else a section does still goes through
  * `host.client` and `host.assembly` like any other contribution.
  *
  * It is NOT {@link HostServices}, and the difference survives: `HostServices` is what every
@@ -31,7 +31,7 @@ import type { WorkspaceSidebarState } from "./container-route.ts";
  *
  * It carries NO identity and NO assembly: `HostServices.principal` already answers "who is this
  * device" and `HostServices.assembly` already answers "what did the composition decide", and a
- * second answer to either would be a second door onto one question (invariant 14).
+ * second answer to either would be a second door onto one question (docs/CONTRACTS.md §One authoritative implementation).
  */
 
 /**

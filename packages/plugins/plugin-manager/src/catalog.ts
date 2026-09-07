@@ -10,11 +10,11 @@ import { needsAttention, permissionCount, pluginStatus } from "./status.ts";
  * where a row came from, nested by family, narrowed by a search word and a set of filter
  * chips, ordered by whichever axis the reader chose. Every function here takes the roster it
  * is asked about and returns fresh arrays, so there is no cached copy of the list to disagree
- * with the server's (invariant 14: one list, one door).
+ * with the server's (docs/CONTRACTS.md §One authoritative implementation: one list, one door).
  *
  * It lives beside the component instead of inside it because grouping, nesting, matching and
  * ordering are POLICY, and policy that can only be exercised by mounting React is policy
- * nobody tests (AGENTS.md §Conventions). Everything below is pure and total: no `undefined`
+ * nobody tests (docs/CONTRACTS.md §Testability (agent-facing)). Everything below is pure and total: no `undefined`
  * returns, no throwing on an id the roster has never heard of, and an empty roster answers
  * with empty structure rather than a special case the caller must remember.
  */

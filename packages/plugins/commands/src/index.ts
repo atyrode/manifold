@@ -15,13 +15,13 @@ import { type PluginManifest } from "@manifold/protocol";
  * So it is not an opinionated feature in the box: it is the universal door-opener, and its
  * data model is the composition itself. Add a plugin and its doors and keys appear here for
  * free; disable one and they leave, because composition dropped them upstream. A palette that
- * kept its own list of commands would be exactly the second roster invariant 14 forbids —
+ * kept its own list of commands would be exactly the second roster docs/CONTRACTS.md §One authoritative implementation forbids —
  * this one cannot have one, because it declares nothing.
  *
  * WHAT IT CONTRIBUTES is one binding and one workspace overlay, and no seat in the rail. A
  * command menu is reached by its key from wherever the viewer is standing — including the
  * workspace root, where no container is mounted — which is what the workspace overlay channel
- * is for. A rail row would be a second door onto one surface (invariant 14) and would need a
+ * is for. A rail row would be a second door onto one surface (docs/CONTRACTS.md §One authoritative implementation) and would need a
  * mark the engine's closed control vocabulary has no neutral verb for; the key table lists
  * this plugin's row like every other, which is where a reader learns the keystroke.
  *

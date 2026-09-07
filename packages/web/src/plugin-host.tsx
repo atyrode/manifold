@@ -200,7 +200,7 @@ export interface WebPanel {
  *
  * It EXTENDS the row `host.assembly` publishes rather than restating those fields: the rows a
  * plugin reads and the rows this file resolves components for are one registry seen twice
- * (invariant 14), and only the extra member — who draws it — is the browser's own.
+ * (docs/CONTRACTS.md §One authoritative implementation), and only the extra member — who draws it — is the browser's own.
  */
 export interface WebSection extends ComposedSection {
   /** Null when the plugin declared the section and registered no component. */
@@ -236,7 +236,7 @@ export interface WebTerminals {
  * Four of the registries below are typed by `@manifold/plugin` rather than by this file
  * ({@link RegisteredElement}, {@link RegisteredTool}, {@link RegisteredRenderer}): they are
  * exactly what the projection registry publishes to plugin code, and a second shape for the
- * same row would be a second answer to "what did the composition register" (invariant 14).
+ * same row would be a second answer to "what did the composition register" (docs/CONTRACTS.md §One authoritative implementation).
  */
 export interface BrowserAssembly {
   readonly roster: PluginRoster;
@@ -1118,7 +1118,7 @@ function typingInto(target: EventTarget | null): boolean {
  * behavior: WHICH event produces a row's keystroke, and whether typing counts as dispatching.
  *
  * A CHORD IS A ROW NOW, and the matcher is the registry's own (`keystrokeMatches`), so "what
- * the key table prints" and "what fires" are one answer (invariant 14). `Mod+k` answers to
+ * the key table prints" and "what fires" are one answer (docs/CONTRACTS.md §One authoritative implementation). `Mod+k` answers to
  * Control on a PC and Command on a Mac, and a bare row still refuses every modifier — the
  * rule the old blanket `if (ctrlKey || metaKey || altKey) return` enforced, kept exactly, now
  * as a property of the row instead of of the listener.
@@ -1151,7 +1151,7 @@ function useBindingDispatch(bindings: readonly ComposedBinding[], host: HostServ
  * THE QUERY PARAMETER a requested address rides in. One constant, written by the navigation
  * door and read by the router, so the browser's grammar for "and open this while you are
  * there" is stated once. The VALUE is a `manifold://` reference and nothing else — the address
- * system is not forked into a second one just because a URL is carrying it (invariant 13).
+ * system is not forked into a second one just because a URL is carrying it (docs/CONTRACTS.md §Reference nodes).
  */
 export const REQUESTED_REF_PARAM = "ref";
 
@@ -1409,7 +1409,7 @@ export function HostServicesGate({
   const projection = useMemo<ProjectionRegistry>(() => {
     /*
       The section rows, INDEXED for the outlet that resolves them. Derived from the one
-      `sections` array rather than joined a second time (invariant 14), and `title` is the
+      `sections` array rather than joined a second time (docs/CONTRACTS.md §One authoritative implementation), and `title` is the
       OWNING PLUGIN's — a missing section component has no title of its own to borrow, which
       is the same rule the renderer and overlay channels above already follow.
      */
@@ -1458,7 +1458,7 @@ export function HostServicesGate({
  * Why a contribution is inert. Mirrored into `data-plugin-state` for gate assertions, and an
  * alias rather than a copy of `@manifold/plugin`'s union: the projection registry publishes
  * these three states to plugin code, and two spellings of the same closed set is exactly the
- * drift invariant 14 forbids.
+ * drift docs/CONTRACTS.md §One authoritative implementation forbids.
  */
 export type PlaceholderState = ProjectionState;
 

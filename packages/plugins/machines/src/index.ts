@@ -67,7 +67,7 @@ export const machinesManifest: PluginManifest = {
 
 /**
  * The withdrawal door's full name, built from the manifest id rather than spelled: the chrome
- * that dispatches it and the `data-action` attribute that names it in the DOM (invariant 12)
+ * that dispatches it and the `data-action` attribute that names it in the DOM (AXIOMS.md §Foundation law and REGISTRY.md §Foundation)
  * cannot drift from the declaration below. `core.keys` set this precedent.
  */
 export const MACHINES_REVOKE_ACTION = `${machinesManifest.id}.revoke`;
@@ -77,7 +77,7 @@ export const MACHINES_FORGET_ACTION = `${machinesManifest.id}.forget`;
  * The wire shapes are the protocol's, not this plugin's, and deliberately: `MachineSummary`
  * is what the SDK's `machines()` parses and what the machine channel's own vocabulary is
  * described in. A plugin re-declaring the same object under a private name would be the
- * second convention invariant 14 forbids — so the actions publish the protocol schemas and
+ * second convention docs/CONTRACTS.md §One authoritative implementation forbids — so the actions publish the protocol schemas and
  * the roster's JSON Schema is that shape, byte for byte.
  */
 export const machinesActions = [
@@ -113,7 +113,7 @@ export const machinesActions = [
       and never taken away. The mechanism was always there — `rotateMachineToken` revokes and
       re-mints — and what did not exist was the act.
 
-      ONE DOOR, ONE CONCEPT (invariant 14): revoking a machine IS revoking that machine's
+      ONE DOOR, ONE CONCEPT (docs/CONTRACTS.md §One authoritative implementation): revoking a machine IS revoking that machine's
       credential, and there is no second spelling of it. The inventory row survives, because
       withdrawing a credential and forgetting a box are different verbs and an operator needs
       to see the machine they just cut off.

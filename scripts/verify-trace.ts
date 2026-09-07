@@ -210,7 +210,7 @@ const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
     MANIFOLD_DATA_DIR: dataDir,
     MANIFOLD_SPAWN_AGENT: "0",
   },
-  // Piped, never echoed: the boot line can carry the owner key (invariant 6). The stream is
+  // Piped, never echoed: the boot line can carry the owner key (docs/CONTRACTS.md §Data and credential boundaries). The stream is
   // read for the origin and for the one-line-per-dispatch action log, which is where T5's
   // untraced name has to remain visible.
   stdout: "pipe",

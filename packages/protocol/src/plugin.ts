@@ -50,7 +50,7 @@ export const ENGINE_NAMESPACE_PREFIX = "engine.";
  * composes cleanly and reads as official to every principal and agent looking at the roster.
  * The permitted set is DERIVED from the distribution's own registration files and handed to
  * `assembleRoster` (`AssemblyEnv.distribution`), never written out a second time here — a
- * hand-kept list of "our" plugins in this package is exactly the second door invariant 14
+ * hand-kept list of "our" plugins in this package is exactly the second door docs/CONTRACTS.md §One authoritative implementation
  * forbids, and it would be the thing that goes stale the first time a plugin is added.
  */
 export const CORE_NAMESPACE_PREFIX = "core.";
@@ -881,7 +881,7 @@ export type PluginRoster = z.infer<typeof PluginRosterSchema>;
  * protocol package, beside the roster shape it reads — rather than in the plugin engine,
  * because both halves of the system and `GET /api/protocol` itself need the same
  * projection, and a second walk of the same array is a second answer to "what disciplines
- * exist" waiting to disagree (invariant 14). One derivation, one door.
+ * exist" waiting to disagree (docs/CONTRACTS.md §One authoritative implementation). One derivation, one door.
  *
  * DISABLED plugins are included, deliberately and for exactly the reason element traits
  * are: their containers are still in the index. A disable decides who RENDERS a container
@@ -971,7 +971,7 @@ export const BindingKeySchema = z.string().min(1).max(24);
 /**
  * ONE PRINCIPAL'S BINDING OVERRIDES: the keys this principal has rebound, as binding id →
  * key. Server-saved rather than device-local, because a principal is one actor across every
- * device they sit at (multiplayer-first, invariant 11) and a rebind that lived in one
+ * device they sit at (multiplayer-first, docs/CONTRACTS.md §Producer-neutral behavior) and a rebind that lived in one
  * browser's storage would be a fact no other client could read.
  *
  * An override is a DELTA, never a table: what a workspace answers to is the declared rows
@@ -1005,7 +1005,7 @@ export type SettingRef = z.infer<typeof SettingRefSchema>;
 
 /**
  * ONE PRINCIPAL'S SETTING VALUES: the preferences they have expressed an opinion about, as
- * setting ref → value. Server-saved for the reason a rebinding is (invariant 11): a principal
+ * setting ref → value. Server-saved for the reason a rebinding is (docs/CONTRACTS.md §Producer-neutral behavior): a principal
  * is one actor across every device they sit at, so a preference held in one browser's storage
  * would be a fact none of their other clients could read.
  *

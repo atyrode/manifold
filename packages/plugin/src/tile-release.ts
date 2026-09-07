@@ -15,7 +15,7 @@ import type { TileAim } from "./tile-geometry.ts";
  * the workspace shell's tree, or the projection of a panel's row arrangement — and the
  * tree that release produces cannot depend on which of those it was. Three copies of
  * "insert at the aim, then prune the seat it came from" is exactly the second door
- * invariant 14 forbids, and it is what this module retired.
+ * docs/CONTRACTS.md §One authoritative implementation forbids, and it is what this module retired.
  *
  * Pure and total over its inputs: no DOM, no document, no notion of a producer. A refusal
  * is `null`, and the CALLER names it — the workspace's editor answers with its own rule

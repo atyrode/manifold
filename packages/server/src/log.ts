@@ -23,8 +23,8 @@ export interface Logger {
  * It was written for the JSONL stream and is now also what the trace ledger writes an
  * argument object through (axiom A6, ADR 0018 §5): both are durable records of what a
  * principal did, and "which fields may never leave the process" is one question with one
- * answer (invariant 14). `SECRET_FIELD` is AGENTS invariant 6 — no owner key, no token, no
- * bearer secret, anywhere — and `TERMINAL_FIELD` is invariant 5: terminal bytes are never
+ * answer (docs/CONTRACTS.md §One authoritative implementation). `SECRET_FIELD` is docs/CONTRACTS.md §Data and credential boundaries — no owner key, no token, no
+ * bearer secret, anywhere — and `TERMINAL_FIELD` is docs/CONTRACTS.md §Data and credential boundaries: terminal bytes are never
  * persisted, so an argument carrying them cannot be persisted either.
  *
  * Matching by NAME rather than by declaration is deliberate. A per-action `redact` list would

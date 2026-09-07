@@ -213,7 +213,7 @@ describe("machine hello reconciliation", () => {
   });
 
   test("current PROTOCOL_VERSION is always machine-channel accepted", () => {
-    // Guards the AGENTS.md invariant: whoever bumps PROTOCOL_VERSION must decide
+    // Guards docs/CONTRACTS.md §Protocol and compatibility: whoever bumps PROTOCOL_VERSION must decide
     // whether the agent wire changed (reset the set) or not (extend it) — this
     // fails the build until that decision is made explicitly.
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(PROTOCOL_VERSION)).toBe(true);
@@ -223,7 +223,7 @@ describe("machine hello reconciliation", () => {
     // v16 RESET the machine wire, so no PRE-reset hello is welcome any more. v17 rode along
     // additively — the event plane is session-side and left `AgentMessage` and
     // `ServerToAgentMessage` byte-identical — so the compat set admits both and this deploy
-    // owes no fleet restart (invariant 10, first clause). What the reset means is that
+    // owes no fleet restart (docs/CONTRACTS.md §Protocol and compatibility, unchanged-wire rule). What the reset means is that
     // everything below v16 is refused, and that is what this asserts rather than the set's
     // exact size, which every additive version would otherwise have to come and edit.
     expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(15)).toBe(false);

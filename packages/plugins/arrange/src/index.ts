@@ -46,8 +46,8 @@ import { type PluginManifest } from "@manifold/protocol";
  * so where it lands decides what it means and which door writes it: the workspace's own tree
  * through `core.space.setLayout`, a composition's tree through `core.space.place`, and a
  * scoped panel's own arrangement through the layout door that already stores it. There is no
- * second drag flavour anywhere in that sentence, which is the invariant it exists to keep
- * (11 and 14). The palette is also where structure GOES BACK (issue #148): while anything is
+ * second drag flavour anywhere in that sentence, as required by docs/CONTRACTS.md §Producer-neutral behavior
+ * and §One authoritative implementation. The palette is also where structure GOES BACK (issue #148): while anything is
  * carried it is a drop target — a fresh item dropped on it is a cancel, a placed structure
  * dropped on it is removed — and Escape ends a grip carry with the tree untouched.
  *

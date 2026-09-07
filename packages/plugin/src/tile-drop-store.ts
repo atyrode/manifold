@@ -65,7 +65,7 @@ export interface TileDropStore {
    * `AIM_TTL_MS` is the bound, and it is the same one for local and remote input alike —
    * it is already how long a PEER's aim survives with no frame behind it
    * (`expireGestures`), and a producer that believed its own pointer longer than its
-   * viewers believe the aim built from it would be exactly the divergence invariant 11
+   * viewers believe the aim built from it would be exactly the divergence docs/CONTRACTS.md §Producer-neutral behavior
    * forbids: the dragger keeps a preview, and the FLIP transforms that ride it, while
    * every collaborator's has already cleared.
    *

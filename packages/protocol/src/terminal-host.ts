@@ -17,7 +17,7 @@ import {
  * The channel is newline-delimited JSON over a private Unix-domain socket named by
  * `MANIFOLD_TERMINAL_HOST_SOCKET`; one frame per line, no line above
  * `MAX_TERMINAL_HOST_FRAME_BYTES`. It is deliberately NOT a second WebSocket client
- * (AGENTS.md invariant 3) and carries no persistence: the host keeps terminal state in memory
+ * (docs/CONTRACTS.md §Protocol and compatibility) and carries no persistence: the host keeps terminal state in memory
  * exactly as the single-process agent did.
  *
  * The terminal frames are the MACHINE frames, reused member for member: a `create` the hub

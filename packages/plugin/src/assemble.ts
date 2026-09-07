@@ -217,7 +217,7 @@ export interface AssemblyEnv {
    * The ids the SHIPPED DISTRIBUTION registers — the permitted inhabitants of the `core.`
    * namespace, derived by the composition root from its own registration file
    * (`SHIPPED_PLUGIN_IDS` in `packages/server/src/assembly.ts`) and never written out as a
-   * second list anybody could let drift (invariant 14).
+   * second list anybody could let drift (docs/CONTRACTS.md §One authoritative implementation).
    *
    * ABSENT MEANS UNKNOWN, not empty: a caller that declares no distribution is not the shipped
    * distribution — a unit test assembling two manifests, or a browser rebuilding a roster the
@@ -470,7 +470,7 @@ function topologicalOrder(
  * across plugins by accident. The claim loop below computes it, and so does anything that has
  * to NAME a panel it did not read out of an assembly: the two `assembly.ts` files build the
  * default workspace tree's leaves this way. Exported so that stays one rule rather than a
- * string template copied into the files that happen to need it (invariant 14).
+ * string template copied into the files that happen to need it (docs/CONTRACTS.md §One authoritative implementation).
  */
 export function panelRefId(pluginId: string, panelId: string): string {
   return `${pluginId}.${panelId}`;

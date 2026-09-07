@@ -22,7 +22,7 @@ import { SpotlightChip, useSpotlight } from "./spotlight.tsx";
  * are painted BY the ref, in the ref's own coordinate space, from the plane mechanism
  * in `@manifold/plugin/hooks` — a peer's pointer position means nothing until something
  * projects it through a viewport transform, and only the renderer holds that transform. A view
- * rendering remote intent as part of its own ref is AGENTS.md invariant 11 working, not a
+ * rendering remote intent as part of its own ref is docs/CONTRACTS.md §Producer-neutral behavior working, not a
  * boundary leak; what would be a leak is this package reaching into React Flow.
  */
 

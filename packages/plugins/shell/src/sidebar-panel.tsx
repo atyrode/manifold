@@ -107,7 +107,7 @@ type CollapsedSections = Readonly<Record<string, boolean>>;
  * `resolveTileAim` says which node a pointer aims at and what releasing there would mean, and
  * `releasedSectionArrangement` says which arrangement that release produces. Nothing about
  * seam bands, zone hysteresis, wedging between neighbours or trading two rows is written
- * here; this file measures the boxes and names the door (AGENTS.md invariants 11 and 14).
+ * here; this file measures the boxes and names the door (docs/CONTRACTS.md §Producer-neutral behavior and docs/CONTRACTS.md §One authoritative implementation).
  *
  * ONE resolution path serves both transports. A row grab is a pointer gesture on the grip that
  * carries a SEAT out of the tree; a palette drop is an HTML5 drag that carries new STRUCTURE
@@ -564,7 +564,7 @@ function StructureGrip({
  * for the same reason; a row does not merely prefer it, it has no alternative.
  *
  * `data-action` names the door a release opens, so the DOM says which authority this
- * affordance reaches for (AGENTS.md invariant 12): a released arrangement commits through
+ * affordance reaches for (AXIOMS.md §Foundation law and REGISTRY.md §Foundation): a released arrangement commits through
  * `core.space.setLayout`, the same door the workspace's own panel grip names.
  */
 function RowGrip({
@@ -776,7 +776,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
    *
    * Read off presence rather than handed down as a prop, exactly as the mode itself always
    * was: the scope is published, so the panel decides what it offers by comparing a ref it
-   * owns against a value every collaborator can also read (invariant 11). Nothing here holds
+   * owns against a value every collaborator can also read (docs/CONTRACTS.md §Producer-neutral behavior). Nothing here holds
    * a second copy of "am I the live arrangement".
    */
   const { arranging, arrangeScope } = useVantage();
@@ -797,7 +797,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
    *
    * `arrangement` is the WIRE FORM — the exact node tree the layout tile stores — and the
    * stack below renders it without knowing whether it came from this pointer, from the palette
-   * or from the server (AGENTS.md invariant 11). That is what makes the live preview and the
+   * or from the server (docs/CONTRACTS.md §Producer-neutral behavior). That is what makes the live preview and the
    * committed arrangement one derivation instead of a drag path beside a render path.
    *
    * A REF BESIDE THE STATE, for the reason the workspace's layout drag keeps one: the state is
@@ -894,7 +894,7 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
   /**
    * ONE ACTION PER GESTURE. The drag repaints per frame off `hold.arrangement` and writes
    * nothing; the release compares what is in hand against what is stored and commits once,
-   * through the workspace layout door — the plane rule's commit point (AGENTS.md invariant 13).
+   * through the workspace layout door — the plane rule's commit point (AXIOMS.md §The plane rule).
    */
   const commitIfMoved = (arrangement: readonly SectionNode[]): void => {
     if (!sameArrangement(arrangement, storedNodes)) commitSectionArrangement(arrangement);

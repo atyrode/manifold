@@ -280,7 +280,7 @@ export function WorkspaceHost({
 
   /**
    * ARRANGE MODE, read off the vantage store the F8 binding writes — presence, not this
-   * component's state (AXIOMS.md A2, AGENTS.md invariant 11). The only thing the frame still
+   * component's state (AXIOMS.md A2, docs/CONTRACTS.md §Producer-neutral behavior). The only thing the frame still
    * does with it is blank its own tile content hosts (`.is-arranging`, `shell.css`) so
    * `core.arrange`'s overlay is the only thing left answering the pointer while armed; every
    * grip, every gesture and every commit that mode once ran HERE now lives in that plugin,
@@ -305,7 +305,7 @@ export function WorkspaceHost({
    *
    * Read off the DOM's own drag lifecycle rather than a store: an HTML5 drag is a browser
    * mode, `dragend` fires on the source however it finished, and there is no plane this
-   * belongs on — it dies with the gesture and nobody else can act on it (invariant 13's
+   * belongs on — it dies with the gesture and nobody else can act on it (AXIOMS.md §The plane rule's
    * device-local clause is about persistence; this persists nowhere at all).
    */
   const [carrying, setCarrying] = useState(false);
@@ -717,7 +717,7 @@ export function WorkspaceHost({
   /**
    * THIS device's own principal, normalized into the wire shape the cross-container presence poll
    * will report a tick later, so every renderer downstream consumes one producer-agnostic row
-   * set and never learns which principal is local (AGENTS.md invariant 11). It is engine plane
+   * set and never learns which principal is local (docs/CONTRACTS.md §Producer-neutral behavior). It is engine plane
    * mechanism rather than `core.presence`'s, and deliberately: the projection is neutral
    * arithmetic over wire payloads, and routing it through a plugin registration would put a
    * second producer of "where is this principal" beside the server's.

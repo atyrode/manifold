@@ -80,7 +80,7 @@ import {
  * the dispatch answers `plugin_disabled` — which is exactly the sentence the section prints.
  *
  * ARMED STATE IS THE VANTAGE, not a flag beside it. `vantage.tool === "inspect"` IS the mode, so
- * there is no second copy of "is this device inspecting" to drift (invariant 14), and the mode
+ * there is no second copy of "is this device inspecting" to drift (docs/CONTRACTS.md §One authoritative implementation), and the mode
  * survives this component re-rendering because the store outlives it.
  */
 
@@ -318,7 +318,7 @@ function IdentityBlock({
           <>
             {/*
               THE OWNER IS AN ADDRESS, so it is navigable like every other address on this card.
-              A plugin's `manifold://plugin/<id>` is one of the seven forms (invariant 13) and
+              A plugin's `manifold://plugin/<id>` is one of the seven forms (docs/CONTRACTS.md §Reference nodes) and
               the host's own navigation is the one door onto "put the viewer there" — the
               inspector neither knows nor cares what the plugin manager does when it arrives.
             */}

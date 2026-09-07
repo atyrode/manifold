@@ -10,7 +10,7 @@
  * ONE list, not one per half. The name is what a reader greps for, and an operator reading a
  * server log and an agent log is reading one vocabulary; two lists would be two doors onto the
  * concept "an evt name" and would let the same word mean two things in two halves with nothing
- * to notice it (invariant 14). The cost is admitted: a server file can spell an agent-only
+ * to notice it (docs/CONTRACTS.md §One authoritative implementation). The cost is admitted: a server file can spell an agent-only
  * name and typecheck. That is a question about which half OWNS a name, and the answer to it is
  * the grouping below plus review — not a second type.
  *
@@ -43,7 +43,7 @@ export const LOG_EVENTS = [
 
   // Server: the unpacked directory (ADR 0025 §4, #257) — files written through the authoring
   // door, a rebuild that could not become a row (a build error, an assembly refusal), and the
-  // workspace's developer-mode switch moving. Never a file's contents (invariant 6).
+  // workspace's developer-mode switch moving. Never a file's contents (docs/CONTRACTS.md §Data and credential boundaries).
   "plugin_authored",
   "plugin_authored_build_failed",
   "developer_mode_changed",

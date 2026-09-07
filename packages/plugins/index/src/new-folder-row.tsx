@@ -20,7 +20,7 @@ import { useState, type ReactElement } from "react";
  *
  * The new row does not appear from this call and must not: the folder's own creation event puts
  * it in the index section, which subscribes to the index's node. Chrome that painted its own
- * optimistic row would be a second answer to what exists (invariant 11).
+ * optimistic row would be a second answer to what exists (docs/CONTRACTS.md §Producer-neutral behavior).
  */
 export function NewFolderRow(): ReactElement {
   const { createFolder, setSidebarOpen, sidebarOpen } = useWorkspaceShell();

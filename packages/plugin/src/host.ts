@@ -296,7 +296,7 @@ export interface TileGeometryHandle {
  * reader needs beside them.
  *
  * It EXTENDS the compose-time row rather than restating it, because there is exactly one
- * section registry and this is its published view (invariant 14). A reader hunting for a
+ * section registry and this is its published view (docs/CONTRACTS.md §One authoritative implementation). A reader hunting for a
  * second list of sections will not find one: `plain` and `disclosure` rows inhabit this array
  * together, in the one declared order, and only the component filling a row reads
  * `presentation`.
@@ -483,7 +483,7 @@ export interface HostServices {
    * publishes the reference for whoever answers it.
    *
    * PARSED, not a string, so nobody re-implements the grammar; NEUTRAL, because it is a
-   * reference and references name everything the same way (invariant 13); and CONSUMED ONCE —
+   * reference and references name everything the same way (docs/CONTRACTS.md §Reference nodes); and CONSUMED ONCE —
    * the shell strips it from the address bar as it publishes it, so a reader who closes what
    * opened does not have it reopen on the next render, and following the same link again is a
    * fresh request rather than a no-op.

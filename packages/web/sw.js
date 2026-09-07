@@ -14,7 +14,7 @@
  * know, cache, or hard-bake an API origin. It answers for the origin that served it, which is
  * the shell, and is deliberately blind to wherever the data lives.
  *
- * WHY HAND-ROLLED. Workbox is the obvious library and was rejected on the invariant-8 test
+ * WHY HAND-ROLLED. Workbox is the obvious library and was rejected on the docs/CONTRACTS.md §Dependency decisions test
  * ("boring, small, pinned"): it would add a build-time dependency and a generated worker to
  * save roughly the eighty lines below, and what it buys — runtime routing strategies, precache
  * revisioning, background sync — is either already answered by vite's content-hashed filenames
@@ -40,7 +40,7 @@
  *   4. Protocol skew is refused, not degraded. Revalidating the document is not enough on its
  *      own — a tab open across a deploy holds an old bundle — so `lens.tsx` compares this
  *      build's `PROTOCOL_VERSION` against the instance's `/healthz` and REFUSES with an update
- *      path when they disagree (`AGENTS.md` invariant 10, whose worked example is `v0.5.0`).
+ *      path when they disagree (docs/CONTRACTS.md §Protocol and compatibility, whose worked example is `v0.5.0`).
  *
  * The `SHELL` line below is rewritten by `packages/web/vite.config.ts` at build time — this file
  * is shipped by the ONE existing vite build, not by a second build target. The literal that

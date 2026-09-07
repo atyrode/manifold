@@ -8,7 +8,7 @@ export const PROTOCOL_VERSION = 25;
  * adoption semantics are identical to the current one. Session (browser)
  * joins stay strictly current — the server always serves the matching SPA.
  *
- * Discipline (AGENTS.md invariant 10): a bump that leaves the agent wire
+ * Discipline (docs/CONTRACTS.md §Protocol and compatibility): a bump that leaves the agent wire
  * identical ADDS the new version here. A bump whose agent-wire change is
  * strictly additive-optional (every pre-bump frame still parses, and the
  * server's default for the absent field reproduces pre-bump semantics) also
@@ -125,7 +125,7 @@ export const PROTOCOL_VERSION = 25;
  * `AgentMessage`/`ServerToAgentMessage`, neither of which gained, lost or
  * renamed a field — `machine.ts` imports exactly one constant from the rest of
  * the protocol (`MAX_SESSION_BASE64_CHARS`, unchanged), and an agent never sees
- * a session frame or a manifest. So invariant 10's first clause applies
+ * a session frame or a manifest. So docs/CONTRACTS.md §Protocol and compatibility's unchanged-wire rule applies
  * verbatim: a bump that leaves the agent wire identical ADDS the new version
  * rather than resetting the set. The set is `{16, 17}` and NO fleet restart is
  * owed; an enrolled v16 agent keeps its terminals across this server deploy,
@@ -145,7 +145,7 @@ export const PROTOCOL_VERSION = 25;
  * (`MACHINE_PING_INTERVAL_MS` -> `DIAL_PING_INTERVAL_MS`,
  * `AGENT_LIVENESS_TIMEOUT_MS` -> `DIAL_LIVENESS_TIMEOUT_MS`) without changing a
  * cadence, a deadline or a close code — two identifiers, zero bytes. So
- * invariant 10's first clause applies verbatim: the set is `{16, 17, 18}` and
+ * docs/CONTRACTS.md §Protocol and compatibility's unchanged-wire rule applies verbatim: the set is `{16, 17, 18}` and
  * NO fleet restart is owed.
  * v18 -> v19: SESSION-CHANNEL LIVENESS (issue #55), and the one bump whose session
  * change REORIENTS a frame pair rather than adding one. The liveness pair on
@@ -157,8 +157,8 @@ export const PROTOCOL_VERSION = 25;
  * addition: a stale tab is refused at the join with 4409 instead of churning.
  *
  * The machine wire is BYTE-IDENTICAL. `AgentMessage` and `ServerToAgentMessage` gained,
- * lost and renamed nothing, and an agent never sees a session frame. So invariant 10's
- * first clause applies verbatim: the set is `{16, 17, 18, 19}` and NO fleet restart is
+ * lost and renamed nothing, and an agent never sees a session frame. So docs/CONTRACTS.md §Protocol and compatibility's
+ * unchanged-wire rule applies verbatim: the set is `{16, 17, 18, 19}` and NO fleet restart is
  * owed.
  * v19 -> v20: SESSION EXPIRY AND THE CREDENTIAL LIST (ADR 0019 §2-§3), additive-optional
  * on both halves it touches. `TokenGrant` gained an OPTIONAL `expiresAt` and
@@ -173,7 +173,7 @@ export const PROTOCOL_VERSION = 25;
  * The machine wire is BYTE-IDENTICAL. `AgentMessage` and `ServerToAgentMessage` gained,
  * lost and renamed nothing, and machine tokens are the deliberate expiry EXEMPTION — an
  * agent's credential is long-lived by design, so nothing an enrolled spoke holds changes
- * meaning across this deploy. So invariant 10's first clause applies verbatim: the set is
+ * meaning across this deploy. So docs/CONTRACTS.md §Protocol and compatibility's unchanged-wire rule applies verbatim: the set is
  * `{16, 17, 18, 19, 20}` and NO fleet restart is owed.
  * v20 -> v21: THE DISCIPLINE ROSTER OPENS (#110, building the ruling ratified on #86).
  * `ContainerDisciplineSchema` stops enumerating `canvas` and `composition` and becomes a
@@ -205,12 +205,12 @@ export const PROTOCOL_VERSION = 25;
  *
  * The machine wire is BYTE-IDENTICAL under both halves of the bump. `AgentMessage` and
  * `ServerToAgentMessage` gained, lost and renamed nothing; `machine.ts` mentions no
- * container, no placement, no manifest, no gesture frame and no carry. So invariant 10's
- * first clause applies verbatim: the set is `{16, 17, 18, 19, 20, 21}` and NO fleet
+ * container, no placement, no manifest, no gesture frame and no carry. So docs/CONTRACTS.md §Protocol and compatibility's
+ * unchanged-wire rule applies verbatim: the set is `{16, 17, 18, 19, 20, 21}` and NO fleet
  * restart is owed — an enrolled v16 spoke keeps its terminals across this deploy.
  *
  * v21 -> v22: A TERMINAL IS BORN RUNNING A PROGRAM (issue #192), and the one bump so far
- * whose ADDITION touches the agent wire — the second clause of invariant 10, applied for the
+ * whose ADDITION touches the agent wire — the additive-optional rule of docs/CONTRACTS.md §Protocol and compatibility, applied for the
  * first time. `terminal_open` gained an OPTIONAL `program { argv }` and an OPTIONAL `env`
  * allowlist (upper-case POSIX keys, never the `MANIFOLD_` prefix, merged UNDER the four fixed
  * keys); `create` gained the same OPTIONAL `program`, and its `env` now carries the opener's
@@ -225,7 +225,7 @@ export const PROTOCOL_VERSION = 25;
  * malformed frame — so the SERVER never sends one to such an agent: the broker compares the
  * hello's protocol against `TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION` and refuses the OPENER
  * (`unsupported`) instead. An enrolled pre-v22 spoke therefore observes a v22 hub exactly as
- * it observed a v21 one, which is the second clause's test verbatim — every pre-bump frame
+ * it observed a v21 one, which is the additive-optional rule's test verbatim — every pre-bump frame
  * still parses, and the default for the absent field is the pre-bump behaviour — so 22 is
  * ADDED, the set is `{16, 17, 18, 19, 20, 21, 22}`, and NO fleet restart is owed. What a
  * pre-v22 spoke cannot do is run a program; that is a named refusal, not a lockout.
@@ -288,12 +288,11 @@ export const TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION = 22;
  * instance channel at the machine set would mean an agent-wire reset silently
  * locking out federated instances that never spoke that wire, and the reverse:
  * an instance-frame change forcing a fleet of PTY agents to restart. Two wires,
- * two sets, one discipline (invariant 10, applied per wire).
+ * two sets, one discipline (docs/CONTRACTS.md §Protocol and compatibility, applied per wire).
  *
  * v18: the version that introduces the wire.
  * v19: session-channel only — the liveness pair reoriented on `/ws/session`. The
- * instance wire is byte-identical (a guest never sees a session frame), so invariant
- * 10's first clause ADDS the version rather than resetting the set, and a v18 guest
+ * instance wire is byte-identical (a guest never sees a session frame), so docs/CONTRACTS.md §Protocol and compatibility's unchanged-wire rule ADDS the version rather than resetting the set, and a v18 guest
  * instance keeps its dial across this deploy.
  * v20: session/HTTP only — credential expiry and the credential list (ADR 0019). A guest
  * instance holds a SHARE secret, which is not a token row and carries no expiry, so the
@@ -338,7 +337,7 @@ export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
  * lesson wave 3 taught: these were `MACHINE_PING_INTERVAL_MS` and
  * `AGENT_LIVENESS_TIMEOUT_MS` while the machine channel was the only dial, and
  * the second dial is what exposed the name as an accident. One scheme, one pair
- * of constants, every dial (invariant 14).
+ * of constants, every dial (docs/CONTRACTS.md §One authoritative implementation).
  */
 export const DIAL_PING_INTERVAL_MS = 30_000;
 export const DIAL_LIVENESS_TIMEOUT_MS = DIAL_PING_INTERVAL_MS * 2 + 15_000;

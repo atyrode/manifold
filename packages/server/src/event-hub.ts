@@ -37,7 +37,7 @@ import type { Logger } from "./log.ts";
  * THE AUTHORITY SEAM, as this mechanism needs it: one question, spelled the way `/api/resolve`
  * spells it. `AuthService` satisfies it structurally, which is what keeps "may I subscribe to
  * this node" and "may I resolve this node" from becoming two answers to one question
- * (invariant 14).
+ * (docs/CONTRACTS.md §One authoritative implementation).
  */
 export interface EventAuthority {
   allows(context: AuthContext, cap: "containers:read", containerId?: string): boolean;

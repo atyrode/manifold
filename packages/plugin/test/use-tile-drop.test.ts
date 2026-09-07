@@ -457,7 +457,7 @@ describe("the drop signal", () => {
       ONE bound for both producers: `AIM_TTL_MS` is already how long a viewer believes a
       peer's aim with no frame behind it, and a dragger who believed their own pointer
       longer would keep a preview their collaborators had already dropped — precisely the
-      divergence invariant 11 forbids.
+      divergence docs/CONTRACTS.md §Producer-neutral behavior forbids.
 
       The stamp is kept OUT of the signal on purpose, and the middle of this test is the
       case that proves it has to be: a stationary pointer under a live drag republishes the

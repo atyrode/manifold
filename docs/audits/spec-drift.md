@@ -7,8 +7,8 @@ Label: `audit`. Issue title prefix: `[audit:spec-drift]`. Run protocol: [`README
 The living spec — `AXIOMS.md`, `REGISTRY.md`, `docs/CONTRACTS.md`, `docs/PLUGINS.md` — is the
 normative form of every ratified decision, and `bun run verify:axioms` makes part of it
 falsifiable. Only part. The S/R/T rows in `REGISTRY.md` §Gates cover registries the gate can read
-mechanically; a prose sentence in `CONTRACTS.md` about what an endpoint returns, an `AGENTS.md`
-invariant naming a file that has since moved, a `PLUGINS.md` code sample importing a symbol the
+mechanically; a prose sentence in `CONTRACTS.md` about what an endpoint returns, an engineering
+constraint naming a file that has since moved, a `PLUGINS.md` code sample importing a symbol the
 engine renamed — none of those fail a gate when the code changes under them. This brief is the
 reader the gate is not: it finds sentences in the spec that the tree at `main` no longer makes
 true, and sentences the tree makes true that the spec does not say.
@@ -16,9 +16,12 @@ true, and sentences the tree makes true that the spec does not say.
 ## Scope
 
 In: `AXIOMS.md`, `REGISTRY.md`, `docs/CONTRACTS.md`, `docs/PLUGINS.md`, `docs/SELF-HOST.md`,
-`docs/ENROLL.md`, the process and invariant sections of `AGENTS.md`, and every file under
-`packages/`, `scripts/`, `.github/workflows/` those documents name. Out: `docs/PLAN.md` (vision,
-not contract), `docs/decisions/*` (reasoning, covered by `decisions-compaction.md`), `CHANGELOG.md`,
+`docs/ENROLL.md`, the scoped operating guidance and routes in `AGENTS.md`, the process owners it
+routes to (`docs/audits/README.md`, `changes/README.md`, `infra/previews/README.md`), and every file
+under `packages/`, `scripts/`, `.github/workflows/` those documents name. Architecture and package
+ownership come from `AXIOMS.md`, `REGISTRY.md` and `docs/CONTRACTS.md` §Topology, not a second
+inventory in `AGENTS.md`. Out: `docs/PLAN.md` (vision, not contract), `docs/decisions/*` (reasoning,
+covered by `decisions-compaction.md`), `CHANGELOG.md`,
 and prose-vs-prose disagreements between two docs (covered by `docs-consistency.md`). Anything the
 gate already asserts is out: if `verify:axioms` is green on the audited revision, S1–S17 are not
 findings here even when the prose around them reads oddly.
@@ -45,18 +48,31 @@ findings here even when the prose around them reads oddly.
    read somewhere, and every variable read must be documented or deliberately internal.
 5. **Persistence.** `docs/CONTRACTS.md` §Persistence's schema block against the `CREATE TABLE`
    statements and migrations in `packages/server/src`. Column added, column not documented, or
-   documented as persisted but never written: finding. Invariant 5 (never persist presence, cursor
-   traffic, terminal bytes) is checked here by reading every `INSERT`.
+   documented as persisted but never written: finding. Check the prohibition on persisting
+   presence, cursor traffic and terminal bytes in
+   [`docs/CONTRACTS.md` §Data and credential boundaries](../CONTRACTS.md#data-and-credential-boundaries)
+   and `AXIOMS.md` A6 here by reading every `INSERT`.
 6. **Plugin authoring guide.** Every import path and identifier in a `docs/PLUGINS.md` code block
    must resolve: `@manifold/plugin`, `@manifold/plugin/hooks`, `@manifold/plugin/ui` exports in
    `packages/plugin/src/index.ts`, `hooks.ts`, `ui/`. Run each sample's imports through
    `bun run check` mentally or by pasting into a scratch file inside a plugin package (delete it
    after). §8 "What the gate checks" must list exactly the checks in `REGISTRY.md` §Gates that a
    plugin can fail.
-7. **AGENTS.md invariants and `AXIOMS.md` prose.** Every file, symbol, script name and check
-   number named in `AGENTS.md` §Invariants, §Map and §Commands, and in `AXIOMS.md` §Foundation law
-   and §Change control, must exist at that path with that name. `bun run <script>` claims are
-   checked against `package.json` `scripts`.
+7. **Engineering law, architecture and operating routes.** Read the full
+   [`docs/CONTRACTS.md` §Engineering constraints](../CONTRACTS.md#engineering-constraints),
+   including its clean-room, single-implementation, protocol/compatibility, producer-neutral,
+   data/credential, dependency, roster and automation-credential rules, and
+   [§Testability](../CONTRACTS.md#testability-agent-facing). Read `AXIOMS.md`'s axioms,
+   [plane rule](../../AXIOMS.md#the-plane-rule),
+   [Foundation law](../../AXIOMS.md#foundation-law),
+   [Lexicon law](../../AXIOMS.md#lexicon-law) and
+   [Change control](../../AXIOMS.md#change-control) against their actual implementation owners.
+   Follow their integration, registry and plugin-guide references; do not require these laws to
+   be restated in `AGENTS.md`. Every file, symbol, script name and check number those sections
+   name must exist at that path with that name. Check package roles against `CONTRACTS.md`
+   §Topology and `REGISTRY.md`'s foundation/plugin inventories. Check the remaining `AGENTS.md`
+   commands, boundaries and task-specific routes, and the process claims in their scoped owners,
+   against the tree; `bun run <script>` claims are checked against `package.json` `scripts`.
 8. **REGISTRY.md prose, not rows.** The gate reads the tables; read the paragraphs. §Decisions
    awaiting ratification's "Nothing is waiting as of <date>" must agree with the `Status:` lines
    in `docs/decisions/`; the per-axiom round table must name only checks that exist in the table

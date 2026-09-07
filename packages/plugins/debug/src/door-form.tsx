@@ -21,7 +21,7 @@ import "./door-form.css";
  * actually opens a door. Everything rjsf is confined behind this module's two exports.
  *
  * The submit control is ours rather than rjsf's default so it can carry
- * `data-action=<door>` — the DOM names the door it opens (invariant 12) — and so the
+ * `data-action=<door>` — the DOM names the door it opens (AXIOMS.md §Foundation law and REGISTRY.md §Foundation) — and so the
  * dispatch-in-flight state has one owner.
  */
 

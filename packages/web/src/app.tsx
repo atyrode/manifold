@@ -36,7 +36,7 @@ type Route =
   PROTOCOL's own claim pattern (`ROUTE_SEGMENT_PATTERN`, what a manifest's `contributes.routes`
   may declare), rather than spelling the character class a second time here. Two spellings of
   one rule is how a path a manifest may legally claim becomes a path the browser answers 404
-  for (invariant 14).
+  for (docs/CONTRACTS.md §One authoritative implementation).
  */
 const PLUGIN_ROUTE = /^\/([^/]+)\/(.+)$/;
 
