@@ -2218,6 +2218,51 @@ With right-click paste off, the normal context menu is untouched; when on, Shift
 mouse-reporting applications retain their existing behavior. Disabling a preference also prevents
 its pending clipboard completion from clearing a selection or pasting into the terminal.
 
+### Native terminal clipboard
+
+`core.terminals` bridges explicit browser paste to applications that enable DEC private mode
+**5522**. The application enables it with `ESC[?5522h` and disables it with `ESC[?5522l`;
+there is no capability-query prerequisite. The agent mirror and browser use the same private-mode
+parser. Every authoritative snapshot appends its current set/reset sequence at the snapshot's
+sequence watermark, so navigating away and returning or reconnecting restores the application mode
+without restarting the process. A legacy snapshot with no suffix leaves enhanced paste disabled.
+This extends the existing terminal byte stream, not the session/machine frame schemas.
+
+A trusted native paste event captures the MIME representations the browser provides. In enhanced
+mode, **Ctrl+Shift+V** uses the browser Clipboard API to retain image formats that Chromium's
+plain-text paste command otherwise discards; native paste events such as **Cmd+V**, and the
+opted-in right-click gesture, use the same exchange. Ordinary applications retain xterm's
+bracketed/plain text paste. Clipboard access never begins from terminal output or a timer.
+
+The explicit paste creates one 15-second, one-use grant bound to that view and its current PTY
+write authority. A Kitty-dot MIME listing is sent through the SDK's existing terminal-input path.
+The application's OSC 5522 read request must echo that grant and a non-empty application name;
+both payload and `mime=` request forms are accepted. Only captured bytes are returned, in
+4096-byte decoded chunks, bounded to **16 MiB and 32 MIME formats**. Another viewer ignores a
+grant it did not issue, rather than racing to refuse the initiating viewer. Grants and captured
+bytes are discarded on completion, expiry, blur, deactivation, authority loss, snapshot replacement,
+disconnect and disposal. Unsupported locations/formats, invalid requests and denied browser
+permissions do not become terminal text or execute commands.
+
+OMP **v18.1.12/v18.1.13** is the compatibility reference (upstream
+`4f429faef639d182633d1cb3f6a15254adcf25c1`; the clipboard consumer is unchanged at
+`a1b254047d12e143b7c6011536e918c6c35c5906`). It chooses
+**PNG > JPEG > WebP > GIF > text/plain**. Text goes to OMP's focused input; an image becomes
+a pending main-editor attachment, while OMP refuses image paste into its text-only modal prompts.
+Neither path submits the prompt. Browser/OS MIME availability still applies: a browser may expose
+only PNG even when an original image was JPEG, WebP or GIF. Manifold does not manufacture formats,
+convert HTML, read remote-host clipboard contents or turn a filesystem path into an upload.
+
+OMP copy uses **OSC 52 UTF-8 text writes**, not OSC 5522 writes. A focused, authorized live view
+offers the bounded copy and changes the browser clipboard only after **Copy** is selected.
+**Cancel** receives initial keyboard focus; Escape cancels. Approval is one-use; denial and
+unavailability are visible browser notices without disclosing copied content. OSC 52 queries
+never read the browser clipboard, and generic OSC 5522 MIME writes are refused.
+
+The browser clipboard and pending grants are device-local custody (`REGISTRY.md`, ADR 0029);
+approved bytes are ordinary, non-persistent PTY traffic. This does **not** create shared Manifold
+files, durable image storage, download URLs or arbitrary file transfer; that separate scope is #370.
+
 ### Terminals over the session channel
 
 - `terminal_open { elementId, cols, rows, cwd?, machineId?, placement?, program?, env? }` →

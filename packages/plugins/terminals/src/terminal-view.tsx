@@ -14,6 +14,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { settingValue } from "@manifold/plugin";
+import { trackTerminalPrivateMode } from "@manifold/protocol";
 import { base64ToBytes } from "@manifold/sdk";
 import {
   TitlebarOutlet,
@@ -34,6 +35,8 @@ import {
   type WheelEvent,
 } from "react";
 import {
+  Chip,
+  Cluster,
   ControlIcon,
   Cover,
   ItemIcon,
@@ -44,6 +47,11 @@ import {
 import { loadTerminalFont, TERMINAL_FONT_FAMILY, TERMINAL_FONT_SIZE } from "./terminal-font";
 import { terminalsManifest } from "./index";
 import { installTerminalGestures } from "./terminal-gestures";
+import {
+  installTerminalClipboard,
+  type TerminalClipboard,
+  type TerminalClipboardCopy,
+} from "./terminal-clipboard";
 import {
   MAX_TERMINAL_FONT_SIZE,
   MIN_TERMINAL_FONT_SIZE,
@@ -85,6 +93,11 @@ export function TerminalView({
   }, [copyOnSelect, pasteOnRightClick]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
+  const clipboardRef = useRef<TerminalClipboard | null>(null);
+  const pasteModeRef = useRef<ReturnType<typeof trackTerminalPrivateMode> | null>(null);
+  const clipboardLiveRef = useRef(false);
+  const activeRef = useRef(active);
+  const [clipboardCopy, setClipboardCopy] = useState<TerminalClipboardCopy | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
   const scheduleResizeRef = useRef<(() => void) | null>(null);
   /**
@@ -172,6 +185,13 @@ export function TerminalView({
   useEffect(() => {
     readOnlyRef.current = readOnly;
   }, [readOnly]);
+  useEffect(() => {
+    if (!active || readOnly || !isController) {
+      clipboardRef.current?.reset();
+      clipboardRef.current?.setPasteMode(pasteModeRef.current?.enabled ?? false);
+    }
+    activeRef.current = active;
+  }, [active, readOnly, isController]);
 
   /**
    * Real-terminal feel: activation (one click-release anywhere on the embed)
@@ -265,6 +285,7 @@ export function TerminalView({
     const initialTerminal = clientRef.current.terminals.get(terminalId);
     if (initialTerminal === undefined) return;
     const terminal = new Terminal({
+      allowProposedApi: true,
       cols: initialTerminal.cols,
       rows: initialTerminal.rows,
       convertEol: false,
@@ -282,14 +303,50 @@ export function TerminalView({
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(container);
+    terminalRef.current = terminal;
+    const canWrite = (): boolean => {
+      const current = clientRef.current;
+      return (
+        terminalRef.current === terminal &&
+        clipboardLiveRef.current &&
+        activeRef.current &&
+        !readOnlyRef.current &&
+        current.status === "open" &&
+        current.self !== null &&
+        current.terminals.get(terminalId)?.controllerId === current.self.id
+      );
+    };
+    const clipboard = installTerminalClipboard(terminal, container, {
+      canWrite,
+      send: (data) => {
+        if (canWrite()) clientRef.current.sendTerminalInput(terminalId, data);
+      },
+      notice: (message) => notifyRef.current(message, { key: `terminal-clipboard:${terminalId}` }),
+      offerCopy: (request) => {
+        if (
+          request === null &&
+          document.hasFocus() &&
+          document.activeElement?.closest(".terminal-clipboard-request")?.parentElement ===
+            container.parentElement
+        ) {
+          terminal.focus();
+        }
+        setClipboardCopy(request);
+      },
+    });
+    clipboardRef.current = clipboard;
+    const pasteMode = trackTerminalPrivateMode(terminal.parser, 5522, (enabled) =>
+      clipboard.setPasteMode(enabled),
+    );
+    pasteModeRef.current = pasteMode;
     const disposeGestures = installTerminalGestures(
       terminal,
       container,
       () => readOnlyRef.current,
       (message) => notifyRef.current(message, { key: `terminal-clipboard:${terminalId}` }),
       () => gesturePreferencesRef.current,
+      (stillCurrent) => clipboard.pasteFromClipboard(stillCurrent),
     );
-    terminalRef.current = terminal;
     paintedRef.current = false;
 
     let lastSentGeometry: { cols: number; rows: number } | null = null;
@@ -362,6 +419,11 @@ export function TerminalView({
       scheduleResizeRef.current = null;
       settleRef.current = null;
       disposeGestures();
+      clipboard.dispose();
+      clipboardRef.current = null;
+      pasteMode.dispose();
+      pasteModeRef.current = null;
+      clipboardLiveRef.current = false;
       terminal.dispose();
       terminalRef.current = null;
       paintedRef.current = false;
@@ -398,13 +460,22 @@ export function TerminalView({
     const terminal = terminalRef.current;
     if (terminal === null) return;
 
+    let subscribed = true;
+    clipboardLiveRef.current = false;
     let snapshotSeq: number | null = null;
     let lastWrittenSeq = 0;
     const bufferedOutputs = new Map<number, string>();
-    const settle = (): void => settleRef.current?.();
+    const settle = (): void => {
+      if (!subscribed) return;
+      clipboardLiveRef.current = true;
+      settleRef.current?.();
+    };
 
     const offSnapshot = client.on("terminal_snapshot", (message) => {
       if (message.terminalId !== terminalId) return;
+      clipboardRef.current?.reset();
+      clipboardLiveRef.current = false;
+      pasteModeRef.current?.reset();
       // Whatever is on screen — painted by this socket or by the one it replaced — is
       // REPLACED by the snapshot, never appended to.
       if (paintedRef.current) terminal.reset();
@@ -454,6 +525,9 @@ export function TerminalView({
 
     const offStatus = client.on("status", (status) => {
       if (status === "open") return;
+      clipboardRef.current?.reset();
+      clipboardLiveRef.current = false;
+      pasteModeRef.current?.reset();
       // Connection dropped: the next snapshot starts a fresh sequence.
       snapshotSeq = null;
       lastWrittenSeq = 0;
@@ -461,6 +535,10 @@ export function TerminalView({
     });
 
     return () => {
+      subscribed = false;
+      clipboardRef.current?.reset();
+      clipboardLiveRef.current = false;
+      pasteModeRef.current?.reset();
       offSnapshot();
       offOutput();
       offTerminalEvent();
@@ -735,6 +813,33 @@ export function TerminalView({
         className={`terminal-idle-veil${active ? "" : " terminal-idle-veil--on"}`}
         aria-hidden="true"
       />
+      {clipboardCopy === null ? null : (
+        <Cover
+          className="terminal-clipboard-request"
+          role="group"
+          aria-label="Terminal clipboard request"
+          onKeyDown={(event) => {
+            if (event.key !== "Escape") return;
+            event.preventDefault();
+            event.stopPropagation();
+            clipboardCopy.cancel();
+          }}
+        >
+          <Stack gap="0.6rem" align="center">
+            <strong>Copy terminal data to your clipboard?</strong>
+            <span>
+              {clipboardCopy.mimeTypes.join(", ")} · {clipboardCopy.byteLength.toLocaleString()}{" "}
+              bytes
+            </span>
+            <Cluster gap="0.6rem">
+              <Chip onClick={() => void clipboardCopy.accept()}>Copy</Chip>
+              <Chip autoFocus onClick={() => clipboardCopy.cancel()}>
+                Cancel
+              </Chip>
+            </Cluster>
+          </Stack>
+        </Cover>
+      )}
       {terminal?.status === "exited" || offlineMachine !== null ? (
         <Cover className="terminal-exited">
           <Stack gap="0.6rem" align="center">
