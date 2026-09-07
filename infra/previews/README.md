@@ -1,10 +1,10 @@
 # Preview environments
 
-| Address            | Runs                                                |
-| ------------------ | --------------------------------------------------- |
-| `preview.<domain>` | Integrated `main` (existing dev stack on port 7912) |
-| `<N>.<domain>`     | PR N's head in `manifold-pr-N`; machine `pr-N`      |
-| `<name>.<domain>`  | Live host worktree: Vite HMR and Bun watch          |
+| Address            | Runs                                                                   |
+| ------------------ | ---------------------------------------------------------------------- |
+| `preview.<domain>` | Integrated `main` (existing dev stack on port 7912)                    |
+| `<N>.<domain>`     | PR N's last explicitly deployed SHA in `manifold-pr-N`; machine `pr-N` |
+| `<name>.<domain>`  | Live host worktree: Vite HMR and Bun watch                             |
 
 Requirements: Bash, Bun, Docker Compose, Caddy, curl, jq, flock, Git and systemd
 user services. Enable linger for the deployment user. Keep this tooling in a stable
@@ -12,14 +12,79 @@ checkout outside disposable preview checkouts. One hub uses approximately 140 Mi
 The registry (`name kind port` per line) and data live under `PREVIEW_HOME`, default
 `$HOME/manifold-previews`. Only this user may write it; lifecycle operations serialize.
 The router, live user units and daily gc timer are generated, enabled at boot, and survive logout.
-`deploy-preview.yml` skips `up` for a head whose whole diff is Markdown outside `changes/`
-(nothing to show); `down` is unconditional and also cleans up images left by earlier teardowns.
+Numbered previews are on demand: opening a PR or pushing never provisions or updates one.
+An explicit deploy request is the decision; there is no docs-only deployment heuristic.
+Integrated `main` still deploys automatically after green CI; production remains separate.
 
 Numbered previews build with the title `pr-N - manifold` and a teal favicon (`#0f766e`),
 distinct from production and the integrated preview. Both use the existing shell-identity
 build inputs; the PR number comes from the deployment's `PREVIEW_MACHINE`.
 
+## Request, inspect and stop a PR preview
+
+Opening a draft PR claims work, not compute. An agent MAY request a numbered preview when live
+verification is useful or the operator should likely inspect the change, and MUST request one
+when the operator explicitly asks to inspect a deployed PR preview. Do not request one for
+ordinary docs/internal-only changes with nothing useful to inspect. Source checkpoint, CI and
+merge rules still apply; pushing is not a deployment request.
+
+From an authenticated GitHub CLI with permission to run this repository's workflow, replace
+`NUMBER` with a positive canonical PR number (for example `123`, never `0123`):
+
+```sh
+gh workflow run deploy-preview.yml --repo atyrode/manifold --ref main -f pr=NUMBER -f action=deploy
+```
+
+Only the trusted workflow on `main` deploys, and only an open PR whose head belongs to this
+repository. It resolves the exact current head SHA through the GitHub API; no local checkout
+or SHA argument is needed. Each request is one-shot: the preview stays on the last successfully
+deployed SHA after subsequent pushes. Run the same command again to deploy the new head.
+
+Find the run matching your PR, action and request time; do not blindly watch another user's
+latest request. Replace `RUN_ID` with that run's ID:
+
+```sh
+gh run list --repo atyrode/manifold --workflow deploy-preview.yml --event workflow_dispatch --branch main --limit 10
+gh run watch RUN_ID --repo atyrode/manifold --exit-status
+gh run view RUN_ID --repo atyrode/manifold --web
+```
+
+If dispatch prints a run URL, use it to identify the run directly. `gh run watch` does not
+support fine-grained PAT authentication; in that case, use `gh run view ... --web` and watch
+the run in the browser instead.
+
+The successful run summary and PR comment record the exact deployed SHA and ordinary
+`https://<N>.<domain>` URL. Open that URL through the normal production browser identity
+handoff described below, then exercise the changed panel/action and check its expected result.
+A successful deployment alone is not runtime verification. Report the SHA, ordinary URL,
+specific action and expected result when handing the preview to the operator, and distinguish
+what you actually verified from what remains to inspect. Never report credentials or a
+key-bearing URL; never imply that a later, undeployed push is visible.
+
+Release resources before closing the PR with:
+
+```sh
+gh workflow run deploy-preview.yml --repo atyrode/manifold --ref main -f pr=NUMBER -f action=stop
+```
+
+Watch the stop run with the same commands; its result marks the preview stopped. Stop removes
+the preview's data as well as its compute. A later deploy request can recreate it while the PR
+is open. Closing or merging the PR still triggers automatic teardown, including when a deploy
+request was queued; closing is not a reason to leave a preview running.
+
+The GitHub UI offers the same controls: repository **Actions** → `deploy-preview.yml` →
+**Run workflow**, choose branch `main`, enter `pr`, and choose `action` (`deploy` or `stop`).
+Open the resulting run to watch it and read its summary. Neither this UI nor the numbered
+preview workflow changes integrated-main automation or authorizes production deployment.
+
 ## Configuration
+
+In GitHub, keep the `preview` environment's deployment branch policy restricted to the
+branch `main` (not tags). Both manual requests and closed-PR cleanup use the trusted
+default-branch workflow; no PR checkout runs on its credential-bearing runner. This
+environment rule is defense in depth, not isolation from maintainers who can edit workflows
+or repository-level secrets. Keep the existing deployment variables and forced-command SSH
+credential configured; this cutover does not change the receiver or production credentials.
 
 Write `$PREVIEW_HOME/env` before using the SSH receiver. It is literal `KEY=VALUE`,
 without shell quoting, expansion or secrets; blank lines and `#` comments are allowed.
