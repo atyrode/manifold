@@ -152,6 +152,20 @@
   pointer-events: none;
 }
 
+.terminal-clipboard-request {
+  position: absolute;
+  grid-area: 2 / 1;
+  inset: 0;
+  z-index: 6;
+  overflow: auto;
+  padding: 0.75rem;
+  color: #e6e9ef;
+  background: rgb(11 13 16 / 94%);
+  font-size: 0.9rem;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
 /* Centering and rhythm are the layout Cover+Stack's; this is the veil itself. */
 .terminal-exited {
   position: absolute;

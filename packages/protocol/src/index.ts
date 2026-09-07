@@ -34,6 +34,7 @@ export {
   type TerminalHostEvent,
   type TerminalHostStatus,
 } from "./terminal-host.ts";
+export { trackTerminalPrivateMode, type TerminalModeParser } from "./terminal-private-mode.ts";
 export { reconnectDelayMs } from "./backoff.ts";
 export { CAPS, CapSchema, hasCap, type Cap } from "./capabilities.ts";
 export { IDENTITY_COLORS, PrincipalSchema, identityColorFor, type Principal } from "./principal.ts";

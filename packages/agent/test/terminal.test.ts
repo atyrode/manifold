@@ -1,6 +1,10 @@
 import { existsSync } from "node:fs";
 import { afterEach, expect, test } from "bun:test";
-import { AgentMessageSchema, MAX_SESSION_FRAME_BYTES } from "@manifold/protocol";
+import {
+  AgentMessageSchema,
+  MAX_SESSION_FRAME_BYTES,
+  trackTerminalPrivateMode,
+} from "@manifold/protocol";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Terminal as HeadlessTerminal } from "@xterm/headless";
 import {
@@ -209,6 +213,35 @@ test("snapshot excludes output queued after its drain marker", async () => {
   expect(snapshot.data).toContain("SNAPSHOT_BEFORE");
   expect(snapshot.data).not.toContain("SNAPSHOT_AFTER");
   expect(h.terminal.seq).toBeGreaterThan(snapshot.seq);
+}, 12000);
+
+test("reattached viewers recover private paste mode at the snapshot watermark", async () => {
+  const h = spawn({});
+  await h.waitUntil(() => h.outputs.length > 0);
+  // Mixed modes must still reach xterm's built-in bracketed-paste handler.
+  injectPtyOutput(h.terminal, "\u001b[?2004;5522h");
+  const pendingSnapshot = h.terminal.snapshot();
+  injectPtyOutput(h.terminal, "\u001b[?5522l");
+  const snapshot = await pendingSnapshot;
+  const viewer = new HeadlessTerminal({ cols: 80, rows: 24, allowProposedApi: true });
+  const pasteMode = trackTerminalPrivateMode(viewer.parser, 5522);
+  const replay = (data: string): Promise<void> => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    viewer.write(data, resolve);
+    return promise;
+  };
+  try {
+    await replay(snapshot.data);
+    expect(pasteMode.enabled).toBe(true);
+    expect(viewer.modes.bracketedPasteMode).toBe(true);
+    await replay((await h.terminal.snapshot()).data);
+    expect(pasteMode.enabled).toBe(false);
+    await replay("\u001b[?5522h\u001bc");
+    expect(pasteMode.enabled).toBe(false);
+  } finally {
+    pasteMode.dispose();
+    viewer.dispose();
+  }
 }, 12000);
 
 test("huge scrollback snapshot stays within machine wire caps and restores", async () => {
