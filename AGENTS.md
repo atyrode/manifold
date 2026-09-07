@@ -178,7 +178,8 @@ The pipeline, in order:
    does not provision a preview. Failed or unrun checks are named unmet criteria, not a ban on
    pushing an incomplete draft. Link the issue with `Closes #N` only when merging resolves all
    its acceptance criteria; partial delivery uses `Refs #N` and names the remaining owning work.
-4. Include a fragment under `changes/` when the change is user-visible (`changes/README.md`).
+4. Include a fragment under `changes/` for user-visible changes, subject to the documentation,
+   process, test and gate-only exemptions in §Changelog and releases (`changes/README.md`).
    Direct commits to `main` are reserved for `bun run release`.
 5. Before ready or merge, `bun run gate` and the required CI must pass for the current published
    revision and intended integration target, `main`. A stacked branch without that evidence
@@ -420,6 +421,12 @@ the index is the generated `docs/decisions/README.md`.
     plugins exist, a second way to rename a terminal — is a bug, not a style choice. When a
     concept genuinely needs a NEW door, the old one is deleted in the same change: no aliases,
     no dual paths, no fallback readers.
+    Apply that implementation replacement only after the owning public or persistent contract's
+    coordinated compatibility transition is complete. This law does not authorize deleting support
+    still required by separately released consumers, migration or rollback; it also does not grant
+    permission for a second authoritative implementation during the transition. Resolve an actual
+    contract conflict through the change-control authority below, not by silently dropping either
+    requirement.
 15. **The foundation is a pillar registry, admitted by a litmus test** — READ `AXIOMS.md`
     §Foundation law before touching floor code, and `REGISTRY.md` §Pillar inventory for the rows.
     A pillar is engine if and only if it passes all
