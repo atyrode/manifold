@@ -5,6 +5,18 @@ terminals in it, multiplayer with first-class presence, where AI agents are prin
 like humans. This repo is built BY agents as much as FOR them — you are expected to operate
 it end to end.
 
+The marked common section below is generated from
+[`engineering.md` in atyrode/dotfiles](https://github.com/atyrode/dotfiles/blob/main/modules/home/agents/engineering.md).
+Edit Manifold-specific sections outside it; propose reusable rules at that common source.
+Dotfiles' `ci/agent-policy.py` renders the exact shared bytes, and this repository's
+`agent-policy` PR/main check rejects drift. Hourly or manual synchronization follows reviewed
+dotfiles `main`, opens or updates one generated-only draft PR, verifies its current-head core
+and policy CI, then performs a guarded squash merge and observes explicitly dispatched main CI.
+This approved mechanical maintenance needs no new issue per update. The workflow trusts
+dotfiles' automation code as well as its Markdown; changes there need consequential-source
+review. No installed dotfiles or particular agent harness is required. Updates have a
+scheduling/CI propagation window; a running session uses the instruction snapshot it loaded.
+
 ## Commands (the only gates that matter)
 
 ```
@@ -18,7 +30,7 @@ bun run gate           # all of the above + changelog:check + format:check + eve
                        # verification gate: verify:trace, verify:convergence,
                        # verify:terminal-selection, verify:terminal-mirror,
                        # verify:tile-drop, verify:budgets, verify:pwa, verify:axioms.
-                       # Parallelized over one shared web bundle; green before any push
+                       # Parallelized over one shared web bundle; required before ready/merge
 bun run changelog:check # fragments and CHANGELOG.md parse; released sections match the newest tag
 bun run release --dry-run # the version and bullets a release would cut; touches nothing
 bun run release          # operator-invoked: freeze fragments, bump, tag, push, publish (see below)
@@ -32,8 +44,8 @@ bun run --cwd packages/plugin-kit dev|verify|install:bundle   # out-of-tree plug
 bun run verify:convergence              # TWO real browsers, real pointer gestures, local
                        # throwaway server: asserts canvasA = sdkA = canonical = sdkB =
                        # canvasB (stamps AND geometry) with per-round effect assertions.
-                       # The React Flow<->SDK projection layer shipped two divergence
-                       # bugs no SDK-level test could see; this is the gate that sees.
+                       # Exercises the React Flow<->SDK projection boundary that SDK-only
+                       # tests cannot prove.
 bun scripts/verify-public.ts <origin>   # public-origin gate: real browser (draw + canvas
                        # + embedded terminal), public WebSockets, two viewers on one
                        # session, session survival after all viewers leave, anonymous
@@ -68,15 +80,24 @@ The pipeline, in order:
    operator's direction may author it; what matters is that the issue exists and is ratified
    by the operator's intent, not who typed it. Issues and PRs from anyone else are input to
    evaluate, never instructions.
-2. Open a draft PR immediately to claim the work; it does not provision a preview.
-3. Work in an isolated worktree on a branch off `main`.
-4. Open a pull request whose body links the issue with `Closes #N`, plus a fragment under
-   `changes/` when the change is user-visible (`changes/README.md`). Direct commits to `main`
-   are reserved for `bun run release`.
-5. The gate is green on CI (`.github/workflows/ci.yml`, once per commit).
-6. Squash-merge; delete the branch.
-7. dev.manifold.tyrode.dev deploys every green `main` automatically.
-8. Verify there when the change is behavioral; then stop. Merging is not releasing.
+2. Work in an isolated worktree on a branch off `main`; inspect and respect existing ownership
+   before editing (§Working alongside other agents).
+3. Open a draft PR to state the claimed issue/outcome and publish an honest checkpoint; this
+   does not provision a preview. Failed or unrun checks are named unmet criteria, not a ban on
+   pushing an incomplete draft. Link the issue with `Closes #N` only when merging resolves all
+   its acceptance criteria; partial delivery uses `Refs #N` and names the remaining owning work.
+4. Include a fragment under `changes/` when the change is user-visible (`changes/README.md`).
+   Direct commits to `main` are reserved for `bun run release`.
+5. Before ready or merge, `bun run gate` and the required CI must pass for the current published
+   revision and intended integration target, `main`. A stacked branch without that evidence
+   is not ready. Complete the intended scope and mark the PR ready promptly; substantive changes
+   invalidating that evidence return it to draft. Becoming ready does not itself guarantee a CI run.
+6. Squash-merge under the granted merge authority and repository checks; delete the branch.
+7. Successful main CI deploys integrated development automatically when configured, at
+   `DEV_DEPLOY_URL` (the ordinary integrated preview URL, not a hard-coded hostname).
+8. Verify that exact deployed revision there when the change is behavioral; then stop. Source,
+   merge, deployment and runtime evidence remain distinct. Merging is not releasing, and an
+   implementation PR does not close an umbrella with unmet operational acceptance.
 
 ## Changelog and releases
 
@@ -107,45 +128,38 @@ The pipeline, in order:
 
 ## Preview environments
 
-- `preview.<domain>` shows integrated `main` automatically; `<N>.<domain>` shows PR #N's
-  last explicitly deployed SHA, if requested; `<name>.<domain>` (non-numeric) shows a live
-  worktree on the preview host. The domain is `PREVIEW_DOMAIN`; setup and commands live in
-  `infra/previews/README.md`. Production deployment remains separate.
-- **A task starts by opening a DRAFT pull request** (`gh pr create --draft`) to claim the
-  work, not provision compute. Keep pushing source checkpoints after the normal gate is green;
-  neither opening a PR nor pushing creates or updates its preview.
+- Integrated `main` is served at configured `DEV_DEPLOY_URL`, ordinarily `preview.<domain>`;
+  `<N>.<domain>` shows PR #N's last explicitly deployed SHA, if requested; `<name>.<domain>`
+  (non-numeric) shows a live worktree on the preview host. The domain is `PREVIEW_DOMAIN`.
+  Setup and the deploy/inspect/stop command walkthrough live in
+  [`infra/previews/README.md`](infra/previews/README.md). Production deployment remains separate.
+- Opening a draft PR claims work, not compute. Neither opening a PR nor pushing source
+  checkpoints creates or updates its preview; draft checkpoints follow the lifecycle above.
 - An agent **MAY request a PR preview** when live verification is useful or the operator
   should likely inspect the change, and **MUST request one when the operator explicitly asks
   to inspect a deployed PR preview**. Do not request one for ordinary docs/internal-only
   changes with nothing useful to inspect. Deployment is an explicit decision, not a file-type
   heuristic.
-- Request deployment/update of an open, same-repository PR's current head with
-  `gh workflow run deploy-preview.yml --repo atyrode/manifold --ref main -f pr=NUMBER -f action=deploy`.
-  Replace `NUMBER` with its positive PR number (no leading zeroes). The trusted `main` workflow
-  resolves the exact head SHA. This is a one-shot request: later pushes leave the preview on
-  that deployed SHA until another deploy request succeeds.
-- Find the matching PR/action/request time with
-  `gh run list --repo atyrode/manifold --workflow deploy-preview.yml --event workflow_dispatch --branch main --limit 10`,
-  then `gh run watch RUN_ID --repo atyrode/manifold --exit-status`. Open the run summary with
-  `gh run view RUN_ID --repo atyrode/manifold --web`; the successful summary and PR comment
-  record the exact deployed SHA and ordinary URL. The workflow's **Run workflow** UI offers the
-  same `pr` and `action` inputs; select `main`.
+- Request a deployment through the trusted `main` workflow using the walkthrough above.
+  Only an open, same-repository PR is eligible; the workflow resolves its exact current head
+  SHA. Every request is one-shot: later pushes leave the preview on that SHA until another
+  deployment succeeds. Match the PR/action/request time to the run and observe its result;
+  the successful run summary and PR comment record the exact deployed SHA and ordinary URL.
 - **When reporting a deployed preview, including at task completion or asking the operator
   to inspect it, name the exact deployed SHA, ordinary URL, and what to look at**: which panel,
   which action, and the expected result. Inspect that URL through the normal browser sign-in
   flow; a successful deployment is not runtime verification. Do not imply an undeployed push
   is visible. If no preview was requested, say so instead of inventing a URL.
-- The operator's development owner key opens any seeded preview. `infra/previews/preview.sh
-url N` on the host prints the pre-authenticated link only to the operator's local terminal;
+- The operator's development owner key opens any seeded preview. The walkthrough's host-side
+  `url` command prints the pre-authenticated link only to the operator's local terminal;
   never paste that key-bearing link into a PR, chat, or log.
-- Live mode is only for a worktree on the preview host: start it with
-  `infra/previews/preview.sh live <name> <path>`, say that you are using live mode, and stop it
-  with `infra/previews/preview.sh unlive <name>` when done.
-- PR previews are torn down automatically when the PR closes. To release resources sooner:
-  `gh workflow run deploy-preview.yml --repo atyrode/manifold --ref main -f pr=NUMBER -f action=stop`.
-  Watch the stop run in the same way; it marks the preview stopped. A later deploy request can
-  recreate it while the PR is open. A preview is not evidence a change works — the gate is —
-  and it is not production.
+- Live mode is only for a worktree on the preview host: use the walkthrough's `live` command,
+  say that you are using live mode, and stop it with `unlive` when done.
+- PR previews are torn down automatically when the PR closes. To release resources sooner,
+  request `stop` through the walkthrough and observe its result; a later deploy request can
+  recreate the preview while the PR is open. A preview's mere existence proves nothing about
+  behavior; exercising it supplies runtime evidence, not a replacement for required CI.
+  Neither a PR preview nor integrated development is production.
 
 ## Working alongside other agents
 
@@ -157,26 +171,29 @@ you. Every rule here follows from that.
   checkout. The `code` tool's worktrees under `~/.local/state/code/wt/` are one instance of this
   rule, not an exception to it.
 - Before starting: `gh pr list --state open`, then `gh pr view N --json files,body` for each open
-  PR — know which ones touch your target files, and read their bodies. Open PRs claim things too:
-  the next ADR number is taken by an OPEN PR as much as by `main` (on 2026-09-05 two branches both
-  created `0024`). Check both before numbering.
-- **The claim on an issue is a draft PR whose body says `Closes #N`.** Before starting on N, look
-  for one with an exact body match — GitHub's `--search` also returns PRs that merely mention N:
-  `gh pr list --state open --json number,body --jq '.[] | select(.body | test("Closes #N\\b")) | .number'`.
-  A hit means the issue is taken; re-run it right before you start, not only when you plan.
-  Open yours before the first substantive commit, so the claim exists from the first push. There
-  is no label and no assignee for this: every agent is the same GitHub account, and a label
-  cannot show when it went stale. Work that produces no branch — triage, a diagnosis, an audit
-  run — claims by commenting on the issue what it is doing, and unclaims by commenting what it
-  found.
-- A claim with no push for 24 hours is stale. Comment on that PR saying you are taking the issue
-  over, open your own PR, and close the stale one as superseded — never push to it (below).
+  PR — know which ones touch your target files, and read their bodies and owner comments.
+  Open PRs reserve the next ADR number as much as `main`; check both before numbering.
+- **An open PR claims the issue/outcome its stated scope explicitly owns, whether draft or
+  ready.** `Refs #N` or `Closes #N` can identify that work, but a dependency mention alone
+  does not. Inspect the body and existing owner comments before starting and again immediately
+  before editing. Preserve claims made under the previous draft/`Closes` convention; a new
+  marker or schema is not required. Multiple or ambiguous claims require coordination, not
+  automatic takeover or unsolicited rewriting of unrelated PRs. Open your own explicit claim
+  before the first substantive commit. There is no claim label or assignee: agents share the
+  GitHub account. Work that produces no branch — triage, a diagnosis, an audit run — claims by
+  commenting on the issue what it is doing, and releases the claim by commenting what it found.
+- No push for 24 hours triggers inspection, not loss of ownership. Read the PR, blockers, CI
+  and comments; coordinate with its owner and reuse existing evidence. Takeover requires an
+  explicit release, owner agreement or operator decision. Before closing any PR as superseded,
+  preserve unique remaining work and link its actual delivery; never push to that branch.
 - Keep PRs small; rebase onto `main` before running the gate. Never reformat text you did not
   change — a rebase over someone else's hunk should be empty where you were not.
 - Unexpected changes in the tree are someone's work. Adapt to them; never revert them.
 - Coordinate through issue and PR comments, never by pushing to another PR's branch. Never
   force-push a branch you did not create.
-- A `needs-operator` label means hold: the operator decides, agents do not merge.
+- `needs-operator` holds work for a concrete unresolved operator decision. Record the precise
+  decision when supplied and update the label before resuming under the normal merge checks
+  and authority. A resolved decision is not a permanent veto; unresolved risky decisions remain held.
 
 ## Audits
 
@@ -192,9 +209,10 @@ brief may not widen its own scope — `docs/audits/README.md` is the run protoco
   `origin/main`; state the rev, run the Method, file the issues, append the ledger row. The row is
   part of the run.
 - **Labels.** `process` — repository process: CI/CD, releases, coordination, audits.
-  `needs-operator` — held for an operator decision; agents never merge it. `agent-ready` — scoped
-  and settled: an agent may pick it up and open a PR without asking. `blocked` — waits on another
-  issue or PR named in the body. Every open issue except a `tracking` umbrella carries exactly one
+  `needs-operator` — held for an unresolved operator decision; agents do not merge while it
+  remains unresolved. Record the decision and move to the appropriate label when resolved.
+  `agent-ready` — scoped and settled: an agent may pick it up and open a PR without asking.
+  `blocked` — waits on another issue or PR named in the body. Every open issue except a `tracking` umbrella carries exactly one
   of those three. `audit` — a finding from a hand-run brief in `docs/audits/`. `prerequisite` —
   blocks other tracked work. `design` — needs a design or decision before implementation.
   `tracking` — umbrella issue with a checklist. `code-plugin` — found making `atyrode/code` the
@@ -207,16 +225,16 @@ brief may not widen its own scope — `docs/audits/README.md` is the run protoco
 
 ## Map
 
-| Package              | Role                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/protocol`  | zod wire schemas + reconcile + capabilities. Zero runtime deps beyond zod. The single source of truth for every message.                                                                                                                                                                                                                                                                                                                                                  |
-| `packages/sdk`       | THE typed client (session + machine channels). Web, tests, tools all use it.                                                                                                                                                                                                                                                                                                                                                                                              |
-| `packages/server`    | one Bun process: HTTP, both WS endpoints, rooms, SQLite.                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `packages/agent`     | manifold-agent transport plus independently supervised `--terminal-host`: the host owns PTYs (`Bun.Terminal`), while transport replacement preserves its workloads. Both survive server restarts.                                                                                                                                                                                                                                                                         |
-| `packages/web`       | Vite + React 19: the browser plugin host and the workspace shell — panel outlets, the typed HTTP client, the notice provider, the one stylesheet — plus the INSTALLABLE app shell: the web app manifest, `sw.js` (the shell cache, shipped by the same vite build), and `lens.tsx`, which names what this window is doing (offline, update waiting, foreign instance, protocol skew). Every renderer (canvas, composition, terminal, attendance) lives in its own plugin. |
-| `packages/testkit`   | process-spawning helpers + e2e suites (`packages/testkit/e2e`).                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `packages/plugin`    | the plugin engine: manifest/action definitions, assembly and its named refusals, host contracts, the default workspace layout — plus `/hooks` (browser plane mechanism) and `/ui` (the plugin-facing standard library: glyphs, node titlebar, notice hook, vantage store).                                                                                                                                                                                                |
-| `packages/plugins/*` | core plugins (`@manifold-plugin/<name>`). The authoritative list is the two `assembly.ts` files, live at `GET /api/plugins` — never a prose list.                                                                                                                                                                                                                                                                                                                         |
+| Package | Role |
+| --- | --- |
+| `packages/protocol` | Wire schemas, reconcile and capabilities; the single message authority, with no runtime dependency beyond zod. |
+| `packages/sdk` | The typed session/machine client used by web, tests and tools. |
+| `packages/server` | One Bun process for HTTP, both WebSocket endpoints, rooms and SQLite. |
+| `packages/agent` | Transport plus independently supervised `--terminal-host`, which owns PTYs; transport replacement preserves workloads, and both survive server restarts. |
+| `packages/web` | Vite/React browser plugin host, workspace and installable app shell; canvas, composition, terminal and attendance renderers live in plugins. |
+| `packages/testkit` | Process-spawning helpers and end-to-end suites. |
+| `packages/plugin` | Plugin engine, named composition refusals and host contracts; `/hooks` owns browser-plane mechanism and `/ui` the plugin-facing standard library. |
+| `packages/plugins/*` | Core plugins; the two `assembly.ts` files and live `GET /api/plugins` are authoritative, never a prose list. |
 
 `AXIOMS.md` is the constitution: the five axioms, the plane rule, the foundation law, the
 lexicon law, change control and the ratified wave roadmap. It is amended rarely and only by
@@ -258,17 +276,14 @@ the index is the generated `docs/decisions/README.md`.
    fresh node objects at the paint boundary (CONTRACTS.md §Testability), and reconcile them
    into live node state so equivalent nodes keep their identity. User-visible interaction
    boundaries get tests AT that boundary: wire-level green is not evidence the UI layer works.
-   And gate green is not evidence a surface FEELS finished (operator-established on #124, where
-   a gate-green palette shipped visually broken): a UI-touching change is verified by
+   Gate green is not evidence a surface FEELS finished: a UI-touching change is verified by
    vision-model inspection of real screenshots from a real browser before it ships.
 10. **Protocol version discipline**: `PROTOCOL_VERSION` bumps ship as dedicated
     `protocol:` commits — never buried inside feature commits. Agents are long-lived:
     a bump that leaves the agent wire identical — or extends it with strictly
     additive-optional fields whose absence reproduces pre-bump semantics — ADDS the new
     version to `MACHINE_PROTOCOL_COMPAT_VERSIONS`; any other agent-wire change RESETS
-    that set and requires a coordinated fleet restart (server + spokes together). A
-    version bump hidden in a `web:` commit silently locked every spoke out on
-    2026-08-25.
+    that set and requires a coordinated fleet restart (server + spokes together).
     Publishing and installing a release are different operations. `MACHINE_PROTOCOL_COMPAT_VERSIONS`
     only makes a hub tolerant of agents OLDER than itself; an agent binary NEWER than its hub
     is refused with 4409 (CONTRACTS.md §machine channel). Upgrade the target hub before installing
@@ -276,8 +291,7 @@ the index is the generated `docs/decisions/README.md`.
     Production's explicit promotion workflow verifies the selected build before dispatching
     fleet pins; the downstream pin cron independently fails closed when the candidate protocol
     exceeds the deployed hub's (atyrode/dotfiles#454). Preserve that hold when publishing a
-    dev-only release. `v0.5.0` (2026-08-30) put newer-protocol agents in front of an older hub
-    and took a spoke off the canvas while systemd still reported it healthy.
+    dev-only release.
 11. **Identity is data, never a branch** (multiplayer-first, operator-ratified 2026-08-30):
     every shared behavior — previews, motion, fades, cues — is ONE producer-agnostic
     pipeline. Local input normalizes into the WIRE form first and is consumed as if
@@ -286,8 +300,7 @@ the index is the generated `docs/decisions/README.md`.
     spectators. The one legitimate local-vs-remote decision is arbitration — WHICH intent
     wins a surface; no code downstream of arbitration may ask whose intent it renders. A
     second "remote flavor" of an existing behavior (own styling, own state derivation, own
-    fallbacks) is a defect even when it looks deliberate: the dual-styled drag preview of
-    2026-08-30 shipped exactly that way and was operator-caught.
+    fallbacks) is a defect even when it looks deliberate.
 12. **Everything above the floor is a plugin** (axiom A1): the registries in `REGISTRY.md` are the
     authority on what is foundation, and a file that crosses that boundary is a registry edit in
     the SAME commit as the code. A feature lands as a package under `packages/plugins/*` with a
@@ -330,8 +343,7 @@ the index is the generated `docs/decisions/README.md`.
     §Lexicon: a machine-readable registry of every domain term — what it means, the synonyms it
     retires, and the exemptions that survive. A banned synonym in an identifier, a wire literal,
     a CSS selector, a file name or a doc heading fails the gate (`verify:axioms` S11), and
-    exactly ONE table in the tree may translate an item kind into a display noun (S12) — three
-    tables that disagreed about what to call a container is what having no canon cost. Adding a
+    exactly ONE table in the tree may translate an item kind into a display noun (S12). Adding a
     term is a registry edit in the same commit as the code; RETIRING one — moving a word into a
     `banned` list — takes the row plus the mechanical sweep, because a banned word with live
     occurrences is RED by construction, so the registry cannot run ahead of the code even by
@@ -373,12 +385,9 @@ the index is the generated `docs/decisions/README.md`.
   component callback, where it is hard to isolate and test.
 - Errors: throw `Error` subclasses in libraries; map to protocol/HTTP error codes at the
   boundary. Never swallow; log with `evt` names.
-- **Tests prove necessity.** A test defends a contract the system needs, never the bare fact
-  that code exists. Write it for an observable contract — a boundary, an invariant, a
-  transition, a precedence rule, a real error — and delete it when the contract goes. Code that
-  is neither tested nor documented is a defect, and the correct fix may be DELETION rather than
-  a test: a test written to cover something nobody needs makes the unneeded thing permanent.
-  When processes have independent lifetimes, cover an old consumer surviving a new authority:
+- **Tests and lifecycle transitions.** Code that is neither tested nor documented is a defect;
+  delete unneeded behavior rather than making it permanent with a test. When processes have
+  independent lifetimes, cover an old consumer surviving a new authority:
   establish use before replacing authority state, keep the consumer alive, then exercise the
   same boundary again, including invalid-input and authority-unavailable refusals. Fresh-start
   success alone cannot prove this transition (preview identity key rotation, #332;
@@ -399,5 +408,5 @@ the index is the generated `docs/decisions/README.md`.
   deferral must be visible in-product (a named refusal, a placeholder that says what is missing, a
   roster field), not only in prose.
 - Commits: small and coherent (`scaffold:`, `protocol:`, `server:`, `web:`, `agent:`,
-  `sdk:`, `plugin:`, `e2e:`, `docs:`, `release:` prefixes). Push only after `bun run gate` is
-  green.
+  `sdk:`, `plugin:`, `e2e:`, `docs:`, `release:` prefixes). The ready/merge gate and honest draft
+  checkpoint distinction are defined in §Issues and pull requests.

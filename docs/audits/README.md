@@ -34,7 +34,8 @@ produces opinions, and the ledger records findings.
    unreferenced export together with its test, correcting a `file:line` pointer. Anything whose
    correctness depends on a judgement — deleting a branch that "looks" dead, rewording a spec
    sentence, changing a check — is an issue for the operator, never a PR. The PR body links its
-   issue with `Closes #N` like any other (`AGENTS.md` §Issues and pull requests).
+   issue with `Closes #N` only when merging resolves its acceptance criteria; partial delivery
+   uses `Refs #N` with remaining work explicit (`AGENTS.md` §Issues and pull requests).
 5. **Append a row to [`LOG.md`](LOG.md)**: date, brief, `main` rev, agent, and the issue numbers
    filed (or `none`). The ledger row is part of the run; a run without a row did not happen.
 

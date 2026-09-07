@@ -1,6 +1,6 @@
-# The gate, run ONCE per commit where it counts: on every pull request into main and on
-# every push to main. `bun run release` refuses to cut a release from a main commit that has
-# no green run here (scripts/release.ts), and the Release workflow no longer repeats it.
+# The gate runs on every pull request into main and every push to main; manual dispatch also
+# supplies post-merge evidence for repository-token merges, which do not trigger push runs.
+# `bun run release` requires green main CI; the Release workflow does not repeat the gate.
 name: CI
 
 on:
@@ -8,6 +8,7 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
