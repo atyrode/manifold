@@ -20,6 +20,48 @@ Numbered previews build with the title `pr-N - manifold` and a teal favicon (`#0
 distinct from production and the integrated preview. Both use the existing shell-identity
 build inputs; the PR number comes from the deployment's `PREVIEW_MACHINE`.
 
+## Development environment
+
+Numbered previews compose the PR's application artifact with the standalone
+portable development environment published by dotfiles. The one environment pin
+is `infra/previews/environment-image.txt` in the stable tooling checkout; it must
+be an immutable, anonymously pullable OCI digest. Updating it is a reviewed code
+change, not a startup installation or a registry login on the preview host.
+
+The environment provides the configured zsh, OMP, Code and the portable profile's
+other tools. It does not provide provider credentials or a model service.
+Integrated-main and production continue using the ordinary application image.
+
+`up` requires the selected Buildx builder's `docker` driver. It builds the PR
+application as `manifold-pr-pr-N:base`, then composes the final
+`manifold-pr-pr-N:local` image with the environment as its base. The PR artifact
+must contain an executable `/app/infra/entrypoint.sh` and a nonempty `engines.bun`
+requirement that the environment's Bun satisfies. Its `/app` is copied; no Bun
+binary, libraries, home or Nix store are copied out of the application image.
+
+Both builds and an offline activation/application-import probe complete before
+the existing service is stopped. Invalid pins, incompatible runtimes and failed
+probes leave the running preview alone. After preflight, deployment announces
+that existing PTYs and their terminal entries are retired and the disposable home
+is replaced. It closes machine admission through `core.machines.drain`, retires
+those PTYs through `core.terminals.kill`, stops the service, changes only its
+`/data` volume's ownership to UID/GID 1000, then starts the application as that
+user and reopens admission. Ordinary canvas and identity data remain in `/data`;
+the home and mutable Nix state survive stop/start but not container recreation.
+A failure after retirement is a deployment failure, not a transactional rollback.
+
+`down` and `url` do not need the environment pin. Teardown removes the preview's
+base and final tags, not the shared environment image. No global environment
+cache pruning is performed.
+
+The independent CI job runs `bun scripts/verify-preview-environment.ts` with a
+private local deployment fixture, real Docker/Compose, SDK clients and Chromium.
+It exercises root-to-developer migration, native terminal interaction and
+reattachment, home recreation and non-disruptive preflight refusals. Only the
+fixture's fixed host-service calls to Caddy and systemd are shimmed. Run with
+`--measure-storage` locally to build two distinct application bases and record
+actual storage deltas. Screenshots and measurements are retained as CI evidence.
+
 ## Request, inspect and stop a PR preview
 
 Opening a draft PR claims work, not compute. An agent MAY request a numbered preview when live
@@ -199,7 +241,7 @@ After closed-PR teardown, `gc` runs `docker builder prune --all --force --keep-s
 while bounding reclaimable build-cache growth; `--all` includes unused non-dangling cache.
 Docker cannot prune layers still in use.
 Only dangling images are pruned globally: tagged images for open PRs are never swept.
-`down N` removes both `manifold-pr-pr-N:local` (the current Compose tag) and the older
+`down N` removes `manifold-pr-pr-N:base`, `manifold-pr-pr-N:local` and the older
 `manifold-pr-N:local` tag, without forcing removal of an image used by another container.
 Inspect disk use with `docker system df`, the schedule with
 `systemctl --user list-timers manifold-previews-gc.timer`, and runs with
