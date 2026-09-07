@@ -19,7 +19,7 @@ propose changes to the other briefs.
 
 In: `.github/workflows/ci.yml`, `release.yml`, `deploy-hub.yml`; `scripts/release.ts`,
 `release-core.ts`, `release-notes.ts`, `gate.ts`, `generate-web-changelog.ts`, and the promotion
-path (`bun run promote`, once #251 lands); `AGENTS.md` §Commands, §Issues and pull requests,
+path (`bun run promote`); `AGENTS.md` §Commands, §Issues and pull requests,
 §Changelog and releases, §Working alongside other agents, §Audits, §Conventions (commits);
 `changes/` fragments; the repository's labels (`gh label list`); `docs/audits/*` including this
 file and `LOG.md`; and the last 30 days of issues and PRs as evidence of practice. Out: product
@@ -35,16 +35,27 @@ repositories (name them as context, never audit them from here).
 ci.yml --commit`) and must be the ONLY writer of `release:` commits and `v*` tags:
    `git log --format='%s' origin/main | grep -c '^release:'` against `git tag -l 'v*' | wc -l`, and
    `git log --merges` for any release commit that is not a squash from a PR.
-3. **PR practice against the contract.** `gh pr list --state merged --limit 30 --json
-number,title,body,labels,files`: every body links an issue with `Closes #N`; every title uses a
+3. **PR practice against the contract.** `gh pr list --state all --limit 30 --json
+number,title,body,labels,files,isDraft,headRefOid,baseRefName,mergedAt`: inspect linked issue
+   acceptance criteria. `Closes #N` is correct only when merging fulfills them; partial delivery
+   uses `Refs #N` with remaining work explicit, including operational acceptance on umbrellas.
+   Draft checkpoints may have named failures or unrun checks. Ready PRs must have completed
+   scope and required evidence for the current published head and intended `main` integration
+   target; inspect the exact-head CI runs, not a previous green revision or the draft-to-ready
+   event. Completed PRs should become ready promptly, and substantive invalidating changes
+   return them to draft. Ownership comes from explicit PR scope, draft or ready, not `Closes`
+   alone; inspect existing owner comments and preserve earlier claims. Every title uses a
    contract prefix; every user-visible change carries a fragment (`changes/`) or a changelog
    bullet; no PR touched `CHANGELOG.md` released sections or `generated-changelog.ts` by hand.
    Count violations; a pattern (three or more PRs doing the same undocumented thing) is a
    candidate for the practice-not-told question in step 7, not a per-PR finding.
 4. **Labels.** `gh label list --repo atyrode/manifold --json name,description`. Every non-default
    label must appear in `AGENTS.md` §Audits with one clause; every label `AGENTS.md` names must
-   exist; `gh issue list --label needs-operator --state open` — anything merged while carrying it
-   is a finding (`needs-operator` means hold).
+   exist. Inspect `needs-operator` issues and related PRs, including their decision and label
+   history: merging with an unresolved decision is a finding. An explicit operator decision
+   resolves that hold when recorded and the label updated; it is not a permanent veto.
+   Report a missing status update separately from an unresolved decision, and do not treat
+   arbitrary comment text as operator authorization.
 5. **Release path against the runbook.** Read `scripts/release.ts` top to bottom against
    `AGENTS.md` §Changelog and releases and `release.yml`: each refusal in the script is a sentence
    in the doc, each doc sentence has a line in the script or a workflow step. `release-notes.ts`
@@ -72,9 +83,10 @@ deploy-hub.yml --limit 1`, then `gh run view <id>`) shows whether "Dispatch the 
    propose it be dropped." Label these `process` and `needs-operator`; the operator decides which
    habits become contract.
 8. **Reverse question.** For each sentence in `AGENTS.md` §Issues and pull requests, §Changelog and
-   releases, §Working alongside other agents and §Audits, find one PR in the last 30 that obeyed it.
-   A rule with no observed instance and no enforcing script is a candidate for deletion or for
-   enforcement; say which.
+   releases, §Working alongside other agents and §Audits, look for practice in the last 30 PRs
+   and for an enforcing script. No recent occurrence is not evidence that a preventive safety
+   rule is useless. Recommend deletion only with a superseding contract, a contradiction or
+   demonstrated cost; otherwise name an actual enforcement gap or report no finding.
 9. Write each finding as its own issue (Output contract). Append the ledger row.
 
 ## Evidence standard
