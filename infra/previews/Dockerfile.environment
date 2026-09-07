@@ -1,0 +1,38 @@
+# The PR owns /app; stable preview tooling supplies the development runtime.
+ARG MANIFOLD_APP_IMAGE
+ARG DEVELOPMENT_IMAGE
+FROM ${MANIFOLD_APP_IMAGE} AS application
+FROM ${DEVELOPMENT_IMAGE}
+
+WORKDIR /app
+COPY --from=application --chown=1000:1000 /app /app
+
+# Profile Bun is available before activation; no executable crosses from the PR base.
+RUN test -f /app/infra/entrypoint.sh && test -x /app/infra/entrypoint.sh || { echo 'preview: artifact contract requires executable /app/infra/entrypoint.sh' >&2; exit 1; }
+RUN bun -e '\
+  const required = (await Bun.file("/app/package.json").json())?.engines?.bun; \
+  if (typeof required !== "string" || !required.trim()) throw new Error("preview: artifact contract requires nonempty /app/package.json engines.bun"); \
+  if (!Bun.semver.satisfies(Bun.version, required)) throw new Error(`preview: development Bun ${Bun.version} does not satisfy artifact engines.bun ${required}`);'
+
+ARG MANIFOLD_VERSION
+ARG MANIFOLD_BUILD
+ARG MANIFOLD_CHANNEL
+ARG MANIFOLD_REVISION
+ARG DEVELOPMENT_IMAGE
+ARG DEVELOPMENT_DIGEST
+ENV MANIFOLD_BIND=0.0.0.0 \
+    MANIFOLD_DATA_DIR=/data \
+    MANIFOLD_VERSION=${MANIFOLD_VERSION} \
+    MANIFOLD_BUILD=${MANIFOLD_BUILD} \
+    MANIFOLD_CHANNEL=${MANIFOLD_CHANNEL}
+LABEL org.opencontainers.image.source="https://github.com/atyrode/manifold" \
+      org.opencontainers.image.revision=${MANIFOLD_REVISION} \
+      org.opencontainers.image.base.name=${DEVELOPMENT_IMAGE} \
+      org.opencontainers.image.base.digest=${DEVELOPMENT_DIGEST}
+
+EXPOSE 7777
+HEALTHCHECK --interval=30s --timeout=5s --start-period=150s --retries=3 \
+  CMD bun -e "const r = await fetch('http://127.0.0.1:7777/healthz'); if (!r.ok) process.exit(1);"
+
+# Inherit init and its root-to-developer activation from the environment.
+CMD ["/app/infra/entrypoint.sh"]

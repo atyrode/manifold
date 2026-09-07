@@ -1,6 +1,6 @@
 services:
   manifold:
-    image: manifold-pr-${PREVIEW_MACHINE}:local
+    image: ${PREVIEW_IMAGE:?preview tooling must select an image}
     build:
       args:
         VITE_MANIFOLD_SITE_TITLE: "${PREVIEW_MACHINE} - manifold"

@@ -47,18 +47,37 @@ unregister() {
   mv "$registry.new" "$registry"
 }
 register() { unregister "$1"; printf '%s %s %s\n' "$1" "$2" "$3" >>"$registry"; }
+environment_image() {
+  local image
+  [[ -f "$here/environment-image.txt" && -r "$here/environment-image.txt" ]] ||
+    fail 'expected a digest-pinned development image'
+  # Read through EOF without discarding trailing newlines; a NUL is invalid too.
+  if IFS= read -r -d '' image <"$here/environment-image.txt"; then
+    fail 'expected a digest-pinned development image'
+  fi
+  image=${image%$'\n'}
+  [[ $image =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]] ||
+    fail 'expected a digest-pinned development image'
+  printf '%s' "$image"
+}
 compose() {
-  local number=$1 port=$2; shift 2
+  local number=$1 port=$2 image=$3; shift 3
   (cd "$PREVIEW_HOME/checkouts/pr-$number" &&
     COMPOSE_PROJECT_NAME="manifold-pr-$number" COMPOSE_FILE="compose.yaml:$here/compose.preview.yaml" \
-    MANIFOLD_DOMAIN="$number.$PREVIEW_DOMAIN" PREVIEW_PORT="$port" PREVIEW_MACHINE="pr-$number" \
+    MANIFOLD_DOMAIN="$number.$PREVIEW_DOMAIN" PREVIEW_PORT="$port" PREVIEW_MACHINE="pr-$number" PREVIEW_IMAGE="$image" \
     env -u MANIFOLD_OWNER_KEY docker compose --env-file /dev/null "$@")
 }
 up() {
-  local number=$1 sha=$2 checkout port volume
+  local number=$1 sha=$2 checkout port volume development_image base_image final_image builder_driver revision probe
   pr_name "$number"; sha_arg "$sha"
+  development_image=$(environment_image)
+  builder_driver=$(docker buildx inspect) ||
+    fail 'development image composition requires the docker Buildx driver'
+  [[ $builder_driver =~ (^|$'\n')Driver:[[:blank:]]+docker($|$'\n') ]] ||
+    fail 'development image composition requires the docker Buildx driver'
   checkout="$PREVIEW_HOME/checkouts/pr-$number"
   port=$(allocate "$number"); volume="manifold-pr-${number}_manifold-data"
+  base_image="manifold-pr-pr-$number:base"; final_image="manifold-pr-pr-$number:local"
   log "fetching PR $number at $sha"
   if [[ ! -d $checkout ]]; then
     git clone -q --no-hardlinks "$PREVIEW_DEV_CHECKOUT" "$checkout"
@@ -66,6 +85,38 @@ up() {
   fi
   git -C "$checkout" fetch -q --tags origin
   git -C "$checkout" checkout -q --detach "$sha"
+  revision=$(git -C "$checkout" rev-parse HEAD)
+  identity "$checkout"; export MANIFOLD_CHANNEL=development
+  log "building PR $number: $MANIFOLD_BUILD on $development_image"
+  compose "$number" "$port" "$base_image" build manifold
+  docker buildx build --load --tag "$final_image" --file "$here/Dockerfile.environment" \
+    --build-arg "MANIFOLD_APP_IMAGE=$base_image" \
+    --build-arg "DEVELOPMENT_IMAGE=$development_image" \
+    --build-arg "DEVELOPMENT_DIGEST=${development_image##*@}" \
+    --build-arg "MANIFOLD_REVISION=$revision" \
+    --build-arg "MANIFOLD_VERSION=$MANIFOLD_VERSION" \
+    --build-arg "MANIFOLD_BUILD=$MANIFOLD_BUILD" \
+    --build-arg "MANIFOLD_CHANNEL=$MANIFOLD_CHANNEL" "$here"
+  log "probing PR $number development environment offline"
+  probe=$(docker run --rm --network none --label "com.docker.compose.project=manifold-pr-$number" "$final_image" bun -e '
+    import { statSync } from "node:fs";
+    if (process.getuid() !== 1000 || process.getgid() !== 1000)
+      throw new Error("preview: development command must run as UID/GID 1000");
+    if (process.env.HOME !== "/home/developer")
+      throw new Error("preview: development command must use /home/developer");
+    const home = statSync(process.env.HOME);
+    if (!home.isDirectory() || home.uid !== 1000 || home.gid !== 1000)
+      throw new Error("preview: development home must be owned by UID/GID 1000");
+    const required = (await Bun.file("/app/package.json").json())?.engines?.bun;
+    if (typeof required !== "string" || !required.trim())
+      throw new Error("preview: artifact contract requires nonempty /app/package.json engines.bun");
+    if (!Bun.semver.satisfies(Bun.version, required))
+      throw new Error(`preview: development Bun ${Bun.version} does not satisfy artifact engines.bun ${required}`);
+    await import(Bun.resolveSync("@manifold/protocol", "/app/packages/server"));
+    console.log("manifold-preview-environment-ok");
+  ')
+  [[ $probe == manifold-preview-environment-ok ]] ||
+    fail 'development image did not execute the supplied command probe'
   if ! docker volume inspect "$volume" >/dev/null 2>&1; then
     log "creating data volume for PR $number"
     docker volume create "$volume" >/dev/null
@@ -76,24 +127,52 @@ up() {
       fi
     fi
   fi
-  identity "$checkout"; export MANIFOLD_CHANNEL=development
-  log "building PR $number: $MANIFOLD_BUILD"
-  compose "$number" "$port" up -d --build manifold
+  log "redeploying PR $number retires existing PTYs and terminal entries and replaces the disposable development home"
+  if [[ -n $(compose "$number" "$port" "$final_image" ps --status running --quiet manifold) ]]; then
+    compose "$number" "$port" "$final_image" exec -T manifold bun - retire <"$here/terminal-lifecycle.ts"
+  fi
+  compose "$number" "$port" "$final_image" stop manifold
+  docker run --rm --network none --label "com.docker.compose.project=manifold-pr-$number" --user 0:0 --entrypoint /bin/bash \
+    --mount "type=volume,src=$volume,dst=/data" "$final_image" \
+    -c 'chown -R --no-dereference 1000:1000 /data' ||
+    fail "PR $number deployment failed while setting /data ownership"
+  compose "$number" "$port" "$final_image" up -d --no-build manifold
   register "$number" pr "$port"
   router
   log "waiting for PR $number health"
-  wait_health "http://127.0.0.1:$port" "$MANIFOLD_BUILD"
-  log "https://$number.$PREVIEW_DOMAIN runs $MANIFOLD_BUILD"
+  wait_health "http://127.0.0.1:$port" "$MANIFOLD_BUILD" ||
+    fail "PR $number deployment failed health check"
+  compose "$number" "$port" "$final_image" exec -T manifold bun - resume <"$here/terminal-lifecycle.ts"
+  log "https://$number.$PREVIEW_DOMAIN runs $MANIFOLD_BUILD on $development_image"
 }
 down() {
-  local number=$1 port image image_id
+  local number=$1 port image image_id project resource resources volume
   pr_name "$number"; lookup "$number"; port=${entry_port:-7920}
+  project="manifold-pr-$number"; volume="${project}_manifold-data"
   log "removing PR $number"
   if [[ -d $PREVIEW_HOME/checkouts/pr-$number ]]; then
-    compose "$number" "$port" down -v
+    compose "$number" "$port" "manifold-pr-pr-$number:local" down -v
     rm -rf -- "$PREVIEW_HOME/checkouts/pr-$number"
+  else
+    # A lost checkout must not strand this project's containers, networks or data.
+    resources=$(docker container ls --all --quiet --filter "label=com.docker.compose.project=$project")
+    while IFS= read -r resource; do
+      [[ -z $resource ]] || docker container rm --force "$resource"
+    done <<<"$resources"
+    resources=$(docker network ls --quiet --filter "label=com.docker.compose.project=$project")
+    while IFS= read -r resource; do
+      [[ -z $resource ]] || docker network rm "$resource"
+    done <<<"$resources"
+    resources=$(docker volume ls --quiet --filter "label=com.docker.compose.project=$project")
+    while IFS= read -r resource; do
+      [[ -z $resource ]] || docker volume rm "$resource"
+    done <<<"$resources"
+    # The seed volume is created before Compose and can have no Compose labels.
+    if docker volume inspect "$volume" >/dev/null 2>&1; then
+      docker volume rm "$volume"
+    fi
   fi
-  for image in "manifold-pr-pr-$number:local" "manifold-pr-$number:local"; do
+  for image in "manifold-pr-pr-$number:base" "manifold-pr-pr-$number:local" "manifold-pr-$number:local"; do
     image_id=$(docker image ls --quiet "$image")
     if [[ -n $image_id ]]; then
       docker image rm "$image"
@@ -151,7 +230,7 @@ url() {
   if [[ $entry_kind == pr ]]; then
     [[ -t 1 ]] || fail 'pre-auth URL is a secret: run url only in the operator local terminal'
     log 'SECRET: the following pre-auth URL is for the operator local terminal only.'
-    key=$(compose "$name" "$entry_port" exec -T manifold sh -c 'cat /data/owner.key')
+    key=$(compose "$name" "$entry_port" "manifold-pr-pr-$name:local" exec -T manifold sh -c 'cat /data/owner.key')
     [[ $key =~ ^[0-9a-f]{64}$ ]] || fail 'invalid owner key'
     printf 'https://%s.%s/#key=%s\n' "$name" "$PREVIEW_DOMAIN" "$key"
     unset key

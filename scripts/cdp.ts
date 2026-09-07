@@ -5,6 +5,7 @@
  * Timing lives in `gate-lib.ts` with the rest of the gate bootstrap; this file is the driver
  * and nothing else.
  */
+import { rmSync } from "node:fs";
 import { reserveLoopbackPort, sleep } from "./gate-lib.ts";
 
 interface CdpFrame {
@@ -60,6 +61,7 @@ function describeRemoteObject(value: unknown): string {
 export class Browser {
   private socket: WebSocket | null = null;
   private proc: Bun.Subprocess | null = null;
+  private transientProfile: string | null = null;
   private nextId = 1;
   /** DevTools protocol session (a CDP connection — canon "session", never a PTY). */
   private sessionId = "";
@@ -98,7 +100,7 @@ export class Browser {
    * the random picks that preceded this collided the moment two checkouts ran the gate at
    * once, and the driver is the one place that turns a port into a Chromium flag (#198).
    */
-  async launch(): Promise<void> {
+  async launch(options: { readonly incognito?: boolean } = {}): Promise<void> {
     const binary = Browser.detect();
     const port = reserveLoopbackPort();
     // GitHub's ubuntu-24.04 image 20260823.283 exports a malformed
@@ -110,12 +112,14 @@ export class Browser {
       if (name === "DBUS_TERMINAL_BUS_ADDRESS" || name === "DBUS_SYSTEM_BUS_ADDRESS") continue;
       if (value !== undefined) env[name] = value;
     }
+    const profile = `/tmp/manifold-verify-${String(port)}-${String(Date.now())}`;
+    this.transientProfile = options.incognito ? profile : null;
     const proc = Bun.spawn(
       [
         binary,
         "--headless=new",
         `--remote-debugging-port=${String(port)}`,
-        `--user-data-dir=/tmp/manifold-verify-${String(port)}-${String(Date.now())}`,
+        `--user-data-dir=${profile}`,
         "--no-first-run",
         "--no-sandbox",
         "--disable-gpu",
@@ -182,7 +186,20 @@ export class Browser {
       this.pending.delete(frame.id);
     };
 
-    const target = await this.send("Target.createTarget", { url: "about:blank" }, false);
+    // A disposable verifier may handle admission credentials that must stay in memory.
+    // Use Chromium's actual off-the-record storage, not a replacement localStorage.
+    const context = options.incognito
+      ? await this.send("Target.createBrowserContext", { disposeOnDetach: true }, false)
+      : null;
+    const browserContextId = context?.result?.["browserContextId"];
+    if (options.incognito && typeof browserContextId !== "string") {
+      throw new Error("Chromium did not create an incognito browser context");
+    }
+    const target = await this.send(
+      "Target.createTarget",
+      { url: "about:blank", ...(browserContextId === undefined ? {} : { browserContextId }) },
+      false,
+    );
     const targetId = String(target.result?.["targetId"]);
     const attached = await this.send("Target.attachToTarget", { targetId, flatten: true }, false);
     this.sessionId = String(attached.result?.["sessionId"]);
@@ -485,5 +502,18 @@ export class Browser {
   async close(): Promise<void> {
     this.socket?.close();
     this.proc?.kill();
+    if (this.transientProfile !== null) {
+      const proc = this.proc;
+      if (proc !== null) {
+        const timer = setTimeout(() => proc.kill("SIGKILL"), 5_000);
+        try {
+          await proc.exited;
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      rmSync(this.transientProfile, { recursive: true, force: true });
+      this.transientProfile = null;
+    }
   }
 }
