@@ -418,9 +418,14 @@ Environment `development`, inert unless the repository variables `DEV_DEPLOY_HOS
 host or provider: the receiver is `infra/previews/receiver.sh`.
 
 **Previews** are an optional development tier: `preview.<domain>` shows integrated `main`,
-`<N>.<domain>` follows PR N's head on every push, and non-numeric `<name>.<domain>` serves a live
-worktree on the preview host with hot reload. `.github/workflows/deploy-preview.yml` deploys
-same-repository PRs and tears them down on close. With
+`<N>.<domain>` serves PR N's last explicitly deployed SHA, and non-numeric `<name>.<domain>`
+serves a live worktree on the preview host with hot reload. Numbered previews are on demand:
+opening a PR or pushing does not provision or update one. Dispatch
+`.github/workflows/deploy-preview.yml` from `main` with `pr=N` and `action=deploy` to deploy
+an open same-repository PR's current head; request again after a push to update it.
+`action=stop` releases resources sooner, and closing the PR still tears it down automatically.
+The exact CLI commands, run-watching steps and inspection/reporting guidance are in
+`infra/previews/README.md` §Request, inspect and stop a PR preview. With
 `MANIFOLD_PREVIEW_DOMAIN=<domain>` on production, integrated and numbered previews use the
 production browser identity handoff (ADR 0027): public URLs carry no secret, production
 credentials never enter preview code, and production capability restrictions are preserved.

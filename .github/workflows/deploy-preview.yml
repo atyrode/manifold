@@ -1,105 +1,175 @@
-# PR PREVIEWS follow each same-repository head and disappear when the PR closes.
-# Fork heads never reach the forced-command SSH key; the job also stays inert without
-# DEV_DEPLOY_HOST. Host, user and domain come from repository variables, never a provider
-# assumption. The receiver and host setup are documented in infra/previews/README.md.
-#
-# A DOCS-ONLY head deploys nothing: when every changed file is Markdown outside changes/
-# there is nothing a preview could show, and `preview up` is a full image build plus a
-# resident container on the host. Fragments under changes/ DO render in the app (the
-# unreleased entry), so they count as code. The decision is re-made on every push from the
-# PR's whole diff, so a PR that grows code later deploys then, and teardown on close is
-# unconditional because `preview down` is idempotent.
+# PR previews are one-shot requests from trusted main, never automatic on open/push.
+# No PR code runs on this runner. Only validated same-repository heads reach the
+# existing forced-command receiver; integrated-main and production are separate.
 name: Deploy preview
-run-name: Preview PR ${{ github.event.pull_request.number }} (${{ github.event.action }})
+run-name: Preview PR ${{ inputs.pr || github.event.pull_request.number }} (${{ inputs.action || 'stop' }})
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, closed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+        type: string
+      action:
+        description: Deploy/update the current head, or stop its preview
+        required: true
+        type: choice
+        options: [deploy, stop]
+        default: deploy
+  pull_request_target:
+    types: [closed]
 
 permissions:
+  actions: read
   contents: read
-  deployments: write
   pull-requests: write
 
-concurrency:
-  group: preview-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
-  deploy:
-    name: preview
-    if: github.event.pull_request.head.repo.full_name == github.repository && vars.DEV_DEPLOY_HOST != ''
+  request:
+    name: Validate trusted preview request
+    if: github.ref == 'refs/heads/main' && vars.DEV_DEPLOY_HOST != ''
     runs-on: ubuntu-latest
+    outputs:
+      pr: ${{ steps.request.outputs.pr }}
+      action: ${{ steps.request.outputs.action }}
+    steps:
+      - name: Validate request without deployment secrets
+        id: request
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            if (context.ref !== "refs/heads/main") throw new Error("Preview requests must use main");
+            const dispatch = context.eventName === "workflow_dispatch";
+            if (!dispatch && !(context.eventName === "pull_request_target" && context.payload.action === "closed")) {
+              throw new Error("Unsupported preview event");
+            }
+            const n = dispatch ? context.payload.inputs?.pr : String(context.payload.pull_request?.number);
+            const action = dispatch ? context.payload.inputs?.action : "stop";
+            if (typeof n !== "string" || !/^[1-9][0-9]*$/.test(n) || !Number.isSafeInteger(Number(n))) {
+              throw new Error("PR must be a positive canonical integer");
+            }
+            if (action !== "deploy" && action !== "stop") throw new Error("Unknown preview action");
+            const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: Number(n) });
+            if (pr.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              throw new Error("Fork previews are not permitted");
+            }
+            if (!dispatch && pr.state !== "closed") {
+              await core.summary.addRaw(`PR #${n}: ignored a delayed close event because the PR is open.`).write();
+              return;
+            }
+            if (action === "deploy" && pr.state !== "open") throw new Error("Only open PRs can be deployed");
+            core.setOutput("pr", n);
+            core.setOutput("action", action);
+
+  preview:
+    name: Apply preview request
+    needs: request
+    if: needs.request.outputs.pr != ''
+    runs-on: ubuntu-latest
+    # Do not cancel an in-flight SSH command: disconnecting does not undo a remote build.
+    # A queued deploy rechecks closure and tears down instead, even if it replaced a
+    # pending close run in GitHub's single pending concurrency slot.
+    concurrency:
+      group: preview-${{ needs.request.outputs.pr }}
+      cancel-in-progress: false
     environment:
       name: preview
-      url: https://${{ github.event.pull_request.number }}.${{ vars.PREVIEW_DOMAIN }}
+      url: https://${{ needs.request.outputs.pr }}.${{ vars.PREVIEW_DOMAIN }}
     env:
-      N: ${{ github.event.pull_request.number }}
-      SHA: ${{ github.event.pull_request.head.sha }}
-      PREVIEW_URL: https://${{ github.event.pull_request.number }}.${{ vars.PREVIEW_DOMAIN }}
+      N: ${{ needs.request.outputs.pr }}
+      REQUEST_ACTION: ${{ needs.request.outputs.action }}
+      PREVIEW_URL: https://${{ needs.request.outputs.pr }}.${{ vars.PREVIEW_DOMAIN }}
       DEV_DEPLOY_USER: ${{ vars.DEV_DEPLOY_USER }}
       DEV_DEPLOY_HOST: ${{ vars.DEV_DEPLOY_HOST }}
     steps:
-      - name: Decide whether this head has anything to show
-        id: diff
-        if: github.event.action != 'closed'
+      - name: Recheck state and select the exact current head
+        id: head
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
-            const files = await github.paginate(github.rest.pulls.listFiles, {
-              ...context.repo,
-              pull_number: context.issue.number,
-              per_page: 100,
+            // Concurrency is not FIFO: a slow validation or rerun must not replay an
+            // older request after a newer deploy/stop. Closed PR cleanup always wins.
+            let superseded = false;
+            if (context.eventName === "workflow_dispatch") {
+              const { data: current } = await github.rest.actions.getWorkflowRun({
+                ...context.repo, run_id: context.runId,
+              });
+              const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+                ...context.repo, workflow_id: "deploy-preview.yml", branch: "main",
+                event: "workflow_dispatch", created: `>=${current.created_at}`, per_page: 100,
+              });
+              superseded = runs.some((run) => run.run_number > current.run_number &&
+                ["deploy", "stop"].some((action) => run.display_title === `Preview PR ${process.env.N} (${action})`));
+            }
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo, pull_number: Number(process.env.N),
             });
-            const docsOnly = (f) => f.filename.endsWith(".md") && !f.filename.startsWith("changes/");
-            const showable = files.filter((f) => !docsOnly(f));
-            core.info(`${files.length} changed file(s), ${showable.length} outside docs`);
-            core.setOutput("deploy", showable.length > 0 ? "true" : "false");
+            if (pr.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              throw new Error("Fork previews are not permitted");
+            }
+            if (pr.state === "open" && (superseded || context.eventName === "pull_request_target")) {
+              core.setOutput("action", "skip");
+              await core.summary.addRaw(`PR #${process.env.N}: skipped a stale preview request; no remote command was sent.`).write();
+              return;
+            }
+            const action = process.env.REQUEST_ACTION === "deploy" && pr.state === "open" ? "deploy" : "stop";
+            if (action === "deploy" && !/^[0-9a-f]{40}$/.test(pr.head.sha)) throw new Error("Invalid PR head SHA");
+            core.setOutput("action", action);
+            core.setOutput("sha", action === "deploy" ? pr.head.sha : "");
 
-      - name: Deploy the PR head
-        if: github.event.action != 'closed' && steps.diff.outputs.deploy == 'true'
+      - name: Apply the request through the forced-command receiver
+        if: steps.head.outputs.action != 'skip'
         env:
+          ACTION: ${{ steps.head.outputs.action }}
+          SHA: ${{ steps.head.outputs.sha }}
           DEV_DEPLOY_SSH_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
         run: |
+          set -euo pipefail
+          [[ "$N" =~ ^[1-9][0-9]*$ ]]
+          case "$ACTION" in
+            deploy)
+              [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+              command="preview up $N $SHA"
+              ;;
+            stop) command="preview down $N" ;;
+            *) exit 1 ;;
+          esac
           umask 077
           key="$(mktemp)"
           trap 'rm -f "$key"' EXIT
           printf '%s\n' "$DEV_DEPLOY_SSH_KEY" > "$key"
           ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$key" \
-            "$DEV_DEPLOY_USER@$DEV_DEPLOY_HOST" "preview up $N $SHA"
+            "$DEV_DEPLOY_USER@$DEV_DEPLOY_HOST" "$command"
 
-      # Posted on the FIRST deploy rather than on `opened`, so a PR that starts docs-only
-      # and later touches code still gets its link exactly once.
-      - name: Post the preview URL once
-        if: github.event.action != 'closed' && steps.diff.outputs.deploy == 'true'
+      - name: Update preview status and summary
+        if: steps.head.outputs.action != 'skip'
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          ACTION: ${{ steps.head.outputs.action }}
+          SHA: ${{ steps.head.outputs.sha }}
         with:
           script: |
-            const marker = `Preview: ${process.env.PREVIEW_URL}`;
+            const marker = "<!-- manifold-pr-preview -->";
+            const legacyMarker = `Preview: ${process.env.PREVIEW_URL}`;
+            const deployed = process.env.ACTION === "deploy";
+            const body = [
+              marker,
+              legacyMarker,
+              deployed ? `Status: deployed commit \`${process.env.SHA}\`.` : "Status: stopped. This preview is not running.",
+              "Previews are on demand. Later pushes do not update or restart this preview; request deploy again to use the current PR head. Closing the PR stops it.",
+              `Deploy/update: \`gh workflow run deploy-preview.yml --repo ${context.repo.owner}/${context.repo.repo} --ref main -f pr=${process.env.N} -f action=deploy\``,
+              `Stop: \`gh workflow run deploy-preview.yml --repo ${context.repo.owner}/${context.repo.repo} --ref main -f pr=${process.env.N} -f action=stop\``,
+              ...(deployed ? ["Open the ordinary URL using your production identity; no preview key or token is needed."] : []),
+            ].join("\n\n");
             const comments = await github.paginate(github.rest.issues.listComments, {
-              ...context.repo,
-              issue_number: context.issue.number,
-              per_page: 100,
+              ...context.repo, issue_number: Number(process.env.N), per_page: 100,
             });
-            if (comments.some((c) => c.body?.startsWith(marker))) return;
-            await github.rest.issues.createComment({
-              ...context.repo,
-              issue_number: context.issue.number,
-              body: [
-                marker,
-                "It follows every push to this PR. Open this ordinary URL using your production identity; no preview key or token is needed.",
-                `The browser title names PR ${process.env.N}, and the teal favicon distinguishes it from production and the integrated preview.`,
-              ].join("\n\n"),
-            });
-
-      - name: Tear down the closed PR
-        if: github.event.action == 'closed'
-        env:
-          DEV_DEPLOY_SSH_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
-        run: |
-          umask 077
-          key="$(mktemp)"
-          trap 'rm -f "$key"' EXIT
-          printf '%s\n' "$DEV_DEPLOY_SSH_KEY" > "$key"
-          ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$key" \
-            "$DEV_DEPLOY_USER@$DEV_DEPLOY_HOST" "preview down $N"
+            const existing = comments.find((c) => c.user?.login === "github-actions[bot]" &&
+              (c.body?.startsWith(marker) || c.body?.startsWith(legacyMarker)));
+            if (existing) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+            } else if (deployed) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: Number(process.env.N), body });
+            }
+            await core.summary.addRaw(body).write();
