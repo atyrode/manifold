@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-/** Real numbered-preview migration and browser smoke check; never targets an operator deployment. */
+/** Real preview migration and browser smoke check; never targets an operator deployment. */
 import {
   appendFileSync,
   chmodSync,
@@ -26,9 +26,15 @@ import { Browser } from "./cdp.ts";
 import { reserveLoopbackPort, sleep, until } from "./gate-lib.ts";
 
 const args = process.argv.slice(2);
-if (args.some((arg) => arg !== "--measure-storage") || args.length > 1) {
-  throw new Error("usage: bun scripts/verify-preview-environment.ts [--measure-storage]");
+if (
+  args.some((arg) => arg !== "--measure-storage" && arg !== "--integrated") ||
+  new Set(args).size !== args.length
+) {
+  throw new Error(
+    "usage: bun scripts/verify-preview-environment.ts [--measure-storage] [--integrated]",
+  );
 }
+const integrated = args.includes("--integrated");
 const measureStorage = args.includes("--measure-storage");
 const repo = resolve(import.meta.dir, "..");
 const started = Date.now();
@@ -50,7 +56,7 @@ const secrets = new Set<string>();
 const clients = new Set<SessionClient>();
 const ownedImages = new Set<string>();
 const processes = new Set<Bun.Subprocess>();
-const metrics: Record<string, unknown> = { measureStorage, artifacts: evidence };
+const metrics: Record<string, unknown> = { integrated, measureStorage, artifacts: evidence };
 const reports: { name: string; elapsedMs: number }[] = [];
 let browser: Browser | null = null;
 let number = "";
@@ -74,11 +80,13 @@ let active = false;
 let cleanupPromise: Promise<void> | undefined;
 let commandTail = "";
 let env: Record<string, string> = {};
-const project = () => `manifold-pr-${number}`;
-const baseImage = () => `manifold-pr-pr-${number}:base`;
-const finalImage = () => `manifold-pr-pr-${number}:local`;
+const project = () => (integrated ? `manifold-dev-${number}` : `manifold-pr-${number}`);
+const baseImage = () => (integrated ? `${project()}:base` : `manifold-pr-pr-${number}:base`);
+const finalImage = () => (integrated ? `${project()}:local` : `manifold-pr-pr-${number}:local`);
 const volume = () => `${project()}_manifold-data`;
-const checkout = () => join(deployment, "checkouts", `pr-${number}`);
+const checkout = () => (integrated ? fixtureRepo : join(deployment, "checkouts", `pr-${number}`));
+const machineName = () => (integrated ? "dev-hub" : `pr-${number}`);
+const developmentOverlay = join(tooling, "fixture-development.yaml");
 const pinPath = join(tooling, "environment-image.txt");
 const adapterPath = join(tooling, "Dockerfile.environment");
 
@@ -159,10 +167,12 @@ function composeEnv(image: string): Record<string, string> {
     ...env,
     ...baseIdentity,
     COMPOSE_PROJECT_NAME: project(),
-    COMPOSE_FILE: `${join(checkout(), "compose.yaml")}:${join(tooling, "compose.preview.yaml")}`,
-    MANIFOLD_DOMAIN: `${number}.preview.invalid`,
+    COMPOSE_FILE: integrated
+      ? `${join(checkout(), "compose.yaml")}:${developmentOverlay}:${join(tooling, "compose.development.yaml")}`
+      : `${join(checkout(), "compose.yaml")}:${join(tooling, "compose.preview.yaml")}`,
+    MANIFOLD_DOMAIN: integrated ? "preview.preview.invalid" : `${number}.preview.invalid`,
     PREVIEW_PORT: String(port),
-    PREVIEW_MACHINE: `pr-${number}`,
+    PREVIEW_MACHINE: machineName(),
     PREVIEW_IMAGE: image,
   };
 }
@@ -236,7 +246,10 @@ async function up(
   options: CommandOptions = {},
 ): Promise<{ code: number; out: string; err: string }> {
   active = true;
-  const result = await command(["bash", join(tooling, "preview.sh"), "up", number, revision], {
+  const argv = integrated
+    ? ["bash", join(tooling, "deploy-dev.sh"), revision]
+    : ["bash", join(tooling, "preview.sh"), "up", number, revision];
+  const result = await command(argv, {
     timeoutMs: 18 * 60_000,
     ...options,
   });
@@ -301,7 +314,7 @@ async function onlineMachine(): Promise<string> {
   await until(
     async () => {
       const { machines } = MachinesResponseSchema.parse(await act("core.machines.list", {}));
-      id = machines.find((machine) => machine.name === `pr-${number}` && machine.online)?.id ?? "";
+      id = machines.find((machine) => machine.name === machineName() && machine.online)?.id ?? "";
       return id !== "";
     },
     30_000,
@@ -576,8 +589,10 @@ async function setup(): Promise<void> {
         `label=com.docker.compose.project=${project()}`,
       ])
     ).out.trim();
-    const images = (await docker(["image", "ls", "-q", `manifold-pr-pr-${number}`])).out.trim();
-    const legacyImages = (await docker(["image", "ls", "-q", `manifold-pr-${number}`])).out.trim();
+    const images = (await docker(["image", "ls", "-q", baseImage().split(":")[0]!])).out.trim();
+    const legacyImages = integrated
+      ? ""
+      : (await docker(["image", "ls", "-q", `manifold-pr-${number}`])).out.trim();
     if (!containers && !volumes && !networks && !images && !legacyImages) {
       ownsProject = true;
       break;
@@ -588,6 +603,26 @@ async function setup(): Promise<void> {
   port = await freeRange();
   origin = `http://127.0.0.1:${port}`;
   env["PREVIEW_PORT_RANGE"] = `${port}-${port + 1}`;
+  if (integrated) {
+    env["PREVIEW_DEV_PORT"] = String(port);
+    env["PREVIEW_DEV_URL"] = origin;
+    env["COMPOSE_PROJECT_NAME"] = project();
+    env["COMPOSE_FILE"] = `${join(fixtureRepo, "compose.yaml")}:${developmentOverlay}`;
+    // The real host overlay's shape, scoped to this run's private project and port.
+    // Docker, activation, protocol probes and lifecycle actions remain real.
+    writeFileSync(
+      developmentOverlay,
+      `services:
+  manifold:
+    ports:
+      - "127.0.0.1:${port}:7777"
+    environment:
+      MANIFOLD_MACHINE_NAME: dev-hub
+  caddy:
+    profiles: [bundled-proxy]
+`,
+    );
+  }
   for (const shim of ["caddy", "systemctl"]) {
     const path = join(shims, shim);
     writeFileSync(
@@ -599,6 +634,9 @@ async function setup(): Promise<void> {
   for (const name of [
     "preview.sh",
     "common.sh",
+    "environment.sh",
+    "deploy-dev.sh",
+    "compose.development.yaml",
     "caddy.sh",
     "compose.preview.yaml",
     "Dockerfile.environment",
@@ -756,7 +794,7 @@ async function browserProof(): Promise<void> {
   await browser.evaluate(
     "(() => { const b = document.querySelector('[data-testid=machines-section] button[aria-expanded]'); if (b.getAttribute('aria-expanded') !== 'true') b.click(); })()",
   );
-  const selector = `[aria-label="New terminal on pr-${number}"]`;
+  const selector = `[aria-label="New terminal on ${machineName()}"]`;
   await until(
     () =>
       browser!.evaluate<boolean>(`document.querySelector(${JSON.stringify(selector)}) !== null`),
@@ -801,24 +839,36 @@ async function browserProof(): Promise<void> {
   );
   await capture("shell-paste");
   await focusTerminal();
+  // A welcome border can paint while OMP still owns a cooked prepaint prompt.
+  // Wait for the application's actual paste-protocol opt-in, not that border.
+  const observer = await session(opened.homeId);
+  let pasteReady = false;
+  let modeTail = "";
+  const observeMode = (data: string): void => {
+    modeTail += base64ToText(data);
+    const enabled = modeTail.lastIndexOf("\u001b[?5522h");
+    const disabled = modeTail.lastIndexOf("\u001b[?5522l");
+    if (enabled !== -1 || disabled !== -1) pasteReady = enabled > disabled;
+    modeTail = modeTail.slice(-16);
+  };
+  observer.on("terminal_output", (message) => observeMode(message.data));
+  observer.on("terminal_snapshot", (message) => observeMode(message.data));
+  observer.attachTerminal(opened.id);
+  // Exercise the editor, not the upstream provider/setup wizard. Use OMP's supported
+  // per-launch switch rather than manufacturing configuration or authentication state.
+  // OMP 18.1.13/18.1.14's bare-launch fast prepaint misses enhanced-paste startup.
+  // This explicit ephemeral compatibility launch bypasses that upstream bug; it is
+  // not evidence that bare `omp` works before the upstream correction is released.
   await browser.typeText(
-    "env -u NO_COLOR -u CI CLICOLOR_FORCE=1 COLORTERM=truecolor TERM=xterm-256color omp\r",
+    "env -u NO_COLOR -u CI OMP_SKIP_SETUP=1 CLICOLOR_FORCE=1 COLORTERM=truecolor TERM=xterm-256color omp --no-session --no-extensions\r",
   );
-  const skipped = new Set<string>();
   await until(
-    async () => {
-      const text = await screen();
-      const setup = /Setup step (\d+) of \d+/.exec(text);
-      if (setup && !skipped.has(setup[1]!)) {
-        skipped.add(setup[1]!);
-        await key("Escape", "Escape");
-        return false;
-      }
-      return !setup && /(?:^|\n)╰─/.test(text);
-    },
+    async () => pasteReady && /(?:^|\n)╰─/.test(await screen()),
     90_000,
     "OMP native editor ready for an unsubmitted draft",
   );
+  observer.close();
+  clients.delete(observer);
   const draft = `preview-draft-${crypto.randomUUID()}-café界\nsecond-line-λ`;
   await paste(draft);
   const draftVisible = async () => {
@@ -827,6 +877,29 @@ async function browserProof(): Promise<void> {
   };
   await until(draftVisible, 20_000, "our Unicode multiline draft painted without submission");
   await capture("omp-draft");
+  const pasteImage = async (number: number): Promise<void> => {
+    await focusTerminal();
+    await browser!.evaluate(`(async () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 128; canvas.height = 64;
+      const context = canvas.getContext('2d');
+      context.fillStyle = '#d020a0'; context.fillRect(0, 0, 64, 64);
+      context.fillStyle = '#20b060'; context.fillRect(64, 0, 64, 64);
+      const {promise, resolve} = Promise.withResolvers();
+      canvas.toBlob(resolve, 'image/png');
+      const blob = await promise;
+      if (!blob) throw new Error('could not create clipboard PNG');
+      await navigator.clipboard.write([new ClipboardItem({'image/png': blob})]);
+    })()`);
+    await key("V", "KeyV", 2 | 8);
+    await until(
+      async () => (await screen()).includes(`#${number}`) && (await draftVisible()),
+      20_000,
+      `OMP stages image attachment ${number} without submitting our draft`,
+    );
+  };
+  await pasteImage(1);
+  await capture("omp-image-paste");
   // Use Index's real rows to leave the terminal for an empty canvas, then reattach.
   // Root navigation restores the last room, so it would not actually detach this viewer.
   const indexCanvas = ContainerResponseSchema.parse(
@@ -869,6 +942,8 @@ async function browserProof(): Promise<void> {
   );
   await until(draftVisible, 20_000, "reattached draft visible in expanded terminal");
   await capture("omp-reattached");
+  await pasteImage(2);
+  await capture("omp-image-paste-reattached");
   await browser.goto(`${origin}/p/${indexCanvas}`);
   await until(
     () => browser!.evaluate<boolean>("document.querySelector('.xterm-rows') === null"),
@@ -1037,7 +1112,11 @@ async function teardown(): Promise<void> {
           failures.push(`could not remove owned ${kind} ${id}`);
       }
     }
-    for (const tag of [baseImage(), finalImage(), `manifold-pr-${number}:local`])
+    for (const tag of [
+      baseImage(),
+      finalImage(),
+      ...(integrated ? [] : [`manifold-pr-${number}:local`]),
+    ])
       await docker(["image", "rm", tag], { allowFailure: true });
     for (const image of ownedImages) {
       const found = await docker(["image", "inspect", image, "--format", "{{json .RepoTags}}"], {
@@ -1185,6 +1264,40 @@ try {
     await newTerminalProbe("recreated-developer");
     await assertDataWrites();
   });
+  if (integrated) {
+    await step("misdirected integrated machine refuses before touching the live hub", async () => {
+      const overlay = readFileSync(developmentOverlay, "utf8");
+      await preserveLive(
+        "wrong-development-machine",
+        async () => {
+          writeFileSync(
+            developmentOverlay,
+            overlay.replace("MANIFOLD_MACHINE_NAME: dev-hub", "MANIFOLD_MACHINE_NAME: other-hub"),
+          );
+        },
+        async () => {
+          writeFileSync(developmentOverlay, overlay);
+        },
+        "integrated deployment requires the existing dev-hub",
+      );
+    });
+    await step("shared integrated data volume refuses before live mutation", async () => {
+      const overlay = readFileSync(developmentOverlay, "utf8");
+      await preserveLive(
+        "shared-development-volume",
+        async () => {
+          writeFileSync(
+            developmentOverlay,
+            `${overlay}\nvolumes:\n  manifold-data:\n    name: not-owned-by-${project()}\n`,
+          );
+        },
+        async () => {
+          writeFileSync(developmentOverlay, overlay);
+        },
+        "integrated deployment requires its project-owned manifold-data volume",
+      );
+    });
+  }
   const goodPin = readFileSync(pinPath, "utf8");
   for (const malformed of [
     "",
@@ -1313,7 +1426,12 @@ try {
   await step("missing-pin down removes only fixture project, volume and app tags", async () => {
     closeClients();
     rmSync(pinPath);
-    await command(["bash", join(tooling, "preview.sh"), "down", number], { timeoutMs: 120_000 });
+    if (integrated) {
+      await compose(finalImage(), ["down", "-v"]);
+      for (const image of [baseImage(), finalImage()]) await docker(["image", "rm", image]);
+    } else {
+      await command(["bash", join(tooling, "preview.sh"), "down", number], { timeoutMs: 120_000 });
+    }
     active = false;
     requireThat(
       (
@@ -1330,12 +1448,13 @@ try {
         (await docker(["image", "inspect", image], { allowFailure: true })).code !== 0,
         `down retained ${image}`,
       );
-    requireThat(
-      !readFileSync(join(deployment, "registry"), "utf8")
-        .split("\n")
-        .some((row) => row.startsWith(number + " ")),
-      "down retained fixture registry entry",
-    );
+    if (!integrated)
+      requireThat(
+        !readFileSync(join(deployment, "registry"), "utf8")
+          .split("\n")
+          .some((row) => row.startsWith(number + " ")),
+        "down retained fixture registry entry",
+      );
   });
 } catch (error) {
   failure = error;

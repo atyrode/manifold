@@ -1,0 +1,14 @@
+# Append to the existing resolved development stack, preserving its project and data.
+services:
+  manifold:
+    image: ${PREVIEW_IMAGE:?preview tooling must select an image}
+    environment:
+      MANIFOLD_PLUGIN_DEV_PATHS: "1"
+      MANIFOLD_ANNOUNCE_KEY: "0"
+      MANIFOLD_IDENTITY_AUTHORITY: https://${PREVIEW_DOMAIN}
+      MANIFOLD_REPLICA_BUCKET: ""
+      MANIFOLD_REPLICA_ENDPOINT: ""
+      LITESTREAM_ACCESS_KEY_ID: ""
+      LITESTREAM_SECRET_ACCESS_KEY: ""
+  caddy:
+    profiles: [bundled-proxy]
