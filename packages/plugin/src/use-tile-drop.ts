@@ -20,7 +20,6 @@ import {
   resolveTileAim,
   tileDestinationFor,
   tileProspect,
-  type PaneShift,
   type TileAim,
   type UnitRect,
 } from "./tile-geometry.ts";
@@ -162,14 +161,12 @@ export interface TileDropState {
   readonly slot: UnitRect;
   /** The second rect a swap trades with, else null. */
   readonly partner: UnitRect | null;
-  /** How the real panes glide and squeeze into their prospective places. */
-  readonly shifts: readonly PaneShift[];
   readonly assessment: ItemDropAssessment | null;
   readonly destination: PlacementDestination;
   /** What is being carried, as the placement algebra sees it. */
   readonly ref: PlacementRef | null;
   readonly chip: TileDropChip | null;
-  /** The leaf this carry is vacating in THIS container, else null. */
+  /** The reserved source leaf in THIS container, else null. */
   readonly carriedTileId: string | null;
 }
 
@@ -307,7 +304,6 @@ export function previewFor(
     aim: wire,
     slot: prospect.slot,
     partner: prospect.partner,
-    shifts: prospect.shifts,
     // The carry judges itself by the item it names, whoever produced it — the local
     // pointer and a peer's frame reach this call with the same two fields.
     assessment: context.assess(destination, carried ?? undefined),

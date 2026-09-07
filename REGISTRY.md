@@ -55,7 +55,7 @@ must never be taught one.
       "id": "protocol",
       "globs": ["packages/protocol/src/**"],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the vocabulary every plane speaks: wire schemas, capabilities, manifest and action shapes, the manifold:// grammar. Nothing can be validated, published or refused by name before it exists, it names no plugin, and it arbitrates by being the single definition every party is measured against.",
+      "verdict": "the vocabulary every plane speaks: wire schemas, capabilities, manifest and action shapes, the manifold:// grammar, and the shared private-mode parser seam that keeps live terminal consumers and authoritative snapshots on the same byte interpretation (ADR 0029). Nothing can be validated, published or refused by name before it exists, it names no plugin, and it arbitrates by being the single definition every party is measured against.",
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {
@@ -1910,6 +1910,11 @@ register. Anything else is presence, document, or action state — A2 leaves no 
     {
       "key": "manifold:terminal-font-sizes",
       "why": "core.terminals' per-device, per-terminalId font-size map: integer pixels 8..32, default/reset 13, at most 128 non-default entries with oldest-updated eviction and malformed entries ignored. Readability depends on THIS display, so it is neither shared document nor action state; spectators may adjust their own font, while PTY resize remains controller-only after snapshot and never from a preview"
+    },
+    {
+      "key": "terminal-clipboard",
+      "prefix": true,
+      "why": "core.terminals' in-memory clipboard exchange and terminal-clipboard:<terminalId> consent/notice surface, never persistent storage: captured MIME bytes, the one-use paste grant and an unapproved OSC 52 copy belong only to this focused, authorized browser view. Publishing another device's clipboard would violate its consent. Captures expire after 15 seconds and are discarded on completion, refusal, blur, deactivation, authority loss, snapshot replacement, disconnect or disposal; approved paste bytes use existing controller-authorized PTY input, not a shared-file store"
     },
     {
       "key": "manifold:show-container-terminals",

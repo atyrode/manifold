@@ -87,13 +87,13 @@ restrict,command="env PREVIEW_HOME=/path/to/previews /path/to/repo/infra/preview
 
 Run `infra/previews/preview.sh` with: `router`; `up 123 <sha>`; `down 123`; `ls`;
 `url 123`; `live feature /path/to/worktree`; `url feature`; `unlive feature`; `gc`; `gc-timer`;
-`plugin <https-url> <sha256>`.
+`plugin <https-url> <sha256> [--hardened]`.
 `up` reuses the port and data on redeploy, waits for the exact build, then prints its URL.
 `down` destroys the container, volume, checkout and per-PR image (including an image whose
 checkout is already gone). An absent image is a no-op; `unlive` retains live data.
 `gc` removes PRs reported CLOSED or MERGED by `gh pr view`; without `gh` it is a no-op.
 The receiver accepts `dev <sha>`, `preview up 123 <sha>`, `preview down 123`,
-`plugin <https-url> <sha256>`, or a bare `<sha>` (legacy dev deployment). Other commands are refused.
+`plugin <https-url> <sha256> [--hardened]`, or a bare `<sha>` (legacy dev deployment). Other commands are refused.
 
 `plugin <url> <sha256>` installs a published plugin bundle on the integrated preview: it runs
 `packages/plugin-kit/src/install.ts` from this stable checkout against `http://127.0.0.1:$PREVIEW_DEV_PORT`
@@ -103,6 +103,11 @@ host. An author repository's release workflow calls it once per bundle, parents 
 same forced-command key (`docs/PLUGINS.md` §9 Delivering). The stable checkout needs
 `bun install --frozen-lockfile` once, like a live worktree. Production is never a receiver verb:
 the operator installs there from the release URL in the plugin manager, by hand.
+The three-word `plugin <url> <sha256>` form keeps the installer's in-realm default.
+Append the exact fourth word `--hardened` to explicitly select its existing hardened runner;
+the bundle must already target that runner. Both the receiver and direct CLI reject unknown
+options and extra arguments before invoking the installer. The receiver does not infer the
+runner from the URL, manifest or hash.
 
 Integrated and numbered previews normally admit an existing production browser identity through
 the POST handoff in ADR 0027. The ordinary public URL carries no credential. A fresh seeded
