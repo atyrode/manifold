@@ -20,7 +20,7 @@ import { createContext, createElement, useContext, type ReactElement, type React
  *
  * It carries NO identity: `HostServices` already answers "who is this device" for every
  * contribution, and a second answer here would be a second door onto the same question
- * (invariant 14).
+ * (docs/CONTRACTS.md §One authoritative implementation).
  */
 
 /**

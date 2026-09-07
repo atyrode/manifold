@@ -13,7 +13,7 @@
  *      disconnected condition is NAMED on screen — and `/api` is still refused, because a lens
  *      that served stale scene state from a cache would be lying about what it knows. A stale
  *      cached bundle in front of a newer instance is REFUSED, in both directions, rather than
- *      reconnecting forever (`AGENTS.md` invariant 10). A foreign shell generation is swept on
+ *      reconnecting forever (docs/CONTRACTS.md §Protocol and compatibility). A foreign shell generation is swept on
  *      activation, so a deploy cannot leave a browser pinned to an old lens.
  *   3. PORTABLE. A lens served by instance A is pointed at instance B with one query
  *      parameter, and then talks to B — HTTP and WebSocket both, cross-origin, with A's
@@ -71,7 +71,7 @@ function spawnInstance(port: number, dataDir: string): Bun.Subprocess {
       MANIFOLD_PREVIEW_DOMAIN: "localhost",
       MANIFOLD_IDENTITY_AUTHORITY: port === portA ? "" : authorityOrigin,
     },
-    // The boot line prints the owner-key URL: never inherit it into gate logs (invariant 6).
+    // The boot line prints the owner-key URL: never inherit it into gate logs (docs/CONTRACTS.md §Data and credential boundaries).
     stdout: "ignore",
     stderr: "inherit",
   });

@@ -3,7 +3,7 @@ import { normalizeInstanceOrigin } from "@manifold/protocol";
 /**
  * WHICH INSTANCE THIS LENS LOOKS AT. One answer, because every door a renderer dials — the
  * session socket, the action door, the boot reads — has to name the same server, and a second
- * derivation is a second answer to "which instance is this" (invariant 14).
+ * derivation is a second answer to "which instance is this" (docs/CONTRACTS.md §One authoritative implementation).
  *
  * The default is the page's own origin, which is the browser baseline: a lens served by an
  * instance looks at that instance. What AXIOMS §The portable lens forbids is the ASSUMPTION —

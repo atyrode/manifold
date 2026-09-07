@@ -59,7 +59,7 @@ export const EVENTS_LIST_DEFAULT = 100;
  * `core.machines` made — worth stating because both are right. `MachineSummary` lives in the
  * protocol because the SDK parses it and the machine channel describes its own vocabulary in
  * it: two planes already spoke that shape, so a private copy would have been the second
- * convention invariant 14 forbids. Nothing outside this plugin has ever named an event row.
+ * convention docs/CONTRACTS.md §One authoritative implementation forbids. Nothing outside this plugin has ever named an event row.
  * Promoting one into the protocol would be publishing a wire type with a single reader, and
  * the roster already publishes this schema as JSON Schema at `GET /api/protocol` — so a
  * stranger's client gets the same machine-readable shape either way, without the floor

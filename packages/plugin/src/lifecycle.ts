@@ -25,7 +25,7 @@ export const LIFECYCLE_TIMEOUT_MS = 2_000;
  * emission call. Nothing else — deliberately. A lifecycle hook exists to put a plugin's OWN
  * durable state in order; anything that touches the workspace is a mutation, and every
  * mutation goes through an action door where it can be authorized, validated, logged and
- * observed (invariant 13).
+ * observed (AXIOMS.md §The plane rule).
  *
  * `emit` is not an exception to that rule, it is the shape of it: an event NOTIFIES and never
  * mutates, so handing a hook the ability to say "I am serving now" costs nothing a door would

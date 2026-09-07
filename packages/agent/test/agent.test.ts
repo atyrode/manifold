@@ -325,7 +325,7 @@ test("abandoning an in-flight snapshot on PTY disposal sends no frame or rejecti
 /**
  * Scripted in-memory socket (agent-side mirror of the server tests' FakeSocket):
  * the test plays the server role by driving open/receive/serverClose, so these
- * cases stay deterministic and network-free per AGENTS.md invariant 7.
+ * cases stay deterministic and network-free per docs/CONTRACTS.md §Testability (agent-facing).
  */
 class ScriptedSocket {
   onopen: (() => void) | null = null;

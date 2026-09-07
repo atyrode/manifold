@@ -53,8 +53,7 @@ function isolateInterpreter(): string | null {
 /**
  * The environment a child gets: the interpreter must be findable, a home directory keeps
  * Bun's own cache out of `/`, and the plugin learns its id. NOTHING of the server's own
- * environment — its data directory, its owner key, its listen address — crosses (invariant
- * 6): a stranger's process is told exactly what it needs to run and nothing it could leak.
+ * environment — its data directory, its owner key, its listen address — crosses (docs/CONTRACTS.md §Data and credential boundaries): a stranger's process is told exactly what it needs to run and nothing it could leak.
  */
 function childEnvironment(pluginId: string): Record<string, string> {
   const env: Record<string, string> = {

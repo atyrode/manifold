@@ -57,7 +57,7 @@ export function BrandRow({ host }: SectionProps): ReactElement {
     The rail's own collapsed/open state and the build's identity are the HOST's facts, read
     off the one context the workspace host publishes above the tree (`WorkspaceShell`). A row
     that needs to know how wide the rail is drawn reads it there and nowhere else: a second
-    channel for "is the sidebar collapsed" would be a second answer to it (invariant 14).
+    channel for "is the sidebar collapsed" would be a second answer to it (docs/CONTRACTS.md §One authoritative implementation).
   */
   const { sidebarOpen, webChangelog, webVersionLabel } = useWorkspaceShell();
   /*

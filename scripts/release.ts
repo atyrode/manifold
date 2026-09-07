@@ -115,7 +115,7 @@ const protocolLine =
     ? `Protocol: ${protocolAtHead} at HEAD; no release tag to compare against`
     : protocolAtTag === protocolAtHead
       ? `Protocol: ${protocolAtHead}, unchanged since ${lastTag}`
-      : `Protocol bump pending: ${protocolAtTag} (${lastTag}) → ${protocolAtHead} (HEAD); the hub ships at or ahead of this release (invariant 10)`;
+      : `Protocol bump pending: ${protocolAtTag} (${lastTag}) → ${protocolAtHead} (HEAD); the hub ships at or ahead of this release (docs/CONTRACTS.md §Protocol and compatibility)`;
 
 const pullRequests = await Promise.all(fragments.map(pullRequestOf));
 const resolved: readonly ChangeFragment[] = fragments.map((fragment, index) => ({

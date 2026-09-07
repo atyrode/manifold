@@ -1154,7 +1154,7 @@ export class TerminalBroker implements TerminalPlacementPort {
    * this runs, so the caps rung, the scope rung and the plugin-enabled rung have all been
    * answered in the published denial vocabulary by the time the transfer happens — and the
    * `terminals:write` check this method used to carry was the second door onto that question
-   * (invariant 14). What is left is the transport's own work: resolve the terminal in THIS
+   * (docs/CONTRACTS.md §One authoritative implementation). What is left is the transport's own work: resolve the terminal in THIS
    * channel's container, refuse the race where it exited between the dispatch and the write,
    * move the lease, and tell the room.
    */

@@ -8,7 +8,7 @@
  * the number is a property of the transport. A preview slot is a RESOLVED zone that snaps
  * to tile boundaries and is painted identically whoever produced it; pairing its duration
  * with this one would make the same slot move differently for a viewer than for the
- * dragger, which is the divergence invariant 11 exists to forbid.
+ * dragger, which is the divergence docs/CONTRACTS.md §Producer-neutral behavior exists to forbid.
  */
 export const GESTURE_HALF_LIFE_MS = 30;
 export const CURSOR_HALF_LIFE_MS = 30;

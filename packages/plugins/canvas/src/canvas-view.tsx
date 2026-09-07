@@ -677,7 +677,7 @@ export function CanvasView({
 
   /**
    * "My pointer is no longer here", normalized into the WIRE form before it leaves this
-   * callback (invariant 11): the presence plane already spells a cleared cursor as an
+   * callback (docs/CONTRACTS.md §Producer-neutral behavior): the presence plane already spells a cleared cursor as an
    * explicit null, so a departure needs no frame type of its own and arrives on the same
    * ordered socket as the motion it ends. Without it the last frame before the pointer
    * left stays on every peer's canvas as a cursor that will never move again (#54).
@@ -783,7 +783,7 @@ export function CanvasView({
   /**
    * Remote selection outlines are pure presence, painted into THIS ref's coordinate space
    * — which is why the canvas paints them rather than an overlay: a selection outline is a box
-   * around a node only this renderer can locate (invariant 11: a view renders remote intent as
+   * around a node only this renderer can locate (docs/CONTRACTS.md §Producer-neutral behavior: a view renders remote intent as
    * part of its own ref). `attendanceRevision` moves on every `attendance_changed`, which the SDK
    * emits for each `presence` frame — selection payloads included — so it is the dependency
    * that provably invalidates this, and a purely local drag frame no longer walks the roster.
@@ -1202,7 +1202,7 @@ export function CanvasView({
    * The terminal verbs this canvas offers, dispatched through the ACTION DOOR. A denial is
    * DATA — the declared rule that refused it — so a disabled plugin, a scoped token or a
    * missing capability reads as the door's own sentence instead of an HTTP status nobody
-   * can render. Affordances that fire these carry `data-action` (AGENTS invariant 12).
+   * can render. Affordances that fire these carry `data-action` (AXIOMS.md §Foundation law and REGISTRY.md §Foundation).
    */
   const dispatchTerminalAction = useCallback(
     (name: string, args: unknown, fallback: string, key: string): void => {

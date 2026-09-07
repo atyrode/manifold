@@ -78,7 +78,7 @@ const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
     MANIFOLD_SPAWN_AGENT: "1",
   },
   // Server boot log prints the owner-key URL: NEVER inherit it into gate logs
-  // (secrets discipline, AGENTS invariant 6).
+  // (secrets discipline, docs/CONTRACTS.md §Data and credential boundaries).
   stdout: "ignore",
   stderr: "inherit",
 });

@@ -206,7 +206,7 @@ test("a program the door refuses never reaches a machine, and the refusal names 
       }),
     ).rejects.toThrow("terminals:spawn capability required");
 
-    // The ledger names the program the door refused (invariant 5): a policy that says no is
+    // The ledger names the program the door refused (docs/CONTRACTS.md §Data and credential boundaries): a policy that says no is
     // a fact about WHAT was asked, and what was asked is recorded.
     const [dispatch] = await openTraces(server);
     if (dispatch === undefined) throw new Error("the ledger holds no core.terminals.open row");

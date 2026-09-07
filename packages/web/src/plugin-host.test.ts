@@ -369,7 +369,7 @@ describe("buildBrowserAssembly routes", () => {
  *
  * The wording is asserted verbatim, deliberately: "duplicate <noun> \"<name>\" claimed by: …"
  * is one sentence for one concept wherever it is raised, and a browser-local paraphrase would
- * be a second answer to "what happened" (invariant 14).
+ * be a second answer to "what happened" (docs/CONTRACTS.md §One authoritative implementation).
  */
 describe("buildBrowserAssembly collisions", () => {
   /** The refusal's own reasons, or a failure — an assembly that composed is the bug here. */

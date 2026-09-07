@@ -91,8 +91,7 @@ import {
 
 /**
  * THE per-room session client. Browsers, tests, and tools all speak to the server
- * through this state machine — never through a second WebSocket implementation (AGENTS.md
- * invariant). It owns everything a ROOM means: the join handshake, epoch/rev tracking,
+ * through this state machine — never through a second WebSocket implementation (docs/CONTRACTS.md §Protocol and compatibility). It owns everything a ROOM means: the join handshake, epoch/rev tracking,
  * gap-triggered resync, optimistic local reconciliation, offline-edit rebase, and the
  * terminal subscription refcounts.
  *
@@ -923,7 +922,7 @@ export class SessionClient {
    * structured form, whether the node exists, and what the workspace calls it.
    *
    * The typed half of the addressing algebra's one read door. `manifold://` is the canonical
-   * reference form for anything addressable (AGENTS invariant 13), and a caller holding a URI
+   * reference form for anything addressable (docs/CONTRACTS.md §Reference nodes), and a caller holding a URI
    * had until now no way to ask whether it still names anything — so every consumer either
    * guessed or parsed the string itself and believed the answer. Parsing tells you the SHAPE;
    * only the server knows whether the node is there.

@@ -32,13 +32,13 @@ import { releasedTileLayout } from "./tile-release.ts";
  * through the SAME release (`releasedTileLayout`), and reads the answer back out. The
  * hysteresis, the seam bands, the between-wedge and the center trade are not
  * reimplemented here for a second surface; there is one kernel and this is a second
- * caller of it (AGENTS.md invariants 11 and 14).
+ * caller of it (docs/CONTRACTS.md §Producer-neutral behavior and docs/CONTRACTS.md §One authoritative implementation).
  *
  * Pure and here, rather than inline in the sidebar's callbacks, because it is exactly the
- * "nontrivial sync policy" the conventions send to a unit-tested module. The sidebar
+ * "nontrivial sync policy" docs/CONTRACTS.md §Testability (agent-facing) sends to a unit-tested module. The sidebar
  * renders the RESULT and never re-derives it, so a live drag and a stored arrangement
  * paint through one path — the local pointer normalizes into the same node list the wire
- * carries before anything looks at it (invariant 11).
+ * carries before anything looks at it (docs/CONTRACTS.md §Producer-neutral behavior).
  */
 
 /**

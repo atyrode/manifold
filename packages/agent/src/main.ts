@@ -27,7 +27,7 @@ import { TerminalHost } from "./terminal-host.ts";
  *   2026-09-05 incident.
  *
  * Configuration is env-only (CONTRACTS.md runtime table). Structured logs are written as JSONL
- * to stdout — never tokens, owner keys, or terminal bytes (AGENTS.md invariant 6).
+ * to stdout — never tokens, owner keys, or terminal bytes (docs/CONTRACTS.md §Data and credential boundaries).
  */
 
 const TERMINAL_HOST_FLAG = "--terminal-host";

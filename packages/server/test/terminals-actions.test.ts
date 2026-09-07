@@ -648,7 +648,7 @@ describe("session channel terminal verbs speak the ladder", () => {
     expect(create.program).toEqual({ argv });
     expect(create.env.CODE_TEST).toBe("launch-7");
 
-    // The trace is the durable record of the program (invariant 5). The env never reaches
+    // The trace is the durable record of the program (docs/CONTRACTS.md §Data and credential boundaries). The env never reaches
     // the ledger: `env` is a redacted field name, so neither its keys nor its values persist.
     const trace = newestOpenTrace(base);
     expect(trace.outcome).toBe("ok");

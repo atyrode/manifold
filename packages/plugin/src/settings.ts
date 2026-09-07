@@ -100,7 +100,7 @@ export function composeSettings(
  * Generic over the row so the engine's registry, the browser's join and a test's fixture all go
  * through this function rather than each writing `if (value === false) continue` in its own
  * loop — one rule, one implementation, and a row's fate is a property of the composition rather
- * than of whichever list happened to be built last (invariant 14).
+ * than of whichever list happened to be built last (docs/CONTRACTS.md §One authoritative implementation).
  *
  * A section naming a setting NO row answers is KEPT. Assembly already refuses a manifest that
  * gates a row on a setting it does not contribute, so the only way to reach this case is a

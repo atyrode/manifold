@@ -19,7 +19,7 @@ export const PrincipalSchema = z.strictObject({
    * because an attendance row IS a principal — because a fact stored twice is a fact that
    * disagrees with itself.
    *
-   * Invariant 11 across instances: this is DATA. Nothing downstream of arbitration may branch
+   * docs/CONTRACTS.md §Producer-neutral behavior across instances: this is DATA. Nothing downstream of arbitration may branch
    * on it; rendering it beside a peer's name and color is presentation of a datum, not a
    * branch, and a second "remote flavor" of any shared behavior is a defect.
    */

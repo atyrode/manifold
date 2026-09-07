@@ -9,7 +9,7 @@ import type { TerminalHost, TerminalHostSession } from "./terminal-host.ts";
  * The Unix-socket end of a {@link TerminalHost}: one listener on a private path, one
  * {@link TerminalHostSession} per accepted connection, newline-delimited JSON both ways with
  * the bounds `ipc-framing.ts` enforces. Bun's `Bun.listen` is the whole transport — no HTTP,
- * no WebSocket, no second machine-channel client (AGENTS.md invariant 3).
+ * no WebSocket, no second machine-channel client (docs/CONTRACTS.md §Protocol and compatibility).
  */
 
 /** Thrown when the socket cannot be served safely; main.ts exits by name rather than guess. */

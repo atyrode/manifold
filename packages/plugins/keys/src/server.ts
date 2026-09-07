@@ -30,7 +30,7 @@ type Outcome = { refused: string } | Record<string, never>;
  * A key table is browser-side registration data: plugins register their rows in their web
  * halves, so no server has ever held the list of declared keys, and a door that pretended to
  * would be inventing a second key registry the browser would then have to agree with
- * (invariant 14). What this door CAN see is the caller's own stored overrides — so it refuses
+ * (docs/CONTRACTS.md §One authoritative implementation). What this door CAN see is the caller's own stored overrides — so it refuses
  * the collision it can prove, in the ENGINE's wording (`bindingRebindRefusal`, the same
  * function the editor calls with the whole effective table in hand), and the composition seam
  * drops any override a declaration has since claimed.

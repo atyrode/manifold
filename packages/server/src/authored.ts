@@ -21,7 +21,7 @@ import { AUTHORED_BUILD_DIR, AUTHORED_DIR, PLUGIN_BUNDLE_SUFFIX } from "./plugin
  * The loop is watch → build → install → publish, and only the first two live here. The build
  * is the KIT's own `packPlugin` — the same `Bun.build` with the same shared-specifier plugin
  * that a `manifold-pack` from a checkout runs — so an unpacked row and a promoted bundle are
- * the same bytes from the same files (invariant 14: one bundler). The install is the host's
+ * the same bytes from the same files (docs/CONTRACTS.md §One authoritative implementation: one bundler). The install is the host's
  * ONE install path, asked for an unpacked replace of the built artifact with the hash pinned
  * from the bytes it wrote; the publish is that path's. Nothing here loads code, and nothing
  * here reads the store: this file is the directory's hands.
@@ -90,7 +90,7 @@ export class AuthoredPlugins {
    * THE AUTHORING DOOR'S HANDS: write the named files into the plugin's directory (a `null`
    * removes one), then rebuild exactly as a save under watch would. Refused before anything is
    * written while developer mode is off — the directory is admitted only behind the switch —
-   * and never logs a file's contents (invariant 6): a plugin's source is the author's.
+   * and never logs a file's contents (docs/CONTRACTS.md §Data and credential boundaries): a plugin's source is the author's.
    */
   async author(
     request: PluginAuthorRequest,

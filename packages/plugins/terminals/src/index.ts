@@ -91,7 +91,7 @@ const geometry = {
  *   terminal channel's `terminal_kill` verb has always enforced, and the one the browser's own
  *   `canKill` rule is computed from. The deleted `PATCH/DELETE /api/terminals/:id` routes
  *   asked for `containers:write` instead — two doors onto one concept answering differently, which
- *   invariant 14 gives exactly one reading. This is that reading.
+ *   docs/CONTRACTS.md §One authoritative implementation gives exactly one reading. This is that reading.
  * - `list` and `terminals` are READS, and reads are doors too (discoverable in
  *   `GET /api/plugins` like any other). `terminals` is `scope: "container"` because the container-terminals
  *   route it replaces answered a container-scoped token with its own container's rows; `list` keeps the

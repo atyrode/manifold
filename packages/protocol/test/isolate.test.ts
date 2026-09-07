@@ -133,7 +133,7 @@ describe("the closed component vocabulary", () => {
   });
 
   test("a button names the door it opens, so a stranger's affordance carries data-action too", () => {
-    // Invariant 12 / S4: every mutating affordance names its action. `action` is the FULL
+    // AXIOMS.md §Foundation law and REGISTRY.md §Foundation / S4: every mutating affordance names its action. `action` is the FULL
     // name; the renderer paints it verbatim as `data-action`.
     const parsed = UiNodeSchema.parse({
       type: "button",
@@ -258,7 +258,7 @@ describe("the install artifact", () => {
   });
 
   test("members are base64 of the file's bytes, under a flat name that cannot climb", () => {
-    // The files are extracted beside the artifact (invariant 6): a name with a slash or a
+    // The files are extracted beside the artifact (docs/CONTRACTS.md §Data and credential boundaries): a name with a slash or a
     // leading dot is a path, not a member, and is refused before any extractor sees it.
     expect(
       PluginBundleSchema.safeParse(

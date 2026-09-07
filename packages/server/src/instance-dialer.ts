@@ -55,7 +55,7 @@ const DIAL_EVENT_KINDS: Record<DialStatus, EventKind> = {
  *
  * It owns no transport. `dialInstance` from the SDK owns the socket, the jittered backoff
  * and the liveness deadline, because the agent already has one implementation of that and
- * the SDK already has another — a third here would be the second convention invariant 14
+ * the SDK already has another — a third here would be the second convention docs/CONTRACTS.md §One authoritative implementation
  * forbids, and D14 says a pattern this generic gets a named evaluation before it is
  * hand-rolled. What this service owns is what the SDK cannot: durable rows, the plane
  * events an operator watches, and the door where THIS instance decides which of its

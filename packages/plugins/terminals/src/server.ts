@@ -115,7 +115,7 @@ export const terminalsHandlers = {
    * and that the caller holds `terminals:write` in the channel's container. The third is what
    * the ladder proves — rung by rung, in the published vocabulary, for a socket and an SDK
    * alike — so the broker's own copy of it is gone and this door is where authority is decided
-   * (invariant 14). The first two survive here verbatim, in the same order, with the same
+   * (docs/CONTRACTS.md §One authoritative implementation). The first two survive here verbatim, in the same order, with the same
    * words: an exited terminal has no lease to take, and a terminal nobody can name has nothing
    * to hand over.
    *
@@ -140,7 +140,7 @@ export const terminalsHandlers = {
    * Killing, unified. Two doors used to answer this and they disagreed: the terminal
    * channel's `terminal_kill` demanded the controller lease (or the wildcard) for a LIVE
    * terminal, while `DELETE /api/terminals/:id` demanded neither. One concept, one answer
-   * (invariant 14), and the answer keeps the lease where the lease means something:
+   * (docs/CONTRACTS.md §One authoritative implementation), and the answer keeps the lease where the lease means something:
    *
    * - an EXITED terminal has no controller and nothing left to protect, so dismissing it
    *   needs only the `terminals:write` the ladder already proved. Kill and dismiss are one
@@ -151,7 +151,7 @@ export const terminalsHandlers = {
    *   before destroying is the whole point.
    *
    * The index route this replaced asked for neither, which is precisely the disagreement
-   * invariant 14 forbids; the stricter answer is the surviving one, and the browser's own
+   * docs/CONTRACTS.md §One authoritative implementation forbids; the stricter answer is the surviving one, and the browser's own
    * `canKill` is computed from the same rule so no affordance offers what the door refuses.
    *
    * Idempotent by construction: the second kill of the same id refuses `terminal not found`,

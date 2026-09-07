@@ -215,10 +215,10 @@ describe("the instance channel handshake", () => {
 
   test("every instance version since v18 remains accepted; older and future versions are refused", () => {
     /*
-      Two wires, two sets, one discipline (invariant 10 applied per wire): sharing the machine
+      Two wires, two sets, one discipline (docs/CONTRACTS.md §Protocol and compatibility applied per wire): sharing the machine
       set would mean an agent-wire reset locking out federated instances that never spoke that
       wire, and an instance-frame change restarting a fleet of PTY agents that never spoke this
-      one. The set GROWS by the same first clause the machine set grows by — v19 moved a
+      one. The set GROWS by the same unchanged-wire rule the machine set grows by — v19 moved a
       session frame pair, v20 bounded a token row's life, v21 opened the container
       discipline roster and added two optional fields to a gesture frame, v22 let a
       terminal be born running a program, and v23 added browser presence location paths
@@ -237,7 +237,7 @@ describe("the instance channel handshake", () => {
 describe("share vocabulary", () => {
   test("a share record cannot carry a secret", () => {
     /*
-      Secrets discipline (invariant 6) enforced by the SHAPE rather than by a redaction rule
+      Secrets discipline (docs/CONTRACTS.md §Data and credential boundaries) enforced by the SHAPE rather than by a redaction rule
       somebody has to remember: the raw token exists in exactly one schema — the grant handed
       to the caller who just minted it — so a list door, a log line or an audit view physically
       cannot publish one.
@@ -260,7 +260,7 @@ describe("share vocabulary", () => {
 
   test("minting addresses the node by manifold:// reference, never by a bare id", () => {
     /*
-      Invariant 13: `manifold://` is the canonical reference form for anything addressable, and
+      docs/CONTRACTS.md §Reference nodes: `manifold://` is the canonical reference form for anything addressable, and
       a grant naming a container by bare id would be the second address system it forbids. The
       wave's container-only rule is the DOOR's refusal, not the schema's, because ADR 0011
       widens this field to subtree grants without reshaping it.

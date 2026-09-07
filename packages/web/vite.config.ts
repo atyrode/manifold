@@ -128,7 +128,7 @@ const SHELL_MARKER = /^const SHELL = .*; \/\/ MANIFOLD_SHELL$/m;
 
 /**
  * Ships the app shell's service worker (`sw.js`) from the ONE existing build — no second build
- * target, no `vite-plugin-pwa`, no generated worker (see `sw.js` for the invariant-8 reasoning).
+ * target, no `vite-plugin-pwa`, no generated worker (see `sw.js` for the docs/CONTRACTS.md §Dependency decisions reasoning).
  *
  * All this plugin does is answer the two questions the worker cannot answer about itself: WHICH
  * files this build shipped, and WHICH generation they belong to. The generation folds a digest

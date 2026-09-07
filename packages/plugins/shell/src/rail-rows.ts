@@ -15,7 +15,7 @@ import type { ComposedSection } from "@manifold/plugin";
  * THE ARRANGEMENT IS NOT DECIDED HERE. The caller hands in the live id order — manifest order,
  * overridden by this principal's stored arrangement, overridden by a gesture in flight —
  * because that merge is the engine's own tested policy and a second answer to it would be a
- * second arrangement (invariant 14). This module only resolves, filters and names the
+ * second arrangement (docs/CONTRACTS.md §One authoritative implementation). This module only resolves, filters and names the
  * absorber; {@link railTree} below applies it to an arrangement that nests.
  */
 export interface RailRow {

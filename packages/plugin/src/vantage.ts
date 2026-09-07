@@ -38,7 +38,7 @@ export interface Vantage {
    * watching a principal whose terminals suddenly ignore clicks is owed the reason, and an
    * agent driving the mode is owed a way to read it back. It is descriptive — the
    * arrangement it produces commits through `core.space.setLayout`, which is where the
-   * authority lives; nothing downstream branches on WHOSE mode it is (invariant 11).
+   * authority lives; nothing downstream branches on WHOSE mode it is (docs/CONTRACTS.md §Producer-neutral behavior).
    */
   readonly arranging: boolean;
   /**
@@ -51,7 +51,7 @@ export interface Vantage {
    * you are standing, and two places at once is not a vantage. Every renderer — the floor's
    * panel grips, a panel's own row grips — decides what it offers by READING this value
    * against its own ref, so the scope is data on the presence plane and never a flag some
-   * component kept privately (invariant 11).
+   * component kept privately (docs/CONTRACTS.md §Producer-neutral behavior).
    *
    * It rides here rather than beside `arranging` as a boolean per arrangeable thing because
    * the floor may not enumerate arrangements: a panel PUBLISHES that it has one, and a scope
@@ -116,7 +116,7 @@ export function subscribeVantage(callback: (view: Vantage) => void): () => void 
  * THE toggle of arrange mode. It is a function rather than a `setVantage` call at each caller
  * because the mode has more than one entrance — the F8 binding, the Escape exit, and any
  * affordance a later wave adds — and "read the flag, write its negation" is the kind of
- * two-step that grows a second answer the moment it is written twice (invariant 14).
+ * two-step that grows a second answer the moment it is written twice (docs/CONTRACTS.md §One authoritative implementation).
  *
  * F8 IS THE WHOLE-MODE KEY, in both directions: it arms the mode at the ROOT scope and it
  * leaves from wherever you are standing. So the scope is cleared on every press rather than

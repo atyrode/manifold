@@ -609,7 +609,7 @@ const webRegistrations: WebRegistration[] = [];
     `SHIPPED_PLUGIN_IDS` does not carry (composed above). This is the other half: the web file
     claims ids too, and it holds no copy of the set — so a web registration under `core.` whose
     id the server table never shipped is the one way the two files could disagree about who
-    inhabits the namespace. Derived from both files, never from a third list (invariant 14).
+    inhabits the namespace. Derived from both files, never from a third list (docs/CONTRACTS.md §One authoritative implementation).
   */
   const squatters = webRegistrations
     .filter((entry) => entry.id.startsWith(CORE_NAMESPACE_PREFIX))
@@ -1368,7 +1368,7 @@ function isMarkupValue(node: ts.StringLiteralLike): boolean {
 // ─────────────────────────────────────────────── S11: the lexicon, S12: one label vocabulary
 
 /**
- * ONE WORD PER CONCEPT, ONE CONCEPT PER WORD (AGENTS invariant 15).
+ * ONE WORD PER CONCEPT, ONE CONCEPT PER WORD (AXIOMS.md §Lexicon law and REGISTRY.md §Lexicon).
  *
  * Vocabulary is a TOKEN property, which is why this check reads tokens instead of following
  * edges the way S2 must: a banned synonym is banned wherever it appears, with no context that
@@ -2351,8 +2351,7 @@ const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
     MANIFOLD_WEB_DIST: distDir,
     MANIFOLD_SPAWN_AGENT: "1",
   },
-  // Piped, never echoed: the boot line carries the owner key (secrets discipline, AGENTS
-  // invariant 6). The stream is read for the origin and for the one-line-per-dispatch action
+  // Piped, never echoed: the boot line carries the owner key (secrets discipline, docs/CONTRACTS.md §Data and credential boundaries). The stream is read for the origin and for the one-line-per-dispatch action
   // log, which is how R4 counts a gesture's commits exactly rather than approximately.
   stdout: "pipe",
   stderr: "inherit",
@@ -5397,7 +5396,7 @@ try {
    * graded by the ladder, answered from the child, painted by the worker — the same door the
    * HTTP dispatch before it went through (A2, parity).
    *
-   * The screenshot is written OUTSIDE the data dir on purpose: invariant 9 says a UI-touching
+   * The screenshot is written OUTSIDE the data dir on purpose: docs/CONTRACTS.md §Testability (agent-facing) says a UI-touching
    * change is verified by inspecting real pixels, and the gate's temp dir is gone by the time a
    * reader looks. Its path is printed as an INFO line.
    */

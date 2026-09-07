@@ -944,7 +944,7 @@ describe("json schema export", () => {
   });
 });
 
-describe("machine-channel compatibility (AGENTS.md invariant 10)", () => {
+describe("machine-channel compatibility (docs/CONTRACTS.md §Protocol and compatibility)", () => {
   test("every machine version since v16 remains accepted; older and future versions are refused", () => {
     /*
       The verdict a bump owes. v15 -> v16 was the lexicon cut and RESET the set: it renamed

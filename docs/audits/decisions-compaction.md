@@ -7,8 +7,10 @@ Label: `audit`. Issue title prefix: `[audit:decisions-compaction]`. Run protocol
 
 A record in `docs/decisions/` is immutable reasoning: why a verdict was reached, with the evidence
 of its date. The living spec — `AXIOMS.md`, `REGISTRY.md`, `docs/CONTRACTS.md`, `docs/PLUGINS.md` —
-is the normative form of what was decided, and ratification IS the spec edit (`AGENTS.md` §Map,
-`AXIOMS.md` §Change control). The failure this brief exists for is a claim that lives ONLY in a
+is the normative form of what was decided, and ratification IS the spec edit
+([`AXIOMS.md` §Change control](../../AXIOMS.md#change-control)).
+`AGENTS.md` is the scoped operating entry point and router, not another copy of that law.
+The failure this brief exists for is a claim that lives ONLY in a
 record: a per-kind table, an enum of refusal names, a numbered rule list that the spec points at
 instead of carrying. Such a claim is law nobody can find from the spec, cannot be gate-checked, and
 goes stale the first time the code moves without anyone reopening a 1,000-line record. The fix is
@@ -40,14 +42,24 @@ Records over ~400 lines are checked FIRST because that is where lists hide:
 3. For each claim, locate its spec home: `grep -n` a distinctive noun from the claim across
    `AXIOMS.md REGISTRY.md docs/CONTRACTS.md docs/PLUGINS.md`. Record `path:line` of the spec sentence
    or row that carries it. Also follow every pointer the spec makes back to the record ("ADR 0013
-   §9") and confirm the pointed-at section says what the spec claims.
+   §9") and confirm the pointed-at section says what the spec claims. For historical numbered
+   `AGENTS.md` citations, use the historical reference in
+   [`CONTRACTS.md` §Engineering constraints](../CONTRACTS.md#engineering-constraints)
+   to interpret the original claim, then locate its current authoritative home: engineering
+   constraints and [§Testability](../CONTRACTS.md#testability-agent-facing) in `CONTRACTS.md`,
+   [Foundation law](../../AXIOMS.md#foundation-law),
+   [the plane rule](../../AXIOMS.md#the-plane-rule) or
+   [Lexicon law](../../AXIOMS.md#lexicon-law) in `AXIOMS.md`, and the corresponding `REGISTRY.md`
+   rows or `PLUGINS.md` author-facing rules. A historical root reference is evidence of the old
+   wording, not a substitute for finding the current law in its owner.
 4. Classify each claim:
    - **Carried**: the spec states it in its own words and the record agrees. Nothing to do.
    - **Pointer-only**: the spec says "see ADR NNNN §M" and the normative content — the table, the
      enum, the list — exists only in the record. Finding; fix is relocation: the table moves into
-     the spec section that owns the concept (`REGISTRY.md` for anything a gate reads or could read,
-     `CONTRACTS.md` for integration behavior, `PLUGINS.md` for author-facing rules), and the record
-     keeps its copy untouched — the record is history; the spec is now the reader's source.
+     the spec section that owns the concept (`AXIOMS.md` for constitutional law, `REGISTRY.md` for
+     enforcement data a gate reads or could read, `CONTRACTS.md` for integration behavior and
+     engineering constraints, `PLUGINS.md` for author-facing rules), and the record keeps its copy
+     untouched — the record is history; the spec is now the reader's source.
    - **Homeless**: no spec sentence carries it and nothing points at it. Finding; fix is either a
      spec sentence (if the tree obeys the claim) or an escalation (if the tree does not — the
      record may be stale, and spec-vs-record disagreements resolve for the spec).
@@ -93,6 +105,9 @@ Body:
 
 - Reasoning, options, evidence or consequences that the spec does not repeat — that is what a
   record is for.
+- Law carried by its authoritative spec owner but not repeated in `AGENTS.md`; root routing is
+  sufficient. Package topology and foundation/plugin inventories likewise belong in
+  `CONTRACTS.md` and `REGISTRY.md`, not in the operating entry point.
 - An evaluation whose verdict is "change nothing" (0021, `REGISTRY.md` §Decisions awaiting
   ratification's rule that only yeses that OBLIGE are ratified): only its reopen trigger is
   checked, and only for whether the spec or the roadmap names it.

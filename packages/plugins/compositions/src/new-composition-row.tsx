@@ -18,7 +18,7 @@ import type { ReactElement } from "react";
  * would grow a switch on the discipline — the shell naming favourites again, one level down.
  *
  * Creation commits through `core.index.createContainer` (named in the DOM as `data-action`,
- * AGENTS.md invariant 12), dispatched through the workspace shell's door so the new
+ * AXIOMS.md §Foundation law and REGISTRY.md §Foundation), dispatched through the workspace shell's door so the new
  * composition is remembered, the index refreshed and the viewer landed inside it.
  */
 export function NewCompositionRow(): ReactElement {

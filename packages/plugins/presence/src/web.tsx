@@ -19,15 +19,14 @@ import { SpotlightOverlay, TitlebarAttendance } from "./container-overlays.tsx";
  *   PAINTING REMOTE INTENT belongs to whichever ref is on screen. A cursor, a carry ghost
  *     and a selection outline mean nothing until something projects them through a viewport
  *     transform, and only the renderer holds that transform. A view consuming a peer's frame
- *     as part of its own ref is invariant 11, exactly as it consumes its own input.
+ *     as part of its own ref is docs/CONTRACTS.md §Producer-neutral behavior, exactly as it consumes its own input.
  *   PRESENCE'S OWN CHROME is this plugin's, and it reaches refs as REGISTERED OVERLAYS
  *     (below) rather than as imports: who is here, and the consent ref for a spotlight.
  *
  * Plus the door itself — `core.presence.focus` (`src/index.ts`, server half `src/server.ts`).
  *
  * `projectLocalPresence` is NOT here and no longer belongs to this package: normalizing this
- * device's own principal into the wire shape the poll will report a moment later is invariant
- * 11's plainest statement, so it is engine mechanism that the shell and every renderer reach
+ * device's own principal into the wire shape the poll will report a moment later is docs/CONTRACTS.md §Producer-neutral behavior's plainest statement, so it is engine mechanism that the shell and every renderer reach
  * through one producer-agnostic function.
  */
 export {

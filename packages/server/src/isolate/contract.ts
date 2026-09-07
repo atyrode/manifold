@@ -61,7 +61,7 @@ export interface IsolateRunner {
  * is not there to grade anything (`unavailable`: crashed past its budget, or silent past the
  * deadline). The host catches this class in `run()` and routes it through the same `refuse`
  * path every other rung takes, so an isolate's refusal is traced exactly like an in-realm
- * one (invariant 5). A handler's own `{ refused }` still returns as data, as it always has.
+ * one (docs/CONTRACTS.md §Data and credential boundaries). A handler's own `{ refused }` still returns as data, as it always has.
  */
 export class IsolateDenial extends Error {
   readonly rule: "invalid_args" | "unavailable";

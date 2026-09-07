@@ -122,7 +122,7 @@ interface ShareRow {
 /**
  * `path` is unused, exactly as it is in the other two code migrations: the snapshot and its
  * retention are the runner's job (`backupBeside`), because every backed-up migration wants the
- * identical rule and invariant 14 allows it one implementation. The parameter stays in the
+ * identical rule and docs/CONTRACTS.md §One authoritative implementation allows it one implementation. The parameter stays in the
  * signature because every code migration is called the same way.
  */
 export function migrateToGrantRows(db: Database, path: string): void {

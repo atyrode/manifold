@@ -307,7 +307,7 @@ describe("core.access handlers", () => {
     );
 
     // The handlers build no message of their own; the only string they can emit is the
-    // mechanism's, and a request carries no secret to leak into one (invariant 6).
+    // mechanism's, and a request carries no secret to leak into one (docs/CONTRACTS.md §Data and credential boundaries).
     expect(reason).toBe("cannot widen container scope");
     expect(reason).not.toContain(grant.token);
   });
@@ -356,7 +356,7 @@ describe("core.access share doors (ADR 0014)", () => {
   test("the attenuation refusal is the mechanism's, verbatim", async () => {
     /*
       A share runs `mint`'s ladder, so it refuses in `mint`'s words. This is the assertion that
-      the door did not grow a second attenuation rule of its own (invariant 14): the handler
+      the door did not grow a second attenuation rule of its own (docs/CONTRACTS.md §One authoritative implementation): the handler
       has no vocabulary for "too wide" and must be unable to invent one.
     */
     const host = recorder({

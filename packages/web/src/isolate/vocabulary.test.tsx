@@ -6,7 +6,7 @@ import { VocabularyRenderer } from "./vocabulary.tsx";
 
 /**
  * THE VOCABULARY'S CONTRACT (ADR 0016 §3): every one of the thirteen node kinds paints into the
- * one `mf-vocab` family, a button's `action` is painted as `data-action` (S4, invariant 12), the
+ * one `mf-vocab` family, a button's `action` is painted as `data-action` (S4, AXIOMS.md §Foundation law and REGISTRY.md §Foundation), the
  * three controls show the tree's value, and a gesture on any control becomes exactly one named
  * event carrying what the node said it would.
  */

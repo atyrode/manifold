@@ -176,7 +176,7 @@ export type AuthRefusal = (typeof AUTH_REFUSALS)[number];
  * A session here is a token ROW, not a socket, and that is a decision rather than a
  * convenience: whether somebody is CONNECTED right now is presence's question, answered by
  * `core.presence` and `GET /api/attendance` with a per-principal connection count, and a
- * second answer to it here would be invariant 14 with the seams showing. What this row
+ * second answer to it here would be docs/CONTRACTS.md §One authoritative implementation with the seams showing. What this row
  * carries is the credential's own life — when it was issued, who issued it, what it is
  * confined to, and when it stops working — which is exactly what a revoke decision needs
  * and exactly what presence cannot say.
@@ -413,7 +413,7 @@ export const MachinesResponseSchema = z.strictObject({
  * `core.machines.revoke` — withdrawal as an ACT, which is the door ADR 0019 §3 names as
  * missing. The mechanism existed one level down (`rotateMachineToken` revokes and re-mints);
  * what nothing could ask for was revocation WITHOUT a re-mint. One door, one concept: there
- * is no second spelling of "revoke this machine's credential" (invariant 14).
+ * is no second spelling of "revoke this machine's credential" (docs/CONTRACTS.md §One authoritative implementation).
  */
 export const RevokeMachineRequestSchema = z.strictObject({
   machineId: z.string().min(1),

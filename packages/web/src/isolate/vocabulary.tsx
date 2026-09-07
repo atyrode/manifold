@@ -158,8 +158,7 @@ function SpinnerNode({ node }: { readonly node: NodeOf<"spinner"> }): ReactEleme
 
 /**
  * `data-action` is the FULL action name the button's event ultimately dispatches, painted so a
- * stranger's affordance names the door it opens exactly as a first-party one does (invariant
- * 12, S4); absent when the guest declared none.
+ * stranger's affordance names the door it opens exactly as a first-party one does (AXIOMS.md §Foundation law and REGISTRY.md §Foundation, S4); absent when the guest declared none.
  */
 function ButtonNode({ node, onEvent }: NodeProps<NodeOf<"button">>): ReactElement {
   return (

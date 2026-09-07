@@ -5,69 +5,90 @@ Label: `audit`. Issue title prefix: `[audit:docs-consistency]`. Run protocol:
 
 ## Purpose
 
-manifold's documentation is layered on purpose: `AGENTS.md` is the operating contract, `AXIOMS.md`
-the constitution, `REGISTRY.md` its enforcement data, `docs/CONTRACTS.md` the integration authority,
-`docs/PLUGINS.md` the authoring guide, `docs/SELF-HOST.md` and `docs/ENROLL.md` the runbooks,
-`docs/PLAN.md` the roadmap, `CHANGELOG.md` the release history. Each has one job and points at the
-others for everything else. Drift between layers is the failure: the same rule stated twice in
-different words, a pointer to a section that was renamed, a command that no longer exists, a claim
-one doc makes that another contradicts. `spec-drift.md` compares docs to code; this brief compares
-docs to docs, and docs to the tree's own shape (paths, script names, section anchors).
+manifold's documentation is layered on purpose: `AGENTS.md` gives concise operating instructions
+and routes task-specific readers; `AXIOMS.md` is the constitution, `REGISTRY.md` its enforcement
+data, `docs/CONTRACTS.md` the engineering and integration authority, `docs/PLUGINS.md` the authoring
+guide, `docs/SELF-HOST.md` and `docs/ENROLL.md` the runbooks, `docs/PLAN.md` the roadmap and
+`CHANGELOG.md` the release history. Each has one job and points at the others for details. Drift
+is a contradictory rule, a dead pointer or a command that no longer exists — not the absence of a
+full inventory in startup instructions. `spec-drift.md` compares contracts to product behavior;
+this brief compares documentation and verifies its named paths, scripts, anchors and owners.
 
 ## Scope
 
-In: `AGENTS.md`, `AXIOMS.md`, `REGISTRY.md` (prose paragraphs, not registry rows), `README.md`,
-`CHANGELOG.md` (the `[Unreleased]` and most recent released section only), everything under `docs/`
-except `docs/decisions/*` and `docs/spikes/*`, and `docs/audits/*` (these briefs are docs too).
-Out: code, tests, workflow YAML (that is `spec-drift.md` or `process.md`); `docs/decisions/*` bodies
-(`decisions-compaction.md`); registry TABLE rows (the gate reads those).
+In: `AGENTS.md`, `AXIOMS.md`, `REGISTRY.md` prose (not registry rows), `README.md`, the current
+release-history shape in `CHANGELOG.md`, `changes/README.md`, `infra/previews/README.md`, and
+`docs/` except historical `docs/decisions/*` bodies and `docs/spikes/*`. Audit briefs and their
+index are included. Read `package.json` and named script/workflow entry points only to establish
+command or source ownership; auditing their behavior belongs to `process.md` or `spec-drift.md`.
+Historical evidence is not rewritten: ADR bodies, released changelog entries and ledger rows
+remain intact. Registry table enforcement belongs to the gate.
 
 ## Method
 
-1. `git fetch origin && git rev-parse --short origin/main`; check out that revision.
-2. **Pointers resolve.** Every `§<Section>` reference and every Markdown link in the in-scope files
-   must land: `grep -rno '§[A-Z][^.,;)]*' AGENTS.md AXIOMS.md REGISTRY.md docs/*.md` and for each
-   confirm a `## `/`### ` heading with that text exists in the named file (the file is the one
-   named just before the `§`, else the current file). `grep -rno '\](\([^)]*\.md[^)]*\))'` for
-   relative links; each target file (and `#anchor`, if any) must exist. A pointer to a heading
-   that was renamed is a finding with a mechanical fix.
-3. **Commands exist.** Every `bun run <name>` and `bun scripts/<file>` in the in-scope files must
-   match a `package.json` `scripts` key or a file under `scripts/`. Every `gh`, `git`, `docker
-compose` invocation in a runbook must be syntactically runnable as written (run it with
-   `--help`/`--dry-run` where one exists; otherwise read it).
-4. **Paths exist.** Every backticked path (`packages/…`, `scripts/…`, `.github/…`, `docs/…`,
-   `infra/…`) must exist at this revision: extract with
-   `grep -rho '\`\(packages\|scripts\|docs\|infra\|\.github\)/[^\` ]_\`' <files> | sort -u`and
-test each with`test -e`. Glob-shaped paths (`packages/plugins/_`) must match at least one file.
-5. **One statement per rule.** For each of these rules, find every place it is stated and check
-   the statements agree in substance (not wording): the issue → PR → `Closes #N` flow; the changelog
-   bullet format and where fragments live; the release path and what it refuses; the commit prefix
-   list; the precedence rule (axioms > decisions > scope notes); what `docs/decisions/` is for;
-   the worktree-per-agent rule. Two statements that disagree are one finding naming both; two that
-   agree but one is a full restatement of the other where a pointer was intended (`AGENTS.md` §Map:
-   "never restate the boundary here") is a finding whose fix is replacing the copy with the pointer.
-6. **AGENTS.md against its own claims.** §Commands must list exactly what `bun run gate` runs
-   (`scripts/gate.ts`); §Map's package table must have one row per directory under `packages/`
-   (plugins excepted, by its own rule); §Audits must name the briefs that exist in `docs/audits/`;
-   the labels list must equal `gh label list --repo atyrode/manifold` minus GitHub's defaults.
-7. **README.md against the runbooks.** The front-page install and dev instructions must be a
-   subset of `docs/SELF-HOST.md` and `AGENTS.md` §Commands, never a third version.
-8. **CHANGELOG.md shape.** `[Unreleased]` sections appear in the documented order (Breaking Changes,
-   Added, Changed, Fixed, Removed); every released bullet ends `(#issue, #pr)`; the newest released
-   version equals `packages/web/package.json` `version` and has a `v<version>` tag
-   (`git tag -l 'v*' | sort -V | tail -1`). `changelog:check` covers the generated file, not this.
-9. **These briefs.** `docs/audits/*.md` each have the seven sections `README.md` promises; every
-   command in a Method step is runnable at this revision; `LOG.md` rows name issues that exist and
-   carry the `audit` label (`gh issue view N --json labels`).
-10. Write each finding as its own issue (Output contract). Append the ledger row.
+1. Establish the audited `main` revision and date under the [run protocol](README.md#run-protocol);
+   do not switch or overwrite another task's checkout.
+2. **Pointers resolve.** Inventory Markdown links and named section references in the in-scope
+   files. Resolve each relative path and anchor against the named document at this revision.
+   For `§<Section>` prose references, use the explicitly named owner or the current document.
+   Distinguish live instruction links from intentionally immutable historical citations. A
+   renamed section is a mechanical correction only if the replacement preserves the meaning.
+3. **Commands exist.** Match each documented `bun run <name>` to its `package.json` script, and
+   each direct `bun scripts/<file>` invocation to the actual file. Follow named command owners
+   rather than requiring every script in root Commands. For runbook `gh`, `git` and container
+   commands, inspect current syntax or use a demonstrably read-only help mode. A `--dry-run`
+   spelling alone does not prove no side effects; do not dispatch, deploy, release, authenticate
+   or mutate a system to check prose. Record unavailable evidence.
+4. **Paths exist.** Resolve concrete backticked source paths at the audited revision. Check globs
+   against the tree, distinguishing illustrative placeholders, runtime-generated paths and
+   explicitly planned files from promises of existing source. Name the exact missing referent;
+   a substring search alone is not proof that a path is stale.
+5. **Each rule has its owner.** Compare live references and summaries with these sources:
+   - Common PR readiness and conditional closure: the generated common contract in `AGENTS.md`;
+     local ownership and live-action boundaries: its Boundaries; local delivery: its Delivery.
+   - Engineering rules: the named sections of `docs/CONTRACTS.md`, not retired numbered root
+     invariants. Constitutional authority, precedence and amendments: `AXIOMS.md` §Change control;
+     foundation/lexicon enforcement: `REGISTRY.md` and their corresponding axiom sections.
+   - Fragments: `changes/README.md` and `scripts/release-core.ts`. Release writing and promotion:
+     root Task-specific guidance, `scripts/release.ts`, `scripts/promote.ts` and their workflows.
+   - Audit cadence, label semantics and run protocol: this directory's `README.md`.
+   - Preview operations: `infra/previews/README.md`, with the root's conditional policy and
+     workflows as its implementation sources.
+     Check that a reader reaches the authoritative detail and that summaries do not contradict it.
+     When the architecture calls for a pointer, report full duplicate rules as maintenance drift,
+     even if their wording currently agrees. Do not infer a new rule from absent root detail.
+6. **Discovery routes to source truth.** Root Commands must offer valid essential commands, not
+   reproduce `scripts/gate.ts`. Package discovery must reach the actual tree and source owners;
+   plugin composition belongs to the assembly sources, not a root package-count assertion. The
+   audit index must name the actual briefs. Label inventory and practice are checked by
+   `process.md` against audit README semantics and live GitHub, not against a mandatory root list.
+   Follow root task-specific links and named owner references through to the requested detail;
+   merely finding the same words in two files does not establish correct routing.
+7. **README.md against runbooks.** Verify front-page install and development instructions agree
+   with `docs/SELF-HOST.md`, the root's essential Commands and the commands' actual owners.
+   An abbreviated quick start may omit detail; it must link to the authoritative procedure and
+   must not create a conflicting third version.
+8. **Release documentation shape.** Check current fragment and generated-changelog claims against
+   `changes/README.md` and the actual release/generation sources. Where docs promise a relation
+   between the current package version, released changelog and tags, verify that relation at the
+   audited revision. Do not assume a pending section, a `-dev` branch or historical line number
+   is still part of the implementation. Report contradictions without rewriting release history.
+9. **These briefs.** Each actual brief has the seven sections the audit README promises; the
+   README index and LOG are not briefs. Check Method references and command syntax under the same
+   safety boundary as steps 2–4. Check that the ledger header points to the current run protocol
+   and cadence owner; leave historical rows untouched. Audit-run cadence and ledger evidence
+   review belong to a scoped `process.md` run, not an implicit second audit here.
+10. Produce findings and the run's ledger row under the [run protocol](README.md#run-protocol),
+    within the task's publication authority.
 
 ## Evidence standard
 
 A finding is two quoted statements (`path:line` each) that cannot both be true, or one quoted
-statement and the command/`test -e` output showing its referent does not exist. Restatement is a
-finding only when the docs' own layering rule says that layer must point rather than copy. A
-difference in emphasis, ordering or example between two docs that agree in substance is not
-drift; a difference a reader could act on differently is.
+statement and evidence that its named referent or owner routing is broken. Name the authoritative
+source and audited revision; include unavailable evidence. Restatement is a finding when the
+layer's job is to point rather than copy. Differences in emphasis, ordering or examples are not
+drift unless readers could act on them differently. Silence in a concise root is not a defect
+when its task-specific pointer reaches the owner.
 
 ## Output contract
 
@@ -77,22 +98,23 @@ Labels: audit, documentation
 Body:
 - main rev: <sha7>
 - Statement A: <path:line> — "<quote>"
-- Statement B: <path:line> — "<quote>"   (or: Referent: <command/test output>)
-- Which is authoritative: <doc>, because <its role per AGENTS.md §Map>
-- Proposed fix: <replace copy with pointer | correct pointer | correct command | reword B to match A>
-- Mechanical PR appropriate: yes (pointer, path, command name, anchor) | no (any rule substance)
+- Statement B: <path:line> — "<quote>" (or: Referent/routing evidence: <source or read-only output>)
+- Which is authoritative: <owner and section>, because <its role and source pointer>
+- Evidence boundary: <unavailable evidence, or none>
+- Proposed fix: <replace copy with pointer | correct pointer | correct command | reword B to match owner>
+- Mechanical PR appropriate: yes (meaning-preserving pointer/path/command/anchor correction) | no (rule substance)
 ```
 
 ## Not a finding
 
-- Tone, sentence length, heading depth, table alignment, Prettier's business.
-- A rule stated in `AGENTS.md` and again in a `docs/` file when `AGENTS.md`'s statement is the
-  one-line summary and the doc is the pointed-at authority.
+- Tone, sentence length, heading depth or table alignment.
+- A one-line summary in `AGENTS.md` that points to its detailed owner.
 - `docs/PLAN.md` describing something not yet built — it is the roadmap.
-- `CHANGELOG.md` released sections' wording; they are immutable.
-- A doc that is silent on something another doc covers; only contradiction and dead pointers count.
+- Historical ADR, audit-ledger or released-changelog wording; these are preserved evidence.
+- A doc silent on something another reachable owner covers.
+- Root Commands, task guidance or audit pointers omitting exhaustive gate, package or label lists.
 
 ## Revisit this brief when
 
-A doc is added under `docs/` or a top-level doc is split, or a link checker joins `bun run gate`
-(then steps 2 and 4 become "confirm it is green").
+A documentation owner is added, split or relocated, or a link checker joins `bun run gate`
+(then reuse its evidence for the references it actually covers).

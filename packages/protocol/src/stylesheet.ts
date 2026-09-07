@@ -1,5 +1,5 @@
 /**
- * THE SELECTOR WALK, shared by the gate and the hub (ADR 0025 §7, #258; invariant 14).
+ * THE SELECTOR WALK, shared by the gate and the hub (ADR 0025 §7, #258; docs/CONTRACTS.md §One authoritative implementation).
  *
  * `verify:axioms` S13 reads every stylesheet in the tree against §Lexicon's `cssFamilies` and
  * refuses a family painted by anyone but its one owner. A stylesheet that is not in the tree —
@@ -14,7 +14,7 @@
  * impossible BY CONSTRUCTION in the one artifact that is declarative — a sheet — rather than by
  * review, which is what S13 does for `core.*` in the tree.
  *
- * No dependency (invariant 8): CSS has a small enough grammar for a selector list that a hand
+ * No dependency (docs/CONTRACTS.md §Dependency decisions): CSS has a small enough grammar for a selector list that a hand
  * walk over parentheses, brackets, quotes and comments is the whole parser.
  */
 

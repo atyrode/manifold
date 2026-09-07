@@ -358,7 +358,7 @@ INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '12');
    * The journal family is the reason. `events` is already the durable, pruned, append-only
    * record of what happened here, already read by exactly one door
    * (`core.events.list`) — so a second table would be a second audit API, a second
-   * retention policy and a second thing to remember to read (invariant 14). What a trace
+   * retention policy and a second thing to remember to read (docs/CONTRACTS.md §One authoritative implementation). What a trace
    * needs that an event row does not is the ATTRIBUTION of an exercise of authority, and
    * that is what these columns carry: `door` (the action dispatched), `authority` (the
    * capability set discharged, or `root`), `targets` (the `manifold://` nodes the door named,
@@ -643,7 +643,7 @@ interface VersionRow {
  *
  * RETENTION lives here rather than in any migration's body, because "keep the newest image
  * per version" is a property of the RUNNER: every `backup: true` migration wants the identical
- * rule, and a rule written once per migration is invariant-14 debt waiting to drift. The
+ * rule, and a rule written once per migration violates docs/CONTRACTS.md §One authoritative implementation and invites drift. The
  * engine never deletes an elder VERSION's image — writing `pre-v11` leaves `pre-v9` exactly
  * where it is, because that file is the operator's recovery inventory and a process that
  * silently deletes a recovery image is a worse outcome than a full disk (docs/CONTRACTS.md

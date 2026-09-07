@@ -23,7 +23,7 @@ import {
  * THE guest half of the instance channel (ADR 0014): one long-lived control link from this
  * instance to a host it holds a share on.
  *
- * It lives in the SDK for the reason invariant 3 states outright — "no second WebSocket state
+ * It lives in the SDK for the reason docs/CONTRACTS.md §Protocol and compatibility states outright — "no second WebSocket state
  * machine; extend `@manifold/sdk`". The agent owns the machine channel's dialing half and this
  * owns the instance channel's, and both are the same discipline: dial out, hello, answer pings,
  * treat silence as a phantom transport, reconnect with jittered backoff, and classify frames so

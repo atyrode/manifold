@@ -8,7 +8,7 @@ import type { ActionSummary, Cap, IndexEntry, PluginRoster } from "@manifold/pro
  * Pure and its own module because it is the whole policy of this plugin — which rows exist,
  * which of them can be run right now, and what a refusal SAYS — and policy that decides
  * authority-shaped questions belongs somewhere a test can ask it directly rather than inside a
- * component callback (AGENTS.md §Conventions). The renderer below it does nothing but paint
+ * component callback (docs/CONTRACTS.md §Testability (agent-facing)). The renderer below it does nothing but paint
  * what this returns.
  */
 

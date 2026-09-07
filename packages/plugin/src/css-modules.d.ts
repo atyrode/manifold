@@ -8,7 +8,7 @@
  * every import from it as `any`, and this tree does not have an `any` in it.
  *
  * It lives here, in the one package every plugin already depends on, because nine copies of
- * the same two lines is nine doors onto one fact (invariant 14). Packages that need it name
+ * the same two lines is nine doors onto one fact (docs/CONTRACTS.md §One authoritative implementation). Packages that need it name
  * this file in their tsconfig `include`; `packages/web` does not, because `vite/client`
  * already declares the same thing for the bundled entry.
  */

@@ -446,7 +446,7 @@ export interface ActionCtx {
    * It exists because the check is identical in every plugin and the WORDING must not be:
    * hand-rolled variants ("scoped tokens can only read their own container", "...rename
    * their own container", ...) are several strings a client cannot switch on for one
-   * concept, which is invariant 14 with the seams showing. The target container is
+   * concept, which is docs/CONTRACTS.md §One authoritative implementation with the seams showing. The target container is
    * deliberately absent from the message — telling a scoped caller the id of a container it
    * may not reach is a disclosure the refusal does not need.
    *
@@ -1192,7 +1192,7 @@ export class PluginHost {
    * Registers a roster listener and returns its removal, mirroring `AuthService.onRevoked`.
    * The listener hears the developer-mode switch with every roster, because the two ride one
    * frame: a flip republishes the roster (its `developer_mode_off` marks moved) and nothing
-   * else, so there is exactly one "the plugins changed" signal (invariant 14).
+   * else, so there is exactly one "the plugins changed" signal (docs/CONTRACTS.md §One authoritative implementation).
    */
   onRosterChange(listener: (roster: PluginRoster, developerMode: boolean) => void): () => void {
     this.rosterListeners.add(listener);
@@ -1333,7 +1333,7 @@ export class PluginHost {
       THE COMMIT POINT, announced. Not staged like a handler's emission: this method IS the
       commit, it has already returned every refusal it can, and it is reached both through
       `core.plugins.setEnabled` and directly by an embedder — so the emission belongs to the
-      transition rather than to one of its callers (invariant 14: one door onto "the roster
+      transition rather than to one of its callers (docs/CONTRACTS.md §One authoritative implementation: one door onto "the roster
       changed").
 
       The topic is `engine.plugins`' OWN node, not the toggled plugin's: a plugin may not be

@@ -597,7 +597,7 @@ void guardRulesComplete;
  * `structure` is the one form with no identity on either side of that translation, and it
  * is a REF rather than a second request shape because a palette drag is an ordinary carry:
  * one gesture kind, one wire payload, one release. Giving it its own envelope would be the
- * second drag flavor the carry kernel exists to prevent (AGENTS.md invariants 11 and 14).
+ * second drag flavor the carry kernel exists to prevent (docs/CONTRACTS.md §Producer-neutral behavior and docs/CONTRACTS.md §One authoritative implementation).
  */
 export const PlacementRefSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("terminal"), terminalId: z.string().min(1) }),
@@ -835,7 +835,7 @@ export interface PlacementItem {
  * takes a census of containers, terminals and solo occupancy that only the grabbing
  * client is guaranteed to have. Shipping the resolved item with the gesture is what lets
  * a collaborator render the same preview without owning that census — identity is data
- * (AGENTS.md invariant 11), and a wire form nobody else can interpret is the defect.
+ * (docs/CONTRACTS.md §Producer-neutral behavior), and a wire form nobody else can interpret is the defect.
  */
 export const PlacementItemSchema = z.strictObject({
   // Bounded exactly like a manifest's element type, which is what an open kind can be.

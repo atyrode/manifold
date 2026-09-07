@@ -713,7 +713,8 @@ export const serverDef = {
 A hook receives exactly `{ pluginId, storage, now() }` and may be sync or `async` — both are awaited
 under the same bound. The context is that narrow on purpose: a hook exists to order your **own**
 durable state, and anything that touches the workspace is a mutation, which goes through an action
-door where it can be authorized, validated, logged and observed (invariant 13). Because the
+door where it can be authorized, validated, logged and observed
+([the plane rule](../AXIOMS.md#the-plane-rule)). Because the
 parameter is contravariant you may declare only the slice you use —
 `onDisable: (ctx: { storage: PluginStorage }) => void` type-checks — the same sandbox shape action
 handlers have.
@@ -766,7 +767,8 @@ have a plane (§5).
 
 **One contract, every plugin.** ADR 0016 §4 (ratified, R3) made `PluginStorage` promise-returning
 for every plugin, first-party included, because a hardened plugin's storage calls cross a process
-boundary and two storage contracts would be two doors onto one concept (invariant 14). In-realm the
+boundary and two storage contracts would be two doors onto one concept
+([One authoritative implementation](CONTRACTS.md#one-authoritative-implementation)). In-realm the
 handle is synchronous inside — the SQLite call runs before the promise comes back, so `await` costs
 a microtask and nothing else — and every refusal (a reserved or malformed key, an oversize value) is
 a **rejection** with `PluginStorageError`, never a throw, so a `try`/`catch` around an `await` is the
@@ -1101,10 +1103,11 @@ for (const row of host.assembly.sections.filter((row) => row.enabled)) {
 This is the **in-realm browser** contract; hardened workers use §9's `GuestHost` instead.
 A panel, section, overlay or element renderer uses `host.client` (`SessionHandle`, exported
 from `@manifold/plugin`). It never opens its own socket or constructs a client from
-`host.token`. Invariant 3 means one WebSocket implementation, the SDK's; invariant 13 keeps
+`host.token`. [Protocol and compatibility](CONTRACTS.md#protocol-and-compatibility) requires
+one WebSocket implementation, the SDK's; [the plane rule](../AXIOMS.md#the-plane-rule) keeps
 continuous PTY I/O, cursor motion and live drags on their existing channels, with discrete
 authority-bearing mutations through actions at the commit point (§5). Event subscriptions
-are notifications, not a second mutation door. Sources: `AGENTS.md` invariants 3/13 and
+are notifications, not a second mutation door. The host API is declared in
 [`host.ts`](../packages/plugin/src/host.ts), `SessionHandle` / `HostServices`.
 
 There are three different lifetimes here, not three sockets:

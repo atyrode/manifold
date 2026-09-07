@@ -44,7 +44,7 @@ export const keysManifest: PluginManifest = {
 /**
  * The two door names, built from the manifest id rather than spelled: a full action name is the
  * pair `${manifest.id}.${local}`, so the chrome that dispatches one and the `data-action`
- * attribute that names it in the DOM (invariant 12) cannot drift from the declaration below.
+ * attribute that names it in the DOM (AXIOMS.md §Foundation law and REGISTRY.md §Foundation) cannot drift from the declaration below.
  */
 export const KEYS_SET_ACTION = `${keysManifest.id}.setBinding`;
 export const KEYS_RESET_ACTION = `${keysManifest.id}.resetBinding`;
@@ -75,7 +75,7 @@ export const keysActions = [
   /**
    * ONE DOOR FOR BOTH RESETS, and `null` is what makes it one: a reset drops overrides, and
    * "this row" and "every row" are the same verb over a different subject. Two doors would put
-   * one concept behind two names (invariant 14), and a client that wanted "reset all" by
+   * one concept behind two names (docs/CONTRACTS.md §One authoritative implementation), and a client that wanted "reset all" by
    * calling the row door in a loop would produce N traces for one gesture.
    */
   defineAction({

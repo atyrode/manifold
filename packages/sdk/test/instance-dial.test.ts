@@ -292,13 +292,13 @@ describe("revocation", () => {
   });
 });
 
-describe("the projection half needs no new client (invariant 3)", () => {
+describe("the projection half needs no new client (docs/CONTRACTS.md §Protocol and compatibility)", () => {
   test("a ticket opens an ORDINARY SessionClient against the host, keyed by (origin, container)", () => {
     /*
       This is the whole reason there is no remote-session class: the pool keys a connection by
       (factory, url, token), so pointing a client at a second instance with a ticket IS the
       `(origin, containerId)` keying wave 1 reserved. A relay or a second renderer would be the
-      second sync path A4 and invariant 14 both forbid.
+      second sync path A4 and docs/CONTRACTS.md §One authoritative implementation both forbid.
     */
     const remote = new SessionClient({
       url: "wss://host.example/ws/session",

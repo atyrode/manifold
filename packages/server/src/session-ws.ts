@@ -885,7 +885,7 @@ export class SessionGateway {
       case "terminal_kill":
         // The kill is the ACTION's, whole: authority, the lease rule and the destruction all
         // live behind one door, so this frame and the workspace index cannot answer
-        // differently about the same terminal (invariant 14).
+        // differently about the same terminal (docs/CONTRACTS.md §One authoritative implementation).
         void this.dispatchPolicy(connection, peer, "core.terminals.kill", message.terminalId, {
           terminalId: message.terminalId,
         });

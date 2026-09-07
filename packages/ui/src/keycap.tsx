@@ -7,7 +7,7 @@ import type { ReactElement } from "react";
  * keycap in the product" — which stopped being true the moment a second surface printed the
  * composed key table (a command list, a menu, a tooltip). The composed table is the ENGINE's
  * read (`host.assembly.bindings`), so ANY plugin may print a row, and a shape every printer
- * needs is stdlib rather than one tenant's private drawing (invariant 14).
+ * needs is stdlib rather than one tenant's private drawing (docs/CONTRACTS.md §One authoritative implementation).
  *
  * The WORDS on the cap are not decided here. A keystroke's grammar (`Mod+k`) and which mark
  * `Mod` wears on this keyboard are the engine's — `keyCapLabel` in `@manifold/plugin/hooks`

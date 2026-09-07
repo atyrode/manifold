@@ -32,7 +32,7 @@ import type {
  * canvas and composition renderers are floor, the workspace index that drags a container
  * row into a tile is a plugin, and neither may import the other. A second envelope format
  * for the plugin side would be exactly the per-source parsing this module exists to end
- * (AGENTS.md invariant 14). The browser half of `@manifold/plugin` carries it because the
+ * (docs/CONTRACTS.md §One authoritative implementation). The browser half of `@manifold/plugin` carries it because the
  * carry register below is DOM-bound; the server never sees a drag.
  */
 export const ITEM_MIME = "application/x-manifold-item";

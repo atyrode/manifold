@@ -6,7 +6,7 @@
  * may import the other: the shell compares index snapshots so a repeated answer never
  * reseeds the renderers below it, and the plugin that renders the index builds its rows and
  * projects its own moves from the same functions. Two copies of "are these the same index?"
- * is the drift this move exists to prevent (AGENTS.md invariant 14).
+ * is the drift this move exists to prevent (docs/CONTRACTS.md §One authoritative implementation).
  */
 import type { IndexEntry } from "@manifold/protocol";
 

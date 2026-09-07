@@ -9,8 +9,7 @@ import { GENERATED_WEB_CHANGELOG } from "./generated-changelog.ts";
  * prints them. The panel reads both off the `WorkspaceShell` context the floor publishes.
  *
  * The release SHAPE is declared in `@manifold/plugin` rather than here, because the producer is
- * floor and the consumer is a plugin and a second spelling of one shape is the drift invariant
- * 14 forbids.
+ * floor and the consumer is a plugin and a second spelling of one shape is the drift docs/CONTRACTS.md §One authoritative implementation forbids.
  */
 
 export const WEB_VERSION =

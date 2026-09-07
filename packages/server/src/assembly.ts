@@ -164,7 +164,7 @@ export const SERVER_PLUGIN_DEFS: readonly ServerPluginDef[] = [
  *
  * DERIVED IS THE WHOLE DESIGN. A hand-kept list of "our" plugins would be a second statement
  * of the same fact and would go stale the first time somebody adds a row twenty lines up
- * (invariant 14) — and a stale one fails in the worst direction, refusing a plugin the
+ * (docs/CONTRACTS.md §One authoritative implementation) — and a stale one fails in the worst direction, refusing a plugin the
  * distribution genuinely ships. Adding a row above is therefore the entire diff, exactly as
  * "builtin" is derived from what the ENGINE registers rather than claimed by a manifest.
  *

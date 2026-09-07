@@ -36,7 +36,7 @@ export interface ButtonOptions {
   /**
    * The FULL name of the action this button's event ultimately dispatches. The engine paints
    * it as `data-action`, so a stranger's affordance names its door exactly as a first-party
-   * one does (invariant 12). Set it on every button whose event ends in `host.action(...)`.
+   * one does (AXIOMS.md §Foundation law and REGISTRY.md §Foundation). Set it on every button whose event ends in `host.action(...)`.
    */
   readonly action?: string | undefined;
 }

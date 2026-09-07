@@ -66,7 +66,7 @@ export function buildTerminalRows(input: TerminalInventoryInput): readonly Termi
           GONE. It predated the unification: two doors answered kill and disagreed, and this
           row was computed from the laxer one, so the affordance offered a kill the surviving
           door refuses. An affordance that offers what the door refuses is worse than a
-          missing button — invariant 14 leaves exactly one reading, and this is it.
+          missing button — docs/CONTRACTS.md §One authoritative implementation leaves exactly one reading, and this is it.
         */
         canKill: terminal.status === "running" ? isController || isRoot : canWriteTerminals,
       } satisfies TerminalRow;

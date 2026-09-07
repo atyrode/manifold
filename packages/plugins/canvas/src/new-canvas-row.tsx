@@ -15,7 +15,7 @@ import type { ReactElement } from "react";
  *
  * THE DOOR IS UNCHANGED, and that is the invariant this move had to keep: creation still
  * commits through `core.index.createContainer`, which is what `data-action` names in the DOM
- * (AGENTS.md invariant 12; gate S4/R7 check every marker against the live roster). It is
+ * (AXIOMS.md §Foundation law and REGISTRY.md §Foundation; gate S4/R7 check every marker against the live roster). It is
  * dispatched through the workspace shell's own `createContainer`, because a birth is not only
  * an action call: the new container is remembered on this device, the index feed is refreshed
  * and the viewer LANDS inside it, and all three of those are the host's business rather than

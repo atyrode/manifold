@@ -146,7 +146,7 @@ function settled(next: TileLayout | null): PanelArrangeOutcome {
  * answer to that question: this function is the workspace editor's GUARDS and its REFUSAL
  * PROSE around it, and nothing else. The arithmetic used to live here, and it had to move
  * the moment the sidebar's rail started resolving its own drops through the same kernel —
- * two copies of "insert at the aim, then prune the seat" is the second door invariant 14
+ * two copies of "insert at the aim, then prune the seat" is the second door docs/CONTRACTS.md §One authoritative implementation
  * forbids.
  */
 export function movedPanelLayout(

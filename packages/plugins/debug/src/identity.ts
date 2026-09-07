@@ -5,7 +5,7 @@ import { formatManifoldUri, type PluginRoster } from "@manifold/protocol";
  * WHAT IS UNDER THE POINTER, decided from what the DOM says about itself — the whole of the
  * inspector's lookup logic, pure and with no DOM types in sight.
  *
- * The product already names itself in markup, because invariant 12 requires it: every mutating
+ * The product already names itself in markup, because AXIOMS.md §Foundation law and REGISTRY.md §Foundation requires it: every mutating
  * affordance carries `data-action`, every sidebar row carries `data-section-id` and
  * `data-plugin`, every tile box carries `data-tile-id`, every workspace leaf carries
  * `data-panel-id`, and a canvas element is a React Flow node carrying `data-id`. Those
@@ -58,7 +58,7 @@ const TREE_PREFIXES: readonly (readonly [string, TileTree])[] = [
 /**
  * One element as this module reads it: the `data-*` attributes it carries and the classes it
  * wears. A plain record rather than an `Element`, so every rule below is testable without a
- * document (invariant 7: unit tests need no DOM).
+ * document (docs/CONTRACTS.md §Testability (agent-facing): unit tests need no DOM).
  */
 export interface Declared {
   readonly attributes: Readonly<Record<string, string>>;
@@ -175,8 +175,7 @@ export interface CompositionLookup {
 /**
  * THE ADDRESS of one declaration, or null when the thing genuinely has none.
  *
- * A `manifold://` address is the canonical reference form for anything addressable (invariant
- * 13), and the seven forms are the protocol's (`packages/protocol/src/uri.ts`). Three of the six
+ * A `manifold://` address is the canonical reference form for anything addressable (docs/CONTRACTS.md §Reference nodes), and the seven forms are the protocol's (`packages/protocol/src/uri.ts`). Three of the six
  * declaration kinds map onto one directly; the other three are addressed through their owner,
  * which is what {@link identify} falls back to.
  */

@@ -1198,7 +1198,7 @@ export class PlaceExecutor {
    *
    *   a TERMINAL lives in exactly one composition, so the mirrors its old container still
    *     held for it go — a leaf naming a terminal that lives somewhere else is a reference
-   *     to a place the item no longer is, which is the state invariant 3 exists to forbid;
+   *     to a place the item no longer is, which is the state the placement executor's third invariant forbids;
    *   an ELEMENT is owned by the composition showing it, so its scene record travels between
    *     the two documents, or the new room would have no payload to render or edit;
    *   an embedded CANVAS is a reference and needs nothing: the container keeps living where

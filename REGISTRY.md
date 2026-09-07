@@ -308,7 +308,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/authored.ts",
-      "why": "the unpacked directory's hands (ADR 0025 §4): <data>/authored/<id>/ watched, built with the kit's own packPlugin (one bundler, invariant 14), and handed to the ONE install path as an unpacked replace pinned from the bytes it wrote — the loop is bootstrap because nothing else turns a save into a roster row, neutral because it reads no manifest field, and arbitration because developer mode is checked at its two entrances"
+      "why": "the unpacked directory's hands (ADR 0025 §4): <data>/authored/<id>/ watched, built with the kit's own packPlugin (one bundler, docs/CONTRACTS.md#one-authoritative-implementation), and handed to the ONE install path as an unpacked replace pinned from the bytes it wrote — the loop is bootstrap because nothing else turns a save into a roster row, neutral because it reads no manifest field, and arbitration because developer mode is checked at its two entrances"
     },
     {
       "glob": "packages/server/src/isolate/**",
@@ -384,7 +384,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/web/src/lens.tsx",
-      "why": "the lens's own three conditions, above the identity gate: which instance this device looks at, whether it answers, and whether this bundle still speaks its protocol. Floor because it is the one surface that may REFUSE to compose an assembly at all — a cached bundle in front of a newer instance (AGENTS.md invariant 10) — and because a plugin cannot own the chrome for the app that hosts it. It also registers the app shell's cache (`packages/web/sw.js`); the offline condition it names is a state, never a second code path"
+      "why": "the lens's own three conditions, above the identity gate: which instance this device looks at, whether it answers, and whether this bundle still speaks its protocol. Floor because it is the one surface that may REFUSE to compose an assembly at all — a cached bundle in front of a newer instance (docs/CONTRACTS.md#protocol-and-compatibility) — and because a plugin cannot own the chrome for the app that hosts it. It also registers the app shell's cache (`packages/web/sw.js`); the offline condition it names is a state, never a second code path"
     },
     {
       "glob": "packages/web/sw.js",
@@ -435,7 +435,8 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
 Everything not floor-matched is plugin territory. The authoritative list of core plugins is
 `packages/plugins/*` as registered in the two `assembly.ts` files, served live at
 `GET /api/plugins`. It is never duplicated in prose here or anywhere else: a list in a document
-is a second door onto the concept "which plugins exist", and by invariant 14 that is a bug.
+is a second door onto the concept "which plugins exist", violating
+[One authoritative implementation](docs/CONTRACTS.md#one-authoritative-implementation).
 
 A plugin package holds a manifest, its actions (server half) and its contributions (web half),
 and it imports only the three named layers (ADR 0025 §8, #240): the SDK — `@manifold/protocol`,
@@ -494,7 +495,8 @@ over wire payloads — neutral over producers, naming no plugin — and its part
 each other. What a renderer PAINTS in its own coordinate space (a peer's cursor, a carry ghost, a
 selection outline) the renderer paints itself, because a peer's pointer means nothing until
 something projects it through a viewport transform and only the renderer holds that transform;
-a renderer showing remote intent as part of its own output is AGENTS.md invariant 11, exactly as
+a renderer showing remote intent as part of its own output follows
+[Producer-neutral behavior](docs/CONTRACTS.md#producer-neutral-behavior), exactly as
 it renders its own normalized input. `core.presence` keeps what is genuinely its own: the wire
 publisher, the `focus` door, and its chrome — which reaches renderers as REGISTERED OVERLAYS
 (`attendance`, `spotlight`) rather than as imports, so presence still owns its own
@@ -504,7 +506,8 @@ presentation and no renderer names the package.
 `core.shell.container-view` panel. Two rows reverse earlier scope notes, ruled in
 [`docs/decisions/0013-plugin-behavioral-contract.md`](docs/decisions/0013-plugin-behavioral-contract.md)
 §14: `POST /api/place` is superseded by `core.space.place` rather than left as a permanent
-exception (invariant 14 admits no second door onto "place a thing"), and `core.access` takes the
+exception ([One authoritative implementation](docs/CONTRACTS.md#one-authoritative-implementation)
+admits no second door onto "place a thing"), and `core.access` takes the
 token and principal administration verbs now. The A5 evaluator (ADR 0011, grant rows,
 `effectiveCaps`) landed in wave 4 (#77) beneath that same seam — "identity mechanism is floor"
 never made `POST /api/tokens` mechanism, and the evaluator arriving did not change which of the
@@ -682,7 +685,8 @@ element types, and that every value's canonical word is the key's registry term.
 a contributed kind takes its manifest element `title` — so the table stays closed while the kind
 vocabulary stays open. The three that disagreed are gone: `carry.ts`'s label map is deleted,
 `item-drop.ts` derives its prose from `ITEM_NOUNS`, and `@manifold/ui`'s `icons.tsx` names glyphs directly
-instead of translating kinds into words a second time. Invariant 14,
+instead of translating kinds into words a second time.
+[One authoritative implementation](docs/CONTRACTS.md#one-authoritative-implementation),
 applied to vocabulary: one door onto "what do we call this kind".
 
 ```json
@@ -1473,7 +1477,7 @@ selector's leftmost compound must anchor on the plugin's own root class,
 classless rule is refused outright, and the refusal is `stylesheet_unscoped` by name — at the
 install door, at the unpacked build, and when a stored bundle is re-verified. The walk is ONE
 module, `packages/protocol/src/stylesheet.ts`, imported by `verify:axioms` for the tree and by
-the hub for a bundle (invariant 14); a kit fixture's sheet under `test/fixtures/` is read the
+the hub for a bundle ([One authoritative implementation](docs/CONTRACTS.md#one-authoritative-implementation)); a kit fixture's sheet under `test/fixtures/` is read the
 hub's way by the gate ("S13 css ownership at load") and registers no family. It binds `core.*`
 too — their sheets are here, where S13 checks them; no runtime check reads a tree row's CSS.
 This is ink ownership, not security: the mod holds the DOM, and the rule closes the one
@@ -2014,7 +2018,7 @@ string" is the question a broken gate actually asks.
     {
       "testid": "lens-skew",
       "renderer": "packages/web/src/lens.tsx",
-      "why": "the protocol-skew REFUSAL card. The gate asserts it appears in both drift directions and that the workspace behind it does not paint — invariant 10's failure mode is precisely a client that looks ordinary while it cannot speak to its server"
+      "why": "the protocol-skew REFUSAL card. The gate asserts it appears in both drift directions and that the workspace behind it does not paint — the failure mode under docs/CONTRACTS.md#protocol-and-compatibility is precisely a client that looks ordinary while it cannot speak to its server"
     },
     {
       "testid": "lens-skew-action",
@@ -2270,7 +2274,7 @@ parser over the dispatch ladder; its live half dispatches every registered door.
 | S9    | **Pillar exhaustiveness**: every floor FILE — stylesheets included, tests excluded — falls inside exactly one pillar's globs, where the most specific glob owns the file (longest literal prefix wins) and two pillars claiming one file at equal specificity is itself RED. An unmatched floor file is RED and is named. A pillar glob claiming no floor file is RED too, `gate-and-registries` excepted: it owns the constitution and the gate scripts, which §Foundation puts outside floor and plugin territory alike. There is no exception list — §Foundation law admits no third state, so a file leaves the unmatched set by moving into its plugin or by a pillar stating the litmus finding that owns it.                                                                                                                                                                                                                                 |
 | S10   | **The residual carve-out, published**: the script prints every `cleanup: true` action in the assembly, so growth of the action plane's one disable exemption is a line in a gate diff rather than a later discovery (ADR 0013 §9). Two assertions give the list teeth: a cleanup door's verb is REMOVAL, against the script's closed verb list — which mechanizes the ruling `core.terminals` makes by hand in a comment, that claiming a lease is administration and therefore not `cleanup` — and a cleanup door belongs to a PLUGIN, because an engine door publishes `source: "builtin"`, has no toggle, and cannot carry a residual from a disable it can never suffer.                                                                                                                                                                                                                                                                        |
 | S11   | **Lexicon**: no word in any §Lexicon row's `banned` list appears in an identifier, a classified wire literal, a CSS selector, a file or directory name, or a Markdown heading, outside a declared `allow` row — and every `allow` row suppresses at least one real occurrence, every `term` occurs at least once, and no `term` sits in another row's `banned` list.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| S12   | **One label vocabulary**: exactly ONE table in the tree translates an item kind into a display noun, its keys are `ITEM_KINDS` ∪ the assembly's element types, and every value's canonical word is that key's registry term. A second such table fails (invariant 14 applied to vocabulary).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| S12   | **One label vocabulary**: exactly ONE table in the tree translates an item kind into a display noun, its keys are `ITEM_KINDS` ∪ the assembly's element types, and every value's canonical word is that key's registry term. A second such table fails ([One authoritative implementation](docs/CONTRACTS.md#one-authoritative-implementation) applied to vocabulary).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | S13   | **CSS ownership**: every selector family in every stylesheet under `packages/` resolves to a §Lexicon `cssFamilies` row, and every rule is defined by the owner of the leftmost family it scopes into. A family painted from another package's sheet, a family with no row, a row whose stylesheet defines nothing, or a classless rule outside the floor sheet — each is RED, named by file and selector. A sheet under a kit `test/fixtures/` is an installed plugin's and is read the hub's way instead ("S13 css ownership at load", ADR 0025 §7, #258): every selector rooted at `.plugin-<id>` by the one walk `packages/protocol/src/stylesheet.ts` lends both readers, else RED naming the selector.                                                                                                                                                                                                                                        |
 | S14   | **Log-event vocabulary**: every `evt` a producer passes to `Logger.info/warn/error` in `packages/server/src` or to the agent's log sink, and every `"evt":"…"` literal a `packages/testkit` e2e or a `scripts/` gate matches inside raw stdout, is a member of `LOG_EVENTS` — and every member has a live producer, so a name nobody emits is a stale row. The producer half is also a compile error (`LogEvent`); the CONSUMER half is why the check exists, because no type reaches inside a string literal.                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | S15   | **Gate contracts**: every `[data-testid=…]` literal and every `clickTestId(…)` argument in `scripts/` resolves to a §Gate-contracts row AND to a live `data-testid=` attribute in that row's renderer (templated attributes match by shape), and every row is queried by some script. A gate keyed off button copy, or off a test-id nobody declared, fails.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -2297,23 +2301,23 @@ parser over the dispatch ladder; its live half dispatches every registered door.
 
 Per-axiom round table — which checks would fail first if an axiom stopped holding:
 
-| Axiom / rule                                  | Checks                                                                                                                                                                                                   |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A1 everything above the floor is a plugin     | S1, S2, S5, S8, S13, R1, R3, R11                                                                                                                                                                         |
-| A2 multiplayer by design                      | R2, R4, R5, R10 (R10 is the one with a stopwatch: two principals observe the same instant, or they do not)                                                                                               |
-| A3 moddable by design                         | `docs/PLUGINS.md` + R1, S5, S11, S12, R9, R11 (a stranger's agent onboards against the vocabulary and composes with the layout algebra; two words for one concept is two things to learn)                |
-| A4 sovereign nodes                            | R6 (addressing); wave 3 adds its own                                                                                                                                                                     |
-| A5 waterfall authority                        | R8 guards the flat degenerate case; the evaluator LANDED in wave 4 (ADR 0011, #77) and its parity is proven by that wave's own suites rather than by a gate row, so a dedicated row is still owed        |
-| A6 every exercise of authority is traced      | T1, T2, T3, T4, T5 (T2 is the one that holds without a dispatch: a rung that refuses without recording fails in the parser, never in a scenario somebody has to think of)                                |
-| Foundation law (litmus, pillars)              | S2, S6, S7, S9, S13, S16                                                                                                                                                                                 |
-| Every runtime-joined namespace has a registry | S3, S4, S7, S11, S12, S13, S14, S15, and `verify:budgets` for the §Budgets ↔ feed-vocabulary join                                                                                                        |
-| D4′ disable semantics (ADR 0013)              | R3, S10                                                                                                                                                                                                  |
-| One word per concept (invariant 16)           | S11, S12, S14                                                                                                                                                                                            |
-| Plane rule and state discipline               | S3, S4, R7, R8, R10 (the event plane's own rule — a notification never mutates, and a subscription dies with its socket)                                                                                 |
-| Self-description (the structured log)         | S14, R10 (the subscribe refusal is SILENT on the wire by design, so the log is the only place it is observable), T1-T5 (the durable half: what an operator tails versus what the workspace can be asked) |
-| Gates assert on declared contracts            | S15                                                                                                                                                                                                      |
-| Self-hosted first (ADR 0022)                  | S17 (the tree ships provider-neutral artifacts; the operator's instance is one deployment of them, named in exactly one file)                                                                            |
-| Records summarize, the spec rules (#248)      | S19 (every record's status is machine-readable and the directory's index is generated from it, never written)                                                                                            |
+| Axiom / rule                                                | Checks                                                                                                                                                                                                   |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1 everything above the floor is a plugin                   | S1, S2, S5, S8, S13, R1, R3, R11                                                                                                                                                                         |
+| A2 multiplayer by design                                    | R2, R4, R5, R10 (R10 is the one with a stopwatch: two principals observe the same instant, or they do not)                                                                                               |
+| A3 moddable by design                                       | `docs/PLUGINS.md` + R1, S5, S11, S12, R9, R11 (a stranger's agent onboards against the vocabulary and composes with the layout algebra; two words for one concept is two things to learn)                |
+| A4 sovereign nodes                                          | R6 (addressing); wave 3 adds its own                                                                                                                                                                     |
+| A5 waterfall authority                                      | R8 guards the flat degenerate case; the evaluator LANDED in wave 4 (ADR 0011, #77) and its parity is proven by that wave's own suites rather than by a gate row, so a dedicated row is still owed        |
+| A6 every exercise of authority is traced                    | T1, T2, T3, T4, T5 (T2 is the one that holds without a dispatch: a rung that refuses without recording fails in the parser, never in a scenario somebody has to think of)                                |
+| Foundation law (litmus, pillars)                            | S2, S6, S7, S9, S13, S16                                                                                                                                                                                 |
+| Every runtime-joined namespace has a registry               | S3, S4, S7, S11, S12, S13, S14, S15, and `verify:budgets` for the §Budgets ↔ feed-vocabulary join                                                                                                        |
+| D4′ disable semantics (ADR 0013)                            | R3, S10                                                                                                                                                                                                  |
+| One word per concept ([Lexicon law](AXIOMS.md#lexicon-law)) | S11, S12, S14                                                                                                                                                                                            |
+| Plane rule and state discipline                             | S3, S4, R7, R8, R10 (the event plane's own rule — a notification never mutates, and a subscription dies with its socket)                                                                                 |
+| Self-description (the structured log)                       | S14, R10 (the subscribe refusal is SILENT on the wire by design, so the log is the only place it is observable), T1-T5 (the durable half: what an operator tails versus what the workspace can be asked) |
+| Gates assert on declared contracts                          | S15                                                                                                                                                                                                      |
+| Self-hosted first (ADR 0022)                                | S17 (the tree ships provider-neutral artifacts; the operator's instance is one deployment of them, named in exactly one file)                                                                            |
+| Records summarize, the spec rules (#248)                    | S19 (every record's status is machine-readable and the directory's index is generated from it, never written)                                                                                            |
 
 Also standing, in `bun run gate`: `verify:trace` (axiom A6's completeness check — T1-T5 above,
 headless, its own server), `verify:convergence` (the document plane), `verify:tile-drop`

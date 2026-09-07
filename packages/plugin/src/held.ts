@@ -6,7 +6,7 @@ import { useSyncExternalStore } from "react";
  * that carry over (issue #148). The palette is `core.arrange`'s chrome and the rail's grips are
  * `core.shell`'s: neither can name the other, so without this slot "drop it back on the
  * palette" is a private import across the boundary or a second palette — the same bug twice
- * (invariants 12 and 14). The holder names ONE VERB, the removal its own layout door performs;
+ * (AXIOMS.md §Foundation law and REGISTRY.md §Foundation and docs/CONTRACTS.md §One authoritative implementation). The holder names ONE VERB, the removal its own layout door performs;
  * whoever paints the palette paints "Drop to remove" and calls it at the release that lands
  * there. NOT A {@link Vantage} FACET, for {@link requestRebind}'s reason: it lives between a
  * grip's drag threshold and its release, and the write it can cause is the traced commit point.

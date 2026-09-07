@@ -42,8 +42,9 @@ plugin may claim.
 a remote human, and an agent, over the UI and over the API. There is no local-only path and
 no API-only path: a gesture in the browser and a call from an SDK land on the same door, and
 the door is the only place authority is decided. Solo is a room of one, never a second mode —
-local input normalizes into the wire form first and is consumed as if received (AGENTS.md
-invariant 11), so single-player is a special case of multiplayer and never the reverse.
+local input normalizes into the wire form first and is consumed as if received
+([Producer-neutral behavior](docs/CONTRACTS.md#producer-neutral-behavior)),
+so single-player is a special case of multiplayer and never the reverse.
 Each principal's **vantage** — the tool in hand, what is being edited, which container has focus,
 whether the sidebar is open — is observable by other principals and drivable by them where
 consent allows it (`core.presence.focus` writes a spotlight into a peer's presence; the peer
@@ -103,7 +104,8 @@ from the log, because a ledger that leaks a credential is a worse artifact than 
 **The exemptions are these three and no others, each because it is not an exercise of authority
 at a door**: presence, which is never persisted and dies with its connection; continuous streams
 — PTY bytes, cursor motion, live drags — whose LIFECYCLE is traced because opening, taking and
-killing are doors, while the bytes themselves are exempt by invariant 5; and document-plane
+killing are doors, while the bytes themselves are exempt by
+[Data and credential boundaries](docs/CONTRACTS.md#data-and-credential-boundaries); and document-plane
 deltas, whose authority is discharged at the socket and whose commit point is a batch, to be
 traced as attributed batches when that batch has an attribution (the seam is named in
 [`docs/decisions/0018-trace-ledger.md`](docs/decisions/0018-trace-ledger.md)). An unregistered
@@ -115,7 +117,8 @@ achieved per door class and the staged path to tamper-evidence are normative in
 check is `REGISTRY.md` §Gates (T1-T5), and a registered door that yields no trace is gate RED.
 
 **"One door per concept" is not a seventh axiom.** It is an engineering law and lives as
-`AGENTS.md` invariant 14: every concept has exactly one authoritative implementation and every
+[One authoritative implementation](docs/CONTRACTS.md#one-authoritative-implementation):
+every concept has exactly one authoritative implementation and every
 consumer goes through it. It is referenced here because the axioms above are unenforceable
 without it — two doors onto one concept means two authority decisions, and the second one is
 the one that gets forgotten.
@@ -169,9 +172,11 @@ conversion work list — which floor surface becomes which plugin, and the rulin
   the SQLite schema (migration 11), CSS, file names, tests and docs, with the retired synonyms
   banned in `REGISTRY.md` §Lexicon and enforced by S11/S12 — the machine wire genuinely breaks here, so
   `MACHINE_PROTOCOL_COMPAT_VERSIONS` resets to `{16}` and the fleet restarts together
-  (invariant 10). Plus `AXIOMS.md` (including §Foundation law and §Lexicon law), `REGISTRY.md`
-  (the lexicon rows, the `cssFamilies` register and the pillar inventory), `AGENTS.md`
-  invariants 12–16, and `verify:axioms` in the gate.
+  ([Protocol and compatibility](docs/CONTRACTS.md#protocol-and-compatibility)).
+  Plus `AXIOMS.md` (including §Foundation law and §Lexicon law), `REGISTRY.md`
+  (the lexicon rows, the `cssFamilies` register and the pillar inventory), the engineering
+  constraints now owned by [CONTRACTS.md](docs/CONTRACTS.md#engineering-constraints),
+  and `verify:axioms` in the gate.
 - **Wave 2 — the event plane** (ADR 0012, #72 / #73). Landed: protocol v17 (`subscribe`,
   `unsubscribe`, `event` — connection-level, structured `ManifoldRef` topics, snake_case declared
   kinds), emission at the doors the engine already owns (action dispatch staged behind the
@@ -283,8 +288,8 @@ conversion work list — which floor surface becomes which plugin, and the rulin
     dispatch door every other caller uses. An action a palette cannot reach is an action that
     escaped the door — which makes the palette an audit instrument as much as an affordance. Actions
     needing arguments are the design work: a schema is enough to prompt from, and inventing a
-    second per-action UI declaration beside it would be the second convention invariant 14
-    forbids.
+    second per-action UI declaration beside it would be the second convention
+    [One authoritative implementation](docs/CONTRACTS.md#one-authoritative-implementation) forbids.
   - **Notifications** — durable, addressed messages that outlive a tab, on wave 2's event plane.
     This is NOT the notice stack: `notice` is the one canonical word for the transient and sticky
     message layer a floor provider owns and every plugin raises into (`REGISTRY.md` §Lexicon), it is
@@ -346,7 +351,8 @@ The reason is ownership. A theme is a mechanism for one party to restyle everyth
 ONE owner, every rule is written by the owner of the family it scopes into, and a family painted
 from another package's stylesheet is RED. A theme layer is precisely a sanctioned way to violate
 that — it would be a second writer for every family in the tree, which is a second convention for
-who owns ink (invariant 14) and the end of the check that currently makes ownership falsifiable.
+who owns ink ([One authoritative implementation](docs/CONTRACTS.md#one-authoritative-implementation))
+and the end of the check that currently makes ownership falsifiable.
 There is no version of "a theme may override any plugin's skin" that S13 survives.
 
 What already exists and is enough: the floor's stylesheet publishes **exactly two cross-owner
@@ -364,7 +370,8 @@ one party restyles another.
 ## Lexicon law
 
 One word per concept, one concept per word. A second name for an existing concept is
-invariant-14 debt, and the whole of it is recorded as DATA rather than argued case by case: the
+debt under [One authoritative implementation](docs/CONTRACTS.md#one-authoritative-implementation),
+and the whole of it is recorded as DATA rather than argued case by case: the
 registry is [`REGISTRY.md`](REGISTRY.md) §Lexicon, it is machine-readable, and `verify:axioms`
 reads it in both directions (S11, S12). It replaced the prose taxonomy that used to sit here — a
 document cannot hold two statements of what a word means without becoming the second door onto
@@ -539,7 +546,8 @@ direction the axioms want.
     not implemented shows up where a user or an agent looks: a named refusal class, a
     placeholder that says what is missing, a roster field, a documented status. A deferral only a
     reader of `docs/` can discover is indistinguishable from a bug.
-- **New dependencies:** `AGENTS.md` invariant 8 (no new runtime dependency without a dated ADR)
+- **New dependencies:** [Dependency decisions](docs/CONTRACTS.md#dependency-decisions)
+  (no new runtime dependency without a dated ADR)
   and its converse both apply — any pattern that is not manifold-specific gets a named library
   evaluation (candidates, code and maintenance saved, opinionation cost) recorded in the owning
   ADR before it is hand-rolled.

@@ -2,7 +2,7 @@
  * ============================================================================
  * ADVERSARIAL TEST HARNESS — RAW WEBSOCKET ALLOWED HERE ONLY.
  *
- * This file is the sole AGENTS.md invariant 3 exemption. It deliberately bypasses the
+ * This file is the sole docs/CONTRACTS.md §Protocol and compatibility exemption. It deliberately bypasses the
  * SessionClient only to prove server rejection and forward-compatibility paths. It MUST
  * NOT be imported by production code or used as a second valid-protocol client.
  * ============================================================================

@@ -16,7 +16,7 @@ import {
 } from "../src/terminal.ts";
 
 /**
- * Real-PTY unit tests. AGENTS.md invariant 7 permits the agent's PTY tests to spawn real
+ * Real-PTY unit tests. docs/CONTRACTS.md §Testability (agent-facing) permits the agent's PTY tests to spawn real
  * shells (this machine supports Bun.Terminal). We pin `bash --norc -i` for determinism
  * instead of inheriting the ambient login shell.
  *
