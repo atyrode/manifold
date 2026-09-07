@@ -195,11 +195,11 @@ function playTileMotion(
   };
 }
 
-/** Internal bridge used by the single live preview, on the same stable boxes as settlement. */
-export function projectTileMotion(element: HTMLElement, transform: string, faded: boolean): void {
+/** Fade the reserved source seat; prospective geometry never moves live content. */
+export function projectTileMotion(element: HTMLElement, faded: boolean): void {
   const opacity = faded ? "var(--carry-fade-opacity)" : "";
-  if (element.style.transform === transform && element.style.opacity === opacity) return;
-  playTileMotion(element, tileVisual(element), transform, opacity);
+  if (element.style.opacity === opacity) return;
+  playTileMotion(element, tileVisual(element), "", opacity);
 }
 
 interface KeyedTile {

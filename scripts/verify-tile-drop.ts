@@ -2,10 +2,8 @@
  * manifold tile-drop regression gate.
  *
  * Guards the leaf-addressed drop pipeline and its live split preview at the RENDERED
- * boundary. One root cause produced three operator-reported defects — a drop onto a
- * composition was addressed as a canvas ELEMENT instead of a node of a tile tree, and
- * the preview was a rectangle painted over the target instead of the layout that would
- * result. The rounds pin the fixes:
+ * boundary. Drop addresses name the intended leaf, and the ghost describes the accepted
+ * result without moving the live target panes. The rounds pin the contracts:
  *
  *   1. DEPTH REACHED — dropping onto the lower half of leaf B of `A | B` produces
  *      `A | (B/C)`: the aimed LEAF splits, never the root.
@@ -16,9 +14,8 @@
  *   4. CHROME EXCLUDED — on a canvas portal the drop geometry measures the tile AREA,
  *      so an aim just below `.portal__strip` resolves at the area's top, not
  *      offset by the strip height.
- *   5. PANES REALLY MOVE — during the hover a pre-existing pane wears a non-identity
- *      transform while its terminal's LAYOUT box is untouched and no `terminal_resize`
- *      frame reaches the wire (transform-not-reflow is the safety property).
+ *   5. PANES STAY PUT — hover leaves painted pane rectangles and terminal layout boxes
+ *      unchanged, with no terminal_resize frame. Only accepted canonical changes animate.
  *   6. FIVE ZONES ON A NESTED TILE — leaf B of `A | (B/C)` answers all four bands and
  *      center for a tile carry (swap at center), a seatless carry replaces at center,
  *      and the displaced terminal survives in a fresh home of its own.
@@ -193,6 +190,8 @@ interface HoverSample {
   readonly rect: Rect | null;
   readonly className: string;
   readonly motion: Record<string, TileMotionSample>;
+  /** Worst painted pane drift over all animation frames since this carry began. */
+  readonly maxPaneDrift: number;
   readonly extra: unknown;
 }
 
@@ -219,7 +218,6 @@ async function dragSequence(
     readonly fx: number;
     readonly fy: number;
     readonly holdMs: number;
-    readonly movingTileId?: string;
   }[],
   release: boolean,
   extraJs = "() => null",
@@ -247,6 +245,21 @@ async function dragSequence(
         return gate.promise;
       };
       const grab = from.getBoundingClientRect();
+      const baseline = (${tileMotionJs})(document.querySelector(${JSON.stringify(area)}));
+      let maxPaneDrift = 0;
+      let watching = true;
+      const measure = () => {
+        const current = (${tileMotionJs})(document.querySelector(${JSON.stringify(area)}));
+        for (const [id, before] of Object.entries(baseline)) {
+          const after = current[id];
+          if (after === undefined) { maxPaneDrift = Number.MAX_VALUE; continue; }
+          const a = before.rect, b = after.rect;
+          maxPaneDrift = Math.max(maxPaneDrift, Math.abs(a.left - b.left),
+            Math.abs(a.top - b.top), Math.abs(a.width - b.width), Math.abs(a.height - b.height));
+        }
+        if (watching) requestAnimationFrame(measure);
+      };
+      requestAnimationFrame(measure);
       fire(from, 'dragstart', grab.left + 4, grab.top + 4);
       const samples = [];
       let last = null;
@@ -254,26 +267,8 @@ async function dragSequence(
       for (const stop of ${JSON.stringify(stops)}) {
         const onto = document.querySelector(stop.selector);
         if (onto === null) { samples.push(null); continue; }
-        /*
-          Zones resolve in the AREA's stable geometry while the FLIP has visually moved
-          the panes — the vacated space is exactly where the slot paints — so hover
-          coordinates must come from the UNTRANSFORMED boxes, the way a pointer's
-          position is judged by the app. Pane seats already have committed geometry.
-          Only a target INSIDE a moving content host needs its ancestor projection
-          lifted: !important overrides WAAPI without cancelling or restarting it.
-        */
-        const lifted = [];
-        for (let el = onto; el !== null && el !== document.body; el = el.parentElement) {
-          if (el.classList.contains('tile-content-host')) {
-            lifted.push([el, el.style.getPropertyValue('transform'), el.style.getPropertyPriority('transform')]);
-            el.style.setProperty('transform', 'none', 'important');
-          }
-        }
+        // Visible pane bounds ARE the target geometry; never lift a transform in the gate.
         const box = onto.getBoundingClientRect();
-        for (const [el, transform, priority] of lifted) {
-          if (transform === '') el.style.removeProperty('transform');
-          else el.style.setProperty('transform', transform, priority);
-        }
         const x = box.left + box.width * stop.fx;
         const y = box.top + box.height * stop.fy;
         fire(onto, 'dragenter', x, y);
@@ -290,25 +285,7 @@ async function dragSequence(
           await wait(120);
           fire(onto, 'dragover', x, y);
         }
-        if (stop.movingTileId === undefined) {
-          await wait(80);
-        } else {
-          // A timer can run before React's preview commit or WAAPI's first painted frame.
-          // Keep the carry alive until its actual content host has moved and settled.
-          const deadline = performance.now() + 10_000;
-          while (true) {
-            const areaEl = document.querySelector(${JSON.stringify(area)});
-            const motion = (${tileMotionJs})(areaEl)[stop.movingTileId];
-            const host = areaEl?.querySelector(
-              '[data-tile-id="' + CSS.escape(stop.movingTileId) + '"] .tile-content-host');
-            if (motion?.moved && host?.getAnimations().every(
-              (animation) => animation.playState === 'finished')) break;
-            if (performance.now() >= deadline)
-              throw new Error('timed out waiting for painted preview motion of ' + stop.movingTileId);
-            fire(onto, 'dragover', x, y);
-            await wait(120);
-          }
-        }
+        await wait(80);
         const areaEl = document.querySelector(${JSON.stringify(area)});
         const slot = areaEl === null ? null : areaEl.querySelector('.tile-preview');
         // A wall-clock hold can elapse before Chromium paints a transition under load.
@@ -324,16 +301,20 @@ async function dragSequence(
           rect,
           className: slot === null ? '' : slot.className,
           motion,
+          maxPaneDrift,
           extra: (${extraJs})(),
         });
         last = { x, y };
         lastNode = onto;
       }
+      watching = false;
       let accepted = false;
       if (${String(release)} && lastNode !== null && last !== null) {
         const released = fire(lastNode, 'drop', last.x, last.y);
         accepted = released.defaultPrevented;
       }
+      // Native HTML5 drag consumes Escape and ends the drag. A synthetic chrome
+      // keydown would instead invoke the composition's intentional shrink command.
       fire(from, 'dragend', last === null ? 0 : last.x, last === null ? 0 : last.y);
       return { ok: true, accepted, samples };
     })()`,
@@ -581,7 +562,6 @@ try {
         fx: 0.5,
         fy: 0.85,
         holdMs: 250,
-        movingTileId: leafB,
       },
     ],
     true,
@@ -657,15 +637,17 @@ try {
   } | null;
   const shifted = hover1?.motion[leafB] ?? null;
   check(
-    "panes really move",
+    "panes stay put while aiming",
     shifted !== null &&
-      shifted.moved &&
+      !shifted.moved &&
       paneBBefore !== null &&
-      rectDrift(shifted.rect, paneBBefore) > 4,
+      rectDrift(shifted.rect, paneBBefore) <= 1 &&
+      hover1 !== null &&
+      hover1.maxPaneDrift <= 1,
     `B's content host painted ${shifted?.transform ?? "no transform"} during the hover`,
   );
   check(
-    "transform, not reflow",
+    "hover neither stretches nor reflows terminals",
     extras1 !== null &&
       paneBBefore !== null &&
       extras1.resizeFrames === 0 &&
@@ -713,28 +695,24 @@ try {
         fx: 0.08,
         fy: 0.5,
         holdMs: 120,
-        movingTileId: leafC,
       },
       {
         selector: `[data-tile-id="${leafB}"]`,
         fx: 0.92,
         fy: 0.5,
         holdMs: 120,
-        movingTileId: leafC,
       },
       {
         selector: `[data-tile-id="${leafB}"]`,
         fx: 0.5,
         fy: 0.14,
         holdMs: 120,
-        movingTileId: leafB,
       },
       {
         selector: `[data-tile-id="${leafB}"]`,
         fx: 0.5,
         fy: 0.86,
         holdMs: 120,
-        movingTileId: leafB,
       },
       { selector: `[data-tile-id="${leafB}"]`, fx: 0.5, fy: 0.5, holdMs: 120 },
       // The carry's own leaf answers nothing: the slot idles instead of lying.
@@ -783,8 +761,9 @@ try {
   check(
     "cancellation restores live content without terminal reflow",
     rememberedCancel &&
-      edgeSamples.some(
-        (sample) => sample !== null && Object.values(sample.motion).some((motion) => motion.moved),
+      edgeSamples.every(
+        (sample) =>
+          sample !== null && Object.values(sample.motion).every((motion) => !motion.moved),
       ) &&
       cancelRestored,
     "after changing preview zones and cancelling, the same hosts/xterms regain their original painted boxes, layout sizes and opacity with no terminal_resize",
@@ -1123,7 +1102,7 @@ try {
           return settling ? null : { cls: slot.className, moved, motion };
         })()`,
       );
-      if (sample !== null && sample.moved && sample.cls.includes("is-remote")) return sample;
+      if (sample !== null && sample.cls.includes("is-remote")) return sample;
       await sleep(100);
     }
     return null;
@@ -1139,8 +1118,11 @@ try {
     });
   check(
     "a collaborator paints the dragger's preview (#61)",
-    viewerSample !== null && viewerSample.moved && peerMotionMatches,
-    `viewer slot "${String(viewerSample?.cls)}", panes glided: ${String(viewerSample?.moved)}, local/remote painted geometry agrees: ${String(peerMotionMatches)}`,
+    viewerSample !== null &&
+      !viewerSample.moved &&
+      peerMotionMatches &&
+      Object.values(localMotion).every((motion) => !motion.moved),
+    `viewer slot "${String(viewerSample?.cls)}", panes moved: ${String(viewerSample?.moved)}, local/remote painted geometry agrees: ${String(peerMotionMatches)}`,
   );
   await until(
     () => viewer!.evaluate<boolean>("document.querySelector('.tile-area .tile-preview') === null"),
@@ -1625,6 +1607,128 @@ try {
     seam === null
       ? `no seam found in the portal (engaged: ${String(seamEngaged)})`
       : `${seamSplit} ${seam.column ? "column" : "row"} shares ${shareStory(sharesBefore)} -> ${shareStory(sharesAfter)} from a 40px press on the seam's visible line; ${seam.band.toFixed(1)}px grab band (≥${String(SEAM_BAND_FLOOR)}) across a ${seam.extent.toFixed(0)}px split, inert ${String(seam.inert)}`,
+  );
+
+  /* ── #372: carry B from A | (B/C), keeping C targetable until commit ── */
+  const stableA = await bornTerminal("stable-A");
+  const stableB = await bornTerminal("stable-B");
+  const stableC = await bornTerminal("stable-C");
+  await place(
+    { kind: "terminal", terminalId: stableB.id },
+    { kind: "tile", containerId: stableA.containerId, targetTileId: ROOT_TILE_ID, edge: "right" },
+  );
+  viewClient.close();
+  viewClient = new SessionClient({
+    url: `${origin.replace(/^http/, "ws")}/ws/session`,
+    containerId: stableA.containerId,
+    token: ownerKey,
+  });
+  await viewClient.connect();
+  await until(() => leafOf(stableB.id) !== "", 10_000, "stable-hover pair visible");
+  await place(
+    { kind: "terminal", terminalId: stableC.id },
+    {
+      kind: "tile",
+      containerId: stableA.containerId,
+      targetTileId: leafOf(stableB.id),
+      edge: "bottom",
+    },
+  );
+  await until(() => leafOf(stableC.id) !== "", 10_000, "A | (B/C) visible");
+  const stableLeafA = leafOf(stableA.id);
+  const stableLeafB = leafOf(stableB.id);
+  const stableLeafC = leafOf(stableC.id);
+  const stableLayout = JSON.stringify(layoutNow());
+  await browser.goto(`${origin}/p/${stableA.containerId}`);
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `document.querySelectorAll('.tile-area .xterm').length === 3 &&
+        [...document.querySelectorAll('.tile-area .tile-content-host')].every(
+          host => host.getBoundingClientRect().width > 0 &&
+            host.getAnimations().every(animation => animation.playState === 'finished'))`,
+      ),
+    20_000,
+    "nested terminals painted before source carry",
+  );
+  const sourceGrip = `[data-tile-id="${stableLeafB}"] [data-titlebar-draggable]`;
+  const stableStops = [
+    { selector: `[data-tile-id="${stableLeafA}"]`, fx: 0.15, fy: 0.5, holdMs: 350 },
+    { selector: `[data-tile-id="${stableLeafC}"]`, fx: 0.5, fy: 0.5, holdMs: 350 },
+    { selector: `[data-tile-id="${stableLeafC}"]`, fx: 0.85, fy: 0.5, holdMs: 350 },
+  ];
+  const stableRemembered = await rememberTileState(browser);
+  const escaped = await dragSequence(browser, sourceGrip, ".tile-area", stableStops, false);
+  const stableRestored = await settles(
+    () => browser!.evaluate<boolean>(`(${tileStateRestoredJs})()`),
+    10_000,
+  );
+  check(
+    "cancellation reserves B's seat and never expands C",
+    stableRemembered &&
+      escaped.ok &&
+      stableRestored &&
+      JSON.stringify(layoutNow()) === stableLayout &&
+      escaped.samples.length === stableStops.length &&
+      escaped.samples.every(
+        (sample) =>
+          sample !== null &&
+          sample.present &&
+          sample.maxPaneDrift <= 1 &&
+          sample.motion[stableLeafC]?.moved === false,
+      ),
+    JSON.stringify({
+      remembered: stableRemembered,
+      restored: stableRestored,
+      unchanged: JSON.stringify(layoutNow()) === stableLayout,
+      samples: escaped.samples.map((sample) =>
+        sample === null
+          ? null
+          : {
+              present: sample.present,
+              drift: sample.maxPaneDrift,
+              cMoved: sample.motion[stableLeafC]?.moved,
+            },
+      ),
+      resizeDelta: await browser.evaluate<number>(
+        "(window.__resizeFrames?.length ?? 0) - window.__tileMotionResizeCount",
+      ),
+    }),
+  );
+  const stableCommit = await dragSequence(browser, sourceGrip, ".tile-area", stableStops, true);
+  const stableLanded = await settles(() => {
+    const layout = layoutNow();
+    const b = leafOf(stableB.id);
+    const c = leafOf(stableC.id);
+    const parent = layout[parentOf(layout, b)];
+    return (
+      b !== "" &&
+      c !== "" &&
+      parent?.dir === "row" &&
+      parentOf(layout, b) === parentOf(layout, c) &&
+      parent.children.indexOf(b) === parent.children.indexOf(c) + 1 &&
+      Object.values(layout).filter((node) => node.dir === null).length === 3
+    );
+  }, 10_000);
+  const finalGhost = stableCommit.samples.at(-1)?.rect ?? null;
+  const stableSlotMatches = await settles(async () => {
+    const landed = await elementRect(browser!, `[data-tile-id="${leafOf(stableB.id)}"]`);
+    return finalGhost !== null && landed !== null && rectDrift(finalGhost, landed) <= 4;
+  }, 10_000);
+  check(
+    "B commits beside C only after stationary hover",
+    stableCommit.ok &&
+      stableCommit.accepted &&
+      stableLanded &&
+      stableSlotMatches &&
+      stableCommit.samples.length === stableStops.length &&
+      stableCommit.samples.every(
+        (sample) =>
+          sample !== null &&
+          sample.maxPaneDrift <= 1 &&
+          sample.motion[stableLeafC]?.moved === false,
+      ),
+    "accepted release preserved insert/prune semantics, retained all three occupants, and landed B in the promised ghost",
   );
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));

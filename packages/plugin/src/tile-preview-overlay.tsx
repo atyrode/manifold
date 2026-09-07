@@ -1,9 +1,7 @@
 import { ROOT_TILE_ID, type CarryAim, type PlacementRef, type TileRef } from "@manifold/protocol";
-import { withoutTileLeaf } from "@manifold/scene";
 import {
   useEffect,
   useLayoutEffect,
-  useMemo,
   useReducer,
   useState,
   useSyncExternalStore,
@@ -12,16 +10,15 @@ import {
 
 import { ControlIcon, ItemIcon } from "@manifold/ui";
 import type { TileDropSignal, TileDropStore } from "./tile-drop-store.ts";
-import { areaUnits, type TileDropPipeline, type TileDropState } from "./use-tile-drop.ts";
-import { paneShifts, type PaneShift } from "./tile-geometry.ts";
+import type { TileDropPipeline, TileDropState } from "./use-tile-drop.ts";
 import { projectTileMotion, resetTileMotion } from "./tile-tree.tsx";
 import { carriedSnapshot, subscribeCarry } from "./item-envelope.ts";
 import type { GestureOverride } from "./presence/remote-gestures.ts";
 
 /**
- * The live split preview. Subscribes to the host's drop store — the ONLY consumer of
- * the per-frame pointer — renders the landing slot, and drives the FLIP: the REAL panes
- * glide and squeeze into their prospective places while only the slot is a ghost.
+ * The stationary split preview. Subscribes to the host's drop store — the ONLY consumer
+ * of the per-frame pointer — and renders a prospective landing slot over the current
+ * tree. The carried source keeps its seat; every other live pane stays visibly targetable.
  *
  * It owns no pipeline. The host creates exactly one {@link TileDropPipeline} and passes
  * it in, because the pipeline's memo is also its hysteresis state: a second instance for
@@ -31,18 +28,13 @@ import type { GestureOverride } from "./presence/remote-gestures.ts";
  * Its entire local-vs-remote logic is ARBITRATION — choosing which producer's
  * `(aim, ref, label)` triple enters the builder. Everything after that reads one
  * {@link TileDropState} and cannot ask who produced it: the slot, the cues, the caption,
- * the denial and the pane motion are one implementation, so a collaborator's view of a
+ * the denial and the source fade are one implementation, so a collaborator's view of a
  * drag is the dragger's view by construction rather than by matching two code paths.
  *
- * The motion is written imperatively as `transform` on the boxes `TileTree` already
- * owns, never through React state, so the tree does not re-render and no xterm is
- * touched. `transform` changes no layout box: the `ResizeObserver` in
- * `@manifold-plugin/terminals/web` observes the terminal's own container (a descendant),
- * never fires, so `fit()` never runs and no `resizeTerminal` reaches the real PTY —
- * transform-not-reflow is the protection, and it covers the fullscreen route's
- * controller socket too. Percentage translate resolves against the element's OWN box,
- * which is the `from` rect, so the numbers are scale-invariant: correct under the
- * portal's `scale(0.5)` and any canvas zoom without knowing either.
+ * Hover never transforms live panes or changes their layout boxes. Only the carried
+ * source fades, so terminal contents neither stretch nor resize while choosing a target.
+ * The ghost can describe the final insert/prune geometry without presenting that geometry
+ * as live hit zones. Accepted canonical changes alone drive TileTree's settlement motion.
  */
 /** The already-arbitrated source carry; no transport or producer identity enters motion. */
 export interface TileDeparture {
@@ -80,14 +72,8 @@ export interface TilePreviewOverlayProps {
 }
 
 const CARRIED_AWAY_CLASS = "is-carried-away";
-const NO_SHIFTS: readonly PaneShift[] = [];
 
-interface PreviewMotion {
-  readonly transform: string;
-  readonly faded: boolean;
-}
-
-/** The DOM box a shift moves: the pane the CURRENT tree drew for that tile. */
+/** The content host in the CURRENT tree; source fading never vacates its seat. */
 function paneElement(
   area: HTMLElement,
   fromTileId: string,
@@ -96,7 +82,7 @@ function paneElement(
   const match = area.querySelector<HTMLElement>(`[data-tile-id="${CSS.escape(fromTileId)}"]`);
   const pane = match ?? (singleLeaf ? area.firstElementChild : null);
   if (!(pane instanceof HTMLElement)) return null;
-  // Only leaves move. A nested split and its descendants must never both transform.
+  // Only leaves fade. A nested split and its descendants must never both dim.
   for (let index = 0; index < pane.children.length; index += 1) {
     const child = pane.children[index];
     if (child instanceof HTMLElement && child.classList.contains("tile-content-host")) return child;
@@ -113,7 +99,7 @@ export function TilePreviewOverlay({
 }: TilePreviewOverlayProps): ReactNode {
   const signal: TileDropSignal = useSyncExternalStore(store.subscribe, store.get, store.get);
   const host = drop.host;
-  const [motion] = useState(() => new Map<HTMLElement, PreviewMotion>());
+  const [faded] = useState(() => new Set<HTMLElement>());
   /** The last real state, so a gap (divider, own leaf) fades instead of popping. */
   const [held, setHeld] = useState<TileDropState | null>(null);
   /** Re-renders this overlay alone when the pointer's freshness window elapses. */
@@ -171,17 +157,6 @@ export function TilePreviewOverlay({
     departure.aim?.containerId !== host.containerId
       ? departure.ref.tileId
       : null;
-  const swapsSource = departure?.aim?.action === "swap";
-  const departureShifts = useMemo(() => {
-    const area = host.areaRef.current;
-    if (departingTileId === null || swapsSource || host.layout === null || area === null)
-      return NO_SHIFTS;
-    const units = areaUnits(area, host.dividerPx);
-    const next = withoutTileLeaf(host.layout, departingTileId);
-    return units === null || next === null
-      ? NO_SHIFTS
-      : paneShifts(host.layout, next, units.dividers);
-  }, [departingTileId, swapsSource, host.layout, host.areaRef, host.dividerPx]);
 
   /*
     Publish the resolved aim back to the store: the SINGLE source of both what a release
@@ -219,58 +194,47 @@ export function TilePreviewOverlay({
     };
   }, [armed, remaining]);
 
-  // Arbitration is finished. Incoming and departing projections use exactly the same
-  // leaf geometry and motion owner; neither moves layout boxes or fits a live PTY.
+  // Arbitration is finished. Incoming and departing carries reserve the source seat.
+  // Never touch another pane's transform, including an in-flight canonical settlement.
   useLayoutEffect(() => {
     const area = host.areaRef.current;
     if (area === null) return;
     const denied = live?.assessment?.denial != null;
     const carriedTileId = denied ? null : (live?.carriedTileId ?? departingTileId);
-    const shifts = denied ? NO_SHIFTS : (live?.shifts ?? departureShifts);
-    const singleLeaf = host.layout === null || host.layout[ROOT_TILE_ID]?.dir === null;
-    const next = new Map<HTMLElement, PreviewMotion>();
+    const carried =
+      carriedTileId === null
+        ? null
+        : paneElement(
+            area,
+            carriedTileId,
+            host.layout === null || host.layout[ROOT_TILE_ID]?.dir === null,
+          );
     area.classList.toggle("is-previewing", shown !== null || carriedTileId !== null);
-    for (const shift of shifts) {
-      const element = paneElement(area, shift.fromTileId, singleLeaf);
-      if (element === null) continue;
-      const dx = ((shift.to.x - shift.from.x) / shift.from.width) * 100;
-      const dy = ((shift.to.y - shift.from.y) / shift.from.height) * 100;
-      const sx = shift.to.width / shift.from.width;
-      const sy = shift.to.height / shift.from.height;
-      next.set(element, {
-        transform: `translate(${String(dx)}%, ${String(dy)}%) scale(${String(sx)}, ${String(sy)})`,
-        faded: false,
-      });
-    }
-    if (carriedTileId !== null) {
-      const carried = paneElement(area, carriedTileId, singleLeaf);
-      if (carried !== null) next.set(carried, { transform: "", faded: true });
-    }
-    for (const element of motion.keys()) {
-      if (next.has(element)) continue;
+    for (const element of faded) {
+      if (element === carried) continue;
       element.parentElement?.classList.remove(CARRIED_AWAY_CLASS);
-      if (element.isConnected) projectTileMotion(element, "", false);
+      if (element.isConnected) projectTileMotion(element, false);
       else resetTileMotion(element);
+      faded.delete(element);
     }
-    motion.clear();
-    for (const [element, projection] of next) {
-      projectTileMotion(element, projection.transform, projection.faded);
-      element.parentElement?.classList.toggle(CARRIED_AWAY_CLASS, projection.faded);
-      motion.set(element, projection);
+    if (carried !== null) {
+      projectTileMotion(carried, true);
+      carried.parentElement?.classList.add(CARRIED_AWAY_CLASS);
+      faded.add(carried);
     }
-  }, [host.areaRef, host.layout, shown, live, departingTileId, departureShifts, motion]);
+  }, [host.areaRef, host.layout, shown, live, departingTileId, faded]);
 
   useLayoutEffect(() => {
     const area = host.areaRef.current;
     return () => {
-      for (const element of motion.keys()) {
+      for (const element of faded) {
         resetTileMotion(element);
         element.parentElement?.classList.remove(CARRIED_AWAY_CLASS);
       }
-      motion.clear();
+      faded.clear();
       area?.classList.remove("is-previewing");
     };
-  }, [host.areaRef, motion]);
+  }, [host.areaRef, faded]);
 
   if (shown === null) return null;
 

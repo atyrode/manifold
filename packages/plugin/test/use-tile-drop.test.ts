@@ -292,10 +292,9 @@ describe("the one state constructor", () => {
 
 describe("the canvas door", () => {
   /*
-    Finding 3.1: the producer used to paint `unitZoneRect` — an exact half, no motion —
-    while every viewer ran the same aim through the tile kernel and saw the existing pane
-    glide into its share. The viewer's version is what `executeCompose` actually writes,
-    so the producer was the wrong one. There is now no second prospect to be wrong with.
+    The producer and viewer must paint the same final landing slot, including divider
+    space. A bare half is not the geometry executeCompose writes. Live panes stay in
+    their current seats; only this destination ghost describes the prospective split.
   */
   test("a solo portal edge aim previews the real root split, not a painted half", () => {
     const wire: CarryAim = {
@@ -318,9 +317,6 @@ describe("the canvas door", () => {
       UNITS.dividers,
     );
     expect(state?.slot).toEqual(expected?.slot);
-    expect(state?.shifts).toEqual(expected?.shifts ?? []);
-    // The existing occupant really moves: a bare half reported no motion at all.
-    expect(state?.shifts.length).toBe(1);
     expect(state?.slot.width).toBeLessThan(0.5);
     // The COMMIT still goes through the canvas door, which is what preserves the
     // ratified "A + B" birth and in-place portal repointing.
