@@ -86,7 +86,7 @@ export function TerminalView({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
-  const scheduleMeasuredResizeRef = useRef<(() => void) | null>(null);
+  const scheduleResizeRef = useRef<(() => void) | null>(null);
   /**
    * True once a snapshot has been painted into the LIVE terminal. It outlives socket
    * swaps on purpose: the next snapshot must replace what is on screen instead of
