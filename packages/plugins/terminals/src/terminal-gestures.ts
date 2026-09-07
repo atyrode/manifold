@@ -11,6 +11,7 @@ export function installTerminalGestures(
     readonly copyOnSelect: boolean;
     readonly pasteOnRightClick: boolean;
   },
+  paste: (stillCurrent: () => boolean) => Promise<void>,
 ): () => void {
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
   const activate = (event: MouseEvent, uri: string): void => {
@@ -107,27 +108,8 @@ export function installTerminalGestures(
       notice("This terminal preview is read-only. Open the terminal to paste.");
       return;
     }
-    const failed = (): void => {
-      if (!disposed && preferences().pasteOnRightClick)
-        notice(
-          "Could not read the clipboard. Allow clipboard access in your browser, or use Ctrl+Shift+V (Cmd+V on Mac) to paste. Shift-right-click opens the browser menu.",
-        );
-    };
-    if (!navigator.clipboard?.readText) {
-      failed();
-      return;
-    }
-    void navigator.clipboard.readText().then((text) => {
-      if (disposed || !preferences().pasteOnRightClick) return;
-      if (readOnly()) {
-        notice("This terminal preview is read-only. Open the terminal to paste.");
-        return;
-      }
-      // xterm owns newline normalization and bracketed paste, and onData owns
-      // the current socket and its existing input permission checks.
-      terminal.paste(text);
-      terminal.focus();
-    }, failed);
+    terminal.focus();
+    void paste(() => !disposed && preferences().pasteOnRightClick && !readOnly());
   };
   host.addEventListener("mousedown", mouseDown, true);
   host.addEventListener("contextmenu", contextMenu, true);

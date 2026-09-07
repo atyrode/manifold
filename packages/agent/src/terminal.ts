@@ -1,7 +1,11 @@
 import { homedir } from "node:os";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Terminal as HeadlessTerminal } from "@xterm/headless";
-import { MAX_SESSION_BASE64_CHARS, type AdvertisedTerminal } from "@manifold/protocol";
+import {
+  MAX_SESSION_BASE64_CHARS,
+  trackTerminalPrivateMode,
+  type AdvertisedTerminal,
+} from "@manifold/protocol";
 
 /**
  * One live PTY plus everything the machine channel needs to describe it: a strictly
@@ -35,7 +39,8 @@ const MIRROR_SCROLLBACK_LINES = 5000;
  */
 const SNAPSHOT_FRAMING_MARGIN_CHARS = 100_000;
 export const MAX_SNAPSHOT_BASE64_CHARS = MAX_SESSION_BASE64_CHARS - SNAPSHOT_FRAMING_MARGIN_CHARS;
-const MAX_SNAPSHOT_UTF8_BYTES = (MAX_SNAPSHOT_BASE64_CHARS / 4) * 3;
+// Reserve the private-mode suffix as part of the same bounded snapshot.
+const MAX_SNAPSHOT_UTF8_BYTES = (MAX_SNAPSHOT_BASE64_CHARS / 4) * 3 - 8;
 const TRUNCATED_SNAPSHOT_PREFIX = "\u001bc[older terminal rows omitted]\r\n";
 
 /** One emitted output chunk: its emission seq and a private copy of the bytes. */
@@ -193,6 +198,7 @@ export class PtyTerminal {
   private readonly pty: Bun.Terminal;
   private readonly mirror: HeadlessTerminal;
   private readonly serializer: SerializeAddon;
+  private readonly pasteMode: ReturnType<typeof trackTerminalPrivateMode>;
   private readonly ring: OutputRing;
   private readonly onOutput: (output: PtyOutput) => void;
 
@@ -227,6 +233,7 @@ export class PtyTerminal {
     });
     this.serializer = new SerializeAddon();
     this.mirror.loadAddon(this.serializer);
+    this.pasteMode = trackTerminalPrivateMode(this.mirror.parser, 5522);
 
     let proc: Bun.Subprocess | undefined;
     try {
@@ -251,6 +258,7 @@ export class PtyTerminal {
       proc?.kill("SIGKILL");
       const pty = proc?.terminal;
       if (pty !== undefined && !pty.closed) pty.close();
+      this.pasteMode.dispose();
       this.mirror.dispose();
       throw spawnFailure(error, command[0] ?? "");
     }
@@ -380,7 +388,7 @@ export class PtyTerminal {
         return;
       }
       try {
-        resolve({ seq, data: this.serializeBoundedSnapshot() });
+        resolve({ seq, data: this.serializeBoundedSnapshot() + this.pasteMode.serialize() });
       } catch (error) {
         reject(error);
       }
@@ -393,6 +401,7 @@ export class PtyTerminal {
     if (this.disposed) return;
     this.disposed = true;
     if (!this.pty.closed) this.pty.close();
+    this.pasteMode.dispose();
     this.mirror.dispose();
   }
 

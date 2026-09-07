@@ -165,32 +165,40 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   grant at `manifold://container/<id>`, which is what it always meant; the field did not move.
 - Revocation: durable; server closes live sockets of revoked tokens with code 4403 and
   message `revoked`.
-- **A principal minted by a script is an agent, and a script that walks the human gate cleans
-  up after itself** (issue #140): every script or testkit helper that mints a principal through
-  the API path (`core.access.createPrincipal`, `core.access.mint`) against a REAL origin declares
-  `kind: "agent"`, and the one that deliberately submits the first-visit dialog to prove the
-  human flow (`scripts/verify-public.ts`, name `verify`) keeps `human` and revokes that principal
-  on teardown, success and failure alike — a throwaway server's data dir dies with it, so its
-  tests are exempt.
-- **Expiry** (ADR 0019 §2, schema 15, v20). A token row carries `expires_at`; NULL means
-  never, which is what every row written before schema 15 means and what nothing backfills.
-  Ordinary human credentials get `INTERACTIVE_TOKEN_TTL_MS` = **14 days** from mint time,
-  not an idle timeout (`packages/server/src/auth.ts`). Preview-local human credentials instead
-  get `PREVIEW_IDENTITY_TOKEN_TTL_MS` = **15 minutes** (§Production identity handoff to
-  disposable previews below). Enforced in `authenticate` on the rung after revocation,
-  refused `forbidden` with message **`expired`**. `TokenGrant.expiresAt?` publishes it at the mint.
+- **Automation owns its teardown** (issues #140, #326): scripts and helpers mint dedicated,
+  clearly named `kind: "agent"` principals with minimal authority on persistent origins. A test
+  deliberately exercising the human form (`scripts/verify-public.ts`, a unique `verify-*` name)
+  retains `human`. Both revoke every run-owned credential on success and failure, verify no live
+  credentials remain, and close their test PTYs as well as removing test containers. A cleanup
+  failure is a failed run, not a warning hidden behind successful checks. Supplied operator
+  credentials and unrelated principals are never cleanup targets. Throwaway-server tests whose
+  data directory is destroyed are exempt; expiry never substitutes for cleanup on a real instance.
+- **Expiry** (ADR 0019 §2, amended by operator request #326). A token row carries `expires_at`;
+  NULL is reserved for the explicit internal lifecycle exceptions below. Ordinary human credentials,
+  including preview browser credentials, expire after **14 days**; ordinary agent credentials expire
+  after **1 hour**. The ordinary bootstrap, mint and federated-ticket paths apply
+  these rules; choosing `kind: "agent"` or root capabilities cannot select non-expiry.
+  `authenticate` refuses expired credentials after the revocation rung with `forbidden` / `expired`;
+  `TokenGrant.expiresAt?` publishes the bound at issuance.
+- **Legacy unbounded credentials receive one grace period** (schema 24, #326). On migration,
+  unrevoked ordinary human credentials receive fourteen days and ordinary agent credentials one
+  hour from migration time. Existing finite deadlines and revocations are untouched; restarting
+  does not extend grace. The migration backs up the database before rewriting deadlines and
+  excludes machine credentials and principals bound to currently running managed terminals.
 - **The two named credential refusals** are the closed set `AUTH_REFUSALS`
   (`revoked`, `expired`), published under `identity.authRefusals` in `GET /api/protocol`. They
   travel verbatim: as the 4403 close reason on `/ws/session`, and as the `forbidden` message
   on the HTTP door. A lens meeting `expired` re-bootstraps; one meeting `revoked` stops. Any
   other `forbidden` from `authenticate` closes with the generic `forbidden`.
-- **Machine tokens are exempt, and so are agents' (ADR 0019 §2).** `expiryFor(kind)` answers
-  `never` for `kind: "agent"`, and `persistMachine` passes `never` outright;
-  `authenticateMachine` has no expiry rung at all, so a machine credential cannot expire by
-  two independent constructions. An agent cannot re-authenticate through a browser, so
-  shortening its credential is a fleet outage wearing a security hat.
-- **The owner key does not expire and is not revocable by a grant.** It is break-glass, and
-  break-glass that can lock you out is not break-glass (ADR 0019 §1, §Alternatives rejected).
+- **Internal lifecycle exceptions are explicit, not a blanket agent exemption.** Machine
+  enrollment credentials remain on their separate machine-authentication path. Credentials
+  injected into a terminal are revoked automatically when that terminal exits or is removed,
+  rather than expiring while its process still needs them. Ordinary minting for the same agent
+  principal still receives the one-hour bound. Neither exception is an option on a public mint
+  request.
+- **The owner key does not expire and is not revocable by a grant.** It is the separate bootstrap
+  and recovery secret (ADR 0019 §1), not a privilege silently awarded to the first human account.
+  Human credentials minted with it still expire normally.
 - **The bootstrap audit** (ADR 0019 §4) leaves EVENT rows, not trace rows:
   `owner_authenticated` — at most one per `OWNER_AUDIT_WINDOW_MS` (**1 hour**), payload
   `{ window }` and nothing else, because `authenticate` runs on every request carrying the key
@@ -2222,6 +2230,53 @@ With right-click paste off, the normal context menu is untouched; when on, Shift
 mouse-reporting applications retain their existing behavior. Disabling a preference also prevents
 its pending clipboard completion from clearing a selection or pasting into the terminal.
 
+### Native terminal clipboard
+
+`core.terminals` bridges explicit browser paste to applications that enable DEC private mode
+**5522**. The application enables it with `ESC[?5522h` and disables it with `ESC[?5522l`;
+there is no capability-query prerequisite. The agent mirror and browser use the same private-mode
+parser. Every authoritative snapshot appends its current set/reset sequence at the snapshot's
+sequence watermark, so navigating away and returning or reconnecting restores the application mode
+without restarting the process. A legacy snapshot with no suffix leaves enhanced paste disabled.
+This extends the existing terminal byte stream, not the session/machine frame schemas.
+
+A trusted native paste event captures the MIME representations the browser provides. In enhanced
+mode, **Ctrl+Shift+V** uses the browser Clipboard API to retain image formats that Chromium's
+plain-text paste command otherwise discards; native paste events such as **Cmd+V**, and the
+opted-in right-click gesture, use the same exchange. Ordinary applications retain xterm's
+bracketed/plain text paste. Clipboard access never begins from terminal output or a timer.
+
+The explicit paste creates one 15-second, one-use grant bound to that view and its current PTY
+write authority. A Kitty-dot MIME listing is sent through the SDK's existing terminal-input path.
+The application's OSC 5522 read request must echo that grant and a non-empty application name;
+both payload and `mime=` request forms are accepted. Only captured bytes are returned, in
+4096-byte decoded chunks, bounded to **16 MiB**, with at most **32 requested MIME entries**.
+Only OMP's five supported MIME types are captured and advertised; unsupported-only clipboard
+contents are refused without issuing a grant. Another viewer ignores a grant it did not issue,
+rather than racing to refuse the initiating viewer. Grants and captured
+bytes are discarded on completion, expiry, blur, deactivation, authority loss, snapshot replacement,
+disconnect and disposal. Unsupported locations/formats, invalid requests and denied browser
+permissions do not become terminal text or execute commands.
+
+OMP **v18.1.12/v18.1.13** is the compatibility reference (upstream
+`4f429faef639d182633d1cb3f6a15254adcf25c1`; the clipboard consumer is unchanged at
+`a1b254047d12e143b7c6011536e918c6c35c5906`). It chooses
+**PNG > JPEG > WebP > GIF > text/plain**. Text goes to OMP's focused input; an image becomes
+a pending main-editor attachment, while OMP refuses image paste into its text-only modal prompts.
+Neither path submits the prompt. Browser/OS MIME availability still applies: a browser may expose
+only PNG even when an original image was JPEG, WebP or GIF. Manifold does not manufacture formats,
+convert HTML, read remote-host clipboard contents or turn a filesystem path into an upload.
+
+OMP copy uses **OSC 52 UTF-8 text writes**, not OSC 5522 writes. A focused, authorized live view
+offers the bounded copy and changes the browser clipboard only after **Copy** is selected.
+**Cancel** receives initial keyboard focus; Escape cancels. Approval is one-use; denial and
+unavailability are visible browser notices without disclosing copied content. OSC 52 queries
+never read the browser clipboard, and generic OSC 5522 MIME writes are refused.
+
+The browser clipboard and pending grants are device-local custody (`REGISTRY.md`, ADR 0029);
+approved bytes are ordinary, non-persistent PTY traffic. This does **not** create shared Manifold
+files, durable image storage, download URLs or arbitrary file transfer; that separate scope is #370.
+
 ### Terminals over the session channel
 
 - `terminal_open { elementId, cols, rows, cwd?, machineId?, placement?, program?, env? }` →
@@ -2676,7 +2731,7 @@ bytes remain untouched for fallback loading and operator recovery; this migratio
 empties an unreadable leaf. The current TileSchema accepts only `element`, not a compatibility
 alias for `text`, so this rewrite completes before any room or workspace layout is read.
 The document and metadata changes and `schema_version=19` commit in one transaction.
-Migration 21 is the attended drawing identity cutover (ADR 0023 §10). It atomically moves the
+Migration 23 is the attended drawing identity cutover (ADR 0023 §10). It atomically moves the
 old drawing namespace to `core.canvas.draw`, including existing version and migration stamps;
 renames its disabled-set entry, attribution key and element-type reservations; and records
 `$migration:core.draw-to-core.canvas.draw` under the new namespace. Principal ids and payload
@@ -2684,12 +2739,12 @@ bytes are not rewritten, and disabled plugins migrate too. Separate prepared sta
 inside the existing transaction so any failed write rolls back the entire cutover. The schema
 stamp and named ledger make the next boot a no-op. There is no old-id alias or fallback reader.
 A code migration declares whether it is recoverable, and
-a one-way data move is not: 9, 11, 13, 16, 19 and 21 each take a consistent `VACUUM INTO` snapshot BEFORE the
+a one-way data move is not: 9, 11, 13, 16, 19, 23 and 24 each take a consistent `VACUUM INTO` snapshot BEFORE the
 transaction opens (a VACUUM cannot run inside one, which is also what
 makes it a true pre-migration image), skipped only for an in-memory or not-yet-existing
 database.
 The snapshot lands beside the database as `<db>.pre-v<version>.bak`, so a `manifold.db` opened
-at schema 8 leaves the images for 9, 11, 13, 16, 19 and 21 once the replay finishes, and
+at schema 8 leaves the images for 9, 11, 13, 16, 19, 23 and 24 once the replay finishes, and
 **the operator prunes them**. The server never deletes an elder VERSION's
 snapshot: that set is the recovery path for moves nothing can run backwards, and a process
 that silently deletes a recovery image is a worse failure than a full disk. The one exception
