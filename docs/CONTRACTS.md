@@ -2170,8 +2170,9 @@ own their frame, body and xterm CSS in their plugin, not foreign selectors in a 
 composition stylesheet. The titlebar stays in normal flow and pointer-active; the clipped
 body uses the terminal's own background and padding without replacing the live xterm host.
 Mono windows and embedded compositions use the same native chrome and font scale; canvas
-zoom scales the projection once. Spectators fit their local display, but the terminal's
-controller-only resize guard prevents that fit from changing shared PTY geometry.
+zoom scales the projection once. Every viewer interprets output at the shared PTY grid:
+spectators scroll a smaller local viewport rather than fitting/reflowing that grid.
+Only a controller's non-preview view may propose a new shared size.
 
 Element `presentation?: Record<discipline, "body" | "titlebar">` is inert contribution data,
 preserved through `RegisteredElement`. Canvas reads the declaration for `canvas`, defaulting
@@ -2189,7 +2190,7 @@ in `packages/plugins/terminals/src/fonts/provenance.json`; exact cmap ranges are
 and Weather Icons are excluded for licensing/notice issues; Seti/Custom, Devicons and Font
 Awesome Extension are outside the audited subset. Shared bounded font readiness precedes
 xterm creation, socket attachment and activation; failure is visible locally, not a silent
-fallback. Snapshot-first replay and post-replay fitting remain the terminal byte contract.
+fallback. Snapshot-first replay and post-replay measurement remain the terminal byte contract.
 
 Native titlebar `−`/`+` controls change xterm font size by one integer pixel within **8–32**;
 the current-size button resets to **13px**. `core.terminals` stores this device's per-terminalId
@@ -2201,11 +2202,11 @@ still controller-only, post-snapshot and non-preview. Zoom updates the existing 
 not the socket or terminal lifecycle.
 
 The terminal's visual inset is outside the FitAddon measurement box, so the measured host
-is usable cell space rather than padding counted as rows. After snapshot replay, fitting
-schedules at most one pending animation-frame publication; unchanged geometry is not sent.
-Publication re-measures the current host before reading the grid, because an earlier resize
-echo may have changed xterm's dimensions since the scheduling fit. This removes the trailing
-quiet-period delay without changing controller/preview authority or the terminal wire.
+is usable cell space rather than padding counted as rows. After snapshot replay, measurement
+schedules at most one pending animation-frame publication; unchanged proposals are not sent.
+Publication measures the current host without resizing the local terminal. Every viewer,
+including the proposer, applies the authoritative resize event, so cursor-positioned output
+does not acquire a different interpretation merely because its viewport is smaller.
 
 `core.terminals` declares two independent **principal-scoped**, default-off boolean settings:
 `copy-on-select` ("Copy selection automatically") and `paste-on-right-click` ("Paste on

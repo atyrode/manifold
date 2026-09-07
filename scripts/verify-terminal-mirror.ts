@@ -1189,6 +1189,81 @@ try {
     rowPersisted,
     `row survives the extraction: ${String(rowPersisted)}`,
   );
+
+  // A TUI's cursor-addressed grid survives navigation into a smaller spectator
+  // viewport. Fitting that viewport locally used to scramble ongoing updates.
+  const gridCanvas = await createContainer("grid-navigation-regression");
+  const gridClient = new SessionClient({
+    url: `${origin.replace(/^http/, "ws")}/ws/session`,
+    containerId: gridCanvas,
+    token: ownerKey,
+    reconnect: false,
+  });
+  try {
+    await gridClient.connect();
+    const portalId = crypto.randomUUID();
+    const gridTerminal = await gridClient.openTerminal({
+      elementId: portalId,
+      cols: 152,
+      rows: 48,
+      program: {
+        argv: [
+          "bun",
+          "-e",
+          'process.stdout.write("\\x1b[?1049h\\x1b[2J\\x1b[1;140HEDGE"); let tick = 0; setInterval(() => process.stdout.write("\\x1b[2;140H" + String(++tick).padStart(6, "0") + "\\x1b[40;1HBOTTOM"), 100);',
+        ],
+      },
+    });
+    gridClient.transact((tx) =>
+      tx.create({
+        id: portalId,
+        type: "portal",
+        containerId: gridTerminal.containerId,
+        x: 40,
+        y: 40,
+        width: 720,
+        height: 480,
+        zIndex: tx.nextZIndex(),
+      }),
+    );
+    const gridState = (): Promise<{ edge: number; bottom: boolean; tick: number }> =>
+      browser!.evaluate(
+        `(() => {
+          const rows = document.querySelector('.xterm-rows')?.children;
+          return {
+            edge: rows?.[0]?.textContent.indexOf('EDGE') ?? -1,
+            bottom: rows?.[39]?.textContent.startsWith('BOTTOM') ?? false,
+            tick: Number(rows?.[1]?.textContent.slice(139, 145)),
+          };
+        })()`,
+      );
+    await browser.goto(`${origin}/p/${gridTerminal.containerId}`);
+    await until(async () => (await gridState()).bottom, 15_000, "full-size TUI painted");
+    await browser.evaluate(
+      `document.querySelector('[aria-label="Open canvas terminal-mirror-gate"]').click()`,
+    );
+    await until(
+      () => browser!.evaluate<boolean>("document.querySelector('.react-flow') !== null"),
+      10_000,
+      "index navigation left the TUI",
+    );
+    await browser.evaluate(
+      `document.querySelector('[aria-label="Open canvas grid-navigation-regression"]').click()`,
+    );
+    await until(async () => (await gridState()).bottom, 15_000, "spectator snapshot painted");
+    const beforeTick = (await gridState()).tick;
+    const coherentUpdates = await settles(async () => {
+      const state = await gridState();
+      return state.edge === 139 && state.bottom && state.tick > beforeTick;
+    }, 5_000);
+    check(
+      "index restoration preserves cursor-addressed TUI updates in a smaller viewport",
+      coherentUpdates,
+      JSON.stringify(await gridState()),
+    );
+  } finally {
+    gridClient.close();
+  }
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
 } finally {
