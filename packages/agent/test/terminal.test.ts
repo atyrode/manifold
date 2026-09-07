@@ -189,7 +189,7 @@ test("snapshot seq equals the last emitted seq; later outputs exceed it", async 
   const snapshot = await h.terminal.snapshot();
   expect(snapshot.seq).toBe(lastSeq);
   // snapshot() drains the mirror through `seq`, so the rendered data includes AAA exactly.
-  expect(snapshot.data).toContain("AAA");
+  expect(Buffer.from(snapshot.data).toString()).toContain("AAA");
 
   const before = h.outputs.length;
   h.terminal.write("echo BBB\n");
@@ -210,8 +210,8 @@ test("snapshot excludes output queued after its drain marker", async () => {
 
   const snapshot = await pendingSnapshot;
   expect(snapshot.seq).toBe(preAfterSeq);
-  expect(snapshot.data).toContain("SNAPSHOT_BEFORE");
-  expect(snapshot.data).not.toContain("SNAPSHOT_AFTER");
+  expect(Buffer.from(snapshot.data).toString()).toContain("SNAPSHOT_BEFORE");
+  expect(Buffer.from(snapshot.data).toString()).not.toContain("SNAPSHOT_AFTER");
   expect(h.terminal.seq).toBeGreaterThan(snapshot.seq);
 }, 12000);
 
@@ -225,7 +225,7 @@ test("reattached viewers recover private paste mode at the snapshot watermark", 
   const snapshot = await pendingSnapshot;
   const viewer = new HeadlessTerminal({ cols: 80, rows: 24, allowProposedApi: true });
   const pasteMode = trackTerminalPrivateMode(viewer.parser, 5522);
-  const replay = (data: string): Promise<void> => {
+  const replay = (data: string | Uint8Array): Promise<void> => {
     const { promise, resolve } = Promise.withResolvers<void>();
     viewer.write(data, resolve);
     return promise;
@@ -256,7 +256,7 @@ test("huge scrollback snapshot stays within machine wire caps and restores", asy
   const wideLine = `${"x".repeat(cols - 1)}\r\n`;
   injectPtyOutput(h.terminal, `${wideLine.repeat(6000)}LATEST_SNAPSHOT_ROW\r\n`);
   const snapshot = await h.terminal.snapshot();
-  const encoded = Buffer.from(snapshot.data, "utf8").toString("base64");
+  const encoded = Buffer.from(snapshot.data).toString("base64");
   const message = {
     type: "snapshot",
     terminalId: h.terminal.terminalId,
@@ -267,8 +267,8 @@ test("huge scrollback snapshot stays within machine wire caps and restores", asy
 
   expect(AgentMessageSchema.safeParse(message).success).toBe(true);
   expect(Buffer.byteLength(frame)).toBeLessThan(MAX_SESSION_FRAME_BYTES);
-  expect(Buffer.from(encoded, "base64").toString("utf8")).toBe(snapshot.data);
-  expect(snapshot.data.includes("LATEST_SNAPSHOT_ROW")).toBe(true);
+  expect(Buffer.from(encoded, "base64")).toEqual(Buffer.from(snapshot.data));
+  expect(Buffer.from(snapshot.data).toString()).toContain("LATEST_SNAPSHOT_ROW");
 
   // The bounded payload remains a valid xterm serialization, not a byte slice ending inside
   // UTF-8. Restore it into a fresh mirror and prove it can be drained and serialized again.

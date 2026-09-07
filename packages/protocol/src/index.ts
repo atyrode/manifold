@@ -1,4 +1,25 @@
 export {
+  encodeTerminalRgba,
+  decodeTerminalRgba,
+  validTerminalRgba,
+  type TerminalRgbaFormat,
+  type EncodedTerminalRgba,
+} from "./terminal-image-codec.ts";
+export {
+  TERMINAL_GRAPHICS_PREFIX,
+  TERMINAL_GRAPHICS_CELL,
+  TERMINAL_GRAPHICS_BYTES,
+  TERMINAL_GRAPHICS_INPUT_BYTES,
+  TERMINAL_GRAPHICS_PIXELS,
+  TERMINAL_GRAPHICS_CELLS,
+  TERMINAL_GRAPHICS_IMAGES,
+  TERMINAL_GRAPHICS_SNAPSHOT_BYTES,
+  TerminalGraphicsSnapshotSchema,
+  TerminalImageBudget,
+  inlineImageDimensions,
+  type TerminalGraphicsSnapshot,
+} from "./terminal-graphics.ts";
+export {
   DIAL_LIVENESS_TIMEOUT_MS,
   DIAL_PING_INTERVAL_MS,
   INSTANCE_PROTOCOL_COMPAT_VERSIONS,

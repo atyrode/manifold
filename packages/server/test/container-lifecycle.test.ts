@@ -60,11 +60,11 @@ import {
  *
  *   L1 BIRTH      a terminal and its home are created together; a canvas opener authors its
  *                 own portal and the server authors nothing on the canvas.
- *   L2 EXIT       successful exits are removed; nonzero/unknown exits keep their leaf, home
- *                 and every portal onto that home, so the real exit code stays visible.
+ *   L2 EXIT       every observed root PTY exit removes its leaf, home and portals;
+ *                 missing-owner inventory evidence alone remains inspectable.
  *   L3 REAP       removing a terminal's last home leaf kills the PTY and forgets the row —
  *                 the leaf addressed as a tile, or the terminal addressed by identity.
- *                 Successful exit uses this same canonical removal.
+ *                 Root PTY exit uses this same canonical removal.
  *   L4 EMPTIED    a composition that just LOST its last item is deleted; one that never held
  *                 anything is not.
  *   L5 MERGE      a terminal joining another composition moves, and every reference to its
@@ -519,7 +519,7 @@ describe("L1 birth: a terminal and its home are created together", () => {
     expect(bodiesOfType(onCanvas.socket, "terminal_opened")).toEqual([]);
     expect(bodiesOfType(onCanvas.socket, "terminal_event")).toEqual([]);
     expect(bodiesOfType(inHome.socket, "terminal_event")).toEqual([
-      { type: "terminal_event", terminalId: born.terminalId, kind: "exited", exitCode: 3 },
+      { type: "terminal_event", terminalId: born.terminalId, kind: "parked" },
     ]);
   });
 
@@ -546,104 +546,46 @@ describe("L1 birth: a terminal and its home are created together", () => {
   });
 });
 
-describe("L2 exit: success removes terminals; error and unknown exits retain evidence", () => {
-  test("an error exit deletes nothing, so the real code stays visible where the terminal lives", async () => {
-    const fixture = await lifecycleFixture();
-    const born = bornOnCanvas(fixture, "ref-1");
-    // Two canvases point at the home, because retaining error evidence has to hold for
-    // EVERY reference and not merely for the one the opener happened to author.
-    const other = canvasContainer(fixture, "second canvas");
-    writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 40, 40), LOCAL_ORIGIN);
-    writeElement(
-      room(fixture, other.id).doc,
-      portalElement("portal-b", born.homeId, 10, 10),
-      LOCAL_ORIGIN,
-    );
+describe("L2 exit: every observed root exit removes the terminal", () => {
+  test.each([0, 130, null])(
+    "exit %s removes every mirror, including persisted portals, for every viewer",
+    async (exitCode) => {
+      const fixture = await lifecycleFixture();
+      const born = bornOnCanvas(fixture, "ref-1");
+      const first = joinPeer(fixture, born.homeId);
+      const second = joinPeer(fixture, born.homeId);
+      const other = canvasContainer(fixture, "unloaded canvas");
+      writeElement(
+        canvasDoc(fixture),
+        portalElement("portal-a", born.homeId, 10, 10),
+        LOCAL_ORIGIN,
+      );
+      writeElement(
+        room(fixture, other.id).doc,
+        portalElement("portal-b", born.homeId, 20, 20),
+        LOCAL_ORIGIN,
+      );
+      fixture.rooms.evictIfIdle(other.id);
+      fixture.machine.clear();
 
-    // The PTY failed on its own. Its nonzero code is evidence to retain.
-    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 3);
-    // Duplicate or contradictory late frames cannot erase already-recorded error evidence.
-    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
+      fixture.broker.onExited(fixture.machine.machineId, born.terminalId, exitCode);
+      fixture.broker.onExited(fixture.machine.machineId, born.terminalId, exitCode);
 
-    expect(fixture.store.getContainer(born.homeId)).not.toBeNull();
-    expect(soleRef(fixture, born.homeId)).toEqual({
-      kind: "terminal",
-      terminalId: born.terminalId,
-    });
-    const stored = fixture.store.getTerminal(born.terminalId);
-    expect(stored?.status).toBe("exited");
-    // The REAL code. A natural exit never invents one and never loses one.
-    expect(stored?.exitCode).toBe(3);
-    expect(stored?.containerId).toBe(born.homeId);
-    expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual(["portal-a"]);
-    expect(room(fixture, other.id).portalIdsTo(born.homeId)).toEqual(["portal-b"]);
-  });
+      expect(fixture.store.getTerminal(born.terminalId)).toBeNull();
+      expect(fixture.store.getContainer(born.homeId)).toBeNull();
+      expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual([]);
+      expect(room(fixture, other.id).portalIdsTo(born.homeId)).toEqual([]);
+      expect(await indexRows(fixture)).toEqual([]);
+      expect(fixture.machine.sent).toEqual([]);
+      for (const viewer of [first, second]) {
+        expect(bodiesOfType(viewer.socket, "terminal_event")).toEqual([
+          { type: "terminal_event", terminalId: born.terminalId, kind: "parked" },
+        ]);
+      }
+    },
+  );
 
-  test("an agent-disconnected exit keeps a null code internally and still deletes nothing", async () => {
-    const fixture = await lifecycleFixture();
-    const born = bornOnCanvas(fixture, "ref-1");
-
-    // No code was observed, so none is reported. Null is the honest answer and it is not a
-    // third lifecycle state: the terminal exited, and what it exited with is unknown.
-    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, null);
-    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
-
-    expect(fixture.store.getTerminal(born.terminalId)).toMatchObject({
-      status: "exited",
-      exitCode: null,
-      containerId: born.homeId,
-    });
-    expect(fixture.store.getContainer(born.homeId)).not.toBeNull();
-  });
-
-  test("the prune that collects unhomed exits never fires on a homed error exit", async () => {
-    const fixture = await lifecycleFixture();
-    const born = bornOnCanvas(fixture, "ref-1");
-    writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 40, 40), LOCAL_ORIGIN);
-
-    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 7);
-    // An error exit touches no leaf, so pruning both the home and referencing canvas must
-    // leave the evidence available for inspection.
-    fixture.broker.pruneExitedUnhomedForContainer(born.homeId);
-    fixture.broker.pruneExitedUnhomedForContainer(fixture.canvas.id);
-
-    expect(fixture.store.getTerminal(born.terminalId)?.exitCode).toBe(7);
-    expect(fixture.store.getContainer(born.homeId)).not.toBeNull();
-    expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual(["portal-a"]);
-  });
-
-  test("a successful exit removes every mirror, including persisted portals, for every viewer", async () => {
-    const fixture = await lifecycleFixture();
-    const born = bornOnCanvas(fixture, "ref-1");
-    const first = joinPeer(fixture, born.homeId);
-    const second = joinPeer(fixture, born.homeId);
-    const other = canvasContainer(fixture, "unloaded canvas");
-    writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 10, 10), LOCAL_ORIGIN);
-    writeElement(
-      room(fixture, other.id).doc,
-      portalElement("portal-b", born.homeId, 20, 20),
-      LOCAL_ORIGIN,
-    );
-    fixture.rooms.evictIfIdle(other.id);
-    fixture.machine.clear();
-
-    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
-    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
-
-    expect(fixture.store.getTerminal(born.terminalId)).toBeNull();
-    expect(fixture.store.getContainer(born.homeId)).toBeNull();
-    expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual([]);
-    expect(room(fixture, other.id).portalIdsTo(born.homeId)).toEqual([]);
-    expect(await indexRows(fixture)).toEqual([]);
-    expect(fixture.machine.sent).toEqual([]);
-    for (const viewer of [first, second]) {
-      expect(bodiesOfType(viewer.socket, "terminal_event")).toEqual([
-        { type: "terminal_event", terminalId: born.terminalId, kind: "parked" },
-      ]);
-    }
-  });
-
-  test("a successful exit removes all its leaves without deleting other composition occupants", async () => {
+  test("a failed root exit removes all its leaves without deleting other composition occupants", async () => {
     const fixture = await lifecycleFixture();
     const composition = compositionContainer(fixture, "shared composition");
     const inside = joinPeer(fixture, composition.id);
@@ -654,6 +596,7 @@ describe("L2 exit: success removes terminals; error and unknown exits retain evi
     writeElement(canvasDoc(fixture), portalElement("portal", composition.id, 10, 10), LOCAL_ORIGIN);
     fixture.machine.clear();
 
+    fixture.broker.onExited(fixture.machine.machineId, finished.terminalId, 130);
     fixture.broker.onExited(fixture.machine.machineId, finished.terminalId, 0);
 
     expect(fixture.store.getTerminal(finished.terminalId)).toBeNull();
@@ -665,6 +608,18 @@ describe("L2 exit: success removes terminals; error and unknown exits retain evi
     });
     expect(room(fixture, fixture.canvas.id).portalIdsTo(composition.id)).toEqual(["portal"]);
     expect(fixture.machine.sent).toEqual([]);
+    expect(fixture.store.listEvents({ type: "terminal_killed", limit: 10 })).toEqual([]);
+    expect(
+      fixture.store
+        .listEvents({ type: "terminal_exited", limit: 10 })
+        .map((event) => JSON.parse(event.payload)),
+    ).toEqual([
+      {
+        terminalId: finished.terminalId,
+        machineId: fixture.machine.machineId,
+        exitCode: 130,
+      },
+    ]);
   });
 });
 
@@ -749,7 +704,7 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     expect(fixture.broker.introspect()).toEqual([]);
   });
 
-  test("killing a terminal that already exited on its own sweeps it the same way", async () => {
+  test("a kill racing after root exit finds no terminal and cannot repeat removal", async () => {
     const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 10, 10), LOCAL_ORIGIN);
@@ -763,9 +718,10 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
       terminalId: born.terminalId,
     });
 
-    // Dismissing a dead terminal and killing a live one are ONE verb, so an exited terminal
-    // is no conflict — and there is no PTY left to ask anything of.
-    expect(killed.payload).toEqual({ ok: true, result: {} });
+    expect(killed.payload).toEqual({
+      ok: false,
+      denial: { rule: "refused", message: "terminal not found" },
+    });
     expect(fixture.machine.sent).toEqual([]);
     expect(fixture.store.getTerminal(born.terminalId)).toBeNull();
     expect(fixture.store.getContainer(born.homeId)).toBeNull();

@@ -47,6 +47,7 @@ import {
 import { loadTerminalFont, TERMINAL_FONT_FAMILY, TERMINAL_FONT_SIZE } from "./terminal-font";
 import { terminalsManifest } from "./index";
 import { installTerminalGestures } from "./terminal-gestures";
+import { installTerminalGraphics, type TerminalGraphics } from "./terminal-graphics";
 import {
   installTerminalClipboard,
   type TerminalClipboard,
@@ -94,6 +95,7 @@ export function TerminalView({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const clipboardRef = useRef<TerminalClipboard | null>(null);
+  const graphicsRef = useRef<TerminalGraphics | null>(null);
   const pasteModeRef = useRef<ReturnType<typeof trackTerminalPrivateMode> | null>(null);
   const clipboardLiveRef = useRef(false);
   const activeRef = useRef(active);
@@ -290,7 +292,7 @@ export function TerminalView({
       rows: initialTerminal.rows,
       convertEol: false,
       cursorBlink: true,
-      scrollback: 2000,
+      scrollback: 5000,
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: terminalFontPreferences.get(terminalId),
       theme: {
@@ -303,6 +305,10 @@ export function TerminalView({
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(container);
+    const graphics = installTerminalGraphics(terminal, (message) =>
+      notifyRef.current(message, { key: `terminal-graphics:${terminalId}` }),
+    );
+    graphicsRef.current = graphics;
     terminalRef.current = terminal;
     const canWrite = (): boolean => {
       const current = clientRef.current;
@@ -422,6 +428,8 @@ export function TerminalView({
       disposeGestures();
       clipboard.dispose();
       clipboardRef.current = null;
+      graphics.dispose();
+      graphicsRef.current = null;
       pasteMode.dispose();
       pasteModeRef.current = null;
       clipboardLiveRef.current = false;
@@ -479,7 +487,6 @@ export function TerminalView({
       pasteModeRef.current?.reset();
       // Whatever is on screen — painted by this socket or by the one it replaced — is
       // REPLACED by the snapshot, never appended to.
-      if (paintedRef.current) terminal.reset();
       snapshotSeq = message.seq;
       lastWrittenSeq = message.seq;
       paintedRef.current = true;
@@ -487,7 +494,10 @@ export function TerminalView({
         .filter(([seq]) => seq > message.seq)
         .sort(([left], [right]) => left - right);
       bufferedOutputs.clear();
-      terminal.write(base64ToBytes(message.data), queued.length === 0 ? settle : undefined);
+      graphicsRef.current?.writeSnapshot(
+        base64ToBytes(message.data),
+        queued.length === 0 ? settle : undefined,
+      );
       queued.forEach(([seq, data], index) => {
         terminal.write(base64ToBytes(data), index === queued.length - 1 ? settle : undefined);
         lastWrittenSeq = seq;
@@ -508,7 +518,8 @@ export function TerminalView({
     const offTerminalEvent = client.on("terminal_event", (message) => {
       if (message.terminalId !== terminalId) return;
       if (message.kind === "resized" && message.cols !== undefined && message.rows !== undefined) {
-        terminal.resize(message.cols, message.rows);
+        const { cols, rows } = message;
+        terminal.write("", () => terminal.resize(cols, rows));
       }
     });
 

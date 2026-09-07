@@ -6,6 +6,8 @@ import {
   trackTerminalPrivateMode,
   type AdvertisedTerminal,
 } from "@manifold/protocol";
+import { TerminalGraphicsMirror } from "./terminal-graphics.ts";
+import { TerminalParserContinuation } from "./terminal-parser-continuation.ts";
 
 /**
  * One live PTY plus everything the machine channel needs to describe it: a strictly
@@ -52,7 +54,7 @@ export interface PtyOutput {
 /** A serialized mirror plus the seq watermark whose bytes it renders exactly. */
 export interface PtySnapshot {
   readonly seq: number;
-  readonly data: string;
+  readonly data: Uint8Array;
 }
 
 /** Result of a PTY exiting: the process exit code, or `null` when terminated by signal. */
@@ -162,6 +164,8 @@ function buildPtyEnvironment(
     for (const [name, value] of Object.entries(injected)) child.set(name, value);
   }
   child.set("TERM", "xterm-256color");
+  // Capability, not policy: an explicit NO_COLOR remains in the inherited environment.
+  child.set("COLORTERM", "truecolor");
   return Object.fromEntries(child);
 }
 
@@ -198,7 +202,9 @@ export class PtyTerminal {
   private readonly pty: Bun.Terminal;
   private readonly mirror: HeadlessTerminal;
   private readonly serializer: SerializeAddon;
+  private readonly graphics: TerminalGraphicsMirror;
   private readonly pasteMode: ReturnType<typeof trackTerminalPrivateMode>;
+  private readonly continuation: TerminalParserContinuation;
   private readonly ring: OutputRing;
   private readonly onOutput: (output: PtyOutput) => void;
 
@@ -231,9 +237,19 @@ export class PtyTerminal {
       scrollback: MIRROR_SCROLLBACK_LINES,
       allowProposedApi: true,
     });
+    this.continuation = new TerminalParserContinuation(this.mirror);
     this.serializer = new SerializeAddon();
     this.mirror.loadAddon(this.serializer);
     this.pasteMode = trackTerminalPrivateMode(this.mirror.parser, 5522);
+    try {
+      this.graphics = new TerminalGraphicsMirror(this.mirror, (data) => {
+        if (!this.disposed && !this.pty.closed) this.pty.write(data);
+      });
+    } catch (error) {
+      this.pasteMode.dispose();
+      this.mirror.dispose();
+      throw error;
+    }
 
     let proc: Bun.Subprocess | undefined;
     try {
@@ -259,6 +275,7 @@ export class PtyTerminal {
       const pty = proc?.terminal;
       if (pty !== undefined && !pty.closed) pty.close();
       this.pasteMode.dispose();
+      this.graphics.dispose();
       this.mirror.dispose();
       throw spawnFailure(error, command[0] ?? "");
     }
@@ -297,7 +314,7 @@ export class PtyTerminal {
     this.colsValue = cols;
     this.rowsValue = rows;
     this.pty.resize(cols, rows);
-    this.mirror.resize(cols, rows);
+    this.mirror.write("", () => this.mirror.resize(cols, rows));
   }
 
   /**
@@ -327,9 +344,23 @@ export class PtyTerminal {
    * multi-MiB serialization of all 5000 retained lines.
    */
   private serializeBoundedSnapshot(): string {
+    const continuation = this.continuation.serialize();
     let data = this.serializer.serialize({ scrollback: 0 });
-    if (Buffer.byteLength(data, "utf8") > MAX_SNAPSHOT_UTF8_BYTES) {
-      return this.truncateSerializedSnapshot(data);
+    const replaysSixel = this.continuation.replaysSixel();
+    const graphicsBudget = this.graphics.serialize(
+      MIRROR_SCROLLBACK_LINES,
+      true,
+      replaysSixel,
+    ).length;
+    const textBudget =
+      MAX_SNAPSHOT_UTF8_BYTES - graphicsBudget - Buffer.byteLength(continuation) - 3;
+    if (Buffer.byteLength(data, "utf8") > textBudget) {
+      return (
+        this.truncateSerializedSnapshot(data, textBudget) +
+        this.graphics.serialize(0, false, replaysSixel) +
+        this.pasteMode.serialize() +
+        continuation
+      );
     }
 
     const availableScrollback = Math.max(0, this.mirror.buffer.normal.length - this.rowsValue);
@@ -338,12 +369,17 @@ export class PtyTerminal {
     while (includedScrollback < availableScrollback) {
       const candidateScrollback = Math.min(availableScrollback, nextScrollback);
       const candidate = this.serializer.serialize({ scrollback: candidateScrollback });
-      if (Buffer.byteLength(candidate, "utf8") > MAX_SNAPSHOT_UTF8_BYTES) break;
+      if (Buffer.byteLength(candidate, "utf8") > textBudget) break;
       data = candidate;
       includedScrollback = candidateScrollback;
       nextScrollback *= 2;
     }
-    return data;
+    return (
+      data +
+      this.graphics.serialize(includedScrollback, true, replaysSixel) +
+      this.pasteMode.serialize() +
+      continuation
+    );
   }
 
   /**
@@ -352,10 +388,9 @@ export class PtyTerminal {
    * the budget, send only the explicit omission marker rather than cutting UTF-8 or an ANSI
    * control sequence and corrupting the viewer's subsequent live stream.
    */
-  private truncateSerializedSnapshot(data: string): string {
+  private truncateSerializedSnapshot(data: string, budget: number): string {
     const encoded = Buffer.from(data, "utf8");
-    const suffixBudget =
-      MAX_SNAPSHOT_UTF8_BYTES - Buffer.byteLength(TRUNCATED_SNAPSHOT_PREFIX, "utf8");
+    const suffixBudget = budget - Buffer.byteLength(TRUNCATED_SNAPSHOT_PREFIX, "utf8");
     const firstEligibleByte = encoded.byteLength - suffixBudget;
     const rowBoundary = encoded.indexOf(0x0a, firstEligibleByte);
     if (rowBoundary === -1) return TRUNCATED_SNAPSHOT_PREFIX;
@@ -388,7 +423,9 @@ export class PtyTerminal {
         return;
       }
       try {
-        resolve({ seq, data: this.serializeBoundedSnapshot() + this.pasteMode.serialize() });
+        const text = Buffer.from(this.serializeBoundedSnapshot(), "utf8");
+        const pending = this.continuation.pendingUtf8();
+        resolve({ seq, data: pending.length ? Buffer.concat([text, pending]) : text });
       } catch (error) {
         reject(error);
       }
@@ -402,6 +439,7 @@ export class PtyTerminal {
     this.disposed = true;
     if (!this.pty.closed) this.pty.close();
     this.pasteMode.dispose();
+    this.graphics.dispose();
     this.mirror.dispose();
   }
 
