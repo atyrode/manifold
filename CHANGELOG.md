@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.14.0] - 2026-09-07
+
+### Breaking Changes
+
+- Ordinary agent credentials now expire after one hour, while human credentials retain their fourteen-day lifetime. Existing unbounded ordinary credentials receive a one-time migration grace period of one hour for agents or fourteen days for humans; the recovery owner key, machine enrollment, and credentials bound to running terminal lifecycles remain exempt. Automation must revoke its own credentials when finished, and public verification now removes its test terminals and fails if credential or resource teardown fails. (#326, #377)
+
+### Added
+
+- Plugin delivery through the preview receiver and operator CLI now accepts an explicit `--hardened` fourth word to select the existing hardened runner. The ordinary `plugin URL SHA256` form stays in-realm; unknown options and extra arguments are refused before installation. (#364, #365)
+- Paste browser clipboard images and text into native OMP terminals using its enhanced MIME protocol, with image attachment rather than remote-file uploads and no automatic submission. Enhanced Ctrl+Shift+V preserves image formats, clipboard mode survives navigation and reconnect with an updated agent, and OMP text copies reach the browser clipboard only after explicit approval. (#371, #377)
+- Numbered previews include the configured portable development environment, with zsh, OMP, Code and development tools available in their existing terminals. Preview deployments verify the pinned environment before stopping the running preview, preserve ordinary canvas and identity data, and run the application as an unprivileged developer user. Redeployment replaces the disposable development home and retires existing terminal processes and their terminal entries. (#379, #381)
+
+### Fixed
+
+- Terminal views preserve the shared character grid when returning through the index, keeping cursor-positioned applications coherent in smaller previews. Smaller viewports scroll the terminal rather than reflowing its live output; only the controller proposes a shared resize. (#368, #369)
+- Keep terminal and composition panes stationary while choosing a drop target. The carried pane keeps its place and fades, so visible panes and their drop zones stay aligned; only an accepted drop rearranges and animates the layout, consistently for collaborators and canvas previews. (#372, #374)
+
 ## [0.13.0] - 2026-09-06
 
 ### Added
