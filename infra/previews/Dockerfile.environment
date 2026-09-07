@@ -6,6 +6,8 @@ FROM ${DEVELOPMENT_IMAGE}
 
 WORKDIR /app
 COPY --from=application --chown=1000:1000 /app /app
+# WORKDIR creates the directory as root before COPY applies ownership to its contents.
+RUN chown 1000:1000 /app
 
 # Profile Bun is available before activation; no executable crosses from the PR base.
 RUN test -f /app/infra/entrypoint.sh && test -x /app/infra/entrypoint.sh || { echo 'preview: artifact contract requires executable /app/infra/entrypoint.sh' >&2; exit 1; }
