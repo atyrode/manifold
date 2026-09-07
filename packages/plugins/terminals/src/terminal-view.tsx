@@ -85,7 +85,6 @@ export function TerminalView({
   }, [copyOnSelect, pasteOnRightClick]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
   const scheduleResizeRef = useRef<(() => void) | null>(null);
   /**
@@ -94,7 +93,7 @@ export function TerminalView({
    * appending to it, whichever socket delivers it.
    */
   const paintedRef = useRef(false);
-  /** Post-replay fit/refresh, owned by the terminal effect and called from the socket effect. */
+  /** Post-replay measurement/refresh, owned by the terminal effect and called by the socket. */
   const settleRef = useRef<(() => void) | null>(null);
   const focusedRef = useRef(false);
   const [takeDenied, setTakeDenied] = useState<{
@@ -291,21 +290,18 @@ export function TerminalView({
       () => gesturePreferencesRef.current,
     );
     terminalRef.current = terminal;
-    fitRef.current = fitAddon;
     paintedRef.current = false;
 
     let lastSentGeometry: { cols: number; rows: number } | null = null;
 
     const sendCurrentGeometry = (): void => {
       resizeFrameRef.current = null;
-      // A preview may fit its own display, but its spectator socket never changes
-      // shared PTY geometry, even when another connection of this principal controls it.
-      if (readOnlyRef.current) return;
-      if (!isControllerRef.current) return;
-      // An earlier resize echo may have changed the grid since the scheduling fit.
-      // Publish the controller's current host geometry, not that stale echoed grid.
-      fitAddon.fit();
-      const geometry = { cols: terminal.cols, rows: terminal.rows };
+      // Measure a viewport without changing its interpretation of shared PTY bytes.
+      // Only the controller publishes a desired size; every viewer adopts the
+      // authoritative resize event, including this one.
+      if (readOnlyRef.current || !isControllerRef.current) return;
+      const geometry = fitAddon.proposeDimensions();
+      if (geometry === undefined) return;
       if (
         lastSentGeometry !== null &&
         lastSentGeometry.cols === geometry.cols &&
@@ -323,13 +319,10 @@ export function TerminalView({
     };
     scheduleResizeRef.current = scheduleResize;
 
-    const fitAndScheduleResize = (): void => {
-      // Serialized snapshots contain cursor movements for the agent's PTY
-      // geometry. Replaying them into an eagerly-fitted viewport corrupts
-      // wrapping and character placement. Keep the advertised geometry until
-      // replay completes, then fit the painted terminal to its canvas box.
+    const scheduleMeasuredResize = (): void => {
+      // A snapshot and subsequent cursor updates must use the same PTY grid.
+      // A smaller spectator viewport scrolls that grid; it must never reflow it.
       if (!paintedRef.current) return;
-      fitAddon.fit();
       scheduleResize();
     };
     let settleFrame: number | null = null;
@@ -339,7 +332,6 @@ export function TerminalView({
       if (settleFollowupFrame !== null) window.cancelAnimationFrame(settleFollowupFrame);
       settleFrame = window.requestAnimationFrame(() => {
         settleFrame = null;
-        fitAddon.fit();
         terminal.refresh(0, terminal.rows - 1);
         scheduleResize();
         // The host canvas can settle transforms across successive frames. A
@@ -347,7 +339,6 @@ export function TerminalView({
         // resize to make xterm repaint at the correct cell geometry.
         settleFollowupFrame = window.requestAnimationFrame(() => {
           settleFollowupFrame = null;
-          fitAddon.fit();
           terminal.refresh(0, terminal.rows - 1);
           scheduleResize();
         });
@@ -355,9 +346,9 @@ export function TerminalView({
     };
     settleRef.current = settleAfterReplay;
 
-    const observer = new ResizeObserver(fitAndScheduleResize);
+    const observer = new ResizeObserver(scheduleMeasuredResize);
     observer.observe(container);
-    const initialFitFrame = window.requestAnimationFrame(fitAndScheduleResize);
+    const initialFitFrame = window.requestAnimationFrame(scheduleMeasuredResize);
 
     return () => {
       observer.disconnect();
@@ -373,7 +364,6 @@ export function TerminalView({
       disposeGestures();
       terminal.dispose();
       terminalRef.current = null;
-      fitRef.current = null;
       paintedRef.current = false;
     };
   }, [terminalId, terminalReady, fontReady]);
@@ -382,7 +372,7 @@ export function TerminalView({
     const terminal = terminalRef.current;
     if (terminal === null || terminal.options.fontSize === fontSize) return;
     terminal.options.fontSize = fontSize;
-    // Queue behind pending snapshot writes, using the existing post-replay fit.
+    // Queue behind pending snapshot writes, using the existing post-replay measurement.
     // Its geometry publication remains controller-only and forbidden in previews.
     if (paintedRef.current) {
       terminal.write("", () => {
@@ -482,7 +472,6 @@ export function TerminalView({
 
   useEffect(() => {
     if (!isController || !paintedRef.current) return;
-    fitRef.current?.fit();
     scheduleResizeRef.current?.();
   }, [isController]);
 
