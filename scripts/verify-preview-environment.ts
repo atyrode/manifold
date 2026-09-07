@@ -71,7 +71,7 @@ let expectedBuild = "";
 const baseIdentity: Record<string, string> = {};
 let identityDigests = "";
 let active = false;
-let cleaned = false;
+let cleanupPromise: Promise<void> | undefined;
 let commandTail = "";
 let env: Record<string, string> = {};
 const project = () => `manifold-pr-${number}`;
@@ -983,9 +983,10 @@ async function preserveLive(
     await restore();
   }
 }
-async function cleanup(): Promise<void> {
-  if (cleaned) return;
-  cleaned = true;
+function cleanup(): Promise<void> {
+  return (cleanupPromise ??= teardown());
+}
+async function teardown(): Promise<void> {
   const running = [...processes];
   for (const proc of running) {
     if (proc.exitCode === null)

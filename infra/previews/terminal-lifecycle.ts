@@ -1,9 +1,12 @@
 // Runs inside the selected PR artifact; credentials never leave its /data boundary.
 export {};
 // The module belongs to the selected PR artifact, not the stable tooling checkout.
-const { ActionOutcomeSchema, MachinesResponseSchema, MachineDrainStatusSchema } = await import(
-  Bun.resolveSync("@manifold/protocol", "/app/packages/server")
-);
+const {
+  ActionOutcomeSchema,
+  MachinesResponseSchema,
+  MachineDrainStatusSchema,
+  TerminalsResponseSchema,
+} = await import(Bun.resolveSync("@manifold/protocol", "/app/packages/server"));
 const mode = process.argv[2];
 if (mode !== "retire" && mode !== "resume") throw new Error("expected retire or resume");
 const owner = (await Bun.file("/data/owner.key").text()).trim();
@@ -28,8 +31,15 @@ if (machine) {
     const drained = MachineDrainStatusSchema.parse(
       await action("core.machines.drain", { machineId: machine.id, draining: true }),
     );
-    for (const terminalId of drained.terminalIds)
-      await action("core.terminals.kill", { terminalId });
+    for (const terminalId of drained.terminalIds) {
+      try {
+        await action("core.terminals.kill", { terminalId });
+      } catch (error) {
+        const current = TerminalsResponseSchema.parse(await action("core.terminals.listAll", {}));
+        if (current.terminals.some((terminal: { id: string }) => terminal.id === terminalId))
+          throw error;
+      }
+    }
     const deadline = Date.now() + 10_000;
     while (true) {
       const status = MachineDrainStatusSchema.parse(
