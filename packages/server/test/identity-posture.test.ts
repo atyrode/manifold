@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ActionOutcome, Cap, CredentialsResponse, TokenGrant } from "@manifold/protocol";
 import {
   AuthService,
+  AUTOMATED_TOKEN_TTL_MS,
   INTERACTIVE_TOKEN_TTL_MS,
   OWNER_AUDIT_WINDOW_MS,
   ServiceError,
@@ -23,8 +24,8 @@ import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from
  * would pass against an implementation that never expires anything.
  *
  * Three exemptions are asserted as loudly as the rule, because each one is a lockout if it
- * ever silently stops holding: a machine's credential, an agent's credential, and the owner
- * key itself.
+ * ever silently stops holding: a machine's credential, a terminal-lifecycle credential, and
+ * the owner key itself. Ordinary agents have their own finite bound.
  */
 
 const OWNER_KEY = "a".repeat(64);
@@ -141,8 +142,8 @@ describe("session expiry (ADR 0019 §2)", () => {
     const fix = await fixture();
     const enrolled = fix.auth.enrollMachine("spoke", fix.owner);
 
-    // Ten times the human bound, which is the point: an agent's credential is long-lived by
-    // design and shortening it is a fleet outage wearing a security hat.
+    // Ten times the human bound: enrolled machine daemons must not inherit either ordinary
+    // principal policy and silently lose their fleet connection.
     fix.runtime.time += INTERACTIVE_TOKEN_TTL_MS * 10;
 
     expect(fix.auth.authenticateMachine(enrolled.machineToken).id).toBe(enrolled.machine.id);
@@ -152,13 +153,114 @@ describe("session expiry (ADR 0019 §2)", () => {
     fix.store.close();
   });
 
-  test("an agent principal's credential does not expire either", async () => {
+  test("an ordinary agent mint publishes the exact last-valid and first-expired boundary", async () => {
     const fix = await fixture();
     const granted = mint(fix, ["scenes:write"], "agent");
+    const expiresAt = fix.runtime.time + 60 * 60 * 1000;
 
-    expect(granted.expiresAt).toBeUndefined();
+    expect(granted.expiresAt).toBe(expiresAt);
+    fix.runtime.time = expiresAt - 1;
+    expect(fix.auth.authenticate(granted.token)).toMatchObject({
+      principal: { id: granted.principal.id },
+      expiresAt,
+    });
+    fix.runtime.time += 1;
+    expect(refusal(() => fix.auth.authenticate(granted.token))).toEqual({
+      code: "forbidden",
+      message: "expired",
+    });
+    fix.store.close();
+  });
+
+  test("agent bootstrap expires even though it grants root authority", async () => {
+    const fix = await fixture();
+    const granted = fix.auth.bootstrapPrincipal({ name: "automation", kind: "agent" }, fix.owner);
+    const expiresAt = fix.runtime.time + AUTOMATED_TOKEN_TTL_MS;
+
+    expect(granted.expiresAt).toBe(expiresAt);
+    fix.runtime.time = expiresAt - 1;
+    expect(fix.auth.authenticate(granted.token).isRoot).toBe(true);
+    fix.runtime.time += 1;
+    expect(refusal(() => fix.auth.authenticate(granted.token)).message).toBe("expired");
+    expect(fix.auth.authenticate(OWNER_KEY).isRoot).toBe(true);
+    fix.store.close();
+  });
+
+  test("federated admission expires agent tickets without shortening human tickets", async () => {
+    const fix = await fixture();
+    const containerId = fix.runtime.newId();
+    fix.store.createContainer({
+      id: containerId,
+      name: "shared",
+      discipline: "canvas",
+      createdAt: fix.runtime.time,
+    });
+    const share = fix.auth.mintShare(
+      {
+        node: { kind: "container", containerId },
+        caps: ["containers:read"],
+        origin: "https://guest.example",
+      },
+      fix.owner,
+    );
+    const record = fix.auth.authenticateShare(share.token);
+    const agent = fix.auth.mintShareTicket(record, {
+      id: "guest-agent",
+      kind: "agent",
+      name: "remote automation",
+      color: "#ea580c",
+    });
+    const human = fix.auth.mintShareTicket(record, {
+      id: "guest-human",
+      kind: "human",
+      name: "remote human",
+      color: "#ea580c",
+    });
+    const agentExpiry = fix.runtime.time + AUTOMATED_TOKEN_TTL_MS;
+    const humanExpiry = fix.runtime.time + INTERACTIVE_TOKEN_TTL_MS;
+
+    expect(agent.expiresAt).toBe(agentExpiry);
+    expect(human.expiresAt).toBe(humanExpiry);
+    fix.runtime.time = agentExpiry - 1;
+    expect(fix.auth.authenticate(agent.token).principal.id).toBe(agent.principal.id);
+    fix.runtime.time += 1;
+    expect(refusal(() => fix.auth.authenticate(agent.token)).message).toBe("expired");
+    expect(fix.auth.authenticate(human.token).principal.id).toBe(human.principal.id);
+    fix.runtime.time = humanExpiry - 1;
+    expect(fix.auth.authenticate(human.token).principal.id).toBe(human.principal.id);
+    fix.runtime.time += 1;
+    expect(refusal(() => fix.auth.authenticate(human.token)).message).toBe("expired");
+    fix.store.close();
+  });
+
+  test("only the internally issued terminal credential is lifecycle-bound, not its principal", async () => {
+    const fix = await fixture();
+    const containerId = fix.runtime.newId();
+    fix.store.createContainer({
+      id: containerId,
+      name: "terminal home",
+      discipline: "composition",
+      createdAt: fix.runtime.time,
+    });
+    const terminal = fix.auth.mintSessionAgentToken(
+      "terminal-1",
+      containerId,
+      fix.owner.principal.id,
+    );
+    const external = fix.auth.mintToken(
+      { principalId: terminal.principal.id, caps: ["containers:read"], containerId },
+      fix.owner,
+    );
+    expect(terminal.expiresAt).toBeUndefined();
+    expect(external.expiresAt).toBe(fix.runtime.time + AUTOMATED_TOKEN_TTL_MS);
+    fix.runtime.time += AUTOMATED_TOKEN_TTL_MS - 1;
+    expect(fix.auth.authenticate(external.token).principal.id).toBe(terminal.principal.id);
+    fix.runtime.time += 1;
+    expect(refusal(() => fix.auth.authenticate(external.token)).message).toBe("expired");
     fix.runtime.time += INTERACTIVE_TOKEN_TTL_MS * 10;
-    expect(fix.auth.authenticate(granted.token).principal.kind).toBe("agent");
+    expect(fix.auth.authenticate(terminal.token).principal.id).toBe(terminal.principal.id);
+    fix.auth.revokeIssuedPrincipal(terminal.principal.id, fix.owner.principal.id);
+    expect(refusal(() => fix.auth.authenticate(terminal.token)).message).toBe("revoked");
     fix.store.close();
   });
 

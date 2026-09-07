@@ -165,32 +165,40 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   grant at `manifold://container/<id>`, which is what it always meant; the field did not move.
 - Revocation: durable; server closes live sockets of revoked tokens with code 4403 and
   message `revoked`.
-- **A principal minted by a script is an agent, and a script that walks the human gate cleans
-  up after itself** (issue #140): every script or testkit helper that mints a principal through
-  the API path (`core.access.createPrincipal`, `core.access.mint`) against a REAL origin declares
-  `kind: "agent"`, and the one that deliberately submits the first-visit dialog to prove the
-  human flow (`scripts/verify-public.ts`, name `verify`) keeps `human` and revokes that principal
-  on teardown, success and failure alike — a throwaway server's data dir dies with it, so its
-  tests are exempt.
-- **Expiry** (ADR 0019 §2, schema 15, v20). A token row carries `expires_at`; NULL means
-  never, which is what every row written before schema 15 means and what nothing backfills.
-  Ordinary human credentials get `INTERACTIVE_TOKEN_TTL_MS` = **14 days** from mint time,
-  not an idle timeout (`packages/server/src/auth.ts`). Preview-local human credentials instead
-  get `PREVIEW_IDENTITY_TOKEN_TTL_MS` = **15 minutes** (§Production identity handoff to
-  disposable previews below). Enforced in `authenticate` on the rung after revocation,
-  refused `forbidden` with message **`expired`**. `TokenGrant.expiresAt?` publishes it at the mint.
+- **Automation owns its teardown** (issues #140, #326): scripts and helpers mint dedicated,
+  clearly named `kind: "agent"` principals with minimal authority on persistent origins. A test
+  deliberately exercising the human form (`scripts/verify-public.ts`, a unique `verify-*` name)
+  retains `human`. Both revoke every run-owned credential on success and failure, verify no live
+  credentials remain, and close their test PTYs as well as removing test containers. A cleanup
+  failure is a failed run, not a warning hidden behind successful checks. Supplied operator
+  credentials and unrelated principals are never cleanup targets. Throwaway-server tests whose
+  data directory is destroyed are exempt; expiry never substitutes for cleanup on a real instance.
+- **Expiry** (ADR 0019 §2, amended by operator request #326). A token row carries `expires_at`;
+  NULL is reserved for the explicit internal lifecycle exceptions below. Ordinary human credentials,
+  including preview browser credentials, expire after **14 days**; ordinary agent credentials expire
+  after **1 hour**. The ordinary bootstrap, mint and federated-ticket paths apply
+  these rules; choosing `kind: "agent"` or root capabilities cannot select non-expiry.
+  `authenticate` refuses expired credentials after the revocation rung with `forbidden` / `expired`;
+  `TokenGrant.expiresAt?` publishes the bound at issuance.
+- **Legacy unbounded credentials receive one grace period** (schema 24, #326). On migration,
+  unrevoked ordinary human credentials receive fourteen days and ordinary agent credentials one
+  hour from migration time. Existing finite deadlines and revocations are untouched; restarting
+  does not extend grace. The migration backs up the database before rewriting deadlines and
+  excludes machine credentials and principals bound to currently running managed terminals.
 - **The two named credential refusals** are the closed set `AUTH_REFUSALS`
   (`revoked`, `expired`), published under `identity.authRefusals` in `GET /api/protocol`. They
   travel verbatim: as the 4403 close reason on `/ws/session`, and as the `forbidden` message
   on the HTTP door. A lens meeting `expired` re-bootstraps; one meeting `revoked` stops. Any
   other `forbidden` from `authenticate` closes with the generic `forbidden`.
-- **Machine tokens are exempt, and so are agents' (ADR 0019 §2).** `expiryFor(kind)` answers
-  `never` for `kind: "agent"`, and `persistMachine` passes `never` outright;
-  `authenticateMachine` has no expiry rung at all, so a machine credential cannot expire by
-  two independent constructions. An agent cannot re-authenticate through a browser, so
-  shortening its credential is a fleet outage wearing a security hat.
-- **The owner key does not expire and is not revocable by a grant.** It is break-glass, and
-  break-glass that can lock you out is not break-glass (ADR 0019 §1, §Alternatives rejected).
+- **Internal lifecycle exceptions are explicit, not a blanket agent exemption.** Machine
+  enrollment credentials remain on their separate machine-authentication path. Credentials
+  injected into a terminal are revoked automatically when that terminal exits or is removed,
+  rather than expiring while its process still needs them. Ordinary minting for the same agent
+  principal still receives the one-hour bound. Neither exception is an option on a public mint
+  request.
+- **The owner key does not expire and is not revocable by a grant.** It is the separate bootstrap
+  and recovery secret (ADR 0019 §1), not a privilege silently awarded to the first human account.
+  Human credentials minted with it still expire normally.
 - **The bootstrap audit** (ADR 0019 §4) leaves EVENT rows, not trace rows:
   `owner_authenticated` — at most one per `OWNER_AUDIT_WINDOW_MS` (**1 hour**), payload
   `{ window }` and nothing else, because `authenticate` runs on every request carrying the key
@@ -2672,7 +2680,7 @@ bytes remain untouched for fallback loading and operator recovery; this migratio
 empties an unreadable leaf. The current TileSchema accepts only `element`, not a compatibility
 alias for `text`, so this rewrite completes before any room or workspace layout is read.
 The document and metadata changes and `schema_version=19` commit in one transaction.
-Migration 21 is the attended drawing identity cutover (ADR 0023 §10). It atomically moves the
+Migration 23 is the attended drawing identity cutover (ADR 0023 §10). It atomically moves the
 old drawing namespace to `core.canvas.draw`, including existing version and migration stamps;
 renames its disabled-set entry, attribution key and element-type reservations; and records
 `$migration:core.draw-to-core.canvas.draw` under the new namespace. Principal ids and payload
@@ -2680,12 +2688,12 @@ bytes are not rewritten, and disabled plugins migrate too. Separate prepared sta
 inside the existing transaction so any failed write rolls back the entire cutover. The schema
 stamp and named ledger make the next boot a no-op. There is no old-id alias or fallback reader.
 A code migration declares whether it is recoverable, and
-a one-way data move is not: 9, 11, 13, 16, 19 and 21 each take a consistent `VACUUM INTO` snapshot BEFORE the
+a one-way data move is not: 9, 11, 13, 16, 19, 23 and 24 each take a consistent `VACUUM INTO` snapshot BEFORE the
 transaction opens (a VACUUM cannot run inside one, which is also what
 makes it a true pre-migration image), skipped only for an in-memory or not-yet-existing
 database.
 The snapshot lands beside the database as `<db>.pre-v<version>.bak`, so a `manifold.db` opened
-at schema 8 leaves the images for 9, 11, 13, 16, 19 and 21 once the replay finishes, and
+at schema 8 leaves the images for 9, 11, 13, 16, 19, 23 and 24 once the replay finishes, and
 **the operator prunes them**. The server never deletes an elder VERSION's
 snapshot: that set is the recovery path for moves nothing can run backwards, and a process
 that silently deletes a recovery image is a worse failure than a full disk. The one exception
