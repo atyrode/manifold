@@ -5,7 +5,10 @@ multiplayer presence, where agents and humans are first-class principals.
 
 The common block is generated from
 [`engineering.md` in atyrode/dotfiles](https://github.com/atyrode/dotfiles/blob/main/modules/home/agents/engineering.md).
-Edit local guidance outside it; propose reusable rules at that source.
+Edit local guidance outside it; propose reusable rules at that source. `agent-policy` rejects
+drift in its common generated content; reviewed source changes arrive through generated-only
+maintenance PRs with required CI and maintainer holds. Details are in dotfiles'
+[`docs/agent-tools.md`](https://github.com/atyrode/dotfiles/blob/main/docs/agent-tools.md).
 
 <!-- BEGIN SHARED ENGINEERING: generated; do not edit -->
 
