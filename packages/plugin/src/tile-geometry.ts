@@ -17,8 +17,8 @@ import { SNAP_EDGE_BAND, snapZone } from "./tile-snap.ts";
  *
  * This module answers WHERE a pointer aims inside a tile tree — any leaf at any depth,
  * every SEAM between adjacent siblings at any depth, and the area's own border ring —
- * and WHAT the panes would do about it (`paneShifts`), which is what the live preview
- * animates. It is deliberately separate from `tile-snap.ts`: that module keeps serving
+ * and the prospective destination ghost. Live panes retain the current tree's geometry
+ * throughout hover. It is deliberately separate from `tile-snap.ts`: that module keeps serving
  * the canvas door, whose center semantics (dissolve-to-nearest-edge for a seatless
  * carry) are now WRONG for tile targets, where five zones are always live.
  */
@@ -670,10 +670,9 @@ export function resolveTileAim(
   let zone = snapZone(rect, point);
   if (zone === null) return null;
   /*
-    HYSTERESIS: while the FLIP glides panes around, the ZONES stay put — but an eye
-    following the moving pixels drifts, and a pointer sitting near a boundary would
-    flutter between aims. So a zone, once held, keeps the aim until the pointer
-    travels a real margin past its boundary. Every frontier in this function has one:
+    HYSTERESIS: panes and zones stay put while aiming, but a pointer sitting near a
+    boundary can still jitter between aims. A zone, once held, keeps the aim until the
+    pointer travels a real margin past its boundary. Every frontier has one:
     the ring's above, the seams' in `seamAt`/`seamAim`, and a leaf's own five here.
   */
   if (held !== null && held.tileId === leafId && zone !== held.edge) {
@@ -890,13 +889,11 @@ export function tileDestinationFor(
   };
 }
 
-/** Everything a preview paints for one aim: the landing slot, a swap's partner, the glide. */
+/** Everything a preview paints for one aim: the landing slot and a swap's partner. */
 export interface TileProspect {
   readonly slot: UnitRect;
   /** The second rect a swap trades with, else null. */
   readonly partner: UnitRect | null;
-  /** How the real panes glide and squeeze into their prospective places. */
-  readonly shifts: readonly PaneShift[];
 }
 
 /**
@@ -925,11 +922,11 @@ function remapAimedTile(
  * frame (and an agent's, through the SDK) all resolve here, which is what makes
  * every renderer paint the same prospect: multiplayer is not a second code path.
  *
- * A carry that is a leaf of THIS container first leaves it, because the server
- * removes the origin too — and removal can collapse the origin's parent split and
- * reshape its siblings. The COMMIT still sends the unpruned aim id: the server
- * writes the landing leaf against the live tree first and prunes afterwards, so
- * preview and commit agree on the resulting SHAPE, which is all a viewer can see.
+ * The destination ghost accounts for removal of a carried leaf of THIS container,
+ * including collapse of its parent split. This is only prospective ghost geometry:
+ * the live source seat and siblings remain unchanged until commit. The COMMIT still
+ * sends the unpruned aim id: the server writes the landing leaf against the live tree
+ * first and prunes afterwards, preserving the resulting shape.
  * `center` is no structural change: the slot is the target leaf itself, and for a
  * swap the partner is the seat the carry came from — both drawn where they are.
  */
@@ -945,7 +942,7 @@ export function tileProspect(
     if (slot === null) return null;
     const partner =
       aim.action === "swap" && carriedTileId !== null ? (rects.get(carriedTileId) ?? null) : null;
-    return { slot, partner, shifts: [] };
+    return { slot, partner };
   }
   const pruned =
     carriedTileId !== null && layout[carriedTileId] !== undefined
@@ -957,5 +954,5 @@ export function tileProspect(
   if (slotted === null) return null;
   const slot = tileRects(slotted.layout, dividers).get(slotted.vacantLeafId) ?? null;
   if (slot === null) return null;
-  return { slot, partner: null, shifts: paneShifts(layout, slotted.layout, dividers) };
+  return { slot, partner: null };
 }

@@ -2113,16 +2113,20 @@ engaged is a socket role rather than a UI mode anyone has to learn.
   recipients also receive target changes and carry-less end frames; end clears that memory.
   These projected frames are `aimOnly`: source departure and target preview consume the carry,
   never foreign-room position, resize, ink, or cursor geometry.
-- **Carry projection and settlement share one content host.** `TilePreviewOverlay` accepts
+- **Carry hover reserves panes; accepted placement animates settlement.** `TilePreviewOverlay` accepts
   `departure?: TileDeparture | null`, where `TileDeparture` holds `{ ref: PlacementRef,
 aim?: CarryAim, denied?: boolean }`. `useTileDeparture(sourceContainerId, overrides)` consumes
   the existing reactive item-envelope source: local first, otherwise the freshest
   source-matching remote, including absent/outside aims. This is an overlay-only projection;
   it never changes the carried item's kind, its payload, or durable layout.
-  Incoming target arbitration wins. Preview and pre-mutation FLIP settlement transform stable
-  `tile-content-host` elements, not ancestor pane boxes; composing both transforms would move
-  live content twice. Structural commits settle from captured visual geometry to authoritative layout;
-  cancellation/refusal restores projection and end/expiry clears departure. Content is neither
+  Incoming target arbitration wins. While aiming, the source keeps its seat and may fade;
+  other live panes do not move or scale to prospective geometry. The destination ghost
+  describes the proposed final placement over the still-targetable current layout.
+  Only accepted structural commits apply FLIP to stable `tile-content-host` elements,
+  never ancestor pane boxes, settling from captured visual geometry to authoritative layout.
+  Cancellation/refusal restores the source fade and end/expiry clears departure, with no
+  speculative layout to roll back. This stationary-hover policy is operator-ratified in #372.
+  Content is neither
   cloned nor additionally reparented for animation. A removed tile may leave a bounded empty
   `tile-departure-shell`; keep `TileTree` mounted for an empty layout to retain that exit.
   Existing `--preview-pane-transition` / `--carry-fade-transition` tokens govern timing;
