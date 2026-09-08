@@ -13,6 +13,7 @@ import {
   PublicJobSchema,
   JobDescriptionSchema,
   MachineHalfSchema,
+  JobResourceBindingsSchema,
   type PublicJob,
 } from "@manifold/protocol";
 import { z } from "zod";
@@ -29,7 +30,12 @@ export const JobExecuteArgsSchema = JobRequestSchema.pick({
   operationId: true,
   input: true,
   outputs: true,
-}).extend({ limits: JobRequestSchema.shape.limits.optional() });
+}).extend({
+  limits: JobRequestSchema.shape.limits.optional(),
+  installationRevision: JobRequestSchema.shape.installationRevision.optional(),
+  artifactSha256: JobRequestSchema.shape.artifactSha256.optional(),
+  resourceBindingDigest: PublicJobSchema.shape.resourceBindingDigest.optional(),
+});
 const execute = JobExecuteArgsSchema;
 const schedule = execute.extend({
   scheduleId: id,
@@ -87,6 +93,7 @@ export const jobDoorSchemas = {
     installationRevision: id,
     artifactSha256: JobRequestSchema.shape.artifactSha256,
     machine: MachineHalfSchema,
+    resourceBindings: JobResourceBindingsSchema.optional(),
   }),
   consent: z.strictObject({
     machineId: id,

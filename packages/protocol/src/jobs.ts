@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
 import { ServiceBindingSchema } from "./services.ts";
+import { JobResourceBindingsSchema, JobResourceInventorySchema } from "./job-resources.ts";
 
 const id = z.string().min(1).max(128);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -101,6 +102,7 @@ export const MachineHalfSchema = z.strictObject({
     .record(id, MachineOperationSchema)
     .refine((v) => Object.keys(v).length > 0 && Object.keys(v).length <= 64),
   locations: z.record(id, MachineLocationSchema).refine((v) => Object.keys(v).length <= 64),
+  requiresResourceBindings: z.boolean().optional(),
 });
 export type MachineHalf = z.infer<typeof MachineHalfSchema>;
 export type MachineArtifact = z.infer<typeof MachineArtifactSchema>;
@@ -130,6 +132,7 @@ export const JobRequestSchema = z.strictObject({
   pluginId: id,
   installationRevision: id,
   artifactSha256: hash,
+  resourceBindings: JobResourceBindingsSchema.optional(),
   input: z
     .record(component, z.union([z.string().max(65536), z.number().finite(), z.boolean()]))
     .refine((v) => Object.keys(v).length <= 64 && JSON.stringify(v).length <= 65536),
@@ -191,6 +194,12 @@ export const JobDescriptionSchema = z.strictObject({
   admissionPublicKey: z.string().startsWith("-----BEGIN PUBLIC KEY-----").max(4096),
   connected: z.boolean(),
   platforms: z.array(z.string()),
+  resources: JobResourceInventorySchema.optional(),
+  operations: z.record(id, z.strictObject({
+    ready: z.boolean(),
+    reason: id.nullable(),
+    resourceBindingDigest: hash,
+  })).optional(),
   installation: z
     .strictObject({
       revision: id,
@@ -198,6 +207,7 @@ export const JobDescriptionSchema = z.strictObject({
       enabled: z.boolean(),
       ready: z.boolean(),
       purgeRequested: z.boolean(),
+      resourceBindings: JobResourceBindingsSchema.optional(),
     })
     .nullable(),
   retainedInstallations: z.array(z.strictObject({ revision: id, artifactSha256: hash })).max(128),
@@ -213,10 +223,11 @@ export const JobDescriptionSchema = z.strictObject({
 export type JobDescription = z.infer<typeof JobDescriptionSchema>;
 export const JobAuthoritySchema = z.strictObject({
   origin: z.discriminatedUnion("kind", [
-    z.strictObject({ kind: z.literal("action"), traceId: id }),
+    z.strictObject({ kind: z.literal("action"), traceId: id, door: id.nullable() }),
     z.strictObject({
       kind: z.literal("schedule"),
       traceId: id,
+      door: id.nullable(),
       scheduleId: id,
       revision: id,
       nominalAt: count,
@@ -224,6 +235,7 @@ export const JobAuthoritySchema = z.strictObject({
     z.strictObject({
       kind: z.literal("invocation"),
       traceId: id,
+      door: id.nullable(),
       parentJobId: id,
       invocationId: id,
     }),
@@ -258,6 +270,8 @@ export const PublicJobSchema = z.strictObject({
   pluginId: id,
   installationRevision: id,
   artifactSha256: hash,
+  inputDigest: hash,
+  resourceBindingDigest: hash,
   state: JobStateSchema,
   result: JobResultSchema.nullable(),
   authority: JobAuthoritySchema,
@@ -317,6 +331,7 @@ export const JobOwnerSchema = z.strictObject({
   generation: count,
   platforms: z.array(z.enum(["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"])).max(4),
   inventoryDigest: hash,
+  resources: JobResourceInventorySchema.optional(),
 });
 export type JobOwner = z.infer<typeof JobOwnerSchema>;
 /** The existing 16 MiB plugin JSON budget also bounds a single base64 machine member. */
@@ -344,6 +359,7 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
     installationRevision: id,
     machine: MachineHalfSchema,
     artifactSha256: hash,
+    resourceBindings: JobResourceBindingsSchema.optional(),
     action: z.enum(["disable", "purge"]).optional(),
     artifact: JobArtifactDeliverySchema.optional(),
   }).refine(({ artifact, ...metadata }) =>
@@ -428,6 +444,10 @@ export const JobEventSchema = z.discriminatedUnion("type", [
     revision: component,
     policySha256: hash,
     operationId: component,
+  }),
+  z.strictObject({
+    type: z.literal("resources"),
+    resources: JobResourceInventorySchema,
   }),
 ]);
 export type JobEvent = z.infer<typeof JobEventSchema>;

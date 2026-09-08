@@ -15,6 +15,9 @@ export type JobExecution = Pick<
   "jobId" | "machineId" | "operationId" | "input" | "outputs"
 > & {
   limits?: JobRequest["limits"] | undefined;
+  installationRevision?: string | undefined;
+  artifactSha256?: string | undefined;
+  resourceBindingDigest?: string | undefined;
 };
 export interface JobScheduleTiming {
   scheduleId: string;

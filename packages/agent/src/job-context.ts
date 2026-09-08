@@ -5,6 +5,10 @@ import { privateSocketPair } from "./job-files.ts";
 import {
   JobCommandSchema,
   JobRequestSchema,
+  ServiceCallSchema,
+  ServiceReplySchema,
+  type ServiceCall,
+  type ServiceReply,
   type JobCommand,
   type JobEvent,
 } from "@manifold/protocol";
@@ -30,6 +34,8 @@ export class JobContext {
   private childOpen = true;
   private closed = false;
   private chain = Promise.resolve();
+  private readonly serviceController = new AbortController();
+  private readonly serviceRequests = new Set<string>();
 
   private pendingBytes = 0;
   constructor(
@@ -37,6 +43,7 @@ export class JobContext {
     private readonly callbacks: {
       invoke(event: Extract<JobEvent, { type: "invocation" }>): void;
       command(command: JobCommand): Promise<void>;
+      service?(request: ServiceCall, signal: AbortSignal): Promise<ServiceReply>;
       failure(reason: string): void;
     },
   ) {
@@ -76,6 +83,22 @@ export class JobContext {
   private async receive(raw: unknown): Promise<void> {
     if (this.closed || raw === null || typeof raw !== "object")
       throw new Error("invalid_context_message");
+    if (Reflect.get(raw, "type") === "service") {
+      const request = ServiceCallSchema.parse(raw);
+      if (this.serviceRequests.has(request.requestId) || this.serviceRequests.size >= 4096)
+        throw new Error("service_request_replayed_or_exhausted");
+      this.serviceRequests.add(request.requestId);
+      const reply = this.callbacks.service
+        ? await this.callbacks.service(request, this.serviceController.signal)
+        : {
+            type: "service_result" as const,
+            requestId: request.requestId,
+            ok: false as const,
+            refusal: "service_unavailable" as const,
+          };
+      this.send(ServiceReplySchema.parse(reply));
+      return;
+    }
     if (Reflect.get(raw, "type") === "invoke") {
       if (
         Object.keys(raw).some((key) => !["type", "operationId", "input", "outputs"].includes(key))
@@ -159,9 +182,13 @@ export class JobContext {
       closeSync(this.childFd);
     }
   }
+  abortServices(): void {
+    this.serviceController.abort();
+  }
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.abortServices();
     this.releaseChildFd();
     this.socket.destroy();
   }

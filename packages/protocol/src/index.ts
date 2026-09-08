@@ -73,6 +73,7 @@ export {
   ServiceBindingSchema,
   ServiceResponsePolicySchema,
   ServiceOperationPolicySchema,
+  ServiceProxyOperationPolicySchema,
   ServicePolicySchema,
   type ServiceInput,
   type ServiceCall,
@@ -81,8 +82,15 @@ export {
   type ServiceBinding,
   type ServiceResponsePolicy,
   type ServiceOperationPolicy,
+  type ServiceProxyOperationPolicy,
   type ServicePolicy,
 } from "./services.ts";
+export {
+  JobResourceBindingsSchema,
+  JobResourceInventorySchema,
+  type JobResourceBindings,
+  type JobResourceInventory,
+} from "./job-resources.ts";
 export {
   JobLimitsSchema,
   MachineArtifactSchema,

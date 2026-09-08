@@ -271,16 +271,17 @@ export class JobStore {
       : null;
     return {
       origin: request.parent
-        ? { kind: "invocation", traceId: request.traceId, ...request.parent }
+        ? { kind: "invocation", traceId: request.traceId, door: job.auditOrigin?.door ?? null, ...request.parent }
         : occurrence
           ? {
               kind: "schedule",
+              door: job.auditOrigin?.door ?? null,
               traceId: request.traceId,
               scheduleId: occurrence.schedule_id,
               revision: occurrence.revision,
               nominalAt: occurrence.nominal,
             }
-          : { kind: "action", traceId: request.traceId },
+          : { kind: "action", traceId: request.traceId, door: job.auditOrigin?.door ?? null },
       requester: request.credential.principalId,
       executor: job.permit
         ? {

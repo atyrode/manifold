@@ -133,6 +133,8 @@ export class JobService {
       pluginId,
       installationRevision,
       artifactSha256,
+      inputDigest: digest(record.request.input),
+      resourceBindingDigest: digest(record.request.resourceBindings ?? null),
       state: record.state,
       result: record.result,
       authority: this.jobs.authority(record),
