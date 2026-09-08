@@ -265,14 +265,15 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
   }
 }, 90_000);
 
-test("an exited terminal refuses to be driven, but dismissing it destroys it", async () => {
+test("nested exit preserves the shell; root failure removes the terminal for every viewer", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];
   const clients: SessionClient[] = [];
+  const captures: TerminalCapture[] = [];
   try {
     const server = await startServer();
     servers.push(server);
-    const container = await createContainer(server, "exited terminal gates");
+    const container = await createContainer(server, "root terminal exit");
     const enrolled = await enrollMachine(server, "exited-terminal-agent");
     const agent = await startAgent({
       serverUrl: server.url,
@@ -282,7 +283,7 @@ test("an exited terminal refuses to be driven, but dismissing it destroys it", a
     agents.push(agent);
     const grant = await mintToken(server, {
       principal: { kind: "human", name: "Exited Controller", color: "#854d9e" },
-      caps: ["containers:read", "terminals:spawn", "terminals:write"],
+      caps: ["containers:read", "scenes:write", "terminals:spawn", "terminals:write"],
     });
     const canvas = await connect(server, {
       containerId: container.id,
@@ -290,83 +291,50 @@ test("an exited terminal refuses to be driven, but dismissing it destroys it", a
       reconnect: false,
     });
     clients.push(canvas);
-    // No portal is authored — this grant holds no `scenes:write` — because the gates under
-    // test are the terminal's own, and an exited terminal keeps its leaf and its home either
-    // way: the exit stays visible where the terminal lives.
     const { terminal, homeClient: client } = await openTerminalAt(canvas, server, {
       elementId: "el-exited-gates",
       token: grant.token,
+      portalAt: { x: 0, y: 0 },
     });
     clients.push(client);
-    // The PTY stops ON ITS OWN, which is the only way to REACH the exited state: asking for
-    // it would destroy the terminal, and then there would be nothing left to gate.
-    const exited = nextMessage(
-      client,
-      "terminal_event",
+    const observer = await connect(server, {
+      containerId: terminal.containerId,
+      token: grant.token,
+      reconnect: false,
+    });
+    clients.push(observer);
+    const capture = captureTerminal(client, terminal.id);
+    captures.push(capture);
+    client.attachTerminal(terminal.id);
+    await waitFor(() => capture.snapshotSeq !== null, 10_000, 20);
+
+    // The marker is split in the input so terminal echo cannot satisfy the output check.
+    client.sendTerminalInput(terminal.id, "sh -c 'exit 7'; printf 'PARENT_%s\\n' ALIVE\n");
+    await waitForTerminalText(capture, "PARENT_ALIVE");
+    expect(client.terminals.get(terminal.id)?.status).toBe("running");
+    expect(observer.terminals.get(terminal.id)?.status).toBe("running");
+
+    const departed = [client, observer].map((viewer) =>
+      nextMessage(
+        viewer,
+        "terminal_event",
+        10_000,
+        (message) => message.terminalId === terminal.id && message.kind === "parked",
+      ),
+    );
+    client.sendTerminalInput(terminal.id, "exit 130\n");
+    await Promise.all(departed);
+    await waitFor(
+      () => !client.terminals.has(terminal.id) && !observer.terminals.has(terminal.id),
       10_000,
-      (message) => message.terminalId === terminal.id && message.kind === "exited",
+      20,
     );
-    client.sendTerminalInput(terminal.id, "exit 3\n");
-    const exitEvent = await exited;
-    expect(exitEvent.kind).toBe("exited");
-    if (exitEvent.kind !== "exited") throw new Error("unreachable");
-    // The REAL code the shell named, carried end to end from the PTY.
-    expect(exitEvent.exitCode).toBe(3);
-    await waitFor(() => client.terminals.get(terminal.id)?.status === "exited", 10_000, 20);
-    expect(client.terminals.get(terminal.id)?.exitCode).toBe(3);
-
-    const inputConflict = nextMessage(
-      client,
-      "error",
-      5_000,
-      (message) =>
-        message.code === "conflict" &&
-        message.ref === terminal.id &&
-        message.message === "terminal has exited",
-    );
-    client.sendTerminalInput(terminal.id, "printf 'AFTER_EXIT\\n'\n");
-    expect((await inputConflict).code).toBe("conflict");
-
-    const resizeConflict = nextMessage(
-      client,
-      "error",
-      5_000,
-      (message) =>
-        message.code === "conflict" &&
-        message.ref === terminal.id &&
-        message.message === "terminal has exited",
-    );
-    client.resizeTerminal(terminal.id, 120, 40);
-    expect((await resizeConflict).code).toBe("conflict");
-
-    const takeConflict = nextMessage(
-      client,
-      "error",
-      5_000,
-      (message) =>
-        message.code === "conflict" &&
-        message.ref === terminal.id &&
-        message.message === "terminal has exited",
-    );
-    client.takeTerminal(terminal.id);
-    expect((await takeConflict).code).toBe("conflict");
-
-    // Dismissing it is not a conflict. A lease is a claim on a LIVE PTY, so an exited
-    // terminal has no controller to win, and clearing it is the same verb as killing a
-    // running one: the home hears a departure and the terminal leaves the world.
-    const departed = nextMessage(
-      client,
-      "terminal_event",
-      10_000,
-      (message) => message.terminalId === terminal.id && message.kind === "parked",
-    );
-    client.killTerminal(terminal.id);
-    expect((await departed).kind).toBe("parked");
-    await waitFor(() => client.terminals.get(terminal.id) === undefined, 10_000, 20);
+    await waitFor(() => !canvas.elements.has("el-exited-gates"), 10_000, 20);
     expect(await listTerminals(server)).toEqual([]);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {
+    for (const capture of captures) capture.stop();
     closeClients(clients);
     await stopProcesses([...servers, ...agents]);
   }

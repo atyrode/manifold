@@ -7,6 +7,7 @@
   },
   "dependencies": {
     "@manifold/protocol": "workspace:*",
+    "@xterm/addon-image": "0.9.0",
     "@xterm/addon-serialize": "0.14.0",
     "@xterm/headless": "6.0.0",
     "zod": "4.4.3"

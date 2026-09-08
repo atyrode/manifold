@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 25;
+export const PROTOCOL_VERSION = 26;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -265,9 +265,18 @@ export const PROTOCOL_VERSION = 25;
  * (shares stay container-only, ADR 0014), so both compatibility sets ADD 25.
  * Upgrade a hub before installing newer agent binaries; publication does not
  * promote a hub.
+ *
+ * v25 -> v26: IMAGE-AWARE TERMINAL VIEWERS (issue #423). The VT stream and snapshots
+ * now include graphics cell placement and parser continuation. A plain pre-v26 xterm
+ * ignores image cursor effects and would misplace following text, not just omit pixels.
+ * Refuse those browser sessions so the existing update/protocol-skew UI requests reload.
+ * Machine and instance frame schemas are byte-identical, so both compatibility sets
+ * ADD 26; no old spoke is forced off its hub. An already-running terminal host remains
+ * its old implementation until safely replaced. Upgrade the target hub before installing
+ * a v26 transport; this source change authorizes no production/fleet activation.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+  16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
 ]);
 
 /**
@@ -310,9 +319,10 @@ export const TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION = 22;
  * v24: terminal-host identity and drain on the machine channel; instance wire unchanged.
  * v25: machine references and shared settings on the session/HTTP wire (#157/#158); a guest
  * never receives a machine ref, so the instance wire is unchanged.
+ * v26: image-aware terminal viewers; instance frames remain unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  18, 19, 20, 21, 22, 23, 24, 25,
+  18, 19, 20, 21, 22, 23, 24, 25, 26,
 ]);
 
 /**

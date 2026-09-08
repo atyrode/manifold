@@ -429,14 +429,16 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
       ),
     ).toHaveLength(0);
 
-    const exited = nextMessage(
+    const departed = nextMessage(
       openerHome,
       "terminal_event",
       5_000,
-      (message) => message.terminalId === terminal.id && message.kind === "exited",
+      (message) => message.terminalId === terminal.id && message.kind === "parked",
     );
     machine.send({ type: "exited", terminalId: terminal.id, exitCode: 7 });
-    expect((await exited).kind).toBe("exited");
+    expect((await departed).kind).toBe("parked");
+    await waitFor(() => !openerHome.terminals.has(terminal.id), 5_000, 20);
+    expect(viewer.frames).toHaveLength(viewerFrameCountAtClose);
   } catch (error) {
     throw e2eFailure(error, servers);
   } finally {

@@ -632,6 +632,149 @@ try {
     "pasted command executes through PTY input",
   );
   console.log("PASS  right-click reads the clipboard and pastes through PTY input");
+  await browser.evaluate("document.querySelector('[aria-label=\"Shrink view\"]').click()");
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "document.querySelector('.canvas') !== null && document.querySelector('.xterm-rows') !== null",
+      ),
+    20_000,
+    "return from fullscreen to canvas",
+  );
+
+  // A trackpad's two-finger travel is an ordinary pixel wheel with both deltas.
+  // Hovering an unengaged terminal must not hand that event to xterm's scrollbar.
+  const viewport = () =>
+    browser!.evaluate<{ scrollX: number; scrollY: number; zoom: number }>(
+      "window.__manifold.viewport()",
+    );
+  const terminalPoint = () =>
+    browser!.evaluate<{ x: number; y: number }>(`(() => {
+    const r=document.querySelector('.xterm-screen').getBoundingClientRect();
+    const canvas=document.querySelector('.canvas').getBoundingClientRect();
+    const left=Math.max(r.left,canvas.left,0)+20,right=Math.min(r.right,canvas.right,innerWidth)-20;
+    const top=Math.max(r.top,canvas.top,0)+20,bottom=Math.min(r.bottom,canvas.bottom,innerHeight)-20;
+    if(right<=left||bottom<=top)throw new Error('terminal has no visible wheel target');
+    return {x:(left+right)/2,y:(top+bottom)/2};
+  })()`);
+  const blankPoint = await browser.evaluate<{ x: number; y: number }>(`(() => {
+    const r=document.querySelector('.canvas').getBoundingClientRect();
+    for(let y=r.bottom-30;y>r.top+30;y-=40)for(let x=r.right-30;x>r.left+30;x-=40){
+      if(document.elementFromPoint(x,y)?.matches('.react-flow__pane'))return {x,y};
+    }
+    throw new Error('no blank canvas point');
+  })()`);
+  for (const type of ["mousePressed", "mouseReleased"])
+    await browser.send("Input.dispatchMouseEvent", {
+      type,
+      ...blankPoint,
+      button: "left",
+      clickCount: 1,
+    });
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "document.querySelector('.portal--engaged,.portal--engaging') === null",
+      ),
+    5000,
+    "blank-canvas click disengages terminal",
+  );
+  const beforeTravel = await viewport();
+  const textBeforeTravel = await browser.evaluate<string>(
+    "document.querySelector('.xterm-rows').textContent",
+  );
+  await browser.send("Input.dispatchMouseEvent", {
+    type: "mouseWheel",
+    ...(await terminalPoint()),
+    deltaX: 45,
+    deltaY: 60,
+  });
+  await Bun.sleep(500);
+  await until(
+    async () => {
+      const v = await viewport();
+      return v.scrollX !== beforeTravel.scrollX || v.scrollY !== beforeTravel.scrollY;
+    },
+    5000,
+    "trackpad travel over inactive terminal",
+  );
+  const afterTravel = await viewport();
+  if (
+    Math.abs(afterTravel.zoom - beforeTravel.zoom) > 0.001 ||
+    (await browser.evaluate<string>("document.querySelector('.xterm-rows').textContent")) !==
+      textBeforeTravel
+  )
+    throw new Error("inactive trackpad travel zoomed canvas or scrolled terminal content");
+  console.log("PASS  trackpad pan crosses inactive terminal without changing its scrollback");
+  await browser.send("Input.dispatchMouseEvent", {
+    type: "mouseWheel",
+    ...(await terminalPoint()),
+    modifiers: 2,
+    deltaX: 0,
+    deltaY: -40,
+  });
+  await until(
+    async () => (await viewport()).zoom > afterTravel.zoom,
+    5000,
+    "pinch over inactive terminal",
+  );
+  console.log("PASS  pinch over inactive terminal reaches canvas zoom");
+  for (const type of ["mousePressed", "mouseReleased"])
+    await browser.send("Input.dispatchMouseEvent", {
+      type,
+      ...(await terminalPoint()),
+      button: "left",
+      clickCount: 1,
+    });
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "document.activeElement?.matches('.xterm-helper-textarea') === true",
+      ),
+    5000,
+    "single click engages terminal keyboard",
+  );
+  // Pinch animation can continue after its first visible zoom change and focus.
+  // Measure the next gesture only after that preceding gesture has settled.
+  let previousViewport = await viewport();
+  let stableFrames = 0;
+  await until(
+    async () => {
+      const current = await viewport();
+      stableFrames =
+        JSON.stringify(current) === JSON.stringify(previousViewport) ? stableFrames + 1 : 0;
+      previousViewport = current;
+      return stableFrames >= 3;
+    },
+    5000,
+    "preceding pinch animation settled",
+  );
+  const beforeScroll = await viewport();
+  const textBeforeScroll = await browser.evaluate<string>(
+    "document.querySelector('.xterm-rows').textContent",
+  );
+  await browser.send("Input.dispatchMouseEvent", {
+    type: "mouseWheel",
+    ...(await terminalPoint()),
+    deltaX: 0,
+    deltaY: -120,
+  });
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `document.querySelector('.xterm-rows').textContent !== ${JSON.stringify(textBeforeScroll)}`,
+      ),
+    5000,
+    "engaged terminal scrollback",
+  );
+  const afterScroll = await viewport();
+  if (
+    afterScroll.scrollX !== beforeScroll.scrollX ||
+    afterScroll.scrollY !== beforeScroll.scrollY ||
+    afterScroll.zoom !== beforeScroll.zoom
+  )
+    throw new Error("engaged terminal scrollback moved the canvas");
+  console.log("PASS  engaged terminal keeps ordinary scrollback without panning canvas");
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
 } finally {

@@ -5,6 +5,7 @@ import {
   createContainer,
   enrollMachine,
   isMachineOnline,
+  listTerminals,
   mintToken,
   startAgent,
   startServer,
@@ -17,6 +18,7 @@ import {
   captureTerminal,
   closeClients,
   e2eFailure,
+  nextMessage,
   openTerminalAt,
   stopProcesses,
   waitForTerminalText,
@@ -149,6 +151,7 @@ test("a transport stopped by SIGTERM ends no terminal; a stopped host does", asy
     const { terminal, homeClient } = await openTerminalAt(client, server, {
       elementId: "el-lifetimes-terminal",
       token: grant.token,
+      portalAt: { x: 0, y: 0 },
     });
     clients.push(homeClient);
 
@@ -165,10 +168,19 @@ test("a transport stopped by SIGTERM ends no terminal; a stopped host does", asy
     ).toBe(false);
 
     // The DELIBERATE destructive stop is the host's, and only the host's: its SIGTERM kills
-    // the shell with grace, the transport reports the exit, and the hub records it.
+    // the shell with grace, the transport reports its exit, and the hub removes its placement.
+    const departed = nextMessage(
+      homeClient,
+      "terminal_event",
+      15_000,
+      (message) => message.terminalId === terminal.id && message.kind === "parked",
+    );
     agent.host.kill("SIGTERM");
     await agent.host.exited;
-    await waitFor(() => homeClient.terminals.get(terminal.id)?.status === "exited", 15_000, 50);
+    expect((await departed).kind).toBe("parked");
+    await waitFor(() => !homeClient.terminals.has(terminal.id), 15_000, 50);
+    await waitFor(() => !client.elements.has("el-lifetimes-terminal"), 10_000, 20);
+    expect(await listTerminals(server)).toEqual([]);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {

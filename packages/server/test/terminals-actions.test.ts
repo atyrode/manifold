@@ -311,10 +311,8 @@ describe("core.terminals doors", () => {
     // PTY. An HTTP dispatch holds no channel, so the lease has not moved.
     expect(base.broker.liveTerminal(terminalId)?.controllerId).toBe(opener);
 
-    // An exited terminal has no lease to take, and the refusal says so rather than saying
-    // "not found": the row is still there, and a client that cannot tell those apart cannot
-    // tell the operator what happened.
-    base.broker.onExited(base.machine.machineId, terminalId, 3);
+    // Missing-owner inventory retains unknown evidence, but no live lease can be taken.
+    base.broker.reconcileMachineHello(base.machine.machineId, []);
     expect(
       denial(await base.host.dispatch(base.owner, "core.terminals.take", { terminalId })),
     ).toEqual({ rule: "refused", message: "terminal has exited" });

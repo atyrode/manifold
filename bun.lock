@@ -18,6 +18,7 @@
       "name": "@manifold/agent",
       "dependencies": {
         "@manifold/protocol": "workspace:*",
+        "@xterm/addon-image": "0.9.0",
         "@xterm/addon-serialize": "0.14.0",
         "@xterm/headless": "6.0.0",
         "zod": "4.4.3",
@@ -295,6 +296,7 @@
         "@manifold/sdk": "workspace:*",
         "@manifold/ui": "workspace:*",
         "@xterm/addon-fit": "0.11.0",
+        "@xterm/addon-image": "0.9.0",
         "@xterm/addon-web-links": "0.12.0",
         "@xterm/xterm": "6.0.0",
         "react": "19.2.8",
@@ -411,7 +413,7 @@
     },
     "packages/web": {
       "name": "@manifold/web",
-      "version": "0.11.0",
+      "version": "0.14.0",
       "dependencies": {
         "@manifold-plugin/access": "workspace:*",
         "@manifold-plugin/arrange": "workspace:*",
@@ -727,6 +729,8 @@
     "@x0k/json-schema-merge": ["@x0k/json-schema-merge@1.0.5", "", { "dependencies": { "@types/json-schema": "^7.0.15" } }, "sha512-bPvwYpTkhBOXkvbC8KMNhkgzv+gWu6Yx6FVho3mL+vMf8Fy3gdn9YrlrBrXphznvOHhB85BudH/ywtVRZ/HG3A=="],
 
     "@xterm/addon-fit": ["@xterm/addon-fit@0.11.0", "", {}, "sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g=="],
+
+    "@xterm/addon-image": ["@xterm/addon-image@0.9.0", "", {}, "sha512-oYWA8/QAr5/Emwl1xL7WCoOqeG3IZfpzEz/OVq1j4Oi9934TQmHiyubClikRf0D/jL3JNiNuz/Lsqx0kXQ02BA=="],
 
     "@xterm/addon-serialize": ["@xterm/addon-serialize@0.14.0", "", {}, "sha512-uteyTU1EkrQa2Ux6P/uFl2fzmXI46jy5uoQMKEOM0fKTyiW7cSn0WrFenHm5vO5uEXX/GpwW/FgILvv3r0WbkA=="],
 

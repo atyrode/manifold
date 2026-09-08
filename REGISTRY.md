@@ -55,7 +55,7 @@ must never be taught one.
       "id": "protocol",
       "globs": ["packages/protocol/src/**"],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the vocabulary every plane speaks: wire schemas, capabilities, manifest and action shapes, the manifold:// grammar, and the shared private-mode parser seam that keeps live terminal consumers and authoritative snapshots on the same byte interpretation (ADR 0029). Nothing can be validated, published or refused by name before it exists, it names no plugin, and it arbitrates by being the single definition every party is measured against.",
+      "verdict": "the vocabulary every plane speaks: wire schemas, capabilities, manifest and action shapes, the manifold:// grammar, shared private-mode parser (ADR 0029), and bounded transient VT graphics snapshot grammar and admission shared by the authoritative mirror and every viewer (ADR 0031). Nothing can be validated, published or refused by name before it exists, it names no plugin, and it arbitrates by being the single definition every party is measured against.",
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {
@@ -220,7 +220,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
   "floor": [
     {
       "glob": "packages/protocol/src/**",
-      "why": "wire schemas, capabilities, the placement algebra, manifest and action shapes, the manifold:// grammar — the vocabulary every plane speaks; and the one CSS selector walk (`stylesheet.ts`, string parsing and nothing else) the gate reads the tree with and the hub admits a bundle's sheet with (ADR 0025 §7)"
+      "why": "wire schemas, capabilities, the placement algebra, manifest and action shapes, the manifold:// grammar — the vocabulary every plane speaks; bounded transient VT graphics snapshot grammar and shared admission (ADR 0031); and the one CSS selector walk (`stylesheet.ts`, string parsing and nothing else) the gate reads the tree with and the hub admits a bundle's sheet with (ADR 0025 §7)"
     },
     {
       "glob": "packages/scene/src/**",
@@ -240,7 +240,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/agent/src/**",
-      "why": "the PTY plane's far end: the terminal host owns terminals and a separate replaceable transport dials in over its private IPC seam; both survive server restarts"
+      "why": "the PTY plane's far end: the terminal host owns terminals, bounded transient graphics and exact parser-continuation snapshots (ADR 0031), and a separate replaceable transport dials in over its private IPC seam; both survive server restarts"
     },
     {
       "glob": "packages/server/src/main.ts",

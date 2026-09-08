@@ -335,12 +335,8 @@ describe("core.terminals.listAll", () => {
     fixture.broker.onExited(fixture.machine.machineId, exited.terminalId, 3);
 
     const terminals = await indexRows(fixture);
-    // The pool listed only the UNBOUND terminals and swept the exited ones. There is nothing
-    // to be unbound from now, so this is simply every terminal — and an exited one is still a
-    // terminal until somebody dismisses its last leaf.
-    expect([...terminals.map((terminal) => terminal.id)].sort()).toEqual(
-      [running.terminalId, exited.terminalId].sort(),
-    );
+    // An observed exit removes the row from the same inventory every viewer reads.
+    expect(terminals.map((terminal) => terminal.id)).toEqual([running.terminalId]);
     expect(terminals.find((terminal) => terminal.id === running.terminalId)).toEqual({
       id: running.terminalId,
       machineId: fixture.machine.machineId,
@@ -349,16 +345,6 @@ describe("core.terminals.listAll", () => {
       status: "running",
       exitCode: null,
       homeId: running.homeId,
-      unplaced: true,
-    });
-    expect(terminals.find((terminal) => terminal.id === exited.terminalId)).toEqual({
-      id: exited.terminalId,
-      machineId: fixture.machine.machineId,
-      name: null,
-      createdAt: 0,
-      status: "exited",
-      exitCode: 3,
-      homeId: exited.homeId,
       unplaced: true,
     });
   });

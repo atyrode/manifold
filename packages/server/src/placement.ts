@@ -154,7 +154,7 @@ export interface TerminalPlacementPort {
    * Kills and forgets a terminal whose last home leaf is gone. There is no pool for it to
    * fall into, so removing a terminal's only representation IS closing the terminal.
    */
-  reapTerminal(terminalId: string): void;
+  reapTerminal(terminalId: string, reason?: "killed" | "exited"): void;
   /** Kills and forgets every PTY homed in a container before its rows are purged. */
   dropContainer(containerId: string): void;
 }
@@ -1629,7 +1629,7 @@ export class PlaceExecutor {
 
   /**
    * Removes a terminal from the world. `core.terminals.kill`, `terminal_kill`, a
-   * titlebar close and a successful natural exit all land here. Removal is total and
+   * titlebar close and every observed root PTY exit all land here. Removal is total and
    * it is one step — every leaf its home holds for it, its row and its PTY,
    * and, when the terminal was the last thing its home held, the home itself along with
    * every portal onto that home, on every canvas, whether or not anybody has it open.
@@ -1644,14 +1644,14 @@ export class PlaceExecutor {
    * identically — dismissing a dead terminal is the same verb as killing a live one, not a
    * second lookalike path.
    */
-  killTerminal(terminalId: string): "ok" | "not_found" {
+  killTerminal(terminalId: string, reason: "killed" | "exited" = "killed"): "ok" | "not_found" {
     const placed = this.terminals.placedTerminal(terminalId);
     if (placed === null) return "not_found";
     const room = this.rooms.get(placed.containerId);
     if (room === null) {
       // A home whose row is already gone cannot be asked what it still holds; the terminal
       // has nowhere left to live either way, so it dies rather than becoming an orphan.
-      this.terminals.reapTerminal(terminalId);
+      this.terminals.reapTerminal(terminalId, reason);
       return "ok";
     }
     for (const tileId of terminalLeafIds(room.tileLayout(), terminalId)) {
@@ -1659,7 +1659,7 @@ export class PlaceExecutor {
     }
     // The row goes before the home is judged: `deleteIfEmptied` asks what the container
     // holds NOW, and a composition still listing the terminal it just lost would survive.
-    this.terminals.reapTerminal(terminalId);
+    this.terminals.reapTerminal(terminalId, reason);
     this.deleteIfEmptied(placed.containerId);
     this.afterLeaving(placed.containerId);
     return "ok";

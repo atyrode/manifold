@@ -438,7 +438,11 @@ export class TerminalHost {
       // One frame carries (seq, data): the tuple is atomic on the seam. Reply only if the
       // requesting transport still holds the seat — a successor re-requests on its own hello.
       if (this.transport === connection) {
-        const data = Buffer.from(snapshot.data, "utf8").toString("base64");
+        const data = Buffer.from(
+          snapshot.data.buffer,
+          snapshot.data.byteOffset,
+          snapshot.data.byteLength,
+        ).toString("base64");
         connection.peer.write({ type: "snapshot", terminalId, seq: snapshot.seq, data });
         this.log("info", "snapshot", { terminalId, seq: snapshot.seq });
       }

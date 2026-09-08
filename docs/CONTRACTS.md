@@ -756,8 +756,8 @@ anybody.
   releases that one; naming the item by identity releases all of them. Nothing is destroyed,
   which is the whole difference from the park it replaced: there is no pool to move into
   because there is nowhere else to be.
-- **Reaping, and the ONE removal path.** Explicit removal and successful natural exit
-  remove a terminal; nonzero and unknown natural exits retain evidence.
+- **Reaping, and the ONE removal path.** Explicit removal and every observed root PTY exit
+  remove a terminal, regardless of exit status.
   - **KILLED** — somebody asked for it: `terminal_kill`, the action
     `core.terminals.kill { terminalId }`, or `core.space.removeTile { containerId, tileId }` on
     its last
@@ -768,23 +768,24 @@ anybody.
     nothing is left to report it on. The tile door is the one tile gesture that is NOT a
     placement (nothing accepts "nowhere" as a destination for a LEAF); a note's leaf is its
     only placement, so its element goes with it.
-  - **SUCCESSFUL EXIT** — the PTY stopped on its own with `exitCode === 0` (including shell
-    Ctrl+D). Operator-ratified 2026-09-06: it uses the SAME canonical removal as a kill —
-    every terminal leaf and row disappears for every viewer, its credential is revoked,
-    and an emptied home plus every reference to it retires. Other occupants of a shared
-    composition and references to that surviving composition remain. No retained exit row
-    or client-side hiding is involved.
-    The durable `terminal_exited` event records code zero after the removal sweep, with the
-    former home identity, so retiring an empty home does not erase the successful outcome.
-  - **ERROR OR UNKNOWN EXIT** — the PTY stopped with a nonzero code or `null`. Its row keeps
-    the REAL exit code (`null` only when none was observed), its home keeps its leaf, and
-    every portal keeps rendering it until somebody dismisses it. Its credential is revoked.
-    Dismissing it uses the same removal path as killing a running terminal.
+  - **ROOT PTY EXIT** — the terminal's root process stopped, with code zero, a nonzero code,
+    or a signal/unknown code (`null`). Operator-ratified 2026-09-07: it uses the SAME canonical
+    removal as a kill — every terminal leaf and row disappears for every viewer, its credential
+    is revoked, and an emptied home plus every reference to it retires. Other occupants of a
+    shared composition and references to that surviving composition remain. No retained exit
+    row or client-side hiding is involved. Ctrl+D remains ordinary PTY input; exiting a nested
+    app while its parent shell remains alive does not close the terminal.
+    One durable `terminal_exited` event records the real code after the removal sweep, with
+    the former home identity, so retiring an empty home does not erase the outcome. It does
+    not also record a `terminal_killed` event.
+  - **MISSING PTY** — an admitted terminal owner's complete hello inventory omits a previously
+    running PTY without observing its exit. This retains a row with `exitCode: null`, its leaf
+    and references for inspection or explicit dismissal; its credential is revoked.
 
   The predicate is structural, not a stored flag: a removed terminal is gone before any
   duplicate or late `exited` frame arrives, so no row can be resurrected. Owner-admitted hello
-  reconciliation applies the same exit rule to replayed exits; an absent PTY has unknown
-  status and is retained with `null`, never treated as success. An undeliverable kill
+  reconciliation applies the same removal to replayed observed exits. Merely going offline
+  retains running terminals, so surviving PTYs reconnect normally. An undeliverable kill
   (machine offline) still removes everything; a PTY that outlived it is killed by `hello`
   reconciliation, which finds no row to adopt it against. Machine-owner admission is unchanged.
 
@@ -2348,6 +2349,31 @@ the clipboard; when on, a completed selection copies and clears only after clipb
 With right-click paste off, the normal context menu is untouched; when on, Shift-right-click and
 mouse-reporting applications retain their existing behavior. Disabling a preference also prevents
 its pending clipboard completion from clearing a selection or pasting into the terminal.
+
+### Terminal images and color
+
+New PTYs advertise `TERM=xterm-256color` and `COLORTERM=truecolor`; an explicit `NO_COLOR`
+is retained. The terminal host, not competing viewers, answers Sixel and geometry queries.
+The browser renders Sixel and iTerm inline PNG/JPEG/GIF through pinned xterm image-addon
+0.9.0. Kitty graphics and filesystem/URL image sources are not supported.
+
+The authoritative mirror and viewers share canonical 7×14 image cells, bounded FIFO
+admission (64 images, 2,097,152 decoded pixels, 2,048 cells, 180,000 encoded bytes), and
+palette/scrolling state. Lossless palette/run-length storage retains ordinary OMP-sized
+images without reducing color or resolution. Encoded input is limited to 131,072 bytes.
+Over-budget or malformed images produce a browser notice; admitting a new image can evict
+the oldest even if still visible. Raster data is transient PTY state, never persisted.
+Snapshots carry the bounded image cache and cell placements after serialized text, then
+the unfinished parser control and any partial UTF-8 bytes at that exact output watermark.
+This preserves late viewers and reconnections; screen edits/scrolling remove placements,
+and resets/disposal release the cache. See ADR 0031 for bounds and the pinned addon seam.
+
+These features require an updated **terminal host process**. Replacing only the transport
+or browser does not update a host deliberately retained to preserve live PTYs.
+OMP 18.1.13/18.1.14 also have an upstream bare-launch prepaint defect: the enhanced-paste
+start listener is installed after the first UI start. Automatic bare-launch paste remains
+blocked on an upstream release; an explicit non-prepaint compatibility launch exercises
+the native protocol but is not a repair of that default.
 
 ### Native terminal clipboard
 

@@ -613,7 +613,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       }
     }
     for (const stored of this.store.listRunningTerminalsForMachine(machineId)) {
-      if (!advertisedIds.has(stored.id)) this.onExited(machineId, stored.id, null);
+      if (!advertisedIds.has(stored.id)) this.onMissing(machineId, stored.id);
     }
   }
 
@@ -1180,10 +1180,9 @@ export class TerminalBroker implements TerminalPlacementPort {
   }
 
   /**
-   * Explicit removal and successful natural exit share one canonical sweep. A natural
-   * nonzero or unknown exit retains its row, real exit code, leaf and references until
-   * dismissed. Removed terminals are absent from `this.terminals`, so duplicate or late
-   * exit frames cannot resurrect them.
+   * Explicit removal and every observed root PTY exit share one canonical sweep.
+   * Removed terminals are absent from `this.terminals`, so duplicate or late exit
+   * frames cannot resurrect them. Missing-owner inventory evidence remains dismissable.
    *
    * THE kill: `core.terminals.kill` is the only door, for the session channel's
    * `terminal_kill` frame as much as for the workspace index, so the lease rule and the
@@ -1204,21 +1203,20 @@ export class TerminalBroker implements TerminalPlacementPort {
    * what empties its home, and an emptied home takes every portal onto it along. The PTY and
    * the row come back through `reapTerminal`, so the two halves cannot drift apart.
    */
-  private destroyTerminal(terminalId: string): void {
+  private destroyTerminal(terminalId: string, reason: "killed" | "exited" = "killed"): void {
     if (this.placement !== null) {
-      this.placement.killTerminal(terminalId);
+      this.placement.killTerminal(terminalId, reason);
       return;
     }
     // Only reachable before startup wiring completes. A kill must still not leave the
     // terminal behind, even if its home outlives it by a moment.
-    this.reapTerminal(terminalId);
+    this.reapTerminal(terminalId, reason);
   }
 
   /**
    * Asks a machine to stop a PTY. Best effort by design: every kill deletes the terminal
    * row, so a PTY that outlives the request is killed by hello reconciliation the moment its
-   * machine reconnects and finds no row for it. Persisting an exit to keep a stale row
-   * honest is the OTHER path's business, and this path has no row left to keep honest.
+   * machine reconnects and finds no row for it.
    */
   private sendPtyStop(terminal: RuntimeTerminal): void {
     this.machines
@@ -1227,32 +1225,36 @@ export class TerminalBroker implements TerminalPlacementPort {
   }
 
   /**
-   * A successful PTY exit removes the terminal through the same sweep as explicit removal.
-   * Nonzero and unknown exits persist evidence for the operator to inspect and dismiss.
+   * The owner observed the root PTY exit. Exit status is audit evidence, not a reason to
+   * retain a dead tile. Nested processes produce no such frame while the root remains alive.
    */
   onExited(machineId: string, terminalId: string, exitCode: number | null): void {
     const terminal = this.terminals.get(terminalId);
     if (terminal === undefined || terminal.info.machineId !== machineId) return;
+    // The PTY is already stopped: reaping must not send it a redundant kill.
+    terminal.info = { ...terminal.info, status: "exited", exitCode, controllerId: null };
+    this.destroyTerminal(terminalId, "exited");
+    // Retiring an empty home clears its history. Record the outcome after that sweep,
+    // retaining the former home identity without retaining its terminal or container.
+    this.announce(terminal.info.containerId, "terminal_exited", terminal.info.createdBy, {
+      terminalId,
+      machineId,
+      exitCode,
+    });
+  }
+
+  /** An admitted owner's inventory lost a PTY without observing its exit. Retain evidence. */
+  private onMissing(machineId: string, terminalId: string): void {
+    const terminal = this.terminals.get(terminalId);
+    if (terminal === undefined || terminal.info.machineId !== machineId) return;
     if (terminal.info.status === "exited") return;
-    if (exitCode === 0) {
-      // The PTY is already stopped: reaping must not send it a redundant kill.
-      terminal.info = { ...terminal.info, status: "exited", exitCode, controllerId: null };
-      this.destroyTerminal(terminalId);
-      // Retiring an empty home clears its old history. Record success after that sweep,
-      // retaining the former home identity without retaining the terminal or container.
-      this.announce(terminal.info.containerId, "terminal_exited", terminal.info.createdBy, {
-        terminalId,
-        machineId,
-        exitCode,
-      });
-      return;
-    }
+    const exitCode = null;
     for (const viewer of terminal.viewers.values()) viewer.cancelSnapshotDeadline?.();
     terminal.viewers.clear();
     terminal.info = { ...terminal.info, status: "exited", exitCode, controllerId: null };
     this.store.markTerminalExited(terminalId, exitCode);
     // The exit is announced in the terminal's HOME, the room every viewer of it is joined
-    // to. Error/unknown evidence stays visible until somebody deliberately dismisses it.
+    // to. Missing-owner evidence stays visible until somebody deliberately dismisses it.
     const containerId = terminal.info.containerId;
     this.rooms.live(containerId)?.broadcast({
       type: "terminal_event",
@@ -1354,7 +1356,7 @@ export class TerminalBroker implements TerminalPlacementPort {
 
   /**
    * `TerminalPlacementPort`: the terminal half of removal — a running PTY is asked to
-   * stop and the row is forgotten. Closing its tile, killing it by id, successful natural
+   * stop and the row is forgotten. Closing its tile, killing it by id, observed root PTY
    * exit and deleting the composition it lived in all use this sweep.
    *
    * No exit is persisted on the way out. The row is being deleted, so an exit record would
@@ -1364,7 +1366,7 @@ export class TerminalBroker implements TerminalPlacementPort {
    * which already means exactly "this terminal left THIS room" and is what makes every
    * viewer's terminal listing drop the row at once instead of at its next resync.
    */
-  reapTerminal(terminalId: string): void {
+  reapTerminal(terminalId: string, reason: "killed" | "exited" = "killed"): void {
     const terminal = this.terminals.get(terminalId);
     if (terminal === undefined) return;
     if (terminal.info.status === "running") this.sendPtyStop(terminal);
@@ -1374,28 +1376,20 @@ export class TerminalBroker implements TerminalPlacementPort {
     this.rooms
       .live(terminal.info.containerId)
       ?.broadcast({ type: "terminal_event", terminalId, kind: "parked" });
-    // The injected agent token dies with the terminal. Retained error/unknown exits revoke
-    // in `onExited`; all removals revoke here, including successful natural exits.
+    // The injected agent token dies with the terminal, regardless of exit status.
     const stored = this.store.getTerminal(terminalId);
     if (stored !== null && stored.agentPrincipalId !== null) {
       this.auth.revokeIssuedPrincipal(stored.agentPrincipalId, terminal.info.createdBy);
     }
     this.store.deleteTerminal(terminalId);
-    /*
-      Removal is announced here rather than at its callers: closing the last tile, killing
-      by id, successful natural exit and deleting the composition all arrive here. The
-      existing `terminal_killed` event names this canonical removal, not a retained exit.
-
-      The topic is the HOME CONTAINER, not the terminal. A killed terminal has no node left to
-      be a topic — its address stops resolving the instant the row is gone, and `/api/resolve`
-      would answer `exists: false` for it — so the event is addressed to the nearest node that
-      still exists, which is also the node every watcher of that terminal was already reached
-      through under the hierarchy rule. Nobody watching the home loses the news.
-     */
-    this.announce(terminal.info.containerId, "terminal_killed", terminal.info.createdBy, {
-      terminalId,
-      machineId: terminal.info.machineId,
-    });
+    // Natural exit is announced after placement retires the empty home (which clears its
+    // history). Do not also record a kill for that same root-process outcome.
+    if (reason === "killed") {
+      this.announce(terminal.info.containerId, "terminal_killed", terminal.info.createdBy, {
+        terminalId,
+        machineId: terminal.info.machineId,
+      });
+    }
   }
 
   /**

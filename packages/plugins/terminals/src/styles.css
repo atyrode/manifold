@@ -128,6 +128,14 @@
   height: 100%;
 }
 
+/* Inactive terminal content must not become a native scroll target. Its frame
+   still receives the click that engages it; xterm descendants can set pointer
+   handling explicitly, so disable their hit testing as well as the host's. */
+.xterm-host--inactive,
+.xterm-host--inactive * {
+  pointer-events: none !important;
+}
+
 /* xterm 6 keeps a legacy viewport behind its theme-painted scrollable element.
    Let the frame show through the row-quantization remainder; outrank stock
    `.xterm .xterm-viewport` regardless of stylesheet order. */
