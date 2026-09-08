@@ -22,12 +22,15 @@ export function resolveWebDist(prefix: string): {
   const repoRoot = join(import.meta.dir, "..");
   const parent = mkdtempSync(join(tmpdir(), prefix));
   const distDir = join(parent, "dist");
-  const build = Bun.spawnSync(["bunx", "vite", "build", "--outDir", distDir, "--emptyOutDir"], {
-    cwd: join(repoRoot, "packages", "web"),
+  const build = Bun.spawnSync(["bun", "run", "build:web", "--outDir", distDir, "--emptyOutDir"], {
+    cwd: repoRoot,
     stdout: "ignore",
     stderr: "inherit",
   });
-  if (!build.success) throw new Error("web build failed");
+  if (!build.success) {
+    rmSync(parent, { recursive: true, force: true });
+    throw new Error("web build failed");
+  }
   return {
     distDir,
     cleanup: () => rmSync(parent, { recursive: true, force: true }),

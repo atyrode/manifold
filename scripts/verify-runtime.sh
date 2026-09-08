@@ -90,6 +90,10 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 mkdir -m 700 "$root/home" "$root/tmp" "$root/mount-tree" "$root/mount-tree/output"
 path="$(dirname -- "$bun"):/usr/local/bin:/usr/bin:/bin"
+if [[ $mode == browser ]]; then
+  git=$(executable "$(command -v git || true)" git)
+  path+=":$(dirname -- "$git")"
+fi
 "$timeout" --kill-after=5s 60s "$env_bin" -i PATH="$path" HOME="$root/home" TMPDIR="$root/tmp" \
   "$cc" -static -O2 -Wall -Wextra "$repo/packages/agent/test/fixtures/job-syscall-probe.c" -o "$root/syscall-probe"
 static_elf "$root/syscall-probe"

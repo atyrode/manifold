@@ -792,16 +792,29 @@ async function main() {
     assert.equal(denied.cursor, undefined);
     denied.close();
     const revokedAt = (await view(other)).seq;
-    // A DOM may disappear on credential revocation. Count actual post-revocation frame
-    // traffic as well, so a stale/hidden panel cannot conceal continued delivery.
+    // HTTP revocation can finish before already-sent socket frames arrive. Wait for the
+    // exact stream-bearing socket to close, then reject traffic from any reconnect too.
     let revokedFrames = 0;
+    let streamSocketId: string | undefined;
+    let streamSocketClosed = false;
     await other.send("Network.enable", {});
     other.on("Network.webSocketFrameReceived", (params) => {
       const response = params.response as { payloadData?: string } | undefined;
-      if (response?.payloadData?.includes('"type":"stream_frame"')) revokedFrames++;
+      if (
+        !response?.payloadData?.includes('"type":"stream_frame"') ||
+        typeof params.requestId !== "string"
+      )
+        return;
+      if (streamSocketClosed) revokedFrames++;
+      else streamSocketId = params.requestId;
     });
+    other.on("Network.webSocketClosed", (params) => {
+      if (streamSocketId !== undefined && params.requestId === streamSocketId)
+        streamSocketClosed = true;
+    });
+    await waitFor(() => streamSocketId !== undefined, 5000, 20);
     await ownerAction(hub, "core.access.revoke", { principalId: viewer.principal.id });
-    revokedFrames = 0;
+    await waitFor(() => streamSocketClosed, 5000, 20);
     await waitFor(async () => (await view(browser)).seq >= revokedAt + 40, 5000, 20);
     assert.equal(revokedFrames, 0, "revoked browser still receives stream frames");
     await waitFor(async () => (await view(browser)).status === "closed", 75_000, 20);
