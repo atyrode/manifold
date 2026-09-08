@@ -54,6 +54,7 @@ export const ServiceResponsePolicySchema = z.discriminatedUnion("kind", [
 ]);
 export const ServiceOperationPolicySchema = z.strictObject({
   method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+  readable: z.boolean().optional(),
   path: z.string().max(4096).refine((path) => path === "/" || (
     path.startsWith("/") && path.slice(1).split("/").every((part) =>
       /^(?:[A-Za-z0-9_~.-]+|\{[A-Za-z0-9][A-Za-z0-9._-]{0,127}\})$/.test(part) && part !== "." && part !== ".."
@@ -76,6 +77,7 @@ export const ServiceOperationPolicySchema = z.strictObject({
 }).superRefine((operation, ctx) => {
   const fail = () => ctx.addIssue({ code: "custom", message: "Invalid service input mapping" });
   if (operation.method === "GET" && operation.body.length) fail();
+  if (operation.readable && (operation.method !== "GET" || operation.response.kind !== "projected-json")) fail();
   const used = new Set<string>();
   const bodyInputs = operation.body.flatMap((field) => "input" in field.value ? [field.value.input] : []);
   for (const source of [...Object.values(operation.query), ...bodyInputs]) {
@@ -239,6 +241,39 @@ export const ServicePolicySchema = z.strictObject({
   .refine((policy) => encodedBytes(policy) <= 128 * 1024, {
   message: "Service policy exceeds the native configuration bound",
 });
+
+/** Native bootstrap advertises references and allowed origins, never source paths or values. */
+export const ServiceCredentialReferenceSchema = z.strictObject({
+  ref: name,
+  origins: z.array(z.url().max(4096).refine(value => {
+    const url = new URL(value);
+    return value === url.origin && (url.protocol === "https:" ||
+      (url.protocol === "http:" && ["127.0.0.1", "[::1]"].includes(url.hostname)));
+  })).min(1).max(32),
+  available: z.boolean(),
+});
+export const ServiceConfigurationSchema = z.strictObject({
+  revision: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  policies: z.array(ServicePolicySchema).max(64),
+}).refine(value => (value.revision !== null || value.policies.length === 0) &&
+  new Set(value.policies.map(policy => policy.serviceId)).size === value.policies.length &&
+  encodedBytes(value) <= 512 * 1024);
+export const ServiceReadArgsSchema = z.strictObject({
+  machineId: name,
+  serviceId: name,
+  revision: name,
+  policySha256: z.string().regex(/^[a-f0-9]{64}$/),
+  operationId: name,
+  input: ServiceInputSchema,
+});
+export const ServiceAuthoritySubjectSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("job"), jobId: name }),
+  z.strictObject({ kind: z.literal("read"), requestId: name }),
+]);
+export type ServiceConfiguration = z.infer<typeof ServiceConfigurationSchema>;
+export type ServiceCredentialReference = z.infer<typeof ServiceCredentialReferenceSchema>;
+export type ServiceReadArgs = z.infer<typeof ServiceReadArgsSchema>;
+export type ServiceAuthoritySubject = z.infer<typeof ServiceAuthoritySubjectSchema>;
 
 export type ServiceInput = z.infer<typeof ServiceInputSchema>;
 export type ServiceCall = z.infer<typeof ServiceCallSchema>;

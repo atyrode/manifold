@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { MachineHalf } from "./jobs.ts";
+import { ServiceCredentialReferenceSchema } from "./services.ts";
 
 const name = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
   .refine((value) => !["__proto__", "constructor", "prototype", ".", ".."].includes(value));
@@ -20,6 +21,7 @@ export const JobResourceInventorySchema = JobResourceBindingsSchema.extend({
     revision: name,
     operationIds: z.array(name).max(64),
   })).refine((value) => Object.keys(value).length <= 64),
+  credentialReferences: z.array(ServiceCredentialReferenceSchema).max(64).optional(),
 });
 export type JobResourceInventory = z.infer<typeof JobResourceInventorySchema>;
 

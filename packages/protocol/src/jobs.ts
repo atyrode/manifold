@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
-import { ServiceBindingSchema } from "./services.ts";
+import { ServiceAuthoritySubjectSchema, ServiceBindingSchema, ServiceConfigurationSchema, ServiceReadArgsSchema, ServiceReplySchema } from "./services.ts";
 import { JobResourceBindingsSchema, JobResourceInventorySchema } from "./job-resources.ts";
 
 const id = z.string().min(1).max(128);
@@ -465,13 +465,16 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     type: z.literal("service_authorized"),
-    jobId: id,
+    subject: ServiceAuthoritySubjectSchema,
     authorizationId: id,
     allowed: z.boolean(),
   }),
   z.strictObject({
     type: z.literal("input_authorized"), jobId: id, requestId: id, allowed: z.boolean(),
   }),
+  z.strictObject({ type: z.literal("configure_services"), configuration: ServiceConfigurationSchema }),
+  z.strictObject({ type: z.literal("service_read"), requestId: id, ...ServiceReadArgsSchema.shape }),
+  z.strictObject({ type: z.literal("service_read_cancel"), requestId: id }),
 ]);
 export type JobCommand = z.infer<typeof JobCommandSchema>;
 export const JobInstallationResourcesSchema = z.strictObject({
@@ -529,13 +532,14 @@ export const JobEventSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     type: z.literal("service_authorize"),
-    jobId: id,
+    subject: ServiceAuthoritySubjectSchema,
     authorizationId: id,
     serviceId: component,
     revision: component,
     policySha256: hash,
     operationId: component,
   }),
+  z.strictObject({ type: z.literal("service_read_result"), requestId: id, reply: ServiceReplySchema }),
   z.strictObject({
     type: z.literal("resources"),
     resources: JobResourceInventorySchema,
