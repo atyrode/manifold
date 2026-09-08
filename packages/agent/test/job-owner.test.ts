@@ -19,6 +19,8 @@ import {
   type JobRequest,
   type JobResult,
 } from "@manifold/protocol";
+import type { TerminalHostEvent } from "@manifold/protocol";
+import { TerminalHost } from "../src/terminal-host.ts";
 import { HeldDirectory } from "../src/job-files.ts";
 import { JobJournal, jobDigest } from "../src/job-journal.ts";
 import { MachineJobOwner, type JobOwnerOptions } from "../src/job-owner.ts";
@@ -148,7 +150,7 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
             outputs: [],
             network: "none",
             limits,
-            stdin: false,
+            stdin: true,
           },
         },
       },
@@ -281,6 +283,83 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
       });
       await owner.execute(command);
       expect(events.at(-1)).toEqual({ type: "result", result });
+      const host = new TerminalHost({ jobOwner: owner });
+      const terminalEvents: TerminalHostEvent[] = [];
+      const terminalExit = Promise.withResolvers<void>();
+      let terminalRefused = Promise.withResolvers<void>();
+      const seat = host.open({
+        write(event) {
+          terminalEvents.push(event);
+          if (event.type === "exited") terminalExit.resolve();
+          if (event.type === "create_error") terminalRefused.resolve();
+          return true;
+        },
+        close() {},
+      });
+      seat.deliver({ type: "attach" });
+      const boundBody = {
+        ...requestBody,
+        jobId: "terminal-once",
+        terminal: { terminalId: "native-terminal", terminalHostId: host.terminalHostId, containerId: "home" },
+      };
+      const boundRequest = { ...boundBody, requestDigest: jobDigest(boundBody) };
+      const boundPermit = {
+        ...permitBody, permitId: "terminal-permit", jobId: boundRequest.jobId,
+        requestDigest: boundRequest.requestDigest,
+      };
+      const boundCommand: Extract<JobCommand, { type: "start" }> = {
+        type: "start", request: boundRequest,
+        permit: {
+          ...boundPermit,
+          signature: sign(null, Buffer.from(canonicalJobJson(boundPermit)), keys.privateKey).toString("base64"),
+        },
+      };
+      const create = { type: "create", terminalId: "native-terminal", cols: 80, rows: 24, env: {}, runtime: boundCommand };
+      try {
+        // A signed job cannot take the ordinary job RPC path or another terminal's PTY.
+        await owner.execute(boundCommand);
+        expect(events.at(-1)).toMatchObject({ type: "refusal", reason: "terminal_host_required" });
+        seat.deliver({ ...create, program: { argv: ["/bin/sh"] } });
+        await terminalRefused.promise;
+        expect(host.terminalCount).toBe(0);
+        terminalRefused = Promise.withResolvers<void>();
+        seat.deliver({ ...create, terminalId: "other-terminal" });
+        await terminalRefused.promise;
+        expect(host.terminalCount).toBe(0);
+        expect(terminalEvents.at(-1)).toMatchObject({ type: "create_error", terminalId: "other-terminal" });
+        terminalRefused = Promise.withResolvers<void>();
+        const stalePermit = { ...boundPermit, ownerGeneration: boundPermit.ownerGeneration - 1 };
+        seat.deliver({
+          ...create,
+          runtime: { ...boundCommand, permit: {
+            ...stalePermit,
+            signature: sign(null, Buffer.from(canonicalJobJson(stalePermit)), keys.privateKey).toString("base64"),
+          } },
+        });
+        await terminalRefused.promise;
+        expect(host.terminalCount).toBe(0);
+        expect(outputs.recovered(boundRequest.jobId)).toEqual([]);
+        seat.deliver(create);
+        await terminalExit.promise;
+        expect(terminalEvents).toContainEqual({ type: "created", terminalId: "native-terminal" });
+        expect(terminalEvents).toContainEqual({ type: "exited", terminalId: "native-terminal", exitCode: 0 });
+        const terminalText = terminalEvents.flatMap((event) =>
+          event.type === "output" ? [Buffer.from(event.data, "base64").toString()] : []).join("");
+        expect(terminalText).toContain("private-once");
+        expect(terminalText).toContain("diagnostic");
+        expect(events.some((event) => event.type === "output" && event.jobId === boundRequest.jobId)).toBe(false);
+        expect(outputs.recovered(boundRequest.jobId)).toEqual([]);
+        seat.deliver(create);
+        expect(terminalEvents.at(-1)).toMatchObject({ type: "create_error", message: "terminal_admission_reused" });
+        seat.detach();
+        const successor = host.open({ write(event) { terminalEvents.push(event); return true; }, close() {} });
+        successor.deliver({ type: "attach" });
+        expect(terminalEvents.at(-1)).toMatchObject({
+          type: "attached", terminals: [{ terminalId: "native-terminal", alive: false, exitCode: 0 }],
+        });
+      } finally {
+        await host.shutdown();
+      }
       release();
       await owner.shutdown();
       const interruptedBody = { ...requestBody, jobId: "unobserved" };

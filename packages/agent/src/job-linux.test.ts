@@ -21,6 +21,7 @@ import {
   type LinuxJobHandle,
   type LinuxJobSpec,
 } from "./job-linux.ts";
+import { PtyTerminal } from "./terminal.ts";
 
 function fixture(): { spec: LinuxJobSpec; close(): void } {
   const path = mkdtempSync(join(tmpdir(), "job-linux-"));
@@ -316,6 +317,49 @@ test.skipIf(!realLinux)(
     );
   },
 );
+
+test.skipIf(!realLinux)("native PTY keeps input, resize and snapshots outside job output storage", async () => {
+  await withLinux(
+    'test -t 0 && test -t 1 && test -t 2 || exit 71; test "$TERM" = xterm-256color || exit 72; test -z "$MANIFOLD_JOB_OWNER_SOCKET$MANIFOLD_MACHINE_TOKEN" || exit 73; printf ready; read line; /bin/busybox stty size; printf "received:%s" "$line"; while :; do /bin/busybox sleep 1; done',
+    async (spec) => {
+      let text = "";
+      let journalFrames = 0;
+      const ready = Promise.withResolvers<void>();
+      const received = Promise.withResolvers<void>();
+      const terminal = new PtyTerminal({
+        terminalId: "native-pty",
+        cols: 80,
+        rows: 24,
+        onOutput(output) {
+          text += Buffer.from(output.bytes).toString();
+          if (text.includes("ready")) ready.resolve();
+          if (text.includes("received:roundtrip")) received.resolve();
+        },
+        runtime: (pty) => startLinuxJob({ ...spec, terminal: pty, onOutput: () => { journalFrames++; } }),
+      });
+      const handle = await terminal.runtimeHandle!;
+      try {
+        await Promise.race([ready.promise, handle.result.then(() => { throw new Error("PTY exited before ready"); })]);
+        terminal.resize(100, 40);
+        terminal.write("roundtrip\n");
+        await Promise.race([received.promise, handle.result.then(() => { throw new Error("PTY exited before input"); })]);
+        expect(text).toContain("40 100");
+        const snapshot = await terminal.snapshot();
+        expect(Buffer.from(snapshot.data).toString()).toContain("received:roundtrip");
+        expect(journalFrames).toBe(0);
+        await terminal.kill();
+        const result = await handle.result;
+        expect(result.reason).toBe("cancelled");
+        expect(result.empty).toBe(true);
+        expect(terminal.alive).toBe(false);
+      } finally {
+        await handle.cancel();
+        handle.release();
+        terminal.dispose();
+      }
+    },
+  );
+});
 
 test.skipIf(!realLinux)(
   "whole-tree cancellation drains a descendant moved into a nested cgroup",

@@ -53,6 +53,7 @@ const ConfigSchema = z.strictObject({
 export async function openConfiguredJobOwner(
   configPath: string,
   socketPath: string,
+  terminalSocketPath: string,
 ): Promise<MachineJobOwner> {
   const parent = HeldDirectory.openAbsolute(dirname(configPath), { private: true });
   const configFd = parent.openFile(basename(configPath));
@@ -70,6 +71,7 @@ export async function openConfiguredJobOwner(
     state,
     parent,
     HeldDirectory.openAbsolute(dirname(socketPath), { private: true }),
+    HeldDirectory.openAbsolute(dirname(terminalSocketPath), { private: true }),
     ...config.protectedDirectories.map((path) => HeldDirectory.openAbsolute(path)),
   ];
   const exclusions = new DirectoryExclusions(protectedDirectories);

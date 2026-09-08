@@ -110,6 +110,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     () => config.publicUrl,
     tileTrees,
   );
+  broker.setJobs(jobs);
   rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
   rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
   /* Species are named by the assembly's noun table, on the same terms as the vocabulary. */

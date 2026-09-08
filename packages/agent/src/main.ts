@@ -22,9 +22,9 @@ import { openConfiguredJobOwner } from "./job-runtime.ts";
  *   SIGTERM here is DESTRUCTIVE (kills the shells with grace, then exits), which is why its
  *   unit is the one an activation must keep running; the safe stop is the maintenance
  *   `shutdown_request` on the socket, honoured only when drained and empty.
- * - `manifold-agent --job-owner` owns durable non-PTY jobs on MANIFOLD_JOB_OWNER_SOCKET.
- *   MANIFOLD_JOB_OWNER_CONFIG names a private reviewed configuration, never a caller payload.
- *   Restart reconciles its journal and kills old cgroups before admitting a new generation.
+ *   When MANIFOLD_JOB_OWNER_CONFIG is configured, this same supervised process also owns
+ *   MachineJobOwner on MANIFOLD_JOB_OWNER_SOCKET. The classes retain their own lifecycles;
+ *   only private native callbacks pass the admitted PTY to the verified Linux job launcher.
  * - `manifold-agent` is the TRANSPORT: it takes the seat on that socket, dials the hub, and
  *   bridges. SIGTERM here closes the socket and the seat and exits 0 — no PTY is touched.
  *   It REQUIRES both owner socket paths and never spawns an owner of its
@@ -37,7 +37,6 @@ import { openConfiguredJobOwner } from "./job-runtime.ts";
  */
 
 const TERMINAL_HOST_FLAG = "--terminal-host";
-const JOB_OWNER_FLAG = "--job-owner";
 
 /** Reads a required env var, throwing a clear error when it is missing or empty. */
 function requireEnv(name: string): string {
@@ -81,15 +80,26 @@ async function terminalHostMain(): Promise<void> {
   const socketPath = requireEnv(TERMINAL_HOST_SOCKET_ENV);
   const build = process.env.MANIFOLD_BUILD ?? "unknown";
   let listener: { stop(): void } | null = null;
+  const jobConfig = process.env.MANIFOLD_JOB_OWNER_CONFIG;
+  const jobSocket = process.env.MANIFOLD_JOB_OWNER_SOCKET;
+  if (Boolean(jobConfig) !== Boolean(jobSocket))
+    throw new Error("job owner configuration and socket must be configured together");
+  const owner = jobConfig && jobSocket ? await openConfiguredJobOwner(jobConfig, jobSocket, socketPath) : undefined;
+  let jobListener: { stop(): void } | undefined;
   const host = new TerminalHost({
     sink: stdoutSink,
     build,
+    ...(owner ? { jobOwner: owner } : {}),
     onMaintenanceShutdown: () => {
       // Accepted only when drained and empty (terminal-host.ts): nothing to kill, so exit
       // once the accepting frame has left the socket.
-      listener?.stop();
-      stdoutSink({ ts: Date.now(), level: "info", evt: "shutdown", terminals: 0 });
-      setTimeout(() => process.exit(0), 0);
+      void (async () => {
+        await owner?.shutdown();
+        jobListener?.stop();
+        listener?.stop();
+        stdoutSink({ ts: Date.now(), level: "info", evt: "shutdown", terminals: 0 });
+        process.exit(0);
+      })().catch(() => process.exit(1));
     },
   });
   stdoutSink({
@@ -102,34 +112,19 @@ async function terminalHostMain(): Promise<void> {
     protocolVersion: PROTOCOL_VERSION,
     build,
   });
+  if (owner && jobSocket) jobListener = await listenJobOwner(owner, jobSocket);
   listener = await listenTerminalHost(host, socketPath, stdoutSink);
   onShutdownSignal(async () => {
     // Kill first, close the socket last: the attached transport receives every `exited`
     // before its connection goes, so the hub records the deliberate stop as exits, not as a
     // machine that merely went offline with its terminals in limbo.
     await host.shutdown();
+    await owner?.shutdown();
+    jobListener?.stop();
     listener?.stop();
   });
 }
 
-async function jobOwnerMain(): Promise<void> {
-  // This is a separately supervised mode, never spawned under the reconnecting transport.
-  const socketPath = requireEnv("MANIFOLD_JOB_OWNER_SOCKET");
-  const owner = await openConfiguredJobOwner(requireEnv("MANIFOLD_JOB_OWNER_CONFIG"), socketPath);
-  const listener = await listenJobOwner(owner, socketPath);
-  onShutdownSignal(async () => {
-    await owner.shutdown();
-    listener.stop();
-  });
-  stdoutSink({
-    ts: Date.now(),
-    level: "info",
-    evt: "starting",
-    mode: "job_owner",
-    ownerId: owner.identity.ownerId,
-    generation: owner.identity.generation,
-  });
-}
 
 function transportMain(): void {
   const serverUrl = requireEnv("MANIFOLD_SERVER_URL");
@@ -164,22 +159,9 @@ function transportMain(): void {
 
 function main(): void {
   const args = process.argv.slice(2);
-  const unknown = args.find((arg) => arg !== TERMINAL_HOST_FLAG && arg !== JOB_OWNER_FLAG);
+  const unknown = args.find((arg) => arg !== TERMINAL_HOST_FLAG);
   if (unknown !== undefined) throw new Error(`unknown argument: ${unknown}`);
   if (args.length > 1) throw new Error("only one supervised owner mode may be selected");
-  if (args.includes(JOB_OWNER_FLAG)) {
-    void jobOwnerMain().catch(() => {
-      stdoutSink({
-        ts: Date.now(),
-        level: "error",
-        evt: "starting",
-        mode: "job_owner",
-        reason: "job_owner_start_failed",
-      });
-      process.exit(1);
-    });
-    return;
-  }
   if (args.includes(TERMINAL_HOST_FLAG)) {
     void terminalHostMain().catch((error: unknown) => {
       stdoutSink({

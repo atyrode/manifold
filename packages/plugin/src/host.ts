@@ -19,6 +19,7 @@ import type {
   TerminalEnv,
   TerminalInfo,
   TerminalProgram,
+  TerminalRuntime,
   TerminalSummary,
   TileLayout,
   StreamCursor,
@@ -186,8 +187,12 @@ export interface SessionHandle {
     readonly placement?: "tile";
     readonly program?: TerminalProgram;
     readonly env?: TerminalEnv;
+    readonly runtime?: TerminalRuntime;
     readonly timeoutMs?: number;
-  }): Promise<TerminalInfo>;
+  } & (
+    | { readonly runtime: TerminalRuntime; readonly program?: never; readonly env?: never; readonly cwd?: never }
+    | { readonly runtime?: never }
+  )): Promise<TerminalInfo>;
   /**
    * Declares a view on a terminal: the server answers with a fresh `terminal_snapshot` and
    * every `terminal_output` after it, gap-free (CONTRACTS.md §attach). Refcounted per handle,

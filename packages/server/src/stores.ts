@@ -426,7 +426,7 @@ export interface NewStoredTerminal {
   machineId: string;
   containerId: string;
   createdBy: string;
-  agentPrincipalId: string;
+  agentPrincipalId: string | null;
   createdAt: number;
 }
 
@@ -2342,7 +2342,7 @@ export class ServerStore {
 
   createTerminal(terminal: NewStoredTerminal): void {
     this.db
-      .query<void, [string, string, string, string, string, string, null, number, null]>(
+      .query<void, [string, string, string, string, string | null, string, null, number, null]>(
         `INSERT INTO terminals(
            id, machine_id, container_id, created_by, agent_principal_id,
            status, exit_code, created_at, name

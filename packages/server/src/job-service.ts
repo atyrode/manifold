@@ -39,6 +39,7 @@ import {
   type MachineHalf,
   type JobFollowEvent,
   type JobFollowUpdate,
+  type TerminalRuntime,
 } from "../../protocol/src/jobs.ts";
 import type { JobDescription } from "../../protocol/src/jobs.ts";
 import { JobOutputRuleSchema } from "../../protocol/src/jobs.ts";
@@ -138,6 +139,7 @@ export class JobService {
       state: record.state,
       result: record.result,
       authority: this.jobs.authority(record),
+      ...(record.request.terminal ? { terminal: record.request.terminal } : {}),
     };
   }
 
@@ -262,6 +264,7 @@ export class JobService {
           installationRevision: job.request.installationRevision,
           artifactSha256: job.request.artifactSha256,
         },
+        ...(job.request.terminal ? { terminal: job.request.terminal } : {}),
         ...authority,
         state: job.state,
         ...(phase === "result" ? { exitCode: job.result?.exitCode ?? null } : {}),
@@ -1081,6 +1084,7 @@ export class JobService {
       const evidence: unknown[] = [];
       for (const prior of request.evidence) {
         const { cap, ref } = prior.requirement;
+        const terminalSpawn = cap === "terminals:spawn" && ref.kind === "container";
         const install = this.resolve(ref);
         const fresh = context
           ? this.auth.explain(context, prior.requirement)
@@ -1088,10 +1092,10 @@ export class JobService {
         const consent = install ? this.consentFor(install, ref, cap) : null;
         const discharged =
           context !== null &&
-          install !== null &&
+          (terminalSpawn || install !== null) &&
           (context.caps.includes("*") || context.caps.includes(cap)) &&
           fresh.allowed &&
-          consent !== null;
+          (terminalSpawn || consent !== null);
         if (!discharged) allowed = false;
         const observedConsent =
           consent ?? (install ? this.consentFor(install, ref, cap, false) : null);
@@ -1326,6 +1330,10 @@ export class JobService {
     }
     return [
       ...invocation,
+      ...(request.terminal ? [{
+        cap: "terminals:spawn" as const,
+        ref: { kind: "container" as const, containerId: request.terminal.containerId },
+      }] : []),
       {
         cap: "machines:run",
         ref: { kind: "operation", machineId: request.machineId, operationId: request.operationId },
@@ -1354,6 +1362,7 @@ export class JobService {
     traceId: string,
     args: JobExecution,
     outputParent?: JobRequest,
+    terminal?: JobRequest["terminal"],
   ): JobRequest {
     const install = this.jobs.installation(args.machineId, pluginId);
     const op = install?.machine.operations[args.operationId];
@@ -1422,10 +1431,12 @@ export class JobService {
       artifactSha256: install.artifact,
       parent: null,
       credential: this.auth.credentialReference(auth),
+      ...(terminal ? { terminal } : {}),
     };
     return JobRequestSchema.parse({ ...unsigned, requestDigest: digest(unsigned) });
   }
   execute(auth: AuthContext, pluginId: string, traceId: string, args: JobExecution): JobRecord {
+    if ("terminal" in args) fail("native_terminal_admission_required");
     const context = this.context(this.auth.credentialReference(auth));
     if (!context) fail("credential_revoked_or_expired");
     const request = this.build(context, pluginId, traceId, args);
@@ -1463,8 +1474,43 @@ export class JobService {
     if (job.state === "queued") this.start(job);
     return this.jobs.get(request.jobId)!;
   }
-  private start(job: JobRecord): void {
+  /** Immediate native admission; unavailable/refused terminals never become retryable jobs. */
+  admitTerminal(
+    auth: AuthContext,
+    runtime: TerminalRuntime,
+    machineId: string,
+    terminal: NonNullable<JobRequest["terminal"]>,
+    traceId: number,
+  ): Extract<JobCommand, { type: "start" }> {
+    const live = this.channels.get(machineId);
+    const install = this.jobs.installation(machineId, runtime.pluginId);
+    if (!live?.proved || live.owner.terminalHostId !== terminal.terminalHostId ||
+        !live.owner.platforms.some((platform) => platform.startsWith("linux-")))
+      fail("terminal_runtime_host_unsupported");
+    if (!install?.ready || !install.enabled || install.revision !== runtime.installationRevision ||
+        install.artifact !== runtime.artifactSha256)
+      fail("installation_changed");
+    if (!install.machine.operations[runtime.operationId]?.stdin)
+      fail("terminal_operation_requires_stdin");
+    const context = this.context(this.auth.credentialReference(auth));
+    if (!context) fail("credential_revoked_or_expired");
+    const pinned = this.build(context, runtime.pluginId, String(traceId), {
+      jobId: randomUUID(), machineId, operationId: runtime.operationId,
+      input: runtime.input, outputs: [],
+    }, undefined, terminal);
+    const job = this.store.transaction(() => this.jobs.reserve(pinned, this.runtime.now()));
+    const command = this.start(job, false);
+    if (!command) {
+      this.jobs.state(pinned.jobId, "refused");
+      this.changed(pinned);
+      fail("terminal_runtime_admission_refused");
+    }
+    this.changed(pinned);
+    return command;
+  }
+  private start(job: JobRecord, dispatch = true): Extract<JobCommand, { type: "start" }> | undefined {
     const request = job.request;
+    if (request.terminal && dispatch) return;
     const live = this.channels.get(request.machineId);
     if (!live?.proved) return;
     const permit = this.store.transaction(() => {
@@ -1532,8 +1578,11 @@ export class JobService {
         reason: "admission_refused",
       });
     }
-    if (permit)
-      live.channel.send({ type: "job_command", command: { type: "start", request, permit } });
+    if (permit) {
+      const command = { type: "start" as const, request, permit };
+      if (dispatch) live.channel.send({ type: "job_command", command });
+      return command;
+    }
   }
   online(channel: JobChannel, owner: JobOwner | undefined, epoch: string): void {
     this.channels.delete(channel.machineId);
@@ -1843,6 +1892,11 @@ export class JobService {
   }
   cancel(auth: AuthContext, node: ManifoldRef, callerPluginId = "engine.jobs"): void {
     this.cancelRecord(this.authorizedJob(auth, node, "jobs:cancel", callerPluginId), "requested");
+  }
+  cancelTerminal(terminalId: string): void {
+    for (const job of this.jobs.active())
+      if (job.request.terminal?.terminalId === terminalId)
+        this.cancelRecord(job, "terminal_closed");
   }
   private cancelRecord(job: JobRecord, reason: string): void {
     if (!active.has(job.state)) return;

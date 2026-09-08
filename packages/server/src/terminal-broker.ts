@@ -22,6 +22,7 @@ import {
   type SessionChannel,
 } from "./session-channel.ts";
 import type { ServerStore } from "./stores.ts";
+import type { JobService } from "./job-service.ts";
 
 /**
  * The broker answers a CHANNEL, and a channel IS one room view, so its payload types are
@@ -122,7 +123,7 @@ interface PendingOpen {
   cols: number;
   rows: number;
   opener: SessionChannel;
-  agentPrincipalId: string;
+  agentPrincipalId: string | null;
   cancelDeadline: (() => void) | null;
 }
 
@@ -155,6 +156,17 @@ export class TerminalBroker implements TerminalPlacementPort {
    * test that drives the PTY mechanism alone should not have to own a hub.
    */
   private events: EventHub | null = null;
+  private jobs: JobService | null = null;
+
+  setJobs(jobs: JobService): void {
+    this.jobs = jobs;
+  }
+
+  private abandonOpen(pending: PendingOpen): void {
+    if (pending.agentPrincipalId !== null)
+      this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
+    this.jobs?.cancelTerminal(pending.terminalId);
+  }
 
   constructor(
     private readonly store: ServerStore,
@@ -297,7 +309,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         message: "machine disconnected while opening terminal",
         ref: pending.ref,
       });
-      this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
+      this.abandonOpen(pending);
       this.pendingOpens.delete(terminalId);
       this.rooms.evictIfIdle(pending.containerId);
     }
@@ -631,7 +643,11 @@ export class TerminalBroker implements TerminalPlacementPort {
    * to the agent below is what the ledger recorded as authorized (issue #192). What remains
    * is mechanism: placement discipline, machine selection, and the create round trip.
    */
-  open(channel: SessionChannel, message: TerminalOpen): void {
+  open(channel: SessionChannel, message: TerminalOpen, traceId?: number): void {
+    if (message.runtime && (message.program !== undefined || message.env !== undefined || message.cwd !== undefined)) {
+      channel.send({ type: "error", code: "forbidden", message: "runtime excludes program, cwd and environment overrides", ref: message.elementId });
+      return;
+    }
     /*
       Discipline decides who authors the placement, and it decides it from its DECLARATION
       (#125): a container that holds a tile tree is placed into server-side by naming a leaf,
@@ -711,7 +727,19 @@ export class TerminalBroker implements TerminalPlacementPort {
       so a create that fails leaves nothing behind to clean up.
      */
     const homeId = placement === "tile" ? channel.containerId : this.runtime.newId();
-    const grant = this.auth.mintSessionAgentToken(terminalId, homeId, channel.auth.principal.id);
+    let runtime: Extract<ServerToAgentMessage, { type: "create" }>["runtime"];
+    if (message.runtime) {
+      try {
+        if (!this.jobs || !machine.terminalHostId || traceId === undefined) throw new Error("terminal_runtime_unsupported");
+        runtime = this.jobs.admitTerminal(channel.auth, message.runtime, machine.machineId, {
+          terminalId, terminalHostId: machine.terminalHostId, containerId: channel.containerId,
+        }, traceId);
+      } catch {
+        channel.send({ type: "error", code: "forbidden", message: "terminal runtime admission refused", ref: message.elementId });
+        return;
+      }
+    }
+    const grant = runtime ? null : this.auth.mintSessionAgentToken(terminalId, homeId, channel.auth.principal.id);
     const pending: PendingOpen = {
       terminalId,
       containerId: channel.containerId,
@@ -724,7 +752,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       cols: message.cols,
       rows: message.rows,
       opener: channel,
-      agentPrincipalId: grant.principal.id,
+      agentPrincipalId: grant?.principal.id ?? null,
       cancelDeadline: null,
     };
     this.pendingOpens.set(terminalId, pending);
@@ -733,7 +761,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       if (this.pendingOpens.get(terminalId) !== pending) return;
       this.pendingOpens.delete(terminalId);
       this.machines.get(machine.machineId)?.send({ type: "kill", terminalId });
-      this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
+      this.abandonOpen(pending);
       pending.opener.send({
         type: "error",
         code: "no_machine",
@@ -752,7 +780,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       cols: message.cols,
       rows: message.rows,
       ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
-      env: {
+      env: runtime ? {} : {
         // The opener's own keys go FIRST so the fixed keys below always win. The schema
         // already refuses the `MANIFOLD_` prefix; the order makes the rule true even if it
         // did not.
@@ -763,14 +791,15 @@ export class TerminalBroker implements TerminalPlacementPort {
         // opener, which authors its portal under exactly that id.
         MANIFOLD_CONTAINER: homeId,
         ...(placement === "tile" ? {} : { MANIFOLD_ELEMENT: message.elementId }),
-        MANIFOLD_TOKEN: grant.token,
+        MANIFOLD_TOKEN: grant!.token,
       },
       ...(message.program === undefined ? {} : { program: message.program }),
+      ...(runtime ? { runtime } : {}),
     });
     if (!sent) {
       pending.cancelDeadline?.();
       this.pendingOpens.delete(terminalId);
-      this.auth.revokeIssuedPrincipal(grant.principal.id, channel.auth.principal.id);
+      this.abandonOpen(pending);
       channel.send({
         type: "error",
         code: "no_machine",
@@ -803,7 +832,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (home === null) {
       // Nothing durable exists yet, so the PTY is the only thing to undo.
       this.machines.get(machineId)?.send({ type: "kill", terminalId });
-      this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
+      this.abandonOpen(pending);
       pending.opener.send({
         type: "error",
         code: "conflict",
@@ -890,7 +919,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (pending === undefined || pending.machineId !== machineId) return;
     this.pendingOpens.delete(terminalId);
     pending.cancelDeadline?.();
-    this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
+    this.abandonOpen(pending);
     pending.opener.send({
       type: "error",
       code: "conflict",
@@ -1444,7 +1473,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       if (pending.containerId !== containerId) continue;
       pending.cancelDeadline?.();
       this.machines.get(pending.machineId)?.send({ type: "kill", terminalId });
-      this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.createdBy);
+      this.abandonOpen(pending);
       pending.opener.send({
         type: "error",
         code: "not_found",

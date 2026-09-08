@@ -2,6 +2,7 @@ import type {
   ContainerTerminalSummary,
   TerminalEnv,
   TerminalProgram,
+  TerminalRuntime,
   TerminalSummary,
 } from "@manifold/protocol";
 
@@ -32,6 +33,7 @@ interface LiveTerminal {
  * is an answer this plugin has to relay, not one it can invent.
  */
 interface TerminalsCtx {
+  readonly traceId: number;
   /** The caller's own container when its token is container-scoped; null for a workspace token. */
   readonly containerScope: string | null;
   /**
@@ -80,11 +82,14 @@ export const terminalsHandlers = {
       placement?: "element" | "tile";
       program?: TerminalProgram;
       env?: TerminalEnv;
+      runtime?: TerminalRuntime;
     },
-  ): Promise<Outcome<Record<string, never>>> {
+  ): Promise<Outcome<Record<string, never> | { traceId: number }>> {
     const outside = ctx.outsideScope(args.containerId);
     if (outside !== null) return outside;
-    return {};
+    if (args.runtime && (args.program !== undefined || args.env !== undefined))
+      return { refused: "runtime excludes program and environment overrides" };
+    return args.runtime ? { traceId: ctx.traceId } : {};
   },
 
   /**

@@ -3,6 +3,7 @@ import { MAX_GESTURE_POINT_VALUES, MAX_SESSION_BASE64_CHARS } from "./elements.t
 import { CapSchema } from "./capabilities.ts";
 import { EventKindSchema, EventPayloadSchema, MAX_SUBSCRIBE_TOPICS } from "./events.ts";
 import { TerminalProgramSchema } from "./machine.ts";
+import { TerminalRuntimeSchema } from "./jobs.ts";
 import {
   CarrySchema,
   GestureKindSchema,
@@ -255,6 +256,7 @@ const CLIENT_BODIES = {
      * field. Absent ≡ the login shell, exactly the pre-v22 gesture.
      */
     program: TerminalProgramSchema.optional(),
+    runtime: TerminalRuntimeSchema.optional(),
     /** Environment merged under the fixed `MANIFOLD_*` keys; absent ≡ nothing added. */
     env: TerminalEnvSchema.optional(),
   }),

@@ -142,8 +142,19 @@ export const JobRequestSchema = z.strictObject({
   credential: JobCredentialSchema,
   traceId: id,
   requestDigest: hash,
+  /** Native terminal admission only; never accepted by ordinary job execute input. */
+  terminal: z.strictObject({ terminalId: id, terminalHostId: id, containerId: id }).optional(),
 });
 export type JobRequest = z.infer<typeof JobRequestSchema>;
+/** Pinned installation input, not executable, working-directory or environment authority. */
+export const TerminalRuntimeSchema = JobRequestSchema.pick({
+  pluginId: true,
+  operationId: true,
+  installationRevision: true,
+  artifactSha256: true,
+  input: true,
+});
+export type TerminalRuntime = z.infer<typeof TerminalRuntimeSchema>;
 export const JobPermitSchema = z.strictObject({
   permitId: id,
   jobId: id,
@@ -275,6 +286,7 @@ export const PublicJobSchema = z.strictObject({
   state: JobStateSchema,
   result: JobResultSchema.nullable(),
   authority: JobAuthoritySchema,
+  terminal: JobRequestSchema.shape.terminal,
 });
 export type PublicJob = z.infer<typeof PublicJobSchema>;
 
@@ -332,6 +344,8 @@ export const JobOwnerSchema = z.strictObject({
   platforms: z.array(z.enum(["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"])).max(4),
   inventoryDigest: hash,
   resources: JobResourceInventorySchema.optional(),
+  /** Present only when this owner shares the native terminal host's supervision boundary. */
+  terminalHostId: id.optional(),
 });
 export type JobOwner = z.infer<typeof JobOwnerSchema>;
 /** The existing 16 MiB plugin JSON budget also bounds a single base64 machine member. */
@@ -345,6 +359,9 @@ export const JobArtifactDeliverySchema = z.strictObject({
 });
 export type JobArtifactDelivery = z.infer<typeof JobArtifactDeliverySchema>;
 const chunk = { seq: count, data: z.base64().max(87384) };
+export const JobStartCommandSchema = z.strictObject({
+  type: z.literal("start"), request: JobRequestSchema, permit: JobPermitSchema,
+});
 export const JobCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("owner_challenge"),
@@ -366,7 +383,7 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
     new TextEncoder().encode(JSON.stringify(metadata)).byteLength +
       (artifact === undefined ? 0 : artifact.bundleFile.length) + 128 <= MAX_JOB_INSTALL_METADATA_BYTES,
     { message: "install metadata exceeds the frame budget" }),
-  z.strictObject({ type: z.literal("start"), request: JobRequestSchema, permit: JobPermitSchema }),
+  JobStartCommandSchema,
   z.strictObject({ type: z.literal("input"), jobId: id, ...chunk, eof: z.boolean() }),
   z.strictObject({ type: z.literal("cancel"), jobId: id, reason: id }),
   z.strictObject({ type: z.literal("status"), jobId: id }),

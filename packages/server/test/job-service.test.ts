@@ -214,6 +214,46 @@ test("authenticated owner installation receives only the pinned bundle member; a
   }
 });
 
+test("bound terminal admission requires current spawn authority, exact pins and the proved native host", () => {
+  const f = fixture();
+  try {
+    const containerId = "terminal-home";
+    f.store.createContainer({ id: containerId, name: "terminal", discipline: "composition", createdAt: f.runtime.now() });
+    const runtime = { pluginId, operationId, installationRevision: "r1", artifactSha256: hash, input: { value: "safe" } };
+    const binding = { terminalId: "native-terminal", terminalHostId: "native-host", containerId };
+    const forged = { jobId: "forged", machineId: f.machineId, operationId, input: runtime.input, outputs: [], terminal: binding };
+    expect(() => f.service.execute(f.root, pluginId, "trace", forged)).toThrow("native_terminal_admission_required");
+    consent(f, "machines:run");
+    prove(f);
+    expect(() => f.service.admitTerminal(f.root, runtime, f.machineId, binding, 1)).toThrow();
+    f.owner.terminalHostId = "native-host";
+    prove(f);
+    expect(() => f.service.admitTerminal(f.root, { ...runtime, installationRevision: "stale" }, f.machineId, binding, 1)).toThrow();
+    expect(() => f.service.admitTerminal(f.root, runtime, f.machineId, { ...binding, terminalHostId: "other-host" }, 1)).toThrow();
+    const token = f.auth.mintToken({
+      principal: { name: "terminal-opener", kind: "agent" },
+      caps: ["machines:run", "terminals:spawn"],
+    }, f.root);
+    const original = f.auth.authenticate(token.token);
+    const first = f.service.admitTerminal(original, runtime, f.machineId, binding, 1);
+    // Admission returns a one-use command to the terminal broker, never a second job-channel start.
+    expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+    f.service.cancelTerminal(binding.terminalId);
+    expect(f.commands.at(-1)).toMatchObject({ type: "cancel", jobId: first.request.jobId });
+    f.auth.grant({
+      principal: { kind: "principal", id: original.principal.id },
+      node: formatManifoldUri({ kind: "container", containerId }),
+      caps: ["terminals:spawn"], effect: "deny", reach: "node",
+    }, f.root);
+    // Reusing the original authenticated context cannot outrun current grant revocation.
+    expect(() => f.service.admitTerminal(original, runtime, f.machineId, { ...binding, terminalId: "denied" }, 1)).toThrow();
+    consent(f, "machines:run", false);
+    expect(() => f.service.admitTerminal(f.root, runtime, f.machineId, { ...binding, terminalId: "no-consent" }, 1)).toThrow();
+    expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+  } finally {
+    f.store.close();
+  }
+});
 describe("retained job discovery", () => {
   test("bounded pages omit unreadable runs and recheck current authority", () => {
     const f = fixture();

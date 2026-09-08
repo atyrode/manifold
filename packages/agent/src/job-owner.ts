@@ -29,8 +29,10 @@ import {
   preflightLinuxJobRuntime,
   recoverLinuxJobs,
   startLinuxJob,
+  LinuxJobRefusal,
   type LinuxJobBind,
   type LinuxJobHandle,
+  type LinuxJobOutput,
   type LinuxJobResult,
   type LinuxJobSpec,
 } from "./job-linux.ts";
@@ -95,6 +97,7 @@ export class MachineJobOwner {
   private sink: ((event: JobEvent) => boolean) | null = null;
   private draining = false;
   private ready = false;
+  private terminalHostId: string | undefined;
 
   private constructor(private readonly options: JobOwnerOptions) {
     this.admissionKey = createPublicKey(options.admissionPublicKey);
@@ -172,6 +175,18 @@ export class MachineJobOwner {
     return owner;
   }
 
+  bindTerminalHost(terminalHostId: string): void {
+    if (this.terminalHostId) throw new Error("terminal_host_already_bound");
+    this.terminalHostId = terminalHostId;
+  }
+  get maintenanceReady(): boolean {
+    return this.draining && ![...this.jobs.values()].some((job) => ACTIVE[job.result.state]);
+  }
+
+  setDraining(draining: boolean): void {
+    this.options.journal.append({ kind: "drain", draining });
+    this.draining = draining;
+  }
   get identity(): JobOwner {
     const journal = this.options.journal;
     return {
@@ -183,6 +198,7 @@ export class MachineJobOwner {
           ? [`linux-${process.arch}`]
           : [],
       inventoryDigest: journal.inventoryDigest(),
+      ...(this.terminalHostId ? { terminalHostId: this.terminalHostId } : {}),
     };
   }
 
@@ -232,11 +248,11 @@ export class MachineJobOwner {
           await this.install(command);
           return;
         case "start":
+          if (command.request.terminal) throw new Error("terminal_host_required");
           await this.start(command);
           return;
         case "drain":
-          this.options.journal.append({ kind: "drain", draining: command.draining });
-          this.draining = command.draining;
+          this.setDraining(command.draining);
           return;
         case "status": {
           const job = this.requireJob(command.jobId);
@@ -248,6 +264,7 @@ export class MachineJobOwner {
           return;
         case "input": {
           const job = this.requireJob(command.jobId);
+          if (job.request.terminal) throw new Error("terminal_input_owner_required");
           const data = Buffer.from(command.data, "base64");
           if (
             command.seq !== job.inputSeq ||
@@ -444,12 +461,30 @@ export class MachineJobOwner {
     });
   }
 
-  private async start(command: Extract<JobCommand, { type: "start" }>): Promise<void> {
+  /** Private in-process handoff from the sole TerminalHost, never a job RPC command. */
+  async startTerminal(
+    command: Extract<JobCommand, { type: "start" }>,
+    terminalId: string,
+    terminalHostId: string,
+    launch: (spec: LinuxJobSpec) => Promise<LinuxJobHandle>,
+  ): Promise<void> {
+    const binding = command.request.terminal;
+    if (!this.ready || !binding || binding.terminalId !== terminalId ||
+        binding.terminalHostId !== terminalHostId || terminalHostId !== this.terminalHostId || command.request.parent)
+      throw new Error("terminal_binding_refused");
+    await this.start(command, launch);
+  }
+
+  private async start(
+    command: Extract<JobCommand, { type: "start" }>,
+    terminalLaunch?: (spec: LinuxJobSpec) => Promise<LinuxJobHandle>,
+  ): Promise<void> {
     const { request, permit } = command;
     const { requestDigest, ...immutable } = request;
     if (jobDigest(immutable) !== requestDigest) throw new Error("request_digest_mismatch");
     const existing = this.jobs.get(request.jobId);
     if (existing) {
+      if (request.terminal) throw new Error("terminal_admission_reused");
       if (existing.request.requestDigest !== requestDigest) throw new Error("job_identity_changed");
       this.emit({ type: "result", result: existing.result }, existing);
       return;
@@ -477,6 +512,8 @@ export class MachineJobOwner {
       )
     )
       throw new Error("start_permit_refused");
+    if (Boolean(request.terminal) !== Boolean(terminalLaunch))
+      throw new Error("terminal_host_required");
     const installation = this.installs.get(
       this.installKey(request.pluginId, request.installationRevision),
     );
@@ -488,6 +525,7 @@ export class MachineJobOwner {
     )
       throw new Error("operation_not_installed");
     this.validateInput(operation, request);
+    if (request.terminal && !operation.stdin) throw new Error("terminal_operation_requires_stdin");
     let parent: OwnedJob | undefined;
     if (request.parent) {
       parent = this.requireJob(request.parent.parentJobId);
@@ -513,6 +551,7 @@ export class MachineJobOwner {
     try {
       preflightLinuxJobRuntime();
       if (request.outputs.length > 30) throw new Error("output_count_limit");
+      if (!request.terminal) {
       job.stdio.stdout = this.options.outputs.createByteStream(
         request.jobId,
         "stdout",
@@ -523,6 +562,7 @@ export class MachineJobOwner {
         "stderr",
         request.limits.outputBytes,
       );
+      }
       const locations: LinuxJobBind[] = [];
       // This token is private to synchronous preparation, before any writable fd is mounted.
       const preparation = {};
@@ -632,7 +672,7 @@ export class MachineJobOwner {
         bidirectional: operation.stdin,
         nestedCgroup: true,
         contextFd: job.context.childFd,
-        onOutput: (output) => {
+        ...(request.terminal ? {} : { onOutput: (output: LinuxJobOutput) => {
           job.stdio[output.channel]!.write(output.bytes);
           job.outputSeq = output.sequence;
           this.emit(
@@ -647,7 +687,7 @@ export class MachineJobOwner {
             },
             job,
           );
-        },
+        } }),
       };
       preflightLinuxJob(spec);
       for (const lease of job.leases)
@@ -666,7 +706,7 @@ export class MachineJobOwner {
         parent.children.add(request.jobId);
         parent.childBudgetMs += request.limits.timeoutMs;
       }
-      job.handle = await startLinuxJob(spec);
+      job.handle = await (terminalLaunch ? terminalLaunch(spec) : startLinuxJob(spec));
       job.resolveLaunched();
       job.context.releaseChildFd();
       job.result = { ...job.result, state: "started", startedAt: Date.now() };
@@ -689,7 +729,8 @@ export class MachineJobOwner {
     } catch (error) {
       job.resolveLaunched();
       job.context?.close();
-      if (this.jobs.has(request.jobId)) {
+      const safelyRefused = request.terminal !== undefined && error instanceof LinuxJobRefusal && error.workloadEmpty && !job.handle;
+      if (this.jobs.has(request.jobId) && !safelyRefused) {
         await this.interrupt(job);
       } else {
         job.resolveEmpty();
@@ -698,6 +739,15 @@ export class MachineJobOwner {
         for (const lease of job.leases) this.options.outputs.abort(lease);
         for (const stream of Object.values(job.stdio)) stream.abort();
         for (const location of job.locations.values()) location.close();
+        job.leases = [];
+        job.stdio = {};
+        job.locations.clear();
+        if (safelyRefused && this.jobs.has(request.jobId)) {
+          job.result = { ...job.result, state: "refused", reason: error.code, finishedAt: Date.now() };
+          this.options.journal.append({ kind: "result", result: job.result });
+          this.emit({ type: "result", result: job.result }, job);
+          job.resolveFinalized();
+        }
       }
       throw error;
     }
@@ -724,7 +774,7 @@ export class MachineJobOwner {
         outputBytes: observed.usage.outputBytes,
       },
     };
-    for (const channel of ["stdout", "stderr"] as const)
+    for (const channel of job.request.terminal ? [] : ["stdout", "stderr"] as const)
       this.emit(
         {
           type: "output",

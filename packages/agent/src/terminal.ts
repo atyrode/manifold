@@ -8,6 +8,7 @@ import {
 } from "@manifold/protocol";
 import { TerminalGraphicsMirror } from "./terminal-graphics.ts";
 import { TerminalParserContinuation } from "./terminal-parser-continuation.ts";
+import type { LinuxJobHandle } from "./job-linux.ts";
 
 /**
  * One live PTY plus everything the machine channel needs to describe it: a strictly
@@ -188,6 +189,8 @@ export interface PtyTerminalOptions {
    * A missing or unrunnable `argv[0]` throws {@link PtyError} naming the program.
    */
   readonly command?: readonly string[];
+  /** Native owner-only launch callback; no shell or ambient environment is used. */
+  readonly runtime?: (terminal: Bun.Terminal) => Promise<LinuxJobHandle>;
   /** Mirror factory seam used to verify construction cleanup without patching xterm globals. */
   readonly createMirror?: (
     options: ConstructorParameters<typeof HeadlessTerminal>[0],
@@ -198,7 +201,9 @@ export class PtyTerminal {
   /** Opaque terminal id, assigned by the server. */
   readonly terminalId: string;
 
-  private readonly proc: Bun.Subprocess;
+  private readonly proc: Bun.Subprocess | undefined;
+  readonly runtimeHandle: Promise<LinuxJobHandle> | undefined;
+  private runtimeCancelled = false;
   private readonly pty: Bun.Terminal;
   private readonly mirror: HeadlessTerminal;
   private readonly serializer: SerializeAddon;
@@ -222,7 +227,7 @@ export class PtyTerminal {
   constructor(opts: PtyTerminalOptions) {
     // Resolve the shell FIRST: a missing shell throws PtyError before any resource is
     // allocated, so the agent can ref it as create_error with nothing to clean up.
-    const command = opts.command ?? resolveShellCommand();
+    const command = opts.runtime ? [] : opts.command ?? resolveShellCommand();
     this.terminalId = opts.terminalId;
     this.colsValue = opts.cols;
     this.rowsValue = opts.rows;
@@ -253,6 +258,30 @@ export class PtyTerminal {
 
     let proc: Bun.Subprocess | undefined;
     try {
+      if (opts.runtime) {
+        this.proc = undefined;
+        this.pty = new Bun.Terminal({
+          cols: opts.cols,
+          rows: opts.rows,
+          data: (_pty, chunk) => this.ingest(chunk),
+        });
+        this.runtimeHandle = opts.runtime(this.pty);
+        this.exited = this.runtimeHandle.then(async (handle) => {
+          if (this.runtimeCancelled) await handle.cancel().catch(() => {});
+          const result = await handle.result.catch(() => ({ exitCode: null }));
+          this.aliveFlag = false;
+          this.exitCodeValue = result.exitCode;
+          return { exitCode: result.exitCode };
+        }, () => {
+          this.aliveFlag = false;
+          this.exitCodeValue = null;
+          if (!this.pty.closed) this.pty.close();
+          return { exitCode: null };
+        });
+        // Startup refusal is observed by the host's create path, not an unhandled exit.
+        void this.exited.catch(() => {});
+        return;
+      }
       proc = Bun.spawn([...command], {
         cwd: opts.cwd ?? homedir(),
         env: buildPtyEnvironment(opts.env),
@@ -296,11 +325,11 @@ export class PtyTerminal {
   }
 
   private async trackExit(): Promise<PtyExit> {
-    await this.proc.exited;
+    await this.proc!.exited;
     this.aliveFlag = false;
     // `exitCode` is null for signal deaths (signalCode is set instead); the wire schema
     // (exited.exitCode) is nullable, so we ref the true code and null for signals.
-    this.exitCodeValue = this.proc.exitCode;
+    this.exitCodeValue = this.proc!.exitCode;
     return { exitCode: this.exitCodeValue };
   }
 
@@ -323,14 +352,18 @@ export class PtyTerminal {
    * they honor (verified on this machine). Callers await {@link exited} via the return value.
    */
   kill(): Promise<PtyExit> {
-    this.proc.kill();
+    this.runtimeCancelled = true;
+    if (this.runtimeHandle) void this.runtimeHandle.then((handle) => handle.cancel()).catch(() => {});
+    this.proc?.kill();
     if (!this.pty.closed) this.pty.close();
     return this.exited;
   }
 
   /** Escalates a terminal that survived graceful shutdown; SIGKILL cannot be trapped. */
   forceKill(): void {
-    this.proc.kill("SIGKILL");
+    this.runtimeCancelled = true;
+    if (this.runtimeHandle) void this.runtimeHandle.then((handle) => handle.cancel()).catch(() => {});
+    this.proc?.kill("SIGKILL");
     if (!this.pty.closed) this.pty.close();
   }
 

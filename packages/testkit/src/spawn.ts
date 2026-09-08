@@ -81,7 +81,7 @@ export interface TestAgent {
   /** The transport process; a new object after every `restartTransport`. */
   readonly proc: SpawnedProcess;
   /** The terminal host process; the same object for the fixture's whole life. */
-  readonly host: SpawnedProcess;
+  readonly host: Bun.Subprocess;
   readonly output: ProcessOutput;
   /** Stops the transport (signal, default SIGTERM) and then the host. */
   stop(signal?: StopSignal): Promise<void>;
@@ -104,6 +104,8 @@ export interface StartAgentOptions {
   readonly machineToken: string;
   readonly name?: string;
   readonly env?: Readonly<Record<string, string>>;
+  /** Borrow a separately provisioned native host; its caller retains shutdown ownership. */
+  readonly existingHost?: { readonly process: Bun.Subprocess; readonly socketPath: string };
 }
 
 /** Resume hints let a fresh SDK instance exercise the documented returning-client join path. */
@@ -728,14 +730,20 @@ export async function connect(server: TestServer, options: ConnectOptions): Prom
 export async function startAgent(options: StartAgentOptions): Promise<TestAgent> {
   const server = serverFromReadyUrl(options.serverUrl);
   const socketDir = await mkdtemp(join(tmpdir(), "manifold-terminal-host-"));
-  const socketPath = join(socketDir, "host.sock");
+  const socketPath = options.existingHost?.socketPath ?? join(socketDir, "host.sock");
   const rings = { stdout: new LineRing(), stderr: new LineRing() };
 
   const hostEnv = mergedEnvironment(options.env);
   hostEnv.MANIFOLD_TERMINAL_HOST_SOCKET = socketPath;
+  if (!hostEnv.MANIFOLD_JOB_OWNER_CONFIG) delete hostEnv.MANIFOLD_JOB_OWNER_SOCKET;
   const output = { stdout: rings.stdout.lines, stderr: rings.stderr.lines };
   let hostProcess: ObservedProcess | undefined;
   let transport: ObservedProcess | undefined;
+  const assertHost = (phase: string): void => {
+    if (options.existingHost) {
+      if (options.existingHost.process.exitCode !== null) throw new Error(`${phase}: host exited`);
+    } else hostProcess?.assertRunning(phase);
+  };
   const stop = async (signal?: StopSignal): Promise<void> => {
     try {
       await transport?.stop(signal);
@@ -748,6 +756,7 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
     }
   };
   try {
+    if (!options.existingHost) {
     const observedHost = observeProcess(
       ["bun", "packages/agent/src/main.ts", "--terminal-host"],
       hostEnv,
@@ -755,10 +764,11 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
       rings,
     );
     hostProcess = observedHost;
+    }
     // The host is ready once its socket exists; the transport fails by name without it.
     await waitFor(
       async () => {
-        observedHost.assertRunning("terminal host before readiness");
+        assertHost("terminal host before readiness");
         return existsSync(socketPath) ? true : undefined; // Bun.file().exists() is false for sockets
       },
       READY_TIMEOUT_MS,
@@ -780,7 +790,7 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
     transport = current;
     const machineId = await waitFor(
       async () => {
-        observedHost.assertRunning("terminal host before agent readiness");
+        assertHost("terminal host before agent readiness");
         current.assertRunning("agent before readiness");
         const body = MachinesResponseSchema.parse(
           await ownerAction(server, "core.machines.list", {}),
@@ -801,7 +811,7 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
       get proc() {
         return current.proc;
       },
-      host: observedHost.proc,
+      host: options.existingHost?.process ?? hostProcess!.proc,
       output,
       stop,
       async restartTransport(signal?: StopSignal): Promise<void> {
@@ -822,7 +832,7 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
           const awaitingWelcome = replacement;
           await waitFor(
             () => {
-              observedHost.assertRunning("terminal host before transport welcome");
+              assertHost("terminal host before transport welcome");
               awaitingWelcome.assertRunning("transport before welcome");
               return welcomed ? true : undefined;
             },

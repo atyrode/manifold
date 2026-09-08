@@ -171,7 +171,7 @@ export const TerminalHostAttachedSchema = z.strictObject({
   terminals: z.array(AdvertisedTerminalSchema),
 });
 
-export const TERMINAL_HOST_SHUTDOWN_REFUSALS = ["not_draining", "terminals_retained"] as const;
+export const TERMINAL_HOST_SHUTDOWN_REFUSALS = ["not_draining", "terminals_retained", "jobs_retained"] as const;
 export const TerminalHostShutdownRefusedSchema = z.strictObject({
   type: z.literal("shutdown_refused"),
   reason: z.enum(TERMINAL_HOST_SHUTDOWN_REFUSALS),
