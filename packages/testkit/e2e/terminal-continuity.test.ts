@@ -64,7 +64,11 @@ test("a workload survives a transport crash and replacement with the same proces
     const capture = await attachedCapture(homeClient, terminal.id);
     captures.push(capture);
     homeClient.sendTerminalInput(terminal.id, "printf 'SHELL_PID_%s_END\\n' \"$$\"\n");
-    await waitForTerminalText(capture, "_END", 10_000);
+    await waitFor(
+      () => /SHELL_PID_\d+_END/.test(capture.snapshotText + capture.outputText),
+      10_000,
+      20,
+    );
     const pidBefore = /SHELL_PID_(\d+)_END/.exec(capture.snapshotText + capture.outputText)?.[1];
     expect(pidBefore).toBeDefined();
 

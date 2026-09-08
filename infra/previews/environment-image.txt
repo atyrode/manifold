@@ -1,1 +1,1 @@
-ghcr.io/atyrode/development@sha256:7b5d7cdacea98690d986a77f7fdd8e9c20d5fc705bda3c1aee206e9a90f572b9
+ghcr.io/atyrode/development@sha256:872ada6c21e7f75bccf255c59c3c06ef4cd92b97fcd5a637da399868c0963a03
