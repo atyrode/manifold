@@ -1,4 +1,8 @@
-import { DEFAULT_ELEMENT_PLACEMENT_TRAITS, type PluginManifest } from "@manifold/protocol";
+import {
+  DEFAULT_ELEMENT_PLACEMENT_TRAITS,
+  type PluginManifest,
+  type StreamDescriptor,
+} from "@manifold/protocol";
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { AssemblyError, assembleRoster, defineAction, type PluginDef } from "../src/index.ts";
@@ -64,6 +68,31 @@ const shell: PluginDef = {
 };
 
 describe("assembleRoster", () => {
+  test("stream kinds are plugin-qualified and disabled contributors retain their claims", () => {
+    const descriptor: StreamDescriptor = {
+      id: "output",
+      title: "Output",
+      body: { type: "string", maxLength: 128 },
+      readCapability: "containers:read",
+      nodeKinds: ["element"],
+      maxFrameBytes: 256,
+      maxRingBytes: 1024,
+      maxRingFrames: 4,
+      maxInstances: 2,
+    };
+    const plugin = (id: string, streams = [descriptor]): PluginDef => ({
+      manifest: manifest({ id, contributes: { streams } }),
+      actions: [],
+    });
+    const disabled = new Set(["acme.capture"]);
+    const assembly = assembleRoster([plugin("acme.capture"), plugin("acme.other")], disabled);
+    expect([...assembly.streams.keys()]).toEqual(["acme.capture.output", "acme.other.output"]);
+    expect(assembly.enabled("acme.capture")).toBe(false);
+    expect(assembly.streams.get("acme.capture.output")?.descriptor).toEqual(descriptor);
+    expect(() =>
+      assembleRoster([plugin("acme.capture", [descriptor, descriptor])], disabled),
+    ).toThrow(AssemblyError);
+  });
   test("a child must prove its home with a required parent edge", () => {
     const parent = manifest({ id: "acme.product" });
     const child = manifest({ id: "acme.product.part" });

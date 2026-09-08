@@ -58,6 +58,10 @@ function resolveTarget(rest: string): Target {
        */
       return { state: "open", uri: decoded, center: false };
     case "machine":
+    case "operation":
+    case "location":
+    case "job":
+    case "output":
     case "principal":
     case "action":
       // Addressable, but not places: there is nowhere to send a browser for a capability

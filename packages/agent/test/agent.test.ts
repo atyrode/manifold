@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AgentMessageSchema, type AgentMessage } from "@manifold/protocol";
 import {
   Agent,
@@ -8,6 +11,7 @@ import {
 import { TerminalHost } from "../src/terminal-host.ts";
 import type { TerminalHostDialer } from "../src/terminal-host-link.ts";
 import { PtyTerminal } from "../src/terminal.ts";
+import { unixJobOwnerDialer } from "../src/job-owner-link.ts";
 
 /**
  * The transport half of a machine, driven against a REAL {@link TerminalHost} through an
@@ -389,6 +393,148 @@ function scriptedHub(
   };
 }
 
+test("unavailable job owner refuses jobs without blocking terminal transport", async () => {
+  const sockets: ScriptedSocket[] = [];
+  const printed = Promise.withResolvers<void>();
+  const refused = Promise.withResolvers<AgentMessage>();
+  let text = "";
+  const host = new TerminalHost({ shellCommand: [BASH, "--norc", "-i"] });
+  const agent = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "machine-token",
+    machineName: "terminal-only",
+    dialTerminalHost: inMemoryDialer(host),
+    dialJobOwner: async () => {
+      throw new Error("unsupported_job_backend");
+    },
+    backoff: { baseMs: 5000, capMs: 5000 },
+    createSocket: scriptedHub(sockets, (_socket, message) => {
+      if (message.type === "output") {
+        text += Buffer.from(message.data, "base64").toString();
+        if (text.includes("TERMINAL_ONLY_OK")) printed.resolve();
+      }
+      if (message.type === "job_event") refused.resolve(message);
+    }),
+  });
+  try {
+    await agent.connect();
+    const socket = sockets[0]!;
+    const hello = socket.sent.find((message) => message.type === "hello");
+    expect(hello?.type === "hello" && hello.jobOwner).toBeUndefined();
+    socket.receive({ type: "job_command", command: { type: "status", jobId: "unavailable-job" } });
+    expect(await refused.promise).toEqual({
+      type: "job_event",
+      event: { type: "refusal", jobId: "unavailable-job", reason: "job_owner_unavailable" },
+    });
+    socket.receive({
+      type: "create",
+      terminalId: "terminal-only",
+      cols: 80,
+      rows: 24,
+      env: {},
+      program: { argv: ["/bin/sh", "-c", "printf TERMINAL_ONLY_OK; exec cat"] },
+    });
+    await printed.promise;
+    expect(host.terminalCount).toBe(1);
+    expect(socket.closedByAgent).toBeNull();
+  } finally {
+    await agent.shutdown();
+    await host.shutdown();
+  }
+}, 10000);
+
+for (const availability of ["missing", "refusing"] as const) {
+  test.skipIf(process.platform !== "linux")(
+    `${availability} Unix owner retries preserve the established terminal connection`,
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "agent-owner-refusal-"));
+      const path = join(root, "owner.sock");
+      const connected = Promise.withResolvers<void>();
+      const listener =
+        availability === "refusing"
+          ? Bun.listen({
+              unix: path,
+              socket: {
+                open(socket) {
+                  // Exercise the real close callback after the terminal connection is established.
+                  void connected.promise.then(() => socket.end());
+                },
+                data() {},
+                close() {},
+                error(socket) {
+                  socket.end();
+                },
+              },
+            })
+          : null;
+      const dialOwner = unixJobOwnerDialer(path);
+      const retried = Promise.withResolvers<void>();
+      let failures = 0;
+      const sockets: ScriptedSocket[] = [];
+      const printed = Promise.withResolvers<void>();
+      const refused = Promise.withResolvers<AgentMessage>();
+      let text = "";
+      const host = new TerminalHost({ shellCommand: [BASH, "--norc", "-i"] });
+      const agent = new Agent({
+        serverUrl: "http://fake.invalid",
+        machineToken: "machine-token",
+        machineName: "terminal-only",
+        dialTerminalHost: inMemoryDialer(host),
+        dialJobOwner: async (handlers) => {
+          try {
+            return await dialOwner(handlers);
+          } catch (error) {
+            if (++failures === 3) retried.resolve();
+            throw error;
+          }
+        },
+        backoff: { baseMs: 5, capMs: 5 },
+        createSocket: scriptedHub(sockets, (_socket, message) => {
+          if (message.type === "output") {
+            text += Buffer.from(message.data, "base64").toString();
+            if (text.includes("UNIX_OWNER_RETRY_OK")) printed.resolve();
+          }
+          if (message.type === "job_event") refused.resolve(message);
+        }),
+      });
+      try {
+        await agent.connect();
+        const socket = sockets[0]!;
+        connected.resolve();
+        await retried.promise;
+        expect(socket.closedByAgent).toBeNull();
+        expect(sockets).toEqual([socket]);
+        socket.receive({
+          type: "job_command",
+          command: { type: "status", jobId: "refused-owner-job" },
+        });
+        expect(await refused.promise).toEqual({
+          type: "job_event",
+          event: { type: "refusal", jobId: "refused-owner-job", reason: "job_owner_unavailable" },
+        });
+        socket.receive({
+          type: "create",
+          terminalId: "unix-owner-retry",
+          cols: 80,
+          rows: 24,
+          env: {},
+          program: { argv: ["/bin/sh", "-c", "printf UNIX_OWNER_RETRY_OK; exec cat"] },
+        });
+        await printed.promise;
+        expect(host.terminalCount).toBe(1);
+        expect(socket.closedByAgent).toBeNull();
+      } finally {
+        connected.resolve();
+        await agent.shutdown();
+        await host.shutdown();
+        listener?.stop(true);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    10000,
+  );
+}
+
 test("phantom transport: silence past the liveness deadline forces close and re-dial", async () => {
   const sockets: ScriptedSocket[] = [];
   const secondDial = Promise.withResolvers<ScriptedSocket>();
@@ -711,39 +857,6 @@ test("a transport shutdown ends nothing: the next transport advertises the same 
       }
     }),
   });
-  await first.connect();
-  const socket = firstSockets[0];
-  if (socket === undefined) throw new Error("missing first socket");
-  socket.receive({ type: "create", terminalId: "survivor", cols: 80, rows: 24, env: {} });
-  await created.promise;
-  socket.receive({
-    type: "input",
-    terminalId: "survivor",
-    data: Buffer.from('printf "PID_%s_END\\n" "$$"\n').toString("base64"),
-  });
-  await pidPrinted.promise;
-  const pid = /PID_(\d+)_END/.exec(firstOutput)?.[1];
-  const terminal = terminalForTest(host, "survivor");
-
-  await first.shutdown();
-  expect(terminal.alive).toBe(true);
-  expect(host.terminalCount).toBe(1);
-  expect(host.transportAttached).toBe(false);
-
-  // Output with no seat: retained by the host, never streamed, never dropped.
-  terminal.write('printf "WHILE_DOWN_%s\\n" "$$"\n');
-  // This real OS PTY has no completion event exposed while its transport is absent.
-  // Poll the drained mirror for computed output: input echo alone also advances seq.
-  const outputDeadline = Date.now() + 5000;
-  for (;;) {
-    const retained = await terminal.snapshot();
-    if (Buffer.from(retained.data).toString("utf8").includes(`WHILE_DOWN_${pid}`)) break;
-    if (Date.now() >= outputDeadline) {
-      await host.shutdown();
-      throw new Error("shell did not produce the offline output marker");
-    }
-    await Bun.sleep(10);
-  }
 
   const secondSockets: ScriptedSocket[] = [];
   const secondHello = Promise.withResolvers<Extract<AgentMessage, { type: "hello" }>>();
@@ -760,20 +873,65 @@ test("a transport shutdown ends nothing: the next transport advertises the same 
     }),
   });
   try {
+    await first.connect();
+    const socket = firstSockets[0];
+    if (socket === undefined) throw new Error("missing first socket");
+    socket.receive({ type: "create", terminalId: "survivor", cols: 80, rows: 24, env: {} });
+    await created.promise;
+    socket.receive({
+      type: "input",
+      terminalId: "survivor",
+      data: Buffer.from('printf "PID_%s_END\\n" "$$"\n').toString("base64"),
+    });
+    await pidPrinted.promise;
+    const pid = /PID_(\d+)_END/.exec(firstOutput)?.[1];
+    if (pid === undefined) throw new Error("missing original shell PID");
+    const terminal = terminalForTest(host, "survivor");
+
+    await first.shutdown();
+    expect(terminal.alive).toBe(true);
+    expect(host.terminalCount).toBe(1);
+    expect(host.transportAttached).toBe(false);
+
+    // Witness executed output with no seat; command echo alone cannot satisfy this marker.
+    const seqBefore = terminal.seq;
+    const marker = `WHILE_DOWN_${pid}_END`;
+    terminal.write('printf "WHILE_DOWN_%s_END\\n" "$$"\n');
+    const deadline = Date.now() + 5_000;
+    let offlineSnapshot = await terminal.snapshot();
+    while (!offlineSnapshot.data.includes(marker)) {
+      if (Date.now() >= deadline) throw new Error(`offline shell output missing: ${marker}`);
+      // Yield for real PTY I/O, not for an assumed shell execution duration.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      offlineSnapshot = await terminal.snapshot();
+    }
+    expect(offlineSnapshot.seq).toBeGreaterThan(seqBefore);
+
     await second.connect();
     const hello = await secondHello.promise;
     expect(hello.terminalHostId).toBe(host.terminalHostId);
+    const survivor = hello.terminals[0];
+    if (survivor === undefined) throw new Error("missing surviving terminal");
     expect(hello.terminals).toEqual([
-      { terminalId: "survivor", cols: 80, rows: 24, alive: true, seq: terminal.seq },
+      { terminalId: "survivor", cols: 80, rows: 24, alive: true, seq: survivor.seq },
     ]);
+    // Later prompt/output is legitimate: compare immutable, witnessed watermarks.
+    expect(survivor.seq).toBeGreaterThanOrEqual(offlineSnapshot.seq);
     secondSockets[0]?.receive({ type: "snapshot_request", terminalId: "survivor" });
     const snapshot = await snapshotSeen.promise;
     const rendered = Buffer.from(snapshot.data, "base64").toString("utf8");
-    expect(rendered).toContain(`WHILE_DOWN_${pid}`);
-    expect(snapshot.seq).toBe(terminal.seq);
+    expect(rendered).toContain(marker);
+    expect(snapshot.seq).toBeGreaterThanOrEqual(survivor.seq);
   } finally {
-    await second.shutdown();
-    await host.shutdown();
+    try {
+      await first.shutdown();
+    } finally {
+      try {
+        await second.shutdown();
+      } finally {
+        await host.shutdown();
+      }
+    }
   }
 }, 20000);
 

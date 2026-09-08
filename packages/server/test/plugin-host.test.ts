@@ -51,6 +51,7 @@ import {
 import { RoomManager } from "../src/room.ts";
 import { TRACE_ROW_TYPE, sha256Hex, type ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
+import type { StreamProducer } from "@manifold/plugin";
 import {
   FakeClock,
   FakeRuntime,
@@ -2616,4 +2617,131 @@ describe("PluginHost unpacked plugins", () => {
     }
     fixture.store.close();
   });
+});
+
+describe("registered governed job doors", () => {
+  test("malformed private input is refused with an opaque trace before service availability", async () => {
+    const fixture = await hostFixture();
+    try {
+      const outcome = await fixture.host.dispatch(fixture.owner, "engine.jobs.execute", {
+        pluginId: "sample.worker",
+        jobId: "private-job",
+        machineId: "machine",
+        operationId: "sample.worker.run",
+        input: { secret: "never-persist-this" },
+        outputs: [],
+        credential: { token: "never-persist-token" },
+      });
+      expect(denial(outcome).rule).toBe("invalid_args");
+      const trace = fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0];
+      expect(trace?.door).toBe("engine.jobs.execute");
+      expect(trace?.outcome).toBe("invalid_args");
+      expect(JSON.stringify(trace)).not.toContain("never-persist");
+      expect(JSON.stringify(trace)).not.toContain("private-job");
+    } finally {
+      fixture.store.close();
+    }
+  });
+
+  test("a valid registered door fails closed while the durable job service is unavailable", async () => {
+    const fixture = await hostFixture();
+    try {
+      const outcome = await fixture.host.dispatch(fixture.owner, "engine.jobs.status", {
+        node: { kind: "job", machineId: "machine", operationId: "sample.worker.run", jobId: "job" },
+      });
+      expect(denial(outcome).rule).toBe("refused");
+      const trace = fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0];
+      expect(trace?.door).toBe("engine.jobs.status");
+      expect(trace?.outcome).toBe("refused");
+      expect(
+        fixture.host.canReadGoverned(fixture.owner, {
+          kind: "output",
+          machineId: "machine",
+          operationId: "sample.worker.run",
+          jobId: "job",
+          outputId: "out",
+        }),
+      ).toBe(false);
+    } finally {
+      fixture.store.close();
+    }
+  });
+});
+
+test("stream close attribution retains the original URI after handler-owned node mutation", async () => {
+  const fixture = await hostFixture();
+  let producer: StreamProducer | undefined;
+  const node = { kind: "plugin" as const, pluginId: "sample.streams" };
+  const def: ServerPluginDef = {
+    manifest: {
+      id: "sample.streams",
+      version: "1.0.0",
+      title: "Streams",
+      description: "Stream attribution fixture",
+      capabilities: ["containers:read"],
+      contributes: {
+        panels: [],
+        sections: [],
+        elements: [],
+        tools: [],
+        events: [],
+        streams: [
+          {
+            id: "updates",
+            title: "Updates",
+            body: { type: "integer" },
+            nodeKinds: ["plugin"],
+            readCapability: "containers:read",
+            maxFrameBytes: 128,
+            maxRingBytes: 1024,
+            maxRingFrames: 4,
+            maxInstances: 1,
+          },
+        ],
+      },
+    },
+    actions: [
+      defineAction({
+        name: "open",
+        title: "Open",
+        caps: [],
+        input: z.strictObject({}),
+        result: z.strictObject({}),
+      }),
+    ],
+    handlers: {
+      open: async (ctx) => {
+        producer = ctx.streams.open("sample.streams.updates", node);
+        return {};
+      },
+    },
+  };
+  try {
+    const host = await testPluginHost(
+      fixture.store,
+      fixture.auth,
+      fixture.rooms,
+      fixture.broker,
+      fixture.runtime,
+      { settingsPlugins: [def] },
+    );
+    expect(await host.dispatch(fixture.owner, "sample.streams.open", {})).toEqual({
+      ok: true,
+      result: {},
+    });
+    node.pluginId = "mutated-owner";
+    producer?.close();
+    const traces = fixture.store
+      .listEvents({ type: TRACE_ROW_TYPE, limit: 10 })
+      .filter((row) => row.door === "sample.streams.open");
+    expect(JSON.stringify(traces)).not.toContain("mutated-owner");
+    expect(
+      traces
+        .filter((row) => JSON.stringify(row.payload).includes("streamLifecycle"))
+        .map((row) => row.targets),
+    ).toEqual([["manifold://plugin/sample.streams"], ["manifold://plugin/sample.streams"]]);
+  } finally {
+    producer?.close();
+    fixture.store.close();
+  }
 });

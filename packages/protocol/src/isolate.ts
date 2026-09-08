@@ -11,6 +11,8 @@ import {
 } from "./plugin.ts";
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
+import { StreamServerMessageSchema } from "./stream.ts";
+import { JobFollowUpdateSchema } from "./jobs.ts";
 
 /**
  * THE ISOLATION VOCABULARY (ADR 0016): everything that crosses the boundary between the engine
@@ -357,6 +359,17 @@ export const ISOLATE_CTX_METHODS = [
   "placement.place",
   "host.roster",
   "host.enabled",
+  "streams.open",
+  "streams.publish",
+  "streams.close",
+  "jobs.execute",
+  "jobs.status",
+  "jobs.input",
+  "jobs.cancel",
+  "jobs.output",
+  "jobs.follow",
+  "jobs.ack",
+  "jobs.unfollow",
 ] as const;
 export const IsolateCtxMethodSchema = z.enum(ISOLATE_CTX_METHODS);
 export type IsolateCtxMethod = (typeof ISOLATE_CTX_METHODS)[number];
@@ -444,6 +457,13 @@ export const IsolateHostFrameSchema = z.discriminatedUnion("t", [
     hook: IsolateHookSchema,
     delta: AssemblyDeltaSchema.optional(),
   }),
+  z.strictObject({
+    t: z.literal("job_update"),
+    id: frameId,
+    delivery: z.number().int().positive(),
+    update: JobFollowUpdateSchema,
+  }),
+  z.strictObject({ t: z.literal("producer_closed"), id: frameId }),
   IsolateReplyFrameSchema,
   z.strictObject({ t: z.literal("shutdown") }),
 ]);
@@ -530,6 +550,9 @@ export const WEB_HOST_METHODS = [
   "openTerminal",
   "sendTerminalInput",
   "terminalsByContainer",
+  "openStream",
+  "closeStream",
+  "ackStream",
 ] as const;
 export const WebHostMethodSchema = z.enum(WEB_HOST_METHODS);
 export type WebHostMethod = (typeof WEB_HOST_METHODS)[number];
@@ -551,6 +574,7 @@ export const WebIsolateHostFrameSchema = z.discriminatedUnion("t", [
   z.strictObject({ t: z.literal("mount"), instance: instanceId, panel: LocalNameSchema }),
   z.strictObject({ t: z.literal("unmount"), instance: instanceId }),
   z.strictObject({ t: z.literal("event"), ...UiEventFields }),
+  z.strictObject({ t: z.literal("stream"), id: frameId, message: StreamServerMessageSchema }),
   IsolateReplyFrameSchema,
 ]);
 export type WebIsolateHostFrame = z.infer<typeof WebIsolateHostFrameSchema>;

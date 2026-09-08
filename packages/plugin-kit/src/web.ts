@@ -12,6 +12,9 @@ import {
   type PlacementRef,
   type Principal,
   type ResolveResponse,
+  type ManifoldRef,
+  type StreamCursor,
+  type StreamServerMessage,
   type TerminalEnv,
   type TerminalInfo,
   type TerminalProgram,
@@ -56,6 +59,20 @@ export interface OpenTerminalOptions {
   readonly env?: TerminalEnv | undefined;
 }
 
+export interface OpenStreamOptions {
+  readonly kind: string;
+  readonly node: ManifoldRef;
+  readonly cursor?: StreamCursor | undefined;
+}
+
+export interface GuestStreamHandle {
+  readonly snapshot: Extract<StreamServerMessage, { type: "stream_snapshot" }> | null;
+  readonly cursor: StreamCursor | undefined;
+  readonly status: "opening" | "open" | "reconnecting" | "gap" | "reset" | "refused" | "closed";
+  on(listener: (message: StreamServerMessage) => void): () => void;
+  close(): void;
+}
+
 /**
  * The host, as a program sees it: the viewer's identity as data, and the nine
  * `WEB_HOST_METHODS` as promises. Each has the semantics of the engine's `SessionHandle`
@@ -65,6 +82,7 @@ export interface GuestHost {
   readonly principal: Principal;
   readonly caps: readonly Cap[];
   readonly containerId: string | null;
+  openStream(options: OpenStreamOptions): GuestStreamHandle;
   /** Invoke an action by its FULL name; a denial is data, never a throw. */
   action(name: string, args: unknown): Promise<ActionOutcome>;
   place(ref: PlacementRef, destination: PlacementDestination): Promise<GuestWebPlaceOutcome>;
@@ -139,6 +157,8 @@ function workerPort(): WebGuestPort | null {
 interface Instance {
   readonly panel: string;
   readonly program: PanelProgram<unknown>;
+  readonly viewer: GuestHost;
+  readonly closeStreams: () => void;
   state: unknown;
   stop: (() => void) | null;
   /** Events fold in order: an `update` still awaiting cannot be overtaken by the next one. */
@@ -167,6 +187,8 @@ export function attachWebGuest(def: WebPluginDef, port: WebGuestPort): void {
   const instances = new Map<string, Instance>();
   let host: GuestHost | null = null;
   let seq = 0;
+  let streamSeq = 0;
+  const streams = new Map<string, (message: StreamServerMessage) => void>();
 
   /** Every outgoing frame is parsed first: a kit bug fails here, loudly, never as a malformed frame. */
   const post = (frame: WebIsolateWorkerFrame): void => {
@@ -178,6 +200,7 @@ export function attachWebGuest(def: WebPluginDef, port: WebGuestPort): void {
   };
 
   const call = (method: WebHostMethod, args: readonly unknown[]): Promise<unknown> => {
+    if (pending.size >= 256) return Promise.reject(new Error("too many pending host calls"));
     seq += 1;
     const id = `c${String(seq)}`;
     const { promise, resolve, reject } = Promise.withResolvers<unknown>();
@@ -186,10 +209,119 @@ export function attachWebGuest(def: WebPluginDef, port: WebGuestPort): void {
     return promise;
   };
 
+  const streamFor = (
+    options: OpenStreamOptions,
+    owner: string,
+    owned: Set<GuestStreamHandle>,
+  ): GuestStreamHandle => {
+    if (streams.size >= 64) throw new Error("too many stream subscriptions");
+    const id = `s${String(++streamSeq)}`;
+    let snapshot: GuestStreamHandle["snapshot"] = null;
+    let cursor = options.cursor;
+    let status: GuestStreamHandle["status"] = "opening";
+    const listeners = new Set<(message: StreamServerMessage) => void>();
+    const handle: GuestStreamHandle = {
+      get snapshot() {
+        return snapshot;
+      },
+      get cursor() {
+        return cursor;
+      },
+      get status() {
+        return status;
+      },
+      on: (listener) => {
+        if (status === "closed" || status === "refused") return () => {};
+        listeners.add(listener);
+        if (snapshot !== null) {
+          try {
+            listener(snapshot);
+            if (
+              listeners.has(listener) &&
+              cursor !== undefined &&
+              cursor.epoch === snapshot.epoch &&
+              cursor.seq > snapshot.lastSeq
+            ) {
+              listener({
+                type: "stream_gap",
+                subscriptionId: snapshot.subscriptionId,
+                epoch: cursor.epoch,
+                fromSeq: snapshot.lastSeq + 1,
+                toSeq: cursor.seq,
+              });
+            }
+          } catch (error) {
+            port.warn(errorText(error));
+          }
+        }
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+      close: () => {
+        if (status === "closed") return;
+        status = "closed";
+        streams.delete(id);
+        owned.delete(handle);
+        listeners.clear();
+        void call("closeStream", [id]).catch((error: unknown) => port.warn(errorText(error)));
+      },
+    };
+    const receive = (message: StreamServerMessage): void => {
+      switch (message.type) {
+        case "stream_snapshot":
+          snapshot = message;
+          cursor = { epoch: message.epoch, seq: message.lastSeq };
+          status = "open";
+          break;
+        case "stream_frame":
+          cursor = { epoch: message.epoch, seq: message.seq };
+          status = "open";
+          break;
+        case "stream_gap":
+          status = "gap";
+          break;
+        case "stream_reset":
+          snapshot = null;
+          cursor = undefined;
+          status = "reset";
+          break;
+        case "stream_refused":
+          status = "refused";
+          break;
+        case "stream_closed":
+          status = "closed";
+          break;
+      }
+      for (const listener of listeners) {
+        try {
+          listener(message);
+        } catch (error) {
+          port.warn(errorText(error));
+        }
+      }
+      if (status === "refused" || status === "closed") {
+        streams.delete(id);
+        owned.delete(handle);
+        listeners.clear();
+      }
+    };
+    streams.set(id, receive);
+    owned.add(handle);
+    void call("openStream", [id, options, owner]).catch((error: unknown) => {
+      if (streams.has(id))
+        receive({ type: "stream_refused", subscriptionId: id, reason: errorText(error) });
+    });
+    return handle;
+  };
+
   const hostFor = (init: Extract<WebIsolateHostFrame, { t: "init" }>): GuestHost => ({
     principal: init.principal,
     caps: init.caps,
     containerId: init.containerId,
+    openStream: () => {
+      throw new Error("stream requires a mounted panel");
+    },
     action: async (name, args) => (await call("action", [name, args])) as ActionOutcome,
     place: async (ref, destination) =>
       (await call("place", [ref, destination])) as GuestWebPlaceOutcome,
@@ -251,10 +383,23 @@ export function attachWebGuest(def: WebPluginDef, port: WebGuestPort): void {
       fault(frame.instance, `no such panel "${frame.panel}"`);
       return;
     }
-    const viewer = host;
+    const owned = new Set<GuestStreamHandle>();
+    let active = true;
+    const viewer: GuestHost = {
+      ...host,
+      openStream: (options) => {
+        if (!active) throw new Error("panel is unmounted");
+        return streamFor(options, frame.instance, owned);
+      },
+    };
     const instance: Instance = {
       panel: frame.panel,
       program,
+      viewer,
+      closeStreams: () => {
+        active = false;
+        for (const stream of owned) stream.close();
+      },
       state: undefined,
       stop: null,
       queue: Promise.resolve(),
@@ -264,6 +409,7 @@ export function attachWebGuest(def: WebPluginDef, port: WebGuestPort): void {
       instance.state = await program.init(viewer);
     } catch (error) {
       instances.delete(frame.instance);
+      instance.closeStreams();
       fault(frame.instance, `panel "${frame.panel}" failed to start: ${errorText(error)}`);
       return;
     }
@@ -285,6 +431,7 @@ export function attachWebGuest(def: WebPluginDef, port: WebGuestPort): void {
     const instance = instances.get(frame.instance);
     if (instance === undefined) return;
     instances.delete(frame.instance);
+    instance.closeStreams();
     try {
       instance.stop?.();
     } catch (error) {
@@ -335,12 +482,19 @@ export function attachWebGuest(def: WebPluginDef, port: WebGuestPort): void {
           page.payload === undefined
             ? { event: page.event }
             : { event: page.event, payload: page.payload },
-          host,
+          instance.viewer,
         );
         return;
       }
       case "unmount":
         onUnmount(page);
+        return;
+      case "stream":
+        try {
+          streams.get(page.id)?.(page.message);
+        } finally {
+          void call("ackStream", [page.id]).catch((error: unknown) => port.warn(errorText(error)));
+        }
         return;
       case "reply":
         onReply(page);

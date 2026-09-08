@@ -19,6 +19,22 @@ import {
 const REFS: readonly { readonly ref: ManifoldRef; readonly uri: string }[] = [
   { ref: { kind: "terminal", terminalId: "s1" }, uri: "manifold://terminal/s1" },
   { ref: { kind: "machine", machineId: "host/a" }, uri: "manifold://machine/host%2Fa" },
+  {
+    ref: { kind: "operation", machineId: "m", operationId: "a/b" },
+    uri: "manifold://machine/m/operation/a%2Fb",
+  },
+  {
+    ref: { kind: "location", machineId: "m", locationId: "l" },
+    uri: "manifold://machine/m/location/l",
+  },
+  {
+    ref: { kind: "job", machineId: "m", operationId: "o", jobId: "j" },
+    uri: "manifold://machine/m/operation/o/job/j",
+  },
+  {
+    ref: { kind: "output", machineId: "m", operationId: "o", jobId: "j", outputId: "out" },
+    uri: "manifold://machine/m/operation/o/job/j/output/out",
+  },
   { ref: { kind: "container", containerId: "p1" }, uri: "manifold://container/p1" },
   {
     ref: { kind: "element", containerId: "p1", elementId: "el-1" },
@@ -37,6 +53,17 @@ const REFS: readonly { readonly ref: ManifoldRef; readonly uri: string }[] = [
 ];
 
 describe("manifold:// addressing", () => {
+  test("output authority descends through its admitted operation and job, never a sibling location", () => {
+    expect(containmentPath("manifold://machine/m/operation/o/job/j/output/out")).toEqual([
+      "manifold://",
+      "manifold://machine/m",
+      "manifold://machine/m/operation/o",
+      "manifold://machine/m/operation/o/job/j",
+      "manifold://machine/m/operation/o/job/j/output/out",
+    ]);
+    expect(parseManifoldUri("manifold://machine/m/job/j")).toBeNull();
+    expect(parseManifoldUri("manifold://machine/m/location/l/job/j")).toBeNull();
+  });
   test("every form round-trips through its canonical text, and the text is what is expected", () => {
     for (const { ref, uri } of REFS) {
       expect(formatManifoldUri(ref)).toBe(uri);

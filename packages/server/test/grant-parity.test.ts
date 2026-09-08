@@ -582,6 +582,62 @@ describe("the waterfall's own precedence", () => {
     return { store, auth, root, subject: auth.authenticate(grant.token) };
   }
 
+  test("resource denies and container ceilings use the same waterfall; root is not execution consent", () => {
+    const where = evaluatorFixture();
+    const ref = {
+      kind: "output" as const,
+      machineId: "m",
+      operationId: "o",
+      jobId: "j",
+      outputId: "out",
+    };
+    const principal = { kind: "principal" as const, id: where.subject.principal.id };
+    where.auth.grant(
+      {
+        principal,
+        node: "manifold://machine/m",
+        caps: ["jobs:read"],
+        effect: "allow",
+        reach: "subtree",
+      },
+      where.root,
+    );
+    expect(where.auth.allowsRef(where.subject, "jobs:read", ref)).toBe(true);
+    const denial = where.auth.grant(
+      {
+        principal,
+        node: "manifold://machine/m/operation/o/job/j",
+        caps: ["jobs:read"],
+        effect: "deny",
+        reach: "subtree",
+      },
+      where.root,
+    );
+    const evidence = where.auth.explain(where.subject, { cap: "jobs:read", ref });
+    expect(evidence.allowed).toBe(false);
+    expect(evidence.winner?.id).toBe(denial.id);
+    expect(where.auth.allowsRef(where.subject, "jobs:read", { ...ref, jobId: "sibling" })).toBe(
+      true,
+    );
+    const scoped = where.auth.mintToken(
+      {
+        principal: { name: "scoped", kind: "human" },
+        caps: ["jobs:read"],
+        containerId: CONTAINER_A,
+      },
+      where.root,
+    );
+    expect(where.auth.allowsRef(where.auth.authenticate(scoped.token), "jobs:read", ref)).toBe(
+      false,
+    );
+    expect(
+      where.auth.admitGoverned(where.root, "test.runtime", "test.runtime.read", [
+        { cap: "jobs:read", ref },
+      ]),
+    ).toEqual({ allowed: false });
+    where.store.close();
+  });
+
   test("machine grants stay on that root child and resolve allow/deny with the same waterfall", () => {
     const where = evaluatorFixture();
     const node = "manifold://machine/m1";

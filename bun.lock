@@ -12,6 +12,7 @@
         "prettier": "^3.9.6",
         "typescript": "^5.9.3",
         "typescript-eslint": "^8.68.0",
+        "zod": "4.4.3",
       },
     },
     "packages/agent": {
@@ -390,6 +391,7 @@
       },
       "devDependencies": {
         "@types/bun": "^1.3.2",
+        "zod": "4.4.3",
       },
     },
     "packages/ui": {

@@ -15,3 +15,9 @@ export {
   type SceneTx,
   type SessionEvents,
 } from "./session-client.ts";
+export {
+  type OpenStreamOptions,
+  type StreamHandle,
+  type StreamListener,
+  type StreamStatus,
+} from "./stream.ts";

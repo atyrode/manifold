@@ -1,0 +1,318 @@
+import { formatManifoldUri } from "@manifold/protocol";
+import type { AuthorityEvidence } from "./auth.ts";
+import {
+  canonicalJobJson,
+  JobRequestSchema,
+  JobResultSchema,
+  MachineHalfSchema,
+  type JobRequest,
+  type JobResult,
+  type JobPermit,
+  type MachineHalf,
+  type JobOwner,
+  type JobAuthority,
+} from "../../protocol/src/jobs.ts";
+import type { ServerStore, TraceAttribution } from "./stores.ts";
+export type JobAuditOrigin = Pick<
+  TraceAttribution,
+  "actor" | "authority" | "door" | "containerId" | "session"
+>;
+export interface JobRecord {
+  request: JobRequest;
+  state: JobResult["state"];
+  permit: JobPermit | null;
+  result: JobResult | null;
+  auditOrigin: JobAuditOrigin | null;
+  decisionId: string | null;
+}
+export interface JobInstallation {
+  machineId: string;
+  pluginId: string;
+  revision: string;
+  artifact: string;
+  machine: MachineHalf;
+  enabled: boolean;
+  ready: boolean;
+  purgeRequested: boolean;
+}
+export class JobStore {
+  constructor(
+    readonly store: ServerStore,
+    private readonly lifecycle: (job: JobRecord, phase: string) => void,
+  ) {}
+  get(jobId: string): JobRecord | null {
+    const r = this.store.db
+      .query<
+        {
+          request: string;
+          state: JobResult["state"];
+          permit: string | null;
+          result: string | null;
+          audit_origin: string | null;
+          decision_id: string | null;
+        },
+        [string]
+      >(
+        "SELECT request,state,permit,result,audit_origin,decision_id FROM machine_jobs WHERE job_id=?",
+      )
+      .get(jobId);
+    return r
+      ? {
+          request: JobRequestSchema.parse(JSON.parse(r.request)),
+          state: r.state,
+          permit: r.permit === null ? null : JSON.parse(r.permit),
+          result: r.result === null ? null : JobResultSchema.parse(JSON.parse(r.result)),
+          auditOrigin: r.audit_origin === null ? null : JSON.parse(r.audit_origin),
+          decisionId: r.decision_id,
+        }
+      : null;
+  }
+  reserve(request: JobRequest, now: number): JobRecord {
+    const previous = this.get(request.jobId);
+    if (previous) {
+      if (previous.request.requestDigest !== request.requestDigest)
+        throw new Error("job_digest_conflict");
+      return previous;
+    }
+    this.store.db
+      .query(
+        "INSERT INTO machine_jobs(job_id,machine_id,plugin_id,digest,request,state,created_at,audit_origin) VALUES (?,?,?,?,?,'queued',?,?)",
+      )
+      .run(
+        request.jobId,
+        request.machineId,
+        request.pluginId,
+        request.requestDigest,
+        canonicalJobJson(request),
+        now,
+        JSON.stringify(this.origin(request)),
+      );
+    return this.get(request.jobId)!;
+  }
+  active(machineId?: string): JobRecord[] {
+    const rows =
+      machineId === undefined
+        ? this.store.db
+            .query<{ job_id: string }, []>(
+              "SELECT job_id FROM machine_jobs WHERE state IN ('queued','admitted','start-committed','started')",
+            )
+            .all()
+        : this.store.db
+            .query<{ job_id: string }, [string]>(
+              "SELECT job_id FROM machine_jobs WHERE machine_id=? AND state IN ('queued','admitted','start-committed','started')",
+            )
+            .all(machineId);
+    return rows.map((r) => this.get(r.job_id)!);
+  }
+  dispatchOrigin(traceId: string): JobAuditOrigin | null {
+    return this.store.db
+      .query<JobAuditOrigin, [string]>(
+        "SELECT principal_id AS actor,authority,door,container_id AS containerId,session FROM events WHERE id=? AND type='trace'",
+      )
+      .get(traceId);
+  }
+  private origin(request: JobRequest): JobAuditOrigin | null {
+    if (request.parent) return this.get(request.parent.parentJobId)?.auditOrigin ?? null;
+    const schedule = this.store.db
+      .query<{ audit_origin: string | null }, [string]>(
+        "SELECT s.audit_origin FROM job_schedules s JOIN job_schedule_occurrences o ON o.schedule_id=s.schedule_id AND o.revision=s.revision WHERE o.job_id=?",
+      )
+      .get(request.jobId);
+    return schedule
+      ? schedule.audit_origin === null
+        ? null
+        : JSON.parse(schedule.audit_origin)
+      : this.dispatchOrigin(request.traceId);
+  }
+  decision(jobId: string, decisionId: string): void {
+    this.store.db
+      .query("UPDATE machine_jobs SET decision_id=? WHERE job_id=?")
+      .run(decisionId, jobId);
+  }
+  authority(job: JobRecord): JobAuthority {
+    const request = job.request;
+    const occurrence = this.store.db
+      .query<{ schedule_id: string; revision: string; nominal: number }, [string]>(
+        "SELECT schedule_id,revision,nominal FROM job_schedule_occurrences WHERE job_id=?",
+      )
+      .get(request.jobId);
+    const row =
+      job.decisionId === null
+        ? null
+        : this.store.db
+            .query<
+              {
+                policy_revision: string;
+                evidence: string;
+                consents: string;
+              },
+              [string]
+            >("SELECT policy_revision,evidence,consents FROM machine_job_decisions WHERE id=?")
+            .get(job.decisionId);
+    const evidence = row
+      ? (JSON.parse(row.evidence) as {
+          allowed: boolean;
+          refusal: string | null;
+          requirements: (AuthorityEvidence & { revision: number })[];
+        })
+      : null;
+    return {
+      origin: request.parent
+        ? { kind: "invocation", traceId: request.traceId, ...request.parent }
+        : occurrence
+          ? {
+              kind: "schedule",
+              traceId: request.traceId,
+              scheduleId: occurrence.schedule_id,
+              revision: occurrence.revision,
+              nominalAt: occurrence.nominal,
+            }
+          : { kind: "action", traceId: request.traceId },
+      requester: request.credential.principalId,
+      executor: job.permit
+        ? {
+            machineId: request.machineId,
+            ownerId: job.permit.ownerId,
+            ownerGeneration: job.permit.ownerGeneration,
+          }
+        : null,
+      decision:
+        row && job.decisionId && evidence
+          ? {
+              decisionId: job.decisionId,
+              policyRevision: row.policy_revision,
+              allowed: evidence.allowed,
+              refusal: evidence.refusal,
+              grants: evidence.requirements.map(({ requirement, winner, revision, allowed }) => ({
+                node: formatManifoldUri(requirement.ref),
+                cap: requirement.cap,
+                allowed,
+                grantId: winner?.id ?? null,
+                authorizer: winner?.createdBy ?? null,
+                revision,
+              })),
+              consents: JSON.parse(row.consents),
+            }
+          : null,
+    };
+  }
+  state(jobId: string, state: JobRecord["state"], permit?: JobPermit): void {
+    this.store.transaction(() => {
+      const previous = this.get(jobId);
+      if (!previous || previous.state === state) return;
+      if (permit)
+        this.store.db
+          .query("UPDATE machine_jobs SET state=?,permit=? WHERE job_id=?")
+          .run(state, canonicalJobJson(permit), jobId);
+      else this.store.db.query("UPDATE machine_jobs SET state=? WHERE job_id=?").run(state, jobId);
+      this.lifecycle(this.get(jobId)!, state);
+    });
+  }
+  cancellation(jobId: string): string | null {
+    return (
+      this.store.db
+        .query<{ cancel_reason: string | null }, [string]>(
+          "SELECT cancel_reason FROM machine_jobs WHERE job_id=?",
+        )
+        .get(jobId)?.cancel_reason ?? null
+    );
+  }
+  cancel(jobId: string, reason: string): void {
+    this.store.db
+      .query("UPDATE machine_jobs SET cancel_reason=? WHERE job_id=?")
+      .run(reason, jobId);
+  }
+  result(result: JobResult): void {
+    this.store.transaction(() => {
+      this.store.db
+        .query("UPDATE machine_jobs SET state=?,result=? WHERE job_id=?")
+        .run(result.state, canonicalJobJson(result), result.jobId);
+      const job = this.get(result.jobId)!;
+      if (
+        result.state === "cancelled" ||
+        result.state === "interrupted" ||
+        result.state === "refused"
+      )
+        this.lifecycle(job, result.state);
+      this.lifecycle(job, "result");
+    });
+  }
+  installation(machineId: string, pluginId: string, revision?: string): JobInstallation | null {
+    const r = this.store.db
+      .query<
+        {
+          revision: string;
+          artifact: string;
+          manifest: string;
+          enabled: number;
+          ready: number;
+          purge_requested: number;
+        },
+        [string, string, string | null]
+      >(
+        `SELECT h.revision,h.artifact,h.manifest,c.enabled,c.purge_requested,
+          CASE WHEN h.revision=c.revision THEN c.ready ELSE 0 END AS ready
+         FROM machine_job_installations h
+         JOIN machine_job_installs c ON c.machine_id=h.machine_id AND c.plugin_id=h.plugin_id
+         WHERE h.machine_id=? AND h.plugin_id=? AND h.revision=COALESCE(?,c.revision)`,
+      )
+      .get(machineId, pluginId, revision ?? null);
+    return r
+      ? {
+          machineId,
+          pluginId,
+          revision: r.revision,
+          artifact: r.artifact,
+          machine: MachineHalfSchema.parse(JSON.parse(r.manifest)),
+          enabled: r.enabled === 1,
+          ready: r.ready === 1,
+          purgeRequested: r.purge_requested === 1,
+        }
+      : null;
+  }
+  installations(machineId?: string): JobInstallation[] {
+    const rows =
+      machineId === undefined
+        ? this.store.db
+            .query<{ machine_id: string; plugin_id: string }, []>(
+              "SELECT machine_id,plugin_id FROM machine_job_installs",
+            )
+            .all()
+        : this.store.db
+            .query<{ machine_id: string; plugin_id: string }, [string]>(
+              "SELECT machine_id,plugin_id FROM machine_job_installs WHERE machine_id=?",
+            )
+            .all(machineId);
+    return rows.map((r) => this.installation(r.machine_id, r.plugin_id)!);
+  }
+  owner(machineId: string): Pick<JobOwner, "ownerId" | "publicKey" | "generation"> | null {
+    const r = this.store.db
+      .query<{ owner_id: string; public_key: string; generation: number }, [string]>(
+        "SELECT owner_id,public_key,generation FROM machine_job_owners WHERE machine_id=?",
+      )
+      .get(machineId);
+    return r ? { ownerId: r.owner_id, publicKey: r.public_key, generation: r.generation } : null;
+  }
+  pinOwner(machineId: string, owner: JobOwner): void {
+    this.store.db
+      .query(
+        "INSERT INTO machine_job_owners VALUES (?,?,?,?) ON CONFLICT(machine_id) DO UPDATE SET generation=excluded.generation",
+      )
+      .run(machineId, owner.ownerId, owner.publicKey, owner.generation);
+  }
+  revision(kind: string, identity: string, digest: string): number {
+    const row = this.store.db
+      .query<{ revision: number; digest: string }, [string, string]>(
+        "SELECT revision,digest FROM machine_job_revisions WHERE kind=? AND identity=?",
+      )
+      .get(kind, identity);
+    if (row?.digest === digest) return row.revision;
+    const revision = (row?.revision ?? 0) + 1;
+    this.store.db
+      .query(
+        "INSERT INTO machine_job_revisions VALUES (?,?,?,?) ON CONFLICT(kind,identity) DO UPDATE SET revision=excluded.revision,digest=excluded.digest",
+      )
+      .run(kind, identity, revision, digest);
+    return revision;
+  }
+}

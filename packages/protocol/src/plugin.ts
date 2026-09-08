@@ -2,6 +2,8 @@ import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
 import { EventKindSchema } from "./events.ts";
 import { ContainerDisciplineSchema } from "./layout.ts";
+import { MAX_STREAM_DESCRIPTORS, StreamDescriptorSchema, streamVocabulary } from "./stream.ts";
+import { MachineHalfSchema } from "./jobs.ts";
 import {
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   DisciplineDefSchema,
@@ -335,6 +337,7 @@ export type RouteDef = z.infer<typeof RouteDefSchema>;
  */
 const ContributesSchema = z.strictObject({
   panels: z.array(PanelDefSchema).max(8).default([]),
+  streams: z.lazy(() => z.array(StreamDescriptorSchema).max(MAX_STREAM_DESCRIPTORS)).optional(),
   /**
    * WHERE THIS PLUGIN'S PANELS ASK TO SIT in the default workspace ({@link SeatDefSchema}).
    * Optional rather than defaulted to `[]`: absence is a MEANING here — the plugin seats
@@ -578,6 +581,7 @@ export const PluginManifestSchema = z.strictObject({
    */
   essential: z.boolean().optional(),
   contributes: ContributesSchema,
+  machine: MachineHalfSchema.optional(),
   /**
    * Declared relationships. Absent ≡ none, which is every manifest written before this
    * field existed: a plugin naming nothing composes exactly as it did.
@@ -643,6 +647,15 @@ export const ACTION_SCOPES = ["workspace", "container"] as const;
 export const ActionScopeSchema = z.enum(ACTION_SCOPES);
 export type ActionScope = (typeof ACTION_SCOPES)[number];
 
+/** A validated structured reference at an own-property path in the action input. */
+export const ActionRequirementSchema = z.strictObject({
+  cap: CapSchema.exclude(["*"]),
+  target: z.array(z.string().min(1).max(128)).min(1).max(8),
+});
+export type ActionRequirement = z.infer<typeof ActionRequirementSchema>;
+export const ActionRequirementsSchema = z.array(ActionRequirementSchema).min(1).max(64);
+export const ActionTracePolicySchema = z.enum(["redacted", "opaque"]);
+
 /**
  * One action, published. `input` and `result` are JSON Schemas rather than zod shapes,
  * because the audience is a stranger's agent reading `GET /api/protocol` — the door's own
@@ -666,6 +679,8 @@ export const ActionSummarySchema = z.strictObject({
    * token call this?" is a question a client must be able to answer from the vocabulary alone.
    */
   scope: ActionScopeSchema.default("workspace"),
+  requirements: ActionRequirementsSchema.optional(),
+  trace: ActionTracePolicySchema.optional(),
   input: z.record(z.string(), z.unknown()),
   result: z.record(z.string(), z.unknown()),
 });
@@ -1043,6 +1058,7 @@ export type PluginSettingValues = z.infer<typeof PluginSettingValuesSchema>;
 export function pluginVocabulary(): Record<string, unknown> {
   return {
     engineNamespace: ENGINE_NAMESPACE_PREFIX,
+    streams: streamVocabulary(),
     /*
       Published beside it because the reservation is a rule an AUTHOR has to know before
       choosing an id: `core.` is taken, and a manifest under it fails assembly unless the

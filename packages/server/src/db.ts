@@ -3,9 +3,10 @@ import { Database } from "bun:sqlite";
 import { migrateToGrantRows } from "./migrate-grants.ts";
 import { migrateToCanonLexicon, migrateToElementRefs } from "./migrate-lexicon.ts";
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
+import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 25;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -625,6 +626,41 @@ WHERE revoked_at IS NULL AND expires_at IS NULL
       db.exec("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '24')");
     },
   },
+  25: `
+CREATE TABLE machine_job_owners(machine_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, public_key TEXT NOT NULL, generation INTEGER NOT NULL);
+CREATE TABLE machine_job_installs(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, enabled INTEGER NOT NULL, ready INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(machine_id,plugin_id));
+CREATE TABLE machine_job_installations(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, PRIMARY KEY(machine_id,plugin_id,revision));
+CREATE TABLE machine_job_consents(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, node TEXT NOT NULL, cap TEXT NOT NULL, installation_revision TEXT NOT NULL, artifact TEXT NOT NULL, revision TEXT NOT NULL, enabled INTEGER NOT NULL, PRIMARY KEY(machine_id,plugin_id,installation_revision,node,cap));
+CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, digest TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, permit TEXT, result TEXT, created_at INTEGER NOT NULL, audit_origin TEXT, decision_id TEXT);
+CREATE INDEX machine_jobs_active ON machine_jobs(machine_id,state);
+ALTER TABLE machine_jobs ADD COLUMN cancel_reason TEXT;
+ALTER TABLE machine_jobs ADD COLUMN event_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE machine_jobs ADD COLUMN output_seq INTEGER;
+ALTER TABLE machine_job_installs ADD COLUMN purge_requested INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE machine_job_decisions(id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, plugin_id TEXT NOT NULL, action TEXT NOT NULL, credential TEXT NOT NULL, policy_revision TEXT NOT NULL, evidence TEXT NOT NULL, consents TEXT NOT NULL);
+CREATE TABLE machine_job_outputs(node TEXT PRIMARY KEY, job_id TEXT NOT NULL, plugin_id TEXT NOT NULL, metadata TEXT NOT NULL, released INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE machine_job_revisions(kind TEXT NOT NULL, identity TEXT NOT NULL, revision INTEGER NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(kind,identity));
+CREATE TRIGGER job_grant_insert AFTER INSERT ON grants BEGIN
+ INSERT INTO machine_job_revisions VALUES ('grant',NEW.id,1,'') ON CONFLICT(kind,identity) DO UPDATE SET revision=revision+1,digest='';
+END;
+CREATE TRIGGER job_grant_update AFTER UPDATE ON grants BEGIN
+ INSERT INTO machine_job_revisions VALUES ('grant',NEW.id,1,'') ON CONFLICT(kind,identity) DO UPDATE SET revision=revision+1,digest='';
+END;
+CREATE TRIGGER job_grant_delete AFTER DELETE ON grants BEGIN
+ INSERT INTO machine_job_revisions VALUES ('grant',OLD.id,1,'') ON CONFLICT(kind,identity) DO UPDATE SET revision=revision+1,digest='';
+END;
+CREATE TRIGGER job_token_insert AFTER INSERT ON tokens BEGIN
+ INSERT INTO machine_job_revisions VALUES ('credential',NEW.id,1,'') ON CONFLICT(kind,identity) DO UPDATE SET revision=revision+1,digest='';
+END;
+CREATE TRIGGER job_token_update AFTER UPDATE ON tokens BEGIN
+ INSERT INTO machine_job_revisions VALUES ('credential',NEW.id,1,'') ON CONFLICT(kind,identity) DO UPDATE SET revision=revision+1,digest='';
+END;
+CREATE TRIGGER job_token_delete AFTER DELETE ON tokens BEGIN
+ INSERT INTO machine_job_revisions VALUES ('credential',OLD.id,1,'') ON CONFLICT(kind,identity) DO UPDATE SET revision=revision+1,digest='';
+END;
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','25');
+${JOB_SCHEDULE_SCHEMA_SQL}
+`,
 };
 
 interface TableRow {

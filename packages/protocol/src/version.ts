@@ -289,6 +289,17 @@ export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
  */
 export const TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION = 22;
 
+/** The first machine protocol that may advertise ownership or exchange governed-job frames. */
+export const GOVERNED_JOB_MIN_PROTOCOL_VERSION = 26;
+
+/** Feature support requires both an accepted wire and the governed-job extension. */
+export function supportsGovernedJobs(protocolVersion: number): boolean {
+  return (
+    MACHINE_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion) &&
+    protocolVersion >= GOVERNED_JOB_MIN_PROTOCOL_VERSION
+  );
+}
+
 /**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
  *

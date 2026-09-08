@@ -17,12 +17,34 @@ export const CAPS = [
   "terminals:write",
   "tokens:mint",
   "machines:mint",
+  "machines:run",
+  "jobs:read",
+  "jobs:input",
+  "jobs:cancel",
+  "locations:read",
+  "locations:write",
+  "locations:create",
+  "operations:invoke",
+  "network:host",
   /** Enable and disable plugins for the whole workspace: assembly administration. */
   "plugins:manage",
 ] as const;
 
 export const CapSchema = z.enum(CAPS);
 export type Cap = z.infer<typeof CapSchema>;
+
+/** These require separate, version-bound consent; a capability grant alone never suffices. */
+export const GOVERNED_CAPS: readonly Cap[] = [
+  "machines:run",
+  "jobs:read",
+  "jobs:input",
+  "jobs:cancel",
+  "locations:read",
+  "locations:write",
+  "locations:create",
+  "operations:invoke",
+  "network:host",
+];
 
 export function hasCap(granted: readonly Cap[], needed: Exclude<Cap, "*">): boolean {
   return granted.includes("*") || granted.includes(needed);

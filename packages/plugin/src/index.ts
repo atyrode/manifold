@@ -7,6 +7,15 @@
  * design system is `@manifold/ui` (ADR 0025 §8), and this package re-exports nothing from it.
  */
 export { defineAction, type ActionDef, type AnyActionDef } from "./action.ts";
+export type {
+  JobExecution,
+  JobScheduleTiming,
+  PublicJobSchedule,
+  JobFollow,
+  PluginJobContext,
+  StreamProducer,
+  PluginStreamContext,
+} from "./runtime.ts";
 export {
   KEYSTROKE_MOD,
   bindingRebindRefusal,
@@ -63,6 +72,7 @@ export {
   type Assembly,
   type AssemblyAction,
   type AssemblyEvent,
+  type AssemblyStream,
   type AssemblyElement,
   type AssemblyEnv,
   type AssemblyPanel,
@@ -165,5 +175,6 @@ export {
   type PlaceOutcome,
   type SectionProps,
   type SessionHandle,
+  type StreamHandle,
   type SessionStatus,
 } from "./host.ts";

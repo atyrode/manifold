@@ -213,23 +213,11 @@ describe("the instance channel handshake", () => {
     expect(DIAL_LIVENESS_TIMEOUT_MS).toBe(DIAL_PING_INTERVAL_MS * 2 + 15_000);
   });
 
-  test("every instance version since v18 remains accepted; older and future versions are refused", () => {
-    /*
-      Two wires, two sets, one discipline (docs/CONTRACTS.md §Protocol and compatibility applied per wire): sharing the machine
-      set would mean an agent-wire reset locking out federated instances that never spoke that
-      wire, and an instance-frame change restarting a fleet of PTY agents that never spoke this
-      one. The set GROWS by the same unchanged-wire rule the machine set grows by — v19 moved a
-      session frame pair, v20 bounded a token row's life, v21 opened the container
-      discipline roster and added two optional fields to a gesture frame, v22 let a
-      terminal be born running a program, and v23 added browser presence location paths
-      and connection snapshots — none of which a guest instance sees (a share secret
-      is not a token row, carries no expiry, names no container and creates no PTY) —
-      so the acceptance floor remains v18.
-    */
+  test("shared resource and capability vocabularies require protocol 26", () => {
+    // Protocol and compatibility (docs/CONTRACTS.md) applies independently per wire:
+    // expanded closed share vocabularies reset instances, not terminal agents.
     for (let version = 0; version <= PROTOCOL_VERSION + 1; version++) {
-      expect(INSTANCE_PROTOCOL_COMPAT_VERSIONS.has(version)).toBe(
-        version >= 18 && version <= PROTOCOL_VERSION,
-      );
+      expect(INSTANCE_PROTOCOL_COMPAT_VERSIONS.has(version)).toBe(version === 26);
     }
   });
 });

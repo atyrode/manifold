@@ -21,6 +21,8 @@ import type {
   TerminalProgram,
   TerminalSummary,
   TileLayout,
+  StreamCursor,
+  StreamServerMessage,
 } from "@manifold/protocol";
 import type { ScenePatch, Y } from "@manifold/scene";
 import type { AssemblyPanel, AssemblySection } from "./assemble.ts";
@@ -53,6 +55,15 @@ export type SessionStatus = "idle" | "connecting" | "open" | "reconnecting" | "c
  */
 type ServerMessageOf<T extends ServerMessageBody["type"]> = Extract<ServerMessageBody, { type: T }>;
 
+/** A bounded stream snapshot and its live notifications, using the SDK's structural contract. */
+export interface StreamHandle {
+  readonly snapshot: Extract<StreamServerMessage, { type: "stream_snapshot" }> | null;
+  readonly cursor: StreamCursor | undefined;
+  readonly status: "opening" | "open" | "reconnecting" | "gap" | "reset" | "refused" | "closed";
+  on(listener: (message: StreamServerMessage) => void): () => void;
+  close(): void;
+}
+
 /**
  * The terminal ref a plugin is handed. It is deliberately the SDK's own ref described
  * structurally: `SessionClient` satisfies it without importing anything from here, so a
@@ -61,6 +72,11 @@ type ServerMessageOf<T extends ServerMessageBody["type"]> = Extract<ServerMessag
  * sandbox shape (ADR 0010) the contracts keep even while plugins run in-process.
  */
 export interface SessionHandle {
+  openStream(options: {
+    kind: string;
+    node: ManifoldRef;
+    cursor?: StreamCursor | undefined;
+  }): StreamHandle;
   /** Invoke an action by its FULL name (`core.terminals.rename`); a denial is data, not a throw. */
   action(name: string, args: unknown): Promise<ActionOutcome>;
   /** THE placement call: put an item in a container. */

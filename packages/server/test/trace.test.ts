@@ -2,6 +2,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { defineAction } from "@manifold/plugin";
 import { EventsListResponseSchema } from "@manifold-plugin/events";
 import {
+  ManifoldRefSchema,
   ContainerResponseSchema,
   PlaceResponseSchema,
   TRACE_AUTHORITY_OPEN,
@@ -15,6 +16,7 @@ import { tileIdForRef } from "@manifold/scene";
 import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
+import { JobService } from "../src/job-service.ts";
 import { createLogger, silentLogger } from "../src/log.ts";
 import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
 import { PluginHost, type ServerPluginDef } from "../src/plugin-host.ts";
@@ -131,10 +133,27 @@ function probeDefs(): readonly ServerPluginDef[] {
         version: "0.0.0",
         title: "Trace probe",
         description: "Doors that fail on purpose, so the ledger can be observed failing with them.",
-        capabilities: [],
+        capabilities: ["scenes:write", "machines:run"],
         contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
       },
       actions: [
+        defineAction({
+          name: "targeted",
+          title: "Target authority probe",
+          caps: ["scenes:write"],
+          requirements: [{ cap: "scenes:write", target: ["target"] }],
+          trace: "opaque",
+          input: z.strictObject({ target: ManifoldRefSchema }),
+          result: z.strictObject({}),
+        }),
+        defineAction({
+          name: "governed",
+          title: "Governed authority probe",
+          caps: ["machines:run"],
+          requirements: [{ cap: "machines:run", target: ["target"] }],
+          input: z.strictObject({ target: ManifoldRefSchema }),
+          result: z.strictObject({}),
+        }),
         defineAction({
           name: "explodeAfterWrite",
           title: "Writes a container, then throws",
@@ -187,6 +206,10 @@ function probeDefs(): readonly ServerPluginDef[] {
         }),
       ],
       handlers: {
+        targeted: async () => ({}),
+        governed: async () => {
+          throw new Error("unconsented handler reached");
+        },
         explodeAfterWrite: async (
           ctx: { store: ServerStore; now(): number },
           args: { containerId: string },
@@ -271,6 +294,43 @@ async function probeHost(base: Fixture): Promise<PluginHost> {
 }
 
 describe("the trace ledger records every exercise of authority", () => {
+  test("target authority is evaluated at the validated machine, and opaque refusals never publish input", async () => {
+    const base = await fixture();
+    const host = await probeHost(base);
+    const caller = tokenContext(base, ["containers:read"]);
+    const target = { kind: "machine" as const, machineId: "m" };
+    base.auth.grant(
+      {
+        principal: { kind: "principal", id: caller.principal.id },
+        node: "manifold://machine/m",
+        caps: ["scenes:write"],
+        effect: "allow",
+        reach: "node",
+      },
+      base.owner,
+    );
+    expect((await host.dispatch(caller, "test.probe.targeted", { target })).ok).toBe(true);
+    expect(
+      (
+        await host.dispatch(caller, "test.probe.targeted", {
+          target: { ...target, machineId: "other" },
+        })
+      ).ok,
+    ).toBe(false);
+    const secret = "private execution argument";
+    const malformed = await host.dispatch(base.owner, "test.probe.governed", {
+      target,
+      prompt: secret,
+      argv: [secret],
+      containerId: secret,
+    });
+    expect(malformed.ok).toBe(false);
+    expect(JSON.stringify(traces(base))).not.toContain(secret);
+    const noConsent = await host.dispatch(base.owner, "test.probe.governed", { target });
+    expect(noConsent.ok).toBe(false);
+    if (!noConsent.ok) expect(noConsent.denial.rule).toBe("forbidden");
+    base.store.close();
+  });
   test("an ok dispatch leaves ONE settled row naming door, actor, authority and targets", async () => {
     const base = await fixture();
 
@@ -710,5 +770,52 @@ describe("the trace ledger records every exercise of authority", () => {
       expect(words).toContain(rule);
     }
     expect(words).not.toContain(UNTRACED_DENIAL_RULE);
+  });
+  test("runtime description is an opaque traced read, not implicit execution consent", async () => {
+    const base = await fixture();
+    try {
+      const jobs = new JobService(base.store, base.auth, base.runtime);
+      base.host.setJobs(jobs);
+      const machineId = base.auth.enrollMachine("runtime", base.owner).machine.id;
+      const inspected = await base.host.dispatch(base.owner, "engine.jobs.describe", {
+        machineId,
+        pluginId: "absent.worker",
+      });
+      expect(inspected).toMatchObject({
+        ok: true,
+        result: {
+          machineId,
+          pluginId: "absent.worker",
+          connected: false,
+          platforms: [],
+          installation: null,
+          consents: [],
+        },
+      });
+      expect(newestTrace(base)).toMatchObject({
+        door: "engine.jobs.describe",
+        outcome: "ok",
+        payload: "{}",
+      });
+      const weak = tokenContext(base, ["containers:read"]);
+      expect(
+        (
+          await base.host.dispatch(weak, "engine.jobs.describe", {
+            machineId,
+            pluginId: "absent.worker",
+          })
+        ).ok,
+      ).toBe(false);
+      const secret = "private-machine-input";
+      await base.host.dispatch(base.owner, "engine.jobs.describe", {
+        machineId,
+        pluginId: "absent.worker",
+        input: secret,
+      });
+      expect(JSON.stringify(traces(base))).not.toContain(secret);
+      expect(base.store.db.query("SELECT * FROM machine_job_consents").all()).toEqual([]);
+    } finally {
+      base.store.close();
+    }
   });
 });

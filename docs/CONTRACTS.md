@@ -2556,7 +2556,7 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
 ## WS /ws/machine — machine channel (JSON; `data` fields base64)
 
 Handshake: agent sends `hello { token, name, agentVersion, protocolVersion, terminals,
-terminalHostId? }`, where `terminals` advertises retained PTYs
+terminalHostId?, jobOwner? }`, where `terminals` advertises retained PTYs
 `{ terminalId, cols, rows, alive, seq, exitCode? }` (server-restart adoption).
 `terminalHostId` identifies the terminal host PROCESS, stable across transport replacements
 and fresh on host restart; it is not the machine token or a durable terminal checkpoint. An
@@ -2566,7 +2566,7 @@ the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` 
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
 4403 revoked, 4409 version, or 4003 admission refused (incumbent continuity mismatch or
 supersession damp). Version acceptance is the
-`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18, 19, 20, 21, 22, 23, 24, 25}` (protocol/version.ts), NOT
+`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26}` (protocol/version.ts), NOT
 strict equality: agents are long-lived and survive server deploys, so every compatible agent
 version stays accepted (session/browser joins remain strictly current). An unchanged agent wire
 adds the new version to the set; a strictly additive-optional change also adds it when every old
@@ -2596,6 +2596,19 @@ capability-gated `drain`/`drain_status`: the hub sends drain frames ONLY to an a
 named a terminal host. Legacy agents remain wire-compatible; compatibility does not move
 their PTYs into a separate host or make a legacy process restart safe.
 
+**Protocol 26: additive machine extension, separate instance cutover.** Governed jobs
+add optional `hello.jobOwner` and new `job_command`/`job_event` variants. Only protocol-26
+agents may advertise a job owner or exchange governed job traffic; the hub never sends
+job commands to an older agent. Absence of `jobOwner` preserves terminal-only behavior,
+so the machine set ADDS 26 and retains every previously compatible terminal agent.
+The pre-v22 terminal-program guard remains; neither terminal connectivity nor version
+acceptance alone proves job readiness. No fleet restart is owed by this additive extension.
+Instance shares carry expanded closed capability/reference vocabularies, so their separate
+accepted set RESETS to `{26}` and federation peers require a coordinated upgrade.
+No PTY, polling or alternative execution control path substitutes for governed jobs.
+This is not a claim of release, fleet installation or live deployment; the current
+[Protocol and compatibility](#protocol-and-compatibility) contract governs the transition.
+
 The unknown-NEWER direction is the one with no recovery, and it is the operator-facing failure
 mode. A hub cannot accept a protocol version that did not exist when it was built, so an agent
 whose `protocolVersion` falls outside `MACHINE_PROTOCOL_COMPAT_VERSIONS` is closed 4409 on every
@@ -2623,6 +2636,226 @@ Agent→server: `created { terminalId }` | `create_error { terminalId, message }
 `output { terminalId, seq, data }` (seq: monotonic per terminal, assigned at emission),
 `snapshot { terminalId, seq, data }`, `exited { terminalId, exitCode }`, `pong`,
 `drain_status { requestId, terminalHostId, draining, terminalIds }`.
+
+### Governed machine jobs
+
+The generic runtime is defined by [`jobs.ts`](../packages/protocol/src/jobs.ts),
+[`job-service.ts`](../packages/server/src/job-service.ts),
+[`job-schedules.ts`](../packages/server/src/job-schedules.ts) and
+[`job-doors.ts`](../packages/server/src/job-doors.ts). Product protocols, custody formats,
+provider handling and postconditions belong to plugins, never the common floor.
+
+- **Declarations and ownership.** An optional manifest machine half declares hash-pinned
+  platform artifacts, namespaced operations and revisioned locations. An operation fixes
+  typed argv slots, bounded inputs, named `runtimeTools` (at most eight), location rights,
+  output names, `network: "none" | "host"`, stdin and timeout/memory/process/output limits.
+  Requests cannot supply an executable, shell, cwd or environment. Installation binds
+  authenticated machine identity, plugin, installation revision and artifact digest.
+  Canonical operation/location nodes belong under that machine, jobs under their admitted
+  operation, and outputs under their job; ownership is resolved from the installation and
+  admitted request, not guessed from caller-supplied IDs or machine labels.
+- **Describe and readiness.** `engine.jobs.describe({ machineId, pluginId, installationRevision? })`
+  (also `ctx.jobs.describe`) is a read-only `machines:run` check at the machine; a plugin may
+  describe only its own installation. Omission selects the current revision; an explicit
+  revision selects its immutable retained declaration/pin, or null if unknown. It grants
+  neither execution nor resource consent.
+  `admissionPublicKey` is the current hub's public SPKI verifier key for reviewed owner
+  configuration. Obtain it through this authenticated interface, not private hub database
+  access; it is not a token, and the private signing key never leaves the hub.
+  `connected` means the current channel has proved its job owner, not merely that a
+  terminal transport is online. `platforms` comes from that proved owner and is empty
+  when disconnected; the implemented backend supports `linux-x64` and `linux-arm64`.
+  `installation` is null or `{ revision, artifactSha256, enabled, ready, purgeRequested }`.
+  `ready` requires the selected revision to be current, enabled plugin/installation, a
+  currently proved owner, that owner's installation acknowledgement and no pending purge;
+  it does not preflight every job's resources or guarantee a start. Historical revisions
+  are never ready for admission. `retainedInstallations` lists at most 128 non-current
+  `{ revision, artifactSha256 }` pins in reverse original installation order; older pins
+  remain individually addressable by explicit revision. `consents` exposes
+  `{ node, cap, enabled, revision }` for the selected revision only; enabled consent must
+  match that revision and artifact, with the plugin/current installation enabled and no
+  pending purge.
+  Terminal transports remain usable without an available job backend. Governed jobs
+  fail closed when their backend or required enforcement is unavailable, without a PTY
+  or unrestricted-process fallback.
+- **Explicit administration.** The root-only `engine.jobs.install` takes
+  `{ machineId, pluginId, installationRevision, artifactSha256, machine }`.
+  `engine.jobs.consent` takes
+  `{ machineId, pluginId, installationRevision, artifactSha256, node, cap, enabled }`.
+  The pin and manifest must agree with the declared machine half. Each machine/plugin
+  revision's declaration and artifact are immutable, including after replacement.
+  Consent names the canonical resource node and exact capability, not a blanket product
+  approval. The existing consent action accepts a retained revision's exact pin and
+  declared operation/location; a retained job/output reference selects the same
+  operation consent for its original revision. Such consent can be granted or revoked
+  independently of the current revision. Replacement preserves existing exact old
+  consent for retained reads; it never transfers that consent to a new revision/artifact.
+  Installation is not approval. Deliberately reinstalling an exact historical declaration
+  is permitted; conflicting reuse of its revision is refused, and reinstall never
+  resubmits a retained job.
+- **Common authority.** Admission uses the A5 waterfall and current credential/delegation
+  lineage intersected with its immutable original scope, capability and expiry ceiling.
+  `machines:run`, `jobs:read`, `jobs:input`, `jobs:cancel`, `locations:read`,
+  `locations:write`, `locations:create`, `operations:invoke` and `network:host` discharge
+  against canonical nodes. Current winning grant IDs/revisions and artifact/resource-bound
+  consent revisions are decision evidence. Consent is explicit even for root/first-party
+  callers; enrollment, wildcard grants, enablement and installation are not consent.
+  Start-commit rechecks authority, consent, policy, installation and owner identity in a
+  transaction, then issues a short-lived, signed, single-use owner/generation-bound permit.
+  Revocation before that commit admits no start; later revocation requests cancellation,
+  not an impossible instantaneous distributed rollback.
+- **Acquisition and confinement.** The trusted owner acquires real HTTPS artifacts without
+  ambient credentials, under approved destination/redirect and compressed/expanded/member
+  bounds. It verifies archive and executable-entry SHA256 and any declared bundled tool
+  files before private atomic publication. Digests must describe actual packaged bytes.
+  Named tools resolve only to reviewed runtime closures or hash-verified bundled files;
+  naming a tool grants no host PATH search or package installation. On supported Linux
+  architectures, the configured, held bubblewrap executable uses FD-backed mounts,
+  isolated namespaces and an owner-controlled cgroup-v2 hierarchy. The enforcing
+  ancestor is never child-writable; only bounded nested workload delegation is exposed.
+  No caller/daemon environment, enrollment tokens or undeclared filesystem/network
+  authority is inherited. Locations resolve from trusted account/XDG anchors with exact
+  file/directory boundaries; descendant access rejects symlink, magic-link and mount escape.
+  `create` is create-only: an existing target refuses rather than opening or overwriting
+  it; active authorized ancestor writers also prevent create-only resolution.
+  The seccomp filter denies `sendmsg`, `sendmmsg` and all `io_uring` entry points to prevent
+  file-descriptor export beyond tracked writers. Alternate/compatibility ABIs are rejected
+  (including x86 `int 0x80` and x32). This is not a general syscall allowlist.
+  These restrictions apply even to `network: "host"`: libraries requiring those calls
+  are incompatible, not silently exempted. Host networking remains broad host-network
+  access, separately declared and consented through `network:host`, not restricted egress.
+  Missing tools, resources, enforcement or unsupported platforms refuse execution;
+  there is no unrestricted platform fallback.
+- **Named output backing and budgets.** Named output directories must already reside on
+  bounded tmpfs filesystems; the runtime does not provision them. Preflight counts each
+  distinct backing device once and requires positive byte/inode capacity, summed byte
+  capacity no greater than `limits.outputBytes`, and summed inode capacity at most 10,000.
+  A normal writable disk directory, unbounded tmpfs or over-capacity backing refuses with
+  `bounded-output-storage-required`. The kernel enforces this storage capacity during
+  writes, including through authorized aliases; a post-exit size check is not the quota.
+  The entire accepted backing capacity is reserved from `outputBytes` before execution.
+  stdout and stderr share the remainder, not one full budget each; exhausting it terminates
+  the job. Final collected output bytes also share the aggregate limit. These boundaries
+  do not confine administrators or unconfined same-UID processes able to remount storage.
+- **Nested invocations.** A separately approved edge binds exact caller/callee machine,
+  plugin, operation, installation revision and artifact, exact revisioned resource rights,
+  depth/concurrency and aggregate limits. Outputs are rules of exactly
+  `{ name, locationId, components, maxSuffixComponents }`. Names must be unique and the
+  child's output set must match the rules, not a subset. `maxSuffixComponents: 0` requires
+  the exact component path; a positive value requires one through that many additional
+  components beneath the declared prefix (total at most 16). Location IDs match exactly.
+  The admitted child still carries exact `{ name, locationId, components }` bindings:
+  they are immutable request content, never replaced by the broader rule. The host binds
+  parent, invocation ID and original credential, reserves before enqueue, and reauthorizes
+  both parent and child. Resource possession is not invocation authority.
+- **Owner recovery and dedupe.** The supervised job owner is independent of the terminal
+  host and transport. Its durable signing identity, generation, nonce proof and journal
+  fence ownership. Request ID and canonical digest bind immutable content; exact replay
+  returns prior state under current job-read authority, including exact revision consent;
+  changed content refuses. A fresh admission receipt does not grant later result inspection.
+  Durable reservations precede spawn and
+  results precede acknowledgement. Transport/hub recovery reconciles existing jobs rather
+  than executing them again; owner recovery clears old descendants before a new generation
+  admits work. An unobserved reserved execution is `interrupted`/unknown, not safe to retry.
+  Retained identity records prevent expired output/result retention from permitting replay.
+  Empty PTY inventories say nothing about jobs. Drain closes both admission paths without
+  merging their lifecycles; cancellation closes input and terminates the execution tree.
+- **Output and privacy.** `child_exit` is execution observation with `outputsSealed: false`,
+  not a final result, writer-drain acknowledgement or closure proof. Sealing waits for the
+  execution tree to be empty and authorized overlapping writers to release, including
+  ancestor/descendant mounts, aliases and parent-held child-output leases. Writer leases
+  attach by held filesystem identity/ancestry and are rechecked at collection after renames.
+  Disjoint unrelated jobs do not impose a global output-sealing barrier.
+  Collection uses held handles, bounded regular files and private immutable bytes/digests;
+  unsafe links/types refuse. Leases identify governed output nodes, not public host paths.
+  Output reads recheck common authority at request and delivery and are at most 64 KiB.
+  Raw stdout/stderr, inputs, prompts and product payloads stay private; public job results
+  expose lifecycle, attribution, limits, usage and output digest/count/reference metadata.
+  All `engine.jobs.*` doors use `trace: "opaque"` before validation/refusal journaling;
+  raw request/result bytes must not enter traces. Lifecycle records append safe metadata
+  linked to the originating trace, distinguishing action, invocation and schedule.
+- **Public authority metadata.** `PublicJob` is
+  `{ jobId, machineId, operationId, pluginId, installationRevision, artifactSha256, state, result, authority }`.
+  The original installation pin is safe metadata for retained-resource consent review;
+  it is not inferred from the current installation. `authority` is:
+  - `origin`: `{ kind: "action", traceId }`,
+    `{ kind: "schedule", traceId, scheduleId, revision, nominalAt }`, or
+    `{ kind: "invocation", traceId, parentJobId, invocationId }`.
+  - `requester`: the original credential's principal ID.
+  - `executor`: null without a committed permit, otherwise
+    `{ machineId, ownerId, ownerGeneration }` from that permit; it is not a claim that
+    the process started or completed.
+  - `decision`: null without retained evaluated evidence, otherwise
+    `{ decisionId, policyRevision, allowed, refusal, grants, consents }`.
+    Each grant is `{ node, cap, allowed, grantId, authorizer, revision }`; nullable
+    `grantId` and `authorizer` identify the winning grant and its `createdBy`, not an
+    inferred approver or automatically the requester. Each consent is
+    `{ node, revision, artifactSha256 }`. Refused decisions can exist without an executor.
+    Lifecycle traces retain these safe facts plus originating actor/authority/door/container/
+    session, `parentTrace`, `originTraceAvailable`, phase, state, exact target pins and result
+    exit code. They do not expose credential values, inputs, environment or raw output;
+    absence of originating trace metadata is represented, not invented.
+- **Follow and retention.** The public `PluginJobContext` exported from `@manifold/plugin`
+  types `ctx.jobs`; `ctx.jobs.follow(node, receive)` returns a watermark snapshot and a
+  close handle. `GuestJobs.follow` supplies the asynchronous contract across isolation.
+  The snapshot includes state/result, `seq`, `firstSeq`, retained events and explicit
+  `unavailable` ranges. Replay is bounded to 128 events/256 KiB per job, with bounded
+  aggregate retention; it is not a durable transcript. Live updates carry monotonic
+  sequence or an explicit close (`authority_revoked`, `gap`, `limit`, `consumer_failed`,
+  `closed`). A consumer must surface unavailable data rather than infer continuity.
+  Follow is authority-bearing and delivery is rechecked; raw bytes are not public events.
+  Durable job/result identity and output references resolve through their original immutable
+  installation declaration across replacement and hub restart, not through the newest
+  artifact. Access still requires current A5 authority and that original revision's exact
+  consent; denial/revocation blocks reads and closes follows. An authorized operator can
+  inspect the retained pin with `describe` and explicitly reacquire consent through the
+  same `consent` action, without authorizing new starts or replaying old jobs. Output
+  availability still depends on the proved owner and retained bytes; purged/released
+  output references do not become readable again on re-enable or reinstall.
+- **Schedules.** The same admission path consumes durable schedule revision, nominal
+  occurrence, interval, deadline, expiry and `skip`/`coalesce-one` offline policy. Occurrence
+  identity is committed before enqueue. Original credential lineage/ceiling persists;
+  revocation/expiry disables future starts. Replacement machines/artifacts do not silently
+  retarget schedules. There is no privileged scheduler or implicit non-expiring grant.
+- **Disable and purge.** Disable stops admission, requests cancellation and retains data;
+  re-enable does not replay jobs. Purge requires disabled installations, no active leases
+  and a proved online owner. Hub `purge_requested` and released references express requested
+  destruction, not acknowledged physical deletion. Do not present command delivery or an
+  installation acknowledgement as proof that machine bytes were deleted.
+
+### Plugin-owned continuous streams
+
+[`stream.ts`](../packages/protocol/src/stream.ts) declares the generic continuous channel,
+not an event-journal feed or a second websocket. `contributes.streams` descriptors declare
+local ID/title, bounded body schema, node kinds, read capability and frame/ring/instance
+limits; assembly reserves plugin-qualified kinds, including disabled contributors.
+Governed node kinds require their canonical read capability, never a weaker substitute.
+Only the owning plugin can open a producer for its existing node and declared kind.
+
+The public `PluginStreamContext` and `StreamProducer` types are exported from
+`@manifold/plugin`. `ctx.streams.open` returns a producer with epoch, `publish`, `close`,
+`closed` and `onClose`. Register close listeners to release attached jobs-follow handles
+and other producer resources, including across the asynchronous hardened bridge; producer
+ownership must not outlive disable or isolate teardown. Opening/closing is lifecycle work;
+individual frames make no durable
+action/event trace rows. Public streams should publish safe metadata, not private raw
+job bytes or credentials.
+
+`stream_open`/`stream_close` use the existing session socket. Server messages are
+`stream_snapshot`, `stream_frame`, `stream_gap`, `stream_reset`, `stream_refused` and
+`stream_closed`. Each producer has a fresh unpredictable epoch and increasing sequence;
+snapshot advertises retained first/last watermarks, followed only by later frames.
+An old cursor or changed epoch produces explicit gap/reset, not invented missing data.
+Admission and delivery recheck node authority, including queued sends. Rings and sender
+queues are bounded; slow-consumer overflow requires explicit resync or connection closure
+if control cannot be delivered, not silent loss or unbounded buffering.
+
+The SDK reference-counts stream handles on its pooled socket and reconnects from their
+cursors. Handles expose snapshot, cursor, status, listener registration and close;
+duplicates are discarded without concealing skips. Disable closes producers/subscriptions,
+re-enable requires fresh epochs, and purge drops retained stream state. In-realm and
+hardened contexts expose the same capabilities. PTY emulation and polling are not
+substitutes for jobs-follow or plugin continuous streams.
 
 Liveness, server half: after `welcome` the server sends `ping` every
 `DIAL_PING_INTERVAL_MS` (30s); a ping still unanswered when the next fires closes the
@@ -2719,8 +2952,13 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{18, 19, 20, 21, 22, 23, 24, 25}` — its own wire, its own set, the
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{26}` — its own wire, its own set, the
 same [Protocol and compatibility](#protocol-and-compatibility) discipline the machine channel follows.
+Shares carry expanded closed capability and reference vocabularies, so protocol 26
+resets instance acceptance; older instances cannot decode that expanded wire.
+Federation peers require a coordinated upgrade, independently of the machine channel's
+additive extension and retained terminal-agent compatibility. This is not an implicit
+live rollout or authorization to install newer agents ahead of their hub.
 
 Guest→host: `pong`, `ticket_request { requestId, principal }` — the guest's OWN principal
 verbatim; the host mints its own mirror id and never adopts a foreign one, because two
@@ -2825,7 +3063,7 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- layout:<principalId>
 ```
 
-Schema version 21 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
+Schema version 25 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
 — `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
 `grants` substrate; 14 is the trace ledger — five nullable columns on `events`; 15 is credential
 expiry — `tokens.expires_at`; 16 retires the grant rows of already-revoked tokens, the same rule
@@ -2833,7 +3071,11 @@ expiry — `tokens.expires_at`; 16 retires the grant rows of already-revoked tok
 new table and nothing rewritten; 18 adds `plugin_installs.actions`, defaulted to `'[]'`;
 19 renames contributed-element TileRef discriminants from `text` to `element`;
 20 adds `machines.owner_host_id` and `machines.draining`, default NULL and 0;
-21 moves the drawing plugin's durable identity to `core.canvas.draw`).
+21 records each install's hardened runner, backfilling existing installs to hardened;
+22 records plugin install mode, defaulting to `bundle`;
+23 moves the drawing plugin's durable identity to `core.canvas.draw`;
+24 bounds legacy human and ordinary-agent credentials with a one-time grace period;
+25 adds governed machine jobs, consent, decisions, outputs, schedules and authority revisions).
 Migrations 12, 14, 15, 17, 18 and 20 are plain SQL for the same reason: none touches a stored
 document and existing rows need no backfill, since absence already means the right thing — a
 NULL origin means "this instance", a NULL `door` means "this row is an event, not a trace", a
@@ -2841,7 +3083,7 @@ NULL `expires_at` means "never", and an empty `actions` list is the doorless row
 already composed. A NULL machine owner means no persisted host identity; `draining=0`
 means admission is open. Migration 20 does not infer terminal loss or rewrite inventory.
 None takes a pre-migration snapshot, and that is the house rule rather than an exception to it:
-the snapshot belongs to a one-way DATA move (9, 11, 13, 16, 19 and 21 — 16 is SQL, but a DELETE
+the snapshot belongs to a one-way DATA move (9, 11, 13, 16, 19, 23 and 24 — 16 is SQL, but a DELETE
 nothing can run backwards), and adding nullable columns is reversible by a later migration
 that drops them. A migration is SQL, or CODE when it rewrites documents or must propagate each
 statement's failure separately:
@@ -2883,6 +3125,30 @@ renames its disabled-set entry, attribution key and element-type reservations; a
 bytes are not rewritten, and disabled plugins migrate too. Separate prepared statements run
 inside the existing transaction so any failed write rolls back the entire cutover. The schema
 stamp and named ledger make the next boot a no-op. There is no old-id alias or fallback reader.
+Migration 24 preserves finite and revoked credentials exactly. Only live, unbounded human
+and ordinary-agent credentials receive a deadline: fourteen days or one hour after migration,
+respectively. Machine enrollment and running-terminal ownership retain their lifecycle
+credentials. This deployed migration remains 24; the jobs schema does not replace it.
+Migration 25 is additive and does not rewrite credentials, grants, containers or scene documents.
+It creates `machine_job_owners` (proved owner identity and generation),
+`machine_job_installs` (current artifact/manifest pin and enabled/ready/purge state),
+`machine_job_installations` (immutable declaration and artifact for each machine/plugin/revision),
+`machine_job_consents` (independent machine/plugin/installation-revision/node/cap consent
+bound to that revision's artifact),
+`machine_jobs` (request, state, permit/result, cancellation and sequence metadata),
+`machine_job_decisions` (credential, policy revision, exact grant evidence and consents),
+`machine_job_outputs` (published resource metadata and release state), and
+`machine_job_revisions` (monotonic grant and credential revisions maintained by write triggers).
+`machine_jobs.audit_origin` retains safe originating trace actor/authority/door/container/session
+metadata; `decision_id` retains the evaluated decision even when a refusal has no permit.
+Scheduled and nested work uses `job_schedules`, `job_schedule_occurrences`,
+`job_invocation_reservations` and `job_invocation_edges`. These durable records survive reopen;
+no job table or trigger belongs to the historical schema-24 fixture. Lifecycle trace payloads
+exclude input, environment, credential values and raw output.
+The public authority projection reads the stored decision evidence, including winning
+grant creators and revisions, rather than substituting the requester as authorizer.
+Schedule occurrence and invocation records determine origin; the committed permit determines
+executor identity. Missing decisions, executors or original trace context remain explicit.
 A code migration declares whether it is recoverable, and
 a one-way data move is not: 9, 11, 13, 16, 19, 23 and 24 each take a consistent `VACUUM INTO` snapshot BEFORE the
 transaction opens (a VACUUM cannot run inside one, which is also what

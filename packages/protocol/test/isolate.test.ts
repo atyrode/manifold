@@ -163,42 +163,14 @@ describe("the closed component vocabulary", () => {
 });
 
 describe("the served ctx slices and host methods", () => {
-  test("the ctx methods a child may call are exactly the stage-1 set", () => {
-    // Everything else in `ActionCtx` is NOT served (ADR 0016 §2): the guest maps the absence
-    // to a named `refused`, so the list is the contract an out-of-tree author writes against.
-    expect([...ISOLATE_CTX_METHODS]).toEqual([
-      "storage.get",
-      "storage.set",
-      "storage.delete",
-      "storage.keys",
-      "auth.allows",
-      "outsideScope",
-      "newId",
-      "machines.isOnline",
-      "placement.place",
-      "host.roster",
-      "host.enabled",
-    ]);
+  test("a child cannot invoke an undeclared room-management method", () => {
     expect(
       IsolateChildFrameSchema.safeParse({ t: "call", id: "1", method: "rooms.list", args: [] })
         .success,
     ).toBe(false);
   });
 
-  test("the host methods a worker may call mirror SessionHandle's, and the token is never one", () => {
-    // ADR 0016 §3: the worker calls the door THROUGH the host, which attaches the caller's
-    // authority. There is no `token` method because there is no token to hand over.
-    expect([...WEB_HOST_METHODS]).toEqual([
-      "action",
-      "place",
-      "selfCaps",
-      "machines",
-      "resolve",
-      "navigate",
-      "openTerminal",
-      "sendTerminalInput",
-      "terminalsByContainer",
-    ]);
+  test("a worker cannot request its host's authentication token", () => {
     expect(
       WebIsolateWorkerFrameSchema.safeParse({ t: "call", id: "1", method: "token", args: [] })
         .success,

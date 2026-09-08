@@ -99,8 +99,8 @@ function ctxWith(
       caps: ["scenes:write"],
       containerScope: "c1",
       isRoot: false,
-      allows: (cap, containerId) => {
-        allowed.push([cap, containerId]);
+      allows: (cap, ref) => {
+        allowed.push([cap, ref]);
         return cap === "scenes:write";
       },
     },
@@ -217,10 +217,16 @@ describe("serveCtxCall", () => {
     await serveCtxCall("storage.set", ["k", "v"], served);
     expect(await serveCtxCall("storage.get", ["k"], served)).toBe("v");
     expect(await serveCtxCall("storage.keys", [], served)).toEqual(["k"]);
-    expect(await serveCtxCall("auth.allows", ["scenes:write", "c1"], served)).toBe(true);
+    expect(
+      await serveCtxCall(
+        "auth.allows",
+        ["scenes:write", { kind: "container", containerId: "c1" }],
+        served,
+      ),
+    ).toBe(true);
     expect(await serveCtxCall("auth.allows", ["containers:read"], served)).toBe(false);
     expect(allowed).toEqual([
-      ["scenes:write", "c1"],
+      ["scenes:write", { kind: "container", containerId: "c1" }],
       ["containers:read", undefined],
     ]);
     expect(await serveCtxCall("outsideScope", ["c2"], served)).toEqual({ refused: "outside" });
@@ -238,6 +244,7 @@ describe("serveCtxCall", () => {
     await expect(serveCtxCall("auth.allows", ["*"], served)).rejects.toThrow(
       'auth.allows: argument 0 must be a capability other than "*"',
     );
+    await expect(serveCtxCall("auth.allows", ["scenes:write", "c1"], served)).rejects.toThrow();
     await expect(serveCtxCall("storage.get", [7], served)).rejects.toThrow(
       "storage.get: argument 0 must be a string",
     );

@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, statSync, unlinkSync, type Stats } from "node:fs";
+import { chmodSync, mkdirSync, statSync, lstatSync, unlinkSync, type Stats } from "node:fs";
 import { dirname } from "node:path";
 import type { TerminalHostEvent } from "@manifold/protocol";
 import { FrameReader, FrameTooLargeError, FrameWriter } from "./ipc-framing.ts";
@@ -73,10 +73,10 @@ function ensurePrivateDirectory(path: string): void {
  * ENOENT, so the file's own type decides: a socket nobody accepts on is stale, anything that
  * is not a socket is somebody else's file and is refused by name rather than unlinked.
  */
-async function reclaimStaleSocket(path: string): Promise<"none" | "stale"> {
+export async function reclaimStaleSocket(path: string): Promise<"none" | "stale"> {
   let info: Stats;
   try {
-    info = statSync(path);
+    info = lstatSync(path);
   } catch (error) {
     if (errorCode(error) === "ENOENT") return "none";
     throw error;

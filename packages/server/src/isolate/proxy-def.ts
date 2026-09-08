@@ -1,6 +1,7 @@
 import type { AnyActionDef, AssemblyDelta, LifecycleCtx, PluginLifecycle } from "@manifold/plugin";
 import {
   CapSchema,
+  ManifoldRefSchema,
   LocalNameSchema,
   PlaceRequestSchema,
   type ActionSummary,
@@ -12,6 +13,7 @@ import {
 import { z } from "zod";
 import type { ActionCtx, ActionHandler } from "../plugin-host.ts";
 import { IsolateDenial, IsolateLoadError, type IsolateLoadResult } from "./contract.ts";
+import { JobExecuteArgsSchema, jobDoorSchemas } from "../job-doors.ts";
 
 /**
  * THE TWO DIRECTIONS OF PROXYING, both pure over a transport. Outbound: the child's `loaded`
@@ -59,6 +61,8 @@ export function localActionDef(pluginId: string, summary: ActionSummary): AnyAct
     title: summary.title,
     caps: summary.caps,
     scope: summary.scope,
+    ...(summary.requirements === undefined ? {} : { requirements: summary.requirements }),
+    ...(summary.trace === undefined ? {} : { trace: summary.trace }),
     ...(summary.cleanup === true ? { cleanup: true } : {}),
     input: z.unknown().meta({ ...summary.input }),
     result: z.unknown().meta({ ...summary.result }),
@@ -145,6 +149,13 @@ export async function serveCtxCall(
   served: ServedCtx,
 ): Promise<unknown> {
   switch (method) {
+    case "streams.open":
+    case "streams.publish":
+    case "streams.close":
+    case "jobs.follow":
+    case "jobs.ack":
+    case "jobs.unfollow":
+      throw new Error("long-lived context handles require isolate ownership");
     case "storage.get":
       return served.ctx.storage.get(stringArg(args, 0, method));
     case "storage.set":
@@ -155,6 +166,11 @@ export async function serveCtxCall(
       return served.ctx.storage.keys(
         args[0] === undefined ? undefined : stringArg(args, 0, method),
       );
+    case "jobs.execute":
+    case "jobs.status":
+    case "jobs.input":
+    case "jobs.cancel":
+    case "jobs.output":
     case "auth.allows":
     case "outsideScope":
     case "newId":
@@ -167,16 +183,26 @@ export async function serveCtxCall(
   if (served.kind !== "dispatch") throw new Error(`slice_unavailable: ${method}`);
   const ctx = served.ctx;
   switch (method) {
+    case "jobs.execute":
+      return ctx.jobs.execute(JobExecuteArgsSchema.parse(args[0]));
+    case "jobs.status":
+      return ctx.jobs.status(jobDoorSchemas.status.parse({ node: args[0] }).node);
+    case "jobs.input":
+      return ctx.jobs.input(jobDoorSchemas.input.parse(args[0]));
+    case "jobs.cancel":
+      return ctx.jobs.cancel(jobDoorSchemas.cancel.parse({ node: args[0] }).node);
+    case "jobs.output":
+      return ctx.jobs.output(jobDoorSchemas.output.parse(args[0]));
     case "auth.allows": {
       const cap = CapSchema.safeParse(args[0]);
       if (!cap.success || cap.data === "*") {
         throw new Error(`${method}: argument 0 must be a capability other than "*"`);
       }
-      const containerId = args[1];
-      if (containerId !== undefined && typeof containerId !== "string") {
-        throw new Error(`${method}: argument 1 must be a container id`);
+      const ref = args[1] === undefined ? undefined : ManifoldRefSchema.safeParse(args[1]);
+      if (ref !== undefined && !ref.success) {
+        throw new Error(`${method}: argument 1 must be a structured reference`);
       }
-      return ctx.auth.allows(cap.data, containerId);
+      return ctx.auth.allows(cap.data, ref?.data);
     }
     case "outsideScope": {
       const containerId = args[0];

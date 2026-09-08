@@ -37,3 +37,11 @@ export {
   type TerminalHostListener,
 } from "./terminal-host-listener.ts";
 export { FrameReader, FrameTooLargeError, FrameWriter } from "./ipc-framing.ts";
+export { MachineJobOwner, type JobOwnerOptions } from "./job-owner.ts";
+export {
+  listenJobOwner,
+  unixJobOwnerDialer,
+  type JobOwnerLink,
+  type JobOwnerDialer,
+} from "./job-owner-link.ts";
+export { openConfiguredJobOwner } from "./job-runtime.ts";

@@ -1345,6 +1345,10 @@ export function CanvasView({
             return;
           }
           case "machine":
+          case "operation":
+          case "location":
+          case "job":
+          case "output":
           case "principal":
           case "plugin":
           case "action":

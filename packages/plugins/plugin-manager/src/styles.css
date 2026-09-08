@@ -1032,3 +1032,90 @@ a.plugin-manager-chip[data-tone="publisher"]:focus-visible {
   opacity: 0.45;
   cursor: default;
 }
+
+.plugin-manager-runtime :is(select, input) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.plugin-manager-runtime select {
+  border: 1px solid #495057;
+  border-radius: 0.4rem;
+  padding: 0.35rem;
+  color: #dee2e6;
+  background: #22262c;
+}
+
+.plugin-manager-runtime :is(h5, p) {
+  margin: 0;
+}
+
+.plugin-manager-runtime :is(h5, strong) {
+  font-size: 0.75rem;
+}
+
+.plugin-manager-runtime :is(small, code) {
+  font-size: 0.68rem;
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-runtime :is(small, p) {
+  color: #adb5bd;
+  line-height: 1.45;
+}
+
+.plugin-manager-runtime
+  :is(
+    .plugin-manager-runtime-identity,
+    .plugin-manager-runtime-location,
+    .plugin-manager-runtime-operation,
+    .plugin-manager-runtime-job,
+    .plugin-manager-runtime-form
+  ) {
+  display: grid;
+  min-width: 0;
+  gap: 0.4rem;
+}
+
+.plugin-manager-runtime-operation,
+.plugin-manager-runtime-job {
+  border: 1px solid #343a40;
+  border-radius: 0.45rem;
+  padding: 0.65rem;
+}
+
+.plugin-manager-runtime-right {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  border-bottom: 1px solid #343a40;
+  padding: 0.45rem 0;
+}
+
+.plugin-manager-runtime-right > div {
+  display: grid;
+  flex: 1 1 12rem;
+  min-width: 0;
+  gap: 0.2rem;
+}
+
+.plugin-manager-runtime-right.is-high-risk,
+.plugin-manager-runtime .plugin-manager-runtime-risk {
+  border: 1px solid #c92a2a;
+  border-radius: 0.35rem;
+  padding: 0.5rem;
+  color: #ffa8a8;
+  background: rgb(201 42 42 / 12%);
+}
+
+.plugin-manager-runtime button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.plugin-manager-runtime :is(button, input, select):focus-visible {
+  outline: 2px solid #8ea4e8;
+  outline-offset: 2px;
+}

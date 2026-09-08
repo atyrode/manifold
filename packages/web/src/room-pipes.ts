@@ -88,6 +88,7 @@ export function panelSessionHandle(
     getContainer: (id) => watch.getContainer(id),
     removeContainerTile: (id, tileId) => watch.removeContainerTile(id, tileId),
     subscribe: (topics, handler) => watch.subscribe(topics, handler),
+    openStream: (options) => watch.openStream(options),
     get status() {
       return watch.status;
     },

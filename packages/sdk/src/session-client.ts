@@ -88,6 +88,7 @@ import {
   type JoinBody,
   type PooledChannel,
 } from "./connection-pool.ts";
+import { type OpenStreamOptions, type StreamHandle } from "./stream.ts";
 
 /**
  * THE per-room session client. Browsers, tests, and tools all speak to the server
@@ -256,6 +257,7 @@ export class SessionClient {
    * itself, never the topics it happens to share.
    */
   private readonly subscriptions = new Set<TopicSubscription>();
+  private readonly streams = new Set<StreamHandle>();
   private currentDoc = createSceneDoc();
   private undoManager!: Y.UndoManager;
   private hasLocalEdits = false;
@@ -395,6 +397,30 @@ export class SessionClient {
     return promise;
   }
 
+  /** Opens a bounded continuous stream on this session's existing pooled transport. */
+  openStream(options: OpenStreamOptions): StreamHandle {
+    if (this.channel === null) this.attach();
+    const pooled = this.channel!.openStream(options);
+    const handle: StreamHandle = {
+      get snapshot() {
+        return pooled.snapshot;
+      },
+      get cursor() {
+        return pooled.cursor;
+      },
+      get status() {
+        return pooled.status;
+      },
+      on: (listener) => pooled.on(listener),
+      close: () => {
+        this.streams.delete(handle);
+        pooled.close();
+      },
+    };
+    this.streams.add(handle);
+    return handle;
+  }
+
   close(): void {
     this.closeError = null;
     const channel = this.channel;
@@ -405,6 +431,7 @@ export class SessionClient {
       record.release?.();
       record.release = null;
     }
+    for (const stream of this.streams) stream.close();
     // Releasing is the whole story: it leaves this room and, when this was the tab's last
     // room, closes the socket — a close IS a leave, so no extra frame is spent.
     channel?.release();
@@ -492,6 +519,7 @@ export class SessionClient {
    * The subscriptions themselves survive: `attach` re-declares them on the next channel.
    */
   private releaseSubscriptions(): void {
+    for (const stream of this.streams) stream.close();
     for (const record of this.subscriptions) {
       record.release?.();
       record.release = null;
@@ -506,6 +534,7 @@ export class SessionClient {
    * socket, which is what makes a subscription outlive a transport it never knew about.
    */
   private forgetSubscriptions(): void {
+    for (const stream of this.streams) stream.close();
     for (const record of this.subscriptions) record.release = null;
   }
 

@@ -7,6 +7,7 @@ import {
   attachWebGuest,
   definePanel,
   type GuestHost,
+  type GuestStreamHandle,
   type PanelEvent,
   type WebPluginDef,
 } from "../src/web.ts";
@@ -87,6 +88,56 @@ const counter = definePanel<{ count: number; viewer: string; denial: string | nu
     if (!outcome.ok) return { ...state, denial: outcome.denial.message };
     return { ...state, count: CountResult.parse(outcome.result).count, denial: null };
   },
+});
+
+test("mounted stream handles consume snapshots and close automatically on unmount", async () => {
+  let stream: GuestStreamHandle | undefined;
+  const fake = page({
+    id: "example.thing",
+    panels: {
+      feed: definePanel({
+        init: (viewer) => {
+          stream = viewer.openStream({
+            kind: "example.thing.output",
+            node: { kind: "container", containerId: "c1" },
+          });
+          return null;
+        },
+        view: () => ui.text("feed"),
+        update: (state) => state,
+      }),
+    },
+  });
+  init(fake);
+  await fake.next();
+  fake.send({ t: "mount", instance: "i1", panel: "feed" });
+  const open = await fake.next();
+  if (open.t !== "call") throw new Error("expected stream open");
+  const id = String(open.args[0]);
+  fake.send({ t: "reply", id: open.id, ok: true, result: null });
+  await fake.next();
+  fake.send({
+    t: "stream",
+    id,
+    message: {
+      type: "stream_snapshot",
+      subscriptionId: "wire1",
+      kind: "example.thing.output",
+      node: { kind: "container", containerId: "c1" },
+      epoch: "e1",
+      firstSeq: 1,
+      lastSeq: 1,
+      frames: [{ seq: 1, body: "line" }],
+    },
+  });
+  expect(stream?.snapshot?.frames).toEqual([{ seq: 1, body: "line" }]);
+  expect(stream?.cursor).toEqual({ epoch: "e1", seq: 1 });
+  const ack = await fake.next();
+  if (ack.t !== "call") throw new Error("expected acknowledgement");
+  fake.send({ t: "reply", id: ack.id, ok: true, result: null });
+  fake.send({ t: "unmount", instance: "i1" });
+  expect(stream?.status).toBe("closed");
+  expect(await fake.next()).toMatchObject({ t: "call", method: "closeStream", args: [id] });
 });
 
 describe("init and mount", () => {

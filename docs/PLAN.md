@@ -90,8 +90,36 @@ operations, evidence and postconditions. The design must establish real machine-
 confinement and preserve requester, authorizer and executor attribution across
 interruption and recovery; a permission card or successful process exit is not proof.
 
-This direction authorizes the common non-privileged capabilities Babel needs, not
-privileged activation, live deployment, release, fleet installation or expanded
-machine grants. Those remain separate operator actions. Contracts, implementation,
-verification and consumer cutover must be delivered together before claiming the
-integration complete.
+This direction authorizes the common non-privileged capabilities Babel needs and
+normal PR/integrated-preview delivery. Privileged activation, production promotion,
+release, fleet installation and expanded machine grants remain separate operator
+actions. Contracts, implementation, verification and consumer cutover must be
+delivered together before claiming the integration complete.
+
+The #375 continuation targets current main's policy-scoped contract.
+Its recovered blanket protocol-26 machine reset was not warranted: `hello.jobOwner`
+is optional and `job_command`/`job_event` are new gated variants, so the
+[machine add/reset rule](CONTRACTS.md#ws-wsmachine--machine-channel-json-data-fields-base64)
+retains compatible terminal agents and adds 26. Governed job traffic remains 26-only,
+including owner advertisement; the existing terminal-program guard remains.
+The instance wire independently resets to 26 because its closed capability/reference
+vocabularies expand; ordinary session clients remain exact-version. This current
+normative contract takes precedence over the blanket cutover proposed in immutable
+[ADR 0031](decisions/0031-governed-plugin-runtime.md), whose historical text is not rewritten.
+It does not authorize a fleet restart, newer-agent installation before its hub, or
+production rollout, and does not establish full Code/Babel delivery.
+
+Local source verification on dev-01 (2026-09-07) exercises real hub/agent/owner
+processes in a disposable delegated Linux unit: denial, queued revocation,
+transport replacement, duplicate identity, bounded sealed output, descendant
+cancellation and restart recovery. The required `verify:jobs` CI step provides
+that fixture; it is not a live-hub installation. A separate SDK-only smoke ran
+1,200 isolated-producer frames over 60 seconds, including reconnect, explicit
+gaps and denial, with no frame payloads in the durable event plane.
+
+The operator clarified on 2026-09-07 that preview delivery is expected, not held:
+integrated preview follows `main`, and PR previews follow their heads. The prior
+broad deployment hold recorded here was an agent interpretation error. Production
+promotion, release and fleet installation remain separate authorizations.
+At the local-source checkpoint above, browser acceptance had not yet been exercised;
+the SDK smoke is not browser evidence. Source implementation is not full release qualification.

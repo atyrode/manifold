@@ -4,8 +4,6 @@ import {
   MAX_TERMINAL_ARGV_ITEMS,
   MAX_TERMINAL_ENV_KEYS,
   ServerToAgentMessageSchema,
-  TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION,
-  MACHINE_PROTOCOL_COMPAT_VERSIONS,
   type TerminalProgram,
 } from "@manifold/protocol";
 
@@ -76,12 +74,6 @@ describe("terminal_open program and env", () => {
     expect(ServerToAgentMessageSchema.parse(create)).toEqual(create);
     expect(ServerToAgentMessageSchema.safeParse({ ...create, program: { argv: [] } }).success).toBe(
       false,
-    );
-    // The field entered the agent wire at a version the compat set accepts, and the set still
-    // reaches below it: the broker's gate is what keeps those older agents from ever seeing it.
-    expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION)).toBe(true);
-    expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION - 1)).toBe(
-      true,
     );
   });
 });

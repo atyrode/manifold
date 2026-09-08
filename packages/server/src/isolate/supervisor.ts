@@ -1,12 +1,14 @@
-import type { AssemblyDelta, LifecycleCtx } from "@manifold/plugin";
+import type { AssemblyDelta, LifecycleCtx, StreamProducer, JobFollow } from "@manifold/plugin";
 import {
   ISOLATE_CRASH_BUDGET,
   ISOLATE_DISPATCH_DEADLINE_MS,
   ISOLATE_IDLE_EVICT_MS,
+  ManifoldRefSchema,
   type IsolateChildFrame,
   type IsolateHook,
   type IsolateHostFrame,
   type RuntimeDeps,
+  type JobFollowUpdate,
 } from "@manifold/protocol";
 import type { Logger } from "../log.ts";
 import type { ActionCtx } from "../plugin-host.ts";
@@ -64,6 +66,12 @@ interface Handshake {
   readonly reject: (error: IsolateLoadError) => void;
 }
 
+interface JobObserver {
+  follow: JobFollow | null;
+  delivery: number;
+  readonly unacknowledged: number[];
+}
+
 /** Everything the supervisor keeps per loaded plugin. */
 class Isolate {
   state: IsolateState = "stopped";
@@ -75,6 +83,9 @@ class Isolate {
   /** The child's first report; a respawn's is not consulted, the bundle is pinned by hash. */
   loaded: LoadedFrame | null = null;
   readonly pending = new Map<string, Pending>();
+  readonly producers = new Map<string, StreamProducer>();
+  readonly jobObservers = new Map<string, JobObserver>();
+  nextProducer = 0;
   /** Unasked-for exits inside the budget window, as `runtime.now()` stamps. */
   crashes: number[] = [];
   /** Cancels the armed idle-eviction timer; a closure, so no platform timer type is named. */
@@ -447,6 +458,10 @@ export class IsolateSupervisor implements IsolateRunner {
 
   private failAll(isolate: Isolate, error: IsolateDenial): void {
     for (const pending of isolate.pending.values()) pending.fail(error);
+    for (const producer of isolate.producers.values()) producer.close();
+    isolate.producers.clear();
+    for (const observer of isolate.jobObservers.values()) observer.follow?.close();
+    isolate.jobObservers.clear();
   }
 
   // ---------------------------------------------------------------- inbound frames
@@ -522,16 +537,101 @@ export class IsolateSupervisor implements IsolateRunner {
     const pending =
       separator === -1 ? undefined : isolate.pending.get(frame.id.slice(0, separator));
     let reply: IsolateHostFrame;
-    if (pending === undefined) {
-      reply = { t: "reply", id: frame.id, ok: false, error: "no such request" };
-    } else {
-      try {
-        const result = await serveCtxCall(frame.method, frame.args, pending.served);
-        reply = { t: "reply", id: frame.id, ok: true, result: result ?? null };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        reply = { t: "reply", id: frame.id, ok: false, error: message.slice(0, 2048) };
+    try {
+      let result: unknown;
+      if (frame.method === "jobs.ack" || frame.method === "jobs.unfollow") {
+        const id = frame.args[0];
+        const observer = typeof id === "string" ? isolate.jobObservers.get(id) : undefined;
+        if (observer !== undefined && typeof id === "string") {
+          if (frame.method === "jobs.unfollow") {
+            isolate.jobObservers.delete(id);
+            observer.follow?.close();
+            this.armIdle(isolate);
+          } else {
+            if (frame.args[1] !== observer.unacknowledged[0]) {
+              isolate.jobObservers.delete(id);
+              observer.follow?.close();
+              throw new Error("invalid job observation acknowledgement");
+            }
+            observer.unacknowledged.shift();
+          }
+        }
+      } else if (frame.method === "streams.publish" || frame.method === "streams.close") {
+        const id = frame.args[0];
+        const producer = typeof id === "string" ? isolate.producers.get(id) : undefined;
+        if (frame.method === "streams.publish") {
+          if (producer === undefined) throw new Error("no such stream producer");
+          producer.publish(frame.args[1]);
+        } else producer?.close();
+      } else if (pending === undefined) {
+        throw new Error("no such request");
+      } else if (frame.method === "streams.open") {
+        if (pending.served.kind !== "dispatch") throw new Error("slice_unavailable: streams.open");
+        if (isolate.producers.size >= 256) throw new Error("too many stream producers");
+        const kind = frame.args[0];
+        if (typeof kind !== "string") throw new Error("streams.open requires a kind");
+        const producer = pending.served.ctx.streams.open(
+          kind,
+          ManifoldRefSchema.parse(frame.args[1]),
+        );
+        const id = `p${String(++isolate.nextProducer)}`;
+        isolate.producers.set(id, producer);
+        this.clearIdle(isolate);
+        const ownerChild = child;
+        producer.onClose(() => {
+          isolate.producers.delete(id);
+          if (isolate.child === ownerChild) ownerChild.send({ t: "producer_closed", id });
+          this.armIdle(isolate);
+        });
+        result = { id, epoch: producer.epoch };
+      } else if (frame.method === "jobs.follow") {
+        if (pending.served.kind !== "dispatch") throw new Error("slice_unavailable: jobs.follow");
+        const id = frame.args[1];
+        if (typeof id !== "string" || !/^j[0-9]{1,12}$/.test(id) || isolate.jobObservers.has(id))
+          throw new Error("invalid job observation identity");
+        if (isolate.jobObservers.size >= 16) throw new Error("too many job observations");
+        const node = ManifoldRefSchema.parse(frame.args[0]);
+        if (node.kind !== "job") throw new Error("job observation requires a job");
+        const observer: JobObserver = { follow: null, delivery: 0, unacknowledged: [] };
+        isolate.jobObservers.set(id, observer);
+        this.clearIdle(isolate);
+        const receive = (update: JobFollowUpdate): void => {
+          if (isolate.child !== child || isolate.jobObservers.get(id) !== observer) return;
+          if (observer.unacknowledged.length >= 16) {
+            isolate.jobObservers.delete(id);
+            observer.follow?.close();
+            child.send({
+              t: "job_update",
+              id,
+              delivery: ++observer.delivery,
+              update: { type: "closed", reason: "gap" },
+            });
+            this.armIdle(isolate);
+            return;
+          }
+          const delivery = ++observer.delivery;
+          observer.unacknowledged.push(delivery);
+          child.send({ t: "job_update", id, delivery, update });
+          if (update.type === "closed") {
+            isolate.jobObservers.delete(id);
+            this.armIdle(isolate);
+          }
+        };
+        try {
+          observer.follow = pending.served.ctx.jobs.follow(node, receive);
+          result = { id, snapshot: observer.follow.snapshot };
+        } catch (error) {
+          isolate.jobObservers.delete(id);
+          this.armIdle(isolate);
+          throw error;
+        }
+      } else {
+        result = await serveCtxCall(frame.method, frame.args, pending.served);
       }
+      reply = { t: "reply", id: frame.id, ok: true, result: result ?? null };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reply = { t: "reply", id: frame.id, ok: false, error: message.slice(0, 2048) };
     }
     if (isolate.child === child) child.send(reply);
   }
@@ -540,7 +640,14 @@ export class IsolateSupervisor implements IsolateRunner {
 
   private armIdle(isolate: Isolate): void {
     this.clearIdle(isolate);
-    if (isolate.state !== "running" || isolate.child === null || isolate.pending.size > 0) return;
+    if (
+      isolate.state !== "running" ||
+      isolate.child === null ||
+      isolate.pending.size > 0 ||
+      isolate.producers.size > 0 ||
+      isolate.jobObservers.size > 0
+    )
+      return;
     const timer = setTimeout(() => this.evict(isolate), this.idleEvictMs);
     // A sleeping child must never be what keeps the server process alive.
     timer.unref();
@@ -557,7 +664,13 @@ export class IsolateSupervisor implements IsolateRunner {
   private evict(isolate: Isolate): void {
     isolate.cancelIdle = null;
     const child = isolate.child;
-    if (child === null || isolate.state !== "running" || isolate.pending.size > 0) return;
+    if (
+      child === null ||
+      isolate.state !== "running" ||
+      isolate.pending.size > 0 ||
+      isolate.producers.size > 0
+    )
+      return;
     this.logger.info("isolate_evicted", {
       plugin: isolate.ref.pluginId,
       pid: child.pid,

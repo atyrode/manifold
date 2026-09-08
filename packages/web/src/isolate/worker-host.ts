@@ -1,7 +1,8 @@
-import type { HostServices, SessionHandle } from "@manifold/plugin";
+import type { HostServices, SessionHandle, StreamHandle } from "@manifold/plugin";
 import { instanceUrl } from "@manifold/plugin/hooks";
 import {
   WebIsolateWorkerFrameSchema,
+  StreamOpenSchema,
   type Cap,
   type PlacementDestination,
   type PlacementRef,
@@ -126,6 +127,15 @@ export class WorkerHost {
   /** The panels the guest announced with `ready`; null until it has. */
   private panels: ReadonlySet<string> | null = null;
   private readonly mounted = new Map<string, Mounted>();
+  private readonly streams = new Map<
+    string,
+    {
+      instance: string;
+      handle: StreamHandle;
+      release: () => void;
+      unacknowledged: number;
+    }
+  >();
   /** The worker-wide fault, once there is one; sticky for the life of this supervisor. */
   private fault: string | null = null;
   private stopped = false;
@@ -207,6 +217,9 @@ export class WorkerHost {
     return () => {
       if (this.mounted.get(instance) !== entry) return;
       this.mounted.delete(instance);
+      for (const [id, stream] of this.streams) {
+        if (stream.instance === instance) this.closeStream(id);
+      }
       if (entry.announced && this.fault === null) this.post({ t: "unmount", instance });
     };
   }
@@ -227,6 +240,7 @@ export class WorkerHost {
     if (this.stopped) return;
     this.stopped = true;
     this.mounted.clear();
+    for (const id of this.streams.keys()) this.closeStream(id);
     this.worker?.terminate();
     this.worker = null;
   }
@@ -328,9 +342,65 @@ export class WorkerHost {
    * `action`'s arguments are `unknown` by contract (the door parses them); the rest are checked
    * here. A thrown error becomes a `reply ok:false` naming it.
    */
+  private closeStream(id: string): void {
+    const stream = this.streams.get(id);
+    if (stream === undefined) return;
+    this.streams.delete(id);
+    stream.release();
+    stream.handle.close();
+  }
+
   private dispatch(method: WebHostMethod, args: readonly unknown[]): unknown {
     const client: SessionHandle = this.host.client;
     switch (method) {
+      case "openStream": {
+        const id = argText(method, args, 0);
+        if (id.length === 0 || id.length > 64) throw new Error("invalid stream handle id");
+        const instance = argText(method, args, 2);
+        if (!this.mounted.get(instance)?.announced) throw new Error("stream owner is not mounted");
+        if (this.streams.has(id)) throw new Error("duplicate stream handle");
+        if (this.streams.size >= 64) throw new Error("too many stream subscriptions");
+        const options = args[1];
+        if (typeof options !== "object" || options === null)
+          throw new Error("stream options required");
+        const request = StreamOpenSchema.parse({
+          ...options,
+          type: "stream_open",
+          subscriptionId: id,
+        });
+        const handle = client.openStream(request);
+        const stream = { instance, handle, release: () => {}, unacknowledged: 0 };
+        this.streams.set(id, stream);
+        stream.release = handle.on((message) => {
+          if (this.streams.get(id) !== stream) return;
+          if (stream.unacknowledged >= 64) {
+            this.closeStream(id);
+            this.post({
+              t: "stream",
+              id,
+              message: {
+                type: "stream_closed",
+                subscriptionId: message.subscriptionId,
+                reason: "slow_consumer",
+              },
+            });
+            return;
+          }
+          stream.unacknowledged += 1;
+          this.post({ t: "stream", id, message });
+          if (message.type === "stream_closed" || message.type === "stream_refused")
+            this.closeStream(id);
+        });
+        return null;
+      }
+      case "closeStream":
+        this.closeStream(argText(method, args, 0));
+        return null;
+      case "ackStream": {
+        const stream = this.streams.get(argText(method, args, 0));
+        if (stream !== undefined && stream.unacknowledged > 0) stream.unacknowledged -= 1;
+        return null;
+      }
       case "action":
         return client.action(argText(method, args, 0), args[1]);
       case "place":
@@ -376,6 +446,7 @@ export class WorkerHost {
     this.fault = error;
     console.error("evt=web_isolate_fault", { plugin: this.deps.pluginId, error });
     for (const entry of this.mounted.values()) entry.onFault(error);
+    for (const id of this.streams.keys()) this.closeStream(id);
     this.worker?.terminate();
     this.worker = null;
   }

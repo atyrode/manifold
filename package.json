@@ -22,6 +22,8 @@
     "verify:pwa": "bun scripts/verify-pwa.ts",
     "verify:axioms": "bun scripts/verify-axioms.ts",
     "verify:trace": "bun scripts/verify-trace.ts",
+    "verify:jobs": "bun scripts/verify-jobs.ts",
+    "verify:jobs:browser": "bun scripts/verify-jobs-browser.ts",
     "changelog:generate": "bun scripts/generate-web-changelog.ts",
     "changelog:check": "bun scripts/generate-web-changelog.ts --check",
     "release": "bun scripts/release.ts",
@@ -41,7 +43,8 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "prettier": "^3.9.6",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.68.0"
+    "typescript-eslint": "^8.68.0",
+    "zod": "4.4.3"
   },
   "patchedDependencies": {
     "@xterm/xterm@6.0.0": "patches/@xterm%2Fxterm@6.0.0.patch"

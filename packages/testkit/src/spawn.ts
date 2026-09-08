@@ -32,7 +32,7 @@ import {
 } from "@manifold/protocol";
 import { SessionClient } from "@manifold/sdk";
 import { existsSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -648,7 +648,11 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
       50,
     );
   } catch (error) {
-    await stopHost();
+    try {
+      await stopHost();
+    } finally {
+      await rm(socketDir, { recursive: true, force: true });
+    }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${message}\n${formatOutput(output)}`, { cause: error });
   }
@@ -667,7 +671,11 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
     try {
       await stopTransport(signal);
     } finally {
-      await stopHost(signal);
+      try {
+        await stopHost(signal);
+      } finally {
+        await rm(socketDir, { recursive: true, force: true });
+      }
     }
   };
   try {

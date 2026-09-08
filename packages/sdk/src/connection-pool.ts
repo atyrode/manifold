@@ -17,6 +17,7 @@ import {
   ReconnectBackoff,
   classifyEnvelope,
 } from "./dial-loop.ts";
+import { StreamState, type OpenStreamOptions, type StreamHandle } from "./stream.ts";
 
 /**
  * ONE socket per tab, ever. A room used to be a socket; now a room is a CHANNEL on a
@@ -56,7 +57,7 @@ export type ChannelFrame = Exclude<
  */
 export type ConnectionFrame = Exclude<
   Extract<ServerMessageBody, { type: (typeof CONNECTION_LEVEL_MESSAGE_TYPES)[number] }>,
-  { type: "ping" }
+  { type: "ping" } | { subscriptionId: string }
 >;
 
 /**
@@ -127,6 +128,7 @@ export interface PooledChannel {
    * re-subscribes on a transport event; it subscribes once and releases once.
    */
   subscribe(topics: readonly ManifoldRef[]): () => void;
+  openStream(options: OpenStreamOptions): StreamHandle;
   /** Re-establishes the transport: an explicit `connect()` on a live handle asks for this. */
   redial(): void;
   /** Leaves the room, closing the socket when this was its last channel. */
@@ -268,6 +270,9 @@ class PooledConnection {
   private readonly connectionState: ConnectionState = { plugins: null };
   /** Live subscriptions, keyed by the ONE joined form of their address. */
   private readonly topics = new Map<string, TopicRecord>();
+  private readonly streams = new Map<string, { state: StreamState; count: number }>();
+  private readonly streamsById = new Map<string, StreamState>();
+  private nextStreamSeq = 0;
   private nextChannelSeq = 0;
   private readonly backoff: ReconnectBackoff;
   private readonly liveness = new LivenessWatchdog({
@@ -358,6 +363,7 @@ class PooledConnection {
         this.sendBody(record, body);
       },
       subscribe: (topics) => this.subscribe(topics),
+      openStream: (options) => this.openStream(options),
       redial: () => {
         this.dial();
       },
@@ -419,6 +425,42 @@ class PooledConnection {
     const socket = this.socket;
     if (socket === null || socket.readyState !== 1) return;
     socket.send(JSON.stringify(body));
+  }
+
+  private openStream(options: OpenStreamOptions): StreamHandle {
+    // Share only a replay we still retain in full; never pretend an old snapshot
+    // contains live frames already delivered to earlier holders.
+    const key = JSON.stringify([
+      options.kind,
+      formatManifoldUri(options.node),
+      options.cursor ?? null,
+    ]);
+    let held = this.streams.get(key);
+    if (
+      held === undefined ||
+      held.state.status === "closed" ||
+      held.state.status === "refused" ||
+      (held.state.snapshot !== null && held.state.cursor?.seq !== held.state.snapshot.lastSeq)
+    ) {
+      const state = new StreamState(`s${++this.nextStreamSeq}`, options);
+      held = { state, count: 0 };
+      this.streams.set(key, held);
+      this.streamsById.set(state.subscriptionId, state);
+      this.writeConnection({
+        type: "stream_open",
+        subscriptionId: state.subscriptionId,
+        ...options,
+      });
+    }
+    held.count += 1;
+    const owned = held;
+    return held.state.handle(() => {
+      owned.count -= 1;
+      if (owned.count !== 0) return;
+      if (this.streams.get(key) === owned) this.streams.delete(key);
+      this.streamsById.delete(owned.state.subscriptionId);
+      this.writeConnection({ type: "stream_close", subscriptionId: owned.state.subscriptionId });
+    });
   }
 
   /**
@@ -503,6 +545,7 @@ class PooledConnection {
       record.sent = false;
       record.sink.transportPhase(phase);
     }
+    for (const state of this.streamsById.values()) state.reconnect();
 
     const socket = this.factory(this.url);
     this.socket = socket;
@@ -523,6 +566,17 @@ class PooledConnection {
         "subscribe",
         [...this.topics.values()].map((held) => held.ref),
       );
+      for (const state of this.streamsById.values()) {
+        if (state.status === "closed" || state.status === "refused") continue;
+        const { kind, node } = state.options;
+        this.writeConnection({
+          type: "stream_open",
+          subscriptionId: state.subscriptionId,
+          kind,
+          node,
+          ...(state.cursor === undefined ? {} : { cursor: state.cursor }),
+        });
+      }
       this.liveness.arm(socket);
     };
 
@@ -582,6 +636,7 @@ class PooledConnection {
       }
 
       this.backoff.schedule();
+      for (const state of this.streamsById.values()) state.reconnect();
       for (const record of this.channels.values()) record.sink.transportPhase("reconnecting");
     };
   }
@@ -602,6 +657,10 @@ class PooledConnection {
         tabs that are perfectly alive. Replying to an inbound frame is throttled by nothing.
        */
       if (this.socket?.readyState === 1) this.socket.send(PONG_FRAME);
+      return;
+    }
+    if ("subscriptionId" in frame) {
+      this.streamsById.get(frame.subscriptionId)?.receive(frame);
       return;
     }
     if (frame.type === "plugins" || frame.type === "event") {
@@ -696,6 +755,15 @@ class PooledConnection {
     const orphans = [...this.channels.values()];
     this.channels.clear();
     this.onDead(this);
+    for (const state of this.streamsById.values()) {
+      state.receive({
+        type: "stream_closed",
+        subscriptionId: state.subscriptionId,
+        reason: error?.message ?? "transport closed",
+      });
+    }
+    this.streams.clear();
+    this.streamsById.clear();
     for (const record of orphans) {
       record.rejoin.cancel();
       this.clearInit(record);

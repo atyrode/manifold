@@ -61,6 +61,7 @@ import {
   pluginStatus,
   type PluginStatus,
 } from "./status.ts";
+import { MachineRuntime } from "./runtime.tsx";
 
 /**
  * Composition administration, rendered by the composition it administers (issue #239). The
@@ -518,12 +519,11 @@ function ContributedKind({
 }
 
 /**
- * THE DETAIL SHEET: everything the roster says about one row, as cards. Nothing here is a
- * second read — every card is a projection of the same `PluginRosterEntry` the list renders,
- * plus the composed settings table for the settings card — so the sheet and the row can never
- * disagree about a plugin.
+ * THE DETAIL SHEET: roster declarations and composed settings, with machine installation
+ * and consent read separately through the public jobs door for the selected machine.
  */
 function PluginDetail({
+  host,
   entry,
   roster,
   settings,
@@ -541,6 +541,7 @@ function PluginDetail({
   onUninstall,
   onSet,
 }: {
+  readonly host: SectionProps["host"];
   readonly entry: PluginRosterEntry;
   readonly roster: readonly PluginRosterEntry[];
   readonly settings: readonly ComposedSetting[];
@@ -709,6 +710,8 @@ function PluginDetail({
           </p>
         )}
       </SheetCard>
+
+      <MachineRuntime key={manifest.id} host={host} entry={entry} />
 
       <SheetCard title="Permissions" testid="plugin-manager-detail-permissions">
         {permissions.length === 0 ? (
@@ -1807,6 +1810,7 @@ export function PluginManagerSection({ host }: SectionProps): ReactElement {
                       data-testid="plugin-manager-sheet"
                     >
                       <PluginDetail
+                        host={host}
                         entry={selected}
                         roster={roster}
                         settings={settings}
