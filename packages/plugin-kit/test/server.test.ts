@@ -435,7 +435,12 @@ describe("dispatch", () => {
                   ? ctx.storage.compareAndSet("choice", oversize, "value")
                   : ctx.storage.compareAndSet("choice", null, oversize);
           // An invalid call must return its promise before the rejection is observed.
-          return { text: await operation.then(() => "accepted", () => "rejected") };
+          return {
+            text: await operation.then(
+              () => "accepted",
+              () => "rejected",
+            ),
+          };
         },
       },
     });

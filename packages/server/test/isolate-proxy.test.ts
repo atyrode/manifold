@@ -283,10 +283,18 @@ describe("serveCtxCall", () => {
         kind: "hook" as const,
         ctx: { pluginId: manifest.id, storage, now: () => 0, emit: () => {} },
       };
-      expect(await serveCtxCall("storage.compareAndSet", ["choice", "private", "stolen"], dispatch)).toBe(false);
-      expect(await serveCtxCall("storage.compareAndSet", ["choice", null, "mine"], hook)).toBe(true);
-      expect(await serveCtxCall("storage.compareAndSet", ["choice", "mine", "updated"], dispatch)).toBe(true);
-      expect(await serveCtxCall("storage.compareAndSet", ["choice", "mine", "stale"], hook)).toBe(false);
+      expect(
+        await serveCtxCall("storage.compareAndSet", ["choice", "private", "stolen"], dispatch),
+      ).toBe(false);
+      expect(await serveCtxCall("storage.compareAndSet", ["choice", null, "mine"], hook)).toBe(
+        true,
+      );
+      expect(
+        await serveCtxCall("storage.compareAndSet", ["choice", "mine", "updated"], dispatch),
+      ).toBe(true);
+      expect(await serveCtxCall("storage.compareAndSet", ["choice", "mine", "stale"], hook)).toBe(
+        false,
+      );
       for (const args of [
         ["$version", null, "9.9"],
         ["bad key", null, "value"],
