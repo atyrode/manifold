@@ -99,7 +99,7 @@ export class JobStore {
   }
   inputResult(jobId: string, requestId: string, state: "accepted" | "rejected" | "unknown", reason: string | null): void {
     this.store.db.query(
-      "UPDATE machine_job_inputs SET state=?,reason=? WHERE job_id=? AND request_id=?",
+      "UPDATE machine_job_inputs SET state=?,reason=? WHERE job_id=? AND request_id=? AND state!='accepted'",
     ).run(state, reason, jobId, requestId);
   }
   reserve(request: JobRequest, now: number): JobRecord {

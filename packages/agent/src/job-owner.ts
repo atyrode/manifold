@@ -369,10 +369,15 @@ export class MachineJobOwner {
     }, job);
     const data = Buffer.from(command.data, "base64");
     const seat = this.sink;
+    if (job.inputRequests.has(command.requestId)) {
+      // A duplicate does not prove that the original command was unconsumed.
+      reply(false, "job_input_delivery_unknown");
+      return;
+    }
     if (job.request.terminal || job.result.state !== "started" || !job.handle ||
         job.inputEnded || job.inputBusy || command.seq !== job.inputSeq ||
         job.inputSeq === Number.MAX_SAFE_INTEGER ||
-        job.inputRequests.has(command.requestId) || job.inputRequests.size >= 4096 ||
+        job.inputRequests.size >= 4096 ||
         job.inputBytes + data.length > job.request.limits.outputBytes ||
         !seat || this.inputAuthorizations.has(command.requestId)) {
       reply(false, "job_input_conflict_or_closed");

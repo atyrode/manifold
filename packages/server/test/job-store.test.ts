@@ -92,6 +92,11 @@ test("native input cursor and unknown attempts survive restart without permittin
     job_id: "stdin", request_id: "attempt", seq: 4, actor: "input-actor",
     trace_id: "input-trace", decision_id: null, state: "unknown", reason: "job_input_delivery_unknown",
   });
+  f.jobs.inputResult("stdin", "attempt", "accepted", null);
+  f.jobs.inputResult("stdin", "attempt", "unknown", "job_input_delivery_unknown");
+  f.reopen();
+  expect(f.store.db.query("SELECT state,reason FROM machine_job_inputs").get())
+    .toEqual({ state: "accepted", reason: null });
 });
 
 test("durable discovery de-duplicates scheduled jobs and continues strictly through tied timestamps", () => {

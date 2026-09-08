@@ -411,6 +411,12 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
       expect(events).toContainEqual(expect.objectContaining({
         type: "input_result", requestId: "first-input", accepted: true, nextInputSeq: 1,
       }));
+      await sendInput("first-input", 0);
+      expect(events.at(-1)).toMatchObject({
+        type: "input_result", requestId: "first-input", accepted: false,
+        reason: "job_input_delivery_unknown", nextInputSeq: 1,
+      });
+      expect(inputCalls).toBe(1);
       write = Promise.withResolvers<void>();
       const failedInput = sendInput("failed-input", 1);
       await owner.execute({ type: "input_authorized", jobId: stdinBody.jobId, requestId: "failed-input", allowed: true });
