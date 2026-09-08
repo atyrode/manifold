@@ -106,6 +106,12 @@ export class JobService {
   private readonly runCursorKey = randomBytes(32);
   private changeNotifier: JobChanges | null = null;
 
+  private readonly inputSync = new Map<string, JobChannel>();
+  private readonly inputs = new Map<string, {
+    channel: JobChannel; requestId: string; seq: number; authorized: boolean;
+    auth: AuthContext; node: ManifoldRef; callerPluginId: string;
+    finish(error?: Error): void;
+  }>();
   setChangeNotifier(notify: JobChanges): void {
     this.changeNotifier = notify;
   }
@@ -138,6 +144,9 @@ export class JobService {
       inputDigest: digest(record.request.input),
       resourceBindingDigest: digest(record.request.resourceBindings ?? null),
       state: record.state,
+      nextInputSeq: this.inputSync.get(jobId) === this.channels.get(machineId)?.channel &&
+        this.channels.get(machineId)?.proved && !this.inputs.has(jobId)
+        ? record.nextInputSeq : null,
       result: record.result,
       authority: this.jobs.authority(record),
       ...(record.request.terminal ? { terminal: record.request.terminal } : {}),
@@ -932,6 +941,9 @@ export class JobService {
     readonly runtime: RuntimeDeps,
   ) {
     this.jobs = new JobStore(store, (job, phase) => this.lifecycle(job, phase));
+    store.db.query(
+      "UPDATE machine_job_inputs SET state='unknown',reason='job_input_delivery_unknown' WHERE state='pending'",
+    ).run();
     this.jobSchedules = new JobSchedules(store);
     this.jobSchedules.setChangeNotifier((request) => this.changed(request));
     const keys = store.transaction(() => {
@@ -1615,6 +1627,8 @@ export class JobService {
     }
   }
   online(channel: JobChannel, owner: JobOwner | undefined, epoch: string): void {
+    const previous = this.channels.get(channel.machineId)?.channel;
+    if (previous) this.disconnectInputs(previous);
     this.channels.delete(channel.machineId);
     this.store.db
       .query("UPDATE machine_job_installs SET ready=0 WHERE machine_id=?")
@@ -1642,12 +1656,20 @@ export class JobService {
     });
   }
   offline(channel: JobChannel): void {
+    this.disconnectInputs(channel);
     if (this.channels.get(channel.machineId)?.channel === channel) {
       this.channels.delete(channel.machineId);
       this.store.db
         .query("UPDATE machine_job_installs SET ready=0 WHERE machine_id=?")
         .run(channel.machineId);
     }
+  }
+  private disconnectInputs(channel: JobChannel): void {
+    for (const [jobId, seat] of this.inputSync)
+      if (seat === channel) this.inputSync.delete(jobId);
+    for (const pending of [...this.inputs.values()])
+      if (pending.channel === channel)
+        pending.finish(new ServiceError("conflict", "job_input_delivery_unknown"));
   }
   private sendInstall(install: JobInstallation): void {
     const live = this.channels.get(install.machineId);
@@ -1737,6 +1759,85 @@ export class JobService {
       return;
     }
     if (!live.proved) return;
+    if (event.type === "input_authorize") {
+      const job = this.jobs.get(event.jobId);
+      const pending = this.inputs.get(event.jobId);
+      let allowed = false;
+      try {
+        if (!job || !this.inputOwner(job, channel)) fail("job_input_owner_unavailable");
+        this.inputAuthority(job);
+        let context: AuthContext;
+        let requirements: AuthorityRequirement[];
+        if (event.parentJobId === null) {
+          if (!pending || pending.channel !== channel || pending.requestId !== event.requestId ||
+              pending.seq !== event.seq || pending.authorized) fail("job_input_request_missing");
+          context = this.context(this.auth.credentialReference(pending.auth))!;
+          this.authorizedJob(pending.auth, pending.node, "jobs:input", pending.callerPluginId);
+          requirements = [{ cap: "jobs:input", ref: pending.node }];
+        } else {
+          if (job.request.parent?.parentJobId !== event.parentJobId || pending)
+            fail("job_input_parent_mismatch");
+          context = this.context(job.request.credential)!;
+          requirements = this.requirements(job.request);
+          if (!this.jobs.reserveInput(job, event.requestId, event.seq,
+              context.principal.id, job.request.traceId)) fail("job_input_request_replayed");
+        }
+        const decision = this.decide({
+          credential: this.auth.credentialReference(context), pluginId: job.request.pluginId,
+          action: "engine.jobs.input", evidence: requirements.map((requirement) =>
+            this.auth.explain(context, requirement)),
+        });
+        this.store.db.query(
+          "UPDATE machine_job_inputs SET decision_id=? WHERE job_id=? AND request_id=?",
+        ).run(decision.decisionId, event.jobId, event.requestId);
+        allowed = decision.allowed;
+        if (allowed) {
+          if (pending) pending.authorized = true;
+          this.inputSync.delete(event.jobId);
+        }
+      } catch {
+        // Input refusals are not job lifecycle events and never cancel another valid run.
+      }
+      channel.send({ type: "job_command", command: {
+        type: "input_authorized", jobId: event.jobId, requestId: event.requestId, allowed,
+      } });
+      return;
+    }
+    if (event.type === "input_state" || event.type === "input_result") {
+      const job = this.jobs.get(event.jobId);
+      if (!job || !this.inputOwner(job, channel)) return;
+      const pending = this.inputs.get(event.jobId);
+      if (event.type === "input_state") {
+        if (event.requestDigest !== job.request.requestDigest ||
+            event.ownerId !== job.permit?.ownerId ||
+            event.ownerGeneration !== job.permit.ownerGeneration ||
+            (job.nextInputSeq !== null && event.nextInputSeq < job.nextInputSeq)) return;
+        this.jobs.inputCursor(event.jobId, event.nextInputSeq, event.stdinClosed);
+        if (!pending) this.inputSync.set(event.jobId, channel);
+        this.changed(job.request);
+        return;
+      }
+      if (event.accepted && (event.reason !== null || event.nextInputSeq !== event.seq + 1)) return;
+      if (event.nextInputSeq !== null)
+        this.jobs.inputCursor(event.jobId, event.nextInputSeq, event.stdinClosed);
+      this.jobs.inputResult(event.jobId, event.requestId,
+        event.accepted ? "accepted" : event.reason === "job_input_delivery_unknown" ? "unknown" : "rejected",
+        event.reason);
+      if (!pending || pending.channel !== channel || pending.requestId !== event.requestId ||
+          pending.seq !== event.seq) return;
+      try {
+        this.authorizedJob(pending.auth, pending.node, "jobs:input", pending.callerPluginId);
+        this.inputAuthority(job);
+        if (!event.accepted || !pending.authorized)
+          throw new ServiceError("conflict", event.reason ?? "job_input_unconfirmed");
+        pending.finish();
+      } catch {
+        pending.finish(new ServiceError("conflict",
+          event.accepted ? "job_input_authority_revoked_after_delivery" :
+            event.reason ?? "job_input_unconfirmed"));
+      }
+      return;
+    }
     if (event.type === "installed") {
       const install = this.jobs.installation(channel.machineId, event.pluginId);
       if (
@@ -1906,19 +2007,69 @@ export class JobService {
     return job;
   }
   status(auth: AuthContext, node: ManifoldRef, callerPluginId = "engine.jobs"): JobRecord {
-    return this.authorizedJob(auth, node, "jobs:read", callerPluginId);
+    const job = this.authorizedJob(auth, node, "jobs:read", callerPluginId);
+    const live = this.channels.get(job.request.machineId);
+    if (live?.proved && this.inputSync.get(job.request.jobId) !== live.channel && !this.inputs.has(job.request.jobId))
+      live.channel.send({ type: "job_command", command: { type: "status", jobId: job.request.jobId } });
+    return this.jobs.get(job.request.jobId)!;
   }
-  input(
-    auth: AuthContext,
-    node: ManifoldRef,
-    seq: number,
-    data: string,
-    eof: boolean,
-    callerPluginId = "engine.jobs",
-  ): void {
+  private inputOwner(job: JobRecord, channel: JobChannel): boolean {
+    const live = this.channels.get(job.request.machineId);
+    return live?.channel === channel && live.proved &&
+      job.permit?.ownerId === live.owner.ownerId &&
+      job.permit.ownerGeneration === live.owner.generation;
+  }
+  private inputAuthority(job: JobRecord): void {
+    const reason = this.jobs.cancellation(job.request.jobId) ??
+      this.reauthorizeDeferred(job.request) ?? this.invocationRefusal(job.request);
+    if (reason) fail(reason);
+    if (job.state !== "started" || job.stdinClosed || job.request.terminal ||
+        !this.jobs.installation(job.request.machineId, job.request.pluginId, job.request.installationRevision)
+          ?.machine.operations[job.request.operationId]?.stdin)
+      fail("job_input_not_open");
+  }
+  async input(
+    auth: AuthContext, node: ManifoldRef, requestId: string, seq: number,
+    data: string, eof: boolean, callerPluginId = "engine.jobs", traceId = "native-input",
+  ): Promise<void> {
     const job = this.authorizedJob(auth, node, "jobs:input", callerPluginId);
-    const command = { type: "input" as const, jobId: job.request.jobId, seq, data, eof };
-    this.channels.get(job.request.machineId)?.channel.send({ type: "job_command", command });
+    this.inputAuthority(job);
+    const live = this.channels.get(job.request.machineId);
+    if (!live || !this.inputOwner(job, live.channel)) fail("job_input_owner_unavailable");
+    if (this.inputs.has(job.request.jobId) || this.inputs.size >= 64)
+      throw new ServiceError("conflict", "job_input_pending");
+    if (this.inputSync.get(job.request.jobId) !== live.channel || job.nextInputSeq === null)
+      throw new ServiceError("conflict", "job_input_cursor_unconfirmed");
+    if (seq !== job.nextInputSeq) throw new ServiceError("conflict", "job_input_sequence_conflict");
+    const command = JobCommandSchema.parse({ type: "input", jobId: job.request.jobId, requestId, seq, data, eof });
+    if (!this.jobs.reserveInput(job, requestId, seq, auth.principal.id, traceId))
+      throw new ServiceError("conflict", "job_input_request_replayed");
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    const finish = (error?: Error) => {
+      if (this.inputs.get(job.request.jobId)?.requestId !== requestId) return;
+      clearTimeout(timer);
+      this.inputs.delete(job.request.jobId);
+      if (error) {
+        // Transport errors cannot establish whether stdin consumed any bytes.
+        this.store.db.query(
+          "UPDATE machine_job_inputs SET state='unknown',reason=? WHERE job_id=? AND request_id=? AND state='pending'",
+        ).run("job_input_delivery_unknown", job.request.jobId, requestId);
+        reject(error);
+      } else resolve();
+    };
+    const timer = setTimeout(() => finish(new ServiceError("conflict", "job_input_delivery_unknown")), 12000);
+    this.inputSync.delete(job.request.jobId);
+    this.inputs.set(job.request.jobId, {
+      channel: live.channel, requestId, seq, authorized: false, auth: structuredClone(auth),
+      node: structuredClone(node), callerPluginId, finish,
+    });
+    try {
+      if (!live.channel.send({ type: "job_command", command }))
+        finish(new ServiceError("conflict", "job_input_delivery_unknown"));
+    } catch {
+      finish(new ServiceError("conflict", "job_input_delivery_unknown"));
+    }
+    return promise;
   }
   cancel(auth: AuthContext, node: ManifoldRef, callerPluginId = "engine.jobs"): void {
     this.cancelRecord(this.authorizedJob(auth, node, "jobs:cancel", callerPluginId), "requested");

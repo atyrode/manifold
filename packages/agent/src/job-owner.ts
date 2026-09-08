@@ -79,6 +79,8 @@ interface OwnedJob {
   inputBytes: number;
   inputTail: Promise<void>;
   inputEnded: boolean;
+  inputBusy: boolean;
+  inputRequests: Set<string>;
   depth: number;
   children: Set<string>;
   empty: Promise<void>;
@@ -108,6 +110,9 @@ export class MachineJobOwner {
   private draining = false;
   private ready = false;
   private terminalHostId: string | undefined;
+  private readonly inputAuthorizations = new Map<string, {
+    jobId: string; resolve(allowed: boolean): void;
+  }>();
 
   private constructor(private readonly options: JobOwnerOptions) {
     this.admissionKey = createPublicKey(options.admissionPublicKey);
@@ -150,6 +155,18 @@ export class MachineJobOwner {
         const job = owner.newJob(request);
         job.result = JobResultSchema.parse(Reflect.get(raw, "result"));
         owner.jobs.set(request.jobId, job);
+        continue;
+      }
+      if (kind === "input") {
+        const job = owner.requireJob(String(Reflect.get(raw, "jobId")));
+        const seq = Reflect.get(raw, "nextInputSeq");
+        const requestId = Reflect.get(raw, "requestId");
+        if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq !== job.inputSeq + 1 || typeof requestId !== "string")
+          throw new Error("invalid_input_journal");
+        job.inputSeq = seq;
+        job.inputRequests.add(requestId);
+        // Recovery never resumes a possibly partially written stream.
+        job.inputEnded = true;
         continue;
       }
       if (kind === "result") {
@@ -219,11 +236,14 @@ export class MachineJobOwner {
       if (job.outputGap) sink({ type: "refusal", jobId: job.request.jobId, reason: "output_gap" });
     }
     return () => {
-      if (this.sink === sink) this.sink = null;
+      if (this.sink === sink) {
+        this.sink = null;
+        for (const pending of this.inputAuthorizations.values()) pending.resolve(false);
+      }
     };
   }
 
-  async execute(raw: unknown): Promise<void> {
+  async execute(raw: unknown, parentJobId: string | null = null): Promise<void> {
     const command = JobCommandSchema.parse(raw);
     if (!this.ready) throw new Error("job_owner_not_ready");
     try {
@@ -267,34 +287,21 @@ export class MachineJobOwner {
         case "status": {
           const job = this.requireJob(command.jobId);
           this.emit({ type: "result", result: job.result }, job);
+          await job.inputTail;
+          this.emitInputState(job);
           return;
         }
         case "cancel":
           await this.cancel(command.jobId);
           return;
-        case "input": {
-          const job = this.requireJob(command.jobId);
-          if (job.request.terminal) throw new Error("terminal_input_owner_required");
-          const data = Buffer.from(command.data, "base64");
-          if (
-            command.seq !== job.inputSeq ||
-            job.inputEnded ||
-            job.inputBytes + data.length > job.request.limits.outputBytes ||
-            !job.handle
-          )
-            throw new Error("job_input_gap_or_limit");
-          job.inputSeq++;
-          job.inputBytes += data.length;
-          const handle = job.handle;
-          job.inputEnded = command.eof;
-          const accepted = job.inputTail.then(async () => {
-            await handle.input(data);
-            if (command.eof) handle.endInput();
-          });
-          job.inputTail = accepted;
-          await accepted;
+        case "input_authorized": {
+          const pending = this.inputAuthorizations.get(command.requestId);
+          if (pending?.jobId === command.jobId) pending.resolve(command.allowed);
           return;
         }
+        case "input":
+          await this.input(command, parentJobId);
+          return;
         case "output_read": {
           const output = this.options.outputs.read(
             command.jobId,
@@ -330,11 +337,98 @@ export class MachineJobOwner {
           ? error.message
           : "job_command_refused";
       const job = this.jobs.get(jobId);
-      if (command.type === "input" && job)
-        await this.cancel(jobId).catch(() => {
-          this.draining = true;
-        });
+      if (command.type === "input") {
+        this.emit({
+          type: "input_result", jobId, requestId: command.requestId, seq: command.seq,
+          accepted: false, reason: "job_input_refused",
+          nextInputSeq: job?.inputSeq ?? null, stdinClosed: job?.inputEnded ?? true,
+        }, job);
+        return;
+      }
       this.emit({ type: "refusal", jobId, reason }, job);
+    }
+  }
+
+  private emitInputState(job: OwnedJob): void {
+    this.emit({
+      type: "input_state", jobId: job.request.jobId,
+      requestDigest: job.request.requestDigest, ownerId: job.result.ownerId,
+      ownerGeneration: job.result.ownerGeneration,
+      nextInputSeq: job.inputSeq, stdinClosed: job.inputEnded,
+    }, job);
+  }
+
+  private async input(
+    command: Extract<JobCommand, { type: "input" }>, parentJobId: string | null,
+  ): Promise<void> {
+    const job = this.requireJob(command.jobId);
+    const reply = (accepted: boolean, reason: string | null) => this.emit({
+      type: "input_result", jobId: command.jobId, requestId: command.requestId,
+      seq: command.seq, accepted, reason, nextInputSeq: job.inputSeq,
+      stdinClosed: job.inputEnded,
+    }, job);
+    const data = Buffer.from(command.data, "base64");
+    const seat = this.sink;
+    if (job.request.terminal || job.result.state !== "started" || !job.handle ||
+        job.inputEnded || job.inputBusy || command.seq !== job.inputSeq ||
+        job.inputSeq === Number.MAX_SAFE_INTEGER ||
+        job.inputRequests.has(command.requestId) || job.inputRequests.size >= 4096 ||
+        job.inputBytes + data.length > job.request.limits.outputBytes ||
+        !seat || this.inputAuthorizations.has(command.requestId)) {
+      reply(false, "job_input_conflict_or_closed");
+      return;
+    }
+    job.inputBusy = true;
+    job.inputRequests.add(command.requestId);
+    const settled = Promise.withResolvers<void>();
+    job.inputTail = settled.promise;
+    let reserved = false;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const authorization = Promise.withResolvers<boolean>();
+      this.inputAuthorizations.set(command.requestId, {
+        jobId: command.jobId, resolve: authorization.resolve,
+      });
+      timer = setTimeout(() => authorization.resolve(false), 5000);
+      this.emit({
+        type: "input_authorize", jobId: command.jobId, requestId: command.requestId,
+        seq: command.seq, parentJobId,
+      });
+      const allowed = await authorization.promise;
+      clearTimeout(timer);
+      this.inputAuthorizations.delete(command.requestId);
+      if (!allowed || this.sink !== seat || job.cancelRequested || job.result.state !== "started" ||
+          !job.handle || job.inputEnded) {
+        reply(false, "job_input_authority_or_state_refused");
+        return;
+      }
+      // Consume the cursor durably before touching stdin; neither a partial write nor
+      // a lost receipt permits replay. The journal contains no input bytes or digest.
+      this.options.journal.append({
+        kind: "input", jobId: command.jobId, requestId: command.requestId,
+        nextInputSeq: job.inputSeq + 1,
+      });
+      job.inputSeq++;
+      job.inputBytes += data.length;
+      reserved = true;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("job_input_delivery_unknown")), 5000);
+      });
+      await Promise.race([job.handle.input(data), timeout]);
+      if (command.eof) {
+        job.handle.endInput();
+        job.inputEnded = true;
+      }
+      reply(true, null);
+    } catch {
+      if (reserved) job.inputEnded = true;
+      reply(false, reserved ? "job_input_delivery_unknown" : "job_input_refused");
+    } finally {
+      clearTimeout(timer);
+      this.inputAuthorizations.delete(command.requestId);
+      job.inputBusy = false;
+      settled.resolve();
+      this.emitInputState(job);
     }
   }
 
@@ -675,7 +769,7 @@ export class MachineJobOwner {
           });
           this.emit(event);
         },
-        command: (next) => this.execute(next),
+        command: (next) => this.execute(next, request.jobId),
         failure: (reason) => {
           const pending = [...(job.context?.invocations.values() ?? [])].some(
             (invocation) =>
@@ -770,6 +864,7 @@ export class MachineJobOwner {
       job.resolveLaunched();
       job.context.releaseChildFd();
       job.result = { ...job.result, state: "started", startedAt: Date.now() };
+      job.inputEnded = !operation.stdin;
       this.options.journal.append({ kind: "result", result: job.result });
       this.emit(
         {
@@ -782,6 +877,7 @@ export class MachineJobOwner {
         },
         job,
       );
+      this.emitInputState(job);
       void job.handle.result
         .then((result) => this.finish(job, result, parent))
         .catch(() => this.interrupt(job));
@@ -1032,6 +1128,8 @@ export class MachineJobOwner {
       inputBytes: 0,
       inputTail: Promise.resolve(),
       inputEnded: false,
+      inputBusy: false,
+      inputRequests: new Set(),
       depth: 0,
       children: new Set(),
       empty: empty.promise,
@@ -1063,7 +1161,7 @@ export class MachineJobOwner {
       (event.type === "output" ||
         event.type === "refusal" ||
         (event.type === "result" && !job?.childExitSent) ||
-        event.type === "state")
+        event.type === "state" || event.type === "input_result" || event.type === "input_state")
     ) {
       parent.context.send(event);
       if (event.type === "output") return;

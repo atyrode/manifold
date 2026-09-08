@@ -75,6 +75,25 @@ function fixture() {
   };
 }
 
+test("native input cursor and unknown attempts survive restart without permitting replay or rewind", () => {
+  const f = fixture();
+  const job = f.jobs.reserve(request("stdin"), 1);
+  f.jobs.inputCursor("stdin", 4, false);
+  expect(f.jobs.reserveInput(job, "attempt", 4, "input-actor", "input-trace")).toBe(true);
+  f.jobs.inputResult("stdin", "attempt", "unknown", "job_input_delivery_unknown");
+  f.reopen();
+  expect(f.jobs.reserveInput(f.jobs.get("stdin")!, "attempt", 4, "input-actor", "input-trace")).toBe(false);
+  expect(f.jobs.get("stdin")).toMatchObject({ nextInputSeq: 4, stdinClosed: false, state: "queued" });
+  f.jobs.inputCursor("stdin", 5, true);
+  f.jobs.inputCursor("stdin", 4, false);
+  f.reopen();
+  expect(f.jobs.get("stdin")).toMatchObject({ nextInputSeq: 5, stdinClosed: true, state: "queued" });
+  expect(f.store.db.query("SELECT * FROM machine_job_inputs").get()).toEqual({
+    job_id: "stdin", request_id: "attempt", seq: 4, actor: "input-actor",
+    trace_id: "input-trace", decision_id: null, state: "unknown", reason: "job_input_delivery_unknown",
+  });
+});
+
 test("durable discovery de-duplicates scheduled jobs and continues strictly through tied timestamps", () => {
   const f = fixture();
   f.jobs.reserve(request("newest"), 101);

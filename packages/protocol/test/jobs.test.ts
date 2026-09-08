@@ -223,9 +223,12 @@ test("a run cannot pair job metadata with a different occurrence identity or imm
     installationRevision: occurrence.installationRevision,
     artifactSha256: occurrence.artifactSha256,
     state: "queued",
+    nextInputSeq: null,
+    inputDigest: "a".repeat(64),
+    resourceBindingDigest: "b".repeat(64),
     result: null,
     authority: {
-      origin: { kind: "action", traceId: "trace" },
+      origin: { kind: "action", traceId: "trace", door: null },
       requester: "principal",
       executor: null,
       decision: null,

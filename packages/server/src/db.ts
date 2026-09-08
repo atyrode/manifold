@@ -6,7 +6,7 @@ import { migrateToSoloCompositions } from "./migrate-solo.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 26;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -660,6 +660,16 @@ CREATE TRIGGER job_token_delete AFTER DELETE ON tokens BEGIN
 END;
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','25');
 ${JOB_SCHEDULE_SCHEMA_SQL}
+`,
+  26: `
+ALTER TABLE machine_jobs ADD COLUMN next_input_seq INTEGER;
+ALTER TABLE machine_jobs ADD COLUMN stdin_closed INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE machine_job_inputs(
+ job_id TEXT NOT NULL, request_id TEXT NOT NULL, seq INTEGER NOT NULL,
+ actor TEXT NOT NULL, trace_id TEXT NOT NULL, decision_id TEXT,
+ state TEXT NOT NULL, reason TEXT, PRIMARY KEY(job_id,request_id)
+);
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','26');
 `,
 };
 

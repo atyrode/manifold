@@ -1402,6 +1402,16 @@ is not permission to run the effect again. `status`, `input`, `cancel` and `outp
 opaque node possession does not grant access. `output` reads a sealed output node in
 bounded chunks (at most 64 KiB), not an arbitrary path.
 
+`await ctx.jobs.input({ node, requestId, seq, data, eof })` returns `{ accepted: true }`
+only after the native owner confirms the stdin write. `requestId` is a fresh opaque ID;
+`data` is base64 and `seq` must equal the owner-confirmed `job.nextInputSeq`. That public
+cursor is `null` until owner reconciliation and while delivery is pending or disconnected.
+Refresh `status` after reconnecting; do not keep a product-local input sequence registry.
+The receipt wait is bounded to 12 seconds. A timeout, lost channel or write failure may
+have consumed bytes: never automatically retry input, even with a new request ID. Reusing
+an attempted request ID is refused. Owner-confirmed cursor metadata is not proof that a
+callback completed its application-level work. Rejected input does not cancel the job.
+
 Recover existing work with `ctx.jobs.listRuns({ machineId, operationId?, limit?, cursor? })`;
 the handle is scoped to its plugin. Browser sections dispatch `engine.jobs.listRuns` with
 the same arguments plus `pluginId`. It returns `{ runs, nextCursor }`, newest first, with

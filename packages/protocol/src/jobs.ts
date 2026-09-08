@@ -332,6 +332,8 @@ export const PublicJobSchema = z.strictObject({
   inputDigest: hash,
   resourceBindingDigest: hash,
   state: JobStateSchema,
+  /** Owner-confirmed cursor; null while disconnected, awaiting receipt or reconciliation. */
+  nextInputSeq: count.nullable(),
   result: JobResultSchema.nullable(),
   authority: JobAuthoritySchema,
   terminal: JobRequestSchema.shape.terminal,
@@ -441,7 +443,7 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
       message: "install bundle members exceed the aggregate budget or repeat the primary",
     }),
   JobStartCommandSchema,
-  z.strictObject({ type: z.literal("input"), jobId: id, ...chunk, eof: z.boolean() }),
+  z.strictObject({ type: z.literal("input"), jobId: id, requestId: id, ...chunk, eof: z.boolean() }),
   z.strictObject({ type: z.literal("cancel"), jobId: id, reason: id }),
   z.strictObject({ type: z.literal("status"), jobId: id }),
   z.strictObject({ type: z.literal("drain"), draining: z.boolean() }),
@@ -466,6 +468,9 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
     jobId: id,
     authorizationId: id,
     allowed: z.boolean(),
+  }),
+  z.strictObject({
+    type: z.literal("input_authorized"), jobId: id, requestId: id, allowed: z.boolean(),
   }),
 ]);
 export type JobCommand = z.infer<typeof JobCommandSchema>;
@@ -534,6 +539,21 @@ export const JobEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("resources"),
     resources: JobResourceInventorySchema,
+  }),
+  z.strictObject({
+    type: z.literal("input_result"),
+    jobId: id, requestId: id, seq: count,
+    accepted: z.boolean(), reason: id.nullable(),
+    nextInputSeq: count.nullable(), stdinClosed: z.boolean(),
+  }),
+  z.strictObject({
+    type: z.literal("input_state"),
+    jobId: id, requestDigest: hash, ownerId: id, ownerGeneration: count,
+    nextInputSeq: count, stdinClosed: z.boolean(),
+  }),
+  z.strictObject({
+    type: z.literal("input_authorize"),
+    jobId: id, requestId: id, seq: count, parentJobId: id.nullable(),
   }),
 ]);
 export type JobEvent = z.infer<typeof JobEventSchema>;

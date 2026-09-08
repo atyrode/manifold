@@ -239,11 +239,12 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
           timeoutMs: 1000,
         },
       };
+      const journal = new JobJournal(
+        HeldDirectory.openAbsolute(join(root, "journal"), { private: true }),
+      );
       owner = await MachineJobOwner.open({
         ...options,
-        journal: new JobJournal(
-          HeldDirectory.openAbsolute(join(root, "journal"), { private: true }),
-        ),
+        journal,
       });
       const events: JobEvent[] = [];
       const completed = Promise.withResolvers<JobResult>();
@@ -367,6 +368,69 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
       expect(events.at(-1)).toEqual({ type: "result", result });
       let launchJob = startLinuxJob;
       const nativeLaunch = spyOn(nativeRuntime, "startLinuxJob").mockImplementation((spec) => launchJob(spec));
+      // Hold the real owner's runtime stdin callback to exercise overlapping commands,
+      // partial-write uncertainty and lifecycle isolation through the public owner API.
+      const stdinExit = Promise.withResolvers<LinuxJobResult>();
+      let write = Promise.withResolvers<void>();
+      let inputCalls = 0;
+      let inputCancels = 0;
+      const stdinResult: LinuxJobResult = {
+        empty: true, exitCode: null, signal: "SIGKILL", reason: "cancelled",
+        startedAt: now, finishedAt: now, boundary: "linux-bubblewrap-cgroup-v2",
+        usage: { wallMs: 0, cpuUsec: 0, memoryPeakBytes: 0, processesPeak: 0, outputBytes: 0, oomKills: 0 },
+      };
+      launchJob = async (spec) => ({
+        result: stdinExit.promise, childDelegation: spec.delegatedCgroup,
+        input: async () => { inputCalls++; await write.promise; },
+        endInput() {}, release() {},
+        async cancel() { inputCancels++; stdinExit.resolve(stdinResult); return stdinResult; },
+      });
+      const stdinBody = { ...requestBody, jobId: "input-receipts" };
+      const stdinRequest = { ...stdinBody, requestDigest: jobDigest(stdinBody) };
+      const stdinPermit = { ...permitBody, jobId: stdinBody.jobId, permitId: stdinBody.jobId, requestDigest: stdinRequest.requestDigest };
+      await owner.execute({
+        type: "start", request: stdinRequest, permit: {
+          ...stdinPermit, signature: sign(null, Buffer.from(canonicalJobJson(stdinPermit)), keys.privateKey).toString("base64"),
+        },
+      });
+      const sendInput = (requestId: string, seq: number) => owner!.execute({
+        type: "input", jobId: stdinBody.jobId, requestId, seq,
+        data: Buffer.from("private-input").toString("base64"), eof: false,
+      });
+      const firstInput = sendInput("first-input", 0);
+      await owner.execute({ type: "input_authorized", jobId: stdinBody.jobId, requestId: "first-input", allowed: true });
+      await sendInput("stale-input", 0);
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "input_result", requestId: "stale-input", accepted: false,
+      }));
+      expect(events.some((event) => event.type === "input_result" && event.requestId === "first-input")).toBe(false);
+      expect(inputCalls).toBe(1);
+      expect(inputCancels).toBe(0);
+      write.resolve();
+      await firstInput;
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "input_result", requestId: "first-input", accepted: true, nextInputSeq: 1,
+      }));
+      write = Promise.withResolvers<void>();
+      const failedInput = sendInput("failed-input", 1);
+      await owner.execute({ type: "input_authorized", jobId: stdinBody.jobId, requestId: "failed-input", allowed: true });
+      write.reject(new Error("private write failure"));
+      await failedInput;
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "input_result", requestId: "failed-input", accepted: false,
+        reason: "job_input_delivery_unknown", nextInputSeq: 2, stdinClosed: true,
+      }));
+      await sendInput("retry-input", 1);
+      await sendInput("closed-input", 2);
+      expect(inputCalls).toBe(2);
+      expect(inputCancels).toBe(0);
+      expect(events.some((event) => event.type === "refusal" && event.jobId === stdinBody.jobId)).toBe(false);
+      await owner.execute({ type: "status", jobId: stdinBody.jobId });
+      expect(events.at(-1)).toMatchObject({
+        type: "input_state", nextInputSeq: 2, stdinClosed: true,
+      });
+      await owner.execute({ type: "cancel", jobId: stdinBody.jobId, reason: "test-finished" });
+      launchJob = startLinuxJob;
       let emptyFailure = Promise.withResolvers<void>();
       const host = new TerminalHost({
         jobOwner: owner,
@@ -576,6 +640,10 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
       release = owner.attach((event) => {
         events.push(event);
         return true;
+      });
+      await owner.execute({ type: "status", jobId: stdinBody.jobId });
+      expect(events.at(-1)).toMatchObject({
+        type: "input_state", nextInputSeq: 2, stdinClosed: true,
       });
       await owner.execute(command);
       expect(events.at(-1)).toEqual({ type: "result", result });

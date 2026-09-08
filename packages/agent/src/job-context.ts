@@ -140,9 +140,26 @@ export class JobContext {
       throw new Error("context_command_forbidden");
     if (
       ![...this.invocations.values()].some((invocation) => invocation.childJobId === command.jobId)
-    )
-      throw new Error("context_child_mismatch");
-    await this.callbacks.command(command);
+    ) {
+      if (command.type !== "input") throw new Error("context_child_mismatch");
+      this.send({
+        type: "input_result", jobId: command.jobId, requestId: command.requestId,
+        seq: command.seq, accepted: false, reason: "context_child_mismatch",
+        nextInputSeq: null, stdinClosed: true,
+      });
+      return;
+    }
+    if (command.type === "input") {
+      try {
+        await this.callbacks.command(command);
+      } catch {
+        this.send({
+          type: "input_result", jobId: command.jobId, requestId: command.requestId,
+          seq: command.seq, accepted: false, reason: "job_input_delivery_unknown",
+          nextInputSeq: null, stdinClosed: true,
+        });
+      }
+    } else await this.callbacks.command(command);
   }
 
   bind(invocationId: string, childJobId: string): void {

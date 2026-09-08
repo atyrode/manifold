@@ -154,6 +154,140 @@ function execute(f: Fixture, jobId = "job", value = "safe") {
   });
 }
 
+function inputFixture() {
+  const f = fixture();
+  consent(f, "machines:run");
+  consent(f, "jobs:input");
+  consent(f, "jobs:read");
+  prove(f);
+  const job = execute(f);
+  const node = { kind: "job" as const, machineId: f.machineId, operationId, jobId: job.request.jobId };
+  const identity = {
+    jobId: job.request.jobId, requestDigest: job.request.requestDigest,
+    ownerId: f.owner.ownerId, ownerGeneration: f.owner.generation,
+  };
+  f.service.event(f.channel, { type: "state", ...identity, state: "started" });
+  const cursor = (seq: number, closed = false) => f.service.event(f.channel, {
+    type: "input_state", ...identity, nextInputSeq: seq, stdinClosed: closed,
+  });
+  cursor(0);
+  const input = (requestId: string, seq = 0) => jobContext(
+    () => f.service, f.root, pluginId, 42,
+  ).input({ node, requestId, seq, data: Buffer.from("private-callback").toString("base64"), eof: false });
+  const authorize = (requestId: string, seq = 0) => f.service.event(f.channel, {
+    type: "input_authorize", jobId: node.jobId, requestId, seq, parentJobId: null,
+  });
+  const receipt = (requestId: string, accepted: boolean, seq = 0) => f.service.event(f.channel, {
+    type: "input_result", jobId: node.jobId, requestId, seq, accepted,
+    reason: accepted ? null : "job_input_conflict_or_closed",
+    nextInputSeq: accepted ? seq + 1 : seq, stdinClosed: false,
+  });
+  return { ...f, node, input, authorize, receipt, cursor };
+}
+
+test("stdin accepts only an owner receipt; stale concurrent input cannot poison a running job", async () => {
+  const f = inputFixture();
+  try {
+    let accepted = false;
+    const first = f.input("first").then((result) => { accepted = true; return result; });
+    await Promise.resolve();
+    expect(accepted).toBe(false);
+    expect(f.service.publicJob(f.service.status(f.root, f.node)).nextInputSeq).toBeNull();
+    await expect(f.input("stale")).rejects.toThrow("job_input_pending");
+    f.receipt("unrelated", false);
+    expect(f.service.status(f.root, f.node).state).toBe("started");
+    f.authorize("first");
+    expect(f.commands.at(-1)).toMatchObject({ type: "input_authorized", allowed: true });
+    f.receipt("first", true);
+    f.cursor(1);
+    expect(await first).toEqual({ accepted: true });
+    await expect(f.input("stale-again")).rejects.toThrow("job_input_sequence_conflict");
+    expect(f.service.publicJob(f.service.status(f.root, f.node)).nextInputSeq).toBe(1);
+    expect(f.commands.some((command) => command.type === "cancel")).toBe(false);
+    const attempt = f.store.db.query("SELECT * FROM machine_job_inputs").get();
+    expect(attempt).toMatchObject({ request_id: "first", actor: f.root.principal.id, trace_id: "42", state: "accepted" });
+    expect(JSON.stringify(attempt)).not.toContain("private-callback");
+    expect(JSON.stringify(attempt)).not.toContain(Buffer.from("private-callback").toString("base64"));
+  } finally { f.store.close(); }
+});
+
+test.each(["disconnect", "false-send", "throw-send"] as const)(
+  "stdin %s leaves an unknown receipt and never replays after reconciliation",
+  async (failure) => {
+    const f = inputFixture();
+    try {
+      if (failure !== "disconnect") f.channel.send = () => {
+        if (failure === "throw-send") throw new Error("private transport detail");
+        return false;
+      };
+      const pending = f.input("uncertain");
+      if (failure === "disconnect") f.service.offline(f.channel);
+      await expect(pending).rejects.toThrow("job_input_delivery_unknown");
+      expect(f.store.db.query("SELECT state FROM machine_job_inputs").get()).toEqual({ state: "unknown" });
+      f.channel.send = ({ command }) => { f.commands.push(command); return true; };
+      prove(f);
+      expect(f.service.publicJob(f.service.status(f.root, f.node)).nextInputSeq).toBeNull();
+      f.cursor(0); // The owner, not a transport failure, can establish this cursor.
+      await expect(f.input("uncertain")).rejects.toThrow("job_input_request_replayed");
+      expect(f.commands.filter((command) => command.type === "input")).toHaveLength(failure === "disconnect" ? 1 : 0);
+      const fresh = f.input("fresh");
+      f.authorize("fresh");
+      f.receipt("fresh", true);
+      f.cursor(1);
+      await fresh;
+      f.cursor(0); // A late older snapshot cannot rewind consumed native input.
+      expect(f.service.publicJob(f.service.status(f.root, f.node)).nextInputSeq).toBe(1);
+    } finally { f.store.close(); }
+  },
+);
+
+test("a lost stdin acknowledgment times out without acceptance or automatic replay", async () => {
+  const f = inputFixture();
+  try {
+    const pending = f.input("lost-ack");
+    f.authorize("lost-ack");
+    await expect(pending).rejects.toThrow("job_input_delivery_unknown");
+    expect(f.service.publicJob(f.service.status(f.root, f.node)).nextInputSeq).toBeNull();
+    f.cursor(1);
+    expect(f.service.publicJob(f.service.status(f.root, f.node)).nextInputSeq).toBe(1);
+    expect(f.commands.filter((command) => command.type === "input")).toHaveLength(1);
+    expect(f.store.db.query("SELECT state FROM machine_job_inputs").get()).toEqual({ state: "unknown" });
+    expect(f.service.jobs.get(f.node.jobId)?.state).toBe("started");
+  } finally { f.store.close(); }
+}, 15000);
+
+test("stdin rechecks current caller and original run authority before writing and acknowledging", async () => {
+  for (const phase of ["before-write", "after-write", "original"] as const) {
+    const f = inputFixture();
+    try {
+      const pending = f.input(phase);
+      if (phase === "after-write") f.authorize(phase);
+      consent(f, phase === "original" ? "machines:run" : "jobs:input", false);
+      if (phase !== "after-write") {
+        f.authorize(phase);
+        expect(f.commands.at(-1)).toMatchObject({ type: "input_authorized", allowed: false });
+      }
+      f.receipt(phase, phase === "after-write");
+      await expect(pending).rejects.toThrow();
+      expect(f.service.jobs.get(f.node.jobId)?.state).toBe("started");
+    } finally { f.store.close(); }
+  }
+});
+
+test("stdin rejects disconnected, unproved, not-started and closed streams without dispatch", async () => {
+  for (const state of ["offline", "unproved", "starting", "closed"] as const) {
+    const f = inputFixture();
+    try {
+      if (state === "offline") f.service.offline(f.channel);
+      if (state === "unproved") f.service.online(f.channel, f.owner, "new-epoch");
+      if (state === "starting") f.service.jobs.state(f.node.jobId, "start-committed");
+      if (state === "closed") f.cursor(0, true);
+      await expect(f.input(state)).rejects.toThrow();
+      expect(f.commands.some((command) => command.type === "input")).toBe(false);
+    } finally { f.store.close(); }
+  }
+});
+
 test("authenticated owner receives only selected deduplicated machine members; substituted sources cannot replace the revision", () => {
   const f = fixture();
   try {

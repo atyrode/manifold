@@ -52,7 +52,7 @@ export interface PluginJobContext {
   status(node: JobNode): PublicJob;
   listRuns(args: ListJobRunsArgs): ListJobRunsResult;
   follow(node: JobNode, receive: (update: JobFollowUpdate) => void): JobFollow;
-  input(args: { node: JobNode; seq: number; data: string; eof: boolean }): { accepted: true };
+  input(args: { node: JobNode; requestId: string; seq: number; data: string; eof: boolean }): Promise<{ accepted: true }>;
   cancel(node: JobNode): { accepted: true };
   output(args: {
     node: OutputNode;

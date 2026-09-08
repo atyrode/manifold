@@ -77,7 +77,8 @@ export const jobDoorSchemas = {
   listRuns: ListJobRunsArgsSchema.extend({ pluginId: JobRequestSchema.shape.pluginId }),
   input: z.strictObject({
     node: jobNode,
-    seq: z.number().int().nonnegative(),
+    requestId: id,
+    seq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     data: z.base64().max(87384),
     eof: z.boolean(),
   }),
@@ -143,10 +144,10 @@ export function jobContext(
         pluginId,
       );
     },
-    input: (args: z.infer<typeof schemas.input>) => {
+    input: async (args: z.infer<typeof schemas.input>) => {
       const a = schemas.input.parse(args);
-      service().input(auth, a.node, a.seq, a.data, a.eof, pluginId);
-      return { accepted: true };
+      await service().input(auth, a.node, a.requestId, a.seq, a.data, a.eof, pluginId, String(traceId));
+      return { accepted: true as const };
     },
     cancel: (node: z.infer<typeof jobNode>) => {
       service().cancel(auth, jobNode.parse(node), pluginId);

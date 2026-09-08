@@ -2737,6 +2737,18 @@ provider handling and postconditions belong to plugins, never the common floor.
   `engine.jobs` plugin topic is coarse access invalidation with no resource or actor identity,
   including for readers who can no longer see a previously authorized job. Shared resource
   feeds re-read through the same governed doors; notifications never transport private bytes.
+- **Owner-confirmed stdin.** Public and private child input commands require a correlated
+  `requestId` and exact `seq`. `input_authorize` / `input_authorized` recheck original run
+  authority and the current public caller (or the native-bound parent invocation) before
+  writing. `input_result` alone acknowledges acceptance; it never becomes a lifecycle refusal.
+  `input_state` reconciles the native cursor after start/status. `PublicJob.nextInputSeq`
+  is nullable while disconnected, pending or not yet reconciled; older snapshots cannot
+  rewind it. Owner authorization and write waits each expire after five seconds; the hub
+  receipt wait expires after twelve. The owner journals the consumed sequence before a
+  write, never its bytes or digest, and closes input after uncertain writes without
+  cancelling an otherwise valid job. The hub persists request/sequence, actor, trace and
+  decision attribution before dispatch, retaining uncertain outcomes rather than rolling
+  them back or replaying them. Current authority is checked again before returning success.
 - **Common authority.** Admission uses the A5 waterfall and current credential/delegation
   lineage intersected with its immutable original scope, capability and expiry ceiling.
   `machines:run`, `jobs:read`, `jobs:input`, `jobs:cancel`, `locations:read`,

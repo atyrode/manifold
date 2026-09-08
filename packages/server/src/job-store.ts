@@ -25,6 +25,8 @@ export interface JobRecord {
   result: JobResult | null;
   auditOrigin: JobAuditOrigin | null;
   decisionId: string | null;
+  nextInputSeq: number | null;
+  stdinClosed: boolean;
 }
 export interface JobInstallation {
   machineId: string;
@@ -62,10 +64,12 @@ export class JobStore {
           result: string | null;
           audit_origin: string | null;
           decision_id: string | null;
+          next_input_seq: number | null;
+          stdin_closed: number;
         },
         [string]
       >(
-        "SELECT request,state,permit,result,audit_origin,decision_id FROM machine_jobs WHERE job_id=?",
+        "SELECT request,state,permit,result,audit_origin,decision_id,next_input_seq,stdin_closed FROM machine_jobs WHERE job_id=?",
       )
       .get(jobId);
     return r
@@ -76,8 +80,27 @@ export class JobStore {
           result: r.result === null ? null : JobResultSchema.parse(JSON.parse(r.result)),
           auditOrigin: r.audit_origin === null ? null : JSON.parse(r.audit_origin),
           decisionId: r.decision_id,
+          nextInputSeq: r.next_input_seq,
+          stdinClosed: r.stdin_closed === 1,
         }
       : null;
+  }
+  inputCursor(jobId: string, seq: number, closed: boolean): void {
+    this.store.db.query(
+      `UPDATE machine_jobs SET next_input_seq=?,stdin_closed=MAX(stdin_closed,?)
+       WHERE job_id=? AND (next_input_seq IS NULL OR next_input_seq<=?)`,
+    ).run(seq, closed ? 1 : 0, jobId, seq);
+  }
+  reserveInput(job: JobRecord, requestId: string, seq: number, actor: string, traceId: string): boolean {
+    return this.store.db.query(
+      `INSERT INTO machine_job_inputs(job_id,request_id,seq,actor,trace_id,decision_id,state)
+       VALUES(?,?,?,?,?,?,'pending') ON CONFLICT(job_id,request_id) DO NOTHING`,
+    ).run(job.request.jobId, requestId, seq, actor, traceId, job.decisionId).changes === 1;
+  }
+  inputResult(jobId: string, requestId: string, state: "accepted" | "rejected" | "unknown", reason: string | null): void {
+    this.store.db.query(
+      "UPDATE machine_job_inputs SET state=?,reason=? WHERE job_id=? AND request_id=?",
+    ).run(state, reason, jobId, requestId);
   }
   reserve(request: JobRequest, now: number): JobRecord {
     const previous = this.get(request.jobId);

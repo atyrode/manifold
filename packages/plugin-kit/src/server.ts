@@ -146,6 +146,7 @@ export interface GuestJobStatus {
   operationId: string;
   pluginId: string;
   state: JobResult["state"];
+  nextInputSeq: number | null;
   result: JobResult | null;
 }
 export interface GuestJobFollow {
@@ -156,7 +157,7 @@ export interface GuestJobs {
   execute(args: GuestJobRequest): Promise<GuestJobStatus>;
   status(node: GuestJobNode): Promise<GuestJobStatus>;
   listRuns(args: ListJobRunsArgs): Promise<ListJobRunsResult>;
-  input(args: { node: GuestJobNode; seq: number; data: string; eof: boolean }): Promise<void>;
+  input(args: { node: GuestJobNode; requestId: string; seq: number; data: string; eof: boolean }): Promise<{ accepted: true }>;
   cancel(node: GuestJobNode): Promise<void>;
   output(args: {
     node: GuestOutputNode;
@@ -465,9 +466,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
           ListJobRunsResultSchema.parse(
             await call("jobs.listRuns", [ListJobRunsArgsSchema.parse(args)]),
           ),
-        input: async (args) => {
-          await call("jobs.input", [args]);
-        },
+        input: async (args) => (await call("jobs.input", [args])) as { accepted: true },
         cancel: async (node) => {
           await call("jobs.cancel", [node]);
         },
