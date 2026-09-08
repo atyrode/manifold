@@ -117,16 +117,26 @@ export const ServiceOperationPolicySchema = z.strictObject({
 });
 
 /** Opaque application bytes are data, never transport controls. The trusted installer
- * opts into full request/response disclosure for this exact route; no caller URL,
- * query, headers, redirects or content negotiation are forwarded. */
+ * opts into full request/response disclosure for approved routes and bounded parameters;
+ * no caller origin, undeclared query/header, redirect or content negotiation is forwarded. */
 export const ServiceProxyOperationPolicySchema = z.strictObject({
   kind: z.literal("http-proxy"),
   method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
   path: z.string().max(4096).refine((path) => path === "/" || (
     path.startsWith("/") && path.slice(1).split("/").every((part) =>
-      /^[A-Za-z0-9_~.-]+$/.test(part) && part !== "." && part !== ".."
+      /^(?:[A-Za-z0-9_~.-]+|\{[A-Za-z0-9][A-Za-z0-9._-]{0,127}\})$/.test(part) && part !== "." && part !== ".."
     )
   )),
+  /** Whole-segment parameters only; decoded values never select transport controls. */
+  pathParameters: z.record(name, z.strictObject({
+    format: z.enum(["component", "positive-integer"]),
+    maxBytes: z.number().int().positive().max(4096),
+  })).refine((value) => Object.keys(value).length <= 64).optional(),
+  /** Only these scalar fields may appear in the caller query. */
+  query: z.record(name, inputField).refine((value) => Object.keys(value).length <= 64).optional(),
+  /** Protocol-specific values are validated by the proxy; no arbitrary headers. */
+  requestHeaders: z.array(z.enum(["if-none-match", "omp-auth-broker-capabilities"])).max(2)
+    .refine((headers) => new Set(headers).size === headers.length).optional(),
   request: z.discriminatedUnion("kind", [
     z.strictObject({ kind: z.literal("none") }),
     z.strictObject({ kind: z.literal("json"), disclosure: z.literal("full") }),
@@ -135,12 +145,22 @@ export const ServiceProxyOperationPolicySchema = z.strictObject({
     kind: z.literal("stream"),
     disclosure: z.literal("full"),
     contentTypes: z.array(z.enum(["application/json", "text/event-stream", "text/plain"])).min(1).max(3),
-    headers: z.array(z.enum(["retry-after", "x-request-id", "request-id"])).max(3),
+    headers: z.array(z.enum(["retry-after", "x-request-id", "request-id", "etag"])).max(4),
   }),
   timeoutMs: z.number().int().positive().max(300000),
   maxRequestBytes: z.number().int().positive().max(16 * 1024 * 1024),
   maxResponseBytes: z.number().int().positive().max(256 * 1024 * 1024),
-}).refine((operation) => operation.method !== "GET" || operation.request.kind === "none");
+}).refine((operation) => operation.method !== "GET" || operation.request.kind === "none")
+  .superRefine((operation, ctx) => {
+    const parameters = operation.path.split("/").filter((part) => part.startsWith("{")).map((part) => part.slice(1, -1));
+    const declared = Object.keys(operation.pathParameters ?? {});
+    const query = Object.keys(operation.query ?? {});
+    if (new Set(parameters).size !== parameters.length ||
+      parameters.some((key) => !Object.hasOwn(operation.pathParameters ?? {}, key)) ||
+      declared.some((key) => !parameters.includes(key) || query.includes(key)) ||
+      declared.length + query.length > 64)
+      ctx.addIssue({ code: "custom", message: "Invalid proxy parameter mapping" });
+  });
 
 export const ServiceRuntimeSchema = z.strictObject({
   pluginId: name,

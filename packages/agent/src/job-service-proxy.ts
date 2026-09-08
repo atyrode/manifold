@@ -3,7 +3,7 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { request as httpsRequest } from "node:https";
 import { Transform, type TransformCallback } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { ServiceBindingSchema, ServicePolicySchema, type ServiceBinding, type ServicePolicy } from "@manifold/protocol";
+import { ServiceBindingSchema, ServicePolicySchema, type ServiceBinding, type ServiceInput, type ServicePolicy } from "@manifold/protocol";
 import type { AuthorizeServiceCall, ResolveServiceCredential } from "./job-services.ts";
 
 type ProxyOperation = Extract<ServicePolicy["operations"][string], { kind: "http-proxy" }>;
@@ -19,8 +19,8 @@ export interface JobServiceProxyOptions {
   policies: readonly ServicePolicy[];
   bindings: readonly ServiceBinding[];
   resolveCredential?: ResolveServiceCredential;
-  /** Captures exact job identity and current authority; input is empty because the
-   * opaque application body cannot select authority. Includes native write-ahead trace. */
+  /** Captures exact job identity and current authority with validated path/query scalars,
+   * never the opaque application body. Includes native write-ahead trace. */
   authorize: AuthorizeServiceCall;
   signal?: AbortSignal;
 }
@@ -96,13 +96,117 @@ function contentType(value: string | undefined): string | undefined {
   return value?.match(/^(application\/json|text\/event-stream|text\/plain)(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?$/i)?.[1]?.toLowerCase();
 }
 
+type PathParameter = NonNullable<ProxyOperation["pathParameters"]>[string];
+type RouteSegment = string | { name: string; field: PathParameter };
+type ProxyRoute = {
+  entry: { policy: ServicePolicy; active: number };
+  operation: ProxyOperation;
+  operationId: string;
+  segments: RouteSegment[];
+};
+
+function pathValue(raw: string, field: PathParameter): string | number | undefined {
+  let value: string;
+  try { value = decodeURIComponent(raw); } catch { return undefined; }
+  // One canonical encoding only; no encoded aliases, separators, percent nesting or dot segments.
+  if (encodeURIComponent(value) !== raw || !/^[A-Za-z0-9_~.@:+-]+$/.test(value) ||
+    value === "." || value === ".." || Buffer.byteLength(value) > field.maxBytes) return undefined;
+  if (field.format === "component") return value;
+  if (!/^[1-9][0-9]*$/.test(value)) return undefined;
+  const number = Number(value);
+  return Number.isSafeInteger(number) ? number : undefined;
+}
+
+function routesOverlap(a: ProxyRoute, b: ProxyRoute): boolean {
+  return a.operation.method === b.operation.method && a.segments.length === b.segments.length &&
+    a.segments.every((left, index) => {
+      const right = b.segments[index]!;
+      if (typeof left === "string") return typeof right === "string" ? left === right : pathValue(left, right.field) !== undefined;
+      return typeof right === "string" ? pathValue(right, left.field) !== undefined : true;
+    });
+}
+
+function matchPath(route: ProxyRoute, segments: string[]): ServiceInput | undefined {
+  if (route.segments.length !== segments.length) return undefined;
+  const input: ServiceInput = Object.create(null);
+  for (let index = 0; index < segments.length; index++) {
+    const part = route.segments[index]!;
+    const raw = segments[index]!;
+    if (typeof part === "string") {
+      if (part !== raw) return undefined;
+    } else {
+      const value = pathValue(raw, part.field);
+      if (value === undefined) return undefined;
+      input[part.name] = value;
+    }
+  }
+  return input;
+}
+
+function validatedQuery(operation: ProxyOperation, raw: string | undefined, input: ServiceInput): string {
+  if (raw !== undefined && !operation.query) throw new ProxyFailure(404, "service_operation_unknown");
+  const invalid = () => new ProxyFailure(400, "service_input_invalid");
+  const seen = new Set<string>();
+  if (raw !== undefined) {
+    for (const pair of raw.split("&")) {
+      const equals = pair.indexOf("=");
+      if (equals < 1) throw invalid();
+      const key = pair.slice(0, equals);
+      if (!Object.hasOwn(operation.query ?? {}, key) || seen.has(key)) throw invalid();
+      seen.add(key);
+      let value: string;
+      try { value = decodeURIComponent(pair.slice(equals + 1).replace(/\+/g, " ")); } catch { throw invalid(); }
+      if (/[\x00-\x1f\x7f]/.test(value)) throw invalid();
+      const field = operation.query![key]!;
+      if (field.type === "string") {
+        if (Buffer.byteLength(value) > field.maxBytes || (field.enum && !field.enum.includes(value))) throw invalid();
+        input[key] = value;
+      } else if (field.type === "boolean") {
+        if (value !== "true" && value !== "false") throw invalid();
+        input[key] = value === "true";
+      } else {
+        if (!/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/.test(value)) throw invalid();
+        const number = Number(value);
+        if (!Number.isFinite(number) || number < field.min || number > field.max || (field.integer && !Number.isSafeInteger(number))) throw invalid();
+        input[key] = number;
+      }
+    }
+  }
+  const query = new URLSearchParams();
+  for (const [key, field] of Object.entries(operation.query ?? {})) {
+    if (!seen.has(key)) {
+      if (field.required) throw invalid();
+    } else query.set(key, String(input[key]));
+  }
+  const encoded = query.toString();
+  return encoded ? `?${encoded}` : "";
+}
+
+function validatedHeaders(operation: ProxyOperation, request: IncomingMessage): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const hopHeaders = (request.headers.connection ?? "").toLowerCase().split(",").map((part) => part.trim());
+  for (const name of ["if-none-match", "omp-auth-broker-capabilities", "last-event-id"] as const) {
+    const value = request.headers[name];
+    if (value === undefined) continue;
+    if (name === "last-event-id" || !operation.requestHeaders?.includes(name) || typeof value !== "string" ||
+      hopHeaders.includes(name) || request.rawHeaders.filter((part, index) => index % 2 === 0 && part.toLowerCase() === name).length !== 1)
+      throw new ProxyFailure(400, "service_invalid_request");
+    if (name === "if-none-match") {
+      if (!/^"(?:0|[1-9][0-9]{0,15})"$/.test(value) || !Number.isSafeInteger(Number(value.slice(1, -1))))
+        throw new ProxyFailure(400, "service_input_invalid");
+    } else if (value !== "codex-meter-block-scopes") throw new ProxyFailure(400, "service_input_invalid");
+    headers[name] = value;
+  }
+  return headers;
+}
+
 /** One immutable trusted policy/binding snapshot and one independently random capability
  * per job. No worker-selected policy, credentials, origin, route templates or redirects. */
 export async function createJobServiceProxy(options: JobServiceProxyOptions): Promise<JobServiceProxy> {
   const { authorize, resolveCredential, signal } = options;
   signal?.throwIfAborted();
   const policies = new Map<string, { policy: ServicePolicy; active: number }>();
-  const routes = new Map<string, { entry: { policy: ServicePolicy; active: number }; operation: ProxyOperation; operationId: string }>();
+  const routes: ProxyRoute[] = [];
   if (options.policies.length > 64 || options.bindings.length > 64) throw new Error("service_policy_invalid");
   for (const raw of options.policies) {
     const parsed = ServicePolicySchema.safeParse(raw);
@@ -121,12 +225,19 @@ export async function createJobServiceProxy(options: JobServiceProxyOptions): Pr
       const operation = Object.hasOwn(entry.policy.operations, operationId) ? entry.policy.operations[operationId] : undefined;
       if (!operation) throw new Error("service_binding_mismatch");
       if (!("kind" in operation)) continue;
-      const key = `${operation.method} ${operation.path}`;
-      if (routes.has(key)) throw new Error("service_policy_invalid");
-      routes.set(key, { entry, operation, operationId });
+      if (entry.policy.credential && operation.requestHeaders?.some((name) => name === entry.policy.credential!.header.toLowerCase()))
+        throw new Error("service_policy_invalid");
+      const route: ProxyRoute = {
+        entry, operation, operationId,
+        segments: operation.path.split("/").map((part) => part.startsWith("{")
+          ? { name: part.slice(1, -1), field: operation.pathParameters![part.slice(1, -1)]! }
+          : part),
+      };
+      if (routes.some((existing) => routesOverlap(existing, route))) throw new Error("service_policy_invalid");
+      routes.push(route);
     }
   }
-  if (!routes.size) throw new Error("service_unavailable");
+  if (!routes.length) throw new Error("service_unavailable");
   const bearer = randomBytes(32).toString("base64url");
   const capability = Buffer.from(`Bearer ${bearer}`);
   const active = new Set<AbortController>();
@@ -147,12 +258,26 @@ export async function createJobServiceProxy(options: JobServiceProxyOptions): Pr
     const supplied = Buffer.from(request.headers.authorization ?? "");
     if (closed || supplied.length !== capability.length || !timingSafeEqual(supplied, capability))
       throw new ProxyFailure(401, "service_unauthorized");
-    // Exact raw origin-form target: no normalization, decoding, query, absolute URL or CORS.
+    // Inspect raw origin-form before URL parsing can normalize traversal or encoded aliases.
     if (request.headers.host !== host || request.headers.origin !== undefined || request.headers["content-encoding"] !== undefined)
       throw new ProxyFailure(400, "service_invalid_request");
-    const route = routes.get(`${request.method} ${request.url}`);
-    if (!route) throw new ProxyFailure(404, "service_operation_unknown");
+    const target = request.url ?? "";
+    if (!target.startsWith("/") || target.startsWith("//") || target.includes("#") || Buffer.byteLength(target) > 8192)
+      throw new ProxyFailure(404, "service_operation_unknown");
+    const queryStart = target.indexOf("?");
+    const path = queryStart < 0 ? target : target.slice(0, queryStart);
+    const segments = path.split("/");
+    let route: ProxyRoute | undefined;
+    let input: ServiceInput | undefined;
+    for (const candidate of routes) {
+      if (candidate.operation.method !== request.method) continue;
+      const matched = matchPath(candidate, segments);
+      if (matched) { route = candidate; input = matched; break; }
+    }
+    if (!route || !input) throw new ProxyFailure(404, "service_operation_unknown");
     const { entry, operation, operationId } = route;
+    const query = validatedQuery(operation, queryStart < 0 ? undefined : target.slice(queryStart + 1), input);
+    const requestHeaders = validatedHeaders(operation, request);
     const length = request.headers["content-length"];
     if (length !== undefined && (!/^\d+$/.test(length) || Number(length) > operation.maxRequestBytes))
       throw new ProxyFailure(413, "service_input_invalid");
@@ -175,7 +300,7 @@ export async function createJobServiceProxy(options: JobServiceProxyOptions): Pr
     let upstream: IncomingMessage | undefined;
     let secret: string | undefined;
     try {
-      const authority = Object.freeze({ serviceId: entry.policy.serviceId, revision: entry.policy.revision, operationId, input: Object.freeze({}) });
+      const authority = Object.freeze({ serviceId: entry.policy.serviceId, revision: entry.policy.revision, operationId, input: Object.freeze(input) });
       const check = async () => {
         try {
           if (await boundedWait(authorize(authority, controller.signal), controller.signal) !== true) throw new Error("denied");
@@ -183,7 +308,7 @@ export async function createJobServiceProxy(options: JobServiceProxyOptions): Pr
         controller.signal.throwIfAborted();
       };
       await check();
-      const headers: Record<string, string> = { "accept-encoding": "identity", accept: operation.response.contentTypes.join(", ") };
+      const headers: Record<string, string> = { ...requestHeaders, "accept-encoding": "identity", accept: operation.response.contentTypes.join(", ") };
       if (operation.request.kind === "json") headers["content-type"] = "application/json";
       const credential = entry.policy.credential;
       if (credential) {
@@ -196,7 +321,8 @@ export async function createJobServiceProxy(options: JobServiceProxyOptions): Pr
         await check();
       }
       controller.signal.throwIfAborted();
-      const url = new URL(operation.path, entry.policy.origin);
+      const url = new URL(path + query, entry.policy.origin);
+      if (url.origin !== entry.policy.origin || url.pathname !== path) throw new ProxyFailure(400, "service_input_invalid");
       const received = Promise.withResolvers<IncomingMessage>();
       const outgoing = (url.protocol === "https:" ? httpsRequest : httpRequest)(url, {
         method: operation.method, headers, signal: controller.signal, agent: false, maxHeaderSize: 16384,
@@ -208,7 +334,8 @@ export async function createJobServiceProxy(options: JobServiceProxyOptions): Pr
       void upload.catch(() => controller.abort());
       upstream = await received.promise;
       const status = upstream.statusCode ?? 0;
-      if (status < 200 || (status >= 300 && status < 400) || status > 599 ||
+      const notModified = status === 304 && operation.method === "GET" && requestHeaders["if-none-match"] !== undefined;
+      if (status < 200 || (status >= 300 && status < 400 && !notModified) || status > 599 ||
         (upstream.headers["content-encoding"] && upstream.headers["content-encoding"] !== "identity"))
         throw new ProxyFailure(502, "service_upstream_refused");
       const responseLength = upstream.headers["content-length"];
@@ -217,7 +344,7 @@ export async function createJobServiceProxy(options: JobServiceProxyOptions): Pr
       const mime = contentType(upstream.headers["content-type"]);
       const hopHeaders = new Set((upstream.headers.connection ?? "").toLowerCase().split(",").map((part) => part.trim()));
       if (hopHeaders.has("content-type")) throw new ProxyFailure(502, "service_response_invalid");
-      if (status !== 204 && (!mime || !operation.response.contentTypes.includes(mime as ProxyOperation["response"]["contentTypes"][number])))
+      if (status !== 204 && !notModified && (!mime || !operation.response.contentTypes.includes(mime as ProxyOperation["response"]["contentTypes"][number])))
         throw new ProxyFailure(502, "service_response_invalid");
       const safeHeaders: Record<string, string> = { "cache-control": "no-store" };
       if (mime) safeHeaders["content-type"] = `${mime}; charset=utf-8`;
