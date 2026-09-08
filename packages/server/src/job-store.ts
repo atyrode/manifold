@@ -1,4 +1,8 @@
-import { formatManifoldUri } from "@manifold/protocol";
+import {
+  formatManifoldUri,
+  JobResourceBindingsSchema,
+  type JobResourceBindings,
+} from "@manifold/protocol";
 import type { AuthorityEvidence } from "./auth.ts";
 import {
   canonicalJobJson,
@@ -34,6 +38,7 @@ export interface JobInstallation {
   revision: string;
   artifact: string;
   machine: MachineHalf;
+  resourceBindings?: JobResourceBindings;
   enabled: boolean;
   ready: boolean;
   purgeRequested: boolean;
@@ -381,13 +386,14 @@ export class JobStore {
           revision: string;
           artifact: string;
           manifest: string;
+          resource_bindings: string | null;
           enabled: number;
           ready: number;
           purge_requested: number;
         },
         [string, string, string | null]
       >(
-        `SELECT h.revision,h.artifact,h.manifest,c.enabled,c.purge_requested,
+        `SELECT h.revision,h.artifact,h.manifest,h.resource_bindings,c.enabled,c.purge_requested,
           CASE WHEN h.revision=c.revision THEN c.ready ELSE 0 END AS ready
          FROM machine_job_installations h
          JOIN machine_job_installs c ON c.machine_id=h.machine_id AND c.plugin_id=h.plugin_id
@@ -401,6 +407,9 @@ export class JobStore {
           revision: r.revision,
           artifact: r.artifact,
           machine: MachineHalfSchema.parse(JSON.parse(r.manifest)),
+          ...(r.resource_bindings === null
+            ? {}
+            : { resourceBindings: JobResourceBindingsSchema.parse(JSON.parse(r.resource_bindings)) }),
           enabled: r.enabled === 1,
           ready: r.ready === 1,
           purgeRequested: r.purge_requested === 1,

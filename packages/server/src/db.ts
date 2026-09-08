@@ -6,7 +6,7 @@ import { migrateToSoloCompositions } from "./migrate-solo.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 27;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -670,6 +670,12 @@ CREATE TABLE machine_job_inputs(
  state TEXT NOT NULL, reason TEXT, PRIMARY KEY(job_id,request_id)
 );
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','26');
+`,
+  27: `
+ALTER TABLE machine_job_installs ADD COLUMN resource_bindings TEXT;
+ALTER TABLE machine_job_installations ADD COLUMN resource_bindings TEXT;
+CREATE TABLE native_service_configurations(machine_id TEXT PRIMARY KEY,revision TEXT NOT NULL,configuration TEXT NOT NULL);
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','27');
 `,
 };
 

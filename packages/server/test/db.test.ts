@@ -2060,7 +2060,7 @@ INSERT INTO scene_docs VALUES ('canvas', 'epoch', 1, 5, 'retained-hash', X'01020
       expect(db.query(`SELECT * FROM ${table}`).all()).toEqual(rows);
     }
     expect(db.query("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "25",
+      value: String(SCHEMA_VERSION),
     });
     // Opening v24 must not replay its credential grace or create another recovery image.
     expect(existsSync(`${path}.pre-v24.bak`)).toBeFalse();
@@ -2068,7 +2068,7 @@ INSERT INTO scene_docs VALUES ('canvas', 'epoch', 1, 5, 'retained-hash', X'01020
 INSERT INTO machine_job_owners VALUES ('machine', 'owner', 'public-key', 1);
 INSERT INTO machine_job_installs(machine_id, plugin_id, revision, artifact, manifest, enabled, ready)
 VALUES ('machine', 'vendor.worker', 'install-2', 'artifact-2', '{"declaration":2}', 1, 1);
-INSERT INTO machine_job_installations VALUES
+INSERT INTO machine_job_installations(machine_id, plugin_id, revision, artifact, manifest) VALUES
   ('machine', 'vendor.worker', 'install-1', 'artifact-1', '{"declaration":1}'),
   ('machine', 'vendor.worker', 'install-2', 'artifact-2', '{"declaration":2}');
 INSERT INTO machine_job_consents VALUES
@@ -2138,6 +2138,93 @@ DELETE FROM grants WHERE id = 'finite-grant';
       { installation_revision: "install-1", artifact: "artifact-1", enabled: 0 },
       { installation_revision: "install-2", artifact: "artifact-2", enabled: 1 },
     ]);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("migration 27 preserves input receipts and installs while adding per-machine native configuration", () => {
+  const dir = mkdtempSync(join(tmpdir(), "manifold-db-services-upgrade-"));
+  const path = join(dir, "manifold.db");
+  let db = new Database(path);
+  try {
+    // Schema-26 rows deliberately predate both resource-binding columns.
+    db.exec(`
+CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO meta VALUES ('schema_version', '26');
+CREATE TABLE machine_job_installs(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, enabled INTEGER NOT NULL, ready INTEGER NOT NULL DEFAULT 0, purge_requested INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(machine_id,plugin_id));
+CREATE TABLE machine_job_installations(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, PRIMARY KEY(machine_id,plugin_id,revision));
+CREATE TABLE machine_job_inputs(job_id TEXT NOT NULL, request_id TEXT NOT NULL, seq INTEGER NOT NULL, actor TEXT NOT NULL, trace_id TEXT NOT NULL, decision_id TEXT, state TEXT NOT NULL, reason TEXT, PRIMARY KEY(job_id,request_id));
+INSERT INTO machine_job_installs VALUES ('machine', 'vendor.worker', 'install-2', 'artifact-2', '{}', 1, 1, 0);
+INSERT INTO machine_job_installations VALUES
+  ('machine', 'vendor.worker', 'install-1', 'artifact-1', '{}'),
+  ('machine', 'vendor.worker', 'install-2', 'artifact-2', '{}');
+INSERT INTO machine_job_inputs VALUES
+  ('job', 'accepted', 1, 'actor', 'trace', 'decision', 'accepted', NULL),
+  ('job', 'unknown', 2, 'actor', 'trace', 'decision', 'unknown', 'job_input_delivery_unknown');
+`);
+    const installs = db
+      .query<Record<string, string | number>, []>("SELECT * FROM machine_job_installs")
+      .all();
+    const history = db
+      .query<Record<string, string>, []>("SELECT * FROM machine_job_installations ORDER BY revision")
+      .all();
+    const receipts = db.query("SELECT * FROM machine_job_inputs ORDER BY seq").all();
+    db.close();
+    db = openDatabase(path);
+    expect(db.query("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({
+      value: String(SCHEMA_VERSION),
+    });
+    expect(db.query("SELECT * FROM machine_job_installs").all()).toEqual(
+      installs.map((row) => ({ ...row, resource_bindings: null })),
+    );
+    expect(db.query("SELECT * FROM machine_job_installations ORDER BY revision").all()).toEqual(
+      history.map((row) => ({ ...row, resource_bindings: null })),
+    );
+    expect(db.query("SELECT * FROM machine_job_inputs ORDER BY seq").all()).toEqual(receipts);
+    expect(db.query("SELECT * FROM native_service_configurations").all()).toEqual([]);
+
+    const revision = "a".repeat(64);
+    const configuration = JSON.stringify({ revision, policies: [] });
+    const insert = db.query(
+      "INSERT INTO native_service_configurations(machine_id,revision,configuration) VALUES (?,?,?)",
+    );
+    insert.run("machine", revision, configuration);
+    expect(() => insert.run("machine", revision, configuration)).toThrow();
+    expect(() => insert.run("missing-revision", null, configuration)).toThrow();
+    expect(() => insert.run("missing-configuration", revision, null)).toThrow();
+    insert.run("other-machine", revision, configuration);
+    const nextRevision = "b".repeat(64);
+    const nextConfiguration = JSON.stringify({ revision: nextRevision, policies: [] });
+    db.query(
+      "UPDATE native_service_configurations SET revision=?,configuration=? WHERE machine_id=?",
+    ).run(nextRevision, nextConfiguration, "machine");
+    const bindings = JSON.stringify({
+      tools: { git: "c".repeat(64) },
+      services: { catalog: "d".repeat(64) },
+      anchors: { data: "e".repeat(64) },
+    });
+    db.query("UPDATE machine_job_installs SET resource_bindings=?").run(bindings);
+    db.query(
+      "UPDATE machine_job_installations SET resource_bindings=? WHERE revision='install-2'",
+    ).run(bindings);
+    db.close();
+    db = openDatabase(path);
+    expect(db.query("SELECT * FROM native_service_configurations ORDER BY machine_id").all()).toEqual([
+      { machine_id: "machine", revision: nextRevision, configuration: nextConfiguration },
+      { machine_id: "other-machine", revision, configuration },
+    ]);
+    expect(db.query("SELECT resource_bindings FROM machine_job_installs").get()).toEqual({
+      resource_bindings: bindings,
+    });
+    expect(
+      db.query("SELECT revision,resource_bindings FROM machine_job_installations ORDER BY revision").all(),
+    ).toEqual([
+      { revision: "install-1", resource_bindings: null },
+      { revision: "install-2", resource_bindings: bindings },
+    ]);
+    expect(db.query("SELECT * FROM machine_job_inputs ORDER BY seq").all()).toEqual(receipts);
   } finally {
     db.close();
     rmSync(dir, { recursive: true, force: true });
