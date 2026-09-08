@@ -7,8 +7,11 @@ import {
   JobRequestSchema,
   ServiceCallSchema,
   ServiceReplySchema,
+  ServiceReadySchema,
+  ServiceReadyResultSchema,
   type ServiceCall,
   type ServiceReply,
+  type ServiceReadyRefusal,
   type JobCommand,
   type JobEvent,
 } from "@manifold/protocol";
@@ -36,6 +39,7 @@ export class JobContext {
   private chain = Promise.resolve();
   private readonly serviceController = new AbortController();
   private readonly serviceRequests = new Set<string>();
+  private serviceReadyRequested = false;
 
   private pendingBytes = 0;
   constructor(
@@ -44,6 +48,7 @@ export class JobContext {
       invoke(event: Extract<JobEvent, { type: "invocation" }>): void;
       command(command: JobCommand): Promise<void>;
       service?(request: ServiceCall, signal: AbortSignal): Promise<ServiceReply>;
+      serviceReady?(port: number): Promise<void>;
       failure(reason: string): void;
     },
   ) {
@@ -83,6 +88,28 @@ export class JobContext {
   private async receive(raw: unknown): Promise<void> {
     if (this.closed || raw === null || typeof raw !== "object")
       throw new Error("invalid_context_message");
+    if (Reflect.get(raw, "type") === "service_ready") {
+      const request = ServiceReadySchema.parse(raw);
+      let refusal: ServiceReadyRefusal | null = null;
+      if (this.serviceReadyRequested) refusal = "service_ready_duplicate";
+      else {
+        this.serviceReadyRequested = true;
+        if (this.serviceController.signal.aborted) refusal = "service_closed";
+        else if (!this.callbacks.serviceReady) refusal = "service_unavailable";
+        else {
+          try {
+            await this.callbacks.serviceReady(request.port);
+          } catch {
+            refusal = "service_unavailable";
+          }
+          if (this.serviceController.signal.aborted) refusal = "service_closed";
+        }
+      }
+      this.send(ServiceReadyResultSchema.parse(refusal === null
+        ? { type: "service_ready_result", requestId: request.requestId, ok: true }
+        : { type: "service_ready_result", requestId: request.requestId, ok: false, refusal }));
+      return;
+    }
     if (Reflect.get(raw, "type") === "service") {
       const request = ServiceCallSchema.parse(raw);
       if (this.serviceRequests.has(request.requestId) || this.serviceRequests.size >= 4096)

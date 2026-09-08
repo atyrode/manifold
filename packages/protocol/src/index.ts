@@ -88,6 +88,22 @@ export {
   type ServicePolicy,
 } from "./services.ts";
 export {
+  WORKER_CONTEXT_FD_ENV,
+  WORKER_FRAME_BYTES,
+  WORKER_QUEUE_BYTES,
+  WORKER_MAX_PENDING,
+  WorkerLocationSchema,
+  WorkerContextSchema,
+  ServiceReadySchema,
+  ServiceReadyRefusalSchema,
+  ServiceReadyResultSchema,
+  type WorkerLocation,
+  type WorkerContextFrame,
+  type ServiceReady,
+  type ServiceReadyResult,
+  type ServiceReadyRefusal,
+} from "./worker.ts";
+export {
   JobResourceBindingsSchema,
   JobResourceInventorySchema,
   jobResourceRequirements,

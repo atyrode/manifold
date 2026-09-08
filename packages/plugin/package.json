@@ -4,7 +4,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./hooks": "./src/hooks.ts"
+    "./hooks": "./src/hooks.ts",
+    "./worker": "./src/worker.ts"
   },
   "dependencies": {
     "@manifold/protocol": "workspace:*",
