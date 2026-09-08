@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MAX_SESSION_BASE64_CHARS } from "./elements.ts";
+import { JobCommandSchema, JobEventSchema, JobOwnerSchema } from "./jobs.ts";
 
 /**
  * Machine channel (`/ws/machine`): the manifold-agent daemon dials OUT to the server and
@@ -74,6 +75,7 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
      * with it.
      */
     terminalHostId: z.string().min(1).optional(),
+    jobOwner: JobOwnerSchema.optional(),
   }),
   z.strictObject({ type: z.literal("created"), terminalId }),
   z.strictObject({ type: z.literal("create_error"), terminalId, message: z.string() }),
@@ -109,6 +111,7 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
     draining: z.boolean(),
     terminalIds: z.array(terminalId),
   }),
+  z.strictObject({ type: z.literal("job_event"), event: JobEventSchema }),
 ]);
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 
@@ -157,6 +160,7 @@ export const ServerToAgentMessageSchema = z.discriminatedUnion("type", [
     requestId: z.string().min(1),
     draining: z.boolean(),
   }),
+  z.strictObject({ type: z.literal("job_command"), command: JobCommandSchema }),
 ]);
 export type ServerToAgentMessage = z.infer<typeof ServerToAgentMessageSchema>;
 
@@ -176,6 +180,7 @@ export const AGENT_MESSAGE_TYPES = [
   "exited",
   "pong",
   "drain_status",
+  "job_event",
 ] as const satisfies readonly AgentMessage["type"][];
 
 export const SERVER_TO_AGENT_MESSAGE_TYPES = [
@@ -187,6 +192,7 @@ export const SERVER_TO_AGENT_MESSAGE_TYPES = [
   "snapshot_request",
   "ping",
   "drain",
+  "job_command",
 ] as const satisfies readonly ServerToAgentMessage["type"][];
 
 type MissingAgentType = Exclude<AgentMessage["type"], (typeof AGENT_MESSAGE_TYPES)[number]>;

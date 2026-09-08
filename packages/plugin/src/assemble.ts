@@ -1,4 +1,5 @@
 import {
+  ActionRequirementsSchema,
   CORE_NAMESPACE_PREFIX,
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   DEFAULT_SECTION_PRESENTATION,
@@ -18,6 +19,7 @@ import {
   type PluginRosterEntry,
   type SectionPresentation,
   type SettingDef,
+  type StreamDescriptor,
 } from "@manifold/protocol";
 import { z } from "zod";
 import type { AnyActionDef } from "./action.ts";
@@ -192,6 +194,12 @@ export interface AssemblyEvent {
   readonly title: string;
 }
 
+/** Canonical stream kind → its sole declaring plugin, including disabled contributors. */
+export interface AssemblyStream {
+  readonly plugin: string;
+  readonly descriptor: StreamDescriptor;
+}
+
 /** A plugin's stored data as the ledger knows it: what was stamped, and what already ran. */
 export interface PluginStoredData {
   readonly version: PluginDataVersion | null;
@@ -309,6 +317,7 @@ export interface Assembly {
    * not where somebody moved a registration line.
    */
   readonly events: ReadonlyMap<string, AssemblyEvent>;
+  readonly streams: ReadonlyMap<string, AssemblyStream>;
   /**
    * THE order: topological over `dependencies` ∪ `after`, ties broken by lexicographic id.
    * Derived, deterministic and total, and it is the order lifecycle hooks fan out in — which
@@ -511,6 +520,7 @@ export function assembleRoster(
   const disciplineIds: Claims = new Map();
   const toolIds: Claims = new Map();
   const eventIds: Claims = new Map();
+  const streamKinds: Claims = new Map();
   const seatPanels: Claims = new Map();
   const routeSegments: Claims = new Map();
   const settingRefs: Claims = new Map();
@@ -525,6 +535,7 @@ export function assembleRoster(
   const settings = new Map<string, AssemblySetting>();
   const tools: AssemblyTool[] = [];
   const declaredEvents: [string, AssemblyEvent][] = [];
+  const declaredStreams: [string, AssemblyStream][] = [];
   const pendingMigrations = new Map<string, readonly PluginMigration[]>();
 
   for (const [index, def] of defs.entries()) {
@@ -593,6 +604,18 @@ export function assembleRoster(
           `action "${name}" requires cap "${cap}" outside its manifest capabilities [${manifest.capabilities.join(", ")}]`,
         );
       }
+      if (action.requirements !== undefined) {
+        const requirements = ActionRequirementsSchema.safeParse(action.requirements);
+        if (
+          !requirements.success ||
+          action.caps.some(
+            (cap) => !action.requirements!.some((requirement) => requirement.cap === cap),
+          ) ||
+          action.requirements.some((requirement) => !action.caps.includes(requirement.cap))
+        ) {
+          problems.push(`action "${name}" has invalid or incomplete target requirements`);
+        }
+      }
       published.push({
         name,
         title: action.title,
@@ -602,6 +625,8 @@ export function assembleRoster(
         // client answering "may my container-scoped token call this?" reads a value rather than an
         // absence it would have to know the rule for.
         scope: action.scope ?? "workspace",
+        ...(action.requirements === undefined ? {} : { requirements: [...action.requirements] }),
+        ...(action.trace === undefined ? {} : { trace: action.trace }),
         input: publishSchema(action.input, "input", `action "${name}" input`, problems),
         result: publishSchema(action.result, "output", `action "${name}" result`, problems),
       });
@@ -749,6 +774,11 @@ export function assembleRoster(
       claim(eventIds, event.id, manifest.id);
       declaredEvents.push([event.id, { plugin: manifest.id, title: event.title }]);
     }
+    for (const descriptor of manifest.contributes.streams ?? []) {
+      const kind = `${manifest.id}.${descriptor.id}`;
+      claim(streamKinds, kind, manifest.id);
+      declaredStreams.push([kind, { plugin: manifest.id, descriptor }]);
+    }
 
     // MIGRATIONS AND DATA VERSION. The declaration is checked here; the running happens in
     // the host, which owns the storage the migration writes through.
@@ -796,6 +826,7 @@ export function assembleRoster(
   reportDuplicates(settingRefs, "setting", problems);
   reportDuplicates(toolIds, "tool", problems);
   reportDuplicates(eventIds, "event", problems);
+  reportDuplicates(streamKinds, "stream", problems);
   reportDuplicates(seatPanels, "seat", problems);
   reportDuplicates(routeSegments, "route", problems);
 
@@ -845,6 +876,7 @@ export function assembleRoster(
   // Sorted, not registration-ordered: this index is published vocabulary, and a diff of two
   // builds' event surfaces should show what changed rather than where a registration moved.
   declaredEvents.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  declaredStreams.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
 
   const isEnabled = (id: string): boolean => manifests.has(id) && !disabled.has(id);
 
@@ -928,6 +960,7 @@ export function assembleRoster(
     settings,
     tools,
     events: new Map(declaredEvents),
+    streams: new Map(declaredStreams),
     order,
     pendingMigrations,
     enabled: isEnabled,

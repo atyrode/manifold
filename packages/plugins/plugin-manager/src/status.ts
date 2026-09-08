@@ -1,4 +1,5 @@
 import {
+  GOVERNED_CAPS,
   PLUGIN_INSTALL_REFUSALS,
   type Cap,
   type PluginInstall,
@@ -290,6 +291,15 @@ export const CAP_MEANINGS: Readonly<Record<Cap, string>> = {
   "terminals:write": "Type into terminals",
   "tokens:mint": "Mint tokens: hand authority to others",
   "machines:mint": "Enroll machines into the fleet",
+  "machines:run": "Run admitted machine operations with explicit version-bound consent",
+  "jobs:read": "Read admitted jobs and their outputs",
+  "jobs:input": "Provide input to admitted jobs",
+  "jobs:cancel": "Cancel admitted jobs",
+  "locations:read": "Read an explicitly admitted location",
+  "locations:write": "Write an explicitly admitted location",
+  "locations:create": "Create entries in an explicitly admitted location",
+  "operations:invoke": "Invoke an explicitly admitted operation",
+  "network:host": "Use explicitly admitted host networking",
   "plugins:manage": "Turn plugins on and off for everyone",
 };
 
@@ -317,7 +327,7 @@ export function pluginPermissions(entry: PluginRosterEntry): readonly Permission
   return entry.manifest.capabilities.map((cap) => ({
     cap,
     meaning: CAP_MEANINGS[cap],
-    granted: granted === null || granted.has(cap),
+    granted: !GOVERNED_CAPS.includes(cap) && (granted === null || granted.has(cap)),
   }));
 }
 
@@ -336,7 +346,8 @@ export function permissionSummary(entry: PluginRosterEntry): string {
   if (permissions.length === 0) return "Declares no capabilities";
   const held = permissions.filter((permission) => permission.granted).map((p) => p.cap);
   const withheld = permissions.filter((permission) => !permission.granted).map((p) => p.cap);
-  if (entry.install === undefined) return `Declares ${held.join(", ")}`;
+  if (entry.install === undefined)
+    return `Declares ${permissions.map((permission) => permission.cap).join(", ")}`;
   const lead = `Granted ${String(held.length)} of ${String(permissions.length)} declared`;
   if (held.length === 0) return `${lead}: nothing; withheld ${withheld.join(", ")}`;
   return withheld.length === 0

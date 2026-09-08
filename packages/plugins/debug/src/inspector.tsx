@@ -391,6 +391,11 @@ function addressLabel(uri: string): string {
       return `plugin ${ref.pluginId}`;
     case "action":
       return `door ${ref.actionName}`;
+    case "operation":
+    case "location":
+    case "job":
+    case "output":
+      return uri;
     default: {
       const exhaustive: never = ref;
       return exhaustive;

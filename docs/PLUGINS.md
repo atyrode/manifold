@@ -1296,6 +1296,205 @@ also uses `refresh()` after a successful administration action, not an event pay
 replacement state. Reading another collection changes the fetch, resource key and topic
 array together; no new client or socket is involved.
 
+#### Governed jobs and continuous streams
+
+Use `ctx.jobs` for a declared non-PTY machine operation and `ctx.streams` for live plugin
+data. Neither is a terminal program, a per-frame action/event, or a polling loop.
+The normative boundaries are in [CONTRACTS §Governed machine jobs](CONTRACTS.md#governed-machine-jobs)
+and [§Plugin-owned continuous streams](CONTRACTS.md#plugin-owned-continuous-streams);
+[ADR 0033](decisions/0033-governed-plugin-runtime.md) records historical reasoning, not a
+second current compatibility contract. It is numbered 0033 because merged main already uses
+0031 for terminal inline graphics; that decision and its protocol-26 graphics history remain
+unchanged.
+
+**Protocol support is not deployment authority.** The session protocol is exact-current 27.
+Governed jobs require a protocol-27 agent with a proved job owner. Plugin streams use
+the current session protocol independently and require no machine owner. Protocol-26
+agents remain compatible for terminal service, including terminal graphics, but cannot advertise
+`jobOwner` or exchange governed job traffic; a job request must not fall back to a PTY. The
+machine compatibility set retains 16 through 26 and adds 27, while instance peers independently
+require protocol 27 because their closed capability/reference vocabularies expanded. Publication,
+preview delivery, production promotion and fleet installation are distinct actions; this author
+guide grants no live rollout authorization. See
+[Protocol and compatibility](CONTRACTS.md#protocol-and-compatibility).
+
+The in-realm handle types are public imports, not server-internal APIs:
+
+```ts
+import type { PluginJobContext, PluginStreamContext } from "@manifold/plugin";
+```
+
+`PluginJobContext` supplies `describe`, `execute`, `status`, `follow`, `input`, `cancel`,
+`output`, `schedule`, `schedules` and `disableSchedule`. `PluginStreamContext` supplies
+`open`; the exported `JobFollow` and `StreamProducer` type their handles. Hardened
+`GuestJobs`/stream handles use their asynchronous bridge counterparts.
+
+**Declare before executing.** The optional machine half declares per-platform HTTPS
+artifacts with real archive/executable SHA256, bounded extraction and optional separately
+hashed bundled tool files; namespaced revisioned locations; and namespaced operations.
+Operations use fixed argv literals/typed input slots, bounded input, at most eight named
+`runtimeTools`, exact location read/write/create rights, output names, stdin, network mode
+and timeout/memory/process/output limits. A runtime tool is a reviewed closure or declared
+bundled file, not an arbitrary executable or a request to search host PATH. Do not invent
+packaging hashes, inherit caller environment, provide host paths/cwd, or install packages
+at execution time. The trusted owner acquires and verifies the real artifact privately.
+Linux x64/arm64 enforces held-FD mounts, seccomp and owner-controlled cgroup-v2 containment;
+unavailable enforcement or unsupported backends refuse execution, never fall back to an
+unrestricted process. Terminal transports remain usable independently of job availability.
+`network: "host"` is separately explicit broad host networking, not an egress allowlist.
+Even host-network jobs cannot use `sendmsg`, `sendmmsg`, `io_uring` or alternate/compatibility
+ABIs (including x86 `int 0x80`/x32); select runtime libraries compatible with that constraint.
+The filter prevents descriptor export beyond tracked writers, not all dangerous syscalls.
+Fresh installation can reuse privately held cache entries only after rechecking the
+approved HTTPS origin, ownership, modes, selected-file digests and size bounds. Missing
+entries permit normal acquisition; corrupt or substituted cache bytes refuse rather than
+silently repairing an installation.
+
+**Install is not consent.** Installation binds machine, plugin, installation revision and
+artifact. Every execution/resource capability must pass common A5 authority AND explicit
+revision-bound consent, including for root and built-ins. No plugin-local ACL, wildcard
+backfill, machine-label targeting or product-specific common-engine exception replaces it.
+The host binds credential lineage and caller identity; it does not trust plugin-provided
+credentials or parent IDs. `engine.jobs.install`, `.consent` and `.setInvocationEdge` are
+root administration doors; normal product actions use their supplied `ctx.jobs` handle.
+
+Discover availability with `ctx.jobs.describe({ machineId, pluginId })`, or dispatch
+`engine.jobs.describe` with those arguments. This checks current `machines:run` authority
+at the machine and, for a plugin handle, its own plugin ID; it is not an execution grant.
+`connected` is the current proved job-owner channel, not terminal online status.
+`platforms` is that owner's advertised list (empty while disconnected), not a promise
+that every declared artifact/backend is available. `installation` is null or
+`{ revision, artifactSha256, enabled, ready, purgeRequested }`; `ready` additionally requires
+the current owner's installation acknowledgement and no pending purge. Resource preflight
+and admission can still refuse. `consents` lists `{ node, cap, enabled, revision }`, with
+enabled rows matching the current revision/hash.
+`admissionPublicKey` supplies the hub's public SPKI verifier key for reviewed machine-owner
+configuration without database access; it confers no authority and exposes no private key.
+Pass optional `installationRevision` to describe a retained revision. Historical readiness
+is false; `retainedInstallations` lists up to 128 non-current revision/artifact pins, and
+older pins remain addressable explicitly. Old consent never authorizes a different artifact.
+
+Root administration dispatches `engine.jobs.install` with
+`{ machineId, pluginId, installationRevision, artifactSha256, machine }`; `machine` must
+match the plugin's declared machine half. Consent dispatches `engine.jobs.consent` with
+`{ machineId, pluginId, installationRevision, artifactSha256, node, cap, enabled }`.
+Use the exact canonical resource URI and capability; a changed installation revision/hash
+needs matching consent. Neither door is part of the plugin's ordinary execution handle.
+
+`ctx.jobs.execute({ jobId, machineId, operationId, input, outputs, limits? })` returns safe
+job metadata. `outputs` contains exact `{ name, locationId, components }` bindings.
+Keep the same immutable request for retry: exact duplicates recover prior state only under
+current job-read authority and consent; changing content under an existing job ID refuses.
+An admission receipt does not grant later result inspection, and an interrupted/unknown start
+is not permission to run the effect again. `status`, `input`, `cancel` and `output` are governed operations;
+opaque node possession does not grant access. `output` reads a sealed output node in
+bounded chunks (at most 64 KiB), not an arbitrary path.
+
+Location access `"create"` refuses an already-existing final file or directory instead of
+opening it for write; an active ancestor writer also blocks create-only resolution.
+Named output bindings require an already-provisioned bounded tmpfs backing, not an
+ordinary writable directory. The runtime does not mount it for you. Across distinct
+backing devices, total positive capacity must fit `limits.outputBytes` and total inode
+capacity must be positive and at most 10,000; otherwise execution refuses
+`bounded-output-storage-required`. Capacity, not free space or eventual output size, is
+reserved from `outputBytes`; stdout and stderr share only the remainder. Leave room for
+both, since exceeding the combined stdio budget terminates execution. Final named output
+and stdio bytes also share the aggregate limit. Administrators and unconfined same-UID
+processes able to remount backing storage are outside this confinement boundary.
+
+Nested execution requires an explicit edge naming exact caller/callee installations,
+artifacts and revisioned resources, plus depth/concurrency/aggregate ceilings. Its output
+rules are `{ name, locationId, components, maxSuffixComponents }`: zero suffix components
+means exact path, a positive bound means at least one and at most that many components
+below the prefix. Every declared output must be matched once, with exact location ID.
+The child request retains its exact immutable bindings; the rule is an admission ceiling,
+not a mutable binding or a grant of the whole parent directory.
+
+Schedules use `engine.jobs.schedule`, `.schedules` and `.disableSchedule`, with revision,
+nominal first occurrence, interval, deadline, expiry and `skip`/`coalesce-one` offline
+policy. They retain the original credential ceiling, reauthorize before start and never
+silently retarget replacement artifacts/machines. Do not create a plugin polling timer
+as an alternate scheduler or make a user's expiring authority permanent.
+
+**Follow privately; publish deliberately.** `ctx.jobs.follow(node, receive)` supplies a
+snapshot (`state`, `result`, `seq`, `firstSeq`, bounded `events`, `unavailable`) and close
+handle, then sequenced event/closed updates. The hardened `GuestJobs.follow` returns a
+promise of the same snapshot contract and an asynchronous `close()`. Inspect unavailable
+ranges and `gap` closure; the 128-event/256-KiB job replay is not a durable transcript.
+Consume the snapshot and subsequent watermarks without duplicate effects or hidden loss.
+Release the follow when its consumer ends, rather than repeatedly polling `status`.
+
+Raw follow/output bytes can contain secrets. Publish only your product's safe metadata
+onto its public stream; keep raw inputs, stdout/stderr, prompts and private output bodies
+out of events, errors and traces. Generic job doors are `trace: "opaque"` before validation
+or refusal; product actions handling private bodies must use that same action declaration,
+not merely redact inside a handler. `PublicJob` contains lifecycle/result metadata and
+`authority`: the original `requester`, `origin` (action trace, schedule occurrence or nested
+invocation), nullable committed-permit `executor`, and nullable retained `decision`.
+See the [exact authority fields](CONTRACTS.md#governed-machine-jobs): a grant's nullable
+`authorizer` is its winning grant's creator, not an inferred approver or automatically the requester.
+Decision grant/consent revisions and artifact hashes are evidence, not credential values.
+Safe lifecycle traces preserve originating context and this metadata without raw bytes.
+Output results expose hashes/counts/references. `child_exit` explicitly says
+`outputsSealed: false`: it is not closure proof. Sealing waits for the empty execution tree
+and all overlapping authorized writers, including aliases, ancestor/descendant mounts and
+parent-held child leases, to release. Disjoint unrelated jobs are not a global sealing barrier.
+Disable retains data and cancels work; purge is separate, refuses active leases, and
+`purge_requested` is not acknowledged deletion. Never label a sent purge command “deleted.”
+
+**Declare and own a stream.** Each `contributes.streams` entry has `id`, `title`, bounded
+JSON `body` schema, `readCapability`, `nodeKinds`, `maxFrameBytes`, `maxRingFrames`,
+`maxRingBytes` and `maxInstances`. Variable-size schema shapes need explicit bounds.
+The qualified kind belongs to your plugin even while disabled, and the node must exist
+and belong to you. Governed node kinds cannot use weaker read authority.
+`ctx.streams.open(kind, node)` returns a producer with `epoch`, `publish(body)`, `close()`
+and `onClose(listener)`. In a hardened plugin, open/publish/close are asynchronous.
+Register `producer.onClose` to release its job-follow and other resources; host disable,
+revocation and isolation teardown must not leave a producer or follow running behind it.
+
+The session handle's `openStream({ kind, node, cursor? })` returns the SDK `StreamHandle`:
+`snapshot`, `cursor`, `status`, `on(listener)` and `close()`. It shares the existing pooled
+session socket; close your handle on teardown rather than opening another socket.
+Snapshot watermarks precede later frames. Surface gap/reset/refusal/closure explicitly;
+SDK duplicate suppression is not missing-data repair. Reconnect resumes from a cursor,
+not from a fabricated complete history. Authority is rechecked at delivery and queued
+sends; bounded slow-consumer failure is explicit. Disable ends epochs and re-enable
+requires fresh ones. Frames are continuous traffic, never per-frame durable actions.
+The in-realm and hardened bridges expose the same semantics.
+
+**Verify the real boundary.** The mandatory Linux runtime CI uses
+[`scripts/verify-runtime.sh`](../scripts/verify-runtime.sh) rather than treating skipped
+fixtures in the ordinary cross-platform suite as boundary evidence. From the checkout:
+
+```sh
+bash scripts/verify-runtime.sh jobs
+bash scripts/verify-runtime.sh browser
+```
+
+Each invocation creates its own fresh, finite `manifold-jobs-*` systemd delegated unit;
+do not run both underlying gates in the same already-initialized cgroup. The default
+uses `systemd --user`; `bash scripts/verify-runtime.sh --system jobs` (or `browser`) is
+the explicit opt-in to noninteractive `sudo -n systemd-run`, executing as the caller's UID.
+No mode implicitly acquires privileges.
+
+The wrapper resolves `bun`, `bwrap`, static `busybox` and a compiler capable of static
+linking (`cc`) from PATH; absolute `BUN`, `MANIFOLD_TEST_BWRAP`,
+`MANIFOLD_TEST_STATIC_BUSYBOX` and `CC` overrides select alternatives. It privately builds
+the syscall probe and provisions the bounded output tmpfs and mount-tree fixtures in a
+disposable namespace. It sets `MANIFOLD_TEST_UNIT`, `MANIFOLD_TEST_SYSCALL_PROBE`,
+`MANIFOLD_TEST_OUTPUT_ROOT` and `MANIFOLD_TEST_MOUNT_TREE` along with the executable
+overrides. This is proof-fixture setup, not automatic production output provisioning.
+Optional `MANIFOLD_CHROMIUM`, `MANIFOLD_GATE_DIST` and `MANIFOLD_RUNTIME_PROOF_DIR`
+are explicitly forwarded; arbitrary inherited credentials are not. Required tools,
+controllers, namespace/mount support and fixture inputs must be available or the wrapper/
+gate fails; missing setup is not a successful skip.
+
+`jobs` invokes `bun run verify:jobs` for the real runtime and security fixtures; `browser`
+invokes `bun run verify:jobs:browser` for the browser path in a separate unit. These are
+local throwaway proofs, not live-hub installation, deployment approval, or evidence of
+full Code/Babel parity or product cutover. A command documented here is not a claim of
+passing acceptance: record the actual exercised revision, surface and result.
+
 #### Terminals through the handle
 
 A terminal is channel traffic — its birth is a round trip to a machine and its bytes are a

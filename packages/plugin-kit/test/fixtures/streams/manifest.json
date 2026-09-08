@@ -1,0 +1,37 @@
+{
+  "id": "example.streams",
+  "version": "1.0.0",
+  "title": "Continuous stream fixture",
+  "description": "A real sixty-second producer and handle-driven viewer exercising bounded continuous delivery without frame journaling.",
+  "capabilities": ["containers:read", "containers:write"],
+  "contributes": {
+    "settings": [],
+    "panels": [{ "id": "frames", "title": "Continuous frames" }],
+    "sections": [],
+    "elements": [],
+    "tools": [],
+    "events": [],
+    "streams": [
+      {
+        "id": "frames",
+        "title": "Twenty frames per second",
+        "body": {
+          "type": "object",
+          "properties": {
+            "frame": { "type": "integer", "minimum": 1, "maximum": 1200 },
+            "ink": { "type": "string", "maxLength": 64 }
+          },
+          "required": ["frame", "ink"],
+          "additionalProperties": false
+        },
+        "readCapability": "containers:write",
+        "nodeKinds": ["plugin"],
+        "maxFrameBytes": 128,
+        "maxRingFrames": 20,
+        "maxRingBytes": 2560,
+        "maxInstances": 4
+      }
+    ]
+  },
+  "entry": { "server": true, "web": "web.js" }
+}

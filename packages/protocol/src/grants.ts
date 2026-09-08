@@ -52,11 +52,11 @@ export const GrantPrincipalSchema = z.discriminatedUnion("kind", [
 export type GrantPrincipal = z.infer<typeof GrantPrincipalSchema>;
 
 /**
- * A URI's worth of room: two 128-character ids and the longest form's fixed segments, rounded
- * up. Bounded for `RefIdSchema`'s reason — a resolver must never be handed an unbounded
- * attacker-chosen blob wearing an address's clothes.
+ * Four bounded ids at the maximum percent-encoded UTF-16 code-unit expansion, plus
+ * the machine/operation/job/output path's fixed segments. Every canonical resource
+ * reference must fit the grant door without truncating its identity.
  */
-export const MAX_GRANT_NODE_LENGTH = 512;
+export const MAX_GRANT_NODE_LENGTH = 4 * 128 * 9 + 64;
 
 /**
  * WHERE, as a `manifold://` URI string rather than a `ManifoldRef`. Two reasons, and both are

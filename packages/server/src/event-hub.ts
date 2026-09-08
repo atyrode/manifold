@@ -143,6 +143,10 @@ function topicContainer(ref: ManifoldRef, terminals: TerminalHomePort): string |
     case "terminal":
       return terminals.placedTerminal(ref.terminalId)?.containerId ?? null;
     case "machine":
+    case "operation":
+    case "location":
+    case "job":
+    case "output":
     case "principal":
     case "plugin":
     case "action":
@@ -246,7 +250,13 @@ export class EventHub {
     for (const ref of topics) {
       const key = formatManifoldUri(ref);
       if (entry.topics.has(key)) continue;
-      if (!this.authorized(subscriber.auth, topicContainer(ref, this.deps.terminals))) {
+      if (
+        ref.kind === "operation" ||
+        ref.kind === "location" ||
+        ref.kind === "job" ||
+        ref.kind === "output" ||
+        !this.authorized(subscriber.auth, topicContainer(ref, this.deps.terminals))
+      ) {
         forbidden += 1;
         continue;
       }

@@ -12,6 +12,7 @@ import {
 import { PluginRosterSchema } from "./plugin.ts";
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
+import { STREAM_CLIENT_BODIES, STREAM_SERVER_BODIES } from "./stream.ts";
 
 /**
  * Session channel (`/ws/session`): browsers, SDKs, tools. JSON text frames.
@@ -320,6 +321,7 @@ const ClientPongSchema = z.strictObject({ type: z.literal("pong") });
  * left.
  */
 export const CLIENT_CONNECTION_BODIES = {
+  ...STREAM_CLIENT_BODIES,
   subscribe: z.strictObject({
     type: z.literal("subscribe"),
     topics: z.array(ManifoldRefSchema).min(1).max(MAX_SUBSCRIBE_TOPICS),
@@ -353,6 +355,8 @@ export const ClientMessageBodySchema = z.discriminatedUnion("type", [
   ClientPongSchema,
   CLIENT_CONNECTION_BODIES.subscribe,
   CLIENT_CONNECTION_BODIES.unsubscribe,
+  CLIENT_CONNECTION_BODIES.stream_open,
+  CLIENT_CONNECTION_BODIES.stream_close,
 ]);
 export type ClientMessageBody = z.infer<typeof ClientMessageBodySchema>;
 
@@ -376,6 +380,8 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   // Connection-level: identical in both unions, because a frame with no `ch` IS its body.
   CLIENT_CONNECTION_BODIES.subscribe,
   CLIENT_CONNECTION_BODIES.unsubscribe,
+  CLIENT_CONNECTION_BODIES.stream_open,
+  CLIENT_CONNECTION_BODIES.stream_close,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;
 
@@ -531,6 +537,7 @@ const ServerPingSchema = z.strictObject({ type: z.literal("ping") });
  * bare literal beside it rather than joining the table: it has no body to parse.
  */
 export const CONNECTION_BODIES = {
+  ...STREAM_SERVER_BODIES,
   /** The roster and, beside it, the developer-mode switch (`PluginsResponseSchema`); absent ≡ off. */
   plugins: z.strictObject({
     type: z.literal("plugins"),
@@ -585,6 +592,12 @@ export const ServerMessageBodySchema = z.discriminatedUnion("type", [
   ServerPingSchema,
   CONNECTION_BODIES.plugins,
   CONNECTION_BODIES.event,
+  CONNECTION_BODIES.stream_snapshot,
+  CONNECTION_BODIES.stream_frame,
+  CONNECTION_BODIES.stream_gap,
+  CONNECTION_BODIES.stream_reset,
+  CONNECTION_BODIES.stream_refused,
+  CONNECTION_BODIES.stream_closed,
 ]);
 export type ServerMessageBody = z.infer<typeof ServerMessageBodySchema>;
 
@@ -607,6 +620,12 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   // Connection-level: identical in both unions, because a frame with no `ch` IS its body.
   CONNECTION_BODIES.plugins,
   CONNECTION_BODIES.event,
+  CONNECTION_BODIES.stream_snapshot,
+  CONNECTION_BODIES.stream_frame,
+  CONNECTION_BODIES.stream_gap,
+  CONNECTION_BODIES.stream_reset,
+  CONNECTION_BODIES.stream_refused,
+  CONNECTION_BODIES.stream_closed,
 ]);
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;
 
@@ -650,6 +669,12 @@ export const SERVER_MESSAGE_TYPES = [
   "ping",
   "plugins",
   "event",
+  "stream_snapshot",
+  "stream_frame",
+  "stream_gap",
+  "stream_reset",
+  "stream_refused",
+  "stream_closed",
 ] as const satisfies readonly ServerMessage["type"][];
 
 export const CLIENT_MESSAGE_TYPES = [
@@ -670,6 +695,8 @@ export const CLIENT_MESSAGE_TYPES = [
   "pong",
   "subscribe",
   "unsubscribe",
+  "stream_open",
+  "stream_close",
 ] as const satisfies readonly ClientMessage["type"][];
 
 /**
@@ -686,6 +713,14 @@ export const CONNECTION_LEVEL_MESSAGE_TYPES = [
   "subscribe",
   "unsubscribe",
   "event",
+  "stream_open",
+  "stream_close",
+  "stream_snapshot",
+  "stream_frame",
+  "stream_gap",
+  "stream_reset",
+  "stream_refused",
+  "stream_closed",
 ] as const;
 
 type MissingServerType = Exclude<ServerMessage["type"], (typeof SERVER_MESSAGE_TYPES)[number]>;

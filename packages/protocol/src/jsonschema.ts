@@ -28,6 +28,24 @@ import {
 } from "./plugin.ts";
 import { ClientMessageSchema, ServerMessageSchema } from "./session.ts";
 import { PROTOCOL_VERSION } from "./version.ts";
+import {
+  MachineHalfSchema,
+  JobRequestSchema,
+  JobPermitSchema,
+  JobResultSchema,
+  JobOwnerSchema,
+  JobCommandSchema,
+  JobEventSchema,
+  JobFollowSnapshotSchema,
+  JobFollowUpdateSchema,
+  MAX_JOB_FOLLOW_EVENTS,
+  MAX_JOB_FOLLOW_BYTES,
+} from "./jobs.ts";
+import {
+  streamVocabulary,
+  StreamClientMessageSchema,
+  StreamServerMessageSchema,
+} from "./stream.ts";
 
 /**
  * The live assembly, when the caller has one to publish. The protocol package describes
@@ -86,6 +104,24 @@ export function buildProtocolJsonSchema(extras?: ProtocolExtras): Record<string,
     machine: {
       agent: z.toJSONSchema(AgentMessageSchema),
       server: z.toJSONSchema(ServerToAgentMessageSchema),
+    },
+    jobContract: {
+      machineHalf: z.toJSONSchema(MachineHalfSchema),
+      request: z.toJSONSchema(JobRequestSchema),
+      permit: z.toJSONSchema(JobPermitSchema),
+      result: z.toJSONSchema(JobResultSchema),
+      owner: z.toJSONSchema(JobOwnerSchema),
+      command: z.toJSONSchema(JobCommandSchema),
+      event: z.toJSONSchema(JobEventSchema),
+      followSnapshot: z.toJSONSchema(JobFollowSnapshotSchema),
+      followUpdate: z.toJSONSchema(JobFollowUpdateSchema),
+      maxFollowEvents: MAX_JOB_FOLLOW_EVENTS,
+      maxFollowBytes: MAX_JOB_FOLLOW_BYTES,
+    },
+    streamContract: {
+      ...streamVocabulary(),
+      client: z.toJSONSchema(StreamClientMessageSchema),
+      server: z.toJSONSchema(StreamServerMessageSchema),
     },
     /**
      * The third wire (ADR 0014): the instance channel a guest dials a host over. Published

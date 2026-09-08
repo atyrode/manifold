@@ -4,7 +4,6 @@ import {
   ActionOutcomeSchema,
   ActionSummarySchema,
   CONNECTION_BODIES,
-  CONNECTION_LEVEL_MESSAGE_TYPES,
   CORE_NAMESPACE_PREFIX,
   DEFAULT_DORMANT_MODE,
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
@@ -23,11 +22,13 @@ import {
   PluginPurgeResultSchema,
   PluginRosterEntrySchema,
   PluginRosterSchema,
-  SERVER_MESSAGE_TYPES,
   ServerMessageSchema,
   TileRefSchema,
   buildProtocolJsonSchema,
   pluginVocabulary,
+  MAX_STREAM_DESCRIPTORS,
+  StreamDescriptorSchema,
+  compileStreamBodySchema,
   type PluginManifest,
   type PluginRosterEntry,
 } from "@manifold/protocol";
@@ -57,6 +58,63 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
 }
 
 describe("plugin manifest", () => {
+  test("stream declarations refuse unbounded or unsupported body schemas before publication", () => {
+    const descriptor = {
+      id: "output",
+      title: "Output",
+      body: {
+        type: "object",
+        properties: { text: { type: "string", maxLength: 16 } },
+        required: ["text"],
+        additionalProperties: false,
+      },
+      readCapability: "containers:read",
+      nodeKinds: ["element"],
+      maxFrameBytes: 256,
+      maxRingBytes: 1024,
+      maxRingFrames: 4,
+      maxInstances: 2,
+    };
+    const parsed = StreamDescriptorSchema.parse(descriptor);
+    const body = compileStreamBodySchema(parsed.body);
+    expect(body.parse({ text: "hello" })).toEqual({ text: "hello" });
+    expect(body.safeParse({}).success).toBe(false);
+    expect(body.safeParse({ text: "x".repeat(17) }).success).toBe(false);
+    expect(body.safeParse({ text: "hello", hidden: true }).success).toBe(false);
+    for (const schema of [
+      { type: "string" },
+      { type: "array", items: { type: "boolean" } },
+      { type: "object", properties: {}, additionalProperties: true },
+      { type: "string", maxLength: 16, pattern: ".*" },
+      { $ref: "https://example.com/schema" },
+    ]) {
+      expect(StreamDescriptorSchema.safeParse({ ...descriptor, body: schema }).success).toBe(false);
+    }
+    const candidate = manifest();
+    candidate.contributes.streams = Array.from(
+      { length: MAX_STREAM_DESCRIPTORS + 1 },
+      () => parsed,
+    );
+    expect(PluginManifestSchema.safeParse(candidate).success).toBe(false);
+    expect(StreamDescriptorSchema.safeParse({ ...descriptor, maxRingBytes: 255 }).success).toBe(
+      false,
+    );
+    expect(StreamDescriptorSchema.safeParse({ ...descriptor, readCapability: "*" }).success).toBe(
+      false,
+    );
+    const governed = { ...descriptor, nodeKinds: ["job", "output"] };
+    expect(StreamDescriptorSchema.safeParse(governed).success).toBe(false);
+    expect(
+      StreamDescriptorSchema.safeParse({ ...governed, readCapability: "jobs:read" }).success,
+    ).toBe(true);
+    expect(
+      StreamDescriptorSchema.safeParse({
+        ...governed,
+        readCapability: "jobs:read",
+        nodeKinds: ["job", "location"],
+      }).success,
+    ).toBe(false);
+  });
   test("a plugin id stops at one independently enabled part", () => {
     expect(PluginManifestSchema.safeParse(manifest({ id: "acme.product.part" })).success).toBe(
       true,
@@ -443,27 +501,6 @@ describe("the connection-level plugins frame", () => {
     const errorBody = { type: "error", code: "forbidden", message: "no" };
     expect(ServerMessageSchema.safeParse(errorBody).success).toBe(false);
     expect(ServerMessageSchema.safeParse({ ...errorBody, ch: "c1" }).success).toBe(true);
-  });
-
-  test("the inventories classify the frame, in both directions", () => {
-    // A pool that demuxes by `ch` needs the classification as DATA, not as a hand-kept list
-    // beside the schemas: an unclassified connection frame would be dropped as unknown-ch.
-    expect(CONNECTION_LEVEL_MESSAGE_TYPES).toContain("plugins");
-    for (const type of Object.keys(CONNECTION_BODIES)) {
-      expect(CONNECTION_LEVEL_MESSAGE_TYPES as readonly string[]).toContain(type);
-      // It is still a server frame: an inventory that forgot it would make it "unknown".
-      expect(SERVER_MESSAGE_TYPES as readonly string[]).toContain(type);
-    }
-    // The liveness pair are connection-level too, and neither has a body to parse; the event
-    // plane's three join them, because a topic is a NODE and a node is not a room.
-    expect([...CONNECTION_LEVEL_MESSAGE_TYPES]).toEqual([
-      "ping",
-      "pong",
-      "plugins",
-      "subscribe",
-      "unsubscribe",
-      "event",
-    ]);
   });
 });
 

@@ -1,4 +1,4 @@
-import { parseManifoldUri } from "@manifold/protocol";
+import { parseManifoldUri, type ManifoldRef } from "@manifold/protocol";
 
 /** One spotlight per pair per two seconds: an interruption, not a stream (D6). */
 const SPOTLIGHT_MIN_INTERVAL_MS = 2_000;
@@ -25,7 +25,7 @@ const lastSpotlightAt = new Map<string, number>();
 interface PresenceCtx {
   readonly principal: { readonly id: string };
   readonly auth: {
-    allows(cap: "scenes:write", containerId?: string): boolean;
+    allows(cap: "scenes:write", ref?: ManifoldRef): boolean;
   };
   readonly rooms: {
     sharedContainerIds(left: string, right: string): readonly string[];
@@ -67,7 +67,9 @@ export const presenceHandlers = {
     if (shared.length === 0) {
       return { refused: "no room shared with that principal" };
     }
-    const containerId = shared.find((candidate) => ctx.auth.allows("scenes:write", candidate));
+    const containerId = shared.find((candidate) =>
+      ctx.auth.allows("scenes:write", { kind: "container", containerId: candidate }),
+    );
     if (containerId === undefined) {
       return { refused: "scenes:write capability required in a shared room" };
     }

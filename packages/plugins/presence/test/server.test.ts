@@ -53,9 +53,9 @@ function recorder(options: {
     ctx: {
       principal: { id: options.caller },
       auth: {
-        allows: (_cap, containerId) =>
-          containerId !== undefined &&
-          (options.writable ?? options.shared ?? []).includes(containerId),
+        allows: (_cap, ref) =>
+          ref?.kind === "container" &&
+          (options.writable ?? options.shared ?? []).includes(ref.containerId),
       },
       rooms: {
         sharedContainerIds: (left, right) => {

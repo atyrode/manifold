@@ -60,8 +60,9 @@ remote movement visible before the durable transaction commits.
 
 ## Risks & mitigations
 
-1. `Bun.Terminal` regressions — pinned bun 1.3.13, validated by `docs/spikes/s2-pty`;
-   fallback: agent package on Node + node-pty (protocol unchanged).
+1. `Bun.Terminal` regressions — pinned Bun 1.4.2 for borrowed-descriptor ownership
+   ([ADR 0032](decisions/0032-bun-descriptor-ownership.md)); revalidate PTYs when upgrading.
+   Fallback: agent package on Node + node-pty (protocol unchanged).
 2. Many-node page cost — React Flow visibility culling plus bounded xterm lifecycle;
    soak test before calling large terminal workspaces done.
 3. External-fact drift — decisions in `docs/decisions/` are dated; re-verify on upgrade.
@@ -74,3 +75,53 @@ debounced durable flush; scoped revocable agent tokens; multi-attach shared sess
 not repeated: whole-record LWW conflicts; third-party renderer drift; five-service dev loop;
 Redis as inter-process glue; 4-hop iframe terminal path; cosmetic presence; owner-scoped
 (not principal-scoped) agent credentials.
+
+## Governed product execution
+
+Operator direction, 2026-09-07: Manifold, Babel and Code advance together.
+Babel's fleet operations and live interface wait for the common engine capabilities
+they need; a terminal launcher, polling loop or compatibility control path is not
+their replacement.
+
+The implementation thread joins #156 (typed machine jobs), #235 (machine halves),
+#236 (resource consent and enforcement) and #169 (plugin-owned continuous streams).
+Manifold owns authenticated dispatch, scoped authority, execution identity,
+supervision, bounded results and stream delivery. Product plugins own their
+operations, evidence and postconditions. The design must establish real machine-side
+confinement and preserve requester, authorizer and executor attribution across
+interruption and recovery; a permission card or successful process exit is not proof.
+
+This direction authorizes the common non-privileged capabilities Babel needs and
+normal PR/integrated-preview delivery. Privileged activation, production promotion,
+release, fleet installation and expanded machine grants remain separate operator
+actions. Contracts, implementation, verification and consumer cutover must be
+delivered together before claiming the integration complete.
+
+The #375 continuation targets current main's policy-scoped contract. Integration renumbers the
+unmerged governed decision from ADR 0031 to ADR 0033 because merged main now owns ADR 0031 for
+terminal inline graphics; that terminal decision and its protocol-26 history are not rewritten.
+The session protocol is exact-current 27. The machine compatibility set retains 16 through 26
+for terminal service and adds 27; protocol 26 remains terminal-only and cannot advertise
+`hello.jobOwner` or exchange governed job traffic. Governed job traffic starts at protocol 27,
+including owner advertisement; plugin streams use the exact-current session protocol
+independently of machine ownership. The instance wire independently resets to 27 because its
+closed capability/reference vocabularies expand; ordinary session clients remain exact 27.
+This current normative contract takes precedence over the blanket cutover proposed in immutable
+[ADR 0033](decisions/0033-governed-plugin-runtime.md), whose historical text is not rewritten.
+It does not authorize a fleet restart, newer-agent installation before its hub, or production
+rollout, and does not establish full Code/Babel delivery.
+
+Local source verification on dev-01 (2026-09-07) exercises real hub/agent/owner
+processes in a disposable delegated Linux unit: denial, queued revocation,
+transport replacement, duplicate identity, bounded sealed output, descendant
+cancellation and restart recovery. The required `verify:jobs` CI step provides
+that fixture; it is not a live-hub installation. A separate SDK-only smoke ran
+1,200 isolated-producer frames over 60 seconds, including reconnect, explicit
+gaps and denial, with no frame payloads in the durable event plane.
+
+The operator clarified on 2026-09-07 that preview delivery is expected, not held:
+integrated preview follows `main`, and PR previews follow their heads. The prior
+broad deployment hold recorded here was an agent interpretation error. Production
+promotion, release and fleet installation remain separate authorizations.
+At the local-source checkpoint above, browser acceptance had not yet been exercised;
+the SDK smoke is not browser evidence. Source implementation is not full release qualification.

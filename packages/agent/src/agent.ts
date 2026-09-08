@@ -14,6 +14,8 @@ import {
 } from "@manifold/protocol";
 import type { AgentLogRecord, AgentLogSink } from "./log.ts";
 import type { TerminalHostDialer, TerminalHostLink } from "./terminal-host-link.ts";
+import type { JobOwnerDialer, JobOwnerLink } from "./job-owner-link.ts";
+import type { JobEvent } from "@manifold/protocol";
 
 /**
  * The manifold-agent's single machine-channel client — the TRANSPORT half of a machine
@@ -53,6 +55,8 @@ export interface AgentOptions {
   readonly machineName: string;
   /** Connects to the terminal host; `unixTerminalHostDialer` in production, in-memory in tests. */
   readonly dialTerminalHost: TerminalHostDialer;
+  /** Optional independently supervised non-PTY owner; absence never disables terminals. */
+  readonly dialJobOwner?: JobOwnerDialer;
   /** id/clock injection (defaults to wall-clock); lets tests seed deterministic log times. */
   readonly runtime?: RuntimeDeps;
   readonly sink?: AgentLogSink;
@@ -122,6 +126,11 @@ export class Agent {
   private readonly livenessTimeoutMs: number;
   private readonly dialTerminalHost: TerminalHostDialer;
   private readonly createSocket: (url: string) => WebSocket;
+  private readonly dialJobOwner: JobOwnerDialer | undefined;
+  private jobOwnerLink: JobOwnerLink | null = null;
+  private jobOwnerDialing = false;
+  private jobOwnerTimer: Timer | null = null;
+  private readonly jobOutputGaps = new Set<string>();
 
   private seat: Seat | null = null;
   /** The link whose `attach` is outstanding; becomes the seat on `attached`. */
@@ -154,6 +163,7 @@ export class Agent {
     this.capMs = opts.backoff?.capMs ?? 15_000;
     this.livenessTimeoutMs = opts.livenessTimeoutMs ?? DIAL_LIVENESS_TIMEOUT_MS;
     this.dialTerminalHost = opts.dialTerminalHost;
+    this.dialJobOwner = opts.dialJobOwner;
     this.createSocket = opts.createSocket ?? ((url: string) => new WebSocket(url));
   }
 
@@ -177,6 +187,7 @@ export class Agent {
     this.stopped = false;
     const { promise, resolve } = Promise.withResolvers<void>();
     this.welcomeWaiters.push(resolve);
+    if (this.dialJobOwner && !this.jobOwnerLink) void this.takeJobOwnerSeat();
     if (this.seat === null) {
       if (!this.seatDialing && this.seatTimer === null) void this.takeSeat();
     } else if (this.socket === null && this.reconnectTimer === null) {
@@ -191,6 +202,12 @@ export class Agent {
    */
   shutdown(): Promise<void> {
     this.stopped = true;
+    if (this.jobOwnerTimer !== null) {
+      clearTimeout(this.jobOwnerTimer);
+      this.jobOwnerTimer = null;
+    }
+    this.jobOwnerLink?.close();
+    this.jobOwnerLink = null;
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -333,6 +350,61 @@ export class Agent {
     }, delay);
   }
 
+  private async takeJobOwnerSeat(): Promise<void> {
+    if (!this.dialJobOwner || this.stopped || this.jobOwnerDialing || this.jobOwnerLink) return;
+    this.jobOwnerDialing = true;
+    let acquired: JobOwnerLink | null = null;
+    let closed = false;
+    try {
+      const link = await this.dialJobOwner({
+        onEvent: (event) => this.onJobEvent(event),
+        onClose: () => {
+          closed = true;
+          if (acquired && this.jobOwnerLink === acquired) {
+            this.jobOwnerLink = null;
+            this.socket?.close(4011, "job owner unavailable");
+          }
+          if (!this.stopped && this.jobOwnerTimer === null)
+            this.jobOwnerTimer = setTimeout(() => {
+              this.jobOwnerTimer = null;
+              void this.takeJobOwnerSeat();
+            }, this.baseMs);
+        },
+      });
+      if (this.stopped || closed) {
+        link.close();
+        return;
+      }
+      this.jobOwnerLink = link;
+      acquired = link;
+      // Identity is carried by hello, so reconnect once when an owner becomes available.
+      if (this.socket) this.socket.close(4011, "job owner available");
+      if (this.seat && this.socket === null && this.reconnectTimer === null) this.dial();
+    } catch {
+      if (!this.stopped && this.jobOwnerTimer === null)
+        this.jobOwnerTimer = setTimeout(() => {
+          this.jobOwnerTimer = null;
+          void this.takeJobOwnerSeat();
+        }, this.baseMs);
+    } finally {
+      this.jobOwnerDialing = false;
+    }
+  }
+
+  private onJobEvent(event: JobEvent): void {
+    const socket = this.socket;
+    if (socket === null || this.helloSent !== socket || socket.readyState !== WebSocket.OPEN) {
+      if (event.type === "output") this.jobOutputGaps.add(event.jobId);
+      return;
+    }
+    if (socket.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT_BYTES) {
+      if (event.type === "output") this.jobOutputGaps.add(event.jobId);
+      socket.close(4009, "outbound buffer exceeded");
+      return;
+    }
+    this.send(socket, { type: "job_event", event });
+  }
+
   // ---------------------------------------------------------------------------- the hub socket
 
   private dial(): void {
@@ -379,6 +451,7 @@ export class Agent {
       protocolVersion: PROTOCOL_VERSION,
       terminals: status.terminals,
       terminalHostId: seat.terminalHostId,
+      ...(this.jobOwnerLink ? { jobOwner: this.jobOwnerLink.identity } : {}),
     });
     this.helloSent = socket;
     this.log("info", "hello", {
@@ -421,11 +494,34 @@ export class Agent {
         }
         this.advertisedDeadTerminalIds = [];
         this.log("info", "welcome", { machineId: msg.machineId, serverEpoch: msg.serverEpoch });
+        for (const jobId of this.jobOutputGaps)
+          this.send(socket, {
+            type: "job_event",
+            event: { type: "refusal", jobId, reason: "output_gap" },
+          });
+        this.jobOutputGaps.clear();
         const waiters = this.welcomeWaiters;
         this.welcomeWaiters = [];
         for (const resolve of waiters) resolve();
         return;
       }
+      case "job_command":
+        if (this.jobOwnerLink) this.jobOwnerLink.send(msg.command);
+        else
+          this.send(socket, {
+            type: "job_event",
+            event: {
+              type: "refusal",
+              jobId:
+                msg.command.type === "start"
+                  ? msg.command.request.jobId
+                  : "jobId" in msg.command && msg.command.jobId !== null
+                    ? msg.command.jobId
+                    : "owner",
+              reason: "job_owner_unavailable",
+            },
+          });
+        return;
       case "ping":
         this.send(socket, { type: "pong" });
         return;

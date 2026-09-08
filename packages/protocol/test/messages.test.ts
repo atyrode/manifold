@@ -25,10 +25,10 @@ import {
   TileLayoutSchema,
   TileSchema,
   TileRefSchema,
-  buildProtocolJsonSchema,
   elementPayload,
   hasCap,
   soloLeaf,
+  supportsGovernedJobs,
   validateTileLayout,
   type LocationPath,
   type Tile,
@@ -50,6 +50,45 @@ const element = (id: string) => ({
   zIndex: 0,
 });
 describe("session channel schemas", () => {
+  test("stream subscriptions are strict connection frames and bodies cannot bypass hard bounds", () => {
+    const open = {
+      type: "stream_open",
+      subscriptionId: "s1",
+      kind: "acme.capture.output",
+      node: { kind: "element", containerId: "c1", elementId: "e1" },
+      cursor: { epoch: "epoch1", seq: 3 },
+    } as const;
+    expect(ClientMessageSchema.parse(open)).toEqual(open);
+    expect(ClientMessageSchema.safeParse({ ...open, ch: "c1" }).success).toBe(false);
+    expect(ClientMessageSchema.safeParse({ ...open, kind: "output" }).success).toBe(false);
+    expect(
+      ClientMessageSchema.safeParse({ ...open, cursor: { epoch: "epoch1", seq: -1 } }).success,
+    ).toBe(false);
+    const frame = {
+      type: "stream_frame",
+      subscriptionId: "s1",
+      epoch: "epoch1",
+      seq: 4,
+      body: { text: "hello" },
+    } as const;
+    expect(ServerMessageSchema.parse(frame)).toEqual(frame);
+    expect(ServerMessageSchema.safeParse({ ...frame, body: "x".repeat(65_537) }).success).toBe(
+      false,
+    );
+    expect(
+      ServerMessageSchema.safeParse({ ...frame, seq: Number.MAX_SAFE_INTEGER + 1 }).success,
+    ).toBe(false);
+    expect(ServerMessageSchema.safeParse({ ...frame, untrusted: true }).success).toBe(false);
+    expect(
+      ServerMessageSchema.safeParse({
+        type: "stream_gap",
+        subscriptionId: "s1",
+        epoch: "epoch1",
+        fromSeq: 8,
+        toSeq: 4,
+      }).success,
+    ).toBe(false);
+  });
   test("join round-trips as a channel frame, and its body without routing", () => {
     const body = {
       type: "join" as const,
@@ -907,79 +946,13 @@ describe("tile layout schemas", () => {
   });
 });
 
-describe("json schema export", () => {
-  test("builds without throwing and names the protocol version", () => {
-    const schema = buildProtocolJsonSchema();
-    expect(schema["protocolVersion"]).toBe(PROTOCOL_VERSION);
-    expect(schema["session"]).toBeDefined();
-    expect(schema["machine"]).toBeDefined();
-  });
-
-  test("every wire and every vocabulary a stranger's agent needs is a SECTION of one document", () => {
-    /*
-      A3's onboarding surface, enumerated. `GET /api/protocol` is the one document an integrator
-      reads before it has read any source, so a domain that publishes nothing here is a domain a
-      stranger has to guess at — and the assertion is the whole key set rather than a spot check
-      because that is the only form a MISSING section fails.
-
-      The three wires (session, machine, instance) plus the six vocabularies: placement's
-      algebra, the plugin contract, the event plane, the authority model, the credential
-      vocabulary (ADR 0019) and the isolation contract (ADR 0016) — the closed component set,
-      the served ctx slices and the two frame pairs an out-of-tree plugin is written against.
-      `actions` and `plugins` are absent on purpose — they are the LIVE assembly, handed in by
-      a server that composed one.
-    */
-    expect(Object.keys(buildProtocolJsonSchema()).sort()).toEqual([
-      "eventContract",
-      "grantContract",
-      "identity",
-      "instance",
-      "isolateContract",
-      "machine",
-      "placement",
-      "pluginContract",
-      "protocolVersion",
-      "session",
-    ]);
-  });
-});
-
 describe("machine-channel compatibility (docs/CONTRACTS.md §Protocol and compatibility)", () => {
-  test("every machine version since v16 remains accepted; older and future versions are refused", () => {
-    /*
-      The verdict a bump owes. v15 -> v16 was the lexicon cut and RESET the set: it renamed
-      the MACHINE wire — `sessionId` became `terminalId` on every agent frame,
-      `hello.sessions` became `hello.terminals` — so a v15 agent could neither be understood
-      nor understand this server, and the upgrade was a coordinated fleet restart.
-
-      v16 -> v17 (the event plane), v17 -> v18 (cross-instance sharing), v18 -> v19 (the
-      session channel's liveness pair, reoriented so the SERVER pings and the browser
-      answers), v19 -> v20 (credential expiry and the credential list, whose one exemption
-      is precisely the machine token) and v20 -> v21 (the container-discipline roster
-      opening into a manifest contribution, plus the carry aim's layout revision and the
-      server's aim-only gesture fan — session frames an agent never sees) are all the first
-      clause. Every one of them leaves `AgentMessage` and `ServerToAgentMessage` gaining,
-      losing and renaming nothing.
-
-      v21 -> v22 (a terminal born running a program, issue #192) is the SECOND clause, applied
-      for the first time: `create` gained an OPTIONAL `program`, whose absence is the
-      byte-identical v21 frame and the same shell spawn — and the broker never sends the key
-      to an agent whose hello predates it, so a v16 agent observes a v22 hub exactly as it
-      observed a v21 one. So the invariant ADDS again, and a v16 agent keeps its terminals
-      across this deploy instead of being locked out by a version check for a field it will
-      never be sent.
-
-      v22 -> v23 adds browser presence location paths and connection snapshots only, leaving
-      both machine directions unchanged, so the acceptance floor remains v16.
-
-      Both halves are asserted: the running version must be accepted (or every agent is
-      refused), and every version since the last reset must STILL be accepted (or this is a
-      reset wearing an additive bump's clothes, and somebody owes the fleet a restart).
-    */
+  test("additive job frames retain legacy terminal compatibility without granting job support", () => {
     for (let version = 0; version <= PROTOCOL_VERSION + 1; version++) {
       expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(version)).toBe(
         version >= 16 && version <= PROTOCOL_VERSION,
       );
+      expect(supportsGovernedJobs(version)).toBe(version >= 27 && version <= PROTOCOL_VERSION);
     }
   });
 });

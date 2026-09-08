@@ -2,6 +2,9 @@ import { timingSafeEqual } from "node:crypto";
 import {
   BootstrapPrincipalRequestSchema,
   CAPS,
+  GOVERNED_CAPS,
+  ManifoldRefSchema,
+  type ManifoldRef,
   CreateGrantRequestSchema,
   MANIFOLD_ROOT_URI,
   MintShareRequestSchema,
@@ -125,7 +128,48 @@ export interface AuthContext {
   tokenId: string | null;
   grantId: string | null;
   /** Absolute credential expiry; absent for owner, machine, and terminal-lifecycle paths. */
-  expiresAt?: number;
+  expiresAt?: number | undefined;
+}
+
+/** Non-secret lineage; never reconstruct delayed authority from a principal alone. */
+export type CredentialReference = Readonly<
+  Pick<AuthContext, "tokenId" | "grantId" | "caps" | "containerScope" | "expiresAt"> & {
+    principalId: string;
+  }
+>;
+export interface AuthorityRequirement {
+  readonly cap: Exclude<Cap, "*">;
+  readonly ref: ManifoldRef;
+}
+export interface AuthorityEvidence {
+  readonly requirement: AuthorityRequirement;
+  /** The exact winning row, not a guessed row version or process-local grantsEpoch. */
+  readonly winner: Grant | null;
+  readonly allowed: boolean;
+}
+export interface GovernedAdmissionRequest {
+  readonly credential: CredentialReference;
+  readonly pluginId: string;
+  readonly action: string;
+  readonly evidence: readonly AuthorityEvidence[];
+}
+export type GovernedAdmissionDecision =
+  | { readonly allowed: false }
+  | {
+      readonly allowed: true;
+      /** Durable store decision committed with policy/consent and credential re-discharge. */
+      readonly decisionId: string;
+      readonly policyRevision: string;
+      readonly consentRevisions: readonly {
+        readonly node: string;
+        readonly revision: string;
+        readonly artifactSha256: string;
+      }[];
+    };
+/** Trusted store port, never supplied by plugin code. Must recheck current credential,
+ * ceilings, grants and explicit version-bound consent transactionally before allowing. */
+export interface GovernedAdmission {
+  decide(request: GovernedAdmissionRequest): GovernedAdmissionDecision;
 }
 
 /** Stable service-layer error codes mapped to HTTP and socket policy at boundaries. */
@@ -294,6 +338,7 @@ function effectiveCapsFrom(
   rows: readonly Grant[],
   path: readonly string[],
   principal: Principal,
+  evidence?: Map<Exclude<Cap, "*">, Grant>,
 ): ReadonlySet<Exclude<Cap, "*">> {
   const target = path[path.length - 1];
   const applicable: RankedGrant[] = [];
@@ -313,6 +358,7 @@ function effectiveCapsFrom(
       if (!mentions) continue;
       if (best === null || outranks(candidate, best)) best = candidate;
     }
+    if (best !== null) evidence?.set(cap, best.row);
     if (best?.row.effect === "allow") granted.add(cap);
   }
   return granted;
@@ -338,6 +384,20 @@ export class AuthService {
   private readonly authority = new WeakMap<AuthContext, ContextAuthority>();
   /** Bumped by every grant write; a cached verdict from an older epoch is discarded unread. */
   private grantsEpoch = 0;
+  private readonly authorityChangedListeners = new Set<() => void>();
+
+  /** Notify only after grant mutations commit and cached verdicts are invalidated. */
+  private authorityChanged(): void {
+    this.grantsEpoch += 1;
+    for (const listener of [...this.authorityChangedListeners]) listener();
+  }
+
+  onAuthorityChanged(listener: () => void): () => void {
+    this.authorityChangedListeners.add(listener);
+    return () => {
+      this.authorityChangedListeners.delete(listener);
+    };
+  }
   /**
    * When the owner path last left a row in the journal, or null before it ever has.
    *
@@ -354,6 +414,7 @@ export class AuthService {
     private readonly store: ServerStore,
     private readonly ownerKey: string,
     private readonly runtime: RuntimeDeps,
+    private readonly governedAdmission?: GovernedAdmission,
   ) {
     const existingId = store.getMeta(OWNER_PRINCIPAL_META);
     const existing = existingId === null ? null : store.getPrincipal(existingId);
@@ -500,6 +561,8 @@ export class AuthService {
    * is to answer yes or no.
    */
   effectiveCaps(context: AuthContext, node: string): ReadonlySet<Exclude<Cap, "*">> {
+    if (context.expiresAt !== undefined && context.expiresAt <= this.runtime.now())
+      return new Set();
     const cached = this.authorityFor(context);
     const hit = cached.byNode.get(node);
     if (hit !== undefined) return hit;
@@ -510,6 +573,82 @@ export class AuthService {
         : effectiveCapsFrom(this.applicableRows(context, path), path, context.principal);
     cached.byNode.set(node, answer);
     return answer;
+  }
+
+  /** Structured node check through the same waterfall, with the immutable container ceiling. */
+  allowsRef(context: AuthContext, cap: Exclude<Cap, "*">, ref: ManifoldRef): boolean {
+    if (!ManifoldRefSchema.safeParse(ref).success) return false;
+    const node = formatManifoldUri(ref);
+    if (
+      context.containerScope !== null &&
+      !containmentPath(node)?.includes(
+        formatManifoldUri({ kind: "container", containerId: context.containerScope }),
+      )
+    )
+      return false;
+    return this.effectiveCaps(context, node).has(cap);
+  }
+
+  credentialReference(context: AuthContext): CredentialReference {
+    return {
+      principalId: context.principal.id,
+      tokenId: context.tokenId,
+      grantId: context.grantId,
+      caps: [...context.caps],
+      containerScope: context.containerScope,
+      ...(context.expiresAt === undefined ? {} : { expiresAt: context.expiresAt }),
+    };
+  }
+
+  /** Captures row evidence without presenting cache invalidation as durable policy evidence. */
+  explain(context: AuthContext, requirement: AuthorityRequirement): AuthorityEvidence {
+    if (!ManifoldRefSchema.safeParse(requirement.ref).success)
+      return { requirement, winner: null, allowed: false };
+    const path = containmentPath(formatManifoldUri(requirement.ref));
+    const winners = new Map<Exclude<Cap, "*">, Grant>();
+    if (path !== null)
+      effectiveCapsFrom(this.applicableRows(context, path), path, context.principal, winners);
+    return {
+      requirement,
+      winner: winners.get(requirement.cap) ?? null,
+      allowed: this.allowsRef(context, requirement.cap, requirement.ref),
+    };
+  }
+
+  admitGoverned(
+    context: AuthContext,
+    pluginId: string,
+    action: string,
+    requirements: readonly AuthorityRequirement[],
+  ): GovernedAdmissionDecision {
+    if (context.tokenId !== null) {
+      const token = this.store.getToken(context.tokenId);
+      if (
+        token === null ||
+        token.revokedAt !== null ||
+        (token.expiresAt !== null && token.expiresAt <= this.runtime.now()) ||
+        token.principalId !== context.principal.id ||
+        token.grantId !== context.grantId
+      )
+        return { allowed: false };
+    } else if (context.principal.id !== this.ownerPrincipal.id) return { allowed: false };
+    if (requirements.some(({ cap }) => !context.caps.includes("*") && !context.caps.includes(cap)))
+      return { allowed: false };
+    if (
+      requirements.length === 0 ||
+      !requirements.some((requirement) => GOVERNED_CAPS.includes(requirement.cap))
+    )
+      return { allowed: false };
+    const evidence = requirements.map((requirement) => this.explain(context, requirement));
+    if (evidence.some((entry) => !entry.allowed)) return { allowed: false };
+    return (
+      this.governedAdmission?.decide({
+        credential: this.credentialReference(context),
+        pluginId,
+        action,
+        evidence,
+      }) ?? { allowed: false }
+    );
   }
 
   /**
@@ -600,7 +739,7 @@ export class AuthService {
    * door keep keying on the TOKEN count, which is the number this hands back.
    */
   private settleRevocation(revocation: TokenRevocation): number {
-    if (revocation.grants > 0) this.grantsEpoch += 1;
+    if (revocation.grants > 0) this.authorityChanged();
     return revocation.tokens;
   }
 
@@ -1186,7 +1325,7 @@ export class AuthService {
       });
     });
     // A new row can change what a live socket may do, so no cached verdict outlives it.
-    this.grantsEpoch += 1;
+    this.authorityChanged();
     return { share: toShare({ ...record, tickets: 0 }), token: raw };
   }
 
@@ -1285,7 +1424,7 @@ export class AuthService {
       if (share.grantId !== null) this.store.deleteGrant(share.grantId);
       return this.store.shareTicketPrincipals(shareId);
     });
-    if (share.grantId !== null) this.grantsEpoch += 1;
+    if (share.grantId !== null) this.authorityChanged();
     let severed = 0;
     for (const principalId of principals) {
       const count = this.settleRevocation(this.store.revokeTokensByPrincipal(principalId, at));
@@ -1376,7 +1515,7 @@ export class AuthService {
         caps: [...row.caps],
       });
     });
-    this.grantsEpoch += 1;
+    this.authorityChanged();
     return row;
   }
 
@@ -1410,7 +1549,7 @@ export class AuthService {
       }
       return gone;
     });
-    if (removed) this.grantsEpoch += 1;
+    if (removed) this.authorityChanged();
     return removed ? 1 : 0;
   }
 

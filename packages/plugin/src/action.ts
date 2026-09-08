@@ -1,4 +1,4 @@
-import type { ActionScope, Cap } from "@manifold/protocol";
+import type { ActionRequirement, ActionScope, Cap } from "@manifold/protocol";
 import type { z } from "zod";
 
 /**
@@ -40,10 +40,10 @@ export interface ActionDef<In = unknown, Out = unknown> {
    *
    * `"container"` declares that the action's whole effect is confined to ONE container, which is
    * what lets a container-scoped token through the scope rung. The container is the TOKEN's
-   * (`ctx.containerScope`), never an argument — authority that read arguments would force the
-   * ladder to validate shape before authority, and a caller would learn a door's schema by
-   * knocking on one it may not open. The declared caps are then evaluated AT that container, so
-   * the scope narrows authority and can never widen it.
+   * (`ctx.containerScope`), never an argument. For context-targeted doors the cap rung
+   * precedes argument validation. Doors declaring `requirements` instead validate bounded
+   * reference targets before evaluating authority at each node; the token's container
+   * ceiling still applies to every target.
    *
    * It is a CONTRACT on the handler, not a label: with a non-null `ctx.containerScope` the handler
    * MUST refuse anything outside that container. The rung can only prove the caller's caps hold
@@ -51,6 +51,10 @@ export interface ActionDef<In = unknown, Out = unknown> {
    * the handler can ask.
    */
   readonly scope?: ActionScope;
+  /** When present, every declared cap is discharged at validated input references, not the context anchor. */
+  readonly requirements?: readonly ActionRequirement[];
+  /** Opaque doors never persist caller input, even on malformed/refused dispatches. */
+  readonly trace?: "redacted" | "opaque";
 }
 
 /**

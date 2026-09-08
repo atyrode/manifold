@@ -1,0 +1,43 @@
+{
+  "id": "fixture.runtime",
+  "version": "1.0.0",
+  "title": "Governed runtime acceptance",
+  "description": "Installed browser acceptance fixture; synthetic public data only.",
+  "capabilities": [
+    "containers:read",
+    "containers:write",
+    "machines:run",
+    "jobs:read",
+    "jobs:cancel",
+    "locations:write"
+  ],
+  "contributes": {
+    "panels": [{ "id": "proof", "title": "Runtime acceptance" }],
+    "sections": [],
+    "elements": [],
+    "tools": [],
+    "events": [],
+    "streams": [
+      {
+        "id": "frames",
+        "title": "Bounded acceptance frames",
+        "body": {
+          "type": "object",
+          "properties": {
+            "frame": { "type": "integer", "minimum": 1, "maximum": 8192 },
+            "ink": { "type": "string", "maxLength": 16000 }
+          },
+          "required": ["frame", "ink"],
+          "additionalProperties": false
+        },
+        "readCapability": "containers:write",
+        "nodeKinds": ["plugin"],
+        "maxFrameBytes": 16384,
+        "maxRingFrames": 20,
+        "maxRingBytes": 327680,
+        "maxInstances": 1
+      }
+    ]
+  },
+  "entry": { "server": true, "web": "web.js" }
+}

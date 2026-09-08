@@ -1,13 +1,18 @@
 import { describe, expect, test } from "bun:test";
+import { generateKeyPairSync, sign } from "node:crypto";
 import {
   DIAL_PING_INTERVAL_MS,
+  GOVERNED_JOB_MIN_PROTOCOL_VERSION,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
   PROTOCOL_VERSION,
   ServerToAgentMessageSchema,
+  canonicalJobJson,
+  type JobOwner,
   type Container,
   type ServerToAgentMessage,
 } from "@manifold/protocol";
 import { AuthService } from "../src/auth.ts";
+import { JobService } from "../src/job-service.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
 import { LiveMachineChannel, MachineGateway, decideAdmission } from "../src/machine-ws.ts";
 import { RoomManager } from "../src/room.ts";
@@ -62,6 +67,26 @@ describe("machine channel send status", () => {
     const channel = new LiveMachineChannel("machine", "principal", socket, PROTOCOL_VERSION, null);
 
     expect(channel.send({ type: "kill", terminalId: "terminal" })).toBe(false);
+  });
+
+  test("protocol 26 terminal transport refuses job commands without breaking terminal traffic", () => {
+    const socket = new StatusSocket(1);
+    const channel = new LiveMachineChannel(
+      "machine",
+      "principal",
+      socket,
+      GOVERNED_JOB_MIN_PROTOCOL_VERSION - 1,
+      null,
+    );
+    expect(channel.send({ type: "job_command", command: { type: "drain", draining: true } })).toBe(
+      false,
+    );
+    expect(socket.sent).toEqual([]);
+    expect(channel.send({ type: "kill", terminalId: "terminal" })).toBe(true);
+    expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([
+      { type: "kill", terminalId: "terminal" },
+    ]);
+    expect(socket.closed).toBeNull();
   });
 });
 
@@ -312,7 +337,7 @@ describe("machine hello reconciliation", () => {
     store.close();
   });
 
-  test("rejects a wire-incompatible protocol version with 4409 and a structured log", () => {
+  test("rejects a newer-than-hub protocol version with 4409 and a structured log", () => {
     const runtime = new FakeRuntime();
     const clock = new FakeClock(runtime);
     const store = testStore();
@@ -346,8 +371,8 @@ describe("machine hello reconciliation", () => {
         type: "hello",
         token: enrollment.machineToken,
         name: "agent",
-        agentVersion: "test-old",
-        protocolVersion: 1,
+        agentVersion: "test-newer",
+        protocolVersion: PROTOCOL_VERSION + 1,
         terminals: [],
       }),
     );
@@ -355,7 +380,7 @@ describe("machine hello reconciliation", () => {
     expect(socket.closed?.code).toBe(4409);
     expect(machineMessages(socket)).toEqual([]);
     const rejected = warned.find((w) => w.evt === "machine_version_rejected");
-    expect(rejected?.fields?.agentProtocolVersion).toBe(1);
+    expect(rejected?.fields?.agentProtocolVersion).toBe(PROTOCOL_VERSION + 1);
     expect(rejected?.fields?.serverProtocolVersion).toBe(PROTOCOL_VERSION);
     gateway.shutdown();
     store.close();
@@ -579,6 +604,8 @@ describe("machine admission and terminal continuity", () => {
       id: string,
       options: {
         terminalHostId?: string;
+        protocolVersion?: number;
+        jobOwner?: JobOwner;
         alive?: readonly string[];
         exited?: readonly string[];
       } = {},
@@ -592,7 +619,7 @@ describe("machine admission and terminal continuity", () => {
           token: enrollment.machineToken,
           name: "agent",
           agentVersion: "test",
-          protocolVersion: PROTOCOL_VERSION,
+          protocolVersion: options.protocolVersion ?? PROTOCOL_VERSION,
           terminals: [
             ...(options.alive ?? []).map((terminalId) => ({
               terminalId,
@@ -613,6 +640,7 @@ describe("machine admission and terminal continuity", () => {
           ...(options.terminalHostId === undefined
             ? {}
             : { terminalHostId: options.terminalHostId }),
+          ...(options.jobOwner === undefined ? {} : { jobOwner: options.jobOwner }),
         }),
       );
       return socket;
@@ -622,6 +650,7 @@ describe("machine admission and terminal continuity", () => {
       clock,
       store,
       auth,
+      root,
       rooms,
       runtime,
       broker,
@@ -632,6 +661,129 @@ describe("machine admission and terminal continuity", () => {
       status,
     };
   }
+
+  test("protocol 26 owner advertisements are refused before terminal adoption or execution authority", () => {
+    const fix = fixture("9".repeat(64), ["t1"]);
+    const jobs = new JobService(fix.store, fix.auth, fix.runtime);
+    fix.gateway.setJobs(jobs);
+    const socket = fix.hello("pre-job-owner", {
+      protocolVersion: GOVERNED_JOB_MIN_PROTOCOL_VERSION - 1,
+      alive: ["t1"],
+      jobOwner: {
+        ownerId: "job-owner",
+        publicKey: "untrusted-owner-key",
+        generation: 1,
+        platforms: ["linux-x64"],
+        inventoryDigest: "a".repeat(64),
+      },
+    });
+    expect(socket.closed).toEqual({ code: 4002, reason: "job protocol unsupported" });
+    expect(machineMessages(socket)).toEqual([]);
+    expect(fix.gateway.isOnline(fix.machineId)).toBe(false);
+    expect(fix.status("t1")).toBe("running");
+    expect(
+      jobs.describe(fix.root, { machineId: fix.machineId, pluginId: "sample.worker" }).connected,
+    ).toBe(false);
+    fix.gateway.shutdown();
+    fix.store.close();
+  });
+
+  test("a protocol 26 peer keeps terminal service but cannot send job events or receive drain commands", async () => {
+    const fix = fixture("a".repeat(64), ["t1"]);
+    const jobs = new JobService(fix.store, fix.auth, fix.runtime);
+    fix.gateway.setJobs(jobs);
+    const socket = fix.hello("pre-job", {
+      protocolVersion: GOVERNED_JOB_MIN_PROTOCOL_VERSION - 1,
+      alive: ["t1"],
+    });
+    expect(socket.closed).toBeNull();
+    expect(fix.gateway.isOnline(fix.machineId)).toBe(true);
+    await fix.gateway.drain(fix.machineId, true);
+    expect(machineMessages(socket).map((frame) => frame.type)).toEqual(["welcome"]);
+    expect(fix.status("t1")).toBe("running");
+    fix.gateway.message(
+      "pre-job",
+      JSON.stringify({
+        type: "job_event",
+        event: {
+          type: "installed",
+          pluginId: "sample.worker",
+          installationRevision: "r1",
+          artifactSha256: "a".repeat(64),
+        },
+      }),
+    );
+    expect(socket.closed).toEqual({ code: 4002, reason: "job protocol unsupported" });
+    expect(
+      jobs.describe(fix.root, { machineId: fix.machineId, pluginId: "sample.worker" }).connected,
+    ).toBe(false);
+    expect(machineMessages(socket).some((frame) => frame.type === "job_command")).toBe(false);
+    fix.gateway.shutdown();
+    fix.store.close();
+  });
+
+  test("protocol 27 proves job ownership; a legacy replacement immediately fences that authority", () => {
+    const fix = fixture("b".repeat(64), []);
+    const jobs = new JobService(fix.store, fix.auth, fix.runtime);
+    fix.gateway.setJobs(jobs);
+    const keys = generateKeyPairSync("ed25519");
+    const owner: JobOwner = {
+      ownerId: "job-owner",
+      publicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      generation: 1,
+      platforms: ["linux-x64"],
+      inventoryDigest: "a".repeat(64),
+    };
+    const socket = fix.hello("job-owner", {
+      protocolVersion: PROTOCOL_VERSION,
+      jobOwner: owner,
+    });
+    const challenge = machineMessages(socket).find((frame) => frame.type === "job_command");
+    if (challenge?.type !== "job_command" || challenge.command.type !== "owner_challenge") {
+      throw new Error("owner challenge missing");
+    }
+    const proof = {
+      nonce: challenge.command.nonce,
+      serverEpoch: challenge.command.serverEpoch,
+      machineId: fix.machineId,
+      owner,
+    };
+    fix.gateway.message(
+      "job-owner",
+      JSON.stringify({
+        type: "job_event",
+        event: {
+          type: "owner_proof",
+          ...proof,
+          signature: sign(null, Buffer.from(canonicalJobJson(proof)), keys.privateKey).toString(
+            "base64",
+          ),
+        },
+      }),
+    );
+    expect(socket.closed).toBeNull();
+    expect(
+      jobs.describe(fix.root, { machineId: fix.machineId, pluginId: "sample.worker" }),
+    ).toMatchObject({
+      connected: true,
+      platforms: ["linux-x64"],
+    });
+    const legacy = fix.hello("legacy-replacement", {
+      protocolVersion: GOVERNED_JOB_MIN_PROTOCOL_VERSION - 1,
+    });
+    expect(legacy.closed).toBeNull();
+    expect(socket.closed?.code).toBe(4001);
+    expect(machineMessages(legacy).map((frame) => frame.type)).toEqual(["welcome"]);
+    // No close callback from the superseded socket has run: admission itself fences jobs.
+    expect(
+      jobs.describe(fix.root, { machineId: fix.machineId, pluginId: "sample.worker" }),
+    ).toMatchObject({
+      connected: false,
+      platforms: [],
+    });
+    fix.gateway.shutdown();
+    fix.store.close();
+  });
 
   test("the verdict table", () => {
     const both = new Set(["t1", "t2"]);
@@ -821,16 +973,16 @@ describe("machine admission and terminal continuity", () => {
   test("a legacy hub restart is admitted only on an inventory that accounts for every row", () => {
     const fix = fixture("7".repeat(64), ["t1", "t2"]);
     // Pre-v24 owner of record: null. The hub "restarted" (no incumbent); the agent comes back.
-    const partial = fix.hello("partial", { alive: ["t1"] });
+    const partial = fix.hello("partial", { protocolVersion: 16, alive: ["t1"] });
     expect(partial.closed?.code).toBe(4003);
     expect(fix.status("t2")).toBe("running");
     // Accounting for t2 as successfully exited while offline permits its canonical removal.
-    const complete = fix.hello("complete", { alive: ["t1"], exited: ["t2"] });
+    const complete = fix.hello("complete", { protocolVersion: 16, alive: ["t1"], exited: ["t2"] });
     expect(complete.closed).toBeNull();
     expect(fix.status("t1")).toBe("running");
     expect(fix.status("t2")).toBe("gone");
     // A stray PTY the owner advertises alongside is its own, and is killed like before.
-    const stray = fix.hello("stray", { alive: ["t1", "stray"] });
+    const stray = fix.hello("stray", { protocolVersion: 16, alive: ["t1", "stray"] });
     expect(stray.closed).toBeNull();
     expect(machineMessages(stray)).toContainEqual({ type: "kill", terminalId: "stray" });
     fix.gateway.shutdown();
@@ -839,7 +991,7 @@ describe("machine admission and terminal continuity", () => {
 
   test("only an owner-naming agent hears the admission latch at hello, and it hears the truth", () => {
     const fix = fixture("8".repeat(64), []);
-    const legacy = fix.hello("legacy");
+    const legacy = fix.hello("legacy", { protocolVersion: 16 });
     // The legacy wire is byte-identical: welcome, and nothing an old parser would refuse.
     expect(machineMessages(legacy).map((message) => message.type)).toEqual(["welcome"]);
     fix.gateway.close("legacy");

@@ -903,6 +903,11 @@ export class HttpApp {
         const action = this.plugins.assembly().actions.get(ref.actionName);
         return { exists: action !== undefined, title: action?.def.title ?? null };
       }
+      case "operation":
+      case "location":
+      case "job":
+      case "output":
+        throw new RequestError("forbidden", "resource resolution requires governed admission");
       default: {
         const exhaustive: never = ref;
         void exhaustive;

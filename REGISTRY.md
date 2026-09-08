@@ -109,7 +109,12 @@ must never be taught one.
       "globs": [
         "packages/server/src/session-ws.ts",
         "packages/server/src/event-hub.ts",
+        "packages/server/src/stream-service.ts",
         "packages/server/src/machine-ws.ts",
+        "packages/server/src/job-service.ts",
+        "packages/server/src/job-store.ts",
+        "packages/server/src/job-schedules.ts",
+        "packages/server/src/job-doors.ts",
         "packages/server/src/instance-ws.ts",
         "packages/server/src/instance-dialer.ts",
         "packages/server/src/terminal-broker.ts",
@@ -268,15 +273,31 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/session-ws.ts",
-      "why": "session transport: channel multiplexing, connection-level frames, roster fan-out"
+      "why": "session transport: channel multiplexing, connection-level frames, roster fan-out and declared stream subscriptions with delivery-time common authority checks"
     },
     {
       "glob": "packages/server/src/session-channel.ts",
-      "why": "session transport: one channel's server-side half — frame validation, presence relay, fan-out"
+      "why": "session transport: bounded shared sender, queued delivery authorization, frame validation, presence relay and fan-out"
     },
     {
       "glob": "packages/server/src/machine-ws.ts",
       "why": "machine transport: agent enrolment, version negotiation, liveness"
+    },
+    {
+      "glob": "packages/server/src/job-service.ts",
+      "why": "ADR 0033 governed machine execution: common revision-bound admission, owner proof, signed start permits, private output authority and honest lifecycle"
+    },
+    {
+      "glob": "packages/server/src/job-store.ts",
+      "why": "ADR 0033 durable immutable request reservations, owner fencing, installation evidence and replay tombstones"
+    },
+    {
+      "glob": "packages/server/src/job-schedules.ts",
+      "why": "ADR 0033 original-credential schedules and host-bound nested invocation reservations with durable aggregate ceilings"
+    },
+    {
+      "glob": "packages/server/src/job-doors.ts",
+      "why": "ADR 0033 generic traced machine job doors and plugin-bound contexts, never arbitrary executable paths"
     },
     {
       "glob": "packages/server/src/instance-ws.ts",
@@ -329,6 +350,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/server/src/event-hub.ts",
       "why": "the event plane's one mechanism (ADR 0012): the per-connection subscription registry, the grammar-derived topic match, the read-authority arbitration at subscribe and at delivery, and the fan-out that appends every emission to the one durable trail. Floor by both criteria — it knows no kind and no plugin, and it arbitrates who may hear whose node"
+    },
+    {
+      "glob": "packages/server/src/stream-service.ts",
+      "why": "ADR 0033 generic continuous stream transport: manifest-owned kinds and node ownership, bounded validated rings, unpredictable producer epochs, exact snapshot watermarks and explicit gaps/closure. Producer lifecycle is traced; continuous frames never enter the event journal. Bootstrap, neutral declaration vocabulary and shared delivery-budget arbitration extend the existing transport pillar."
     },
     {
       "glob": "packages/server/src/index.ts",
@@ -749,6 +774,30 @@ applied to vocabulary: one door onto "what do we call this kind".
     {
       "term": "seat",
       "means": "a place in an arranged tree whose content is something else's address, rendered by rendering its referent (docs/CONTRACTS.md §Reference nodes, including implementation and deferral status): a tile leaf is one, and a manifest's contributes.seats is its declared intent to occupy one in the default workspace",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "operation",
+      "means": "a canonical machine-child authority node, addressed as manifold://machine/<machineId>/operation/<operationId>; jobs are addressed beneath their admitted operation",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "location",
+      "means": "a canonical machine-child resource authority node, addressed as manifold://machine/<machineId>/location/<locationId>; a reference is not filesystem access or consent",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "job",
+      "means": "a canonical authority node beneath an admitted machine operation; the reference algebra does not imply an executing or completed process",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "output",
+      "means": "a canonical authority node beneath a job, not possession-based authority or evidence that output bytes are sealed",
       "banned": [],
       "allow": []
     },
@@ -1989,6 +2038,16 @@ string" is the question a broken gate actually asks.
       "testid": "plugin-manager-row-open",
       "renderer": "packages/plugins/plugin-manager/src/web.tsx",
       "why": "the terminal-selection gate opens the Terminals settings through the same plugin detail affordance as a person, then proves each default-off clipboard gesture and its live opt-in transition"
+    },
+    {
+      "testid": "plugin-manager-machine-runtime",
+      "renderer": "packages/plugins/plugin-manager/src/runtime.tsx",
+      "why": "the runtime browser proof installs a declared artifact and approves exact machine resource rights through the native plugin manager"
+    },
+    {
+      "testid": "plugin-manager-job-status",
+      "renderer": "packages/plugins/plugin-manager/src/runtime.tsx",
+      "why": "the runtime browser proof observes and cancels the selected canonical job, then compares its visible state and authority with durable records"
     },
     {
       "testid": "identity-enter",

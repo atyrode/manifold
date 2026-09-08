@@ -7,6 +7,7 @@ import {
   MAX_ISOLATE_EMITS,
   ManifoldRefSchema,
   type ActionScope,
+  type ActionRequirement,
   type ActionSummary,
   type AssemblyDelta,
   type Cap,
@@ -24,6 +25,14 @@ import {
   type PluginRoster,
   type Principal,
 } from "@manifold/protocol";
+import {
+  JobFollowSnapshotSchema,
+  type JobFollowSnapshot,
+  type JobFollowUpdate,
+  type JobRequest,
+  type JobResult,
+  type JobEvent,
+} from "../../protocol/src/jobs.ts";
 import { z } from "zod";
 import { HostCallError, IsolateSliceUnavailable } from "./errors.ts";
 
@@ -58,6 +67,8 @@ export interface ServerActionDef<In = unknown, Out = unknown> {
   readonly caps: readonly Cap[];
   /** Absent ≡ `"workspace"`; `"container"` confines the door to `ctx.containerScope`. */
   readonly scope?: ActionScope | undefined;
+  readonly requirements?: readonly ActionRequirement[];
+  readonly trace?: "redacted" | "opaque";
   /** A cleanup action stays dispatchable while the plugin is disabled (D12). */
   readonly cleanup?: boolean | undefined;
   readonly input: z.ZodType<In>;
@@ -80,7 +91,7 @@ export interface GuestAuth {
   readonly caps: readonly Cap[];
   readonly containerScope: string | null;
   readonly isRoot: boolean;
-  allows(cap: Exclude<Cap, "*">, containerId?: string): Promise<boolean>;
+  allows(cap: Exclude<Cap, "*">, ref?: ManifoldRef): Promise<boolean>;
 }
 
 /**
@@ -110,6 +121,44 @@ export type GuestEmit = (ref: ManifoldRef, kind: EventKind, payload?: EventPaylo
  * caller's own data are plain. `emit` stages, exactly as in-realm — the emissions ride back
  * on the `dispatched` frame and the host flushes them only when the outcome is `ok`.
  */
+export interface GuestStreamProducer {
+  readonly epoch: string;
+  publish(body: unknown): Promise<void>;
+  close(): Promise<void>;
+  onClose(listener: () => void): () => void;
+}
+
+export type GuestJobNode = Extract<ManifoldRef, { kind: "job" }>;
+export type GuestOutputNode = Extract<ManifoldRef, { kind: "output" }>;
+export type GuestJobRequest = Pick<
+  JobRequest,
+  "jobId" | "machineId" | "operationId" | "input" | "outputs"
+> & { limits?: JobRequest["limits"] };
+export interface GuestJobStatus {
+  jobId: string;
+  machineId: string;
+  operationId: string;
+  pluginId: string;
+  state: JobResult["state"];
+  result: JobResult | null;
+}
+export interface GuestJobFollow {
+  readonly snapshot: JobFollowSnapshot;
+  close(): Promise<void>;
+}
+export interface GuestJobs {
+  execute(args: GuestJobRequest): Promise<GuestJobStatus>;
+  status(node: GuestJobNode): Promise<GuestJobStatus>;
+  input(args: { node: GuestJobNode; seq: number; data: string; eof: boolean }): Promise<void>;
+  cancel(node: GuestJobNode): Promise<void>;
+  output(args: {
+    node: GuestOutputNode;
+    offset: number;
+    maxBytes: number;
+  }): Promise<Extract<JobEvent, { type: "output" }>>;
+  follow(node: GuestJobNode, receive: (update: JobFollowUpdate) => void): Promise<GuestJobFollow>;
+}
+
 export interface GuestCtx {
   readonly traceId: IsolateDispatchCtx["traceId"];
   readonly pluginId: string;
@@ -120,6 +169,10 @@ export interface GuestCtx {
   now(): number;
   newId(): Promise<string>;
   readonly storage: GuestStorage;
+  readonly jobs: GuestJobs;
+  readonly streams: {
+    open(kind: string, node: ManifoldRef): Promise<GuestStreamProducer>;
+  };
   readonly emit: GuestEmit;
   readonly machines: { isOnline(machineId: string): Promise<boolean> };
   readonly placement: { place(request: PlaceRequest): Promise<GuestPlaceOutcome> };
@@ -264,6 +317,16 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
   >();
   const actions = new Map(def.actions.map((action) => [action.name, action] as const));
   let loaded = false;
+  const producerClosures = new Map<string, () => void>();
+  type JobNotification = Extract<IsolateHostFrame, { t: "job_update" }>;
+  interface Observer {
+    ready: boolean;
+    delivery: number;
+    readonly queued: JobNotification[];
+    readonly receive: (update: JobFollowUpdate) => void;
+  }
+  const observers = new Map<string, Observer>();
+  let nextObserver = 0;
 
   /** Every outgoing frame is parsed first: a kit bug fails here, loudly, never as a malformed frame. */
   const post = (frame: IsolateChildFrame): void => {
@@ -281,6 +344,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
             new Error(`${method} called after request "${requestId}" already answered`),
           );
         }
+        if (pending.size >= 256) return Promise.reject(new Error("too many pending host calls"));
         seq += 1;
         const id = `${requestId}:${String(seq)}`;
         const { promise, resolve, reject } = Promise.withResolvers<unknown>();
@@ -292,6 +356,55 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         open = false;
       },
     };
+  };
+
+  // This channel carries only producer IDs. It cannot revive a completed dispatch's authority.
+  const producerCalls = callsFor("producer");
+
+  const deliverJob = (frame: JobNotification, observer: Observer): void => {
+    if (frame.delivery !== observer.delivery + 1) {
+      observers.delete(frame.id);
+      void producerCalls.call("jobs.unfollow", [frame.id]).catch(() => {});
+      observer.receive({ type: "closed", reason: "gap" });
+      return;
+    }
+    observer.delivery = frame.delivery;
+    try {
+      observer.receive(frame.update);
+    } catch {
+      observers.delete(frame.id);
+      void producerCalls.call("jobs.unfollow", [frame.id]).catch(() => {});
+      transport.warn("job observation callback failed");
+      return;
+    }
+    if (frame.update.type === "closed") observers.delete(frame.id);
+    void producerCalls.call("jobs.ack", [frame.id, frame.delivery]).catch(() => {
+      if (observers.delete(frame.id)) {
+        try {
+          observer.receive({ type: "closed", reason: "closed" });
+        } catch {
+          transport.warn("job observation callback failed");
+        }
+      }
+    });
+  };
+
+  const receiveJob = (frame: JobNotification): void => {
+    const observer = observers.get(frame.id);
+    if (observer === undefined) return;
+    if (observer.ready) {
+      deliverJob(frame, observer);
+    } else if (observer.queued.length < 16 || frame.update.type === "closed") {
+      observer.queued.push(frame);
+    } else {
+      observers.delete(frame.id);
+      void producerCalls.call("jobs.unfollow", [frame.id]).catch(() => {});
+      try {
+        observer.receive({ type: "closed", reason: "gap" });
+      } catch {
+        transport.warn("job observation callback failed");
+      }
+    }
   };
 
   const storageFor = (call: Call): GuestStorage => ({
@@ -323,11 +436,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         caps: carried.caps,
         containerScope: carried.containerScope,
         isRoot: carried.isRoot,
-        allows: async (cap, containerId) =>
-          (await call(
-            "auth.allows",
-            containerId === undefined ? [cap] : [cap, containerId],
-          )) as boolean,
+        allows: async (cap, ref) =>
+          (await call("auth.allows", ref === undefined ? [cap] : [cap, ref])) as boolean,
       },
       containerScope: carried.containerScope,
       outsideScope: async (containerId) =>
@@ -335,6 +445,109 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       now: () => carried.now,
       newId: async () => (await call("newId", [])) as string,
       storage: storageFor(call),
+      jobs: {
+        execute: async (args) => (await call("jobs.execute", [args])) as GuestJobStatus,
+        status: async (node) => (await call("jobs.status", [node])) as GuestJobStatus,
+        input: async (args) => {
+          await call("jobs.input", [args]);
+        },
+        cancel: async (node) => {
+          await call("jobs.cancel", [node]);
+        },
+        output: async (args) =>
+          (await call("jobs.output", [args])) as Extract<JobEvent, { type: "output" }>,
+        follow: async (node, receive) => {
+          if (observers.size >= 16) throw new Error("too many job observations");
+          const id = `j${String(++nextObserver)}`;
+          const observer: Observer = { ready: false, delivery: 0, queued: [], receive };
+          observers.set(id, observer);
+          try {
+            const opened = (await call("jobs.follow", [node, id])) as {
+              id: string;
+              snapshot: unknown;
+            };
+            if (opened.id !== id) throw new Error("job observation identity mismatch");
+            const snapshot = JobFollowSnapshotSchema.parse(opened.snapshot);
+            // The awaited handle exposes its snapshot before any live callback. Frames
+            // received during the handshake stay bounded and preserve delivery order.
+            setTimeout(() => {
+              if (observers.get(id) !== observer) return;
+              observer.ready = true;
+              for (const frame of observer.queued) {
+                if (observers.get(id) !== observer) break;
+                deliverJob(frame, observer);
+              }
+              observer.queued.length = 0;
+            }, 0);
+            return {
+              snapshot,
+              close: async () => {
+                if (!observers.delete(id)) return;
+                observer.queued.length = 0;
+                await producerCalls.call("jobs.unfollow", [id]);
+              },
+            };
+          } catch (error) {
+            observers.delete(id);
+            void producerCalls.call("jobs.unfollow", [id]).catch(() => {});
+            throw error;
+          }
+        },
+      },
+      streams: {
+        open: async (kind, node) => {
+          const opened = (await call("streams.open", [kind, node])) as {
+            id: string;
+            epoch: string;
+          };
+          let closed = false;
+          const listeners = new Set<() => void>();
+          const notify = (): void => {
+            if (closed) return;
+            closed = true;
+            producerClosures.delete(opened.id);
+            for (const listener of listeners) {
+              try {
+                void Promise.resolve(listener()).catch(() =>
+                  transport.warn("producer close callback failed"),
+                );
+              } catch {
+                transport.warn("producer close callback failed");
+              }
+            }
+            listeners.clear();
+          };
+          producerClosures.set(opened.id, notify);
+          return {
+            epoch: opened.epoch,
+            publish: async (body) => {
+              if (closed) throw new Error("stream producer is closed");
+              await producerCalls.call("streams.publish", [opened.id, body]);
+            },
+            close: async () => {
+              if (closed) return;
+              notify();
+              await producerCalls.call("streams.close", [opened.id]);
+            },
+            onClose: (listener) => {
+              if (closed) {
+                try {
+                  void Promise.resolve(listener()).catch(() =>
+                    transport.warn("producer close callback failed"),
+                  );
+                } catch {
+                  transport.warn("producer close callback failed");
+                }
+                return () => {};
+              }
+              listeners.add(listener);
+              return () => {
+                listeners.delete(listener);
+              };
+            },
+          };
+        },
+      },
       emit: (ref, kind, payload) => {
         if (staged.length >= MAX_ISOLATE_EMITS) {
           throw new Error(`a dispatch may stage at most ${String(MAX_ISOLATE_EMITS)} emissions`);
@@ -400,6 +613,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         caps: [...action.caps],
         ...(action.cleanup === undefined ? {} : { cleanup: action.cleanup }),
         scope: action.scope ?? "workspace",
+        ...(action.requirements === undefined ? {} : { requirements: [...action.requirements] }),
+        ...(action.trace === undefined ? {} : { trace: action.trace }),
         input: z.toJSONSchema(action.input, { io: "input" }),
         result: z.toJSONSchema(action.result, { io: "output" }),
       };
@@ -547,7 +762,26 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       case "reply":
         onReply(host);
         return;
+      case "job_update":
+        receiveJob(host);
+        return;
+      case "producer_closed":
+        producerClosures.get(host.id)?.();
+        return;
       case "shutdown":
+        for (const notify of producerClosures.values()) notify();
+        producerClosures.clear();
+        for (const observer of observers.values()) {
+          try {
+            observer.receive({ type: "closed", reason: "closed" });
+          } catch {
+            transport.warn("job observation callback failed");
+          }
+        }
+        observers.clear();
+        producerCalls.close();
+        for (const waiting of pending.values()) waiting.reject(new Error("isolate shutting down"));
+        pending.clear();
         transport.exit(0);
         return;
       default: {

@@ -7,7 +7,7 @@ import { z } from "zod";
  * link carries, and a log line prints; the struct is what a door consumes. Nothing is
  * addressable here that is not addressable there.
  *
- * The eight forms:
+ * The canonical forms:
  *   manifold://terminal/<terminalId>
  *   manifold://container/<containerId>
  *   manifold://container/<containerId>/element/<elementId>
@@ -16,6 +16,10 @@ import { z } from "zod";
  *   manifold://plugin/<pluginId>
  *   manifold://action/<actionName>
  *   manifold://machine/<machineId>
+ *   manifold://machine/<machineId>/operation/<operationId>
+ *   manifold://machine/<machineId>/location/<locationId>
+ *   manifold://machine/<machineId>/operation/<operationId>/job/<jobId>
+ *   manifold://machine/<machineId>/operation/<operationId>/job/<jobId>/output/<outputId>
  *
  * An element and a tile are addressed THROUGH their container because neither has an
  * identity outside it — the same reason `TileRef`'s element form names an element id
@@ -44,6 +48,25 @@ export const ManifoldRefSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("plugin"), pluginId: RefIdSchema }),
   z.strictObject({ kind: z.literal("action"), actionName: RefIdSchema }),
   z.strictObject({ kind: z.literal("machine"), machineId: RefIdSchema }),
+  z.strictObject({
+    kind: z.literal("operation"),
+    machineId: RefIdSchema,
+    operationId: RefIdSchema,
+  }),
+  z.strictObject({ kind: z.literal("location"), machineId: RefIdSchema, locationId: RefIdSchema }),
+  z.strictObject({
+    kind: z.literal("job"),
+    machineId: RefIdSchema,
+    operationId: RefIdSchema,
+    jobId: RefIdSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("output"),
+    machineId: RefIdSchema,
+    operationId: RefIdSchema,
+    jobId: RefIdSchema,
+    outputId: RefIdSchema,
+  }),
 ]);
 export type ManifoldRef = z.infer<typeof ManifoldRefSchema>;
 
@@ -71,6 +94,14 @@ export function formatManifoldUri(ref: ManifoldRef): string {
       return `${MANIFOLD_URI_SCHEME}action/${encodeURIComponent(ref.actionName)}`;
     case "machine":
       return `${MANIFOLD_URI_SCHEME}machine/${encodeURIComponent(ref.machineId)}`;
+    case "operation":
+      return `${formatManifoldUri({ kind: "machine", machineId: ref.machineId })}/operation/${encodeURIComponent(ref.operationId)}`;
+    case "location":
+      return `${formatManifoldUri({ kind: "machine", machineId: ref.machineId })}/location/${encodeURIComponent(ref.locationId)}`;
+    case "job":
+      return `${formatManifoldUri({ kind: "operation", machineId: ref.machineId, operationId: ref.operationId })}/job/${encodeURIComponent(ref.jobId)}`;
+    case "output":
+      return `${formatManifoldUri({ kind: "job", machineId: ref.machineId, operationId: ref.operationId, jobId: ref.jobId })}/output/${encodeURIComponent(ref.outputId)}`;
     default: {
       const exhaustive: never = ref;
       return exhaustive;
@@ -140,12 +171,28 @@ export function parseManifoldUri(text: string): ManifoldRef | null {
     if (mid === "tile") return { kind: "tile", containerId: first, tileId: second };
     return null;
   }
+  if (head === "machine" && second !== undefined) {
+    if (segments.length === 4 && mid === "location")
+      return { kind: "location", machineId: first, locationId: second };
+    if (mid === "operation") {
+      if (segments.length === 4)
+        return { kind: "operation", machineId: first, operationId: second };
+      const jobId = segments[5];
+      if (segments[4] === "job" && jobId !== undefined) {
+        if (segments.length === 6)
+          return { kind: "job", machineId: first, operationId: second, jobId };
+        const outputId = segments[7];
+        if (segments.length === 8 && segments[6] === "output" && outputId !== undefined)
+          return { kind: "output", machineId: first, operationId: second, jobId, outputId };
+      }
+    }
+  }
 
   return null;
 }
 
 /**
- * THE WORKSPACE ROOT, which is the one node with no form of its own. The eight forms above
+ * THE WORKSPACE ROOT, which is the one node with no form of its own. The forms above
  * each name something the workspace HOLDS; this names the workspace itself, and it has no
  * `ManifoldRef` because there is nothing to discriminate — no id, no owner, no second
  * spelling. Adding a root union member to carry it would widen every wire schema that
@@ -187,6 +234,35 @@ export function containmentPath(node: string): readonly string[] | null {
       formatManifoldUri({ kind: "container", containerId: ref.containerId }),
       self,
     ];
+  }
+  if (
+    ref.kind === "operation" ||
+    ref.kind === "location" ||
+    ref.kind === "job" ||
+    ref.kind === "output"
+  ) {
+    const path = [
+      MANIFOLD_ROOT_URI,
+      formatManifoldUri({ kind: "machine", machineId: ref.machineId }),
+    ];
+    if (ref.kind === "job" || ref.kind === "output")
+      path.push(
+        formatManifoldUri({
+          kind: "operation",
+          machineId: ref.machineId,
+          operationId: ref.operationId,
+        }),
+      );
+    if (ref.kind === "output")
+      path.push(
+        formatManifoldUri({
+          kind: "job",
+          machineId: ref.machineId,
+          operationId: ref.operationId,
+          jobId: ref.jobId,
+        }),
+      );
+    return [...path, self];
   }
   return [MANIFOLD_ROOT_URI, self];
 }

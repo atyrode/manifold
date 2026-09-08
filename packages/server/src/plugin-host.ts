@@ -29,6 +29,8 @@ import {
 } from "@manifold/plugin";
 import {
   CAPS,
+  GOVERNED_CAPS,
+  ManifoldRefSchema,
   CORE_NAMESPACE_PREFIX,
   ENGINE_NAMESPACE_PREFIX,
   PLUGIN_BUNDLE_SERVER_FILE,
@@ -69,7 +71,15 @@ import type {
   UNTRACED_DENIAL_RULE,
 } from "@manifold/protocol";
 import { ServiceError } from "./auth.ts";
-import type { AuthContext, AuthService, MachineEnrollment, ServiceErrorCode } from "./auth.ts";
+import type {
+  AuthContext,
+  AuthService,
+  AuthorityRequirement,
+  CredentialReference,
+  GovernedAdmissionDecision,
+  MachineEnrollment,
+  ServiceErrorCode,
+} from "./auth.ts";
 import { AuthoredPlugins, type AuthoredPack } from "./authored.ts";
 import type { EventHub } from "./event-hub.ts";
 import type { InstanceDialer } from "./instance-dialer.ts";
@@ -93,6 +103,10 @@ import {
 import type { RoomManager } from "./room.ts";
 import type { MachineRecord, PluginInstallRow, ServerStore, TraceAttribution } from "./stores.ts";
 import type { DrainOutcome, TerminalBroker } from "./terminal-broker.ts";
+import { StreamService } from "./stream-service.ts";
+import type { StreamProducer, PluginStreamContext } from "@manifold/plugin";
+import { jobContext, jobDoors, type JobContext } from "./job-doors.ts";
+import type { JobService } from "./job-service.ts";
 
 /**
  * The caller's authority as a handler sees it: identity, what the token carries, and the
@@ -105,7 +119,7 @@ export interface ActionAuth {
   readonly caps: readonly Cap[];
   readonly containerScope: string | null;
   readonly isRoot: boolean;
-  allows(cap: Exclude<Cap, "*">, containerId?: string): boolean;
+  allows(cap: Exclude<Cap, "*">, ref?: ManifoldRef): boolean;
 }
 
 /**
@@ -251,9 +265,9 @@ function installRefused(reason: PluginInstallRefusal, detail: string): ActionRef
 }
 
 /**
- * THE HIGH-RISK SET a default grant never includes (ADR 0016 §5, R4 = option B): root, the
- * power to mint credentials, and the power to change the roster. A stranger's plugin that
- * declares them gets them only when an installer names them in `grant`.
+ * Ordinary high-risk caps require an explicit install grant. Governed caps are excluded
+ * from both default and explicit flat install grants: their consent is version-bound and
+ * discharged separately by the trusted store port, including for first-party plugins.
  */
 const UNGRANTED_BY_DEFAULT: Partial<Record<Cap, true>> = {
   "*": true,
@@ -275,10 +289,12 @@ function withinCeiling(cap: Cap, declared: readonly Cap[]): boolean {
 function grantFor(declared: readonly Cap[], widen: readonly Cap[] | undefined): Cap[] {
   const granted = new Set<Cap>();
   for (const cap of declared) {
-    if (CAPS.includes(cap) && UNGRANTED_BY_DEFAULT[cap] !== true) granted.add(cap);
+    if (CAPS.includes(cap) && UNGRANTED_BY_DEFAULT[cap] !== true && !GOVERNED_CAPS.includes(cap))
+      granted.add(cap);
   }
   for (const cap of widen ?? []) {
-    if (CAPS.includes(cap) && withinCeiling(cap, declared)) granted.add(cap);
+    if (CAPS.includes(cap) && !GOVERNED_CAPS.includes(cap) && withinCeiling(cap, declared))
+      granted.add(cap);
   }
   return CAPS.filter((cap) => granted.has(cap));
 }
@@ -419,6 +435,11 @@ export interface ActionCtx {
   readonly traceId: number;
   readonly principal: Principal;
   readonly auth: ActionAuth;
+  /** Host-bound lineage and durable admission evidence; never caller supplied. */
+  readonly credential: CredentialReference;
+  readonly admission: GovernedAdmissionDecision | null;
+  readonly streams: PluginStreamContext;
+  readonly jobs: JobContext;
   /**
    * The container this dispatch is confined to, or null for a workspace-grade caller.
    *
@@ -570,6 +591,7 @@ interface EngineDoorCtx {
  * `source: "builtin"` says only "this row has no toggle".
  */
 const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
+  jobDoors,
   {
     manifest: enginePluginsManifest,
     actions: enginePluginsActions,
@@ -754,13 +776,10 @@ function traceTargets(targets: readonly ManifoldRef[]): readonly string[] {
  * The action door's engine: it owns the live assembly, answers dispatches, and is the
  * only writer of workspace-global enablement.
  *
- * The denial ladder is MONOTONIC and evaluated in one fixed order — unknown action, then
- * disabled plugin, then scoped-token refusal, then declared caps, then argument shape, then
- * the handler's own refusal. Order is contract, not implementation detail: each rung
- * answers a question the next rung would otherwise leak. A caller must not learn an
- * action's argument shape by probing a door it may not open, and a disabled plugin's
- * actions must report `plugin_disabled` rather than `unknown_action`, because those are
- * different truths a client acts on differently.
+ * Context-targeted doors check scope and caps before parsing arguments. Resource-targeted
+ * doors retain the early enablement/scope/install checks, then validate declared references
+ * and discharge their caps through the same evaluator. Governed requirements additionally
+ * need explicit version-bound store admission, never inferred from a flat install grant.
  *
  * Contract v2 (ADR 0013) adds no rung. Everything it introduced — dependency violations,
  * incompatibility, data downgrades, a purge of running code, a builtin row somebody tried
@@ -813,6 +832,53 @@ export class PluginHost {
    */
   private readonly lifecycleStates = new Map<string, PluginLifecycleState>();
   private readonly lifecycleTimeoutMs: number;
+  readonly streams = new StreamService(
+    () => this.assembled,
+    (plugin, node) => this.ownsStreamNode(plugin, node),
+  );
+  private jobs: JobService | null = null;
+
+  /** Trusted runtime composition; registered doors refuse until the durable service is ready. */
+  setJobs(jobs: JobService): void {
+    jobs.setLifecycleRecorder((record) => this.store.appendTrace(record));
+    jobs.setManifestResolver((pluginId) => {
+      if (!this.assembled.enabled(pluginId)) return null;
+      return (
+        this.assembled.roster.find((entry) => entry.manifest.id === pluginId)?.manifest.machine ??
+        null
+      );
+    });
+    this.jobs = jobs;
+    this.streams.reconcile();
+  }
+
+  canReadGoverned(auth: AuthContext, node: ManifoldRef): boolean {
+    if (
+      node.kind !== "operation" &&
+      node.kind !== "location" &&
+      node.kind !== "job" &&
+      node.kind !== "output"
+    )
+      return true;
+    return this.jobs?.canReadGoverned(auth, node) ?? false;
+  }
+
+  private ownsStreamNode(plugin: string, node: ManifoldRef): boolean {
+    if (node.kind === "plugin") {
+      return (
+        node.pluginId === plugin && this.assembled.roster.some((row) => row.manifest.id === plugin)
+      );
+    }
+    if (node.kind === "element") {
+      const element = this.rooms.get(node.containerId)?.element(node.elementId);
+      return (
+        element !== undefined &&
+        element !== null &&
+        this.store.elementOwners().get(element.type) === plugin
+      );
+    }
+    return this.jobs?.ownsNode(plugin, node) ?? false;
+  }
 
   private constructor(
     defs: readonly ServerPluginDef[],
@@ -1308,6 +1374,8 @@ export class PluginHost {
     // COMMIT FIRST, then tell people. A lifecycle hook has no vote (ADR 0013 §2): the roster
     // every client will render is already the truth by the time any plugin hears about it.
     this.assembled = await this.reassemble();
+    if (!enabled) this.jobs?.disablePlugin(id);
+    this.streams.reconcile();
     const delta: AssemblyDelta = {
       enabled: this.assembled.order.filter(
         (row) => this.assembled.enabled(row) && !wasEnabled.has(row),
@@ -1370,6 +1438,13 @@ export class PluginHost {
     if (entry === undefined) return refused("unknown_plugin", [id]);
     if (this.assembled.builtin(id)) return refused("builtin", [id]);
     if (entry.enabled) return refused("still_enabled", [id]);
+    try {
+      this.jobs?.purgePlugin(id);
+    } catch (error) {
+      if (error instanceof ServiceError) return { refused: `${error.code}: job purge refused` };
+      throw error;
+    }
+    this.streams.reconcile();
 
     const def = this.defs.find((candidate) => candidate.manifest.id === id);
     const onPurge = def?.lifecycle?.onPurge;
@@ -1516,6 +1591,7 @@ export class PluginHost {
     // the row leaves the "was enabled" set so the new module's `onEnable` fans out below.
     const live = previous !== undefined && wasEnabled.has(id);
     if (live) {
+      this.jobs?.disablePlugin(id);
       await this.hook(id, "onDisable", "disable_failed");
       wasEnabled.delete(id);
     }
@@ -1868,6 +1944,7 @@ export class PluginHost {
   }
 
   private publish(): void {
+    this.streams.reconcile();
     const developerMode = this.store.developerMode();
     for (const listener of this.rosterListeners) listener(this.assembled.roster, developerMode);
   }
@@ -1936,13 +2013,15 @@ export class PluginHost {
       answer. Everything in it is a fact about the CALLER and the DOOR, so nothing a handler
       does can change it, which is what lets the row be written before the handler runs.
     */
+    const opaque =
+      entry.def.trace === "opaque" || entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap));
     const attribution: TraceAttribution = {
       ts: this.runtime.now(),
       actor: auth.principal.id,
       authority: traceAuthority(auth, entry.def.caps),
       door: fullName,
-      containerId: traceContainer(auth, rawArgs),
-      payload: tracePayload(rawArgs),
+      containerId: opaque ? auth.containerScope : traceContainer(auth, rawArgs),
+      payload: opaque ? {} : tracePayload(rawArgs),
       session,
     };
     /*
@@ -1997,17 +2076,21 @@ export class PluginHost {
     const install = this.installed.get(pluginId);
     if (install !== undefined) {
       for (const cap of entry.def.caps) {
-        if (withinCeiling(cap, install.row.grantedCaps)) continue;
+        // Governed consent is checked separately against exact resource/artifact revisions.
+        if (GOVERNED_CAPS.includes(cap) || withinCeiling(cap, install.row.grantedCaps)) continue;
         return refuse("forbidden", `${cap} not granted to plugin ${pluginId}`);
       }
     }
-    for (const cap of entry.def.caps) {
-      const held =
-        cap === "*"
-          ? auth.isRoot
-          : this.authService.allows(auth, cap, auth.containerScope ?? undefined);
-      if (held) continue;
-      return refuse("forbidden", `${cap} capability required`);
+    if (entry.def.requirements === undefined) {
+      for (const cap of entry.def.caps) {
+        if (GOVERNED_CAPS.includes(cap))
+          return refuse(
+            "forbidden",
+            "governed actions require resource targets and explicit consent",
+          );
+        const held = cap === "*" ? auth.isRoot : this.authService.allows(auth, cap);
+        if (!held) return refuse("forbidden", `${cap} capability required`);
+      }
     }
     const parsed = entry.def.input.safeParse(rawArgs);
     if (!parsed.success) {
@@ -2015,6 +2098,26 @@ export class PluginHost {
         .map((issue) => `${issue.path.map(String).join(".") || "(root)"} ${issue.message}`)
         .join("; ");
       return refuse("invalid_args", detail);
+    }
+    const requirements: AuthorityRequirement[] = [];
+    for (const declared of entry.def.requirements ?? []) {
+      let value: unknown = parsed.data;
+      for (const segment of declared.target) {
+        value =
+          value !== null && typeof value === "object" && Object.hasOwn(value, segment)
+            ? Reflect.get(value, segment)
+            : undefined;
+      }
+      const ref = ManifoldRefSchema.safeParse(value);
+      if (!ref.success) return refuse("invalid_args", "invalid authority target");
+      if (!this.authService.allowsRef(auth, declared.cap, ref.data))
+        return refuse("forbidden", `${declared.cap} capability required at target`);
+      requirements.push({ cap: declared.cap, ref: ref.data });
+    }
+    let admission: GovernedAdmissionDecision | null = null;
+    if (entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap))) {
+      admission = this.authService.admitGoverned(auth, pluginId, fullName, requirements);
+      if (!admission.allowed) return refuse("forbidden", "explicit version-bound consent required");
     }
     const handler = this.handlers.get(pluginId)?.[entry.def.name];
     if (handler === undefined) {
@@ -2050,15 +2153,61 @@ export class PluginHost {
      */
     const traceId = this.store.appendTrace({ ...attribution, outcome: null, targets: [] });
     const targets: ManifoldRef[] = [];
+    let streamAdmissionOpen = true;
+    const openedStreams: StreamProducer[] = [];
     const ctx: ActionCtx = {
       traceId,
+      credential: this.authService.credentialReference(auth),
+      admission,
+      jobs: jobContext(
+        () => {
+          if (this.jobs === null) throw new ServiceError("forbidden", "job service unavailable");
+          return this.jobs;
+        },
+        auth,
+        pluginId,
+        traceId,
+      ),
+      streams: {
+        open: (kind, node) => {
+          if (!streamAdmissionOpen) throw new Error("stream open requires an active action");
+          const descriptor = this.assembled.streams.get(kind)?.descriptor;
+          if (
+            descriptor === undefined ||
+            !this.authService.allowsRef(auth, descriptor.readCapability, node) ||
+            !this.canReadGoverned(auth, node)
+          )
+            throw new Error("stream producer authority refused");
+          const uri = formatManifoldUri(node);
+          // Retain scalar attribution only, never handler-owned node/argument graphs.
+          const { actor, authority, door, containerId, session: streamSession } = attribution;
+          const producer = this.streams.open(pluginId, kind, node, (phase, epoch) => {
+            this.store.appendTrace({
+              actor,
+              authority,
+              door,
+              containerId,
+              session: streamSession,
+              ts: this.runtime.now(),
+              payload: { streamLifecycle: phase, parentTrace: traceId, kind, epoch },
+              outcome: "ok",
+              targets: opaque ? [] : [uri],
+            });
+          });
+          openedStreams.push(producer);
+          return producer;
+        },
+      },
       principal: auth.principal,
       auth: {
         principal: auth.principal,
         caps: auth.caps,
         containerScope: auth.containerScope,
         isRoot: auth.isRoot,
-        allows: (cap, containerId) => this.authService.allows(auth, cap, containerId),
+        allows: (cap, ref) =>
+          ref === undefined
+            ? this.authService.allows(auth, cap)
+            : this.authService.allowsRef(auth, cap, ref),
       },
       containerScope: auth.containerScope,
       outsideScope: (containerId) =>
@@ -2110,11 +2259,11 @@ export class PluginHost {
       now: () => this.runtime.now(),
       newId: () => this.runtime.newId(),
       target: (ref) => {
-        targets.push(ref);
+        if (!opaque) targets.push(ref);
       },
       emit: (ref, kind, payload) => {
         staged.push({ ref, kind, payload: payload ?? {} });
-        targets.push(ref);
+        if (!opaque) targets.push(ref);
       },
     };
     const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
@@ -2122,6 +2271,8 @@ export class PluginHost {
     try {
       produced = await invoke(ctx, parsed.data);
     } catch (error) {
+      streamAdmissionOpen = false;
+      for (const producer of openedStreams) producer.close();
       if (error instanceof IsolateDenial) {
         /*
           THE CHILD'S OWN RUNGS (ADR 0016 §6). An isolated handler grades `invalid_args`
@@ -2139,9 +2290,11 @@ export class PluginHost {
       this.store.settleTrace(traceId, "failed", traceTargets(targets));
       throw error;
     }
+    streamAdmissionOpen = false;
     if (produced !== null && typeof produced === "object") {
       const denial = Reflect.get(produced, "refused");
       if (typeof denial === "string") {
+        for (const producer of openedStreams) producer.close();
         this.store.settleTrace(traceId, "refused", traceTargets(targets));
         return { ok: false, denial: { rule: "refused", message: denial } };
       }
@@ -2154,6 +2307,7 @@ export class PluginHost {
     try {
       result = entry.def.result.parse(produced);
     } catch (error) {
+      for (const producer of openedStreams) producer.close();
       this.store.settleTrace(traceId, "failed", traceTargets(targets));
       throw error;
     }

@@ -20,6 +20,7 @@ import { InstanceGateway } from "./instance-ws.ts";
 import { IsolateSupervisor } from "./isolate/supervisor.ts";
 import { createLogger, type Logger } from "./log.ts";
 import { MachineGateway } from "./machine-ws.ts";
+import { JobService } from "./job-service.ts";
 import {
   assemblyItemNouns,
   assemblyPlacementVocabulary,
@@ -81,7 +82,10 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const timers = options.timers ?? defaultRoomTimers;
   const logger = options.logger ?? createLogger(runtime);
   const store = new ServerStore(openDatabase(resolve(config.dataDir, "manifold.db")));
-  const auth = new AuthService(store, config.ownerKey, runtime);
+  const auth = new AuthService(store, config.ownerKey, runtime, {
+    decide: (request) => jobs.decide(request),
+  });
+  const jobs: JobService = new JobService(store, auth, runtime);
   /*
     THE ASSEMBLY'S PLACEMENT VOCABULARY, before anything that reads it. Element traits, the
     discipline roster and the tile-tree question all come off the same declarations (ADR 0013
@@ -131,6 +135,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     runtime.newId(),
     runtime,
   );
+  machines.setJobs(jobs);
   /*
     THE INSTANCE CHANNEL, both ends. The host gateway sits beside the machine gateway for
     the same reason it looks like it (ADR 0014): a remote process dialing in with a token,
@@ -200,6 +205,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       isolates: { runner: isolates, dataDir: config.dataDir, devPaths: config.pluginDevPaths },
     },
   );
+  plugins.setJobs(jobs);
+  const jobTick = setInterval(() => jobs.tick(), 1000);
   /*
     THE element-payload boundary, installed rather than constructed for the same reason the
     terminal view above it is: the schemas belong to the assembly, the assembly belongs to the
@@ -315,6 +322,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     async stop(): Promise<void> {
       if (stopped) return;
       stopped = true;
+      clearInterval(jobTick);
       rooms.flushAll();
       unwatchAuthored();
       sessions.shutdown();

@@ -104,6 +104,7 @@ import {
   type TokenGrant,
 } from "../packages/protocol/src/index.ts";
 import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../packages/server/src/assembly.ts";
+import { jobDoors } from "../packages/server/src/job-doors.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser, type DragPayload } from "./cdp.ts";
@@ -418,20 +419,19 @@ function keyLiteral(node: ts.Expression, constants: ReadonlyMap<string, string>)
 let assembly: Assembly | null = null;
 try {
   /*
-    The engine's own builtin row is registered by the HOST, not by `assembly.ts` — so the
-    vocabulary this script compares against the live server has to include it, or every
-    check that says "/api/protocol equals the composition" would fail on the enablement door
-    itself.
+    The engine's builtin rows are registered by the HOST, not by `assembly.ts`, so this
+    comparison uses their authoritative definitions too. Omitting a builtin would make
+    a correct live roster look like an undeclared action or plugin.
 
     `distribution` is the `core.` reservation, composed exactly as `main.ts` composes it: the
     shipped ids derived from the registration table. Passing it here is what makes S1 a real
     exercise of the reservation rather than a composition that happens to avoid it.
   */
-  assembly = assembleRoster(
-    [...SERVER_PLUGIN_DEFS, { manifest: enginePluginsManifest, actions: enginePluginsActions }],
-    new Set(),
-    { builtins: new Set([ENGINE_PLUGINS_ID]), distribution: SHIPPED_PLUGIN_IDS },
-  );
+  const builtins = [{ manifest: enginePluginsManifest, actions: enginePluginsActions }, jobDoors];
+  assembly = assembleRoster([...SERVER_PLUGIN_DEFS, ...builtins], new Set(), {
+    builtins: new Set(builtins.map((def) => def.manifest.id)),
+    distribution: SHIPPED_PLUGIN_IDS,
+  });
   check("S1 server assembly", true, `${String(assembly.roster.length)} plugins composed`);
 } catch (error) {
   const detail = error instanceof AssemblyError ? error.problems.join(" | ") : String(error);

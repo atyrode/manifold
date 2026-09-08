@@ -30,7 +30,7 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: "1.3.13"
+          bun-version: "1.4.2"
 
       - name: Cache bun's download store
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -41,6 +41,14 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Install Linux containment fixtures
+        run: bash scripts/install-runtime-ci.sh
+
+      - name: Verify real machine jobs and browser runtime
+        run: |
+          bash scripts/verify-runtime.sh --system jobs
+          bash scripts/verify-runtime.sh --system browser
 
       - name: Gate
         run: bun run gate
@@ -57,7 +65,7 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: "1.3.13"
+          bun-version: "1.4.2"
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Verify preview development environment

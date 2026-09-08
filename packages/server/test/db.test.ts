@@ -15,6 +15,7 @@ import {
 } from "@manifold/scene";
 import { AuthService, ServiceError } from "../src/auth.ts";
 import { openDatabase, SCHEMA_VERSION } from "../src/db.ts";
+import { migrateToGrantRows } from "../src/migrate-grants.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
 
@@ -1170,6 +1171,28 @@ describe("pre-migration snapshot retention", () => {
   });
 });
 
+/**
+ * Complete the authority schema shared by these post-v16 fixtures. Use migration 13 for
+ * grant rows and credential references rather than duplicating their schema; migration 15
+ * adds expiry, and migration 16 has nothing to retire in these empty authority tables.
+ */
+function seedPostV16Authority(db: Database, path: string): void {
+  const version = db
+    .query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'")
+    .get();
+  if (version === null) throw new Error("fixture lacks its historical schema version");
+  db.exec(`
+CREATE TABLE tokens(id TEXT PRIMARY KEY, hash TEXT UNIQUE, principal_id TEXT, caps TEXT,
+  container_id TEXT, created_at INTEGER, revoked_at INTEGER, minted_by TEXT);
+CREATE TABLE shares(id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, container_id TEXT NOT NULL,
+  caps TEXT NOT NULL, origin TEXT NOT NULL, minted_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL, revoked_at INTEGER);
+`);
+  migrateToGrantRows(db, path);
+  db.exec("ALTER TABLE tokens ADD COLUMN expires_at INTEGER");
+  db.query("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(version.value);
+}
+
 describe("migration 18: an install row's published doors", () => {
   test("a row admitted before the column reads doorless rather than failing to load", () => {
     const dir = mkdtempSync(join(tmpdir(), "manifold-db-installs-"));
@@ -1183,7 +1206,6 @@ CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER);
 CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER);
 CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT);
-CREATE TABLE tokens(id TEXT PRIMARY KEY, principal_id TEXT, revoked_at INTEGER, expires_at INTEGER);
 CREATE TABLE terminals(agent_principal_id TEXT, status TEXT);
 CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INTEGER NOT NULL,
   ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
@@ -1199,6 +1221,7 @@ INSERT INTO meta(key, value) VALUES ('schema_version', '17');
 INSERT INTO plugin_installs VALUES ('vendor.elder', '${"0".repeat(64)}', '/uploads/elder',
   '["containers:read"]', 'p-owner', 1, '/data/plugins/vendor.elder/bundle.json');
 `);
+      seedPostV16Authority(seed, path);
       seed.close();
 
       const db = openDatabase(path);
@@ -1228,7 +1251,6 @@ CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts 
 CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER,
   owner_host_id TEXT, draining INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT);
-CREATE TABLE tokens(id TEXT PRIMARY KEY, principal_id TEXT, revoked_at INTEGER, expires_at INTEGER);
 CREATE TABLE terminals(agent_principal_id TEXT, status TEXT);
 CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INTEGER NOT NULL,
   ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
@@ -1244,6 +1266,7 @@ INSERT INTO meta(key, value) VALUES ('schema_version', '20');
 INSERT INTO plugin_installs VALUES ('vendor.elder', '${"0".repeat(64)}', '/uploads/elder',
   '["containers:read"]', 'p-owner', 1, '/data/plugins/vendor.elder/bundle.json', '[]');
 `);
+      seedPostV16Authority(seed, path);
       seed.close();
 
       const db = openDatabase(path);
@@ -1303,10 +1326,10 @@ CREATE TABLE plugin_installs(
 CREATE TABLE plugin_kv(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
   PRIMARY KEY (plugin_id, key)) WITHOUT ROWID;
 CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT);
-CREATE TABLE tokens(id TEXT PRIMARY KEY, principal_id TEXT, revoked_at INTEGER, expires_at INTEGER);
 CREATE TABLE terminals(agent_principal_id TEXT, status TEXT);
 INSERT INTO meta(key, value) VALUES ('schema_version', '18');
 `);
+  seedPostV16Authority(db, path);
   const doc = createSceneDoc();
   doc.clientID = 1601;
   const refs = [
@@ -1497,16 +1520,8 @@ describe("migration 19: contributed element refs", () => {
       const upgradedMetadata = db
         .query<{ key: string; value: string }, []>("SELECT key, value FROM meta ORDER BY key")
         .all();
-      // A direct retry must be a no-op even when the converted bytes are already present.
-      // Rewinding past 19 also rewinds 20's, 21's, 22's and 23's state: `ADD COLUMN` is not
-      // re-runnable, and the retry under test is 19's, not a duplicate-column failure of a
-      // successor.
-      db.exec("UPDATE meta SET value = '18' WHERE key = 'schema_version'");
-      db.exec("ALTER TABLE machines DROP COLUMN owner_host_id");
-      db.exec("ALTER TABLE machines DROP COLUMN draining");
-      db.exec("ALTER TABLE plugin_installs DROP COLUMN hardened");
-      db.exec("ALTER TABLE plugin_installs DROP COLUMN built_against");
-      db.exec("ALTER TABLE plugin_installs DROP COLUMN mode");
+      // Retry from a valid historical schema carrying the already-converted bytes.
+      // Rewinding only schema_version would leave successor migrations' tables behind.
       db.close();
       const backup = new Database(`${path}.pre-v19.bak`, { strict: true });
       expect(
@@ -1532,7 +1547,21 @@ describe("migration 19: contributed element refs", () => {
       }
       backup.close();
       expect(snapshotVersion(`${path}.pre-v19.bak`)).toBe("18");
-      const retried = openDatabase(path);
+      const retryPath = join(dir, "retry.db");
+      seedPreV19(retryPath);
+      const retryFixture = new Database(retryPath, { strict: true });
+      const replaceDoc = retryFixture.query(
+        "UPDATE scene_docs SET hash=?, doc=? WHERE container_id=? AND epoch=? AND rev=?",
+      );
+      for (const row of upgraded) {
+        replaceDoc.run(row.hash, row.doc, row.container_id, row.epoch, row.rev);
+      }
+      const replaceMeta = retryFixture.query("INSERT OR REPLACE INTO meta(key,value) VALUES (?,?)");
+      for (const row of upgradedMetadata) {
+        if (row.key !== "schema_version") replaceMeta.run(row.key, row.value);
+      }
+      retryFixture.close();
+      const retried = openDatabase(retryPath);
       for (const row of upgraded) {
         expect(
           retried
@@ -1673,7 +1702,6 @@ test("migration 23: canvas draw retains storage, reservations and disable attrib
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE events(id INTEGER PRIMARY KEY, container_id TEXT, ts INTEGER);
 CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT);
-CREATE TABLE tokens(id TEXT PRIMARY KEY, principal_id TEXT, revoked_at INTEGER, expires_at INTEGER);
 CREATE TABLE machines(id TEXT PRIMARY KEY, token_id TEXT);
 CREATE TABLE terminals(agent_principal_id TEXT, status TEXT);
 CREATE TABLE plugin_kv(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
@@ -1689,6 +1717,7 @@ INSERT INTO plugin_kv VALUES ('engine.plugins', '$owner:draw', 'core.draw');
 INSERT INTO plugin_kv VALUES ('engine.plugins', '$owner:note', 'vendor.other');
 INSERT INTO plugin_kv VALUES ('vendor.other', 'reference', 'core.draw');
 `);
+    seedPostV16Authority(db, path);
     const strokes = JSON.stringify({
       strokes: [
         {
@@ -1752,6 +1781,46 @@ CREATE TRIGGER reject_draw_ledger BEFORE INSERT ON plugin_kv
   }
 });
 
+/**
+ * The schema-23 tables exercised by credential migration and authority lookup. Seed the
+ * historical shape directly: opening today's database and rewinding its version leaves
+ * later job tables and triggers behind and no longer represents a pre-migration database.
+ * Migration 24 changes credential data only, so this is also the schema-24 table shape.
+ */
+function seedPreV24(path: string, version: 23 | 24 = 23): Database {
+  const db = new Database(path, { create: true, strict: true });
+  db.exec(`
+CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT, name TEXT, color TEXT,
+  created_at INTEGER, origin TEXT);
+CREATE TABLE containers(id TEXT PRIMARY KEY, name TEXT, created_at INTEGER,
+  sort_order INTEGER, folder_id TEXT, discipline TEXT NOT NULL DEFAULT 'canvas');
+CREATE TABLE container_folders(id TEXT PRIMARY KEY, name TEXT NOT NULL,
+  created_at INTEGER NOT NULL, parent_folder_id TEXT, sort_order INTEGER);
+CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER,
+  owner_host_id TEXT, draining INTEGER NOT NULL DEFAULT 0);
+CREATE UNIQUE INDEX machines_name_unique ON machines(name);
+CREATE TABLE terminals(id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT,
+  created_by TEXT, status TEXT, exit_code INTEGER, created_at INTEGER,
+  agent_principal_id TEXT, name TEXT);
+CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT,
+  ts INTEGER, principal_id TEXT, type TEXT, payload TEXT,
+  door TEXT, authority TEXT, targets TEXT, outcome TEXT, session TEXT);
+CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INTEGER NOT NULL,
+  ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
+  PRIMARY KEY(container_id, epoch, rev));
+CREATE TABLE plugin_kv(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+  PRIMARY KEY(plugin_id, key)) WITHOUT ROWID;
+CREATE TABLE plugin_installs(plugin_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL,
+  source TEXT NOT NULL, granted_caps TEXT NOT NULL, installed_by TEXT NOT NULL,
+  installed_at INTEGER NOT NULL, bundle_path TEXT NOT NULL, actions TEXT NOT NULL DEFAULT '[]',
+  hardened INTEGER NOT NULL DEFAULT 0, mode TEXT NOT NULL DEFAULT 'bundle') WITHOUT ROWID;
+`);
+  db.query("INSERT INTO meta VALUES ('schema_version', ?)").run(String(version));
+  seedPostV16Authority(db, path);
+  return db;
+}
+
 describe("migration 24: legacy credential grace", () => {
   test("bounds historical bearers once while preserving authority and lifecycle credentials", () => {
     const dir = mkdtempSync(join(tmpdir(), "manifold-db-credential-grace-"));
@@ -1765,11 +1834,9 @@ describe("migration 24: legacy credential grace", () => {
     let db: Database | undefined;
     const now = spyOn(Date, "now").mockReturnValue(migratedAt);
     try {
-      // 24 changes data only: an empty migrated schema is also the complete v23 schema.
       // Insert historical rows directly, never through today's credential minting policy.
-      db = openDatabase(path);
+      db = seedPreV24(path);
       const owner = new AuthService(new ServerStore(db), ownerKey, runtime).ownerPrincipal;
-      db.exec("UPDATE meta SET value = '23' WHERE key = 'schema_version'");
       const fixtures = [
         { id: "human", kind: "human", name: "machine", expires: null, revoked: null },
         { id: "agent", kind: "agent", name: "terminal-looking-name", expires: null, revoked: null },
@@ -1932,9 +1999,8 @@ test("migration 24 refuses to rewrite credentials when its backup cannot be publ
   const dir = mkdtempSync(join(tmpdir(), "manifold-db-credential-backup-"));
   const path = join(dir, "manifold.db");
   try {
-    const seed = openDatabase(path);
+    const seed = seedPreV24(path);
     seed.exec(`
-UPDATE meta SET value = '23' WHERE key = 'schema_version';
 INSERT INTO principals(id, kind, name, created_at) VALUES ('human', 'human', 'reader', 1);
 INSERT INTO tokens(id, hash, principal_id, caps, created_at)
 VALUES ('legacy', 'historical-hash', 'human', '["containers:read"]', 1);
@@ -1955,6 +2021,125 @@ VALUES ('legacy', 'historical-hash', 'human', '["containers:read"]', 1);
       unchanged.close();
     }
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("migration 25 adds durable jobs without rewriting schema-24 credentials or containers", () => {
+  const dir = mkdtempSync(join(tmpdir(), "manifold-db-jobs-upgrade-"));
+  const path = join(dir, "manifold.db");
+  let db = seedPreV24(path, 24);
+  try {
+    db.exec(`
+INSERT INTO principals(id, kind, name, color, created_at) VALUES
+  ('bounded', 'agent', 'bounded agent', '#123456', 1),
+  ('revoked', 'human', 'revoked human', '#654321', 2);
+INSERT INTO tokens(id, hash, principal_id, caps, created_at, revoked_at, minted_by, grant_id, expires_at) VALUES
+  ('finite', 'finite-hash', 'bounded', '["containers:read"]', 1, NULL, 'owner', 'finite-grant', 1900000000000),
+  ('revoked', 'revoked-hash', 'revoked', '["containers:read"]', 2, 12345, 'owner', NULL, NULL);
+INSERT INTO grants(id, principal_kind, principal_id, node, caps, effect, reach, created_by, created_at)
+VALUES ('finite-grant', 'principal', 'bounded', 'manifold://', '["containers:read"]', 'allow', 'subtree', 'owner', 1);
+INSERT INTO containers(id, name, created_at, sort_order, discipline) VALUES
+  ('canvas', 'Existing canvas', 3, 7, 'canvas'),
+  ('composition', 'Existing composition', 4, 8, 'composition');
+INSERT INTO scene_docs VALUES ('canvas', 'epoch', 1, 5, 'retained-hash', X'01020304');
+`);
+    const before = {
+      principals: db.query("SELECT * FROM principals").all(),
+      tokens: db.query("SELECT * FROM tokens").all(),
+      grants: db.query("SELECT * FROM grants").all(),
+      containers: db.query("SELECT * FROM containers").all(),
+      scene_docs: db.query("SELECT * FROM scene_docs").all(),
+    };
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE name = 'machine_job_owners'").get(),
+    ).toBeNull();
+    db.close();
+    db = openDatabase(path);
+    for (const [table, rows] of Object.entries(before)) {
+      expect(db.query(`SELECT * FROM ${table}`).all()).toEqual(rows);
+    }
+    expect(db.query("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
+      value: "25",
+    });
+    // Opening v24 must not replay its credential grace or create another recovery image.
+    expect(existsSync(`${path}.pre-v24.bak`)).toBeFalse();
+    db.exec(`
+INSERT INTO machine_job_owners VALUES ('machine', 'owner', 'public-key', 1);
+INSERT INTO machine_job_installs(machine_id, plugin_id, revision, artifact, manifest, enabled, ready)
+VALUES ('machine', 'vendor.worker', 'install-2', 'artifact-2', '{"declaration":2}', 1, 1);
+INSERT INTO machine_job_installations VALUES
+  ('machine', 'vendor.worker', 'install-1', 'artifact-1', '{"declaration":1}'),
+  ('machine', 'vendor.worker', 'install-2', 'artifact-2', '{"declaration":2}');
+INSERT INTO machine_job_consents VALUES
+  ('machine', 'vendor.worker', 'manifold://machine/machine', 'jobs:read', 'install-1', 'artifact-1', 'consent-1', 1),
+  ('machine', 'vendor.worker', 'manifold://machine/machine', 'jobs:read', 'install-2', 'artifact-2', 'consent-2', 0);
+INSERT INTO machine_job_decisions VALUES
+  ('decision-1', 6, 'vendor.worker', 'vendor.worker.run', 'finite', 'policy-1', '[]', '[]');
+INSERT INTO machine_jobs(job_id, machine_id, plugin_id, digest, request, state, created_at, audit_origin, decision_id)
+VALUES ('job-1', 'machine', 'vendor.worker', 'digest', '{}', 'admitted', 6,
+  '{"actor":"bounded","door":"vendor.worker.run"}', 'decision-1');
+INSERT INTO machine_job_outputs VALUES ('manifold://job/job-1', 'job-1', 'vendor.worker', '{}', 0);
+INSERT INTO job_schedules(schedule_id, revision, spec, next_nominal)
+VALUES ('schedule-1', '1', '{}', 100);
+INSERT INTO job_schedule_occurrences VALUES ('schedule-1', '1', 100, 'job-1', '{}', 200, 'admitted', NULL);
+INSERT INTO job_invocation_reservations VALUES ('parent', 'invocation', 'job-1', 'root', 1, '{}', '{}', 1);
+INSERT INTO job_invocation_edges VALUES ('vendor.worker', 'run', '{}', 1);
+UPDATE tokens SET revoked_at = 7 WHERE id = 'finite';
+DELETE FROM grants WHERE id = 'finite-grant';
+`);
+    // Existing authority rows participate in revision tracking after the additive upgrade.
+    expect(
+      db.query("SELECT kind, identity, revision FROM machine_job_revisions ORDER BY kind").all(),
+    ).toEqual([
+      { kind: "credential", identity: "finite", revision: 1 },
+      { kind: "grant", identity: "finite-grant", revision: 1 },
+    ]);
+    const jobTables = [
+      "machine_job_owners",
+      "machine_job_installs",
+      "machine_job_installations",
+      "machine_job_consents",
+      "machine_job_decisions",
+      "machine_jobs",
+      "machine_job_outputs",
+      "machine_job_revisions",
+      "job_schedules",
+      "job_schedule_occurrences",
+      "job_invocation_reservations",
+      "job_invocation_edges",
+    ];
+    const jobs = jobTables.map((table) => ({
+      table,
+      rows: db.query(`SELECT * FROM ${table}`).all(),
+    }));
+    const credentials = db.query("SELECT * FROM tokens").all();
+    db.close();
+    db = openDatabase(path);
+    for (const { table, rows } of jobs) {
+      expect(db.query(`SELECT * FROM ${table}`).all()).toEqual(rows);
+    }
+    expect(db.query("SELECT * FROM tokens").all()).toEqual(credentials);
+    expect(db.query("SELECT * FROM containers").all()).toEqual(before.containers);
+    expect(db.query("SELECT * FROM scene_docs").all()).toEqual(before.scene_docs);
+    db.query(
+      "UPDATE machine_job_consents SET enabled=0 WHERE machine_id=? AND plugin_id=? AND installation_revision=?",
+    ).run("machine", "vendor.worker", "install-1");
+    db.query(
+      "UPDATE machine_job_consents SET enabled=1 WHERE machine_id=? AND plugin_id=? AND installation_revision=?",
+    ).run("machine", "vendor.worker", "install-2");
+    expect(
+      db
+        .query(
+          "SELECT installation_revision,artifact,enabled FROM machine_job_consents ORDER BY installation_revision",
+        )
+        .all(),
+    ).toEqual([
+      { installation_revision: "install-1", artifact: "artifact-1", enabled: 0 },
+      { installation_revision: "install-2", artifact: "artifact-2", enabled: 1 },
+    ]);
+  } finally {
+    db.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });

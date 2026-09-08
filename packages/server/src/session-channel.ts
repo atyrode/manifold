@@ -54,6 +54,8 @@ interface QueuedFrame {
   readonly payload: string;
   /** Authoritative init/resync bytes are bounded by the transport, not the flood queue. */
   readonly boundedBytes: number;
+  readonly authorized?: () => boolean;
+  readonly delivered?: () => void;
 }
 
 /** Validates and serializes a server frame body exactly once before fanout. */
@@ -190,7 +192,13 @@ export class SessionSender {
    * authoritative frame, so their bytes use the 16 MiB transport ceiling rather than the
    * 1 MiB application flood queue.
    */
-  sendSerialized(frame: SerializedServerMessage, droppable = false): boolean {
+  sendSerialized(
+    frame: SerializedServerMessage,
+    droppable = false,
+    authorized?: () => boolean,
+    delivered?: () => void,
+  ): boolean {
+    if (authorized !== undefined && !authorized()) return false;
     if (this.closed) return false;
     const bytes = frame.bytes + this.prefixBytes;
     if (bytes > SESSION_TRANSPORT_PAYLOAD_BYTES) {
@@ -220,12 +228,20 @@ export class SessionSender {
 
     const payload = this.tag(frame.body);
     if (this.queue.length > 0 || this.socket.bufferedAmount > 0) {
-      this.queue.push({ type: frame.type, payload, boundedBytes });
+      this.queue.push({
+        type: frame.type,
+        payload,
+        boundedBytes,
+        ...(authorized === undefined ? {} : { authorized }),
+        ...(delivered === undefined ? {} : { delivered }),
+      });
       this.queuedBytes += boundedBytes;
       return true;
     }
 
-    return this.acceptSendStatus(this.socket.send(payload));
+    const accepted = this.acceptSendStatus(this.socket.send(payload));
+    if (accepted) delivered?.();
+    return accepted;
   }
 
   private acceptSendStatus(status: number): boolean {
@@ -240,8 +256,11 @@ export class SessionSender {
       const frame = this.queue.shift();
       if (frame === undefined) break;
       this.queuedBytes -= frame.boundedBytes;
+      if (frame.authorized !== undefined && !frame.authorized()) continue;
       const status = this.socket.send(frame.payload);
-      if (!this.acceptSendStatus(status) || status === -1) break;
+      if (!this.acceptSendStatus(status)) break;
+      frame.delivered?.();
+      if (status === -1) break;
     }
   }
 

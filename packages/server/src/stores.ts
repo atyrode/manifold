@@ -1617,20 +1617,25 @@ export class ServerStore {
     revokedAt: number,
   ): TokenRevocation {
     return this.transaction(() => {
-      const grants = this.db
+      // Bun's run().changes includes trigger writes. SQLite's changes() counts only
+      // the direct mutation, without materializing one RETURNING row per credential.
+      const changes = this.db.query<{ count: number }, []>("SELECT changes() AS count");
+      this.db
         .query<void, string[]>(
           `DELETE FROM grants WHERE id IN (
              SELECT grant_id FROM tokens
              WHERE ${where} AND revoked_at IS NULL AND grant_id IS NOT NULL
            )`,
         )
-        .run(...params).changes;
-      const tokens = this.db
+        .run(...params);
+      const grants = changes.get()?.count ?? 0;
+      this.db
         .query<void, [number, ...string[]]>(
           `UPDATE tokens SET revoked_at = ?, grant_id = NULL
            WHERE ${where} AND revoked_at IS NULL`,
         )
-        .run(revokedAt, ...params).changes;
+        .run(revokedAt, ...params);
+      const tokens = changes.get()?.count ?? 0;
       return { tokens, grants };
     });
   }

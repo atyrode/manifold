@@ -32,7 +32,7 @@ import {
 } from "@manifold/protocol";
 import { SessionClient } from "@manifold/sdk";
 import { existsSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -253,22 +253,25 @@ function mergedEnvironment(
   return env;
 }
 
-function spawnPiped(command: string[], env: Record<string, string>): SpawnedProcess {
-  return Bun.spawn(command, {
-    cwd: REPO_ROOT,
-    env,
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+interface ObservedProcess {
+  readonly proc: SpawnedProcess;
+  readonly output: ProcessOutput;
+  readonly stop: (signal?: StopSignal) => Promise<void>;
+  assertRunning(phase: string): void;
+  drain(): Promise<void>;
 }
 
 function createStop(proc: SpawnedProcess): (signal?: StopSignal) => Promise<void> {
   let exitObserved = false;
   let stopRequested = false;
-  void proc.exited.then(() => {
-    exitObserved = true;
-  });
+  void proc.exited.then(
+    () => {
+      exitObserved = true;
+    },
+    () => {
+      exitObserved = true;
+    },
+  );
   return async (signal?: StopSignal): Promise<void> => {
     if (exitObserved || proc.exitCode !== null || stopRequested) {
       await proc.exited;
@@ -285,20 +288,117 @@ function createStop(proc: SpawnedProcess): (signal?: StopSignal) => Promise<void
   };
 }
 
-function captureProcess(
-  proc: SpawnedProcess,
+function observeProcess(
+  command: string[],
+  env: Record<string, string>,
   onStdoutLine?: (line: string) => void,
   into?: { readonly stdout: LineRing; readonly stderr: LineRing },
-): ProcessOutput {
+): ObservedProcess {
   const stdout = into?.stdout ?? new LineRing();
   const stderr = into?.stderr ?? new LineRing();
-  void collectLines(proc.stdout, stdout, onStdoutLine).catch((error: unknown) => {
-    stdout.push(`output capture failed: ${error instanceof Error ? error.message : String(error)}`);
-  });
-  void collectLines(proc.stderr, stderr).catch((error: unknown) => {
-    stderr.push(`output capture failed: ${error instanceof Error ? error.message : String(error)}`);
-  });
-  return { stdout: stdout.lines, stderr: stderr.lines };
+  const output = { stdout: stdout.lines, stderr: stderr.lines };
+  let exitError: unknown;
+  let exitCode: number | undefined;
+  let captureError: unknown;
+  let proc: SpawnedProcess;
+  try {
+    proc = Bun.spawn(command, {
+      cwd: REPO_ROOT,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      // Bun may invoke this before spawn returns. Its error is a waitpid error,
+      // not a subprocess.spawnError property; preserve the original object.
+      onExit(_proc, _code, _signal, error) {
+        if (error !== undefined) exitError = error;
+      },
+    });
+  } catch (error) {
+    throw new Error(`failed to spawn ${JSON.stringify(command)}: ${String(error)}`, {
+      cause: error,
+    });
+  }
+  void proc.exited.then(
+    (code) => {
+      exitCode = code;
+    },
+    (error: unknown) => {
+      exitError = error;
+    },
+  );
+  const capture = (
+    name: "stdout" | "stderr",
+    ring: LineRing,
+    onLine?: (line: string) => void,
+  ): Promise<void> => {
+    const stream = proc[name];
+    // Runtime failures can return a process with missing pipes despite the
+    // configured "pipe" type. Missing evidence is not an empty successful read.
+    if (stream === undefined || stream === null) {
+      const error = new Error(`${name} pipe unavailable (requested "pipe")`);
+      captureError ??= error;
+      ring.push(error.message);
+      return Promise.resolve();
+    }
+    return collectLines(stream, ring, onLine).catch((error: unknown) => {
+      captureError ??= error;
+      ring.push(`${name} capture failed: ${String(error)}`);
+    });
+  };
+  const drained = Promise.all([capture("stdout", stdout, onStdoutLine), capture("stderr", stderr)]);
+  return {
+    proc,
+    output,
+    stop: createStop(proc),
+    assertRunning(phase) {
+      const code = proc.exitCode ?? exitCode;
+      const signal = proc.signalCode;
+      if (exitError !== undefined || code !== undefined || signal !== null) {
+        throw new Error(
+          `${phase}: process exited (pid=${proc.pid}, code=${code ?? "unavailable"}, signal=${signal ?? "none"})` +
+            (exitError === undefined ? "" : `: ${String(exitError)}`),
+          { cause: exitError },
+        );
+      }
+      if (captureError !== undefined) {
+        throw new Error(`${phase}: ${String(captureError)} (pid=${proc.pid})`, {
+          cause: captureError,
+        });
+      }
+    },
+    async drain() {
+      // Descendants can retain a pipe after their parent exits. Keep the useful
+      // tail without making error reporting wait indefinitely for EOF.
+      let timer: NodeJS.Timeout | undefined;
+      const timeout = new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), 250);
+      });
+      try {
+        if (!(await Promise.race([drained.then(() => true), timeout]))) {
+          stderr.push("output drain timed out; captured tails may be incomplete");
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
+async function processFailure(
+  error: unknown,
+  output: ProcessOutput,
+  cleanup: () => Promise<void>,
+  observed: readonly ObservedProcess[],
+): Promise<Error> {
+  let cleanupFailure = "";
+  try {
+    await cleanup();
+  } catch (cleanupError) {
+    cleanupFailure = `\nprocess cleanup failed: ${String(cleanupError)}`;
+  }
+  await Promise.all(observed.map((child) => child.drain()));
+  return new Error(`${String(error)}${cleanupFailure}\n${formatOutput(output)}`, { cause: error });
 }
 
 function serverFromReadyUrl(serverUrl: string): Pick<TestServer, "httpUrl" | "ownerKey"> {
@@ -359,11 +459,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Tes
   env.MANIFOLD_ANNOUNCE_KEY = "1";
   if (port !== 0) env.MANIFOLD_PUBLIC_URL = `http://localhost:${port}`;
 
-  const proc = spawnPiped(["bun", "packages/server/src/main.ts"], env);
-  const stop = createStop(proc);
   const { promise: ready, resolve, reject } = Promise.withResolvers<ReadyInfo>();
   let settled = false;
-  const output = captureProcess(proc, (line) => {
+  const observed = observeProcess(["bun", "packages/server/src/main.ts"], env, (line) => {
     if (settled) return;
     try {
       const info = parseReadyLine(line);
@@ -376,13 +474,17 @@ export async function startServer(options: StartServerOptions = {}): Promise<Tes
       reject(error);
     }
   });
-  void proc.exited.then((exitCode) => {
-    if (!settled) {
-      settled = true;
-      reject(new Error(`server exited before readiness with code ${exitCode}`));
-    }
-  });
+  const { proc, stop, output } = observed;
+  void proc.exited.then(
+    (exitCode) => reject(new Error(`server exited before readiness with code ${exitCode}`)),
+    (error: unknown) => reject(error),
+  );
 
+  try {
+    observed.assertRunning("server before readiness");
+  } catch (error) {
+    reject(error);
+  }
   let info: ReadyInfo;
   try {
     info = await Promise.race([
@@ -391,13 +493,12 @@ export async function startServer(options: StartServerOptions = {}): Promise<Tes
         throw new Error(`server readiness timed out after ${READY_TIMEOUT_MS}ms`);
       }),
     ]);
+    observed.assertRunning("server before readiness");
     if (info.ownerKey !== configuredOwnerKey) {
       throw new Error("server ready owner key does not match MANIFOLD_OWNER_KEY");
     }
   } catch (error) {
-    await stop();
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${message}\n${formatOutput(output)}`, { cause: error });
+    throw await processFailure(error, output, stop, [observed]);
   }
 
   return {
@@ -632,50 +733,55 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
 
   const hostEnv = mergedEnvironment(options.env);
   hostEnv.MANIFOLD_TERMINAL_HOST_SOCKET = socketPath;
-  const host = spawnPiped(["bun", "packages/agent/src/main.ts", "--terminal-host"], hostEnv);
-  const output = captureProcess(host, undefined, rings);
-  const stopHost = createStop(host);
+  const output = { stdout: rings.stdout.lines, stderr: rings.stderr.lines };
+  let hostProcess: ObservedProcess | undefined;
+  let transport: ObservedProcess | undefined;
+  const stop = async (signal?: StopSignal): Promise<void> => {
+    try {
+      await transport?.stop(signal);
+    } finally {
+      try {
+        await hostProcess?.stop(signal);
+      } finally {
+        await rm(socketDir, { recursive: true, force: true });
+      }
+    }
+  };
   try {
+    const observedHost = observeProcess(
+      ["bun", "packages/agent/src/main.ts", "--terminal-host"],
+      hostEnv,
+      undefined,
+      rings,
+    );
+    hostProcess = observedHost;
     // The host is ready once its socket exists; the transport fails by name without it.
     await waitFor(
       async () => {
-        if (host.exitCode !== null) {
-          throw new Error(`terminal host exited before readiness with code ${host.exitCode}`);
-        }
+        observedHost.assertRunning("terminal host before readiness");
         return existsSync(socketPath) ? true : undefined; // Bun.file().exists() is false for sockets
       },
       READY_TIMEOUT_MS,
       50,
     );
-  } catch (error) {
-    await stopHost();
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${message}\n${formatOutput(output)}`, { cause: error });
-  }
+    const transportEnv = mergedEnvironment(options.env);
+    transportEnv.MANIFOLD_SERVER_URL = server.httpUrl;
+    transportEnv.MANIFOLD_MACHINE_TOKEN = options.machineToken;
+    transportEnv.MANIFOLD_TERMINAL_HOST_SOCKET = socketPath;
+    if (options.name === undefined) delete transportEnv.MANIFOLD_MACHINE_NAME;
+    else transportEnv.MANIFOLD_MACHINE_NAME = options.name;
 
-  const transportEnv = mergedEnvironment(options.env);
-  transportEnv.MANIFOLD_SERVER_URL = server.httpUrl;
-  transportEnv.MANIFOLD_MACHINE_TOKEN = options.machineToken;
-  transportEnv.MANIFOLD_TERMINAL_HOST_SOCKET = socketPath;
-  if (options.name === undefined) delete transportEnv.MANIFOLD_MACHINE_NAME;
-  else transportEnv.MANIFOLD_MACHINE_NAME = options.name;
-
-  let proc = spawnPiped(["bun", "packages/agent/src/main.ts"], transportEnv);
-  captureProcess(proc, undefined, rings);
-  let stopTransport = createStop(proc);
-  const stop = async (signal?: StopSignal): Promise<void> => {
-    try {
-      await stopTransport(signal);
-    } finally {
-      await stopHost(signal);
-    }
-  };
-  try {
+    let current = observeProcess(
+      ["bun", "packages/agent/src/main.ts"],
+      transportEnv,
+      undefined,
+      rings,
+    );
+    transport = current;
     const machineId = await waitFor(
       async () => {
-        if (proc.exitCode !== null) {
-          throw new Error(`agent exited before readiness with code ${proc.exitCode}`);
-        }
+        observedHost.assertRunning("terminal host before agent readiness");
+        current.assertRunning("agent before readiness");
         const body = MachinesResponseSchema.parse(
           await ownerAction(server, "core.machines.list", {}),
         );
@@ -683,6 +789,7 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
           (candidate) =>
             candidate.online && (options.name === undefined || candidate.name === options.name),
         );
+        current.assertRunning("agent before readiness");
         return machine?.id;
       },
       READY_TIMEOUT_MS,
@@ -692,40 +799,57 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
       machineId,
       name: options.name,
       get proc() {
-        return proc;
+        return current.proc;
       },
-      host,
+      host: observedHost.proc,
       output,
       stop,
       async restartTransport(signal?: StopSignal): Promise<void> {
-        await stopTransport(signal);
-        let welcomed = false;
-        proc = spawnPiped(["bun", "packages/agent/src/main.ts"], transportEnv);
-        captureProcess(
-          proc,
-          (line) => {
-            if (line.includes('"evt":"welcome"')) welcomed = true;
-          },
-          rings,
-        );
-        stopTransport = createStop(proc);
-        const replacement = proc;
-        await waitFor(
-          () => {
-            if (replacement.exitCode !== null) {
-              throw new Error(`transport exited before welcome with code ${replacement.exitCode}`);
-            }
-            return welcomed ? true : undefined;
-          },
-          READY_TIMEOUT_MS,
-          50,
-        );
+        await current.stop(signal);
+        let replacement: ObservedProcess | undefined;
+        try {
+          let welcomed = false;
+          replacement = observeProcess(
+            ["bun", "packages/agent/src/main.ts"],
+            transportEnv,
+            (line) => {
+              if (line.includes('"evt":"welcome"')) welcomed = true;
+            },
+            rings,
+          );
+          current = replacement;
+          transport = replacement;
+          const awaitingWelcome = replacement;
+          await waitFor(
+            () => {
+              observedHost.assertRunning("terminal host before transport welcome");
+              awaitingWelcome.assertRunning("transport before welcome");
+              return welcomed ? true : undefined;
+            },
+            READY_TIMEOUT_MS,
+            50,
+          );
+        } catch (error) {
+          // A failed replacement belongs to this fixture too. Do not kill the
+          // host; stop() retains ownership of it and its private socket directory.
+          throw await processFailure(
+            error,
+            output,
+            async () => {
+              await replacement?.stop();
+            },
+            replacement === undefined ? [] : [replacement],
+          );
+        }
       },
     };
   } catch (error) {
-    await stop();
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${message}\n${formatOutput(output)}`, { cause: error });
+    throw await processFailure(
+      error,
+      output,
+      stop,
+      [hostProcess, transport].filter((child): child is ObservedProcess => child !== undefined),
+    );
   }
 }
 

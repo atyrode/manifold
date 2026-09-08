@@ -6,6 +6,7 @@ import {
   MAX_SESSION_FRAME_BYTES,
   PROTOCOL_VERSION,
   ServerToAgentMessageSchema,
+  supportsGovernedJobs,
   type AgentMessage,
   type RuntimeDeps,
   type ServerToAgentMessage,
@@ -16,6 +17,7 @@ import type { RoomTimers } from "./room.ts";
 import type { RawSocket } from "./session-channel.ts";
 import type { ServerStore } from "./stores.ts";
 import type { DrainOutcome, MachineChannel, TerminalBroker } from "./terminal-broker.ts";
+import type { JobService } from "./job-service.ts";
 
 type ClassifiedFrame =
   | { kind: "message"; message: AgentMessage }
@@ -46,6 +48,9 @@ export class LiveMachineChannel implements MachineChannel {
   ) {}
 
   send(message: ServerToAgentMessage): boolean {
+    if (message.type === "job_command" && !supportsGovernedJobs(this.protocolVersion)) {
+      return false;
+    }
     const payload = JSON.stringify(ServerToAgentMessageSchema.parse(message));
     if (this.socket.bufferedAmount + Buffer.byteLength(payload) > MAX_SESSION_FRAME_BYTES) {
       this.socket.close(1013, "machine outbound queue overflow");
@@ -188,6 +193,11 @@ export class MachineGateway {
     this.removeRevocationListener = auth.onRevoked((principalId, containerId) => {
       this.revokePrincipal(principalId, containerId);
     });
+    this.jobs = undefined;
+  }
+  private jobs: JobService | undefined;
+  setJobs(jobs: JobService): void {
+    this.jobs = jobs;
   }
   private pruneExpiredSupersessionDamp(now: number): void {
     for (const [tokenPrincipalId, supersededAt] of this.lastSupersededAtByToken) {
@@ -255,11 +265,9 @@ export class MachineGateway {
       return;
     }
     if (!MACHINE_PROTOCOL_COMPAT_VERSIONS.has(message.protocolVersion)) {
-      // Long-lived agents survive server deploys, so the compat set is the whole point: it
-      // admits every wire version this server can still speak — v16 and v17, since the event
-      // plane is session-side and left the machine frames byte-identical — and refuses
-      // everything below the v16 reset right here. Say so out loud — a silent 4409 lockout is
-      // a diagnosed outage (2026-08-25).
+      // The compatibility set preserves long-lived terminal agents across additive changes
+      // and refuses both pre-reset and unknown-newer wires. Feature gates below keep those
+      // accepted older agents from seeing frames they cannot parse.
       this.logger.warn("machine_version_rejected", {
         agentProtocolVersion: message.protocolVersion,
         serverProtocolVersion: PROTOCOL_VERSION,
@@ -267,6 +275,14 @@ export class MachineGateway {
         machineName: message.name,
       });
       connection.socket.close(4409, "protocol version mismatch");
+      return;
+    }
+    if (message.jobOwner !== undefined && !supportsGovernedJobs(message.protocolVersion)) {
+      this.logger.warn("machine_job_protocol_rejected", {
+        agentProtocolVersion: message.protocolVersion,
+        serverProtocolVersion: PROTOCOL_VERSION,
+      });
+      connection.socket.close(4002, "job protocol unsupported");
       return;
     }
 
@@ -360,6 +376,11 @@ export class MachineGateway {
     }
     this.activeByMachine.set(authenticated.id, channel);
     this.broker.setMachineOnline(channel);
+    this.jobs?.online(
+      channel,
+      supportsGovernedJobs(channel.protocolVersion) ? message.jobOwner : undefined,
+      this.serverEpoch,
+    );
     if (older !== null) {
       this.lastSupersededAtByToken.set(authenticated.tokenPrincipalId, now);
       this.logger.info("machine_superseded", { machineId: authenticated.id });
@@ -391,6 +412,17 @@ export class MachineGateway {
 
   private dispatch(channel: LiveMachineChannel, message: AgentMessage): void {
     switch (message.type) {
+      case "job_event":
+        if (!supportsGovernedJobs(channel.protocolVersion)) {
+          channel.close(4002, "job protocol unsupported");
+          return;
+        }
+        try {
+          this.jobs?.event(channel, message.event);
+        } catch {
+          channel.close(4002, "job protocol refused");
+        }
+        return;
       case "hello":
         channel.close(4002, "duplicate hello");
         return;
@@ -435,6 +467,7 @@ export class MachineGateway {
       this.activeByMachine.delete(channel.machineId);
     }
     this.broker.setMachineOffline(channel);
+    this.jobs?.offline(channel);
   }
 
   /** Fences a machine socket whose token principal was durably revoked. */
@@ -459,6 +492,11 @@ export class MachineGateway {
    * latch and the owner round trip; this is the door, not a second implementation.
    */
   drain(machineId: string, draining: boolean): Promise<DrainOutcome> {
+    this.store.setMachineDraining(machineId, draining);
+    const channel = this.activeByMachine.get(machineId);
+    if (channel !== undefined && supportsGovernedJobs(channel.protocolVersion)) {
+      channel.send({ type: "job_command", command: { type: "drain", draining } });
+    }
     return this.broker.drain(machineId, draining);
   }
 

@@ -12,6 +12,7 @@ import {
   attachServerGuest,
   defineServerAction,
   type GuestCtx,
+  type GuestStreamProducer,
   type ServerPluginDef,
 } from "../src/server.ts";
 
@@ -121,6 +122,44 @@ function load(fake: FakeHost, pluginId = manifest.id): void {
   fake.send({ t: "load", pluginId, manifest, dir: "/nowhere" });
 }
 
+test("a retained producer works after dispatch while other captured authority expires", async () => {
+  let captured: GuestCtx | undefined;
+  let producer: GuestStreamProducer | undefined;
+  const fake = host({
+    manifest,
+    actions: [echo],
+    handlers: {
+      echo: async (ctx) => {
+        captured = ctx;
+        producer = await ctx.streams.open("example.thing.output", {
+          kind: "container",
+          containerId: "c1",
+        });
+        return { text: "started" };
+      },
+    },
+  });
+  load(fake);
+  await fake.next();
+  fake.send({ t: "dispatch", id: "d1", action: "echo", args: { text: "start" }, ctx: ctxOf() });
+  await serve(fake, { id: "p1", epoch: "e1" });
+  expect(await fake.next()).toMatchObject({ t: "dispatched", outcome: { ok: true } });
+  if (producer === undefined || captured === undefined)
+    throw new Error("handler did not retain its producer");
+  await expect(captured.storage.get("x")).rejects.toThrow("already answered");
+  const publishing = producer.publish({ line: "after return" });
+  const publication = await serve(fake, null);
+  expect(publication).toMatchObject({
+    method: "streams.publish",
+    args: ["p1", { line: "after return" }],
+  });
+  await publishing;
+  const closing = producer.close();
+  await serve(fake, null);
+  await closing;
+  await expect(producer.publish({ line: "too late" })).rejects.toThrow("closed");
+});
+
 describe("load", () => {
   test("answers loaded with fully qualified summaries, JSON schemas and the hook flags", async () => {
     const fake = host({
@@ -189,7 +228,10 @@ describe("dispatch", () => {
           const previous = await ctx.storage.get("last");
           await ctx.storage.set("last", args.text);
           const id = await ctx.newId();
-          const may = await ctx.auth.allows("containers:write", "c1");
+          const may = await ctx.auth.allows("containers:write", {
+            kind: "container",
+            containerId: "c1",
+          });
           const online = await ctx.machines.isOnline("m1");
           ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, "thing_happened", { id });
           return { text: `${previous ?? "-"}:${args.text}:${String(may)}:${String(online)}` };
@@ -213,7 +255,7 @@ describe("dispatch", () => {
     expect(await serve(fake, true)).toMatchObject({
       id: "r7:4",
       method: "auth.allows",
-      args: ["containers:write", "c1"],
+      args: ["containers:write", { kind: "container", containerId: "c1" }],
     });
     expect(await serve(fake, false)).toMatchObject({ id: "r7:5", method: "machines.isOnline" });
     expect(await fake.next()).toEqual({

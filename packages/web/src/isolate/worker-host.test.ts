@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test, vi } from "bun:test";
-import type { HostServices } from "@manifold/plugin";
-import type { Principal, UiNode, WebIsolateHostFrame } from "@manifold/protocol";
+import type { HostServices, StreamHandle } from "@manifold/plugin";
+import type {
+  Principal,
+  StreamServerMessage,
+  UiNode,
+  WebIsolateHostFrame,
+} from "@manifold/protocol";
 import {
   WORKER_GRACE_MS,
   WorkerHost,
@@ -157,6 +162,58 @@ afterEach(() => {
   consoleError?.mockRestore();
   consoleError = null;
   vi.useRealTimers();
+});
+
+test("stream delivery is bounded for a stalled worker and releases the SDK subscription", async () => {
+  let deliver: (message: StreamServerMessage) => void = () => {};
+  let closed = 0;
+  const handle: StreamHandle = {
+    snapshot: null,
+    cursor: undefined,
+    status: "open",
+    on: (listener) => {
+      deliver = listener;
+      return () => {
+        deliver = () => {};
+      };
+    },
+    close: () => {
+      closed += 1;
+    },
+  };
+  const { worker, host } = bench({ ...fakeClient([]), openStream: () => handle } as FakeClient);
+  const unmount = host.mount(
+    "i1",
+    "notes",
+    () => {},
+    () => {},
+  );
+  worker.emit({ t: "ready", panels: ["notes"] });
+  worker.emit({
+    t: "call",
+    id: "c1",
+    method: "openStream",
+    args: [
+      "s1",
+      { kind: "acme.notes.output", node: { kind: "container", containerId: "c1" } },
+      "i1",
+    ],
+  });
+  await flush();
+  for (let seq = 1; seq <= 100; seq += 1) {
+    deliver({ type: "stream_frame", subscriptionId: "wire1", epoch: "e1", seq, body: seq });
+  }
+  const notifications = worker.frames().filter((frame) => frame.t === "stream");
+  expect(notifications).toHaveLength(65);
+  expect(notifications.at(-1)).toMatchObject({
+    t: "stream",
+    id: "s1",
+    message: { type: "stream_closed", reason: "slow_consumer" },
+  });
+  expect(closed).toBe(1);
+  unmount();
+  host.stop();
+  expect(closed).toBe(1);
 });
 
 describe("WorkerHost frames", () => {

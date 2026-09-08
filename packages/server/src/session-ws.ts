@@ -10,6 +10,7 @@ import {
   GESTURE_TTL_MS,
   MAX_SESSION_CHANNELS_PER_CONNECTION,
   MAX_SESSION_FRAME_BYTES,
+  MAX_STREAM_SUBSCRIPTIONS_PER_CONNECTION,
   PROTOCOL_VERSION,
   type ActionDenialRule,
   type ActionOutcome,
@@ -96,6 +97,8 @@ const SPECTATOR_MAY_SEND: Readonly<Record<ClientMessage["type"], boolean>> = {
   pong: true,
   subscribe: true,
   unsubscribe: true,
+  stream_open: true,
+  stream_close: true,
   terminal_attach: true,
   terminal_detach: true,
   doc_update: false,
@@ -163,6 +166,8 @@ interface SessionConnection {
    */
   subscriber: EventSubscriber | null;
   eventSender: SessionSender | null;
+  streamSender: SessionSender | null;
+  readonly streams: Map<string, () => void>;
   cancelJoinTimeout: (() => void) | null;
   /**
    * The liveness watchdog, armed at the first surviving join and never re-armed: a socket
@@ -242,6 +247,8 @@ export class SessionGateway {
       drainCursor: 0,
       subscriber: null,
       eventSender: null,
+      streamSender: null,
+      streams: new Map(),
       cancelJoinTimeout: null,
       cancelPing: null,
       cancelExpiry: null,
@@ -337,6 +344,10 @@ export class SessionGateway {
           this.routeSubscription(connection, message);
           return;
         }
+        if (message.type === "stream_open" || message.type === "stream_close") {
+          this.routeStream(connection, message);
+          return;
+        }
         const channel = connection.channels.get(message.ch);
         if (channel === undefined) {
           // A frame can legitimately be in flight when the server retires its channel
@@ -380,6 +391,67 @@ export class SessionGateway {
       return;
     }
     this.events.unsubscribe(subscriber.id, message.topics);
+  }
+
+  private routeStream(
+    connection: SessionConnection,
+    message: Extract<ClientMessage, { type: "stream_open" | "stream_close" }>,
+  ): void {
+    if (message.type === "stream_close") {
+      connection.streams.get(message.subscriptionId)?.();
+      connection.streams.delete(message.subscriptionId);
+      return;
+    }
+    const subscriber = connection.subscriber;
+    const sender = connection.streamSender;
+    if (subscriber === null || sender === null) {
+      connection.socket.close(4002, "stream before join");
+      return;
+    }
+    if (
+      connection.streams.has(message.subscriptionId) ||
+      connection.streams.size >= MAX_STREAM_SUBSCRIPTIONS_PER_CONNECTION
+    ) {
+      connection.socket.close(4002, "stream subscription limit or duplicate");
+      return;
+    }
+    let finished = false;
+    const release = this.plugins.streams.subscribe(message, {
+      send: (frame, authorized) => {
+        const body = JSON.stringify(frame);
+        return sender.sendSerialized(
+          {
+            type: frame.type,
+            body,
+            bytes: Buffer.byteLength(body),
+            authoritative: false,
+          },
+          false,
+          authorized,
+          () => {
+            if (frame.type === "stream_refused" || frame.type === "stream_closed") {
+              finished = true;
+              connection.streams.get(message.subscriptionId)?.();
+              connection.streams.delete(message.subscriptionId);
+            }
+          },
+        );
+      },
+      allows: (kind, node) => {
+        const descriptor = this.plugins.assembly().streams.get(kind)?.descriptor;
+        return (
+          descriptor !== undefined &&
+          this.auth.allowsRef(subscriber.auth, descriptor.readCapability, node) &&
+          this.plugins.canReadGoverned(subscriber.auth, node)
+        );
+      },
+      close: (reason) => {
+        connection.socket.close(1013, reason);
+        this.close(connection.id);
+      },
+    });
+    if (connection.closed || finished) release();
+    else connection.streams.set(message.subscriptionId, release);
   }
 
   /** Writes a channel refusal for a channel that has no peer yet (join never completed). */
@@ -483,6 +555,14 @@ export class SessionGateway {
       };
       const sender = new SessionSender(connection.socket, (body) => body, 0, close, close, "drop");
       connection.eventSender = sender;
+      connection.streamSender = new SessionSender(
+        connection.socket,
+        (body) => body,
+        0,
+        close,
+        close,
+        "drop",
+      );
       connection.subscriber = {
         id: connection.id,
         auth: context,
@@ -800,6 +880,8 @@ export class SessionGateway {
       case "pong":
       case "subscribe":
       case "unsubscribe":
+      case "stream_open":
+      case "stream_close":
         // Routed before dispatch: join creates channels, and the three connection-level frames
         // address the socket, so none of them has a channel for this switch to apply it to.
         return;
@@ -909,6 +991,7 @@ export class SessionGateway {
       (channel): SessionChannel | SessionSender => channel.peer,
     );
     if (connection.eventSender !== null) peers.push(connection.eventSender);
+    if (connection.streamSender !== null) peers.push(connection.streamSender);
     if (peers.length === 0) return;
     const start = connection.drainCursor % peers.length;
     for (let offset = 0; offset < peers.length; offset += 1) {
@@ -929,6 +1012,10 @@ export class SessionGateway {
     connection.closed = true;
     connection.eventSender?.stop();
     connection.eventSender = null;
+    connection.streamSender?.stop();
+    connection.streamSender = null;
+    for (const release of connection.streams.values()) release();
+    connection.streams.clear();
     connection.cancelJoinTimeout?.();
     connection.cancelJoinTimeout = null;
     connection.cancelPing?.();
@@ -965,6 +1052,7 @@ export class SessionGateway {
   shutdown(): void {
     this.removeRevocationListener();
     this.removeRosterListener();
+    this.plugins.streams.shutdown();
     for (const [id, connection] of [...this.connections]) {
       connection.cancelJoinTimeout?.();
       connection.socket.close(1001, "server shutting down");

@@ -11,26 +11,33 @@ import { resolveMachineToken } from "./machine-token.ts";
 import { unixTerminalHostDialer } from "./terminal-host-link.ts";
 import { listenTerminalHost } from "./terminal-host-listener.ts";
 import { TerminalHost } from "./terminal-host.ts";
+import { listenJobOwner, unixJobOwnerDialer } from "./job-owner-link.ts";
+import { openConfiguredJobOwner } from "./job-runtime.ts";
 
 /**
- * manifold-agent entry point: ONE binary, two modes, two lifetimes (issue #278).
+ * One binary, three separately supervised lifetimes.
  *
  * - `manifold-agent --terminal-host` is the TERMINAL HOST: it owns every PTY and serves them
  *   on the Unix socket `MANIFOLD_TERMINAL_HOST_SOCKET`. It holds no token and dials nothing.
  *   SIGTERM here is DESTRUCTIVE (kills the shells with grace, then exits), which is why its
  *   unit is the one an activation must keep running; the safe stop is the maintenance
  *   `shutdown_request` on the socket, honoured only when drained and empty.
+ * - `manifold-agent --job-owner` owns durable non-PTY jobs on MANIFOLD_JOB_OWNER_SOCKET.
+ *   MANIFOLD_JOB_OWNER_CONFIG names a private reviewed configuration, never a caller payload.
+ *   Restart reconciles its journal and kills old cgroups before admitting a new generation.
  * - `manifold-agent` is the TRANSPORT: it takes the seat on that socket, dials the hub, and
  *   bridges. SIGTERM here closes the socket and the seat and exits 0 — no PTY is touched.
- *   It REQUIRES the socket path and fails by name without one: it never spawns a host of its
+ *   It REQUIRES both owner socket paths and never spawns an owner of its
  *   own, because a host inside the transport's cgroup dies with the transport, which is the
  *   2026-09-05 incident.
  *
- * Configuration is env-only (CONTRACTS.md runtime table). Structured logs are written as JSONL
- * to stdout — never tokens, owner keys, or terminal bytes (docs/CONTRACTS.md §Data and credential boundaries).
+ * Transport/PTY configuration is env-only; the job owner additionally reads its private config.
+ * Structured stdout logs exclude tokens, owner keys and workload bytes
+ * (docs/CONTRACTS.md §Data and credential boundaries).
  */
 
 const TERMINAL_HOST_FLAG = "--terminal-host";
+const JOB_OWNER_FLAG = "--job-owner";
 
 /** Reads a required env var, throwing a clear error when it is missing or empty. */
 function requireEnv(name: string): string {
@@ -105,9 +112,29 @@ async function terminalHostMain(): Promise<void> {
   });
 }
 
+async function jobOwnerMain(): Promise<void> {
+  // This is a separately supervised mode, never spawned under the reconnecting transport.
+  const socketPath = requireEnv("MANIFOLD_JOB_OWNER_SOCKET");
+  const owner = await openConfiguredJobOwner(requireEnv("MANIFOLD_JOB_OWNER_CONFIG"), socketPath);
+  const listener = await listenJobOwner(owner, socketPath);
+  onShutdownSignal(async () => {
+    await owner.shutdown();
+    listener.stop();
+  });
+  stdoutSink({
+    ts: Date.now(),
+    level: "info",
+    evt: "starting",
+    mode: "job_owner",
+    ownerId: owner.identity.ownerId,
+    generation: owner.identity.generation,
+  });
+}
+
 function transportMain(): void {
   const serverUrl = requireEnv("MANIFOLD_SERVER_URL");
   const socketPath = requireEnv(TERMINAL_HOST_SOCKET_ENV);
+  const jobOwnerSocket = process.env.MANIFOLD_JOB_OWNER_SOCKET;
   const machineToken = resolveMachineToken(process.env, (path) => readFileSync(path, "utf8"));
   const machineName = process.env.MANIFOLD_MACHINE_NAME ?? hostname();
 
@@ -117,6 +144,7 @@ function transportMain(): void {
     machineName,
     sink: stdoutSink,
     dialTerminalHost: unixTerminalHostDialer(socketPath),
+    ...(jobOwnerSocket ? { dialJobOwner: unixJobOwnerDialer(jobOwnerSocket) } : {}),
   });
   onShutdownSignal(() => agent.shutdown());
 
@@ -136,8 +164,22 @@ function transportMain(): void {
 
 function main(): void {
   const args = process.argv.slice(2);
-  const unknown = args.find((arg) => arg !== TERMINAL_HOST_FLAG);
+  const unknown = args.find((arg) => arg !== TERMINAL_HOST_FLAG && arg !== JOB_OWNER_FLAG);
   if (unknown !== undefined) throw new Error(`unknown argument: ${unknown}`);
+  if (args.length > 1) throw new Error("only one supervised owner mode may be selected");
+  if (args.includes(JOB_OWNER_FLAG)) {
+    void jobOwnerMain().catch(() => {
+      stdoutSink({
+        ts: Date.now(),
+        level: "error",
+        evt: "starting",
+        mode: "job_owner",
+        reason: "job_owner_start_failed",
+      });
+      process.exit(1);
+    });
+    return;
+  }
   if (args.includes(TERMINAL_HOST_FLAG)) {
     void terminalHostMain().catch((error: unknown) => {
       stdoutSink({
