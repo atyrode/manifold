@@ -7,7 +7,7 @@ set -euo pipefail
   exit 1
 }
 sudo -n apt-get update
-sudo -n apt-get install -y gcc libc6-dev binutils busybox-static libcap-dev pkg-config meson ninja-build git
+sudo -n apt-get install -y gcc clang-18 libc6-dev binutils busybox-static libcap-dev pkg-config meson ninja-build git
 
 # Ubuntu's stock bubblewrap can predate FD binds. Build the immutable v0.11.2 commit,
 # without setuid support, instead of weakening the runtime proof for old packages.
@@ -22,7 +22,9 @@ git -C "$root/source" remote add origin https://github.com/containers/bubblewrap
 git -C "$root/source" fetch --depth=1 origin "$revision"
 git -C "$root/source" checkout --detach FETCH_HEAD
 [[ $(git -C "$root/source" rev-parse HEAD) == "$revision" ]]
-meson setup "$root/build" "$root/source" --buildtype=release \
+# GCC 13's optimized null-format analysis rejects this upstream release; Clang
+# builds it with the same strict warning policy rather than disabling diagnostics.
+CC=clang-18 meson setup "$root/build" "$root/source" --buildtype=release \
   -Dsupport_setuid=false -Dtests=false -Dman=disabled -Dselinux=disabled \
   -Dbash_completion=disabled -Dzsh_completion=disabled
 meson compile -C "$root/build"
