@@ -182,20 +182,34 @@ function validatedQuery(operation: ProxyOperation, raw: string | undefined, inpu
   return encoded ? `?${encoded}` : "";
 }
 
-function validatedHeaders(operation: ProxyOperation, request: IncomingMessage): Record<string, string> {
+function validatedHeaders(operation: ProxyOperation, request: IncomingMessage, credentialHeader?: string): Record<string, string> {
   const headers: Record<string, string> = {};
-  const hopHeaders = (request.headers.connection ?? "").toLowerCase().split(",").map((part) => part.trim());
-  for (const name of ["if-none-match", "omp-auth-broker-capabilities", "last-event-id"] as const) {
-    const value = request.headers[name];
-    if (value === undefined) continue;
-    if (name === "last-event-id" || !operation.requestHeaders?.includes(name) || typeof value !== "string" ||
-      hopHeaders.includes(name) || request.rawHeaders.filter((part, index) => index % 2 === 0 && part.toLowerCase() === name).length !== 1)
+  const seen = new Set<string>();
+  // Node coalesces some duplicates and discards others; inspect the wire fields first.
+  for (let index = 0; index < request.rawHeaders.length; index += 2) {
+    const name = request.rawHeaders[index]!.toLowerCase();
+    const value = request.rawHeaders[index + 1]!;
+    if (seen.has(name) || /[^\x20-\x7e]/.test(value))
       throw new ProxyFailure(400, "service_invalid_request");
-    if (name === "if-none-match") {
-      if (!/^"(?:0|[1-9][0-9]{0,15})"$/.test(value) || !Number.isSafeInteger(Number(value.slice(1, -1))))
+    seen.add(name);
+  }
+  const connection = (request.headers.connection ?? "").toLowerCase().split(",").map((part) => part.trim());
+  if (connection.some((name) => name !== "" && name !== "close" && name !== "keep-alive") ||
+    (credentialHeader && credentialHeader !== "authorization" && seen.has(credentialHeader)))
+    throw new ProxyFailure(400, "service_invalid_request");
+  for (const [name, field] of Object.entries(operation.requestHeaders ?? {})) {
+    const value = request.headers[name];
+    if (value !== undefined && typeof value !== "string") throw new ProxyFailure(400, "service_invalid_request");
+    if (field.kind === "literal") {
+      if (value !== undefined && value !== field.value) throw new ProxyFailure(400, "service_input_invalid");
+      headers[name] = field.value;
+    } else if (value === undefined) {
+      if (field.required) throw new ProxyFailure(400, "service_input_invalid");
+    } else {
+      if (value.length > field.maxBytes || (field.enum && !field.enum.includes(value)))
         throw new ProxyFailure(400, "service_input_invalid");
-    } else if (value !== "codex-meter-block-scopes") throw new ProxyFailure(400, "service_input_invalid");
-    headers[name] = value;
+      headers[name] = value;
+    }
   }
   return headers;
 }
@@ -225,8 +239,6 @@ export async function createJobServiceProxy(options: JobServiceProxyOptions): Pr
       const operation = Object.hasOwn(entry.policy.operations, operationId) ? entry.policy.operations[operationId] : undefined;
       if (!operation) throw new Error("service_binding_mismatch");
       if (!("kind" in operation)) continue;
-      if (entry.policy.credential && operation.requestHeaders?.some((name) => name === entry.policy.credential!.header.toLowerCase()))
-        throw new Error("service_policy_invalid");
       const route: ProxyRoute = {
         entry, operation, operationId,
         segments: operation.path.split("/").map((part) => part.startsWith("{")
@@ -277,7 +289,7 @@ export async function createJobServiceProxy(options: JobServiceProxyOptions): Pr
     if (!route || !input) throw new ProxyFailure(404, "service_operation_unknown");
     const { entry, operation, operationId } = route;
     const query = validatedQuery(operation, queryStart < 0 ? undefined : target.slice(queryStart + 1), input);
-    const requestHeaders = validatedHeaders(operation, request);
+    const requestHeaders = validatedHeaders(operation, request, entry.policy.credential?.header.toLowerCase());
     const length = request.headers["content-length"];
     if (length !== undefined && (!/^\d+$/.test(length) || Number(length) > operation.maxRequestBytes))
       throw new ProxyFailure(413, "service_input_invalid");

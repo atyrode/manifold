@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ServiceCallSchema, ServicePolicySchema, ServiceReplySchema, type ServicePolicy } from "../src/services.ts";
+import { ServiceCallSchema, ServicePolicySchema, ServiceProxyOperationPolicySchema, ServiceReplySchema, type ServicePolicy, type ServiceProxyOperationPolicy } from "../src/services.ts";
 
 function policy(): ServicePolicy {
   return {
@@ -69,4 +69,70 @@ test("full responses require explicit disclosure and credentials are only opaque
   expect(ServicePolicySchema.safeParse({ ...spec, credential: { ref: "key", header: "Authorization", prefix: "Bearer ", value: "raw" } }).success).toBe(false);
   expect(ServicePolicySchema.safeParse({ ...spec, credential: { ref: "/tmp/key", header: "Authorization", prefix: "Bearer " } }).success).toBe(false);
   expect(ServicePolicySchema.safeParse({ ...spec, operations: { read: { ...spec.operations.read!, response: { kind: "json" } } } }).success).toBe(false);
+});
+
+function proxyOperation(): ServiceProxyOperationPolicy {
+  return {
+    kind: "http-proxy", method: "GET", path: "/inventory", request: { kind: "none" },
+    response: { kind: "stream", disclosure: "full", contentTypes: ["application/json"], headers: ["etag"] },
+    timeoutMs: 1000, maxRequestBytes: 4096, maxResponseBytes: 4096,
+  };
+}
+
+test("proxy header policies admit application data but never transport, routing or credential controls", () => {
+  const operation = proxyOperation();
+  expect(ServiceProxyOperationPolicySchema.safeParse({ ...operation, requestHeaders: {
+    "x-inventory-version": { kind: "literal", value: "inventory-v2" },
+    "x-inventory-region": { kind: "forward", maxBytes: 4, required: true, enum: ["west", "east"] },
+    "if-none-match": { kind: "forward", maxBytes: 128, required: false },
+  } }).success).toBe(true);
+  for (const header of [
+    "Authorization", "authorization", "authentication-info", "www-authenticate", "cookie", "set-cookie",
+    "host", "connection", "keep-alive", "content-length", "content-type", "content-encoding",
+    "transfer-encoding", "te", "trailer", "upgrade", "expect", "accept", "accept-encoding",
+    "origin", "referer", "via", "forwarded", "forwarded-for", "max-forwards", "http2-settings",
+    "proxy-authorization", "proxy-custom", "sec-fetch-site", "x-forwarded-host", "x-real-ip",
+    "x-upstream-url", "x-original-url", "x-original-host", "x-rewrite-url", "x-http-method-override",
+    "access-control-request-method", "__proto__", "constructor", "prototype", "bad name", "bad\r\nname", "bad\n",
+  ]) {
+    for (const field of [{ kind: "literal", value: "fixed" }, { kind: "forward", maxBytes: 8, required: false }]) {
+      expect(ServiceProxyOperationPolicySchema.safeParse({ ...operation, requestHeaders: { [header]: field } }).success).toBe(false);
+    }
+  }
+  expect(ServiceProxyOperationPolicySchema.safeParse({ ...operation, requestHeaders: ["if-none-match"] }).success).toBe(false);
+  for (const field of [{ kind: "literal", value: "fixed" }, { kind: "forward", maxBytes: 8, required: false }]) {
+    expect(ServicePolicySchema.safeParse({
+      ...policy(), credential: { ref: "key", header: "X-Inventory-Key", prefix: "" },
+      operations: { read: { ...operation, requestHeaders: { "x-inventory-key": field } } },
+    }).success).toBe(false);
+  }
+});
+
+test("proxy header policies bound safe values, distinct enums, header count and aggregate wire bytes", () => {
+  const operation = proxyOperation();
+  const invalidFields = [
+    { kind: "literal", value: "x\r\ninjected: yes" },
+    { kind: "literal", value: "bad\tvalue" },
+    { kind: "literal", value: "caf\xe9" },
+    { kind: "literal", value: " ambiguous " },
+    { kind: "literal", value: "x".repeat(4097) },
+    { kind: "forward", maxBytes: 0, required: false },
+    { kind: "forward", maxBytes: 4097, required: false },
+    { kind: "forward", maxBytes: 8 },
+    { kind: "forward", maxBytes: 8, required: false, enum: [] },
+    { kind: "forward", maxBytes: 8, required: false, enum: ["same", "same"] },
+    { kind: "forward", maxBytes: 8, required: false, enum: ["bad\nvalue"] },
+    { kind: "forward", maxBytes: 3, required: false, enum: ["west"] },
+    { kind: "forward", maxBytes: 8, required: false, enum: Array.from({ length: 65 }, (_, i) => String(i)) },
+  ];
+  for (const field of invalidFields)
+    expect(ServiceProxyOperationPolicySchema.safeParse({ ...operation, requestHeaders: { "x-inventory": field } }).success).toBe(false);
+  const tooMany = Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`x-${i}`, { kind: "literal", value: "" }]));
+  expect(ServiceProxyOperationPolicySchema.safeParse({ ...operation, requestHeaders: tooMany }).success).toBe(false);
+  for (const maxBytes of [4089, 4090]) {
+    expect(ServiceProxyOperationPolicySchema.safeParse({ ...operation, requestHeaders: {
+      "x-a": { kind: "forward", maxBytes, required: false },
+      "x-b": { kind: "literal", value: "x".repeat(maxBytes) },
+    } }).success).toBe(maxBytes === 4089);
+  }
 });

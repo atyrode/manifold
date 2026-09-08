@@ -393,50 +393,128 @@ test("parameterized requests recheck current authority without opaque body autho
   } finally { await proxy.close(); }
 });
 
-test("SDK snapshot conditional headers are explicit, bounded, and preserve safe 304 metadata", async () => {
-  let hits = 0;
+test("declarative application headers enforce literals and bounded caller values before authority or upstream I/O", async () => {
   let authorized = 0;
-  let status = 304;
-  let etag = '"124"';
+  let resolved = 0;
   const observed: unknown[] = [];
-  const server = await upstream((request, response) => {
-    hits++;
+  const server = await upstream(async (request, response) => {
+    for await (const _chunk of request) { /* Drain the bounded request. */ }
     observed.push({
-      url: request.url, generation: request.headers["if-none-match"],
-      capabilities: request.headers["omp-auth-broker-capabilities"], extra: request.headers["x-extra"],
+      version: request.headers["x-inventory-version"], region: request.headers["x-inventory-region"],
+      cursor: request.headers["x-inventory-cursor"], extra: request.headers["x-extra"],
       authorization: request.headers.authorization,
     });
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+  });
+  const proxy = await createJobServiceProxy({
+    policies: [policy(server.origin, { requestHeaders: {
+      "x-inventory-version": { kind: "literal", value: "inventory-v2" },
+      "x-inventory-region": { kind: "forward", maxBytes: 4, required: true, enum: ["west", "east"] },
+      "x-inventory-cursor": { kind: "forward", maxBytes: 8, required: false },
+    } })], bindings: [binding],
+    authorize: async () => { authorized++; return true; },
+    resolveCredential: async () => { resolved++; return secret; },
+  });
+  try {
+    const invalid: Record<string, string | string[]>[] = [
+      {}, { "x-inventory-region": "north" },
+      { "x-inventory-region": "west", "x-inventory-version": "inventory-v3" },
+      { "x-inventory-region": "west", "x-inventory-cursor": "123456789" },
+      { "x-inventory-region": "west", "x-inventory-cursor": "bad\tvalue" },
+      { "x-inventory-region": "west", "x-inventory-cursor": "caf\xe9" },
+      { "x-inventory-region": ["west", "west"] },
+      { "x-inventory-region": ["west", "east"] },
+      { "x-inventory-region": "west", "x-inventory-version": ["inventory-v2", "inventory-v2"] },
+      { "x-inventory-region": "west", connection: "keep-alive, X-Inventory-Region" },
+      { "x-inventory-region": "west", connection: "x-inventory-version" },
+      { "x-inventory-region": "west", connection: "authorization" },
+      { "x-inventory-region": "west", authorization: [`Bearer ${proxy.bearer}`, `Bearer ${proxy.bearer}`] },
+    ];
+    for (const headers of invalid) expect((await send(proxy, { headers })).status).toBe(400);
+    expect(authorized).toBe(0);
+    expect(resolved).toBe(0);
+    expect(observed).toEqual([]);
+    expect((await send(proxy, { headers: { "x-inventory-region": "west", "x-extra": "discard" } })).status).toBe(200);
+    expect((await send(proxy, { headers: {
+      "x-inventory-region": "east", "x-inventory-version": "inventory-v2", "x-inventory-cursor": "12345678",
+    } })).status).toBe(200);
+    expect(observed).toEqual([
+      { version: "inventory-v2", region: "west", cursor: undefined, extra: undefined, authorization: `Bearer ${secret}` },
+      { version: "inventory-v2", region: "east", cursor: "12345678", extra: undefined, authorization: `Bearer ${secret}` },
+    ]);
+  } finally { await proxy.close(); await server.close(); }
+});
+
+test("source credential headers cannot collide with policy data or be injected by the caller", async () => {
+  let hits = 0;
+  let authorized = 0;
+  const server = await upstream((_request, response) => {
+    hits++;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+  });
+  const spec = policy(server.origin);
+  spec.credential = { ref: "owner-key", header: "X-Inventory-Key", prefix: "" };
+  try {
+    for (const field of [
+      { kind: "literal" as const, value: "injected" },
+      { kind: "forward" as const, maxBytes: 32, required: false },
+    ]) {
+      const collision = { ...spec, operations: { generate: {
+        ...spec.operations.generate!, requestHeaders: { "x-inventory-key": field },
+      } } };
+      await expect(createJobServiceProxy({
+        policies: [collision], bindings: [binding], authorize: async () => { authorized++; return true; },
+      })).rejects.toThrow("service_policy_invalid");
+    }
+    const proxy = await createJobServiceProxy({
+      policies: [spec], bindings: [binding], resolveCredential: async () => secret,
+      authorize: async () => { authorized++; return true; },
+    });
+    try {
+      expect((await send(proxy, { headers: { "x-inventory-key": "injected" } })).status).toBe(400);
+      expect((await send(proxy, { headers: { connection: "x-inventory-key" } })).status).toBe(400);
+      expect(authorized).toBe(0);
+      expect(hits).toBe(0);
+    } finally { await proxy.close(); }
+  } finally { await server.close(); }
+});
+
+test("conditional HTTP forwards opaque validators and preserves only safe bodyless 304 metadata", async () => {
+  let status = 304;
+  let etag = 'W/"inventory-revision-a7"';
+  const observed: unknown[] = [];
+  const server = await upstream((request, response) => {
+    observed.push({ validator: request.headers["if-none-match"], extra: request.headers["last-event-id"] });
     response.writeHead(status, { etag, location: "https://other.invalid", "set-cookie": "private", authorization: secret });
     response.end();
   });
   const proxy = await createJobServiceProxy({
     policies: [policy(server.origin, {
       method: "GET", path: "/v1/snapshot", request: { kind: "none" },
-      query: { wait: { type: "number", required: false, min: 0, max: 30000, integer: true } },
-      requestHeaders: ["if-none-match", "omp-auth-broker-capabilities"],
+      requestHeaders: { "if-none-match": { kind: "forward", maxBytes: 128, required: false } },
       response: { kind: "stream", disclosure: "full", contentTypes: ["application/json"], headers: ["etag"] },
-    })], bindings: [binding], authorize: async () => { authorized++; return true; }, resolveCredential: async () => secret,
+    })], bindings: [binding], authorize: async () => true, resolveCredential: async () => secret,
   });
   try {
-    const headers = { authorization: `Bearer ${proxy.bearer}`, "if-none-match": '"123"', "omp-auth-broker-capabilities": "codex-meter-block-scopes", "x-extra": "never-forward" };
-    const response = await fetch(`${proxy.url}/v1/snapshot?wait=30000`, { headers });
+    const headers = { authorization: `Bearer ${proxy.bearer}`, "if-none-match": 'W/"inventory-revision-a6", "opaque"', "last-event-id": "discard" };
+    const response = await fetch(`${proxy.url}/v1/snapshot`, { headers });
     expect(response.status).toBe(304);
     expect(await response.text()).toBe("");
-    expect(response.headers.get("etag")).toBe('"124"');
+    expect(response.headers.get("etag")).toBe(etag);
     for (const name of ["location", "set-cookie", "authorization", "access-control-allow-origin"]) expect(response.headers.get(name)).toBeNull();
-    expect(observed).toEqual([{
-      url: "/v1/snapshot?wait=30000", generation: '"123"', capabilities: "codex-meter-block-scopes",
-      extra: undefined, authorization: `Bearer ${secret}`,
-    }]);
-    const invalidRequestHeaders: Record<string, string | string[]>[] = [
-      { "if-none-match": "*" }, { "if-none-match": '"01"' }, { "if-none-match": '"9007199254740992"' },
-      { "if-none-match": ['"1"', '"2"'] }, { "omp-auth-broker-capabilities": "unknown" },
-      { "last-event-id": "123" }, { "if-none-match": '"1"', connection: "if-none-match" },
-    ];
-    for (const invalidHeaders of invalidRequestHeaders)
-      expect((await send(proxy, { path: "/v1/snapshot", method: "GET", body: "", headers: invalidHeaders })).status).toBe(400);
-    expect(hits).toBe(1);
-    expect(authorized).toBe(2);
+    expect((await send(proxy, { path: "/v1/snapshot", method: "GET", body: "", headers: { "if-none-match": "*" } })).status).toBe(304);
+    expect(observed).toEqual([
+      { validator: 'W/"inventory-revision-a6", "opaque"', extra: undefined },
+      { validator: "*", extra: undefined },
+    ]);
+    for (const invalid of [
+      { "if-none-match": ['"one"', '"two"'] },
+      { "if-none-match": "x".repeat(129) },
+      { "if-none-match": '"one"', connection: "if-none-match" },
+    ]) expect((await send(proxy, { path: "/v1/snapshot", method: "GET", body: "", headers: invalid })).status).toBe(400);
+    expect(observed).toHaveLength(2);
     etag = secret;
     expect((await fetch(`${proxy.url}/v1/snapshot`, { headers })).headers.get("etag")).toBeNull();
     status = 302;

@@ -116,6 +116,35 @@ export const ServiceOperationPolicySchema = z.strictObject({
   }
 });
 
+const deniedProxyHeaders: Readonly<Record<string, true>> = {
+  constructor: true, prototype: true, authorization: true, "authentication-info": true,
+  "www-authenticate": true, cookie: true, "set-cookie": true, host: true, connection: true,
+  "keep-alive": true, "transfer-encoding": true, te: true, trailer: true, upgrade: true, expect: true,
+  accept: true, origin: true, referer: true, via: true, forwarded: true, "max-forwards": true,
+  "http2-settings": true, "alt-used": true, destination: true, "x-real-ip": true, "x-forwarded": true,
+};
+const proxyHeaderName = z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/).refine((value) =>
+  value === value.trim() && !Object.hasOwn(deniedProxyHeaders, value) &&
+  !/^(?:content-|accept-|proxy-|sec-|forwarded-|x-forwarded-|x-http-method|access-control-|x-upstream-|x-original-|x-rewrite-|x-envoy-)/.test(value)
+);
+const proxyHeaderValue = z.string().max(4096).regex(/^[\x20-\x7e]*$/)
+  .refine((value) => value === value.trim());
+const proxyHeaderMapping = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("literal"), value: proxyHeaderValue }),
+  z.strictObject({
+    kind: z.literal("forward"),
+    maxBytes: z.number().int().positive().max(4096),
+    required: z.boolean(),
+    enum: z.array(proxyHeaderValue).min(1).max(64)
+      .refine((values) => new Set(values).size === values.length).optional(),
+  }).refine((field) => !field.enum || field.enum.every((value) => value.length <= field.maxBytes)),
+]);
+const proxyRequestHeaders = z.record(proxyHeaderName, proxyHeaderMapping).refine((headers) => {
+  const entries = Object.entries(headers);
+  return entries.length <= 16 && entries.reduce((bytes, [name, field]) =>
+    bytes + name.length + 4 + (field.kind === "literal" ? field.value.length : field.maxBytes), 0) <= 8192;
+});
+
 /** Opaque application bytes are data, never transport controls. The trusted installer
  * opts into full request/response disclosure for approved routes and bounded parameters;
  * no caller origin, undeclared query/header, redirect or content negotiation is forwarded. */
@@ -134,9 +163,8 @@ export const ServiceProxyOperationPolicySchema = z.strictObject({
   })).refine((value) => Object.keys(value).length <= 64).optional(),
   /** Only these scalar fields may appear in the caller query. */
   query: z.record(name, inputField).refine((value) => Object.keys(value).length <= 64).optional(),
-  /** Protocol-specific values are validated by the proxy; no arbitrary headers. */
-  requestHeaders: z.array(z.enum(["if-none-match", "omp-auth-broker-capabilities"])).max(2)
-    .refine((headers) => new Set(headers).size === headers.length).optional(),
+  /** Installer-fixed nonsecret values or explicitly bounded caller data, never transport controls. */
+  requestHeaders: proxyRequestHeaders.optional(),
   request: z.discriminatedUnion("kind", [
     z.strictObject({ kind: z.literal("none") }),
     z.strictObject({ kind: z.literal("json"), disclosure: z.literal("full") }),
@@ -205,7 +233,10 @@ export const ServicePolicySchema = z.strictObject({
     policy.allowLoopbackHttp && url.protocol === "http:" &&
     (url.hostname === "127.0.0.1" || url.hostname === "[::1]")
   );
-}).refine((policy) => encodedBytes(policy) <= 128 * 1024, {
+}).refine((policy) => !policy.credential || Object.values(policy.operations).every((operation) =>
+  !("kind" in operation) || !Object.hasOwn(operation.requestHeaders ?? {}, policy.credential!.header.toLowerCase())
+), { message: "Proxy request header collides with the source credential" })
+  .refine((policy) => encodedBytes(policy) <= 128 * 1024, {
   message: "Service policy exceeds the native configuration bound",
 });
 
