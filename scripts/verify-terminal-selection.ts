@@ -734,6 +734,21 @@ try {
     5000,
     "single click engages terminal keyboard",
   );
+  // Pinch animation can continue after its first visible zoom change and focus.
+  // Measure the next gesture only after that preceding gesture has settled.
+  let previousViewport = await viewport();
+  let stableFrames = 0;
+  await until(
+    async () => {
+      const current = await viewport();
+      stableFrames =
+        JSON.stringify(current) === JSON.stringify(previousViewport) ? stableFrames + 1 : 0;
+      previousViewport = current;
+      return stableFrames >= 3;
+    },
+    5000,
+    "preceding pinch animation settled",
+  );
   const beforeScroll = await viewport();
   const textBeforeScroll = await browser.evaluate<string>(
     "document.querySelector('.xterm-rows').textContent",
