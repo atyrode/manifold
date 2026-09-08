@@ -899,7 +899,13 @@ test("a transport shutdown ends nothing: the next transport advertises the same 
     terminal.write('printf "WHILE_DOWN_%s_END\\n" "$$"\n');
     const deadline = Date.now() + 5_000;
     let offlineSnapshot = await terminal.snapshot();
-    while (!offlineSnapshot.data.includes(marker)) {
+    while (
+      !Buffer.from(
+        offlineSnapshot.data.buffer,
+        offlineSnapshot.data.byteOffset,
+        offlineSnapshot.data.byteLength,
+      ).includes(marker)
+    ) {
       if (Date.now() >= deadline) throw new Error(`offline shell output missing: ${marker}`);
       // Yield for real PTY I/O, not for an assumed shell execution duration.
       await new Promise<void>((resolve) => setImmediate(resolve));

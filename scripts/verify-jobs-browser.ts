@@ -530,6 +530,11 @@ async function main() {
     browsers.push(browser);
     await browser.launch();
     await browser.goto(`${origin}/#key=${hub.ownerKey}`);
+    await waitFor(
+      () => browser.evaluate<boolean>("document.querySelector('#identity-name') !== null"),
+      10_000,
+      50,
+    );
     await browser.typeInto("#identity-name", "runtime-proof-owner");
     await browser.clickTestId("identity-enter");
     await waitFor(
@@ -964,6 +969,18 @@ async function main() {
     );
   } catch (error) {
     failure = { error };
+    for (const browser of browsers) {
+      try {
+        console.error(
+          "Runtime browser failure state:",
+          await browser.evaluate(
+            "({ready:document.readyState,rootChildren:document.querySelector('#root')?.childElementCount,identity:document.querySelector('#identity-name')!==null,offline:document.querySelector('[data-testid=lens-offline]')?.textContent,skew:document.querySelector('[data-testid=lens-skew]')?.textContent})",
+          ),
+        );
+      } catch {
+        console.error("Runtime browser failure state unavailable");
+      }
+    }
   } finally {
     for (const client of clients) await cleanup(() => client.close());
     for (const browser of browsers) {
