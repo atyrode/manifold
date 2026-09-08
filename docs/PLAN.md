@@ -97,18 +97,19 @@ release, fleet installation and expanded machine grants remain separate operator
 actions. Contracts, implementation, verification and consumer cutover must be
 delivered together before claiming the integration complete.
 
-The #375 continuation targets current main's policy-scoped contract.
-Its recovered blanket protocol-26 machine reset was not warranted: `hello.jobOwner`
-is optional and `job_command`/`job_event` are new gated variants, so the
-[machine add/reset rule](CONTRACTS.md#ws-wsmachine--machine-channel-json-data-fields-base64)
-retains compatible terminal agents and adds 26. Governed job traffic remains 26-only,
-including owner advertisement; the existing terminal-program guard remains.
-The instance wire independently resets to 26 because its closed capability/reference
-vocabularies expand; ordinary session clients remain exact-version. This current
-normative contract takes precedence over the blanket cutover proposed in immutable
-[ADR 0031](decisions/0031-governed-plugin-runtime.md), whose historical text is not rewritten.
-It does not authorize a fleet restart, newer-agent installation before its hub, or
-production rollout, and does not establish full Code/Babel delivery.
+The #375 continuation targets current main's policy-scoped contract. Integration renumbers the
+unmerged governed decision from ADR 0031 to ADR 0033 because merged main now owns ADR 0031 for
+terminal inline graphics; that terminal decision and its protocol-26 history are not rewritten.
+The session protocol is exact-current 27. The machine compatibility set retains 16 through 26
+for terminal service and adds 27; protocol 26 remains terminal-only and cannot advertise
+`hello.jobOwner` or exchange governed job traffic. Governed job traffic starts at protocol 27,
+including owner advertisement; plugin streams use the exact-current session protocol
+independently of machine ownership. The instance wire independently resets to 27 because its
+closed capability/reference vocabularies expand; ordinary session clients remain exact 27.
+This current normative contract takes precedence over the blanket cutover proposed in immutable
+[ADR 0033](decisions/0033-governed-plugin-runtime.md), whose historical text is not rewritten.
+It does not authorize a fleet restart, newer-agent installation before its hub, or production
+rollout, and does not establish full Code/Babel delivery.
 
 Local source verification on dev-01 (2026-09-07) exercises real hub/agent/owner
 processes in a disposable delegated Linux unit: denial, queued revocation,

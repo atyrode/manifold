@@ -2575,9 +2575,9 @@ the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` 
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
 4403 revoked, 4409 version, or 4003 admission refused (incumbent continuity mismatch or
 supersession damp). Version acceptance is the
-`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26}` (protocol/version.ts), NOT
+`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27}` (protocol/version.ts), NOT
 strict equality: agents are long-lived and survive server deploys, so every compatible agent
-version stays accepted (session/browser joins remain strictly current). An unchanged agent wire
+version stays accepted (session/browser joins remain strictly current at protocol 27). An unchanged agent wire
 adds the new version to the set; a strictly additive-optional change also adds it when every old
 frame still parses and the absent-field default reproduces pre-bump semantics. Any other
 agent-wire change resets the set to the new version and requires a coordinated fleet
@@ -2605,18 +2605,28 @@ capability-gated `drain`/`drain_status`: the hub sends drain frames ONLY to an a
 named a terminal host. Legacy agents remain wire-compatible; compatibility does not move
 their PTYs into a separate host or make a legacy process restart safe.
 
-**Protocol 26: additive machine extension, separate instance cutover.** Governed jobs
-add optional `hello.jobOwner` and new `job_command`/`job_event` variants. Only protocol-26
-agents may advertise a job owner or exchange governed job traffic; the hub never sends
-job commands to an older agent. Absence of `jobOwner` preserves terminal-only behavior,
-so the machine set ADDS 26 and retains every previously compatible terminal agent.
+**Protocol 26: terminal inline graphics, machine-compatible.** The bounded graphics envelope is
+opaque VT data on the session channel, so old browser parsers cannot safely consume its cursor
+effects and session negotiation refuses them through the existing protocol-skew UI. Machine and
+instance frames are unchanged, so protocol 26 is added without disconnecting older spokes.
+An updated terminal host is required; replacing only the transport or web bundle does not upgrade
+a retained host. Protocol-26 agents remain terminal-only for governed jobs: they cannot advertise
+`jobOwner` or exchange governed job traffic. This preserves the full terminal graphics contract in
+[ADR 0031: Bounded terminal inline graphics](decisions/0031-terminal-inline-graphics.md).
+
+**Protocol 27: governed machine jobs and plugin-owned streams.** Governed jobs add optional
+`hello.jobOwner` and new `job_command`/`job_event` variants. Only protocol-27 agents may
+advertise a job owner or exchange governed job traffic; the hub never sends job commands to
+older agents. The machine set adds 27 while retaining 16 through 26 for terminal service, and
+`GOVERNED_JOB_MIN_PROTOCOL_VERSION` is 27. The instance compatibility set independently resets
+to `{27}` because the governed closed capability/reference vocabularies expand. No fleet restart
+is owed by this additive machine extension, and no PTY, polling or alternative execution control
+path substitutes for governed jobs. This is not a claim of release, fleet installation or live
+deployment; the current [Protocol and compatibility](#protocol-and-compatibility) contract
+governs the transition.
 The pre-v22 terminal-program guard remains; neither terminal connectivity nor version
-acceptance alone proves job readiness. No fleet restart is owed by this additive extension.
-Instance shares carry expanded closed capability/reference vocabularies, so their separate
-accepted set RESETS to `{26}` and federation peers require a coordinated upgrade.
-No PTY, polling or alternative execution control path substitutes for governed jobs.
-This is not a claim of release, fleet installation or live deployment; the current
-[Protocol and compatibility](#protocol-and-compatibility) contract governs the transition.
+acceptance alone proves job readiness. Plugin streams use the exact-current session
+protocol independently of machine job ownership.
 
 The unknown-NEWER direction is the one with no recovery, and it is the operator-facing failure
 mode. A hub cannot accept a protocol version that did not exist when it was built, so an agent
@@ -2961,13 +2971,13 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{26}` — its own wire, its own set, the
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{27}` — its own wire, its own set, the
 same [Protocol and compatibility](#protocol-and-compatibility) discipline the machine channel follows.
-Shares carry expanded closed capability and reference vocabularies, so protocol 26
-resets instance acceptance; older instances cannot decode that expanded wire.
-Federation peers require a coordinated upgrade, independently of the machine channel's
-additive extension and retained terminal-agent compatibility. This is not an implicit
-live rollout or authorization to install newer agents ahead of their hub.
+Governed jobs and streams expand the closed capability and reference vocabularies, so protocol 27
+independently resets instance acceptance; older instances cannot decode that governed wire.
+Federation peers require a coordinated upgrade, independently of the machine channel's retained
+terminal-agent compatibility. This is not an implicit live rollout or authorization to install
+newer agents ahead of their hub.
 
 Guest→host: `pong`, `ticket_request { requestId, principal }` — the guest's OWN principal
 verbatim; the host mints its own mirror id and never adopts a foreign one, because two

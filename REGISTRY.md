@@ -285,19 +285,19 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/job-service.ts",
-      "why": "ADR 0031 governed machine execution: common revision-bound admission, owner proof, signed start permits, private output authority and honest lifecycle"
+      "why": "ADR 0033 governed machine execution: common revision-bound admission, owner proof, signed start permits, private output authority and honest lifecycle"
     },
     {
       "glob": "packages/server/src/job-store.ts",
-      "why": "ADR 0031 durable immutable request reservations, owner fencing, installation evidence and replay tombstones"
+      "why": "ADR 0033 durable immutable request reservations, owner fencing, installation evidence and replay tombstones"
     },
     {
       "glob": "packages/server/src/job-schedules.ts",
-      "why": "ADR 0031 original-credential schedules and host-bound nested invocation reservations with durable aggregate ceilings"
+      "why": "ADR 0033 original-credential schedules and host-bound nested invocation reservations with durable aggregate ceilings"
     },
     {
       "glob": "packages/server/src/job-doors.ts",
-      "why": "ADR 0031 generic traced machine job doors and plugin-bound contexts, never arbitrary executable paths"
+      "why": "ADR 0033 generic traced machine job doors and plugin-bound contexts, never arbitrary executable paths"
     },
     {
       "glob": "packages/server/src/instance-ws.ts",
@@ -353,7 +353,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/server/src/stream-service.ts",
-      "why": "ADR 0031 generic continuous stream transport: manifest-owned kinds and node ownership, bounded validated rings, unpredictable producer epochs, exact snapshot watermarks and explicit gaps/closure. Producer lifecycle is traced; continuous frames never enter the event journal. Bootstrap, neutral declaration vocabulary and shared delivery-budget arbitration extend the existing transport pillar."
+      "why": "ADR 0033 generic continuous stream transport: manifest-owned kinds and node ownership, bounded validated rings, unpredictable producer epochs, exact snapshot watermarks and explicit gaps/closure. Producer lifecycle is traced; continuous frames never enter the event journal. Bootstrap, neutral declaration vocabulary and shared delivery-budget arbitration extend the existing transport pillar."
     },
     {
       "glob": "packages/server/src/index.ts",

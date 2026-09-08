@@ -1,8 +1,18 @@
-# ADR 0031: Governed machine operations and plugin-owned streams
+# ADR 0033: Governed machine operations and plugin-owned streams
 
 Date: 2026-09-07
 Status: accepted
 Ratified: operator-authorized implementation, 2026-09-07; not release or deployment approval.
+
+Integration note: this decision was authored as ADR 0031 before current main merged
+[ADR 0031: Bounded terminal inline graphics](0031-terminal-inline-graphics.md). On integration,
+this decision is numbered ADR 0033; the terminal graphics decision remains unchanged, including
+its protocol-26 history. This renumbering changes this decision's filename, heading and links
+only; it does not rewrite either historical record.
+The original cutover proposal below remains historical. The current
+[compatibility contract](../CONTRACTS.md#protocol-and-compatibility) instead assigns
+governed jobs to protocol 27, retains terminal agents 16–26, and resets only the
+separate instance wire to 27.
 
 The operator authorized advancing the common runtime with its consumers. The generic implementation is present in this worktree; acceptance records that implementation direction, not verified gates, security approval, packaging or deployment. Normative contracts: [CONTRACTS.md](../CONTRACTS.md#governed-machine-jobs) and [PLUGINS.md](../PLUGINS.md#governed-jobs-and-continuous-streams). Local source references are [jobs.ts](../../packages/protocol/src/jobs.ts), [job-service.ts](../../packages/server/src/job-service.ts), [job-schedules.ts](../../packages/server/src/job-schedules.ts) and [job-doors.ts](../../packages/server/src/job-doors.ts); no earlier revision is cited as containing these changes.
 

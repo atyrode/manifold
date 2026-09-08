@@ -1302,17 +1302,19 @@ Use `ctx.jobs` for a declared non-PTY machine operation and `ctx.streams` for li
 data. Neither is a terminal program, a per-frame action/event, or a polling loop.
 The normative boundaries are in [CONTRACTS §Governed machine jobs](CONTRACTS.md#governed-machine-jobs)
 and [§Plugin-owned continuous streams](CONTRACTS.md#plugin-owned-continuous-streams);
-[ADR 0031](decisions/0031-governed-plugin-runtime.md) records historical reasoning, not a
-second current compatibility contract.
+[ADR 0033](decisions/0033-governed-plugin-runtime.md) records historical reasoning, not a
+second current compatibility contract. It is numbered 0033 because merged main already uses
+0031 for terminal inline graphics; that decision and its protocol-26 graphics history remain
+unchanged.
 
-**Protocol support is not deployment authority.** Governed jobs require a protocol-26
-agent with a proved job owner. Compatible older agents remain available for terminals,
-but cannot advertise or exchange job traffic; a job request must not fall back to a PTY.
-The additive machine extension does not require a blanket fleet restart. Instance peers
-require protocol 26 because their closed capability/reference vocabularies expanded;
-ordinary session clients still require the hub's exact protocol version.
-Upgrade the target hub before installing newer-protocol agents. Publication, preview
-delivery, production promotion and fleet installation are distinct actions; this author
+**Protocol support is not deployment authority.** The session protocol is exact-current 27.
+Governed jobs require a protocol-27 agent with a proved job owner. Plugin streams use
+the current session protocol independently and require no machine owner. Protocol-26
+agents remain compatible for terminal service, including terminal graphics, but cannot advertise
+`jobOwner` or exchange governed job traffic; a job request must not fall back to a PTY. The
+machine compatibility set retains 16 through 26 and adds 27, while instance peers independently
+require protocol 27 because their closed capability/reference vocabularies expanded. Publication,
+preview delivery, production promotion and fleet installation are distinct actions; this author
 guide grants no live rollout authorization. See
 [Protocol and compatibility](CONTRACTS.md#protocol-and-compatibility).
 
