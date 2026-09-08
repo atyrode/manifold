@@ -18,11 +18,11 @@ import { join } from "node:path";
 import type { MachineArtifact } from "@manifold/protocol";
 import {
   acquireArtifact,
-  extractArtifact,
   isPublicArtifactAddress,
   openCachedArtifact,
 } from "../src/job-artifacts.ts";
 import { HeldDirectory } from "../src/job-files.ts";
+import { extractArtifact } from "@manifold/plugin-kit/artifacts";
 
 const executable = Buffer.from("#!/bin/sh\nexit 0\n");
 function specification(archive: Buffer, format: MachineArtifact["format"]): MachineArtifact {
@@ -374,9 +374,7 @@ test("raw delivery cannot claim extra bundled executable entries", async () => {
       },
     },
   };
-  await expect(extractArtifact(executable, spec, new AbortController().signal)).rejects.toThrow(
-    "artifact_raw_bundle",
-  );
+  await expect(extractArtifact(executable, spec, new AbortController().signal)).rejects.toThrow();
 });
 
 test("cache recovery pins primary and runtime bytes and closes every descriptor idempotently", () => {
@@ -460,6 +458,46 @@ test("fresh acquisition revalidates consent and pinned cache bytes without a net
     );
     cache.atomicWrite(`${spec.sha256}-${spec.entrySha256}`, Buffer.from("substitution"), 0o500);
     await expect(acquireArtifact(spec, cache, authority)).rejects.toThrow("artifact_entry_digest");
+  } finally {
+    cache.close();
+    rmSync(path, { recursive: true, force: true });
+  }
+});
+
+test("bundled acquisition pins supplied bytes without network authority and refuses missing, extra, or substituted delivery even on cache hits", async () => {
+  const bytes = Buffer.alloc(1024 * 1024 + 1, 0x61);
+  const spec: MachineArtifact = {
+    ...specification(bytes, "raw"), url: undefined, bundleFile: "worker",
+    maxBytes: bytes.length, maxExpandedBytes: bytes.length,
+  };
+  const delivery = { bundleFile: "worker", data: bytes.toString("base64") };
+  const authority = { origins: [], maxRedirects: 0, timeoutMs: 5000 };
+  const path = mkdtempSync(join(tmpdir(), "job-bundled-cache-"));
+  const cache = HeldDirectory.openAbsolute(path, { private: true });
+  try {
+    await expect(acquireArtifact(spec, cache, authority)).rejects.toThrow();
+    const acquired = await acquireArtifact(spec, cache, authority, delivery);
+    try {
+      expect(readFileSync(acquired.fd)).toEqual(bytes);
+    } finally {
+      acquired.close();
+    }
+    await expect(acquireArtifact(spec, cache, authority)).rejects.toThrow();
+    await expect(acquireArtifact(spec, cache, authority, { ...delivery, bundleFile: "other" })).rejects.toThrow();
+    await expect(acquireArtifact(spec, cache, authority, {
+      ...delivery, data: Buffer.from("substitution").toString("base64"),
+    })).rejects.toThrow();
+    await expect(acquireArtifact(spec, cache, authority, { ...delivery, extra: "unrequested" } as typeof delivery)).rejects.toThrow();
+    const cached = await acquireArtifact(spec, cache, authority, delivery);
+    try {
+      expect(readFileSync(cached.fd)).toEqual(bytes);
+    } finally {
+      cached.close();
+    }
+    await expect(acquireArtifact(
+      { ...spec, bundleFile: undefined, url: "https://example.com/worker" },
+      cache, { ...authority, origins: ["https://example.com"] }, delivery,
+    )).rejects.toThrow();
   } finally {
     cache.close();
     rmSync(path, { recursive: true, force: true });

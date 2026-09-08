@@ -3,6 +3,7 @@ import {
   JobCommandSchema,
   JobEventSchema,
   JobOwnerSchema,
+  MAX_JOB_INSTALL_FRAME_BYTES,
   type JobCommand,
   type JobEvent,
   type JobOwner,
@@ -12,8 +13,8 @@ import { HeldDirectory, safeComponent } from "./job-files.ts";
 import { reclaimStaleSocket } from "./terminal-host-listener.ts";
 import type { MachineJobOwner } from "./job-owner.ts";
 
-const MAX_FRAME = 1024 * 1024;
-const MAX_QUEUE = 4 * 1024 * 1024;
+const MAX_FRAME = MAX_JOB_INSTALL_FRAME_BYTES;
+const MAX_QUEUE = 2 * MAX_JOB_INSTALL_FRAME_BYTES;
 export interface JobOwnerLink {
   readonly identity: JobOwner;
   send(command: JobCommand): void;

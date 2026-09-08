@@ -5,6 +5,7 @@ import { elementPayloadGuard } from "@manifold/plugin";
 import {
   defaultRuntime,
   INSTANCE_CHANNEL_PATH,
+  MAX_JOB_INSTALL_FRAME_BYTES,
   normalizeInstanceOrigin,
   type RuntimeDeps,
 } from "@manifold/protocol";
@@ -295,6 +296,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
         else instances.close(socket.data.id);
       },
       maxPayloadLength: SESSION_TRANSPORT_PAYLOAD_BYTES,
+      // Machine installs carry one bounded base64 bundle member; other channels keep their own queues.
+      backpressureLimit: 2 * MAX_JOB_INSTALL_FRAME_BYTES,
       idleTimeout: 120,
     },
   });

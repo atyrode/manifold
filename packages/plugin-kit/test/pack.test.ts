@@ -152,6 +152,48 @@ describe("the artifact", () => {
       else Object.defineProperty(globalThis, key, previous);
     }
   });
+
+  test("pack carries declared binary workers and refuses missing, substituted, oversized, or colliding members", async () => {
+    const source = mkdtempSync(`${tmpdir()}/plugin-kit-machine-`);
+    try {
+      const bytes = Buffer.alloc(1024 * 1024 + 17, 0x80);
+      const hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+      const spec = {
+        bundleFile: "worker", sha256: hash, entrySha256: hash, format: "raw",
+        entry: ["worker"], maxBytes: bytes.length, maxExpandedBytes: bytes.length, maxMembers: 1,
+      };
+      const manifest = {
+        ...bundle.manifest, entry: { web: "web.js" },
+        machine: {
+          artifacts: { "linux-x64": spec }, locations: {},
+          operations: {
+            "example.counter.run": {
+              argv: [], input: {}, runtimeTools: [], locations: [], outputs: [],
+              network: "none", stdin: false,
+              limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 4096 },
+            },
+          },
+        },
+      };
+      await Bun.write(`${source}/manifest.json`, JSON.stringify(manifest));
+      await Bun.write(`${source}/web.ts`, "export {};");
+      const out = `${source}/packed.json`;
+      await expect(packPlugin(source, out, { shared: false })).rejects.toThrow();
+      await Bun.write(`${source}/worker`, bytes);
+      await packPlugin(source, out, { shared: false });
+      const packed = PluginBundleSchema.parse(await Bun.file(out).json());
+      expect(Buffer.from(packed.files.worker!, "base64")).toEqual(bytes);
+      await Bun.write(`${source}/worker`, Buffer.from("substitution"));
+      await expect(packPlugin(source, out, { shared: false })).rejects.toThrow();
+      await Bun.write(`${source}/worker`, Buffer.alloc(bytes.length + 1));
+      await expect(packPlugin(source, out, { shared: false })).rejects.toThrow();
+      manifest.machine.artifacts["linux-x64"].bundleFile = "web.js";
+      await Bun.write(`${source}/manifest.json`, JSON.stringify(manifest));
+      await expect(packPlugin(source, out, { shared: false })).rejects.toThrow();
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("the packed server half, as a real isolate", () => {

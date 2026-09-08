@@ -674,6 +674,28 @@ export const PluginBundleSchema = z
       }),
   })
   .check((ctx) => {
+    const files = ctx.value.files;
+    if (Object.values(files).reduce((bytes, data) => bytes + data.length, 0) > ISOLATE_MAX_ARTIFACT_BYTES) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["files"],
+        message: "bundle members exceed the artifact byte budget",
+      });
+    }
+    for (const [platform, artifact] of Object.entries(ctx.value.manifest.machine?.artifacts ?? {})) {
+      if (artifact.bundleFile === undefined) continue;
+      const data = files[artifact.bundleFile];
+      const bytes = data === undefined ? 0 : data.length / 4 * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
+      if (!Object.hasOwn(files, artifact.bundleFile) || bytes === 0 || bytes > artifact.maxBytes) {
+        ctx.issues.push({
+          code: "custom",
+          input: ctx.value,
+          path: ["manifest", "machine", "artifacts", platform, "bundleFile"],
+          message: "machine bundle member is missing, empty, or exceeds maxBytes",
+        });
+      }
+    }
     const { entry } = ctx.value.manifest;
     const missing = (name: string, half: string): void => {
       ctx.issues.push({

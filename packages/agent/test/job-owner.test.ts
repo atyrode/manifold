@@ -7,6 +7,7 @@ import {
   mkdirSync,
   rmSync,
   writeFileSync,
+  readFileSync,
   unlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -101,14 +102,16 @@ describe.skipIf(!linux)("durable job owner journal", () => {
 const bwrap = process.env.MANIFOLD_TEST_BWRAP;
 const busybox = process.env.MANIFOLD_TEST_STATIC_BUSYBOX;
 const cgroupRoot = process.env.MANIFOLD_TEST_CGROUP;
+const compiledProbe = process.env.MANIFOLD_TEST_SYSCALL_PROBE;
 const realBackend = linux && Boolean(bwrap && busybox && cgroupRoot);
 
-describe.skipIf(!realBackend)("real supervised job owner", () => {
-  test("signed reservation runs once; transport and owner restarts never replay; stdout stays job-bound", async () => {
+describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () => {
+  test("bundled worker installation runs once; transport and owner restarts never replay; stdout stays job-bound", async () => {
     const root = mkdtempSync(join(tmpdir(), "machine-owner-"));
     const keys = generateKeyPairSync("ed25519");
     const admissionPublicKey = keys.publicKey.export({ type: "spki", format: "pem" }).toString();
-    const bytes = Buffer.from("#!/bin/busybox sh\nprintf private-once; printf diagnostic >&2\n");
+    // A real statically compiled worker, padded beyond the former 1 MiB IPC/journal ceiling.
+    const bytes = Buffer.concat([readFileSync(compiledProbe!), Buffer.alloc(1024 * 1024)]);
     const sha256 = createHash("sha256").update(bytes).digest("hex");
     const limits = {
       timeoutMs: 10_000,
@@ -121,10 +124,11 @@ describe.skipIf(!realBackend)("real supervised job owner", () => {
       pluginId: "fixture.jobs",
       installationRevision: "r1",
       artifactSha256: sha256,
+      artifact: { bundleFile: "worker", data: bytes.toString("base64") },
       machine: {
         artifacts: {
           [`linux-${process.arch}`]: {
-            url: "https://example.invalid/fixture",
+            bundleFile: "worker",
             sha256,
             format: "raw",
             entry: ["fixture"],
@@ -137,9 +141,9 @@ describe.skipIf(!realBackend)("real supervised job owner", () => {
         locations: {},
         operations: {
           "fixture.jobs.run": {
-            argv: [],
+            argv: [{ literal: "worker" }],
             input: {},
-            runtimeTools: ["busybox"],
+            runtimeTools: [],
             locations: [],
             outputs: [],
             network: "none",
@@ -152,22 +156,12 @@ describe.skipIf(!realBackend)("real supervised job owner", () => {
     let owner: MachineJobOwner | null = null;
     const held: HeldDirectory[] = [];
     let bwrapFd = -1;
-    let busyboxFd = -1;
     try {
       for (const name of ["journal", "cache", "outputs"])
         mkdirSync(join(root, name), { mode: 0o700 });
-      writeFileSync(join(root, "cache", `${sha256}-${sha256}`), bytes, { mode: 0o500 });
-      const seed = new JobJournal(
-        HeldDirectory.openAbsolute(join(root, "journal"), { private: true }),
-      );
-      seed.append({ kind: "install", command: install });
-      seed.close();
       const executableParent = HeldDirectory.openAbsolute(dirname(bwrap!));
       bwrapFd = executableParent.openFile(basename(bwrap!));
       executableParent.close();
-      const runtimeParent = HeldDirectory.openAbsolute(dirname(busybox!));
-      busyboxFd = runtimeParent.openFile(basename(busybox!));
-      runtimeParent.close();
       const cache = HeldDirectory.openAbsolute(join(root, "cache"), { private: true });
       const outputDirectory = HeldDirectory.openAbsolute(join(root, "outputs"), { private: true });
       const delegatedCgroup = HeldDirectory.openAbsolute(cgroupRoot!);
@@ -184,11 +178,9 @@ describe.skipIf(!realBackend)("real supervised job owner", () => {
         bubblewrapFd: bwrapFd,
         anchors: {},
         protectedDirectories: [protectedRoot],
-        runtimeTools: {
-          busybox: [{ fd: busyboxFd, target: "/bin/busybox", writable: false }],
-        },
+        runtimeTools: {},
         artifactAuthority: {
-          origins: ["https://example.invalid"],
+          origins: [],
           maxRedirects: 0,
           timeoutMs: 1000,
         },
@@ -209,6 +201,16 @@ describe.skipIf(!realBackend)("real supervised job owner", () => {
         )
           completed.resolve(event.result);
         return true;
+      });
+      const { artifact: delivery, ...missing } = install;
+      await owner.execute(missing);
+      expect(events.at(-1)).toMatchObject({ type: "refusal" });
+      await owner.execute({ ...install, artifact: { ...delivery, data: Buffer.from("substitution").toString("base64") } });
+      expect(events.at(-1)).toMatchObject({ type: "refusal" });
+      await owner.execute(install);
+      expect(events.at(-1)).toMatchObject({
+        type: "installed", pluginId: install.pluginId,
+        installationRevision: install.installationRevision, artifactSha256: sha256,
       });
       const requestBody = {
         jobId: "once",
@@ -346,7 +348,6 @@ describe.skipIf(!realBackend)("real supervised job owner", () => {
     } finally {
       await owner?.shutdown();
       if (bwrapFd >= 0) closeSync(bwrapFd);
-      if (busyboxFd >= 0) closeSync(busyboxFd);
       for (const directory of held) directory.close();
       rmSync(root, { recursive: true, force: true });
     }

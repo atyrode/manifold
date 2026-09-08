@@ -4,6 +4,8 @@ import {
   DIAL_PING_INTERVAL_MS,
   GOVERNED_JOB_MIN_PROTOCOL_VERSION,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
+  MAX_JOB_INSTALL_FRAME_BYTES,
+  MAX_SESSION_FRAME_BYTES,
   PROTOCOL_VERSION,
   ServerToAgentMessageSchema,
   canonicalJobJson,
@@ -87,6 +89,44 @@ describe("machine channel send status", () => {
       { type: "kill", terminalId: "terminal" },
     ]);
     expect(socket.closed).toBeNull();
+  });
+
+  test("bundled worker frames cross the former 1 MiB ceiling without making queues unbounded", () => {
+    const socket = new StatusSocket(-1);
+    const channel = new LiveMachineChannel("machine", "principal", socket, PROTOCOL_VERSION, null);
+    const bytes = Buffer.alloc(2 * 1024 * 1024, 0x80);
+    const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+    expect(channel.send({
+      type: "job_command",
+      command: {
+        type: "install", pluginId: "fixture.worker", installationRevision: "r1",
+        artifactSha256: sha256, artifact: { bundleFile: "worker", data: bytes.toString("base64") },
+        machine: {
+          artifacts: { "linux-x64": {
+            bundleFile: "worker", sha256, entrySha256: sha256, format: "raw",
+            entry: ["worker"], maxBytes: bytes.length, maxExpandedBytes: bytes.length, maxMembers: 1,
+          } },
+          locations: {},
+          operations: { "fixture.worker.run": {
+            argv: [], input: {}, runtimeTools: [], locations: [], outputs: [],
+            network: "none", stdin: false,
+            limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 4096 },
+          } },
+        },
+      },
+    })).toBe(true);
+    socket.bufferedAmount = Buffer.byteLength(socket.sent[0]!);
+    expect(channel.send({ type: "kill", terminalId: "terminal" })).toBe(true);
+    expect(socket.closed).toBeNull();
+    socket.bufferedAmount = 2 * MAX_JOB_INSTALL_FRAME_BYTES;
+    expect(channel.send({ type: "kill", terminalId: "terminal" })).toBe(false);
+    expect(socket.closed?.code).toBe(1013);
+
+    const ordinary = new StatusSocket(-1);
+    const terminalChannel = new LiveMachineChannel("ordinary", "principal", ordinary, PROTOCOL_VERSION, null);
+    ordinary.bufferedAmount = MAX_SESSION_FRAME_BYTES;
+    expect(terminalChannel.send({ type: "kill", terminalId: "terminal" })).toBe(false);
+    expect(ordinary.closed?.code).toBe(1013);
   });
 });
 

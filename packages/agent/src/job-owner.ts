@@ -12,6 +12,7 @@ import {
   type MachineOperation,
 } from "@manifold/protocol";
 import type { HeldDirectory } from "./job-files.ts";
+import { deliveredArtifact } from "@manifold/plugin-kit/artifacts";
 import {
   acquireArtifact,
   openCachedArtifact,
@@ -324,7 +325,14 @@ export class MachineJobOwner {
     });
   }
 
-  private async install(command: Extract<JobCommand, { type: "install" }>): Promise<void> {
+  private async install(incoming: Extract<JobCommand, { type: "install" }>): Promise<void> {
+    const { artifact: delivery, ...command } = incoming;
+    const artifactSpec = command.machine.artifacts[this.platform()];
+    if (!artifactSpec || artifactSpec.sha256 !== command.artifactSha256)
+      throw new Error("unsupported_artifact_platform");
+    if (command.action) {
+      if (delivery !== undefined) throw new Error("artifact_unexpected_delivery");
+    }
     if (this.draining && !command.action) throw new Error("owner_draining");
     const key = this.installKey(command.pluginId, command.installationRevision);
     const existing = this.installs.get(key);
@@ -392,6 +400,7 @@ export class MachineJobOwner {
       return;
     }
     if (existing) {
+      deliveredArtifact(artifactSpec, delivery);
       if (jobDigest(existing.command) !== jobDigest(command))
         throw new Error("installation_revision_changed");
       if (!existing.enabled) {
@@ -400,9 +409,6 @@ export class MachineJobOwner {
       }
     } else {
       if (this.installs.size >= 128) throw new Error("installation_capacity");
-      const artifactSpec = command.machine.artifacts[this.platform()];
-      if (!artifactSpec || artifactSpec.sha256 !== command.artifactSha256)
-        throw new Error("unsupported_artifact_platform");
       for (const locationId of Object.keys(command.machine.locations))
         if (!locationId.startsWith(`${command.pluginId}.`))
           throw new Error("location_namespace_mismatch");
@@ -419,6 +425,7 @@ export class MachineJobOwner {
         artifactSpec,
         this.options.cache,
         this.options.artifactAuthority,
+        delivery,
       );
       try {
         if (this.draining || this.installs.has(key)) throw new Error("installation_raced");

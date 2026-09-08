@@ -4,6 +4,7 @@ import {
   DIAL_PING_INTERVAL_MS,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
   MAX_SESSION_FRAME_BYTES,
+  MAX_JOB_INSTALL_FRAME_BYTES,
   PROTOCOL_VERSION,
   ServerToAgentMessageSchema,
   supportsGovernedJobs,
@@ -39,6 +40,7 @@ interface PendingMachineConnection {
 }
 
 export class LiveMachineChannel implements MachineChannel {
+  private outboundQueueLimit = MAX_SESSION_FRAME_BYTES;
   constructor(
     readonly machineId: string,
     readonly tokenPrincipalId: string,
@@ -52,7 +54,12 @@ export class LiveMachineChannel implements MachineChannel {
       return false;
     }
     const payload = JSON.stringify(ServerToAgentMessageSchema.parse(message));
-    if (this.socket.bufferedAmount + Buffer.byteLength(payload) > MAX_SESSION_FRAME_BYTES) {
+    const install = message.type === "job_command" && message.command.type === "install";
+    if (this.socket.bufferedAmount === 0) this.outboundQueueLimit = MAX_SESSION_FRAME_BYTES;
+    if (install) this.outboundQueueLimit = 2 * MAX_JOB_INSTALL_FRAME_BYTES;
+    const frameLimit = install ? MAX_JOB_INSTALL_FRAME_BYTES : MAX_SESSION_FRAME_BYTES;
+    if (Buffer.byteLength(payload) > frameLimit ||
+        this.socket.bufferedAmount + Buffer.byteLength(payload) > this.outboundQueueLimit) {
       this.socket.close(1013, "machine outbound queue overflow");
       return false;
     }

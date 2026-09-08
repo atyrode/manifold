@@ -16,6 +16,8 @@ import {
   type ManifoldRef,
   type Cap,
   type RuntimeDeps,
+  type PluginBundle,
+  type JobArtifactDelivery,
 } from "@manifold/protocol";
 import {
   canonicalJobJson,
@@ -58,6 +60,7 @@ import {
 import type { ServerStore, TraceRecord } from "./stores.ts";
 import { JobSchedules, type JobScheduleSpec, type JobInvocationEdge } from "./job-schedules.ts";
 export type { JobRecord } from "./job-store.ts";
+import { deliveredArtifact } from "@manifold/plugin-kit/artifacts";
 interface JobFollower {
   auth: AuthContext;
   readonly callerPluginId: string;
@@ -688,6 +691,25 @@ export class JobService {
   declaredMachine(pluginId: string): MachineHalf | null {
     return this.manifestResolver?.(pluginId) ?? null;
   }
+  private bundleResolver: ((pluginId: string) => PluginBundle | null) | null = null;
+  setBundleResolver(resolver: (pluginId: string) => PluginBundle | null): void {
+    this.bundleResolver = resolver;
+  }
+  private artifactDelivery(pluginId: string, machine: MachineHalf, sha256: string): JobArtifactDelivery | null | undefined {
+    const artifacts = Object.values(machine.artifacts).filter((artifact) => artifact.sha256 === sha256);
+    const spec = artifacts.find((artifact) => artifact.bundleFile !== undefined);
+    if (!spec) return undefined;
+    if (artifacts.some((artifact) => artifact.bundleFile !== spec.bundleFile))
+      fail("artifact_source_ambiguous");
+    const bundle = this.bundleResolver?.(pluginId);
+    if (!bundle || bundle.manifest.id !== pluginId || digest(bundle.manifest.machine) !== digest(machine))
+      return null;
+    const data = bundle.files[spec.bundleFile!];
+    if (data === undefined) return null;
+    const delivery = { bundleFile: spec.bundleFile!, data };
+    deliveredArtifact(spec, delivery);
+    return delivery;
+  }
   private readonly followers = new Set<JobFollower>();
   private readonly followQueue: {
     jobId: string;
@@ -1149,6 +1171,8 @@ export class JobService {
     const declared = this.declaredMachine(args.pluginId);
     if (declared === null || digest(declared) !== digest(machine))
       fail("manifest_declaration_mismatch");
+    if (this.artifactDelivery(args.pluginId, machine, args.artifactSha256) === null)
+      fail("artifact_bundle_unavailable");
     for (const name of [...Object.keys(machine.operations), ...Object.keys(machine.locations)])
       if (!name.startsWith(`${args.pluginId}.`)) fail("unqualified_declaration");
     for (const operation of Object.values(machine.operations)) {
@@ -1555,6 +1579,10 @@ export class JobService {
           installationRevision: install.revision,
           artifactSha256: install.artifact,
           machine: install.machine,
+          ...(install.enabled && !install.purgeRequested
+            // An unavailable former bundle must refuse acquisition, not disconnect retained reads.
+            ? { artifact: this.artifactDelivery(install.pluginId, install.machine, install.artifact) ?? undefined }
+            : {}),
           ...(install.purgeRequested
             ? { action: "purge" as const }
             : install.enabled

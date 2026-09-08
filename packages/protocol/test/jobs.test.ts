@@ -82,6 +82,16 @@ test("artifact executable bundles pin selected members and never admit URL crede
   ).toBe(false);
 });
 
+test("machine artifacts select exactly one pinned HTTPS or flat bundle source", () => {
+  const { url, ...pinned } = artifact;
+  expect(MachineArtifactSchema.parse({ ...pinned, bundleFile: "worker-linux-x64" }).bundleFile).toBe("worker-linux-x64");
+  expect(MachineArtifactSchema.safeParse(pinned).success).toBe(false);
+  expect(MachineArtifactSchema.safeParse({ ...pinned, url, bundleFile: "worker" }).success).toBe(false);
+  for (const bundleFile of ["../worker", "bin/worker", ".worker", "worker\\other"]) {
+    expect(MachineArtifactSchema.safeParse({ ...pinned, bundleFile }).success).toBe(false);
+  }
+});
+
 test("owner-retained stdout and stderr cannot be caller-declared or rebound as filesystem outputs", () => {
   const operation = {
     argv: [],

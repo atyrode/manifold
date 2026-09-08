@@ -27,7 +27,9 @@ export const MachineArtifactSchema = z
       .refine((v) => {
         const url = new URL(v);
         return url.protocol === "https:" && url.username === "" && url.password === "";
-      }),
+      })
+      .optional(),
+    bundleFile: component.optional(),
     sha256: hash,
     format: z.enum(["raw", "zip", "tar.gz"]),
     entry: z.array(component).min(1).max(16),
@@ -39,6 +41,9 @@ export const MachineArtifactSchema = z
       .record(component, z.strictObject({ entry: z.array(component).min(1).max(16), sha256: hash }))
       .refine((files) => Object.keys(files).length <= 8)
       .optional(),
+  })
+  .refine((artifact) => (artifact.url === undefined) !== (artifact.bundleFile === undefined), {
+    message: "An artifact must name exactly one HTTPS url or bundleFile",
   })
   .refine(
     (artifact) => artifact.format !== "raw" || Object.keys(artifact.files ?? {}).length === 0,
@@ -314,6 +319,16 @@ export const JobOwnerSchema = z.strictObject({
   inventoryDigest: hash,
 });
 export type JobOwner = z.infer<typeof JobOwnerSchema>;
+/** The existing 16 MiB plugin JSON budget also bounds a single base64 machine member. */
+export const MAX_JOB_ARTIFACT_BASE64_BYTES = 16 * 1024 * 1024;
+export const MAX_JOB_INSTALL_METADATA_BYTES = 1024 * 1024;
+export const MAX_JOB_INSTALL_FRAME_BYTES =
+  MAX_JOB_ARTIFACT_BASE64_BYTES + MAX_JOB_INSTALL_METADATA_BYTES;
+export const JobArtifactDeliverySchema = z.strictObject({
+  bundleFile: component,
+  data: z.base64().max(MAX_JOB_ARTIFACT_BASE64_BYTES),
+});
+export type JobArtifactDelivery = z.infer<typeof JobArtifactDeliverySchema>;
 const chunk = { seq: count, data: z.base64().max(87384) };
 export const JobCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({
@@ -330,7 +345,11 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
     machine: MachineHalfSchema,
     artifactSha256: hash,
     action: z.enum(["disable", "purge"]).optional(),
-  }),
+    artifact: JobArtifactDeliverySchema.optional(),
+  }).refine(({ artifact, ...metadata }) =>
+    new TextEncoder().encode(JSON.stringify(metadata)).byteLength +
+      (artifact === undefined ? 0 : artifact.bundleFile.length) + 128 <= MAX_JOB_INSTALL_METADATA_BYTES,
+    { message: "install metadata exceeds the frame budget" }),
   z.strictObject({ type: z.literal("start"), request: JobRequestSchema, permit: JobPermitSchema }),
   z.strictObject({ type: z.literal("input"), jobId: id, ...chunk, eof: z.boolean() }),
   z.strictObject({ type: z.literal("cancel"), jobId: id, reason: id }),

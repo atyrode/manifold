@@ -18,6 +18,7 @@ import {
   type PluginInstallRefusal,
 } from "@manifold/protocol";
 import { sha256Hex, type PluginInstallRow } from "./stores.ts";
+import { deliveredArtifact, verifyBundledArtifacts } from "@manifold/plugin-kit/artifacts";
 
 /**
  * THE ARTIFACT'S JOURNEY (ADR 0016 §8 stage 2, #152): from a URL or a path to a verified,
@@ -209,6 +210,7 @@ function readArtifactFile(request: ArtifactRequest): Uint8Array {
 
 /** The bytes as a bundle, or `artifact_invalid` naming the first zod path that failed. */
 export function parseBundle(bytes: Uint8Array): PluginBundle {
+  if (bytes.byteLength > ISOLATE_MAX_ARTIFACT_BYTES) throw tooLarge(bytes.byteLength);
   let raw: unknown;
   try {
     raw = JSON.parse(new TextDecoder().decode(bytes));
@@ -216,7 +218,17 @@ export function parseBundle(bytes: Uint8Array): PluginBundle {
     throw new InstallRefusal("artifact_invalid", "artifact is not JSON");
   }
   const parsed = PluginBundleSchema.safeParse(raw);
-  if (parsed.success) return parsed.data;
+  if (parsed.success) {
+    for (const spec of Object.values(parsed.data.manifest.machine?.artifacts ?? {})) {
+      if (spec.bundleFile === undefined) continue;
+      try {
+        deliveredArtifact(spec, { bundleFile: spec.bundleFile, data: parsed.data.files[spec.bundleFile]! });
+      } catch (error) {
+        throw new InstallRefusal("artifact_invalid", error instanceof Error ? error.message : "invalid machine member");
+      }
+    }
+    return parsed.data;
+  }
   const detail = parsed.error.issues
     .map((issue) => `${issue.path.map(String).join(".") || "(root)"} ${issue.message}`)
     .join("; ");
@@ -272,6 +284,11 @@ export async function installArtifact(request: ArtifactRequest): Promise<Install
   const bundle = parseBundle(bytes);
   const refusal = request.admit?.(bundle) ?? stylesheetRefusal(bundle);
   if (refusal !== null) throw refusal;
+  try {
+    await verifyBundledArtifacts(bundle);
+  } catch (error) {
+    throw new InstallRefusal("artifact_invalid", error instanceof Error ? error.message : "invalid machine member");
+  }
   const { bundlePath, dir } = installLayout(request.dataDir, bundle.manifest.id, sha256);
   mkdirSync(dirname(bundlePath), { recursive: true, mode: 0o700 });
   writeFileSync(bundlePath, bytes, { mode: 0o600 });

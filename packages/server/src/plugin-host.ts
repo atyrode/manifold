@@ -848,6 +848,7 @@ export class PluginHost {
         null
       );
     });
+    jobs.setBundleResolver((pluginId) => this.installed.get(pluginId)?.bundle ?? null);
     this.jobs = jobs;
     this.streams.reconcile();
   }

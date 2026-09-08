@@ -4,7 +4,7 @@ import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { formatManifoldUri, type Cap } from "@manifold/protocol";
+import { formatManifoldUri, PluginBundleSchema, type Cap } from "@manifold/protocol";
 import {
   canonicalJobJson,
   type JobCommand,
@@ -153,6 +153,66 @@ function execute(f: Fixture, jobId = "job", value = "safe") {
     outputs: [],
   });
 }
+
+test("authenticated owner installation receives only the pinned bundle member; absent or substituted sources cannot replace the native revision", () => {
+  const f = fixture();
+  try {
+    const bytes = Buffer.from("private worker bytes");
+    const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+    const bundled: MachineHalf = {
+      ...machine,
+      artifacts: { "linux-x64": {
+        ...machine.artifacts["linux-x64"]!, url: undefined, bundleFile: "worker",
+        sha256, entrySha256: sha256,
+      } },
+    };
+    const bundle = PluginBundleSchema.parse({
+      format: 1,
+      manifest: {
+        id: pluginId, version: "1.0.0", title: "Worker", description: "Private worker",
+        capabilities: [], contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+        entry: { web: "web.js" }, machine: bundled,
+      },
+      files: { "web.js": Buffer.from("export {};").toString("base64"), worker: bytes.toString("base64") },
+    });
+    f.service.setManifestResolver(() => bundled);
+    f.service.setBundleResolver(() => bundle);
+    f.service.install(f.root, {
+      machineId: f.machineId, pluginId, installationRevision: "bundled",
+      artifactSha256: sha256, machine: bundled,
+    });
+    expect(f.commands).toEqual([]);
+    prove(f);
+    const command = f.commands.find((command) => command.type === "install");
+    if (command?.type !== "install") throw new Error("owner did not receive installation");
+    expect(command.installationRevision).toBe("bundled");
+    expect(command.artifactSha256).toBe(sha256);
+    expect(command.artifact?.bundleFile).toBe("worker");
+    expect(Buffer.from(command.artifact!.data, "base64")).toEqual(bytes);
+    const priorCommands = f.commands.length;
+    for (const source of [null, { ...bundle, files: { ...bundle.files, worker: Buffer.from("substitution").toString("base64") } }]) {
+      f.service.setBundleResolver(() => source);
+      expect(() => f.service.install(f.root, {
+        machineId: f.machineId, pluginId, installationRevision: "substituted",
+        artifactSha256: sha256, machine: bundled,
+      })).toThrow();
+      expect(f.service.jobs.installation(f.machineId, pluginId)?.revision).toBe("bundled");
+      expect(f.commands.length).toBe(priorCommands);
+    }
+    f.service.setBundleResolver(() => null);
+    f.service.offline(f.channel);
+    f.commands.length = 0;
+    prove(f);
+    const unavailable = f.commands.find((command) => command.type === "install");
+    if (unavailable?.type !== "install") throw new Error("missing pinned acquisition attempt");
+    expect(unavailable.installationRevision).toBe("bundled");
+    expect(unavailable.artifactSha256).toBe(sha256);
+    expect(unavailable.artifact).toBeUndefined();
+    expect(f.commands.some((command) => command.type === "drain")).toBe(true);
+  } finally {
+    f.store.close();
+  }
+});
 
 describe("retained job discovery", () => {
   test("bounded pages omit unreadable runs and recheck current authority", () => {
