@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
+import { ServiceBindingSchema } from "./services.ts";
 
 const id = z.string().min(1).max(128);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -77,6 +78,7 @@ export const MachineOperationSchema = z.strictObject({
     .max(64),
   input: z.record(component, MachineInputFieldSchema).refine((v) => Object.keys(v).length <= 64),
   runtimeTools: z.array(component).max(8),
+  services: z.array(ServiceBindingSchema).max(16).optional(),
   locations: z
     .array(z.strictObject({ locationId: id, access: z.enum(["read", "write", "create"]) }))
     .max(32),
@@ -350,6 +352,12 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
     jobId: id.nullable(),
     reason: id.nullable(),
   }),
+  z.strictObject({
+    type: z.literal("service_authorized"),
+    jobId: id,
+    authorizationId: id,
+    allowed: z.boolean(),
+  }),
 ]);
 export type JobCommand = z.infer<typeof JobCommandSchema>;
 export const JobEventSchema = z.discriminatedUnion("type", [
@@ -392,6 +400,15 @@ export const JobEventSchema = z.discriminatedUnion("type", [
     operationId: id,
     input: JobRequestSchema.shape.input,
     outputs: JobRequestSchema.shape.outputs,
+  }),
+  z.strictObject({
+    type: z.literal("service_authorize"),
+    jobId: id,
+    authorizationId: id,
+    serviceId: component,
+    revision: component,
+    policySha256: hash,
+    operationId: component,
   }),
 ]);
 export type JobEvent = z.infer<typeof JobEventSchema>;

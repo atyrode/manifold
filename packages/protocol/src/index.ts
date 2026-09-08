@@ -65,6 +65,25 @@ export {
   type StreamServerMessage,
 } from "./stream.ts";
 export {
+  SERVICE_FRAME_BYTES,
+  ServiceInputSchema,
+  ServiceCallSchema,
+  ServiceReplySchema,
+  ServiceRefusalSchema,
+  ServiceBindingSchema,
+  ServiceResponsePolicySchema,
+  ServiceOperationPolicySchema,
+  ServicePolicySchema,
+  type ServiceInput,
+  type ServiceCall,
+  type ServiceReply,
+  type ServiceRefusal,
+  type ServiceBinding,
+  type ServiceResponsePolicy,
+  type ServiceOperationPolicy,
+  type ServicePolicy,
+} from "./services.ts";
+export {
   JobLimitsSchema,
   MachineArtifactSchema,
   MachineLocationSchema,
