@@ -74,3 +74,24 @@ debounced durable flush; scoped revocable agent tokens; multi-attach shared sess
 not repeated: whole-record LWW conflicts; third-party renderer drift; five-service dev loop;
 Redis as inter-process glue; 4-hop iframe terminal path; cosmetic presence; owner-scoped
 (not principal-scoped) agent credentials.
+
+## Governed product execution
+
+Operator direction, 2026-09-07: Manifold, Babel and Code advance together.
+Babel's fleet operations and live interface wait for the common engine capabilities
+they need; a terminal launcher, polling loop or compatibility control path is not
+their replacement.
+
+The implementation thread joins #156 (typed machine jobs), #235 (machine halves),
+#236 (resource consent and enforcement) and #169 (plugin-owned continuous streams).
+Manifold owns authenticated dispatch, scoped authority, execution identity,
+supervision, bounded results and stream delivery. Product plugins own their
+operations, evidence and postconditions. The design must establish real machine-side
+confinement and preserve requester, authorizer and executor attribution across
+interruption and recovery; a permission card or successful process exit is not proof.
+
+This direction authorizes the common non-privileged capabilities Babel needs, not
+privileged activation, live deployment, release, fleet installation or expanded
+machine grants. Those remain separate operator actions. Contracts, implementation,
+verification and consumer cutover must be delivered together before claiming the
+integration complete.
