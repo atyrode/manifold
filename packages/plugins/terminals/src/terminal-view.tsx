@@ -636,7 +636,7 @@ export function TerminalView({
       listener set, so this handler now runs BEFORE React Flow's zoom listener —
       an unconditional stop here would silently kill pinch-zoom over a terminal.
     */
-    if (focusedRef.current && !event.ctrlKey) event.stopPropagation();
+    if (active && focusedRef.current && !event.ctrlKey) event.stopPropagation();
   };
 
   /**
@@ -795,7 +795,9 @@ export function TerminalView({
         }
       />
       <div
-        className="xterm-host"
+        className={
+          onEngage !== undefined && !active ? "xterm-host xterm-host--inactive" : "xterm-host"
+        }
         ref={containerRef}
         data-action={showTakeControl ? "core.terminals.take" : undefined}
         onDoubleClickCapture={handleTakeControl}
