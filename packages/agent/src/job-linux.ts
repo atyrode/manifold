@@ -12,6 +12,8 @@ import {
 import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
+import { MachineLocationSchema } from "@manifold/protocol";
+import { ownsWorkloadLoopbackListener } from "./job-listener-proof.ts";
 import type { HeldDirectory } from "./job-files.ts";
 import {
   fdMountId,
@@ -93,6 +95,8 @@ export interface LinuxJobHandle {
   result: Promise<LinuxJobResult>;
   /** Borrowed owner-only delegation for separately admitted child jobs. Never mounted. */
   childDelegation: HeldDirectory;
+  /** Kernel-backed live workload ownership, never a connectivity probe. */
+  ownsLoopbackListener(port: number): boolean;
   /** Close retained group handles after result and child/output sealing; idempotent. */
   release(): void;
   input(bytes: Uint8Array): Promise<void>;
@@ -287,7 +291,9 @@ export function preflightLinuxJob(spec: LinuxJobSpec): number {
     bind.target === "/inputs" || bind.target.startsWith("/inputs/"))) refuse("reserved-input-target");
   let inputBytes = 0;
   for (const bind of inputFiles) {
-    if (bind.writable || !/^\/inputs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(bind.target) ||
+    const namedInput = /^\/inputs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(bind.target);
+    const privateHomeInput = MachineLocationSchema.shape.guestPath.safeParse(bind.target).success;
+    if (bind.writable || (!namedInput && !privateHomeInput) ||
       !fstatSync(bind.fd).isFile() || !isSealedByteFile(bind.fd)) refuse("unsafe-input-file");
     inputBytes += fstatSync(bind.fd).size;
   }
@@ -799,6 +805,10 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   return {
     result,
     childDelegation: groups.children,
+    ownsLoopbackListener(port) {
+      return !released && !settled && !terminating && spec.network === "host" &&
+        ownsWorkloadLoopbackListener(groups, port);
+    },
     release() {
       if (released) return;
       if (!settled || counter(readControl(groups.root, "cgroup.events"), "populated") !== 0)
