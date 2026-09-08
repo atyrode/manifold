@@ -5,9 +5,11 @@ import {
   formatManifoldUri,
   JobDescriptionSchema,
   JobRequestSchema,
+  ListJobRunsResultSchema,
   PublicJobSchema,
   type Cap,
   type JobDescription,
+  type ListJobRunsResult,
   type MachineHalf,
   type MachineOperation,
   type MachineSummary,
@@ -985,6 +987,206 @@ function MachineSetup({
   );
 }
 
+function MachineRuns({
+  host,
+  entry,
+  machine,
+  declaration,
+}: {
+  readonly host: Host;
+  readonly entry: PluginRosterEntry;
+  readonly machine: MachineSummary;
+  readonly declaration: MachineHalf;
+}): ReactElement {
+  const pluginId = entry.manifest.id;
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [selection, setSelection] = useState<{
+    jobId: string;
+    job: JobIdentity | null;
+  } | null>(null);
+  const { value: observation, refresh } = usePolledResource<
+    ReadResult<ListJobRunsResult> | null
+  >(
+    async () => {
+      try {
+        const value = ListJobRunsResultSchema.parse(
+          await request(host, "engine.jobs.listRuns", {
+            machineId: machine.id,
+            pluginId,
+            limit: 20,
+            ...(cursor === null ? {} : { cursor }),
+          }),
+        );
+        for (const run of value.runs) {
+          const identity = run.job ?? run.occurrence;
+          if (identity?.machineId !== machine.id || identity.pluginId !== pluginId)
+            throw new Error("Run history response does not match this machine and plugin");
+        }
+        return { value, failure: null };
+      } catch (reason) {
+        return { value: null, failure: failureMessage(reason) };
+      }
+    },
+    FALLBACK_POLL_MS,
+    {
+      key: `engine.jobs.listRuns:${JSON.stringify([machine.id, pluginId, 20, cursor])}`,
+      initial: null,
+      topics: [{ kind: "plugin", pluginId: "engine.jobs" }],
+      events: host.client,
+    },
+  );
+  const page = observation?.value;
+  const selectedRun = selection
+    ? page?.runs.find((run) => (run.job ?? run.occurrence)?.jobId === selection.jobId)
+    : page?.runs[0];
+  // Only a real job returned by execute/listRuns can open the existing status door.
+  // An occurrence's reserved job id is not evidence that a job exists.
+  const selectedJob = selectedRun ? selectedRun.job : (selection?.job ?? null);
+  const occurrence = selectedRun?.occurrence;
+  const selectedId = selection?.jobId ?? (selectedRun?.job ?? occurrence)?.jobId ?? "";
+  const showLatest = (): void => {
+    if (cursor === null) refresh();
+    else setCursor(null);
+  };
+  return (
+    <>
+      <MachineSetup
+        host={host}
+        entry={entry}
+        machine={machine}
+        declaration={declaration}
+        onJobRequested={(job) => {
+          setSelection({ jobId: job.jobId, job });
+          showLatest();
+        }}
+      />
+      <section className="plugin-manager-runtime-job" aria-label="Operation run history">
+        <h5>Recent operation runs</h5>
+        <p className="plugin-manager-sheet-muted">
+          Direct jobs and scheduled occurrences visible under your current authority and the
+          original installation consent. Each page contains at most 20 runs.
+        </p>
+        {observation === null ? (
+          <p role="status">Reading operation run history…</p>
+        ) : observation.failure !== null ? (
+          <p className="plugin-manager-error" role="alert">
+            Run history unavailable: {observation.failure}
+          </p>
+        ) : page?.runs.length === 0 ? (
+          <p role="status">No visible runs on this page.</p>
+        ) : null}
+        {page && page.runs.length > 0 ? (
+          <label className="plugin-manager-install-field">
+            <span>{cursor === null ? "Recent runs" : "Older runs"}</span>
+            <select
+              aria-label="Operation run"
+              value={selectedId}
+              onChange={(event) => {
+                const run = page.runs.find(
+                  (row) => (row.job ?? row.occurrence)?.jobId === event.target.value,
+                );
+                if (run) setSelection({ jobId: event.target.value, job: run.job });
+              }}
+            >
+              {selection && !selectedRun ? (
+                <option value={selection.jobId}>
+                  Selected {selection.jobId} · not on this page
+                </option>
+              ) : null}
+              {page.runs.map((run) => {
+                const identity = run.job ?? run.occurrence;
+                if (!identity) return null;
+                return (
+                  <option key={identity.jobId} value={identity.jobId}>
+                    {identity.operationId} ·{" "}
+                    {run.occurrence
+                      ? `scheduled ${run.occurrence.state} · ${run.occurrence.nominalAt}`
+                      : "direct"}{" "}
+                    · {run.job?.state ?? "no job recorded"} · {identity.jobId}
+                  </option>
+                );
+              })}
+            </select>
+          </label>
+        ) : null}
+        <Cluster gap="0.4rem">
+          <button
+            type="button"
+            className="plugin-manager-filter"
+            data-action="engine.jobs.listRuns"
+            onClick={refresh}
+          >
+            Refresh run history
+          </button>
+          {cursor !== null ? (
+            <button
+              type="button"
+              className="plugin-manager-filter"
+              data-action="engine.jobs.listRuns"
+              onClick={() => {
+                setSelection(null);
+                showLatest();
+              }}
+            >
+              Latest runs
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="plugin-manager-filter"
+            data-action="engine.jobs.listRuns"
+            disabled={!page?.nextCursor}
+            onClick={() => {
+              if (!page?.nextCursor) return;
+              setSelection(null);
+              setCursor(page.nextCursor);
+            }}
+          >
+            Older runs
+          </button>
+        </Cluster>
+        {selection && !selectedRun ? (
+          <p role="status">
+            Selected run {selection.jobId} is not in the current history page.
+            {selectedJob
+              ? " Its job status is read separately under your current authority."
+              : " Refresh history or select another run to inspect an occurrence."}
+          </p>
+        ) : null}
+        {occurrence ? (
+          <div className="plugin-manager-runtime-identity">
+            <strong>Schedule {occurrence.scheduleId}</strong>
+            <small>
+              Revision {occurrence.revision} · nominal time {occurrence.nominalAt} · operation{" "}
+              {occurrence.operationId}
+            </small>
+            <p role="status">Occurrence state: {occurrence.state}</p>
+            {occurrence.reason === null ? null : <p>Reason: {occurrence.reason}</p>}
+            <small>Installation revision {occurrence.installationRevision}</small>
+            <small>Artifact SHA-256 {occurrence.artifactSha256}</small>
+            {selectedRun?.job === null ? (
+              <p className="plugin-manager-sheet-muted">
+                No job was recorded for this occurrence. There is no job result or executor status
+                to display.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+        {selectedJob ? (
+          <JobStatus
+            key={selectedJob.jobId}
+            host={host}
+            jobId={selectedJob.jobId}
+            operationId={selectedJob.operationId}
+            machineId={selectedJob.machineId}
+            pluginId={selectedJob.pluginId}
+          />
+        ) : null}
+      </section>
+    </>
+  );
+}
+
 /** Existing plugin detail seat, using only roster declarations and public machine/job doors. */
 export function MachineRuntime({
   host,
@@ -995,9 +1197,6 @@ export function MachineRuntime({
 }): ReactElement {
   const [machineId, setMachineId] = useState("");
   const [failure, setFailure] = useState<string | null>(null);
-  const [jobs, setJobs] = useState<readonly JobIdentity[]>([]);
-  const [selectedJobId, setSelectedJobId] = useState("");
-  const selectedJob = jobs.find((job) => job.jobId === selectedJobId);
   const { value: machines, refresh } = usePolledResource<readonly MachineSummary[] | null>(
     () => host.client.machines(),
     FALLBACK_POLL_MS,
@@ -1089,16 +1288,12 @@ export function MachineRuntime({
             </p>
           )}
           {machine ? (
-            <MachineSetup
-              key={`${entry.manifest.id}:${machine.id}`}
+            <MachineRuns
+              key={JSON.stringify([entry.manifest.id, machine.id])}
               host={host}
               entry={entry}
               machine={machine}
               declaration={declaration}
-              onJobRequested={(job) => {
-                setJobs((current) => [...current, job]);
-                setSelectedJobId(job.jobId);
-              }}
             />
           ) : (
             <p className="plugin-manager-sheet-muted">
@@ -1108,32 +1303,6 @@ export function MachineRuntime({
           )}
         </>
       )}
-      {jobs.length > 0 ? (
-        <label className="plugin-manager-install-field">
-          <span>Jobs requested from this detail view</span>
-          <select
-            aria-label="Requested job"
-            value={selectedJobId}
-            onChange={(event) => setSelectedJobId(event.target.value)}
-          >
-            {jobs.map((job) => (
-              <option key={job.jobId} value={job.jobId}>
-                {job.machineId} · {job.operationId} · {job.jobId}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : null}
-      {selectedJob ? (
-        <JobStatus
-          key={selectedJob.jobId}
-          host={host}
-          jobId={selectedJob.jobId}
-          operationId={selectedJob.operationId}
-          machineId={selectedJob.machineId}
-          pluginId={selectedJob.pluginId}
-        />
-      ) : null}
     </section>
   );
 }
