@@ -147,6 +147,7 @@ function topicContainer(ref: ManifoldRef, terminals: TerminalHomePort): string |
     case "location":
     case "job":
     case "output":
+    case "service":
     case "principal":
     case "plugin":
     case "action":
@@ -233,7 +234,7 @@ export class EventHub {
 
   private authorizedTopic(auth: AuthContext, topic: ManifoldRef): boolean {
     if (topic.kind === "operation" || topic.kind === "location") return false;
-    if (topic.kind === "job" || topic.kind === "output")
+    if (topic.kind === "job" || topic.kind === "output" || topic.kind === "service")
       return this.deps.canReadGoverned(auth, topic);
     return this.authorized(auth, topicContainer(topic, this.deps.terminals));
   }
@@ -482,7 +483,7 @@ export class EventHub {
       if (entry === undefined) continue;
       // Collection delivery cannot broaden the original resource's read authority.
       if (
-        governingTopic.kind === "job" || governingTopic.kind === "output"
+        governingTopic.kind === "job" || governingTopic.kind === "output" || governingTopic.kind === "service"
           ? !this.deps.canReadGoverned(entry.subscriber.auth, governingTopic)
           : !this.authorized(entry.subscriber.auth, containerId)
       )

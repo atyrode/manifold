@@ -903,6 +903,11 @@ export class HttpApp {
         const action = this.plugins.assembly().actions.get(ref.actionName);
         return { exists: action !== undefined, title: action?.def.title ?? null };
       }
+      case "service": {
+        if (!this.plugins.canReadGoverned(context, ref))
+          throw new RequestError("forbidden", "resource resolution requires governed admission");
+        return { exists: true, title: ref.serviceId };
+      }
       case "operation":
       case "location":
       case "job":

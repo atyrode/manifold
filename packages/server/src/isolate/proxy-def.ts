@@ -15,6 +15,7 @@ import { z } from "zod";
 import type { ActionCtx, ActionHandler } from "../plugin-host.ts";
 import { IsolateDenial, IsolateLoadError, type IsolateLoadResult } from "./contract.ts";
 import { JobExecuteArgsSchema, jobDoorSchemas } from "../job-doors.ts";
+import { serviceDoorSchemas } from "../service-doors.ts";
 
 /**
  * THE TWO DIRECTIONS OF PROXYING, both pure over a transport. Outbound: the child's `loaded`
@@ -179,6 +180,10 @@ export async function serveCtxCall(
     case "jobs.input":
     case "jobs.cancel":
     case "jobs.output":
+    case "services.describe":
+    case "services.readConfiguration":
+    case "services.configureConfiguration":
+    case "services.read":
     case "auth.allows":
     case "outsideScope":
     case "newId":
@@ -203,6 +208,14 @@ export async function serveCtxCall(
       return ctx.jobs.cancel(jobDoorSchemas.cancel.parse({ node: args[0] }).node);
     case "jobs.output":
       return ctx.jobs.output(jobDoorSchemas.output.parse(args[0]));
+    case "services.describe":
+      return ctx.services.describe(serviceDoorSchemas.describe.parse(args[0]));
+    case "services.readConfiguration":
+      return ctx.services.readConfiguration(serviceDoorSchemas.readConfiguration.parse(args[0]));
+    case "services.configureConfiguration":
+      return ctx.services.configureConfiguration(serviceDoorSchemas.configureConfiguration.parse(args[0]));
+    case "services.read":
+      return ctx.services.read(serviceDoorSchemas.read.parse(args[0]));
     case "auth.allows": {
       const cap = CapSchema.safeParse(args[0]);
       if (!cap.success || cap.data === "*") {

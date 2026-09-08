@@ -1,3 +1,9 @@
+import type {
+  ConfigureServiceConfigurationArgs,
+  JobExecution,
+  ServiceConfigurationRead,
+  ServiceDescription,
+} from "@manifold/plugin";
 import {
   EventKindSchema,
   EventPayloadSchema,
@@ -28,12 +34,14 @@ import {
   type PluginManifest,
   type PluginRoster,
   type Principal,
+  type ServiceConfiguration,
+  type ServiceReadArgs,
+  type ServiceReply,
 } from "@manifold/protocol";
 import {
   JobFollowSnapshotSchema,
   type JobFollowSnapshot,
   type JobFollowUpdate,
-  type JobRequest,
   type JobResult,
   type JobEvent,
 } from "../../protocol/src/jobs.ts";
@@ -136,10 +144,7 @@ export interface GuestStreamProducer {
 
 export type GuestJobNode = Extract<ManifoldRef, { kind: "job" }>;
 export type GuestOutputNode = Extract<ManifoldRef, { kind: "output" }>;
-export type GuestJobRequest = Pick<
-  JobRequest,
-  "jobId" | "machineId" | "operationId" | "input" | "outputs"
-> & { limits?: JobRequest["limits"] };
+export type GuestJobRequest = JobExecution;
 export interface GuestJobStatus {
   jobId: string;
   machineId: string;
@@ -167,6 +172,14 @@ export interface GuestJobs {
   follow(node: GuestJobNode, receive: (update: JobFollowUpdate) => void): Promise<GuestJobFollow>;
 }
 
+/** The native service contract with asynchronous host calls across the isolate boundary. */
+export interface GuestServices {
+  describe(args: { machineId: string }): Promise<ServiceDescription>;
+  readConfiguration(args: { machineId: string }): Promise<ServiceConfigurationRead>;
+  configureConfiguration(args: ConfigureServiceConfigurationArgs): Promise<ServiceConfiguration>;
+  read(args: ServiceReadArgs): Promise<ServiceReply>;
+}
+
 export interface GuestCtx {
   readonly traceId: IsolateDispatchCtx["traceId"];
   readonly pluginId: string;
@@ -178,6 +191,7 @@ export interface GuestCtx {
   newId(): Promise<string>;
   readonly storage: GuestStorage;
   readonly jobs: GuestJobs;
+  readonly services: GuestServices;
   readonly streams: {
     open(kind: string, node: ManifoldRef): Promise<GuestStreamProducer>;
   };
@@ -509,6 +523,16 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
             throw error;
           }
         },
+      },
+      services: {
+        describe: async (args) =>
+          (await call("services.describe", [args])) as ServiceDescription,
+        readConfiguration: async (args) =>
+          (await call("services.readConfiguration", [args])) as ServiceConfigurationRead,
+        configureConfiguration: async (args) =>
+          (await call("services.configureConfiguration", [args])) as ServiceConfiguration,
+        read: async (args) =>
+          (await call("services.read", [args])) as ServiceReply,
       },
       streams: {
         open: async (kind, node) => {

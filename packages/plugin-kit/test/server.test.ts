@@ -147,6 +147,15 @@ test("a retained producer works after dispatch while other captured authority ex
   if (producer === undefined || captured === undefined)
     throw new Error("handler did not retain its producer");
   await expect(captured.storage.get("x")).rejects.toThrow("already answered");
+  await expect(captured.services.describe({ machineId: "machine" })).rejects.toThrow("already answered");
+  await expect(captured.services.readConfiguration({ machineId: "machine" })).rejects.toThrow("already answered");
+  await expect(captured.services.configureConfiguration({
+    machineId: "machine", expectedRevision: null, policies: [],
+  })).rejects.toThrow("already answered");
+  await expect(captured.services.read({
+    machineId: "machine", serviceId: "service", revision: "revision",
+    policySha256: "a".repeat(64), operationId: "read", input: {},
+  })).rejects.toThrow("already answered");
   const publishing = producer.publish({ line: "after return" });
   const publication = await serve(fake, null);
   expect(publication).toMatchObject({

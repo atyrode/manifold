@@ -372,6 +372,10 @@ export const ISOLATE_CTX_METHODS = [
   "jobs.follow",
   "jobs.ack",
   "jobs.unfollow",
+  "services.describe",
+  "services.readConfiguration",
+  "services.configureConfiguration",
+  "services.read",
 ] as const;
 export const IsolateCtxMethodSchema = z.enum(ISOLATE_CTX_METHODS);
 export type IsolateCtxMethod = (typeof ISOLATE_CTX_METHODS)[number];

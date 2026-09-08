@@ -104,9 +104,10 @@ import type { RoomManager } from "./room.ts";
 import type { MachineRecord, PluginInstallRow, ServerStore, TraceAttribution } from "./stores.ts";
 import type { DrainOutcome, TerminalBroker } from "./terminal-broker.ts";
 import { StreamService } from "./stream-service.ts";
-import type { StreamProducer, PluginStreamContext } from "@manifold/plugin";
+import type { StreamProducer, PluginStreamContext, PluginServiceContext } from "@manifold/plugin";
 import { jobContext, jobDoors, type JobContext } from "./job-doors.ts";
 import type { JobService } from "./job-service.ts";
+import { serviceContext, serviceDoors } from "./service-doors.ts";
 
 /**
  * The caller's authority as a handler sees it: identity, what the token carries, and the
@@ -440,6 +441,7 @@ export interface ActionCtx {
   readonly admission: GovernedAdmissionDecision | null;
   readonly streams: PluginStreamContext;
   readonly jobs: JobContext;
+  readonly services: PluginServiceContext;
   /**
    * The container this dispatch is confined to, or null for a workspace-grade caller.
    *
@@ -592,6 +594,7 @@ interface EngineDoorCtx {
  */
 const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
   jobDoors,
+  serviceDoors,
   {
     manifest: enginePluginsManifest,
     actions: enginePluginsActions,
@@ -858,7 +861,8 @@ export class PluginHost {
       node.kind !== "operation" &&
       node.kind !== "location" &&
       node.kind !== "job" &&
-      node.kind !== "output"
+      node.kind !== "output" &&
+      node.kind !== "service"
     )
       return true;
     return this.jobs?.canReadGoverned(auth, node) ?? false;
@@ -2163,6 +2167,15 @@ export class PluginHost {
       jobs: jobContext(
         () => {
           if (this.jobs === null) throw new ServiceError("forbidden", "job service unavailable");
+          return this.jobs;
+        },
+        auth,
+        pluginId,
+        traceId,
+      ),
+      services: serviceContext(
+        () => {
+          if (this.jobs === null) throw new ServiceError("forbidden", "service authority unavailable");
           return this.jobs;
         },
         auth,

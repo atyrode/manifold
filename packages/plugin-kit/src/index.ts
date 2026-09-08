@@ -24,6 +24,7 @@ export type {
   GuestCtx,
   GuestEmit,
   GuestJobs,
+  GuestServices,
   GuestJobRequest,
   GuestJobStatus,
   GuestJobFollow,

@@ -2619,6 +2619,62 @@ describe("PluginHost unpacked plugins", () => {
   });
 });
 
+describe("registered native service doors", () => {
+  test("invalid reads and configurations never disclose service input or policy bodies in traces", async () => {
+    const fixture = await hostFixture();
+    try {
+      for (const [door, args] of [
+        ["engine.services.read", {
+          machineId: "machine",
+          serviceId: "private-service",
+          revision: "revision",
+          policySha256: "a".repeat(64),
+          operationId: "read",
+          input: { query: "never-persist-input" },
+          credential: "never-persist-credential",
+        }],
+        ["engine.services.configureConfiguration", {
+          machineId: "machine",
+          expectedRevision: null,
+          policies: [{ serviceId: "private-service", credential: { ref: "never-persist-reference" } }],
+        }],
+      ] as const) {
+        const outcome = await fixture.host.dispatch(fixture.owner, door, args);
+        expect(denial(outcome).rule).toBe("invalid_args");
+        const trace = fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0];
+        expect(trace?.door).toBe(door);
+        expect(trace?.outcome).toBe("invalid_args");
+        expect(trace?.payload).toEqual({});
+        expect(JSON.stringify(trace)).not.toContain("never-persist");
+        expect(JSON.stringify(trace)).not.toContain("private-service");
+      }
+    } finally {
+      fixture.store.close();
+    }
+  });
+
+  test("native configuration cannot be reached by a non-owner and its denial remains opaque", async () => {
+    const fixture = await hostFixture();
+    try {
+      const reader = context(fixture, ["services:read"]);
+      const outcome = await fixture.host.dispatch(reader, "engine.services.configureConfiguration", {
+        machineId: "machine",
+        expectedRevision: null,
+        policies: [{ credential: "never-persist-policy" }],
+      });
+      expect(denial(outcome).rule).toBe("forbidden");
+      const trace = fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0];
+      expect(trace?.payload).toEqual({});
+      expect(JSON.stringify(trace)).not.toContain("never-persist");
+      expect(fixture.host.canReadGoverned(fixture.owner, {
+        kind: "service", machineId: "machine", serviceId: "service",
+      })).toBe(false);
+    } finally {
+      fixture.store.close();
+    }
+  });
+});
+
 describe("registered governed job doors", () => {
   test("malformed private input is refused with an opaque trace before service availability", async () => {
     const fixture = await hostFixture();

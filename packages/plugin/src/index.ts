@@ -13,6 +13,10 @@ export type {
   PublicJobSchedule,
   JobFollow,
   PluginJobContext,
+  PluginServiceContext,
+  ServiceDescription,
+  ServiceConfigurationRead,
+  ConfigureServiceConfigurationArgs,
   StreamProducer,
   PluginStreamContext,
 } from "./runtime.ts";

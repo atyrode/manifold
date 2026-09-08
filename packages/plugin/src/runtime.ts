@@ -4,10 +4,16 @@ import type {
   JobFollowSnapshot,
   JobFollowUpdate,
   JobRequest,
+  JobResourceBindings,
   ListJobRunsArgs,
   ListJobRunsResult,
   ManifoldRef,
   PublicJob,
+  ServiceConfiguration,
+  ServiceCredentialReference,
+  ServicePolicy,
+  ServiceReadArgs,
+  ServiceReply,
 } from "@manifold/protocol";
 
 export type JobExecution = Pick<
@@ -18,6 +24,7 @@ export type JobExecution = Pick<
   installationRevision?: string | undefined;
   artifactSha256?: string | undefined;
   resourceBindingDigest?: string | undefined;
+  resourceBindings?: JobResourceBindings | undefined;
 };
 export interface JobScheduleTiming {
   scheduleId: string;
@@ -62,6 +69,38 @@ export interface PluginJobContext {
   schedule(args: JobExecution & JobScheduleTiming): Record<string, never>;
   schedules(): PublicJobSchedule[];
   disableSchedule(args: { scheduleId: string; revision: string }): Record<string, never>;
+}
+
+export interface ServiceDescription {
+  machineId: string;
+  connected: boolean;
+  services: {
+    serviceId: string;
+    revision: string;
+    policySha256: string;
+    operations: {
+      operationId: string;
+      readable: boolean;
+      ready: boolean;
+      reason: string | null;
+    }[];
+  }[];
+}
+export interface ServiceConfigurationRead {
+  configuration: ServiceConfiguration;
+  credentialReferences: ServiceCredentialReference[];
+}
+export interface ConfigureServiceConfigurationArgs {
+  machineId: string;
+  expectedRevision: string | null;
+  policies: ServicePolicy[];
+}
+/** Native policy and credential authority remain host-owned and bound to the caller. */
+export interface PluginServiceContext {
+  describe(args: { machineId: string }): ServiceDescription;
+  readConfiguration(args: { machineId: string }): ServiceConfigurationRead;
+  configureConfiguration(args: ConfigureServiceConfigurationArgs): ServiceConfiguration;
+  read(args: ServiceReadArgs): Promise<ServiceReply>;
 }
 
 /** The producer validates each bounded body against its manifest's declared stream schema. */

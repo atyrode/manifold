@@ -35,6 +35,7 @@ export const JobExecuteArgsSchema = JobRequestSchema.pick({
   installationRevision: JobRequestSchema.shape.installationRevision.optional(),
   artifactSha256: JobRequestSchema.shape.artifactSha256.optional(),
   resourceBindingDigest: PublicJobSchema.shape.resourceBindingDigest.optional(),
+  resourceBindings: JobResourceBindingsSchema.optional(),
 });
 const execute = JobExecuteArgsSchema;
 const schedule = execute.extend({
