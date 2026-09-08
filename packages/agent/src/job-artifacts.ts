@@ -201,9 +201,12 @@ export async function acquireArtifact(
     const sourceKey = `${spec.url ?? spec.bundleFile}\0${spec.sha256}`;
     const archive = archives?.get(sourceKey) ?? supplied ?? await download(spec, authority, controller.signal);
     if (archive.length > spec.maxBytes) throw new Error("artifact_compressed_limit");
-    if (archives && !archives.has(sourceKey) &&
-      [...archives.values()].reduce((bytes, value) => bytes + value.length, archive.length) <= 16 * 1024 * 1024)
+    if (archives && !archives.has(sourceKey)) {
+      // The owner groups equal sources. Retain at most one bounded archive, including
+      // large managed runtimes, while verifying/publishing each selected layout separately.
+      archives.clear();
       archives.set(sourceKey, archive);
+    }
     const extracted = await extractArtifact(archive, spec, controller.signal, deadline);
     const files: Record<string, PinnedArtifactFile> = Object.create(null);
     const publications: { temporary: string; destination: string }[] = [];

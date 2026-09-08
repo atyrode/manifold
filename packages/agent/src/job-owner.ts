@@ -370,8 +370,12 @@ export class MachineJobOwner {
     if (this.draining && !command.action) throw new Error("owner_draining");
     const key = this.installKey(command.pluginId, command.installationRevision);
     const existing = this.installs.get(key);
-    const selectedTools = Object.entries(command.machine.tools ?? {}).map(([alias, platforms]) =>
-      [alias, platforms[this.platform()]] as const);
+    const primarySource = `${artifactSpec.url ?? artifactSpec.bundleFile}\0${artifactSpec.sha256}`;
+    const selectedTools = Object.entries(command.machine.tools ?? {}).map(([alias, platforms]) => {
+      const spec = platforms[this.platform()];
+      return [alias, spec, spec ? `${spec.url ?? spec.bundleFile}\0${spec.sha256}` : ""] as const;
+    }).sort((a, b) => a[2] === b[2] ? 0 : a[2] === primarySource ? -1 :
+      b[2] === primarySource ? 1 : a[2].localeCompare(b[2]));
     for (const name of Object.keys(toolArtifacts ?? {}))
       if (!selectedTools.some(([, spec]) => spec?.bundleFile === name))
         throw new Error("artifact_unexpected_delivery");
