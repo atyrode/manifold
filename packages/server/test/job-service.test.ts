@@ -1,6 +1,6 @@
 import "../src/shared-modules.ts";
 import { describe, expect, test } from "bun:test";
-import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
+import { createHash, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -368,7 +368,8 @@ test("bound terminal admission requires current spawn authority, exact pins and 
       containerId, session: null, ts: f.runtime.now(), outcome: "ok", targets: [], payload: {},
     });
     let traceId = spawnTrace(f.root);
-    const runtime = { pluginId, operationId, installationRevision: "r1", artifactSha256: hash, input: { value: "safe" } };
+    const runtime = { pluginId, operationId, installationRevision: "r1", artifactSha256: hash,
+      resourceBindingDigest: createHash("sha256").update("null").digest("hex"), input: { value: "safe" } };
     const binding = { terminalId: "native-terminal", terminalHostId: "native-host", containerId: "new-solo-home" };
     const forged = { jobId: "forged", machineId: f.machineId, operationId, input: runtime.input, outputs: [], terminal: binding };
     expect(() => f.service.execute(f.root, pluginId, "trace", forged)).toThrow("native_terminal_admission_required");
