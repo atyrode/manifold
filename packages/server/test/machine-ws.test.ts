@@ -69,7 +69,7 @@ describe("machine channel send status", () => {
     expect(channel.send({ type: "kill", terminalId: "terminal" })).toBe(false);
   });
 
-  test("a pre-job transport refuses job commands without breaking terminal traffic", () => {
+  test("protocol 26 terminal transport refuses job commands without breaking terminal traffic", () => {
     const socket = new StatusSocket(1);
     const channel = new LiveMachineChannel(
       "machine",
@@ -662,7 +662,7 @@ describe("machine admission and terminal continuity", () => {
     };
   }
 
-  test("pre-job owner advertisements are refused before terminal adoption or execution authority", () => {
+  test("protocol 26 owner advertisements are refused before terminal adoption or execution authority", () => {
     const fix = fixture("9".repeat(64), ["t1"]);
     const jobs = new JobService(fix.store, fix.auth, fix.runtime);
     fix.gateway.setJobs(jobs);
@@ -688,7 +688,7 @@ describe("machine admission and terminal continuity", () => {
     fix.store.close();
   });
 
-  test("a pre-job peer keeps terminal service but cannot send job events or receive drain commands", async () => {
+  test("a protocol 26 peer keeps terminal service but cannot send job events or receive drain commands", async () => {
     const fix = fixture("a".repeat(64), ["t1"]);
     const jobs = new JobService(fix.store, fix.auth, fix.runtime);
     fix.gateway.setJobs(jobs);
@@ -722,7 +722,7 @@ describe("machine admission and terminal continuity", () => {
     fix.store.close();
   });
 
-  test("protocol 26 proves job ownership; a legacy replacement immediately fences that authority", () => {
+  test("protocol 27 proves job ownership; a legacy replacement immediately fences that authority", () => {
     const fix = fixture("b".repeat(64), []);
     const jobs = new JobService(fix.store, fix.auth, fix.runtime);
     fix.gateway.setJobs(jobs);
@@ -735,7 +735,7 @@ describe("machine admission and terminal continuity", () => {
       inventoryDigest: "a".repeat(64),
     };
     const socket = fix.hello("job-owner", {
-      protocolVersion: GOVERNED_JOB_MIN_PROTOCOL_VERSION,
+      protocolVersion: PROTOCOL_VERSION,
       jobOwner: owner,
     });
     const challenge = machineMessages(socket).find((frame) => frame.type === "job_command");

@@ -952,7 +952,7 @@ describe("machine-channel compatibility (docs/CONTRACTS.md §Protocol and compat
       expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(version)).toBe(
         version >= 16 && version <= PROTOCOL_VERSION,
       );
-      expect(supportsGovernedJobs(version)).toBe(version === 26);
+      expect(supportsGovernedJobs(version)).toBe(version >= 27 && version <= PROTOCOL_VERSION);
     }
   });
 });
