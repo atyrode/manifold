@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { MAX_STORAGE_VALUE_BYTES, PluginStorageError } from "@manifold/plugin";
 import type { Container, TileLayout } from "@manifold/protocol";
 import { Y, createSceneDoc } from "@manifold/scene";
-import { sha256Hex } from "../src/stores.ts";
+import { openDatabase } from "../src/db.ts";
+import { ServerStore, sha256Hex } from "../src/stores.ts";
 import { testStore } from "./helpers.ts";
 
 interface EventRow {
@@ -23,6 +28,109 @@ const canvasContainer = (id: string, name: string, createdAt: number): Container
   name,
   createdAt,
   discipline: "canvas",
+});
+
+describe("ServerStore plugin storage compare-and-set", () => {
+  test("competing creators and updaters across database handles cannot both commit", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-storage-cas-"));
+    const path = join(dir, "state.sqlite");
+    const first = new ServerStore(openDatabase(path));
+    const second = new ServerStore(openDatabase(path));
+    try {
+      const left = first.pluginStorage("test.writer");
+      const right = second.pluginStorage("test.writer");
+      const created = await Promise.all([
+        left.compareAndSet("choice", null, "left"),
+        right.compareAndSet("choice", null, "right"),
+      ]);
+      expect(created.filter(Boolean)).toHaveLength(1);
+      const initial = created[0] ? "left" : "right";
+      expect(await right.get("choice")).toBe(initial);
+
+      // Both callers read the same revision before either tries to commit.
+      const snapshots = await Promise.all([left.get("choice"), right.get("choice")]);
+      const updated = await Promise.all([
+        left.compareAndSet("choice", snapshots[0] ?? null, "left-updated"),
+        right.compareAndSet("choice", snapshots[1] ?? null, "right-updated"),
+      ]);
+      expect(updated.filter(Boolean)).toHaveLength(1);
+      expect(await left.get("choice")).toBe(updated[0] ? "left-updated" : "right-updated");
+    } finally {
+      second.close();
+      first.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("missing and stale comparisons preserve data, with exact bytes and null distinct from empty", async () => {
+    const store = testStore();
+    try {
+      const storage = store.pluginStorage("test.writer");
+      expect(await storage.compareAndSet("choice", "", "not-created")).toBe(false);
+      expect(await storage.get("choice")).toBeNull();
+      expect(await storage.compareAndSet("choice", null, "")).toBe(true);
+      expect(await storage.compareAndSet("choice", null, "not-replaced")).toBe(false);
+      expect(await storage.get("choice")).toBe("");
+      expect(await storage.compareAndSet("choice", "", "é\u0000A")).toBe(true);
+      expect(await storage.compareAndSet("choice", "e\u0301\u0000A", "normalized")).toBe(false);
+      expect(await storage.compareAndSet("choice", "é\u0000a", "case-folded")).toBe(false);
+      expect(await storage.compareAndSet("choice", "é", "truncated")).toBe(false);
+      expect(await storage.get("choice")).toBe("é\u0000A");
+      expect(await storage.compareAndSet("choice", "é\u0000A", "é\u0000A")).toBe(true);
+      await storage.delete("choice");
+      expect(await storage.compareAndSet("choice", "é\u0000A", "resurrected")).toBe(false);
+      expect(await storage.get("choice")).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  test("a comparison can only address its bound plugin namespace", async () => {
+    const store = testStore();
+    try {
+      const mine = store.pluginStorage("test.alpha");
+      const yours = store.pluginStorage("test.beta");
+      await yours.set("choice", "private");
+      expect(await mine.compareAndSet("choice", "private", "stolen")).toBe(false);
+      expect(await mine.compareAndSet("choice", null, "mine")).toBe(true);
+      expect(await mine.compareAndSet("test.beta/choice", null, "still-mine")).toBe(true);
+      expect(await mine.get("choice")).toBe("mine");
+      expect(await yours.get("choice")).toBe("private");
+      expect(await yours.keys()).toEqual(["choice"]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("invalid keys and either oversize operand reject before comparison without changing data", async () => {
+    const store = testStore();
+    try {
+      const storage = store.pluginStorage("test.writer");
+      await storage.stampDataVersion({ major: 1, minor: 0 });
+      await storage.recordMigration("initial", 1);
+      const limit = "é".repeat(MAX_STORAGE_VALUE_BYTES / 2);
+      const oversize = `${limit}é`;
+      expect(await storage.compareAndSet("choice", null, limit)).toBe(true);
+      expect(await storage.compareAndSet("choice", limit, "kept")).toBe(true);
+      for (const key of ["$version", "$migration:initial", "", "bad key", "x".repeat(129)]) {
+        const refused = storage.compareAndSet(key, null, "forged");
+        await expect(refused).rejects.toBeInstanceOf(PluginStorageError);
+      }
+      // Invalid operands reject even if the comparison would fail or the key is absent.
+      const expectedTooLarge = storage.compareAndSet("missing", oversize, "small");
+      const valueTooLarge = storage.compareAndSet("choice", "stale", oversize);
+      const createTooLarge = storage.compareAndSet("missing", null, oversize);
+      await expect(expectedTooLarge).rejects.toBeInstanceOf(PluginStorageError);
+      await expect(valueTooLarge).rejects.toBeInstanceOf(PluginStorageError);
+      await expect(createTooLarge).rejects.toBeInstanceOf(PluginStorageError);
+      expect(await storage.get("choice")).toBe("kept");
+      expect(await storage.get("missing")).toBeNull();
+      expect(await storage.dataVersion()).toEqual({ major: 1, minor: 0 });
+      expect(await storage.appliedMigrations()).toEqual(["initial"]);
+    } finally {
+      store.close();
+    }
+  });
 });
 
 describe("ServerStore event retention", () => {

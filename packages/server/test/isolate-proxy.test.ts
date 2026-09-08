@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { LifecycleCtx, PluginStorage } from "@manifold/plugin";
+import { attachServerGuest } from "@manifold/plugin-kit/server";
 import type { IsolateChildFrame, PluginManifest } from "@manifold/protocol";
 import { z } from "zod";
 import { IsolateDenial, IsolateLoadError } from "../src/isolate/contract.ts";
@@ -208,6 +209,103 @@ describe("buildIsolateDef", () => {
 });
 
 describe("serveCtxCall", () => {
+  test("the guest runtime commits through native storage and distinguishes a stale comparison", async () => {
+    const store = testStore();
+    try {
+      const storage = store.pluginStorage(manifest.id);
+      const served = {
+        kind: "hook" as const,
+        ctx: { pluginId: manifest.id, storage, now: () => 0, emit: () => {} },
+      };
+      let receive: (frame: unknown) => void = () => {};
+      const completed = Promise.withResolvers<Extract<IsolateChildFrame, { t: "hooked" }>>();
+      attachServerGuest(
+        {
+          manifest,
+          actions: [],
+          handlers: {},
+          lifecycle: {
+            async onEnable(ctx) {
+              if (!(await ctx.storage.compareAndSet("choice", null, "first"))) {
+                throw new Error("could not create absent choice");
+              }
+              if (!(await ctx.storage.compareAndSet("choice", "first", "updated"))) {
+                throw new Error("could not replace matching choice");
+              }
+              if (await ctx.storage.compareAndSet("choice", "first", "lost-update")) {
+                throw new Error("stale choice overwrote committed value");
+              }
+            },
+          },
+        },
+        {
+          onMessage: (listener) => {
+            receive = listener;
+          },
+          send: (frame) => {
+            if (frame.t === "call") {
+              void serveCtxCall(frame.method, frame.args, served).then(
+                (result) => receive({ t: "reply", id: frame.id, ok: true, result }),
+                (error: unknown) =>
+                  receive({
+                    t: "reply",
+                    id: frame.id,
+                    ok: false,
+                    error: error instanceof Error ? error.message : String(error),
+                  }),
+              );
+            } else if (frame.t === "hooked") {
+              completed.resolve(frame);
+            }
+          },
+          warn: () => {},
+          exit: () => {},
+        },
+      );
+      receive({ t: "load", pluginId: manifest.id, manifest, dir: "/unused" });
+      receive({ t: "hook", id: "commit", hook: "onEnable" });
+      expect(await completed.promise).toMatchObject({ ok: true });
+      expect(await storage.get("choice")).toBe("updated");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("compare-and-set enforces namespace and operand validation for dispatches and hooks", async () => {
+    const store = testStore();
+    try {
+      const storage = store.pluginStorage(manifest.id);
+      const other = store.pluginStorage("other.plugin");
+      await other.set("choice", "private");
+      const { ctx } = ctxWith(storage, new FakeRuntime());
+      const dispatch = { kind: "dispatch" as const, ctx };
+      const hook = {
+        kind: "hook" as const,
+        ctx: { pluginId: manifest.id, storage, now: () => 0, emit: () => {} },
+      };
+      expect(await serveCtxCall("storage.compareAndSet", ["choice", "private", "stolen"], dispatch)).toBe(false);
+      expect(await serveCtxCall("storage.compareAndSet", ["choice", null, "mine"], hook)).toBe(true);
+      expect(await serveCtxCall("storage.compareAndSet", ["choice", "mine", "updated"], dispatch)).toBe(true);
+      expect(await serveCtxCall("storage.compareAndSet", ["choice", "mine", "stale"], hook)).toBe(false);
+      for (const args of [
+        ["$version", null, "9.9"],
+        ["bad key", null, "value"],
+        ["choice", 7, "value"],
+        ["choice", undefined, "value"],
+        ["choice", null, 7],
+        ["choice", "é".repeat(32 * 1024 + 1), "value"],
+        ["choice", "stale", "é".repeat(32 * 1024 + 1)],
+      ]) {
+        await expect(serveCtxCall("storage.compareAndSet", args, dispatch)).rejects.toThrow();
+      }
+      expect(await storage.get("choice")).toBe("updated");
+      expect(await storage.dataVersion()).toBeNull();
+      expect(await other.get("choice")).toBe("private");
+    } finally {
+      store.close();
+    }
+  });
+
   test("a dispatch serves every slice from the caller's own ctx", async () => {
     const runtime = new FakeRuntime();
     const storage = testStore().pluginStorage(manifest.id);

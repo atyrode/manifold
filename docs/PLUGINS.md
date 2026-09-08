@@ -752,6 +752,7 @@ interface PluginStorage {
   readonly pluginId: string;
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
+  compareAndSet(key: string, expected: string | null, value: string): Promise<boolean>;
   delete(key: string): Promise<void>;
   keys(prefix?: string): Promise<readonly string[]>; // sorted; the engine's own `$` rows are never listed
   dataVersion(): Promise<PluginDataVersion | null>; // null until something has been stamped
@@ -760,10 +761,10 @@ interface PluginStorage {
 ```
 
 It is **promise-returning** and **string-valued**: serialize your own structures. Keys match
-`^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$` and values are ≤64 KiB; a `$` prefix is engine-reserved and
-`set`/`delete` reject on it, which is what makes the version stamp and the migration ledger something
-you can read but not forge. If you have more than 64 KiB of a thing, it is a document, and documents
-have a plane (§5).
+`^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$` and values are ≤64 KiB of UTF-8; a `$` prefix is
+engine-reserved and `set`/`compareAndSet`/`delete` reject on it, which is what makes the version
+stamp and the migration ledger something you can read but not forge. If you have more than 64 KiB
+of a thing, it is a document, and documents have a plane (§5).
 
 **One contract, every plugin.** ADR 0016 §4 (ratified, R3) made `PluginStorage` promise-returning
 for every plugin, first-party included, because a hardened plugin's storage calls cross a process
@@ -774,6 +775,17 @@ a microtask and nothing else — and every refusal (a reserved or malformed key,
 a **rejection** with `PluginStorageError`, never a throw, so a `try`/`catch` around an `await` is the
 one failure path whichever way your plugin runs. Write one storage call per statement and `await`
 each; `storage.get(storage.get("ptr") ?? "")` no longer type-checks, which is the point.
+
+**Concurrent choices use `compareAndSet`, not a read followed by `set`.** Pass the exact string
+you read as `expected`, or `null` to require that the key is absent. SQLite checks and writes
+atomically in your plugin's namespace: one competing writer wins, the other gets `false` and
+must reread before deciding whether to retry or report a conflict. Strings compare byte-for-byte
+without parsing JSON, normalizing Unicode or folding case; `""` is not absence. A mismatch
+changes nothing, and a match returns `true` even if the replacement is identical. Both
+`expected` (when non-null) and `value` obey the UTF-8 size limit and reject invalid calls as
+promises, even when the comparison would fail. This is the same operation in-realm and through
+the hardened guest's storage proxy. It does not lock a series of operations or publish an event;
+after a successful commit, your action emits its own declared notification (§6b).
 
 When your stored shape changes incompatibly, bump `dataVersion.major` and ship a **named**
 migration:

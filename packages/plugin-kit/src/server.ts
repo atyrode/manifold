@@ -99,7 +99,7 @@ export interface GuestAuth {
 }
 
 /**
- * The plugin's own storage, served over the boundary. The four verbs `ISOLATE_CTX_METHODS`
+ * The plugin's own storage, served over the boundary. The verbs `ISOLATE_CTX_METHODS`
  * lists; the engine's ledger verbs (`dataVersion`, `appliedMigrations`) are not served in
  * stage 1 and are therefore not on this type.
  */
@@ -107,6 +107,8 @@ export interface GuestStorage {
   readonly pluginId: string;
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
+  /** Atomically replaces an exact stored value, or creates an absent key when expected is null. */
+  compareAndSet(key: string, expected: string | null, value: string): Promise<boolean>;
   delete(key: string): Promise<void>;
   keys(prefix?: string): Promise<readonly string[]>;
 }
@@ -422,6 +424,12 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       assertStorageKey(key);
       assertStorageValue(key, value);
       await call("storage.set", [key, value]);
+    },
+    compareAndSet: async (key, expected, value) => {
+      assertStorageKey(key);
+      if (expected !== null) assertStorageValue(key, expected);
+      assertStorageValue(key, value);
+      return (await call("storage.compareAndSet", [key, expected, value])) as boolean;
     },
     delete: async (key) => {
       assertStorageKey(key);

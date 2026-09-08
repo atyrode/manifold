@@ -161,6 +161,12 @@ export async function serveCtxCall(
       return served.ctx.storage.get(stringArg(args, 0, method));
     case "storage.set":
       return served.ctx.storage.set(stringArg(args, 0, method), stringArg(args, 1, method));
+    case "storage.compareAndSet":
+      return served.ctx.storage.compareAndSet(
+        stringArg(args, 0, method),
+        args[1] === null ? null : stringArg(args, 1, method),
+        stringArg(args, 2, method),
+      );
     case "storage.delete":
       return served.ctx.storage.delete(stringArg(args, 0, method));
     case "storage.keys":

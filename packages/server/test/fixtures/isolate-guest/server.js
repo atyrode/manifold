@@ -2,7 +2,7 @@
   THE CHILD SIDE OF THE ISOLATE PROTOCOL, BY HAND — no kit, so the supervisor is proved
   against the wire (`IsolateHostFrameSchema` / `IsolateChildFrameSchema`) rather than against
   another package's reading of it. One plugin, `test.guest`, with the doors the supervisor
-  tests need: `echo` (one storage round trip through `call`, then the args back with one
+  tests need: `echo` (an atomic storage increment through `call`, then the args back with one
   emission), `boom` (dies mid-dispatch), `hang` (never answers), `garble` (answers with a
   frame that is not a frame), `refuse` (a handler's own domain refusal). `onEnable` reads
   storage through its hook id and answers ok.
@@ -34,9 +34,12 @@ const handlers = {
     if (typeof args !== "object" || args === null || typeof args.text !== "string") {
       return { ok: false, rule: "invalid_args", message: "text must be a string" };
     }
-    const seen = await call(id, "storage.get", ["count"]);
-    const count = seen === null ? 1 : Number(seen) + 1;
-    await call(id, "storage.set", ["count", String(count)]);
+    let count;
+    for (;;) {
+      const seen = await call(id, "storage.get", ["count"]);
+      count = seen === null ? 1 : Number(seen) + 1;
+      if (await call(id, "storage.compareAndSet", ["count", seen, String(count)])) break;
+    }
     const emits = [
       { ref: { kind: "plugin", pluginId: "test.guest" }, kind: "echoed", payload: { count } },
     ];
