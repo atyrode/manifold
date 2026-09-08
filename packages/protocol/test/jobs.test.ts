@@ -8,6 +8,8 @@ import {
   ListJobRunsResultSchema,
   PublicJobRunSchema,
   PublicScheduleOccurrenceSchema,
+  type PublicJob,
+  type PublicScheduleOccurrence,
 } from "../src/jobs.ts";
 
 const location = { anchor: "config", components: ["vault"], revision: "r1", kind: "file" };
@@ -105,7 +107,7 @@ test("owner-retained stdout and stderr cannot be caller-declared or rebound as f
   }
 });
 
-const occurrence = {
+const occurrence: PublicScheduleOccurrence = {
   scheduleId: "schedule",
   revision: "schedule-revision",
   nominalAt: 100,
@@ -166,7 +168,7 @@ test("occurrence-only runs expose honest skipped state and reject private persis
 });
 
 test("a run cannot pair job metadata with a different occurrence identity or immutable pin", () => {
-  const job = {
+  const job: PublicJob = {
     jobId: occurrence.jobId,
     machineId: occurrence.machineId,
     pluginId: occurrence.pluginId,

@@ -170,7 +170,7 @@ export class JobService {
           throw new Error("cursor filter mismatch");
         before = value.before;
       } catch {
-        throw new ServiceError("invalid_args", "invalid_job_run_cursor_refresh_required");
+        throw new ServiceError("conflict", "invalid_job_run_cursor_refresh_required");
       }
     }
     const candidates = this.jobs.runCandidates(
