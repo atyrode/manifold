@@ -731,15 +731,19 @@ test("a transport shutdown ends nothing: the next transport advertises the same 
   expect(host.transportAttached).toBe(false);
 
   // Output with no seat: retained by the host, never streamed, never dropped.
-  const seqBefore = terminal.seq;
   terminal.write('printf "WHILE_DOWN_%s\\n" "$$"\n');
-  await new Promise<void>((resolve) => {
-    const poll = (): void => {
-      if (terminal.seq > seqBefore) resolve();
-      else setTimeout(poll, 10);
-    };
-    poll();
-  });
+  // This real OS PTY has no completion event exposed while its transport is absent.
+  // Poll the drained mirror for computed output: input echo alone also advances seq.
+  const outputDeadline = Date.now() + 5000;
+  for (;;) {
+    const retained = await terminal.snapshot();
+    if (Buffer.from(retained.data).toString("utf8").includes(`WHILE_DOWN_${pid}`)) break;
+    if (Date.now() >= outputDeadline) {
+      await host.shutdown();
+      throw new Error("shell did not produce the offline output marker");
+    }
+    await Bun.sleep(10);
+  }
 
   const secondSockets: ScriptedSocket[] = [];
   const secondHello = Promise.withResolvers<Extract<AgentMessage, { type: "hello" }>>();
