@@ -25,6 +25,7 @@ type ReadResult<T> = { value: T; failure: null } | { value: null; failure: strin
 type Input = Record<string, string | number | boolean>;
 type ConsentRight = { node: string; cap: Cap; label: string };
 type JobIdentity = Readonly<Pick<PublicJob, "jobId" | "machineId" | "pluginId" | "operationId">>;
+const JOBS_TOPIC = { kind: "plugin", pluginId: "engine.jobs" } as const;
 
 /** Only the public action outcome is interpreted here; no input or output bytes are echoed. */
 async function request(host: Host, action: string, args: unknown): Promise<unknown> {
@@ -361,7 +362,7 @@ function JobStatus({
     {
       key: `engine.jobs.status:${formatManifoldUri(node)}`,
       initial: null,
-      topics: [node],
+      topics: [JOBS_TOPIC],
       events: host.client,
     },
   );
@@ -555,7 +556,7 @@ function MachineSetup({
     {
       key: `engine.jobs.describe:${machine.id}:${pluginId}`,
       initial: null,
-      topics: host.topics.machines,
+      topics: [...host.topics.machines, JOBS_TOPIC],
       events: host.client,
     },
   );
@@ -1004,9 +1005,7 @@ function MachineRuns({
     jobId: string;
     job: JobIdentity | null;
   } | null>(null);
-  const { value: observation, refresh } = usePolledResource<
-    ReadResult<ListJobRunsResult> | null
-  >(
+  const { value: observation, refresh } = usePolledResource<ReadResult<ListJobRunsResult> | null>(
     async () => {
       try {
         const value = ListJobRunsResultSchema.parse(
@@ -1031,7 +1030,7 @@ function MachineRuns({
     {
       key: `engine.jobs.listRuns:${JSON.stringify([machine.id, pluginId, 20, cursor])}`,
       initial: null,
-      topics: [{ kind: "plugin", pluginId: "engine.jobs" }],
+      topics: [JOBS_TOPIC],
       events: host.client,
     },
   );

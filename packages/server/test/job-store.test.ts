@@ -45,21 +45,32 @@ function fixture() {
   cleanup.push(() => store.close());
   let jobs = new JobStore(store, () => {});
   return {
-    get store() { return store; },
-    get jobs() { return jobs; },
+    get store() {
+      return store;
+    },
+    get jobs() {
+      return jobs;
+    },
     reopen() {
       store.close();
       store = new ServerStore(openDatabase(path));
       jobs = new JobStore(store, () => {});
     },
     occurrence(value: JobRequest, nominal: number, state = "pending") {
-      store.db.query(
-        "INSERT INTO job_schedule_occurrences(schedule_id,revision,nominal,job_id,request,deadline,state,reason) VALUES(?,?,?,?,?,?,?,?)",
-      ).run(
-        `schedule-${value.jobId}`, "schedule-revision", nominal, value.jobId,
-        canonicalJobJson(value), nominal + 1000, state,
-        state === "skipped" ? "machine-offline" : null,
-      );
+      store.db
+        .query(
+          "INSERT INTO job_schedule_occurrences(schedule_id,revision,nominal,job_id,request,deadline,state,reason) VALUES(?,?,?,?,?,?,?,?)",
+        )
+        .run(
+          `schedule-${value.jobId}`,
+          "schedule-revision",
+          nominal,
+          value.jobId,
+          canonicalJobJson(value),
+          nominal + 1000,
+          state,
+          state === "skipped" ? "machine-offline" : null,
+        );
     },
   };
 }
@@ -110,13 +121,23 @@ test("candidate filters use exact durable targets for direct jobs and every occu
   }
   const runs = f.jobs.runCandidates({ ...filter, operationId: "sample.worker.run" }, 100);
   expect(runs.map((run) => run.position.jobId)).toEqual([
-    "refused", "skipped", "enqueued", "pending", "direct",
+    "refused",
+    "skipped",
+    "enqueued",
+    "pending",
+    "direct",
   ]);
   expect(runs.map((run) => run.request.installationRevision)).toEqual(
     Array(5).fill("retained-revision"),
   );
   expect(f.jobs.runCandidates(filter, 100).map((run) => run.position.jobId)).toEqual([
-    "foreign-occurrence-2", "foreign-direct-2", "refused", "skipped", "enqueued", "pending", "direct",
+    "foreign-occurrence-2",
+    "foreign-direct-2",
+    "refused",
+    "skipped",
+    "enqueued",
+    "pending",
+    "direct",
   ]);
 });
 
@@ -131,8 +152,8 @@ test("candidate reads enforce their hard bound and parse stored requests before 
   expect(bounded.length).toBe(257);
   expect(bounded.at(-1)?.position.jobId).toBe("job-1");
   f.occurrence(request("corrupt"), 1000);
-  f.store.db.query("UPDATE job_schedule_occurrences SET request=? WHERE job_id=?").run(
-    JSON.stringify({ ...request("corrupt"), credential: "invalid" }), "corrupt",
-  );
+  f.store.db
+    .query("UPDATE job_schedule_occurrences SET request=? WHERE job_id=?")
+    .run(JSON.stringify({ ...request("corrupt"), credential: "invalid" }), "corrupt");
   expect(() => f.jobs.runCandidates(filter, 1)).toThrow();
 });

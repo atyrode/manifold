@@ -364,6 +364,7 @@ export const ISOLATE_CTX_METHODS = [
   "streams.close",
   "jobs.execute",
   "jobs.status",
+  "jobs.listRuns",
   "jobs.input",
   "jobs.cancel",
   "jobs.output",

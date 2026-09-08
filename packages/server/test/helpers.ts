@@ -13,7 +13,7 @@ import {
 import { FLOOR_EVENT_OWNERS, SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../src/assembly.ts";
 import type { AuthService } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
-import { EventHub } from "../src/event-hub.ts";
+import { EventHub, type EventHubDeps } from "../src/event-hub.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
 import { silentLogger, type Logger } from "../src/log.ts";
 import {
@@ -312,9 +312,10 @@ export function testEventHub(
   assembly: () => Assembly,
   runtime: RuntimeDeps,
   logger: Logger = silentLogger,
+  canReadGoverned: EventHubDeps["canReadGoverned"] = () => false,
 ): EventHub {
   return new EventHub(
-    { assembly, terminals: broker, owners: FLOOR_EVENT_OWNERS },
+    { assembly, terminals: broker, owners: FLOOR_EVENT_OWNERS, canReadGoverned },
     auth,
     store,
     runtime,
@@ -382,6 +383,7 @@ export async function testPluginHost(
       },
       runtime,
       options.logger ?? silentLogger,
+      (context, node) => host?.canReadGoverned(context, node) ?? false,
     );
   host = await PluginHost.boot(
     [...SERVER_PLUGIN_DEFS, ...(options.settingsPlugins ?? [])],

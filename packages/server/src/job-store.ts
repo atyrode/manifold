@@ -142,8 +142,21 @@ export class JobStore {
           state: string | null;
           reason: string | null;
         },
-        [string, string, string | null, string | null, string, string, string | null, string | null,
-          number | null, number | null, number | null, string | null, number]
+        [
+          string,
+          string,
+          string | null,
+          string | null,
+          string,
+          string,
+          string | null,
+          string | null,
+          number | null,
+          number | null,
+          number | null,
+          string | null,
+          number,
+        ]
       >(
         `WITH candidates AS (
           SELECT j.created_at AS at, 0 AS source, j.job_id, j.request,

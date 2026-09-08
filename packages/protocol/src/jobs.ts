@@ -283,11 +283,9 @@ export const PublicJobRunSchema = z
     job: PublicJobSchema.nullable(),
     occurrence: PublicScheduleOccurrenceSchema.nullable(),
   })
-  .refine(
-    ({ job, occurrence }) =>
-      job !== null || occurrence !== null,
-    { message: "A run must contain a job or schedule occurrence" },
-  )
+  .refine(({ job, occurrence }) => job !== null || occurrence !== null, {
+    message: "A run must contain a job or schedule occurrence",
+  })
   .refine(
     ({ job, occurrence }) =>
       job === null ||

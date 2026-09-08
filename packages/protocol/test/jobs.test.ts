@@ -132,7 +132,8 @@ test("run discovery bounds its public query and pagination without admitting aut
     { machineId: "machine", cursor: "c".repeat(2049) },
     { machineId: "machine", credential: { tokenId: "private" } },
     { machineId: "machine", pluginId: "other-plugin" },
-  ]) expect(ListJobRunsArgsSchema.safeParse(args).success).toBe(false);
+  ])
+    expect(ListJobRunsArgsSchema.safeParse(args).success).toBe(false);
   const run = { job: null, occurrence };
   expect(
     ListJobRunsResultSchema.parse({ runs: Array(100).fill(run), nextCursor: "opaque" }).nextCursor,
@@ -140,9 +141,7 @@ test("run discovery bounds its public query and pagination without admitting aut
   expect(
     ListJobRunsResultSchema.safeParse({ runs: Array(101).fill(run), nextCursor: null }).success,
   ).toBe(false);
-  expect(
-    ListJobRunsResultSchema.safeParse({ runs: [], nextCursor: "" }).success,
-  ).toBe(false);
+  expect(ListJobRunsResultSchema.safeParse({ runs: [], nextCursor: "" }).success).toBe(false);
 });
 
 test("occurrence-only runs expose honest skipped state and reject private persisted fields", () => {
@@ -185,12 +184,20 @@ test("a run cannot pair job metadata with a different occurrence identity or imm
   };
   expect(PublicJobRunSchema.parse({ job, occurrence }).job).toEqual(job);
   for (const field of [
-    "jobId", "machineId", "pluginId", "operationId", "installationRevision", "artifactSha256",
+    "jobId",
+    "machineId",
+    "pluginId",
+    "operationId",
+    "installationRevision",
+    "artifactSha256",
   ]) {
     expect(
       PublicJobRunSchema.safeParse({
         job,
-        occurrence: { ...occurrence, [field]: field === "artifactSha256" ? "b".repeat(64) : "other" },
+        occurrence: {
+          ...occurrence,
+          [field]: field === "artifactSha256" ? "b".repeat(64) : "other",
+        },
       }).success,
     ).toBe(false);
   }

@@ -26,6 +26,7 @@ import { indexActions, indexManifest } from "@manifold-plugin/index";
 import { indexHandlers } from "@manifold-plugin/index/server";
 import type { FloorEventOwners } from "./event-hub.ts";
 import type { ServerPluginDef } from "./plugin-host.ts";
+import { jobDoors } from "./job-doors.ts";
 
 /**
  * WHICH plugin declares the vocabulary for each concept the FLOOR emits about (ADR 0012 §1:
@@ -48,6 +49,7 @@ export const FLOOR_EVENT_OWNERS: FloorEventOwners = {
   terminals: terminalsManifest.id,
   attendance: presenceManifest.id,
   machines: machinesManifest.id,
+  jobs: jobDoors.manifest.id,
   /*
     `core.access` owns the cross-instance words because it owns the doors that create and
     destroy the relationship — mintShare, revokeShare, dialShare, openDial. The dialer

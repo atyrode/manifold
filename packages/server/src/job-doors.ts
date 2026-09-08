@@ -225,7 +225,10 @@ export const jobDoors: ServerPluginDef = {
       sections: [],
       elements: [],
       tools: [],
-      events: [{ id: "job_changed", title: "Job changed" }],
+      events: [
+        { id: "job_changed", title: "Job changed" },
+        { id: "job_access_changed", title: "Job read authority changed" },
+      ],
     },
   },
   actions: Object.entries(schemas).map(([name, input]) =>
@@ -242,13 +245,13 @@ export const jobDoors: ServerPluginDef = {
             ? publicJob
             : name === "listRuns"
               ? ListJobRunsResultSchema
-            : name === "output"
-              ? JobEventSchema
-              : name === "schedules"
-                ? z.array(publicSchedule)
-                : name === "install" || name === "input" || name === "cancel"
-                  ? accepted
-                  : empty,
+              : name === "output"
+                ? JobEventSchema
+                : name === "schedules"
+                  ? z.array(publicSchedule)
+                  : name === "install" || name === "input" || name === "cancel"
+                    ? accepted
+                    : empty,
     }),
   ),
   handlers: {
