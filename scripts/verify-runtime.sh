@@ -20,7 +20,7 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 executable() {
   local path=${1:-}
   [[ $path == /* && -f $path && -x $path ]] || fail "$2 must resolve to an absolute executable path"
-  printf '%s\n' "$path"
+  realpath -- "$path"
 }
 cc=$(executable "${CC:-$(command -v cc || true)}" CC)
 bun=$(executable "${BUN:-$(command -v bun || true)}" BUN)
