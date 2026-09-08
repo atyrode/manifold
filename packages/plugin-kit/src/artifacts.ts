@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createGunzip, createInflateRaw } from "node:zlib";
 import { Readable } from "node:stream";
-import { JobArtifactDeliverySchema, MachineArtifactSchema, type MachineArtifact, type PluginBundle, type JobArtifactDelivery } from "@manifold/protocol";
+import { JobArtifactDeliverySchema, MachineArtifactSchema, machineArtifacts, type MachineArtifact, type PluginBundle, type JobArtifactDelivery } from "@manifold/protocol";
 
 export interface ExtractedArtifact {
   executable: Buffer;
@@ -9,7 +9,8 @@ export interface ExtractedArtifact {
 }
 
 /** Verify transport presence and identity before cache lookup, even for an already installed worker. */
-export function deliveredArtifact(spec: MachineArtifact, delivery: JobArtifactDelivery | undefined): Buffer | undefined {
+export function deliveredArtifact(spec: MachineArtifact, delivery: JobArtifactDelivery | undefined,
+  decoded?: Map<string, Buffer>): Buffer | undefined {
   if (spec.bundleFile === undefined) {
     if (delivery !== undefined) throw new Error("artifact_unexpected_delivery");
     return undefined;
@@ -19,8 +20,9 @@ export function deliveredArtifact(spec: MachineArtifact, delivery: JobArtifactDe
   delivery = JobArtifactDeliverySchema.parse(delivery);
   const size = delivery.data.length / 4 * 3 - (delivery.data.endsWith("==") ? 2 : delivery.data.endsWith("=") ? 1 : 0);
   if (!size || size > spec.maxBytes) throw new Error("artifact_compressed_limit");
-  const bytes = Buffer.from(delivery.data, "base64");
+  const bytes = decoded?.get(delivery.data) ?? Buffer.from(delivery.data, "base64");
   if (createHash("sha256").update(bytes).digest("hex") !== spec.sha256) throw new Error("artifact_archive_digest");
+  decoded?.set(delivery.data, bytes);
   return bytes;
 }
 
@@ -28,9 +30,10 @@ export function deliveredArtifact(spec: MachineArtifact, delivery: JobArtifactDe
 export async function verifyBundledArtifacts(bundle: PluginBundle): Promise<void> {
   const signal = AbortSignal.timeout(30000);
   const deadline = performance.now() + 30000;
-  for (const spec of Object.values(bundle.manifest.machine?.artifacts ?? {})) {
+  const decoded = new Map<string, Buffer>();
+  for (const spec of machineArtifacts(bundle.manifest.machine)) {
     if (spec.bundleFile === undefined) continue;
-    const archive = deliveredArtifact(spec, { bundleFile: spec.bundleFile, data: bundle.files[spec.bundleFile]! })!;
+    const archive = deliveredArtifact(spec, { bundleFile: spec.bundleFile, data: bundle.files[spec.bundleFile]! }, decoded)!;
     await extractArtifact(archive, spec, signal, deadline);
   }
 }

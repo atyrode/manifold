@@ -154,7 +154,7 @@ function execute(f: Fixture, jobId = "job", value = "safe") {
   });
 }
 
-test("authenticated owner installation receives only the pinned bundle member; absent or substituted sources cannot replace the native revision", () => {
+test("authenticated owner receives only selected deduplicated machine members; substituted sources cannot replace the revision", () => {
   const f = fixture();
   try {
     const bytes = Buffer.from("private worker bytes");
@@ -166,6 +166,12 @@ test("authenticated owner installation receives only the pinned bundle member; a
         sha256, entrySha256: sha256,
       } },
     };
+    const tool = { ...bundled.artifacts["linux-x64"]!, bundleFile: "engine" };
+    bundled.tools = {
+      engine: { "linux-x64": tool, "linux-arm64": { ...tool, bundleFile: "other-platform" } },
+      duplicate: { "linux-x64": tool },
+      primaryAlias: { "linux-x64": bundled.artifacts["linux-x64"]! },
+    };
     const bundle = PluginBundleSchema.parse({
       format: 1,
       manifest: {
@@ -173,7 +179,8 @@ test("authenticated owner installation receives only the pinned bundle member; a
         capabilities: [], contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
         entry: { web: "web.js" }, machine: bundled,
       },
-      files: { "web.js": Buffer.from("export {};").toString("base64"), worker: bytes.toString("base64") },
+      files: { "web.js": Buffer.from("export {};").toString("base64"), worker: bytes.toString("base64"),
+        engine: bytes.toString("base64"), "other-platform": bytes.toString("base64") },
     });
     f.service.setManifestResolver(() => bundled);
     f.service.setBundleResolver(() => bundle);
@@ -189,8 +196,11 @@ test("authenticated owner installation receives only the pinned bundle member; a
     expect(command.artifactSha256).toBe(sha256);
     expect(command.artifact?.bundleFile).toBe("worker");
     expect(Buffer.from(command.artifact!.data, "base64")).toEqual(bytes);
+    expect(command.toolArtifacts).toEqual({ engine: bytes.toString("base64") });
     const priorCommands = f.commands.length;
-    for (const source of [null, { ...bundle, files: { ...bundle.files, worker: Buffer.from("substitution").toString("base64") } }]) {
+    for (const source of [null,
+      { ...bundle, files: { ...bundle.files, worker: Buffer.from("substitution").toString("base64") } },
+      { ...bundle, files: { ...bundle.files, engine: Buffer.from("substitution").toString("base64") } }]) {
       f.service.setBundleResolver(() => source);
       expect(() => f.service.install(f.root, {
         machineId: f.machineId, pluginId, installationRevision: "substituted",

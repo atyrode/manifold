@@ -18,6 +18,7 @@ import { join } from "node:path";
 import type { MachineArtifact } from "@manifold/protocol";
 import {
   acquireArtifact,
+  artifactCacheKey,
   isPublicArtifactAddress,
   openCachedArtifact,
 } from "../src/job-artifacts.ts";
@@ -387,11 +388,11 @@ test("cache recovery pins primary and runtime bytes and closes every descriptor 
   const path = mkdtempSync(join(tmpdir(), "job-cache-"));
   const cache = HeldDirectory.openAbsolute(path, { private: true });
   try {
-    cache.atomicWrite(`${spec.sha256}-${spec.entrySha256}`, executable, 0o500);
-    cache.atomicWrite(`${spec.sha256}-${runtimeHash}`, runtime, 0o500);
+    cache.atomicWrite(artifactCacheKey(spec, spec.entrySha256), executable, 0o500);
+    cache.atomicWrite(artifactCacheKey(spec, runtimeHash), runtime, 0o500);
     const pinned = openCachedArtifact(spec, cache);
     try {
-      cache.atomicWrite(`${spec.sha256}-${runtimeHash}`, Buffer.from("replacement"), 0o500);
+      cache.atomicWrite(artifactCacheKey(spec, runtimeHash), Buffer.from("replacement"), 0o500);
       expect(readFileSync(pinned.fd)).toEqual(executable);
       expect(readFileSync(pinned.files.engine!.fd)).toEqual(runtime);
     } finally {
@@ -417,10 +418,10 @@ test("cache recovery rejects writable executables and aggregate selected byte ov
   const path = mkdtempSync(join(tmpdir(), "job-cache-"));
   const cache = HeldDirectory.openAbsolute(path, { private: true });
   try {
-    cache.atomicWrite(`${spec.sha256}-${spec.entrySha256}`, executable, 0o500);
-    cache.atomicWrite(`${spec.sha256}-${runtimeHash}`, runtime, 0o700);
+    cache.atomicWrite(artifactCacheKey(spec, spec.entrySha256), executable, 0o500);
+    cache.atomicWrite(artifactCacheKey(spec, runtimeHash), runtime, 0o700);
     expect(() => openCachedArtifact(spec, cache)).toThrow("artifact_cache_identity");
-    cache.atomicWrite(`${spec.sha256}-${runtimeHash}`, runtime, 0o500);
+    cache.atomicWrite(artifactCacheKey(spec, runtimeHash), runtime, 0o500);
     expect(() =>
       openCachedArtifact(
         { ...spec, maxExpandedBytes: executable.length + runtime.length - 1 },
@@ -446,7 +447,7 @@ test("fresh acquisition revalidates consent and pinned cache bytes without a net
   const path = mkdtempSync(join(tmpdir(), "job-cache-install-"));
   const cache = HeldDirectory.openAbsolute(path, { private: true });
   try {
-    cache.atomicWrite(`${spec.sha256}-${spec.entrySha256}`, executable, 0o500);
+    cache.atomicWrite(artifactCacheKey(spec, spec.entrySha256), executable, 0o500);
     const pinned = await acquireArtifact(spec, cache, authority);
     try {
       expect(readFileSync(pinned.fd)).toEqual(executable);
@@ -456,12 +457,33 @@ test("fresh acquisition revalidates consent and pinned cache bytes without a net
     await expect(acquireArtifact(spec, cache, { ...authority, origins: [] })).rejects.toThrow(
       "artifact_destination_not_approved",
     );
-    cache.atomicWrite(`${spec.sha256}-${spec.entrySha256}`, Buffer.from("substitution"), 0o500);
+    cache.atomicWrite(artifactCacheKey(spec, spec.entrySha256), Buffer.from("substitution"), 0o500);
     await expect(acquireArtifact(spec, cache, authority)).rejects.toThrow("artifact_entry_digest");
   } finally {
     cache.close();
     rmSync(path, { recursive: true, force: true });
   }
+});
+
+test("shared archive bytes never authorize a different cached entry layout", async () => {
+  const archive = gzipSync(Buffer.concat([tarMember(), Buffer.alloc(1024)]));
+  const { url: _url, ...base } = specification(archive, "tar.gz");
+  const spec = { ...base, bundleFile: "shared" };
+  const delivery = { bundleFile: "shared", data: archive.toString("base64") };
+  const path = mkdtempSync(join(tmpdir(), "job-layout-"));
+  const cache = HeldDirectory.openAbsolute(path, { private: true });
+  const authority = { origins: [], maxRedirects: 0, timeoutMs: 1000 };
+  const archives = new Map<string, Buffer>();
+  try {
+    const first = await acquireArtifact(spec, cache, authority, delivery, archives);
+    first.close();
+    const other = { ...spec, entry: ["missing"], entrySha256: spec.entrySha256 };
+    expect(() => openCachedArtifact(other, cache)).toThrow();
+    await expect(acquireArtifact(other, cache, authority, delivery, archives)).rejects.toThrow();
+    const restored = openCachedArtifact(spec, cache);
+    try { expect(readFileSync(restored.fd)).toEqual(executable); }
+    finally { restored.close(); }
+  } finally { cache.close(); rmSync(path, { recursive: true, force: true }); }
 });
 
 test("bundled acquisition pins supplied bytes without network authority and refuses missing, extra, or substituted delivery even on cache hits", async () => {

@@ -13,6 +13,7 @@ import {
   ISOLATE_MAX_ARTIFACT_BYTES,
   PLUGIN_BUNDLE_STYLES_FILE,
   PluginBundleSchema,
+  machineArtifacts,
   unscopedRule,
   type PluginBundle,
   type PluginInstallRefusal,
@@ -219,7 +220,7 @@ export function parseBundle(bytes: Uint8Array): PluginBundle {
   }
   const parsed = PluginBundleSchema.safeParse(raw);
   if (parsed.success) {
-    for (const spec of Object.values(parsed.data.manifest.machine?.artifacts ?? {})) {
+    for (const spec of machineArtifacts(parsed.data.manifest.machine)) {
       if (spec.bundleFile === undefined) continue;
       try {
         deliveredArtifact(spec, { bundleFile: spec.bundleFile, data: parsed.data.files[spec.bundleFile]! });

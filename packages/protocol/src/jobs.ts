@@ -84,6 +84,9 @@ export const MachineOperationSchema = z.strictObject({
     .max(64),
   input: z.record(component, MachineInputFieldSchema).refine((v) => Object.keys(v).length <= 64),
   runtimeTools: z.array(component).max(8),
+  executable: z.strictObject({ runtimeTool: component }).optional(),
+  inputFiles: z.record(component, z.strictObject({ input: component }))
+    .refine((files) => Object.keys(files).length <= 64).optional(),
   services: z.array(ServiceBindingSchema).max(16).optional(),
   locations: z
     .array(z.strictObject({ locationId: id, access: z.enum(["read", "write", "create"]) }))
@@ -92,12 +95,23 @@ export const MachineOperationSchema = z.strictObject({
   network: z.enum(["none", "host"]),
   limits: JobLimitsSchema,
   stdin: z.boolean(),
+}).refine((operation) => !operation.executable ||
+  operation.runtimeTools.includes(operation.executable.runtimeTool), {
+  message: "The executable must name a required runtimeTool",
+}).refine((operation) => Object.values(operation.inputFiles ?? {}).every(({ input }) =>
+  operation.input[input]?.type === "string" && operation.input[input]?.required === true), {
+  message: "Input files must name declared required string inputs",
+}).refine((operation) => new Set(operation.runtimeTools).size === operation.runtimeTools.length, {
+  message: "Runtime tools must be unique",
 });
+const platformArtifacts = z.partialRecord(
+  z.enum(["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]),
+  MachineArtifactSchema,
+);
 export const MachineHalfSchema = z.strictObject({
-  artifacts: z.partialRecord(
-    z.enum(["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]),
-    MachineArtifactSchema,
-  ),
+  artifacts: platformArtifacts,
+  tools: z.record(component, platformArtifacts)
+    .refine((tools) => Object.keys(tools).length <= 8).optional(),
   operations: z
     .record(id, MachineOperationSchema)
     .refine((v) => Object.keys(v).length > 0 && Object.keys(v).length <= 64),
@@ -108,6 +122,13 @@ export type MachineHalf = z.infer<typeof MachineHalfSchema>;
 export type MachineArtifact = z.infer<typeof MachineArtifactSchema>;
 export type MachineOperation = z.infer<typeof MachineOperationSchema>;
 export type MachineLocation = z.infer<typeof MachineLocationSchema>;
+/** All declared layouts, including managed tools; callers still select the owner platform. */
+export function machineArtifacts(machine: MachineHalf | undefined): MachineArtifact[] {
+  return [
+    ...Object.values(machine?.artifacts ?? {}),
+    ...Object.values(machine?.tools ?? {}).flatMap((platforms) => Object.values(platforms)),
+  ];
+}
 export const JobCredentialSchema = z.strictObject({
   principalId: id,
   tokenId: id.nullable(),
@@ -135,7 +156,7 @@ export const JobRequestSchema = z.strictObject({
   resourceBindings: JobResourceBindingsSchema.optional(),
   input: z
     .record(component, z.union([z.string().max(65536), z.number().finite(), z.boolean()]))
-    .refine((v) => Object.keys(v).length <= 64 && JSON.stringify(v).length <= 65536),
+    .refine((v) => Object.keys(v).length <= 64 && new TextEncoder().encode(JSON.stringify(v)).byteLength <= 65536),
   limits: JobLimitsSchema,
   outputs: z.array(JobOutputBindingSchema).max(30),
   parent: z.strictObject({ parentJobId: id, invocationId: id }).nullable(),
@@ -379,10 +400,19 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
     resourceBindings: JobResourceBindingsSchema.optional(),
     action: z.enum(["disable", "purge"]).optional(),
     artifact: JobArtifactDeliverySchema.optional(),
-  }).refine(({ artifact, ...metadata }) =>
+    /** Additional exact bundle members, keyed by bundleFile; the primary member is not repeated. */
+    toolArtifacts: z.record(component, z.base64().max(MAX_JOB_ARTIFACT_BASE64_BYTES))
+      .refine((files) => Object.keys(files).length <= 8).optional(),
+  }).refine(({ artifact, toolArtifacts, ...metadata }) =>
     new TextEncoder().encode(JSON.stringify(metadata)).byteLength +
-      (artifact === undefined ? 0 : artifact.bundleFile.length) + 128 <= MAX_JOB_INSTALL_METADATA_BYTES,
-    { message: "install metadata exceeds the frame budget" }),
+      (artifact === undefined ? 0 : artifact.bundleFile.length) +
+      Object.keys(toolArtifacts ?? {}).reduce((bytes, name) => bytes + name.length + 8, 0) + 256 <= MAX_JOB_INSTALL_METADATA_BYTES,
+    { message: "install metadata exceeds the frame budget" })
+    .refine(({ artifact, toolArtifacts }) =>
+      (artifact?.data.length ?? 0) + Object.values(toolArtifacts ?? {}).reduce((bytes, data) => bytes + data.length, 0) <= MAX_JOB_ARTIFACT_BASE64_BYTES &&
+      (!artifact || !Object.hasOwn(toolArtifacts ?? {}, artifact.bundleFile)), {
+      message: "install bundle members exceed the aggregate budget or repeat the primary",
+    }),
   JobStartCommandSchema,
   z.strictObject({ type: z.literal("input"), jobId: id, ...chunk, eof: z.boolean() }),
   z.strictObject({ type: z.literal("cancel"), jobId: id, reason: id }),
@@ -412,6 +442,17 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export type JobCommand = z.infer<typeof JobCommandSchema>;
+export const JobInstallationResourcesSchema = z.strictObject({
+  artifactAvailable: z.boolean(),
+  tools: z.array(z.strictObject({
+    alias: component, managed: z.boolean(), available: z.boolean(),
+    artifactSha256: hash.optional(), entrySha256: hash.optional(), reason: id.optional(),
+  })).max(520).refine((tools) => new Set(tools.map((tool) => tool.alias)).size === tools.length),
+  operations: z.array(z.strictObject({
+    operationId: id, available: z.boolean(), reason: id.optional(),
+  })).max(64).refine((operations) => new Set(operations.map((operation) => operation.operationId)).size === operations.length),
+});
+export type JobInstallationResources = z.infer<typeof JobInstallationResourcesSchema>;
 export const JobEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("owner_proof"),
@@ -426,6 +467,7 @@ export const JobEventSchema = z.discriminatedUnion("type", [
     pluginId: id,
     installationRevision: id,
     artifactSha256: hash,
+    resources: JobInstallationResourcesSchema.optional(),
   }),
   z.strictObject({
     type: z.literal("state"),

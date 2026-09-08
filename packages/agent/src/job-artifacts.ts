@@ -13,7 +13,7 @@ import {
   readSync,
   fstatSync,
 } from "node:fs";
-import { MachineArtifactSchema, type MachineArtifact, type JobArtifactDelivery } from "@manifold/protocol";
+import { MachineArtifactSchema, canonicalJobJson, type MachineArtifact, type JobArtifactDelivery } from "@manifold/protocol";
 import { deliveredArtifact, extractArtifact } from "@manifold/plugin-kit/artifacts";
 import type { HeldDirectory } from "./job-files.ts";
 import { safeComponent } from "./job-files.ts";
@@ -37,6 +37,13 @@ export interface PinnedArtifact {
   bytes: number;
   readonly files: Readonly<Record<string, PinnedArtifactFile>>;
   close(): void;
+}
+
+/** Layout identity is distinct from archive identity: equal bytes do not authorize new entries. */
+export function artifactCacheKey(spec: MachineArtifact, entrySha256: string): string {
+  const layout = { sha256: spec.sha256, format: spec.format, entry: spec.entry,
+    entrySha256: spec.entrySha256, files: spec.files ?? {} };
+  return `${createHash("sha256").update(canonicalJobJson(layout)).digest("hex")}-${entrySha256}`;
 }
 
 /** Conservative globally routable unicast policy; mapped IPv4 and special IPv6 ranges refuse. */
@@ -155,6 +162,8 @@ export async function acquireArtifact(
   cache: HeldDirectory,
   authority: ArtifactAuthority,
   delivery?: JobArtifactDelivery,
+  archives?: Map<string, Buffer>,
+  decoded?: Map<string, Buffer>,
 ): Promise<PinnedArtifact> {
   const spec = MachineArtifactSchema.parse(specification);
   if (
@@ -171,7 +180,7 @@ export async function acquireArtifact(
     throw new Error("artifact_cache_not_private");
   const deadline = performance.now() + authority.timeoutMs;
   if (spec.url !== undefined) approvedUrl(spec.url, authority);
-  const supplied = deliveredArtifact(spec, delivery);
+  const supplied = deliveredArtifact(spec, delivery, decoded);
   try {
     const cached = openCachedArtifact(spec, cache);
     if (performance.now() >= deadline) {
@@ -189,7 +198,12 @@ export async function acquireArtifact(
   const held: number[] = [];
   let transferred = false;
   try {
-    const archive = supplied ?? await download(spec, authority, controller.signal);
+    const sourceKey = `${spec.url ?? spec.bundleFile}\0${spec.sha256}`;
+    const archive = archives?.get(sourceKey) ?? supplied ?? await download(spec, authority, controller.signal);
+    if (archive.length > spec.maxBytes) throw new Error("artifact_compressed_limit");
+    if (archives && !archives.has(sourceKey) &&
+      [...archives.values()].reduce((bytes, value) => bytes + value.length, archive.length) <= 16 * 1024 * 1024)
+      archives.set(sourceKey, archive);
     const extracted = await extractArtifact(archive, spec, controller.signal, deadline);
     const files: Record<string, PinnedArtifactFile> = Object.create(null);
     const publications: { temporary: string; destination: string }[] = [];
@@ -228,7 +242,7 @@ export async function acquireArtifact(
         const pinned = { fd, entrySha256: entry.hash, bytes: entry.bytes.length };
         if (entry.name) files[entry.name] = pinned;
         else primary = pinned;
-        publications.push({ temporary, destination: `${spec.sha256}-${entry.hash}` });
+        publications.push({ temporary, destination: artifactCacheKey(spec, entry.hash) });
       } finally {
         closeSync(writable);
       }
@@ -295,7 +309,7 @@ export function openCachedArtifact(
   let primary: PinnedArtifactFile | undefined;
   try {
     for (const entry of entries) {
-      const fd = cache.openFile(`${spec.sha256}-${entry.hash}`, constants.O_RDONLY);
+      const fd = cache.openFile(artifactCacheKey(spec, entry.hash), constants.O_RDONLY);
       held.push(fd);
       const before = fstatSync(fd);
       if (before.uid !== process.getuid?.() || (before.mode & 0o7777) !== 0o500 || before.size <= 0)

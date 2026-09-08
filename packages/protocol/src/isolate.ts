@@ -12,7 +12,7 @@ import {
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
 import { StreamServerMessageSchema } from "./stream.ts";
-import { JobFollowUpdateSchema } from "./jobs.ts";
+import { JobFollowUpdateSchema, machineArtifacts } from "./jobs.ts";
 
 /**
  * THE ISOLATION VOCABULARY (ADR 0016): everything that crosses the boundary between the engine
@@ -683,7 +683,7 @@ export const PluginBundleSchema = z
         message: "bundle members exceed the artifact byte budget",
       });
     }
-    for (const [platform, artifact] of Object.entries(ctx.value.manifest.machine?.artifacts ?? {})) {
+    for (const artifact of machineArtifacts(ctx.value.manifest.machine)) {
       if (artifact.bundleFile === undefined) continue;
       const data = files[artifact.bundleFile];
       const bytes = data === undefined ? 0 : data.length / 4 * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
@@ -691,7 +691,7 @@ export const PluginBundleSchema = z
         ctx.issues.push({
           code: "custom",
           input: ctx.value,
-          path: ["manifest", "machine", "artifacts", platform, "bundleFile"],
+          path: ["manifest", "machine"],
           message: "machine bundle member is missing, empty, or exceeds maxBytes",
         });
       }

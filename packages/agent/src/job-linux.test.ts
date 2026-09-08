@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HeldDirectory, privateSocketPair } from "./job-files.ts";
+import { HeldDirectory, privateSocketPair, privateByteFile, isSealedByteFile } from "./job-files.ts";
 import { JobOutputStore } from "./job-outputs.ts";
 import {
   preflightLinuxJob,
@@ -160,6 +160,35 @@ test("invalid bounds and mount shadowing refuse before touching executable descr
   } finally {
     f.close();
   }
+});
+
+test("runtime executable selection cannot execute a directory closure or an undeclared alias", () => {
+  const f = fixture();
+  try {
+    expect(() => preflightLinuxJob({ ...f.spec, executableRuntimeTool: "engine" }))
+      .toThrow("runtime-executable-unavailable");
+    expect(() => preflightLinuxJob({ ...f.spec, executableRuntimeTool: "engine",
+      runtime: [{ fd: f.spec.delegatedCgroup.fd, target: "/runtime/bin/engine", writable: false }] }))
+      .toThrow("untrusted-executable");
+  } finally { f.close(); }
+});
+
+test("input files must be immutable anonymous descriptors, not readonly views of mutable host files", () => {
+  const f = fixture();
+  const fd = privateByteFile(Buffer.from("exact config\n"));
+  try {
+    expect(isSealedByteFile(fd)).toBe(true);
+    const writable = openSync(`/proc/self/fd/${fd}`, constants.O_RDWR);
+    try { expect(() => writeFileSync(writable, "substitution")).toThrow(); }
+    finally { closeSync(writable); }
+    expect(() => preflightLinuxJob({ ...f.spec,
+      inputFiles: [{ fd: f.spec.artifactFd, target: "/inputs/config", writable: false }] }))
+      .toThrow("unsafe-input-file");
+    expect(() => preflightLinuxJob({ ...f.spec,
+      inputFiles: [{ fd, target: "/inputs/config", writable: false }],
+      locations: [{ fd: f.spec.artifactFd, target: "/inputs/other", writable: false }] }))
+      .toThrow("reserved-input-target");
+  } finally { closeSync(fd); f.close(); }
 });
 
 test("ordinary directories cannot stand in for enforced cgroups", async () => {
@@ -361,6 +390,28 @@ test.skipIf(!realLinux)("native PTY keeps input, resize and snapshots outside jo
   );
 });
 
+test.skipIf(!realLinux)("selected runtime executable reads exact readonly native config instead of running the primary worker", async () => {
+  await withLinux("exit 91", async (spec) => {
+    const fd = privateByteFile(Buffer.from("private-native-config\n"));
+    const frames: string[] = [];
+    try {
+      const handle = await startLinuxJob({
+        ...spec,
+        runtime: [...spec.runtime, { fd: spec.runtime[0]!.fd, target: "/runtime/bin/busybox", writable: false }],
+        executableRuntimeTool: "busybox",
+        argv: ["sh", "-c", 'if ( printf changed > /inputs/config ) 2>/dev/null; then exit 92; fi; /runtime/bin/busybox cat /inputs/config'],
+        inputFiles: [{ fd, target: "/inputs/config", writable: false }],
+        onOutput: (frame) => { if (frame.channel === "stdout") frames.push(Buffer.from(frame.bytes).toString()); },
+      });
+      handle.endInput();
+      const result = await handle.result;
+      handle.release();
+      expect(result.exitCode).toBe(0);
+      expect(result.empty).toBe(true);
+      expect(frames.join("")).toBe("private-native-config\n");
+    } finally { closeSync(fd); }
+  });
+});
 test.skipIf(!realLinux)(
   "whole-tree cancellation drains a descendant moved into a nested cgroup",
   async () => {

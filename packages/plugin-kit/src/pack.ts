@@ -12,6 +12,7 @@ import {
   PLUGIN_BUNDLE_STYLES_FILE,
   PluginBundleSchema,
   PluginManifestSchema,
+  machineArtifacts,
   type PluginBundle,
 } from "@manifold/protocol";
 
@@ -172,7 +173,7 @@ export async function packPlugin(
       `${manifestFile}: ${PLUGIN_BUNDLE_STYLES_FILE} is beside the manifest but entry.styles is not true`,
     );
   }
-  for (const artifact of Object.values(manifest.machine?.artifacts ?? {})) {
+  for (const artifact of machineArtifacts(manifest.machine)) {
     const name = artifact.bundleFile;
     if (name === undefined) continue;
     if (name === PLUGIN_BUNDLE_SERVER_FILE || name === manifest.entry.web || name === PLUGIN_BUNDLE_STYLES_FILE)

@@ -38,6 +38,7 @@ const FILE_SYMBOLS = {
   flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
   socketpair: { args: [FFIType.i32, FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 },
   memfd_create: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
+  fcntl: { args: [FFIType.i32, FFIType.i32, FFIType.i32], returns: FFIType.i32 },
 } as const;
 let libc: Library<typeof FILE_SYMBOLS> | undefined;
 /** Lock remains owned by the open description until the caller closes it. */
@@ -74,11 +75,11 @@ export function privateSocketPair(): PrivateSocketPair {
   }
 }
 
-/** Anonymous owner-created bytes, returned read-only at offset zero for a trusted child. */
+/** Anonymous sealed bytes, returned read-only at offset zero; caller owns the descriptor. */
 export function privateByteFile(bytes: Uint8Array): number {
   libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
   const name = Buffer.from("manifold-job-policy\0");
-  const fd = libc.symbols.memfd_create(ptr(name), 1);
+  const fd = libc.symbols.memfd_create(ptr(name), 1 | 2);
   if (fd < 0) throw new Error("private_policy_file_unavailable");
   try {
     let offset = 0;
@@ -87,10 +88,18 @@ export function privateByteFile(bytes: Uint8Array): number {
       if (written === 0) throw new Error("short_policy_write");
       offset += written;
     }
+    // F_SEAL_SEAL | SHRINK | GROW | WRITE: even reopening via proc cannot mutate the bytes.
+    if (libc.symbols.fcntl(fd, 1033, 15) !== 0) throw new Error("private_file_sealing_failed");
     return openSync(`/proc/self/fd/${fd}`, constants.O_RDONLY | CLOSE_ON_EXEC);
   } finally {
     closeSync(fd);
   }
+}
+
+export function isSealedByteFile(fd: number): boolean {
+  libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
+  const seals = libc.symbols.fcntl(fd, 1034, 0);
+  return seals >= 0 && (seals & 15) === 15;
 }
 
 /** Identity ancestry of a held directory, never a checked-and-reopened pathname. */

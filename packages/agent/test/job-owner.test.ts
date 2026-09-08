@@ -25,6 +25,7 @@ import { HeldDirectory } from "../src/job-files.ts";
 import { JobJournal, jobDigest } from "../src/job-journal.ts";
 import { MachineJobOwner, type JobOwnerOptions } from "../src/job-owner.ts";
 import { JobOutputStore } from "../src/job-outputs.ts";
+import { artifactCacheKey } from "../src/job-artifacts.ts";
 
 const linux = process.platform === "linux";
 describe.skipIf(!linux)("durable job owner journal", () => {
@@ -108,7 +109,7 @@ const compiledProbe = process.env.MANIFOLD_TEST_SYSCALL_PROBE;
 const realBackend = linux && Boolean(bwrap && busybox && cgroupRoot);
 
 describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () => {
-  test("bundled worker installation runs once; transport and owner restarts never replay; stdout stays job-bound", async () => {
+  test.each(["primary", "managed"] as const)("bundled %s execution survives missing optional tools and owner recovery without replay", async (mode) => {
     const root = mkdtempSync(join(tmpdir(), "machine-owner-"));
     const keys = generateKeyPairSync("ed25519");
     const admissionPublicKey = keys.publicKey.export({ type: "spki", format: "pem" }).toString();
@@ -155,6 +156,20 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
         },
       },
     };
+    const primary = Object.values(install.machine.artifacts)[0]!;
+    const engine = { ...primary, bundleFile: "engine", entry: ["managed-engine"] };
+    install.machine.tools = { engine: { [`linux-${process.arch}`]: engine }, absent: {} };
+    install.toolArtifacts = { engine: bytes.toString("base64") };
+    install.machine.operations["fixture.jobs.managed"] = {
+      ...install.machine.operations["fixture.jobs.run"]!,
+      executable: { runtimeTool: "engine" }, runtimeTools: ["engine"],
+      input: { config: { type: "string", required: true } },
+      inputFiles: { "config.json": { input: "config" } },
+    };
+    install.machine.operations["fixture.jobs.absent"] = {
+      ...install.machine.operations["fixture.jobs.run"]!,
+      executable: { runtimeTool: "absent" }, runtimeTools: ["absent"],
+    };
     let owner: MachineJobOwner | null = null;
     const held: HeldDirectory[] = [];
     let bwrapFd = -1;
@@ -180,7 +195,7 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
         bubblewrapFd: bwrapFd,
         anchors: {},
         protectedDirectories: [protectedRoot],
-        runtimeTools: {},
+        runtimeTools: { absent: [{ fd: bwrapFd, target: "/runtime/bin/absent", writable: false }] },
         artifactAuthority: {
           origins: [],
           maxRedirects: 0,
@@ -209,6 +224,15 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
       expect(events.at(-1)).toMatchObject({ type: "refusal" });
       await owner.execute({ ...install, artifact: { ...delivery, data: Buffer.from("substitution").toString("base64") } });
       expect(events.at(-1)).toMatchObject({ type: "refusal" });
+      await owner.execute({ ...install, toolArtifacts: undefined });
+      expect(events.at(-1)).toMatchObject({ type: "installed", resources: {
+        artifactAvailable: true,
+        operations: expect.arrayContaining([
+          { operationId: "fixture.jobs.run", available: true },
+          expect.objectContaining({ operationId: "fixture.jobs.managed", available: false }),
+          expect.objectContaining({ operationId: "fixture.jobs.absent", available: false }),
+        ]),
+      } });
       await owner.execute(install);
       expect(events.at(-1)).toMatchObject({
         type: "installed", pluginId: install.pluginId,
@@ -217,11 +241,11 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
       const requestBody = {
         jobId: "once",
         machineId: "machine",
-        operationId: "fixture.jobs.run",
+        operationId: mode === "primary" ? "fixture.jobs.run" : "fixture.jobs.managed",
         pluginId: "fixture.jobs",
         installationRevision: "r1",
         artifactSha256: sha256,
-        input: {},
+        input: mode === "primary" ? {} : { config: "{\"private\":true}\n" },
         limits,
         outputs: [],
         parent: null,
@@ -259,6 +283,13 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
           ).toString("base64"),
         },
       };
+      const absentBody = { ...requestBody, jobId: "absent", operationId: "fixture.jobs.absent", input: {} };
+      const absentRequest = { ...absentBody, requestDigest: jobDigest(absentBody) };
+      const absentPermit = { ...permitBody, permitId: "absent", jobId: "absent", requestDigest: absentRequest.requestDigest };
+      await owner.execute({ type: "start", request: absentRequest, permit: {
+        ...absentPermit, signature: sign(null, Buffer.from(canonicalJobJson(absentPermit)), keys.privateKey).toString("base64"),
+      } });
+      expect(events.at(-1)).toMatchObject({ type: "refusal", jobId: "absent", reason: "runtime_tool_platform_unavailable" });
       await owner.execute({
         ...command,
         permit: { ...command.permit, signature: Buffer.alloc(64).toString("base64") },
@@ -362,6 +393,7 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
       }
       release();
       await owner.shutdown();
+      unlinkSync(join(root, "cache", artifactCacheKey(engine, engine.entrySha256)));
       const interruptedBody = { ...requestBody, jobId: "unobserved" };
       const interruptedRequest: JobRequest = {
         ...interruptedBody,
@@ -395,6 +427,16 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
           HeldDirectory.openAbsolute(join(root, "journal"), { private: true }),
         ),
       });
+      expect(owner.installedResources(install.pluginId, install.installationRevision).operations)
+        .toEqual(expect.arrayContaining([
+          { operationId: "fixture.jobs.run", available: true },
+          expect.objectContaining({ operationId: "fixture.jobs.managed", available: false }),
+          expect.objectContaining({ operationId: "fixture.jobs.absent", available: false }),
+        ]));
+      await owner.execute({ type: "drain", draining: false });
+      await owner.execute(install);
+      expect(owner.installedResources(install.pluginId, install.installationRevision).operations)
+        .toContainEqual({ operationId: "fixture.jobs.managed", available: true });
       release = owner.attach((event) => {
         events.push(event);
         return true;
@@ -507,7 +549,7 @@ test.skipIf(!realBackend || !outputRoot)(
       for (const name of ["journal", "cache", "outputs"])
         mkdirSync(join(root, name), { mode: 0o700 });
       mkdirSync(join(sourceRoot, "source"), { mode: 0o700 });
-      writeFileSync(join(root, "cache", `${sha256}-${sha256}`), bytes, { mode: 0o500 });
+      writeFileSync(join(root, "cache", artifactCacheKey(Object.values(install.machine.artifacts)[0]!, sha256)), bytes, { mode: 0o500 });
       const seed = new JobJournal(
         HeldDirectory.openAbsolute(join(root, "journal"), { private: true }),
       );

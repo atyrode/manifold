@@ -14,6 +14,7 @@ import { packPlugin, type PackResult } from "../src/pack.ts";
 import * as React from "react";
 import * as Plugin from "@manifold/plugin";
 import * as UI from "@manifold/ui";
+import { createHash } from "node:crypto";
 
 /**
  * `pack` TURNS THE SAMPLE INTO THE ARTIFACT THE INSTALL DOOR READS — and the artifact runs.
@@ -72,6 +73,35 @@ describe("the artifact", () => {
     expect(bundle.manifest.id).toBe("example.counter");
     expect(bundle.manifest.entry).toEqual({ server: true, web: "web.js" });
     expect(Object.keys(bundle.files).sort()).toEqual([PLUGIN_BUNDLE_SERVER_FILE, "web.js"]);
+  });
+
+  test("packing carries managed tool members once and verifies their own pinned bytes", async () => {
+    const source = mkdtempSync(`${tmpdir()}/managed-tool-pack-`);
+    const bytes = Buffer.from("private managed executable");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const pinned = { bundleFile: "engine", sha256, entrySha256: sha256, format: "raw",
+      entry: ["engine"], maxBytes: bytes.length, maxExpandedBytes: bytes.length, maxMembers: 1 };
+    const manifest = { ...bundle.manifest, entry: { web: "web.js" }, machine: {
+      artifacts: { "linux-x64": { ...pinned, bundleFile: "worker" } },
+      tools: { engine: { "linux-x64": pinned }, other: { "linux-x64": pinned } },
+      locations: {}, operations: { "example.counter.run": {
+        argv: [], input: {}, runtimeTools: ["engine"], executable: { runtimeTool: "engine" },
+        locations: [], outputs: [], network: "none", stdin: false,
+        limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+      } },
+    } };
+    try {
+      await Bun.write(`${source}/manifest.json`, JSON.stringify(manifest));
+      await Bun.write(`${source}/web.ts`, "export const native = true;");
+      await Bun.write(`${source}/worker`, bytes);
+      await Bun.write(`${source}/engine`, bytes);
+      const result = await packPlugin(source, `${source}/bundle.json`, { shared: false });
+      const packed = PluginBundleSchema.parse(await Bun.file(result.file).json());
+      expect(Object.keys(packed.files).sort()).toEqual(["engine", "web.js", "worker"]);
+      expect(Buffer.from(packed.files.engine!, "base64")).toEqual(bytes);
+      await Bun.write(`${source}/engine`, Buffer.from("substituted tool bytes"));
+      await expect(packPlugin(source, `${source}/bad.json`, { shared: false })).rejects.toThrow();
+    } finally { rmSync(source, { recursive: true, force: true }); }
   });
 
   test("both halves are self-contained: the kit, the protocol and zod are inlined", () => {

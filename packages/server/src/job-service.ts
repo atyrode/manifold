@@ -22,6 +22,7 @@ import {
 import {
   canonicalJobJson,
   JobRequestSchema,
+  JobCommandSchema,
   MachineHalfSchema,
   MAX_JOB_FOLLOW_EVENTS,
   MAX_JOB_FOLLOW_BYTES,
@@ -700,20 +701,40 @@ export class JobService {
   setBundleResolver(resolver: (pluginId: string) => PluginBundle | null): void {
     this.bundleResolver = resolver;
   }
-  private artifactDelivery(pluginId: string, machine: MachineHalf, sha256: string): JobArtifactDelivery | null | undefined {
-    const artifacts = Object.values(machine.artifacts).filter((artifact) => artifact.sha256 === sha256);
-    const spec = artifacts.find((artifact) => artifact.bundleFile !== undefined);
-    if (!spec) return undefined;
-    if (artifacts.some((artifact) => artifact.bundleFile !== spec.bundleFile))
+  private artifactDelivery(pluginId: string, machine: MachineHalf, sha256: string, platforms?: readonly string[]):
+    Pick<Extract<JobCommand, { type: "install" }>, "artifact" | "toolArtifacts"> | null {
+    const candidates = Object.entries(machine.artifacts).filter(([platform, artifact]) =>
+      artifact.sha256 === sha256 && (!platforms?.length || platforms.includes(platform)));
+    if (!candidates.length) return null;
+    // A primary digest alone cannot choose different platform-specific tool closures.
+    const selections = candidates.map(([platform, primary]) => ({
+      primary,
+      tools: Object.values(machine.tools ?? {}).flatMap((tools) => {
+        const tool = tools[platform as keyof typeof tools];
+        return tool ? [tool] : [];
+      }),
+    }));
+    if (selections.some((selection) => digest(selection) !== digest(selections[0])))
       fail("artifact_source_ambiguous");
+    const { primary, tools } = selections[0]!;
+    const specs = [primary, ...tools];
+    if (!specs.some((spec) => spec.bundleFile !== undefined)) return {};
     const bundle = this.bundleResolver?.(pluginId);
     if (!bundle || bundle.manifest.id !== pluginId || digest(bundle.manifest.machine) !== digest(machine))
       return null;
-    const data = bundle.files[spec.bundleFile!];
-    if (data === undefined) return null;
-    const delivery = { bundleFile: spec.bundleFile!, data };
-    deliveredArtifact(spec, delivery);
-    return delivery;
+    let artifact: JobArtifactDelivery | undefined;
+    const toolArtifacts: Record<string, string> = Object.create(null);
+    for (const spec of specs) {
+      if (!spec.bundleFile) continue;
+      const data = bundle.files[spec.bundleFile];
+      if (data === undefined) return null;
+      const delivery = { bundleFile: spec.bundleFile, data };
+      deliveredArtifact(spec, delivery);
+      if (spec === primary) artifact = delivery;
+      else if (artifact?.bundleFile !== spec.bundleFile) toolArtifacts[spec.bundleFile] = data;
+    }
+    return { ...(artifact ? { artifact } : {}),
+      ...(Object.keys(toolArtifacts).length ? { toolArtifacts } : {}) };
   }
   private readonly followers = new Set<JobFollower>();
   private readonly followQueue: {
@@ -1177,8 +1198,10 @@ export class JobService {
     const declared = this.declaredMachine(args.pluginId);
     if (declared === null || digest(declared) !== digest(machine))
       fail("manifest_declaration_mismatch");
-    if (this.artifactDelivery(args.pluginId, machine, args.artifactSha256) === null)
-      fail("artifact_bundle_unavailable");
+    const delivery = this.artifactDelivery(args.pluginId, machine, args.artifactSha256, this.channels.get(args.machineId)?.owner.platforms);
+    if (delivery === null) fail("artifact_bundle_unavailable");
+    JobCommandSchema.parse({ type: "install", pluginId: args.pluginId,
+      installationRevision: args.installationRevision, artifactSha256: args.artifactSha256, machine, ...delivery });
     for (const name of [...Object.keys(machine.operations), ...Object.keys(machine.locations)])
       if (!name.startsWith(`${args.pluginId}.`)) fail("unqualified_declaration");
     for (const operation of Object.values(machine.operations)) {
@@ -1631,7 +1654,7 @@ export class JobService {
     if (live?.proved)
       live.channel.send({
         type: "job_command",
-        command: {
+        command: JobCommandSchema.parse({
           type: "install",
           pluginId: install.pluginId,
           installationRevision: install.revision,
@@ -1639,14 +1662,14 @@ export class JobService {
           machine: install.machine,
           ...(install.enabled && !install.purgeRequested
             // An unavailable former bundle must refuse acquisition, not disconnect retained reads.
-            ? { artifact: this.artifactDelivery(install.pluginId, install.machine, install.artifact) ?? undefined }
+            ? this.artifactDelivery(install.pluginId, install.machine, install.artifact, live.owner.platforms) ?? {}
             : {}),
           ...(install.purgeRequested
             ? { action: "purge" as const }
             : install.enabled
               ? {}
               : { action: "disable" as const }),
-        },
+        }),
       });
   }
   event(channel: JobChannel, event: JobEvent): void {

@@ -18,6 +18,7 @@ import {
   safeComponent,
   privateSocketPair,
   privateByteFile,
+  isSealedByteFile,
   type PrivateSocketPair,
 } from "./job-files.ts";
 
@@ -42,6 +43,10 @@ export interface LinuxJobSpec {
   /** Pinned, trusted bubblewrap supporting --bind-fd and --ro-bind-fd. */
   bubblewrapFd: number;
   artifactFd: number;
+  /** Reviewed manifest runtime alias, never a caller path. */
+  executableRuntimeTool?: string;
+  /** Sealed anonymous readonly files, separate from runtime closures and output writers. */
+  inputFiles?: readonly LinuxJobBind[];
   argv: readonly string[];
   runtime: readonly LinuxJobBind[];
   locations: readonly LinuxJobBind[];
@@ -251,7 +256,8 @@ export function preflightLinuxJob(spec: LinuxJobSpec): number {
     )
   )
     refuse("invalid-fixed-argv");
-  const binds = [...spec.runtime, ...spec.locations, ...spec.outputs];
+  const inputFiles = spec.inputFiles ?? [];
+  const binds = [...spec.runtime, ...spec.locations, ...spec.outputs, ...inputFiles];
   if (binds.length > 256) refuse("too-many-mounts");
   for (const bind of binds) destination(bind.target);
   for (let i = 0; i < binds.length; i++) {
@@ -269,6 +275,22 @@ export function preflightLinuxJob(spec: LinuxJobSpec): number {
       refuse("overlapping-mounts");
   }
   if (spec.runtime.some((bind) => bind.writable)) refuse("writable-runtime");
+  if ([...spec.runtime, ...spec.locations, ...spec.outputs].some((bind) =>
+    bind.target === "/inputs" || bind.target.startsWith("/inputs/"))) refuse("reserved-input-target");
+  let inputBytes = 0;
+  for (const bind of inputFiles) {
+    if (bind.writable || !/^\/inputs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(bind.target) ||
+      !fstatSync(bind.fd).isFile() || !isSealedByteFile(bind.fd)) refuse("unsafe-input-file");
+    inputBytes += fstatSync(bind.fd).size;
+  }
+  if (inputBytes > 65536) refuse("input-file-byte-limit");
+  if (spec.executableRuntimeTool !== undefined) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(spec.executableRuntimeTool))
+      refuse("invalid-runtime-executable");
+    const matches = spec.runtime.filter((bind) => bind.target === `/runtime/bin/${spec.executableRuntimeTool}`);
+    if (matches.length !== 1 || matches[0]!.writable) refuse("runtime-executable-unavailable");
+    executable(matches[0]!.fd);
+  }
   executable(spec.bubblewrapFd);
   executable(spec.artifactFd);
   const mountBudget = { entries: 0 };
@@ -569,13 +591,15 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     args.push(writable ? "--bind-fd" : "--ro-bind-fd", String(slot), target);
   }
   bind(spec.artifactFd, "/job/artifact", false);
-  for (const mount of [...spec.runtime, ...spec.locations, ...spec.outputs])
+  for (const mount of [...spec.runtime, ...spec.locations, ...spec.outputs, ...(spec.inputFiles ?? [])])
     bind(mount.fd, mount.target, mount.writable);
   if (spec.nestedCgroup) {
     bind(groups.workloads.fd, "/sys/fs/cgroup/workloads", true);
     args.push("--setenv", "MANIFOLD_JOB_CGROUP_ROOT", "/sys/fs/cgroup/workloads");
   }
-  args.push("--remount-ro", "/", "--", "/job/artifact", ...spec.argv);
+  args.push("--remount-ro", "/", "--",
+    spec.executableRuntimeTool === undefined ? "/job/artifact" : `/runtime/bin/${spec.executableRuntimeTool}`,
+    ...spec.argv);
   let child: { readonly pid: number | undefined; kill(signal: "SIGKILL"): unknown };
   let exited: Promise<{ code: number | null; signal: string | null }>;
   let stdin: ChildProcess["stdin"] = null;

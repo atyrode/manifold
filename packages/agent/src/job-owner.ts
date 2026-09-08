@@ -1,4 +1,5 @@
 import { createPublicKey, verify, type KeyObject } from "node:crypto";
+import { closeSync, fstatSync } from "node:fs";
 import {
   canonicalJobJson,
   JobCommandSchema,
@@ -10,12 +11,15 @@ import {
   type JobRequest,
   type JobResult,
   type MachineOperation,
+  type JobInstallationResources,
+  type JobArtifactDelivery,
 } from "@manifold/protocol";
-import type { HeldDirectory } from "./job-files.ts";
+import { privateByteFile, type HeldDirectory } from "./job-files.ts";
 import { deliveredArtifact } from "@manifold/plugin-kit/artifacts";
 import {
   acquireArtifact,
   openCachedArtifact,
+  artifactCacheKey,
   type ArtifactAuthority,
   type PinnedArtifact,
 } from "./job-artifacts.ts";
@@ -54,7 +58,9 @@ export interface JobOwnerOptions {
 }
 interface Installation {
   command: Extract<JobCommand, { type: "install" }>;
-  artifact: PinnedArtifact;
+  artifact: PinnedArtifact | null;
+  tools: Map<string, PinnedArtifact>;
+  toolFailures: Map<string, string>;
   enabled: boolean;
 }
 interface OwnedJob {
@@ -63,6 +69,7 @@ interface OwnedJob {
   handle: LinuxJobHandle | null;
   context: JobContext | null;
   locations: Map<string, JobLocation>;
+  inputFiles: LinuxJobBind[];
   leases: JobOutputLease[];
   releaseWriters: Array<() => void>;
   inputSeq: number;
@@ -332,27 +339,44 @@ export class MachineJobOwner {
     const spec = command.machine.artifacts[this.platform()];
     if (!spec || spec.sha256 !== command.artifactSha256)
       throw new Error("installed_artifact_platform_mismatch");
-    const artifact = openCachedArtifact(spec, this.options.cache);
+    let artifact: PinnedArtifact | null = null;
+    try { artifact = openCachedArtifact(spec, this.options.cache); } catch { /* Report unavailable, never ambient fallback. */ }
     const key = this.installKey(command.pluginId, command.installationRevision);
-    this.installs.get(key)?.artifact.close();
+    const tools = new Map<string, PinnedArtifact>();
+    const toolFailures = new Map<string, string>();
+    for (const [alias, platforms] of Object.entries(command.machine.tools ?? {})) {
+      const tool = platforms[this.platform()];
+      try {
+        if (!tool) throw new Error("runtime_tool_platform_unavailable");
+        tools.set(alias, openCachedArtifact(tool, this.options.cache));
+      } catch { toolFailures.set(alias, "runtime_tool_cache_unavailable"); }
+    }
+    this.installs.get(key)?.artifact?.close();
+    for (const tool of this.installs.get(key)?.tools.values() ?? []) tool.close();
     this.installs.set(key, {
       command: { ...command, action: undefined },
-      enabled: command.action !== "disable",
-      artifact,
+      enabled: command.action !== "disable", artifact, tools, toolFailures,
     });
   }
 
   private async install(incoming: Extract<JobCommand, { type: "install" }>): Promise<void> {
-    const { artifact: delivery, ...command } = incoming;
+    const { artifact: delivery, toolArtifacts, ...command } = incoming;
     const artifactSpec = command.machine.artifacts[this.platform()];
     if (!artifactSpec || artifactSpec.sha256 !== command.artifactSha256)
       throw new Error("unsupported_artifact_platform");
     if (command.action) {
-      if (delivery !== undefined) throw new Error("artifact_unexpected_delivery");
+      if (delivery !== undefined || toolArtifacts !== undefined) throw new Error("artifact_unexpected_delivery");
     }
     if (this.draining && !command.action) throw new Error("owner_draining");
     const key = this.installKey(command.pluginId, command.installationRevision);
     const existing = this.installs.get(key);
+    const selectedTools = Object.entries(command.machine.tools ?? {}).map(([alias, platforms]) =>
+      [alias, platforms[this.platform()]] as const);
+    for (const name of Object.keys(toolArtifacts ?? {}))
+      if (!selectedTools.some(([, spec]) => spec?.bundleFile === name))
+        throw new Error("artifact_unexpected_delivery");
+    const archives = new Map<string, Buffer>();
+    const decoded = new Map<string, Buffer>();
     if (command.action) {
       if (
         !existing ||
@@ -389,23 +413,23 @@ export class MachineJobOwner {
         for (const job of affected)
           for (const output of this.options.outputs.recovered(job.request.jobId))
             this.options.outputs.release(job.request.jobId, output.outputId);
-        existing.artifact.close();
+        existing.artifact?.close();
+        for (const tool of existing.tools.values()) tool.close();
         this.installs.delete(key);
-        const spec = command.machine.artifacts[this.platform()]!;
-        const digests = new Set([
-          spec.entrySha256,
-          ...Object.values(spec.files ?? {}).map((file) => file.sha256),
-        ]);
-        for (const digest of digests) {
-          const shared = [...this.installs.values()].some((installation) => {
-            const other = installation.command.machine.artifacts[this.platform()];
-            return (
-              other?.sha256 === spec.sha256 &&
-              (other.entrySha256 === digest ||
-                Object.values(other.files ?? {}).some((file) => file.sha256 === digest))
-            );
-          });
-          if (!shared) this.options.cache.unlink(`${spec.sha256}-${digest}`);
+        const specs = [artifactSpec, ...selectedTools.flatMap(([, spec]) => spec ? [spec] : [])];
+        for (const spec of specs) {
+          for (const digest of new Set([spec.entrySha256, ...Object.values(spec.files ?? {}).map((file) => file.sha256)])) {
+            const name = artifactCacheKey(spec, digest);
+            const shared = [...this.installs.values()].some((installation) => {
+              const machine = installation.command.machine;
+              const others = [machine.artifacts[this.platform()], ...Object.values(machine.tools ?? {}).map((platforms) => platforms[this.platform()])];
+              return others.some((other) => other && artifactCacheKey(other, digest) === name);
+            });
+            if (!shared) {
+              try { this.options.cache.unlink(name); }
+              catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+            }
+          }
         }
       }
       this.emit({
@@ -413,13 +437,16 @@ export class MachineJobOwner {
         pluginId: command.pluginId,
         installationRevision: command.installationRevision,
         artifactSha256: command.artifactSha256,
+        resources: this.installedResources(command.pluginId, command.installationRevision),
       });
       return;
     }
     if (existing) {
-      deliveredArtifact(artifactSpec, delivery);
+      deliveredArtifact(artifactSpec, delivery, decoded);
       if (jobDigest(existing.command) !== jobDigest(command))
         throw new Error("installation_revision_changed");
+      if (!existing.artifact) existing.artifact = await acquireArtifact(
+        artifactSpec, this.options.cache, this.options.artifactAuthority, delivery, archives, decoded);
       if (!existing.enabled) {
         this.options.journal.append({ kind: "install", command });
         existing.enabled = true;
@@ -431,9 +458,6 @@ export class MachineJobOwner {
           throw new Error("location_namespace_mismatch");
       for (const [id, operation] of Object.entries(command.machine.operations)) {
         if (!id.startsWith(`${command.pluginId}.`)) throw new Error("operation_namespace_mismatch");
-        for (const tool of operation.runtimeTools)
-          if (!this.options.runtimeTools[tool] && !artifactSpec.files?.[tool])
-            throw new Error("runtime_tool_unavailable");
         for (const location of operation.locations)
           if (!command.machine.locations[location.locationId])
             throw new Error("undeclared_location");
@@ -443,14 +467,34 @@ export class MachineJobOwner {
         this.options.cache,
         this.options.artifactAuthority,
         delivery,
+        archives, decoded,
       );
       try {
         if (this.draining || this.installs.has(key)) throw new Error("installation_raced");
         this.options.journal.append({ kind: "install", command });
-        this.installs.set(key, { command, artifact, enabled: true });
+        this.installs.set(key, { command, artifact, enabled: true, tools: new Map(), toolFailures: new Map() });
       } catch (error) {
         artifact.close();
         throw error;
+      }
+    }
+    const installation = this.installs.get(key)!;
+    for (const [alias, spec] of selectedTools) {
+      try {
+        if (!spec) throw new Error("runtime_tool_platform_unavailable");
+        const member: JobArtifactDelivery | undefined = spec.bundleFile === undefined ? undefined :
+          delivery?.bundleFile === spec.bundleFile ? delivery :
+          toolArtifacts?.[spec.bundleFile] === undefined ? undefined :
+          { bundleFile: spec.bundleFile, data: toolArtifacts[spec.bundleFile]! };
+        const artifact = await acquireArtifact(spec, this.options.cache, this.options.artifactAuthority, member, archives, decoded);
+        installation.tools.get(alias)?.close();
+        installation.tools.set(alias, artifact);
+        installation.toolFailures.delete(alias);
+      } catch (error) {
+        installation.tools.get(alias)?.close();
+        installation.tools.delete(alias);
+        installation.toolFailures.set(alias, error instanceof Error && /^[a-zA-Z0-9_-]{1,128}$/.test(error.message)
+          ? error.message : "runtime_tool_acquisition_refused");
       }
     }
     this.emit({
@@ -458,6 +502,7 @@ export class MachineJobOwner {
       pluginId: command.pluginId,
       installationRevision: command.installationRevision,
       artifactSha256: command.artifactSha256,
+      resources: this.installedResources(command.pluginId, command.installationRevision),
     });
   }
 
@@ -519,13 +564,15 @@ export class MachineJobOwner {
     );
     const operation = installation?.command.machine.operations[request.operationId];
     if (
-      !installation?.enabled ||
+      !installation?.enabled || !installation.artifact ||
       !operation ||
       installation.command.artifactSha256 !== request.artifactSha256
     )
       throw new Error("operation_not_installed");
     this.validateInput(operation, request);
     if (request.terminal && !operation.stdin) throw new Error("terminal_operation_requires_stdin");
+    const unavailable = this.operationUnavailable(installation, operation);
+    if (unavailable) throw new Error(unavailable);
     let parent: OwnedJob | undefined;
     if (request.parent) {
       parent = this.requireJob(request.parent.parentJobId);
@@ -644,18 +691,22 @@ export class MachineJobOwner {
       });
       const runtime: LinuxJobBind[] = [];
       for (const tool of operation.runtimeTools) {
-        const bundled = installation.artifact.files[tool];
-        const configured = bundled
-          ? [{ fd: bundled.fd, target: `/runtime/bin/${tool}`, writable: false }]
-          : this.options.runtimeTools[tool];
+        const configured = this.runtimeTool(installation, tool);
         if (!configured) throw new Error("runtime_tool_unavailable");
         for (const bind of configured)
           if (!runtime.some((prior) => prior.fd === bind.fd && prior.target === bind.target))
             runtime.push(bind);
       }
+      for (const [name, declaration] of Object.entries(operation.inputFiles ?? {})) {
+        const value = request.input[declaration.input];
+        if (typeof value !== "string") throw new Error("input_file_string_required");
+        job.inputFiles.push({ fd: privateByteFile(Buffer.from(value)), target: `/inputs/${name}`, writable: false });
+      }
       const spec: LinuxJobSpec = {
         bubblewrapFd: this.options.bubblewrapFd,
         artifactFd: installation.artifact.fd,
+        executableRuntimeTool: operation.executable?.runtimeTool,
+        inputFiles: job.inputFiles,
         argv: operation.argv.map((slot) =>
           "literal" in slot ? slot.literal : String(request.input[slot.input]),
         ),
@@ -748,6 +799,7 @@ export class MachineJobOwner {
           this.emit({ type: "result", result: job.result }, job);
           job.resolveFinalized();
         }
+        this.closeInputFiles(job);
       }
       throw error;
     }
@@ -758,6 +810,7 @@ export class MachineJobOwner {
     job.handle = null;
     for (const childId of job.children) await this.cancel(childId);
     job.resolveEmpty();
+    this.closeInputFiles(job);
     for (const release of job.releaseWriters) release();
     job.releaseWriters = [];
     const result: JobResult = {
@@ -862,6 +915,9 @@ export class MachineJobOwner {
 
   private async interrupt(job: OwnedJob): Promise<void> {
     this.draining = true;
+    // Immutable inputs have no output-writer authority. Child mounts retain their own kernel
+    // references; releasing our transport copies is safe even if empty proof is unavailable.
+    this.closeInputFiles(job);
     if (job.handle) {
       try {
         await job.handle.cancel();
@@ -894,6 +950,9 @@ export class MachineJobOwner {
   }
 
   private validateInput(operation: MachineOperation, request: JobRequest): void {
+    if (Object.values(operation.inputFiles ?? {}).reduce((bytes, { input }) =>
+      bytes + (typeof request.input[input] === "string" ? Buffer.byteLength(request.input[input]) : 0), 0) > 65536)
+      throw new Error("input_file_byte_limit");
     for (const [name, value] of Object.entries(request.input)) {
       const field = operation.input[name];
       if (
@@ -940,6 +999,7 @@ export class MachineJobOwner {
       handle: null,
       context: null,
       locations: new Map(),
+      inputFiles: [],
       leases: [],
       releaseWriters: [],
       inputSeq: 0,
@@ -984,6 +1044,55 @@ export class MachineJobOwner {
   private installKey(pluginId: string, revision: string): string {
     return `${pluginId}\0${revision}`;
   }
+  private closeInputFiles(job: OwnedJob): void {
+    for (const file of job.inputFiles) closeSync(file.fd);
+    job.inputFiles = [];
+  }
+  private runtimeTool(installation: Installation, alias: string): readonly LinuxJobBind[] | undefined {
+    if (Object.hasOwn(installation.command.machine.tools ?? {}, alias)) {
+      const managed = installation.tools.get(alias);
+      return managed ? [{ fd: managed.fd, target: `/runtime/bin/${alias}`, writable: false }] : undefined;
+    }
+    const bundled = installation.artifact?.files[alias];
+    return bundled ? [{ fd: bundled.fd, target: `/runtime/bin/${alias}`, writable: false }] :
+      Object.hasOwn(this.options.runtimeTools, alias) ? this.options.runtimeTools[alias] : undefined;
+  }
+  private operationUnavailable(installation: Installation, operation: MachineOperation): string | undefined {
+    if (!installation.enabled || !installation.artifact) return "operation_not_installed";
+    for (const alias of operation.runtimeTools) {
+      const binds = this.runtimeTool(installation, alias);
+      if (!binds) return installation.toolFailures.get(alias) ?? "runtime_tool_unavailable";
+      if (operation.executable?.runtimeTool === alias) {
+        const matches = binds.filter((bind) => bind.target === `/runtime/bin/${alias}` && !bind.writable);
+        if (matches.length !== 1) return "runtime_executable_unavailable";
+        try {
+          const stat = fstatSync(matches[0]!.fd);
+          if (!stat.isFile() || !(stat.mode & 0o111) || (stat.mode & 0o6022)) return "runtime_executable_untrusted";
+        } catch { return "runtime_executable_unavailable"; }
+      }
+    }
+    return undefined;
+  }
+  installedResources(pluginId: string, revision: string): JobInstallationResources {
+    const installation = this.installs.get(this.installKey(pluginId, revision));
+    return {
+      artifactAvailable: installation?.artifact !== null && installation?.artifact !== undefined,
+      tools: installation ? [...new Set([
+        ...Object.keys(installation.command.machine.tools ?? {}),
+        ...Object.values(installation.command.machine.operations).flatMap((operation) => operation.runtimeTools),
+      ])].map((alias) => {
+        const managed = Object.hasOwn(installation.command.machine.tools ?? {}, alias);
+        const artifact = installation.tools.get(alias);
+        return { alias, managed, available: this.runtimeTool(installation, alias) !== undefined,
+          ...(artifact ? { artifactSha256: artifact.archiveSha256, entrySha256: artifact.entrySha256 } : {}),
+          ...(installation.toolFailures.has(alias) ? { reason: installation.toolFailures.get(alias)! } : {}) };
+      }) : [],
+      operations: installation ? Object.entries(installation.command.machine.operations).map(([operationId, operation]) => {
+        const reason = this.operationUnavailable(installation, operation);
+        return { operationId, available: reason === undefined, ...(reason ? { reason } : {}) };
+      }) : [],
+    };
+  }
   private platform(): "linux-x64" | "linux-arm64" {
     if (process.platform !== "linux" || (process.arch !== "x64" && process.arch !== "arm64"))
       throw new Error("unsupported_job_platform");
@@ -996,6 +1105,10 @@ export class MachineJobOwner {
     await Promise.all([...this.jobs.values()].map((job) => this.cancel(job.request.jobId)));
     await Promise.all([...this.jobs.values()].map((job) => job.finalized));
     this.ready = false;
+    for (const installation of this.installs.values()) {
+      installation.artifact?.close();
+      for (const tool of installation.tools.values()) tool.close();
+    }
     this.options.journal.close();
   }
 }
