@@ -219,23 +219,29 @@ test("bound terminal admission requires current spawn authority, exact pins and 
   try {
     const containerId = "terminal-home";
     f.store.createContainer({ id: containerId, name: "terminal", discipline: "composition", createdAt: f.runtime.now() });
+    const spawnTrace = (actor: AuthContext) => f.store.appendTrace({
+      actor: actor.principal.id, authority: "terminals:spawn", door: "core.terminals.open",
+      containerId, session: null, ts: f.runtime.now(), outcome: "ok", targets: [], payload: {},
+    });
+    let traceId = spawnTrace(f.root);
     const runtime = { pluginId, operationId, installationRevision: "r1", artifactSha256: hash, input: { value: "safe" } };
-    const binding = { terminalId: "native-terminal", terminalHostId: "native-host", containerId };
+    const binding = { terminalId: "native-terminal", terminalHostId: "native-host", containerId: "new-solo-home" };
     const forged = { jobId: "forged", machineId: f.machineId, operationId, input: runtime.input, outputs: [], terminal: binding };
     expect(() => f.service.execute(f.root, pluginId, "trace", forged)).toThrow("native_terminal_admission_required");
     consent(f, "machines:run");
     prove(f);
-    expect(() => f.service.admitTerminal(f.root, runtime, f.machineId, binding, 1)).toThrow();
+    expect(() => f.service.admitTerminal(f.root, runtime, f.machineId, binding, traceId)).toThrow();
     f.owner.terminalHostId = "native-host";
     prove(f);
-    expect(() => f.service.admitTerminal(f.root, { ...runtime, installationRevision: "stale" }, f.machineId, binding, 1)).toThrow();
-    expect(() => f.service.admitTerminal(f.root, runtime, f.machineId, { ...binding, terminalHostId: "other-host" }, 1)).toThrow();
+    expect(() => f.service.admitTerminal(f.root, { ...runtime, installationRevision: "stale" }, f.machineId, binding, traceId)).toThrow();
+    expect(() => f.service.admitTerminal(f.root, runtime, f.machineId, { ...binding, terminalHostId: "other-host" }, traceId)).toThrow();
     const token = f.auth.mintToken({
       principal: { name: "terminal-opener", kind: "agent" },
       caps: ["machines:run", "terminals:spawn"],
     }, f.root);
     const original = f.auth.authenticate(token.token);
-    const first = f.service.admitTerminal(original, runtime, f.machineId, binding, 1);
+    traceId = spawnTrace(original);
+    const first = f.service.admitTerminal(original, runtime, f.machineId, binding, traceId);
     // Admission returns a one-use command to the terminal broker, never a second job-channel start.
     expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
     f.service.cancelTerminal(binding.terminalId);
@@ -246,9 +252,10 @@ test("bound terminal admission requires current spawn authority, exact pins and 
       caps: ["terminals:spawn"], effect: "deny", reach: "node",
     }, f.root);
     // Reusing the original authenticated context cannot outrun current grant revocation.
-    expect(() => f.service.admitTerminal(original, runtime, f.machineId, { ...binding, terminalId: "denied" }, 1)).toThrow();
+    expect(() => f.service.admitTerminal(original, runtime, f.machineId, { ...binding, terminalId: "denied" }, traceId)).toThrow();
     consent(f, "machines:run", false);
-    expect(() => f.service.admitTerminal(f.root, runtime, f.machineId, { ...binding, terminalId: "no-consent" }, 1)).toThrow();
+    traceId = spawnTrace(f.root);
+    expect(() => f.service.admitTerminal(f.root, runtime, f.machineId, { ...binding, terminalId: "no-consent" }, traceId)).toThrow();
     expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
   } finally {
     f.store.close();

@@ -1305,6 +1305,13 @@ export class JobService {
       this.store.disabledPlugins().has(request.pluginId)
     )
       fail("installation_changed");
+    const terminalOrigin = request.terminal
+      ? this.jobs.get(request.jobId)?.auditOrigin ?? this.jobs.dispatchOrigin(request.traceId)
+      : null;
+    if (request.terminal && (!terminalOrigin?.containerId ||
+        terminalOrigin.door !== "core.terminals.open" ||
+        terminalOrigin.actor !== request.credential.principalId))
+      fail("terminal_spawn_origin_missing");
     const invocation: AuthorityRequirement[] = [];
     if (request.parent) {
       const parent = this.jobs.get(request.parent.parentJobId);
@@ -1332,7 +1339,7 @@ export class JobService {
       ...invocation,
       ...(request.terminal ? [{
         cap: "terminals:spawn" as const,
-        ref: { kind: "container" as const, containerId: request.terminal.containerId },
+        ref: { kind: "container" as const, containerId: terminalOrigin!.containerId! },
       }] : []),
       {
         cap: "machines:run",

@@ -732,7 +732,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       try {
         if (!this.jobs || !machine.terminalHostId || traceId === undefined) throw new Error("terminal_runtime_unsupported");
         runtime = this.jobs.admitTerminal(channel.auth, message.runtime, machine.machineId, {
-          terminalId, terminalHostId: machine.terminalHostId, containerId: channel.containerId,
+          terminalId, terminalHostId: machine.terminalHostId, containerId: homeId,
         }, traceId);
       } catch {
         channel.send({ type: "error", code: "forbidden", message: "terminal runtime admission refused", ref: message.elementId });
