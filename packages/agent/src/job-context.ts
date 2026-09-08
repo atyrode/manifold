@@ -61,7 +61,10 @@ export class JobContext {
         this.fail("context_protocol_error");
       }
     });
-    this.socket.on("error", () => this.fail("context_io_error"));
+    this.socket.on("error", (error: NodeJS.ErrnoException) => {
+      const peerClosed = error.code === "ECONNRESET" || error.code === "EPIPE";
+      this.fail(peerClosed ? "context_closed" : "context_io_error");
+    });
     this.socket.on("end", () => {
       if (!this.closed) this.fail("context_closed");
     });

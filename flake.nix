@@ -69,6 +69,12 @@
         pkgs:
         let
           inherit (pkgs.stdenv.hostPlatform) system;
+          # A compiled agent embeds this runtime. Never silently package the
+          # borrowed-descriptor ownership bug from an older nixpkgs input (ADR 0032).
+          bun =
+            assert pkgs.lib.assertMsg (pkgs.lib.versionAtLeast pkgs.bun.version "1.4.2")
+              "Manifold requires Bun >= 1.4.2 for borrowed descriptor ownership; update the nixpkgs input before building.";
+            pkgs.bun;
 
           # Vendored node_modules keyed on bun.lock: the only network-touching
           # derivation. It must produce the installed tree, not bun's download
@@ -103,7 +109,7 @@
             inherit version;
             src = bunDepsSrc;
             nativeBuildInputs = [
-              pkgs.bun
+              bun
               pkgs.cacert
             ];
             dontConfigure = true;
@@ -152,7 +158,7 @@
               inherit pname version;
               src = self;
               nativeBuildInputs = [
-                pkgs.bun
+                bun
                 pkgs.makeWrapper
                 # Only the web build (vite) runs under node; the compiled
                 # binaries embed the bun runtime and never reference it.

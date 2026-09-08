@@ -98,7 +98,7 @@ maintenance PRs with required CI and maintainer holds. Details are in dotfiles'
 ## Commands
 
 ```sh
-bun install        # workspace dependencies; Bun >= 1.3.13
+bun install        # workspace dependencies; Bun >= 1.4.2 (ADR 0032)
 bun run gate       # complete repository gate required before ready/merge
 bun run dev:server # local server on :7777; starts a local machine agent
 bun run dev:web    # Vite on :5173, proxying to :7777

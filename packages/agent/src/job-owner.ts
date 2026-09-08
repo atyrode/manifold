@@ -25,6 +25,7 @@ import type { JobOutputStore } from "./job-outputs.ts";
 import { type JobOutputLease, type JobOutputByteStream } from "./job-outputs.ts";
 import {
   preflightLinuxJob,
+  preflightLinuxJobRuntime,
   recoverLinuxJobs,
   startLinuxJob,
   type LinuxJobBind,
@@ -503,6 +504,7 @@ export class MachineJobOwner {
     const job = this.newJob(request);
     job.depth = parent ? parent.depth + 1 : 0;
     try {
+      preflightLinuxJobRuntime();
       if (request.outputs.length > 30) throw new Error("output_count_limit");
       job.stdio.stdout = this.options.outputs.createByteStream(
         request.jobId,

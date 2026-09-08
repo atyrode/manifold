@@ -20,12 +20,15 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 executable() {
   local path=${1:-}
   [[ $path == /* && -f $path && -x $path ]] || fail "$2 must resolve to an absolute executable path"
-  realpath -- "$path"
+  printf '%s\n' "$path"
 }
 cc=$(executable "${CC:-$(command -v cc || true)}" CC)
 bun=$(executable "${BUN:-$(command -v bun || true)}" BUN)
 bwrap=$(executable "${MANIFOLD_TEST_BWRAP:-$(command -v bwrap || true)}" MANIFOLD_TEST_BWRAP)
 busybox=$(executable "${MANIFOLD_TEST_STATIC_BUSYBOX:-$(command -v busybox || true)}" MANIFOLD_TEST_STATIC_BUSYBOX)
+# Held fixture targets must be canonical; preserve argv0 for other multicall tools.
+bwrap=$(realpath -- "$bwrap")
+busybox=$(realpath -- "$busybox")
 unshare=$(executable "$(command -v unshare || true)" unshare)
 readelf=$(executable "$(command -v readelf || true)" readelf)
 env_bin=$(executable "$(command -v env || true)" env)

@@ -1,8 +1,8 @@
 # manifold hub image: one Bun process serving HTTP + both WS endpoints + the web
 # bundle, plus an OPTIONAL in-container PTY agent (`MANIFOLD_SPAWN_AGENT`, machine
 # ${MANIFOLD_MACHINE_NAME:-hub}). Debian-based oven/bun provides bash and PTY support
-# for in-container shells. The bun tag is ADR 0001's exact pin.
-FROM oven/bun:1.3.13 AS build
+# for in-container shells. ADR 0032 updates ADR 0001's Bun pin for descriptor ownership.
+FROM oven/bun:1.4.2 AS build
 WORKDIR /app
 # What this image IS (scripts/build-identity.ts; docs/SELF-HOST.md §Environments): the caller
 # stamps a release as its tag or a development build as `<version>+<distance>.g<sha>`. Left
@@ -25,7 +25,7 @@ RUN bun run build:web
 
 # Runtime ships the workspace source (agent-spawn runs `bun packages/agent/src/main.ts`
 # from source), the installed node_modules, and the built web bundle — no build caches.
-FROM oven/bun:1.3.13
+FROM oven/bun:1.4.2
 WORKDIR /app
 COPY --from=build /app /app
 

@@ -98,6 +98,15 @@ No new runtime dependency without a dated entry in `docs/decisions/` justifying 
 "boring, small, pinned". The converse duty to evaluate a named library before hand-rolling a
 non-manifold-specific pattern remains owned by [AXIOMS.md §Change control](../AXIOMS.md#change-control).
 
+Bun remains the server, agent and tooling runtime. The minimum is **1.4.2**, and current
+Docker and CI/release pins use that exact version: borrowed numeric descriptors passed
+through extended `stdio` must remain owned by the caller after child cleanup.
+[ADR 0032](decisions/0032-bun-descriptor-ownership.md) records the demonstrated 1.3.13
+ownership defect and the 1.4.2 reproduction. Updating the existing runtime adds no runtime
+dependency and does not change the permission or protocol model. Compiled binaries embed
+their build-time Bun; Nix packaging refuses older Bun, and preview environments must satisfy
+the application's `engines.bun` before activation.
+
 ### Roster restraint
 
 The default distribution stays small and non-opinionated. A new core plugin needs the same

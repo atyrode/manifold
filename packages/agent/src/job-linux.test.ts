@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
   closeSync,
   constants,
@@ -46,6 +47,92 @@ function fixture(): { spec: LinuxJobSpec; close(): void } {
     },
   };
 }
+
+// Borrowed-stdio regressions can close unrelated runtime FDs. Only a disposable
+// process may exercise that contract; the suite runner passes no extra descriptors.
+function isolatedRuntime(source: string): void {
+  const result = spawnSync(process.execPath, ["--eval", source], {
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+    timeout: 15_000,
+    killSignal: "SIGKILL",
+  });
+  expect(result.error).toBeUndefined();
+  expect(result.signal).toBeNull();
+  expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: "" });
+}
+
+test.skipIf(process.platform !== "linux")(
+  "unsupported Bun refuses governed execution before reading job authority",
+  () => {
+    isolatedRuntime(`
+      import assert from "node:assert/strict";
+      import { LinuxJobRefusal, preflightLinuxJob, startLinuxJob } from ${JSON.stringify(
+        new URL("./job-linux.ts", import.meta.url).href,
+      )};
+      Bun.semver.satisfies = () => false;
+      const spec = new Proxy({}, {
+        get() { throw new Error("job authority touched before runtime refusal"); },
+      });
+      const refused = error => error instanceof LinuxJobRefusal &&
+        error.code === "bun-job-fd-ownership-unsupported";
+      assert.throws(() => preflightLinuxJob(spec), refused);
+      await assert.rejects(startLinuxJob(spec), refused);
+    `);
+  },
+);
+
+test.skipIf(process.platform !== "linux").each(["sync", "async"])(
+  "borrowed numeric extra FD survives successful %s spawn and collection in an isolated process",
+  (mode) => {
+    isolatedRuntime(`
+      import assert from "node:assert/strict";
+      import { spawn, spawnSync } from "node:child_process";
+      import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+      import { once } from "node:events";
+      import { setImmediate } from "node:timers/promises";
+      const fd = openSync("/dev/null", "r");
+      const identity = ({ dev, ino, rdev, mode }) => ({ dev, ino, rdev, mode });
+      const expected = identity(fstatSync(fd));
+      const assertBorrowed = () => {
+        assert.deepEqual(identity(fstatSync(fd)), expected);
+        assert.equal(readSync(fd, Buffer.alloc(1), 0, 1, null), 0);
+      };
+      const args = ["--eval", \`
+        import assert from "node:assert/strict";
+        import { fstatSync, readSync } from "node:fs";
+        assert.equal(fstatSync(3).isCharacterDevice(), true);
+        assert.equal(readSync(3, Buffer.alloc(1), 0, 1, null), 0);
+      \`];
+      const options = {
+        stdio: ["ignore", "ignore", "inherit", fd],
+        timeout: 3000,
+        killSignal: "SIGKILL",
+      };
+      // Drop the child wrapper before GC, while retaining ownership of fd.
+      await (async () => {
+        if (${JSON.stringify(mode)} === "sync") {
+          const child = spawnSync(process.execPath, args, options);
+          assert.equal(child.error, undefined);
+          assert.equal(child.signal, null);
+          assert.equal(child.status, 0);
+        } else {
+          const child = spawn(process.execPath, args, options);
+          const [code, signal] = await once(child, "close");
+          assert.equal(signal, null);
+          assert.equal(code, 0);
+        }
+      })();
+      assertBorrowed();
+      for (let turn = 0; turn < 4; turn++) {
+        Bun.gc(true);
+        await setImmediate();
+        assertBorrowed();
+      }
+      closeSync(fd);
+    `);
+  },
+);
 
 test("invalid bounds and mount shadowing refuse before touching executable descriptors", () => {
   const f = fixture();

@@ -43,6 +43,16 @@ never the shared `manifold:local` tag. The application artifact must contain an 
 Bun satisfies. Its `/app` is copied with UID/GID 1000 ownership; no Bun binary,
 libraries, home or Nix store are copied out of the application image.
 
+The current application requires Bun >= 1.4.2 for borrowed-descriptor ownership
+([ADR 0032](../../docs/decisions/0032-bun-descriptor-ownership.md)). Updating the application
+Dockerfile does not update the independently pinned development runtime. Before deploying
+this cutover, the dotfiles environment owner must publish an environment with the corrected
+Bun and its reviewed immutable digest must replace `environment-image.txt`; do not substitute
+an unverified digest or copy Bun from the application layer. Until that dependency is met,
+an older environment is refused before the existing service is stopped. Host-side source
+builds and live worktrees also require the corrected Bun; changing source pins does not
+upgrade installed tools or authorize a service restart.
+
 Both builds and an offline activation/application-import probe complete before
 the existing service is stopped. The probe checks application ownership, `omp`/`code`
 availability, the activated user/home, Bun compatibility and the real protocol import.

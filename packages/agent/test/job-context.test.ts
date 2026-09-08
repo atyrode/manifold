@@ -5,6 +5,26 @@ import { JobContext } from "../src/job-context.ts";
 import type { JobEvent } from "@manifold/protocol";
 
 describe.skipIf(process.platform !== "linux")("parent-bound private invocation channel", () => {
+  test("peer exit with unread context is closure rather than an I/O failure", async () => {
+    const closed = Promise.withResolvers<string>();
+    const context = new JobContext("exiting-parent", {
+      invoke: () => {
+        throw new Error("unexpected invocation");
+      },
+      command: async () => {
+        throw new Error("unexpected command");
+      },
+      failure: closed.resolve,
+    });
+    try {
+      context.send({ type: "context", locations: [] });
+      context.releaseChildFd();
+      expect(await closed.promise).toBe("context_closed");
+    } finally {
+      context.close();
+    }
+  });
+
   test("caller cannot supply a parent identity, or address an unrelated child", async () => {
     const native = dlopen("libc.so.6", { dup: { args: [FFIType.i32], returns: FFIType.i32 } });
     const refused = Promise.withResolvers<string>();

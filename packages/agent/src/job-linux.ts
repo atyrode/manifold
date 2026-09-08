@@ -87,8 +87,11 @@ export interface LinuxJobHandle {
   cancel(): Promise<LinuxJobResult>;
 }
 export class LinuxJobRefusal extends Error {
-  constructor(readonly code: string) {
-    super(code);
+  constructor(
+    readonly code: string,
+    message = code,
+  ) {
+    super(message);
     this.name = "LinuxJobRefusal";
   }
 }
@@ -202,12 +205,24 @@ function jobSeccompFilter(): Buffer {
   return bytes;
 }
 
+/** Admission must check this before preparing any private job descriptors. */
+export function preflightLinuxJobRuntime(): void {
+  if (process.platform !== "linux") refuse("linux-required");
+  // Older Bun can close borrowed extra stdio FDs, corrupting the owner's authority.
+  // Check only this boundary: ordinary terminal transport does not borrow job FDs.
+  if (typeof Bun === "undefined" || !Bun.semver.satisfies(Bun.version, ">=1.4.2"))
+    throw new LinuxJobRefusal(
+      "bun-job-fd-ownership-unsupported",
+      "Governed Linux jobs require Bun >=1.4.2 to preserve borrowed stdio descriptors; upgrade Bun before retrying.",
+    );
+  if (process.arch !== "x64" && process.arch !== "arm64")
+    refuse("unsupported-seccomp-architecture");
+}
+
 /** Preflight performs no process creation. Returns capacity reserved for named output storage.
  * Namespace setup itself is fail-closed in bubblewrap. */
 export function preflightLinuxJob(spec: LinuxJobSpec): number {
-  if (process.platform !== "linux") refuse("linux-required");
-  if (process.arch !== "x64" && process.arch !== "arm64")
-    refuse("unsupported-seccomp-architecture");
+  preflightLinuxJobRuntime();
   if (
     ![
       spec.limits.memoryBytes,

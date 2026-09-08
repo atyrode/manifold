@@ -60,8 +60,9 @@ remote movement visible before the durable transaction commits.
 
 ## Risks & mitigations
 
-1. `Bun.Terminal` regressions — pinned bun 1.3.13, validated by `docs/spikes/s2-pty`;
-   fallback: agent package on Node + node-pty (protocol unchanged).
+1. `Bun.Terminal` regressions — pinned Bun 1.4.2 for borrowed-descriptor ownership
+   ([ADR 0032](decisions/0032-bun-descriptor-ownership.md)); revalidate PTYs when upgrading.
+   Fallback: agent package on Node + node-pty (protocol unchanged).
 2. Many-node page cost — React Flow visibility culling plus bounded xterm lifecycle;
    soak test before calling large terminal workspaces done.
 3. External-fact drift — decisions in `docs/decisions/` are dated; re-verify on upgrade.
