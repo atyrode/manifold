@@ -61,12 +61,15 @@ interface Installation {
   artifact: PinnedArtifact | null;
   tools: Map<string, PinnedArtifact>;
   toolFailures: Map<string, string>;
+  runtimeAliases: Map<string, { tool: string | null; companion: boolean }>;
   enabled: boolean;
 }
 interface OwnedJob {
   request: JobRequest;
   result: JobResult;
   handle: LinuxJobHandle | null;
+  startupCleanup: (() => Promise<void>) | undefined;
+  emptyObserved: boolean;
   context: JobContext | null;
   locations: Map<string, JobLocation>;
   inputFiles: LinuxJobBind[];
@@ -187,7 +190,7 @@ export class MachineJobOwner {
     this.terminalHostId = terminalHostId;
   }
   get maintenanceReady(): boolean {
-    return this.draining && ![...this.jobs.values()].some((job) => ACTIVE[job.result.state]);
+    return this.draining && [...this.jobs.values()].every((job) => job.emptyObserved);
   }
 
   setDraining(draining: boolean): void {
@@ -336,6 +339,7 @@ export class MachineJobOwner {
   }
 
   private restoreInstallation(command: Extract<JobCommand, { type: "install" }>): void {
+    const runtimeAliases = this.runtimeAliases(command);
     const spec = command.machine.artifacts[this.platform()];
     if (!spec || spec.sha256 !== command.artifactSha256)
       throw new Error("installed_artifact_platform_mismatch");
@@ -355,7 +359,7 @@ export class MachineJobOwner {
     for (const tool of this.installs.get(key)?.tools.values() ?? []) tool.close();
     this.installs.set(key, {
       command: { ...command, action: undefined },
-      enabled: command.action !== "disable", artifact, tools, toolFailures,
+      enabled: command.action !== "disable", artifact, tools, toolFailures, runtimeAliases,
     });
   }
 
@@ -364,6 +368,7 @@ export class MachineJobOwner {
     const artifactSpec = command.machine.artifacts[this.platform()];
     if (!artifactSpec || artifactSpec.sha256 !== command.artifactSha256)
       throw new Error("unsupported_artifact_platform");
+    const runtimeAliases = this.runtimeAliases(command);
     if (command.action) {
       if (delivery !== undefined || toolArtifacts !== undefined) throw new Error("artifact_unexpected_delivery");
     }
@@ -393,7 +398,7 @@ export class MachineJobOwner {
       );
       if (
         command.action === "purge" &&
-        affected.some((job) => ACTIVE[job.result.state] || job.leases.length > 0)
+        affected.some((job) => !job.emptyObserved || job.leases.length > 0)
       )
         throw new Error("installation_active_leases");
       this.options.journal.append({ kind: "install", command });
@@ -476,7 +481,7 @@ export class MachineJobOwner {
       try {
         if (this.draining || this.installs.has(key)) throw new Error("installation_raced");
         this.options.journal.append({ kind: "install", command });
-        this.installs.set(key, { command, artifact, enabled: true, tools: new Map(), toolFailures: new Map() });
+        this.installs.set(key, { command, artifact, enabled: true, tools: new Map(), toolFailures: new Map(), runtimeAliases });
       } catch (error) {
         artifact.close();
         throw error;
@@ -538,7 +543,7 @@ export class MachineJobOwner {
       this.emit({ type: "result", result: existing.result }, existing);
       return;
     }
-    if ([...this.jobs.values()].filter((job) => ACTIVE[job.result.state]).length >= 64)
+    if ([...this.jobs.values()].filter((job) => !job.emptyObserved).length >= 64)
       throw new Error("owner_active_job_limit");
     const now = Date.now();
     const { signature, ...signedPermit } = permit;
@@ -784,7 +789,8 @@ export class MachineJobOwner {
     } catch (error) {
       job.resolveLaunched();
       job.context?.close();
-      const safelyRefused = request.terminal !== undefined && error instanceof LinuxJobRefusal && error.workloadEmpty && !job.handle;
+      const safelyRefused = error instanceof LinuxJobRefusal && error.workloadEmpty && !job.handle;
+      if (error instanceof LinuxJobRefusal && !error.workloadEmpty) job.startupCleanup = error.cleanup;
       if (this.jobs.has(request.jobId) && !safelyRefused) {
         await this.interrupt(job);
       } else {
@@ -810,8 +816,8 @@ export class MachineJobOwner {
   }
 
   private async finish(job: OwnedJob, observed: LinuxJobResult, parent?: OwnedJob): Promise<void> {
+    if (observed.empty !== true) throw new Error("workload_empty_proof_required");
     const handle = job.handle;
-    job.handle = null;
     for (const childId of job.children) await this.cancel(childId);
     job.resolveEmpty();
     this.closeInputFiles(job);
@@ -912,6 +918,7 @@ export class MachineJobOwner {
     this.emit({ type: "result", result: final }, job);
     job.resolveFinalized();
     handle?.release();
+    job.handle = null;
     job.context?.close();
     for (const location of job.locations.values()) location.close();
     job.locations.clear();
@@ -924,7 +931,8 @@ export class MachineJobOwner {
     this.closeInputFiles(job);
     if (job.handle) {
       try {
-        await job.handle.cancel();
+        const observed = await job.handle.cancel();
+        if (observed.empty !== true) throw new Error("workload_empty_proof_required");
         job.resolveEmpty();
         for (const release of job.releaseWriters) release();
         job.releaseWriters = [];
@@ -950,7 +958,19 @@ export class MachineJobOwner {
     job.cancelRequested = true;
     await job.launched;
     for (const child of job.children) await this.cancel(child);
-    if (job.handle) await job.handle.cancel();
+    if (job.handle) {
+      const observed = await job.handle.cancel();
+      if (observed.empty !== true) throw new Error("workload_empty_proof_required");
+      job.resolveEmpty();
+      for (const release of job.releaseWriters) release();
+      job.releaseWriters = [];
+    } else if (job.startupCleanup) {
+      await job.startupCleanup();
+      job.startupCleanup = undefined;
+      job.resolveEmpty();
+      for (const release of job.releaseWriters) release();
+      job.releaseWriters = [];
+    } else if (!job.emptyObserved) throw new Error("workload_empty_unproven");
   }
 
   private validateInput(operation: MachineOperation, request: JobRequest): void {
@@ -1001,6 +1021,8 @@ export class MachineJobOwner {
         outputs: [],
       },
       handle: null,
+      startupCleanup: undefined,
+      emptyObserved: false,
       context: null,
       locations: new Map(),
       inputFiles: [],
@@ -1013,7 +1035,10 @@ export class MachineJobOwner {
       depth: 0,
       children: new Set(),
       empty: empty.promise,
-      resolveEmpty: empty.resolve,
+      resolveEmpty() {
+        this.emptyObserved = true;
+        empty.resolve();
+      },
       childBudgetMs: 0,
       outputGap: false,
       cancelRequested: false,
@@ -1052,14 +1077,29 @@ export class MachineJobOwner {
     for (const file of job.inputFiles) closeSync(file.fd);
     job.inputFiles = [];
   }
-  private runtimeTool(installation: Installation, alias: string): readonly LinuxJobBind[] | undefined {
-    if (Object.hasOwn(installation.command.machine.tools ?? {}, alias)) {
-      const managed = installation.tools.get(alias);
-      return managed ? [{ fd: managed.fd, target: `/runtime/bin/${alias}`, writable: false }] : undefined;
+  private runtimeAliases(command: Installation["command"]): Installation["runtimeAliases"] {
+    const aliases: Installation["runtimeAliases"] = new Map();
+    const add = (alias: string, tool: string | null, companion: boolean): void => {
+      if (aliases.has(alias)) throw new Error("runtime_tool_alias_ambiguous");
+      aliases.set(alias, { tool, companion });
+    };
+    for (const alias of Object.keys(command.machine.artifacts[this.platform()]?.files ?? {}))
+      add(alias, null, true);
+    for (const [tool, platforms] of Object.entries(command.machine.tools ?? {})) {
+      add(tool, tool, false);
+      for (const alias of Object.keys(platforms[this.platform()]?.files ?? {}))
+        add(alias, tool, true);
     }
-    const bundled = installation.artifact?.files[alias];
-    return bundled ? [{ fd: bundled.fd, target: `/runtime/bin/${alias}`, writable: false }] :
-      Object.hasOwn(this.options.runtimeTools, alias) ? this.options.runtimeTools[alias] : undefined;
+    return aliases;
+  }
+  private runtimeTool(installation: Installation, alias: string): readonly LinuxJobBind[] | undefined {
+    const source = installation.runtimeAliases.get(alias);
+    if (source) {
+      const artifact = source.tool === null ? installation.artifact : installation.tools.get(source.tool);
+      const pinned = source.companion ? artifact?.files[alias] : artifact;
+      return pinned ? [{ fd: pinned.fd, target: `/runtime/bin/${alias}`, writable: false }] : undefined;
+    }
+    return Object.hasOwn(this.options.runtimeTools, alias) ? this.options.runtimeTools[alias] : undefined;
   }
   private operationUnavailable(installation: Installation, operation: MachineOperation): string | undefined {
     if (!installation.enabled || !installation.artifact) return "operation_not_installed";
@@ -1108,7 +1148,20 @@ export class MachineJobOwner {
     this.options.journal.append({ kind: "drain", draining: true });
     await Promise.all([...this.jobs.values()].map((job) => this.cancel(job.request.jobId)));
     await Promise.all([...this.jobs.values()].map((job) => job.finalized));
+    if (![...this.jobs.values()].every((job) => job.emptyObserved))
+      throw new Error("workload_empty_unproven");
     this.ready = false;
+    for (const job of this.jobs.values()) {
+      job.handle?.release();
+      job.handle = null;
+      job.context?.close();
+      for (const lease of job.leases) this.options.outputs.abort(lease);
+      for (const stream of Object.values(job.stdio)) stream.abort();
+      for (const location of job.locations.values()) location.close();
+      job.leases = [];
+      job.stdio = {};
+      job.locations.clear();
+    }
     for (const installation of this.installs.values()) {
       installation.artifact?.close();
       for (const tool of installation.tools.values()) tool.close();

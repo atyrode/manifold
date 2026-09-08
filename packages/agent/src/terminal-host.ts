@@ -155,15 +155,21 @@ export class TerminalHost {
   async shutdown(): Promise<void> {
     this.stopping = true;
     const terminals = [...this.terminals.values()];
-    const kills = terminals.map((terminal) => terminal.kill());
+    const kills = terminals.map(async (terminal) => {
+      try { await terminal.kill(); }
+      catch (error) { if (!terminal.workloadEmpty) throw error; }
+    });
     let graceTimer: Timer | undefined;
-    await Promise.race([
-      Promise.all(kills),
-      new Promise<void>((resolve) => {
-        graceTimer = setTimeout(resolve, this.shutdownGraceMs);
-      }),
-    ]);
-    clearTimeout(graceTimer);
+    try {
+      await Promise.race([
+        Promise.all(kills),
+        new Promise<void>((resolve) => {
+          graceTimer = setTimeout(resolve, this.shutdownGraceMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(graceTimer);
+    }
     for (const terminal of terminals) {
       if (terminal.alive) terminal.forceKill();
     }
@@ -359,8 +365,10 @@ export class TerminalHost {
         const terminal = this.terminals.get(command.terminalId);
         if (terminal === undefined) return;
         if (terminal.alive) {
-          void terminal.kill();
-        } else {
+          void terminal.kill().catch(() => {
+            this.log("warn", "terminal_empty_unproven", { terminalId: command.terminalId });
+          });
+        } else if (terminal.workloadEmpty) {
           this.terminals.delete(command.terminalId);
           terminal.dispose();
         }
@@ -437,8 +445,13 @@ export class TerminalHost {
       } catch {
         if (terminal) {
           await terminal.kill().catch(() => {});
-          terminal.dispose();
-          this.terminals.delete(msg.terminalId);
+          if (terminal.workloadEmpty) {
+            terminal.dispose();
+            this.terminals.delete(msg.terminalId);
+          } else {
+            this.draining = true;
+            this.jobOwner?.setDraining(true);
+          }
         }
         connection.peer.write({ type: "create_error", terminalId: msg.terminalId, message: "terminal_runtime_refused" });
       }
@@ -506,7 +519,14 @@ export class TerminalHost {
   }
 
   private async watchExit(terminalId: string, terminal: PtyTerminal): Promise<void> {
-    const { exitCode } = await terminal.exited;
+    let exitCode: number | null;
+    try { ({ exitCode } = await terminal.exited); }
+    catch {
+      this.draining = true;
+      this.jobOwner?.setDraining(true);
+      this.log("warn", "terminal_empty_unproven", { terminalId });
+      return;
+    }
     if (this.terminals.get(terminalId) !== terminal) return; // already forgotten
     // The record is RETAINED (alive:false + exit code) until a transport acknowledges it with
     // `kill`: an attached transport does so once the hub has the `exited`; a transport that

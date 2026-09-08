@@ -39,6 +39,12 @@ export interface LinuxJobOutput {
   channel: "stdout" | "stderr";
   bytes: Uint8Array;
 }
+/** Private PTY handoff. The runtime installs its meter before any process can emit bytes. */
+export interface LinuxJobTerminal {
+  pty: Bun.Terminal;
+  onOutput(bytes: Uint8Array): void;
+  setOutputHandler(handler: (bytes: Uint8Array) => void): void;
+}
 export interface LinuxJobSpec {
   /** Pinned, trusted bubblewrap supporting --bind-fd and --ro-bind-fd. */
   bubblewrapFd: number;
@@ -61,7 +67,7 @@ export interface LinuxJobSpec {
   /** A private, already-authorized connected socket; inherited as fd 3, no other authority. */
   contextFd?: number;
   /** Owned by the native terminal host; never supplied by a workload or wire caller. */
-  terminal?: Bun.Terminal;
+  terminal?: LinuxJobTerminal;
   /** Must consume synchronously. Throwing terminates the workload, rather than losing bytes. */
   onOutput?: (output: LinuxJobOutput) => void;
 }
@@ -99,6 +105,8 @@ export class LinuxJobRefusal extends Error {
     message = code,
     /** Positive startup cleanup observation, never inferred merely from a rejected promise. */
     readonly workloadEmpty = false,
+    /** Retains startup containment when emptiness is unknown; resolves only after empty proof. */
+    readonly cleanup?: () => Promise<void>,
   ) {
     super(message);
     this.name = "LinuxJobRefusal";
@@ -552,7 +560,11 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     "/dev",
     "--dir",
     "/job",
-    "--dir",
+    "--size",
+    String(spec.limits.memoryBytes),
+    "--perms",
+    "0700",
+    "--tmpfs",
     "/home/job",
     "--setenv",
     "HOME",
@@ -605,11 +617,33 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   let stdin: ChildProcess["stdin"] = null;
   let stdout: ChildProcess["stdout"] = null;
   let stderr: ChildProcess["stderr"] = null;
+  let outputBytes = 0;
+  let sequence = 0;
+  let reason: LinuxJobResult["reason"] = "exited";
+  let fatal: unknown;
+  let settled = false;
+  let terminating = false;
+  const terminalFailure = Promise.withResolvers<never>();
+  void terminalFailure.promise.catch(() => {});
+  function admitOutput(bytes: Uint8Array): boolean {
+    outputBytes += bytes.byteLength;
+    if (reason === "output-limit" || reason === "output-consumer") return false;
+    if (outputBytes > spec.limits.outputBytes - namedOutputCapacity) {
+      terminate("output-limit");
+      return false;
+    }
+    return true;
+  }
+  spec.terminal?.setOutputHandler((bytes) => {
+    if (!admitOutput(bytes)) return;
+    try { spec.terminal!.onOutput(bytes); }
+    catch { terminate("output-consumer"); }
+  });
   try {
     if (spec.terminal) {
       const proc = Bun.spawn([`/proc/${process.pid}/fd/${spec.bubblewrapFd}`, ...args], {
         stdio: ["inherit", "inherit", "inherit", ...stdio.slice(3).map((fd) => typeof fd === "number" ? fd : "ignore")],
-        terminal: spec.terminal,
+        terminal: spec.terminal.pty,
         env: {},
         cwd: "/",
       });
@@ -642,14 +676,6 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   }
   // Avoid an unhandled rejection while the launch gate is being attached.
   void exited.catch(() => {});
-  let outputBytes = 0;
-  let sequence = 0;
-  let reason: LinuxJobResult["reason"] = "exited";
-  let fatal: unknown;
-  let settled = false;
-  let terminating = false;
-  const terminalFailure = Promise.withResolvers<never>();
-  void terminalFailure.promise.catch(() => {});
   function terminate(next: LinuxJobResult["reason"]): void {
     if (settled || terminating) return;
     terminating = true;
@@ -668,12 +694,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   function consume(channel: "stdout" | "stderr", stream: Readable): Promise<void> {
     const { promise, resolve } = Promise.withResolvers<void>();
     stream.on("data", (bytes: Buffer) => {
-      if (reason === "output-limit" || reason === "output-consumer") return;
-      if (outputBytes + bytes.length > spec.limits.outputBytes - namedOutputCapacity) {
-        terminate("output-limit");
-        return;
-      }
-      outputBytes += bytes.length;
+      if (!admitOutput(bytes)) return;
       for (let offset = 0; offset < bytes.length; offset += FRAME_BYTES) {
         try {
           spec.onOutput?.({
@@ -715,12 +736,23 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
       /* Still kill the namespace owner below. */
     }
     child.kill("SIGKILL");
-    try {
+    let cleaned = false;
+    const cleanup = async (): Promise<void> => {
+      if (cleaned) return;
+      writeControl(groups.root, "cgroup.kill", "1");
+      child.kill("SIGKILL");
       await awaitEmpty(groups.root);
+      if (cleaned) return;
+      cleaned = true;
       gate.destroy();
-    } finally {
-      closeGroups(groups);
       metadata.destroy();
+      closeGroups(groups);
+    };
+    try {
+      await cleanup();
+    } catch (failure) {
+      const code = failure instanceof LinuxJobRefusal ? failure.code : "startup-empty-unproven";
+      throw new LinuxJobRefusal(code, code, false, cleanup);
     }
     throw observedStartRefusal(error);
   }

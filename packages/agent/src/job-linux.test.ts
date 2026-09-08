@@ -326,7 +326,7 @@ test.skipIf(!realLinux)(
   "real sandbox has no ambient home, runtime fd or enrollment environment and roundtrips private input",
   async () => {
     await withLinux(
-      'test "$HOME" = /home/job && test "$XDG_DATA_HOME" = /home/job/.local/share && test "$XDG_RUNTIME_DIR" = /home/job/.run && test -z "$MANIFOLD_MACHINE_TOKEN" && test ! -e /etc/passwd && test ! -e /proc/self/fd/6 && test ! -e "$HOME/.ssh" && printf scratch > /tmp/private && read line && printf "%s" "$line"',
+      'test "$HOME" = /home/job && test "$XDG_DATA_HOME" = /home/job/.local/share && test "$XDG_RUNTIME_DIR" = /home/job/.run && test -z "$MANIFOLD_MACHINE_TOKEN" && test ! -e /etc/passwd && test ! -e /proc/self/fd/6 && test ! -e "$HOME/.ssh" && test ! -e "$HOME/private" || exit 70; for directory in "$HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_RUNTIME_DIR"; do printf private > "$directory/private" || exit 71; test "$(/bin/busybox stat -f -c %T "$directory")" = tmpfs || exit 72; done; test "$(/bin/busybox stat -c %a "$XDG_RUNTIME_DIR")" = 700 || exit 73; if ( printf forbidden > /job/ambient ) 2>/dev/null; then exit 74; fi; printf scratch > /tmp/private && read line && printf "%s" "$line"',
       async (spec) => {
         const frames: { sequence: number; text: string }[] = [];
         const handle = await startLinuxJob({
@@ -342,6 +342,12 @@ test.skipIf(!realLinux)(
         expect(result.empty).toBe(true);
         expect(frames.map((frame) => frame.text).join("")).toBe("private-roundtrip");
         expect(frames.map((frame) => frame.sequence)).toEqual(frames.map((_, index) => index + 1));
+        const second = await startLinuxJob(spec);
+        await second.input(Buffer.from("isolated-home\n"));
+        second.endInput();
+        const secondResult = await second.result;
+        second.release();
+        expect(secondResult.exitCode).toBe(0);
       },
     );
   },
@@ -380,6 +386,7 @@ test.skipIf(!realLinux)("native PTY keeps input, resize and snapshots outside jo
         const result = await handle.result;
         expect(result.reason).toBe("cancelled");
         expect(result.empty).toBe(true);
+        expect(result.usage.outputBytes).toBe(Buffer.byteLength(text));
         expect(terminal.alive).toBe(false);
       } finally {
         await handle.cancel();
@@ -388,6 +395,71 @@ test.skipIf(!realLinux)("native PTY keeps input, resize and snapshots outside jo
       }
     },
   );
+});
+
+test.skipIf(!realLinux)("native PTY meters cumulative bytes before delivery without persisting terminal output", async () => {
+  await withLinux('printf ready; read line; while :; do printf "0123456789abcdef"; done', async (spec) => {
+    let delivered = 0;
+    let journalFrames = 0;
+    const ready = Promise.withResolvers<void>();
+    const terminal = new PtyTerminal({
+      terminalId: "native-pty-overflow", cols: 80, rows: 24,
+      onOutput(output) {
+        delivered += output.bytes.byteLength;
+        ready.resolve();
+      },
+      runtime: (pty) => startLinuxJob({
+        ...spec, terminal: pty, limits: { ...spec.limits, outputBytes: 128 },
+        onOutput: () => { journalFrames++; },
+      }),
+    });
+    const handle = await terminal.runtimeHandle!;
+    try {
+      await Promise.race([ready.promise, handle.result.then(() => { throw new Error("PTY exited before overflow"); })]);
+      terminal.write("go\n");
+      const result = await handle.result;
+      await terminal.exited;
+      expect(result.reason).toBe("output-limit");
+      expect(result.empty).toBe(true);
+      expect(result.usage.outputBytes).toBeGreaterThan(128);
+      expect(delivered).toBeLessThanOrEqual(128);
+      expect(terminal.ringBytes).toBe(delivered);
+      expect(journalFrames).toBe(0);
+    } finally {
+      await handle.cancel();
+      handle.release();
+      terminal.dispose();
+    }
+  });
+});
+
+test.skipIf(!realLinux)("native PTY delivery failure cancels its workload instead of escaping the owner", async () => {
+  await withLinux('printf ready; read line; printf rejected; while :; do /bin/busybox sleep 1; done', async (spec) => {
+    const ready = Promise.withResolvers<void>();
+    let rejectOutput = false;
+    const terminal = new PtyTerminal({
+      terminalId: "native-pty-consumer", cols: 80, rows: 24,
+      onOutput() {
+        if (rejectOutput) throw new Error("transport unavailable");
+        ready.resolve();
+      },
+      runtime: (pty) => startLinuxJob({ ...spec, terminal: pty }),
+    });
+    const handle = await terminal.runtimeHandle!;
+    try {
+      await Promise.race([ready.promise, handle.result.then(() => { throw new Error("PTY exited before delivery"); })]);
+      rejectOutput = true;
+      terminal.write("go\n");
+      const result = await handle.result;
+      await terminal.exited;
+      expect(result.reason).toBe("output-consumer");
+      expect(result.empty).toBe(true);
+    } finally {
+      await handle.cancel();
+      handle.release();
+      terminal.dispose();
+    }
+  });
 });
 
 test.skipIf(!realLinux)("selected runtime executable reads exact readonly native config instead of running the primary worker", async () => {
@@ -476,6 +548,7 @@ test.skipIf(!realLinux)(
       expect(result.reason).toBe("output-limit");
       expect(result.empty).toBe(true);
       expect(delivered).toBeLessThanOrEqual(128);
+      expect(result.usage.outputBytes).toBeGreaterThan(128);
     });
   },
 );

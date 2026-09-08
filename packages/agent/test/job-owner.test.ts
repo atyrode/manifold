@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { createHash, generateKeyPairSync, sign, verify, createPublicKey } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import {
   closeSync,
   lstatSync,
@@ -26,6 +27,25 @@ import { JobJournal, jobDigest } from "../src/job-journal.ts";
 import { MachineJobOwner, type JobOwnerOptions } from "../src/job-owner.ts";
 import { JobOutputStore } from "../src/job-outputs.ts";
 import { artifactCacheKey } from "../src/job-artifacts.ts";
+import { LinuxJobRefusal, startLinuxJob, type LinuxJobResult } from "../src/job-linux.ts";
+import * as nativeRuntime from "../src/job-linux.ts";
+
+function tarMember(name: string, contents: Buffer): Buffer {
+  const header = Buffer.alloc(512);
+  header.write(name);
+  header.write("0000755\0", 100);
+  header.write("0000000\0", 108);
+  header.write("0000000\0", 116);
+  header.write(`${contents.length.toString(8).padStart(11, "0")}\0`, 124);
+  header.write("00000000000\0", 136);
+  header.fill(32, 148, 156);
+  header.write("0", 156);
+  header.write("ustar\0", 257);
+  header.write("00", 263);
+  const checksum = header.reduce((sum, byte) => sum + byte, 0);
+  header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148);
+  return Buffer.concat([header, contents, Buffer.alloc((512 - (contents.length % 512)) % 512)]);
+}
 
 const linux = process.platform === "linux";
 describe.skipIf(!linux)("durable job owner journal", () => {
@@ -109,7 +129,7 @@ const compiledProbe = process.env.MANIFOLD_TEST_SYSCALL_PROBE;
 const realBackend = linux && Boolean(bwrap && busybox && cgroupRoot);
 
 describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () => {
-  test.each(["primary", "managed"] as const)("bundled %s execution survives missing optional tools and owner recovery without replay", async (mode) => {
+  test.each(["primary", "managed", "companion"] as const)("bundled %s execution survives missing optional tools and owner recovery without replay", async (mode) => {
     const root = mkdtempSync(join(tmpdir(), "machine-owner-"));
     const keys = generateKeyPairSync("ed25519");
     const admissionPublicKey = keys.publicKey.export({ type: "spki", format: "pem" }).toString();
@@ -157,14 +177,28 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
       },
     };
     const primary = Object.values(install.machine.artifacts)[0]!;
-    const engine = { ...primary, bundleFile: "engine", entry: ["managed-engine"] };
+    const helperBytes = Buffer.concat([bytes, Buffer.from("pinned-companion")]);
+    const helperHash = createHash("sha256").update(helperBytes).digest("hex");
+    const engineBytes = gzipSync(Buffer.concat([
+      tarMember("managed-engine", bytes), tarMember("helper", helperBytes), Buffer.alloc(1024),
+    ]));
+    const engine = {
+      ...primary, bundleFile: "engine", entry: ["managed-engine"], format: "tar.gz" as const,
+      sha256: createHash("sha256").update(engineBytes).digest("hex"),
+      files: { helper: { entry: ["helper"], sha256: helperHash } },
+      maxBytes: engineBytes.length, maxExpandedBytes: bytes.length + helperBytes.length, maxMembers: 2,
+    };
     install.machine.tools = { engine: { [`linux-${process.arch}`]: engine }, absent: {} };
-    install.toolArtifacts = { engine: bytes.toString("base64") };
+    install.toolArtifacts = { engine: engineBytes.toString("base64") };
     install.machine.operations["fixture.jobs.managed"] = {
       ...install.machine.operations["fixture.jobs.run"]!,
       executable: { runtimeTool: "engine" }, runtimeTools: ["engine"],
       input: { config: { type: "string", required: true } },
       inputFiles: { "config.json": { input: "config" } },
+    };
+    install.machine.operations["fixture.jobs.companion"] = {
+      ...install.machine.operations["fixture.jobs.managed"]!,
+      executable: { runtimeTool: "helper" }, runtimeTools: ["engine", "helper"],
     };
     install.machine.operations["fixture.jobs.absent"] = {
       ...install.machine.operations["fixture.jobs.run"]!,
@@ -195,7 +229,10 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
         bubblewrapFd: bwrapFd,
         anchors: {},
         protectedDirectories: [protectedRoot],
-        runtimeTools: { absent: [{ fd: bwrapFd, target: "/runtime/bin/absent", writable: false }] },
+        runtimeTools: {
+          absent: [{ fd: bwrapFd, target: "/runtime/bin/absent", writable: false }],
+          helper: [{ fd: bwrapFd, target: "/runtime/bin/helper", writable: false }],
+        },
         artifactAuthority: {
           origins: [],
           maxRedirects: 0,
@@ -224,6 +261,19 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
       expect(events.at(-1)).toMatchObject({ type: "refusal" });
       await owner.execute({ ...install, artifact: { ...delivery, data: Buffer.from("substitution").toString("base64") } });
       expect(events.at(-1)).toMatchObject({ type: "refusal" });
+      await owner.execute({
+        ...install,
+        machine: { ...install.machine, tools: { ...install.machine.tools, helper: {} } },
+      });
+      expect(events.at(-1)).toMatchObject({ type: "refusal", reason: "runtime_tool_alias_ambiguous" });
+      await owner.execute({
+        ...install,
+        machine: {
+          ...install.machine,
+          artifacts: { [`linux-${process.arch}`]: { ...primary, files: engine.files } },
+        },
+      });
+      expect(events.at(-1)).toMatchObject({ type: "refusal", reason: "runtime_tool_alias_ambiguous" });
       await owner.execute({ ...install, toolArtifacts: undefined });
       expect(events.at(-1)).toMatchObject({ type: "installed", resources: {
         artifactAvailable: true,
@@ -231,6 +281,7 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
           { operationId: "fixture.jobs.run", available: true },
           expect.objectContaining({ operationId: "fixture.jobs.managed", available: false }),
           expect.objectContaining({ operationId: "fixture.jobs.absent", available: false }),
+          expect.objectContaining({ operationId: "fixture.jobs.companion", available: false }),
         ]),
       } });
       await owner.execute(install);
@@ -241,7 +292,7 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
       const requestBody = {
         jobId: "once",
         machineId: "machine",
-        operationId: mode === "primary" ? "fixture.jobs.run" : "fixture.jobs.managed",
+        operationId: mode === "primary" ? "fixture.jobs.run" : mode === "managed" ? "fixture.jobs.managed" : "fixture.jobs.companion",
         pluginId: "fixture.jobs",
         installationRevision: "r1",
         artifactSha256: sha256,
@@ -314,7 +365,13 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
       });
       await owner.execute(command);
       expect(events.at(-1)).toEqual({ type: "result", result });
-      const host = new TerminalHost({ jobOwner: owner });
+      let launchJob = startLinuxJob;
+      const nativeLaunch = spyOn(nativeRuntime, "startLinuxJob").mockImplementation((spec) => launchJob(spec));
+      let emptyFailure = Promise.withResolvers<void>();
+      const host = new TerminalHost({
+        jobOwner: owner,
+        sink: (record) => { if (record.evt === "terminal_empty_unproven") emptyFailure.resolve(); },
+      });
       const terminalEvents: TerminalHostEvent[] = [];
       const terminalExit = Promise.withResolvers<void>();
       let terminalRefused = Promise.withResolvers<void>();
@@ -383,17 +440,95 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
         seat.deliver(create);
         expect(terminalEvents.at(-1)).toMatchObject({ type: "create_error", message: "terminal_admission_reused" });
         seat.detach();
-        const successor = host.open({ write(event) { terminalEvents.push(event); return true; }, close() {} });
+        const successor = host.open({
+          write(event) {
+            terminalEvents.push(event);
+            if (event.type === "create_error") terminalRefused.resolve();
+            return true;
+          },
+          close() {},
+        });
         successor.deliver({ type: "attach" });
         expect(terminalEvents.at(-1)).toMatchObject({
           type: "attached", terminals: [{ terminalId: "native-terminal", alive: false, exitCode: 0 }],
         });
+        successor.deliver({ type: "kill", terminalId: "native-terminal" });
+        for (const failure of ["empty-startup", "startup", "result"] as const) {
+          successor.deliver({ type: "drain", draining: false, requestId: `resume-${failure}` });
+          let proofAvailable = false;
+          const interrupted = Promise.withResolvers<JobResult>();
+          release();
+          release = owner.attach((event) => {
+            events.push(event);
+            if (event.type === "result" && event.result.state === "interrupted")
+              interrupted.resolve(event.result);
+            return true;
+          });
+          emptyFailure = Promise.withResolvers<void>();
+          terminalRefused = Promise.withResolvers<void>();
+          const id = `unknown-${failure}`;
+          const body = { ...boundBody, jobId: id, terminal: { ...boundBody.terminal, terminalId: id } };
+          const request = { ...body, requestDigest: jobDigest(body) };
+          const permit = { ...boundPermit, jobId: id, permitId: id, requestDigest: request.requestDigest };
+          const cleanup = async () => {
+            if (!proofAvailable) throw new LinuxJobRefusal("cgroup-empty-unproven");
+          };
+          launchJob = async (spec) => {
+            if (failure !== "result")
+              throw new LinuxJobRefusal("cgroup-empty-unproven", undefined, failure === "empty-startup", cleanup);
+            return {
+              result: Promise.reject(new LinuxJobRefusal("cgroup-empty-unproven")),
+              childDelegation: spec.delegatedCgroup,
+              input: async () => {}, endInput() {}, release() {},
+              async cancel(): Promise<LinuxJobResult> {
+                await cleanup();
+                return {
+                  empty: true, exitCode: null, signal: "SIGKILL", reason: "cancelled",
+                  startedAt: now, finishedAt: now, boundary: "linux-bubblewrap-cgroup-v2",
+                  usage: { wallMs: 0, cpuUsec: 0, memoryPeakBytes: 0, processesPeak: 0, outputBytes: 0, oomKills: 0 },
+                };
+              },
+            };
+          };
+          successor.deliver({
+            ...create, terminalId: id,
+            runtime: { type: "start", request, permit: {
+              ...permit, signature: sign(null, Buffer.from(canonicalJobJson(permit)), keys.privateKey).toString("base64"),
+            } },
+          });
+          if (failure === "empty-startup") {
+            await terminalRefused.promise;
+            successor.deliver({ type: "drain", draining: true, requestId: "safe-refusal" });
+            expect(owner.maintenanceReady).toBe(true);
+            expect(host.terminalCount).toBe(0);
+            continue;
+          }
+          await interrupted.promise;
+          if (failure === "startup") await terminalRefused.promise;
+          else await emptyFailure.promise;
+          expect(owner.maintenanceReady).toBe(false);
+          expect(host.status().terminals).toContainEqual(expect.objectContaining({ terminalId: id, alive: true }));
+          expect(terminalEvents.some((event) => event.type === "exited" && event.terminalId === id)).toBe(false);
+          successor.deliver({ type: "kill", terminalId: id });
+          successor.deliver({ type: "shutdown_request" });
+          expect(terminalEvents.at(-1)).toMatchObject({ type: "shutdown_refused", reason: "terminals_retained" });
+          await expect(owner.shutdown()).rejects.toThrow("cgroup-empty-unproven");
+          proofAvailable = true;
+          await owner.execute({ type: "cancel", jobId: id });
+          expect(owner.maintenanceReady).toBe(true);
+          emptyFailure = Promise.withResolvers<void>();
+          successor.deliver({ type: "kill", terminalId: id });
+          await emptyFailure.promise;
+          successor.deliver({ type: "kill", terminalId: id });
+          expect(host.terminalCount).toBe(0);
+        }
       } finally {
+        nativeLaunch.mockRestore();
         await host.shutdown();
       }
       release();
       await owner.shutdown();
-      unlinkSync(join(root, "cache", artifactCacheKey(engine, engine.entrySha256)));
+      unlinkSync(join(root, "cache", artifactCacheKey(engine, mode === "companion" ? helperHash : engine.entrySha256)));
       const interruptedBody = { ...requestBody, jobId: "unobserved" };
       const interruptedRequest: JobRequest = {
         ...interruptedBody,
@@ -432,6 +567,7 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
           { operationId: "fixture.jobs.run", available: true },
           expect.objectContaining({ operationId: "fixture.jobs.managed", available: false }),
           expect.objectContaining({ operationId: "fixture.jobs.absent", available: false }),
+          expect.objectContaining({ operationId: "fixture.jobs.companion", available: false }),
         ]));
       await owner.execute({ type: "drain", draining: false });
       await owner.execute(install);
