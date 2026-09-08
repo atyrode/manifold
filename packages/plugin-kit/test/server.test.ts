@@ -419,6 +419,43 @@ describe("dispatch", () => {
     expect(fake.sent.filter((frame) => frame.t === "call")).toHaveLength(0);
   });
 
+  test("compare-and-set rejects invalid keys and both oversize operands in the guest", async () => {
+    const fake = host({
+      manifest,
+      actions: [echo],
+      handlers: {
+        async echo(ctx: GuestCtx, args: { text: string }) {
+          const oversize = "é".repeat(32 * 1024 + 1);
+          const operation =
+            args.text === "reserved"
+              ? ctx.storage.compareAndSet("$version", null, "9.9")
+              : args.text === "malformed"
+                ? ctx.storage.compareAndSet("bad key", null, "value")
+                : args.text === "expected"
+                  ? ctx.storage.compareAndSet("choice", oversize, "value")
+                  : ctx.storage.compareAndSet("choice", null, oversize);
+          // An invalid call must return its promise before the rejection is observed.
+          return {
+            text: await operation.then(
+              () => "accepted",
+              () => "rejected",
+            ),
+          };
+        },
+      },
+    });
+    load(fake);
+    await fake.next();
+    for (const text of ["reserved", "malformed", "expected", "replacement"]) {
+      fake.send({ t: "dispatch", id: text, action: "echo", args: { text }, ctx: ctxOf() });
+      expect(await fake.next()).toMatchObject({
+        id: text,
+        outcome: { ok: true, result: { text: "rejected" } },
+      });
+    }
+    expect(fake.sent.filter((frame) => frame.t === "call")).toHaveLength(0);
+  });
+
   test("emissions are checked as they are staged, and bounded", async () => {
     const fake = host({
       manifest,

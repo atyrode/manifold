@@ -204,6 +204,34 @@ describe("IsolateSupervisor", () => {
     expect(await invoke(def, "slice", ctx, {})).toBe("id-1");
   });
 
+  test("concurrent child dispatches increment durable state without losing an update", async () => {
+    const { supervisor, runtime, storage } = fixture();
+    const { def } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });
+    const { ctx } = actionCtx(storage, runtime);
+    const first = await Promise.all([
+      invoke(def, "echo", ctx, { text: "concurrent" }),
+      invoke(def, "echo", ctx, { text: "concurrent" }),
+    ]);
+    expect(first).toEqual(
+      expect.arrayContaining([
+        { text: "concurrent", count: 1 },
+        { text: "concurrent", count: 2 },
+      ]),
+    );
+    expect(await storage.get("count")).toBe("2");
+    const second = await Promise.all([
+      invoke(def, "echo", ctx, { text: "updated" }),
+      invoke(def, "echo", ctx, { text: "updated" }),
+    ]);
+    expect(second).toEqual(
+      expect.arrayContaining([
+        { text: "updated", count: 3 },
+        { text: "updated", count: 4 },
+      ]),
+    );
+    expect(await storage.get("count")).toBe("4");
+  });
+
   test("the child's own verdicts: invalid_args throws the denial, refused returns as data", async () => {
     const { supervisor, runtime, storage } = fixture();
     const { def } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });

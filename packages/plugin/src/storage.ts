@@ -39,6 +39,12 @@ export interface PluginStorage {
   readonly pluginId: string;
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
+  /**
+   * Atomically writes value only when the key is absent (expected is null) or its stored
+   * bytes equal expected. Returns false without changing data on a mismatch. Both strings
+   * obey the value limit, and the key obeys the same rules as set.
+   */
+  compareAndSet(key: string, expected: string | null, value: string): Promise<boolean>;
   delete(key: string): Promise<void>;
   /** Every key this plugin holds, sorted, optionally narrowed to a prefix. */
   keys(prefix?: string): Promise<readonly string[]>;
@@ -49,8 +55,8 @@ export interface PluginStorage {
 }
 
 /**
- * The engine's half of the same ref. `set`/`delete` on a `PluginStorage` refuse reserved
- * keys, so a plugin cannot forge its own data version or ledger entry; the engine writes
+ * The engine's half of the same ref. `set`/`compareAndSet`/`delete` on a `PluginStorage` refuse
+ * reserved keys, so a plugin cannot forge its own data version or ledger entry; the engine writes
  * those through here instead. `clear` is the purge verb's hands, and `count` is what it would
  * take — the number an uninstall refuses over while it is not zero.
  */

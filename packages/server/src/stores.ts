@@ -910,8 +910,8 @@ export class ServerStore {
    * so two plugins cannot read each other's rows and a purge erases exactly one namespace.
    *
    * Returned as the ADMIN handle. `PluginHost` keeps that and hands plugins the narrower
-   * `PluginStorage` view, whose `set`/`delete` refuse the engine's reserved keys — a plugin
-   * cannot forge its own data version or a ledger entry saying a migration already ran.
+   * `PluginStorage` view, whose writes refuse the engine's reserved keys — a plugin cannot
+   * forge its own data version or a ledger entry saying a migration already ran.
    *
    * Every method is promise-returning (ADR 0016 §4) and synchronous inside: the SQLite call
    * runs before the promise is handed back, so the promise is already settled and a refused
@@ -957,6 +957,29 @@ export class ServerStore {
         assertStorageKey(key);
         assertStorageValue(key, value);
         write(key, value);
+      },
+      compareAndSet: async (key, expected, value) => {
+        assertStorageKey(key);
+        if (expected !== null) assertStorageValue(key, expected);
+        assertStorageValue(key, value);
+        // Each condition and write is one SQLite statement, including competing creators.
+        // Never split the comparison from the mutation across awaited storage calls.
+        if (expected === null) {
+          return (
+            this.db
+              .query<void, [string, string, string]>(
+                "INSERT INTO plugin_kv(plugin_id, key, value) VALUES (?, ?, ?) ON CONFLICT(plugin_id, key) DO NOTHING",
+              )
+              .run(pluginId, key, value).changes === 1
+          );
+        }
+        return (
+          this.db
+            .query<void, [string, string, string, string]>(
+              "UPDATE plugin_kv SET value = ? WHERE plugin_id = ? AND key = ? AND value = ? COLLATE BINARY",
+            )
+            .run(value, pluginId, key, expected).changes === 1
+        );
       },
       delete: async (key) => {
         assertStorageKey(key);

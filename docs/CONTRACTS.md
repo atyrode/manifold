@@ -1123,12 +1123,21 @@ and `verify:axioms` publishes every action carrying it.
 
 **Per-plugin storage.** `ctx.storage` is the only place a plugin persists anything: one SQLite table
 `plugin_kv(plugin_id, key, value)` (added in schema 10), namespaced per plugin, PROMISE-RETURNING
-(ADR 0016 §4, for every plugin) and string-valued (`get`/`set`/`delete`/`keys(prefix?)`/
+(ADR 0016 §4, for every plugin) and string-valued (`get`/`set`/`compareAndSet`/`delete`/`keys(prefix?)`/
 `dataVersion()`/`appliedMigrations()`). The in-realm handle is synchronous inside and settles
 before it returns; a refused key or value rejects with `PluginStorageError`, never throws. Keys
-match `^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$`, values are ≤64 KiB, and `$`-prefixed keys are
+match `^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$`, values are ≤64 KiB of UTF-8, and `$`-prefixed keys are
 engine-reserved and unforgeable by plugins — that is where the version stamp and migration ledger
-live. Migrations are `{ name, to, migrate(storage): void | Promise<void> }`, all-or-nothing because
+live. `compareAndSet(key, expected, value): Promise<boolean>` atomically writes only when
+`expected` is `null` and the key is absent, or when the stored bytes exactly equal the expected
+string. An empty string is a value, not absence. A mismatch returns `false` without changing data;
+a match returns `true`, including when the replacement equals the current value. Both expected
+and replacement strings obey the same size limit as `set`, even on a mismatch. The key uses the
+same validation and bound plugin namespace as `set`. SQLite performs the condition and write in
+one statement; no awaited read/write pair or client-side lock implements it. The isolated guest
+calls the same operation through its storage proxy, preserving the promise-rejection contract.
+Storage emits no event automatically: the successful action owns its declared product notification.
+Migrations are `{ name, to, migrate(storage): void | Promise<void> }`, all-or-nothing because
 a migration awaits nothing but its storage handle, run at boot (awaited before the socket binds)
 for enabled plugins and at the enablement door for one being switched on; applied NAMES are
 recorded so none runs twice. Version rules: equal assembles; minor-only difference assembles with
@@ -1723,7 +1732,7 @@ JSON frames over `Bun.spawn` ipc, discriminated on `t`:
 | child→host | `call`        | `id`, `method: IsolateCtxMethod`, `args: unknown[]`                                                                                                                        |
 
 The ctx slices served over `call` are exactly `ISOLATE_CTX_METHODS`: `storage.get` / `set` /
-`delete` / `keys` (namespaced by plugin id), `auth.allows` (graded as the dispatching principal,
+`compareAndSet` / `delete` / `keys` (namespaced by plugin id), `auth.allows` (graded as the dispatching principal,
 found by the dispatch id), `outsideScope`, `newId`, `machines.isOnline`, `placement.place`,
 `host.roster`, `host.enabled`. Every other `ActionCtx` member is NOT served in stage 1; the guest
 runtime raises `IsolateSliceUnavailable(method)` and answers `{ ok: false, rule: "refused" }`, so

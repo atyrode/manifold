@@ -350,6 +350,7 @@ const errorText = z.string().max(2048);
 export const ISOLATE_CTX_METHODS = [
   "storage.get",
   "storage.set",
+  "storage.compareAndSet",
   "storage.delete",
   "storage.keys",
   "auth.allows",
