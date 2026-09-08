@@ -105,11 +105,24 @@ async function createContainer(origin: string, ownerKey: string, name: string): 
 }
 
 /** Crosses the identity gate if it is standing; a device that already holds a grant has none. */
-async function enterIdentity(driver: Browser, name: string): Promise<void> {
-  if (!(await driver.evaluate<boolean>("document.querySelector('input') !== null"))) return;
-  await driver.typeInto("input", name);
+async function enterIdentity(driver: Browser, name: string, storageKey: string): Promise<void> {
+  const hasIdentity = `localStorage.getItem(${JSON.stringify(storageKey)}) !== null`;
+  await until(
+    async () =>
+      await driver.evaluate<boolean>(
+        `document.querySelector('#identity-name') !== null || ${hasIdentity}`,
+      ),
+    10_000,
+    "the identity form or existing credential",
+  );
+  if (await driver.evaluate<boolean>(hasIdentity)) return;
+  await driver.typeInto("#identity-name", name);
   await driver.clickTestId("identity-enter");
-  await sleep(1200);
+  await until(
+    async () => await driver.evaluate<boolean>(hasIdentity),
+    10_000,
+    "the granted browser identity",
+  );
 }
 
 async function seenTestId(driver: Browser, testid: string): Promise<boolean> {
@@ -218,7 +231,7 @@ try {
   // ───────────────────────────────────────────────────────────── 1. installability
   console.log("\n1. installability");
   await driver.goto(`${originA}/#key=${ownerA}`);
-  await enterIdentity(driver, "pwa-gate");
+  await enterIdentity(driver, "pwa-gate", "manifold.identity");
 
   const manifest = await driver.send("Page.getAppManifest", {});
   const manifestErrors = (manifest.result?.["errors"] ?? []) as { message?: string }[];
@@ -497,7 +510,7 @@ try {
     "looking elsewhere is a named, visible condition",
     await seenTestId(driver, "lens-instance"),
   );
-  await enterIdentity(driver, "pwa-gate-elsewhere");
+  await enterIdentity(driver, "pwa-gate-elsewhere", `manifold.identity@${originB}`);
   assert(
     "the foreign instance's grant is kept beside the local one, never over it",
     (await driver.evaluate<string>("localStorage.getItem('manifold.identity') ?? ''")) ===
