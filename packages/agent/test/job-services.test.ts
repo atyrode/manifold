@@ -228,7 +228,7 @@ test("explicit full disclosure returns JSON or encoded bytes, still enforcing th
           ok: true, result: bytes ? { encoding: "base64", data: "AP8q" } : { value: { allowed: true } },
         });
       } finally { runner.close(); }
-      spec.operations.read!.maxResultBytes = 1;
+      if (!("kind" in spec.operations.read!)) spec.operations.read!.maxResultBytes = 1;
       const limited = createJobServiceRunner({ policies: [spec] });
       try { expect(await limited.call(call, binding, allow)).toMatchObject({ refusal: "service_response_limit" }); }
       finally { limited.close(); }

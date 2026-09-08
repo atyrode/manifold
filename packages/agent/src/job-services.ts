@@ -232,7 +232,7 @@ export function createJobServiceRunner(options: { policies: readonly ServicePoli
     const policy = parsed.data;
     const projections = new Map<string, Projection>();
     for (const [id, operation] of Object.entries(policy.operations)) {
-      if (operation.response.kind === "projected-json") projections.set(id, projectionTree(operation.response.fields));
+      if (!("kind" in operation) && operation.response.kind === "projected-json") projections.set(id, projectionTree(operation.response.fields));
     }
     policies.set(policy.serviceId, { policy, active: 0, projections });
   }
@@ -256,7 +256,7 @@ export function createJobServiceRunner(options: { policies: readonly ServicePoli
       if (!binding.success || binding.data.serviceId !== request.serviceId || binding.data.revision !== entry.policy.revision || !binding.data.operationIds.includes(request.operationId))
         return refusal("service_binding_mismatch");
       const operation = Object.hasOwn(entry.policy.operations, request.operationId) ? entry.policy.operations[request.operationId] : undefined;
-      if (!operation) return refusal("service_operation_unknown");
+      if (!operation || "kind" in operation) return refusal("service_operation_unknown");
       if (entry.active >= entry.policy.maxConcurrent) return refusal("service_busy");
       const controller = new AbortController();
       let timedOut = false;

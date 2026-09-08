@@ -116,6 +116,32 @@ export const ServiceOperationPolicySchema = z.strictObject({
   }
 });
 
+/** Opaque application bytes are data, never transport controls. The trusted installer
+ * opts into full request/response disclosure for this exact route; no caller URL,
+ * query, headers, redirects or content negotiation are forwarded. */
+export const ServiceProxyOperationPolicySchema = z.strictObject({
+  kind: z.literal("http-proxy"),
+  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+  path: z.string().max(4096).refine((path) => path === "/" || (
+    path.startsWith("/") && path.slice(1).split("/").every((part) =>
+      /^[A-Za-z0-9_~.-]+$/.test(part) && part !== "." && part !== ".."
+    )
+  )),
+  request: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("none") }),
+    z.strictObject({ kind: z.literal("json"), disclosure: z.literal("full") }),
+  ]),
+  response: z.strictObject({
+    kind: z.literal("stream"),
+    disclosure: z.literal("full"),
+    contentTypes: z.array(z.enum(["application/json", "text/event-stream", "text/plain"])).min(1).max(3),
+    headers: z.array(z.enum(["retry-after", "x-request-id", "request-id"])).max(3),
+  }),
+  timeoutMs: z.number().int().positive().max(300000),
+  maxRequestBytes: z.number().int().positive().max(16 * 1024 * 1024),
+  maxResponseBytes: z.number().int().positive().max(256 * 1024 * 1024),
+}).refine((operation) => operation.method !== "GET" || operation.request.kind === "none");
+
 /** Owner-installed policy. No raw credential values or caller-selected transport controls. */
 export const ServicePolicySchema = z.strictObject({
   serviceId: name,
@@ -131,7 +157,7 @@ export const ServicePolicySchema = z.strictObject({
     prefix: z.enum(["", "Bearer ", "Basic "]),
   }).optional(),
   maxConcurrent: z.number().int().positive().max(64),
-  operations: z.record(name, ServiceOperationPolicySchema).refine(
+  operations: z.record(name, z.union([ServiceOperationPolicySchema, ServiceProxyOperationPolicySchema])).refine(
     (value) => Object.keys(value).length > 0 && Object.keys(value).length <= 64,
   ),
 }).refine((policy) => {
@@ -151,3 +177,4 @@ export type ServiceBinding = z.infer<typeof ServiceBindingSchema>;
 export type ServiceResponsePolicy = z.infer<typeof ServiceResponsePolicySchema>;
 export type ServiceOperationPolicy = z.infer<typeof ServiceOperationPolicySchema>;
 export type ServicePolicy = z.infer<typeof ServicePolicySchema>;
+export type ServiceProxyOperationPolicy = z.infer<typeof ServiceProxyOperationPolicySchema>;
