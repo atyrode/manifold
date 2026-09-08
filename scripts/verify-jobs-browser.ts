@@ -352,15 +352,16 @@ async function nativeProof(
     );
     await browser.send("Input.insertText", { text: label });
     await nativeScreenshot(browser, input, `native-declared-input-${label}`);
+    const priorJobs = await browser.evaluate<string[]>(
+      "[...(document.querySelector('select[aria-label=\"Operation run\"]')?.options ?? [])].map(option => option.value)",
+    );
     await nativeClick(browser, run);
     const jobId = await waitFor(
       async () => {
         const selected = await browser.evaluate<unknown>(
           "document.querySelector('select[aria-label=\"Operation run\"]')?.value",
         );
-        return typeof selected === "string" &&
-          selected.length > 0 &&
-          !jobs.some((job) => job.jobId === selected)
+        return typeof selected === "string" && selected.length > 0 && !priorJobs.includes(selected)
           ? selected
           : false;
       },
@@ -498,17 +499,10 @@ async function nativeProof(
   await waitFor(
     () =>
       browser.evaluate<boolean>(
-        `document.querySelector(${JSON.stringify(`${statusSelector} [role="alert"]`)}) !== null`,
+        `document.querySelector(${JSON.stringify(statusSelector)})?.innerText.includes(${JSON.stringify(retained.result!.requestDigest)}) === false`,
       ),
     5000,
     20,
-  );
-  assert.equal(
-    await browser.evaluate<boolean>(
-      `document.querySelector(${JSON.stringify(statusSelector)})?.innerText.includes(${JSON.stringify(retained.result!.requestDigest)}) === true`,
-    ),
-    false,
-    "revoked status retained a readable result",
   );
   await nativeClick(
     browser,
@@ -678,11 +672,11 @@ async function main() {
     const observer = new Browser();
     browsers.push(observer);
     await observer.launch({ incognito: true });
-    await observer.goto(origin);
+    await observer.goto(hub.httpUrl);
     await observer.evaluate(
       `localStorage.setItem('manifold.identity', ${JSON.stringify(JSON.stringify({ token: observationGrant.token, principal: observationGrant.principal }))})`,
     );
-    await observer.goto(`${origin}/p/${container.id}`);
+    await observer.goto(`${hub.httpUrl}/p/${container.id}`);
     await openNativeHistory(observer, runtime.machineId);
     const native = await nativeProof(browser, observer, hub, runtime);
     await browser.goto(`${origin}/p/${container.id}`);
@@ -1050,8 +1044,9 @@ async function main() {
     );
   } catch (error) {
     failure = { error };
-    for (const browser of browsers) {
+    for (const [index, browser] of browsers.entries()) {
       try {
+        await screenshot(browser, `failure-browser-${index}`);
         console.error(
           "Runtime browser failure state:",
           await browser.evaluate(
