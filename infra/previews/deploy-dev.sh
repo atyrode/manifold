@@ -68,7 +68,7 @@ binary=${MANIFOLD_DEV_SPOKE_BINARY:-$HOME/.local/share/manifold-dev-agent/manifo
 agent_env=${MANIFOLD_DEV_SPOKE_ENV:-$HOME/.config/manifold/dev/agent.env}
 echo 'deploy-dev: rebuilding the dev spoke transport only; the independently supervised terminal host and its live PTYs are preserved'
 mkdir -p "$(dirname "$binary")" "$(dirname "$agent_env")"
-(cd "$checkout" && bun build --compile packages/agent/src/main.ts --outfile "$binary" >/dev/null)
+(cd "$checkout" && bun install --frozen-lockfile && bun build --compile packages/agent/src/main.ts --outfile "$binary" >/dev/null)
 printf 'MANIFOLD_BUILD=%s\n' "$MANIFOLD_BUILD" >"$agent_env"
 since=$(date --iso-8601=seconds)
 systemctl --user restart "$MANIFOLD_DEV_SPOKE_UNIT"
