@@ -256,6 +256,56 @@ export const PublicJobSchema = z.strictObject({
   authority: JobAuthoritySchema,
 });
 export type PublicJob = z.infer<typeof PublicJobSchema>;
+
+export const ListJobRunsArgsSchema = z.strictObject({
+  machineId: JobRequestSchema.shape.machineId,
+  operationId: JobRequestSchema.shape.operationId.optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+  cursor: z.string().min(1).max(2048).optional(),
+});
+export type ListJobRunsArgs = z.infer<typeof ListJobRunsArgsSchema>;
+export const PublicScheduleOccurrenceSchema = z.strictObject({
+  scheduleId: z.string().min(1).max(256),
+  revision: z.string().min(1).max(256),
+  nominalAt: count,
+  jobId: JobRequestSchema.shape.jobId,
+  machineId: JobRequestSchema.shape.machineId,
+  pluginId: JobRequestSchema.shape.pluginId,
+  operationId: JobRequestSchema.shape.operationId,
+  installationRevision: JobRequestSchema.shape.installationRevision,
+  artifactSha256: JobRequestSchema.shape.artifactSha256,
+  state: z.enum(["pending", "enqueued", "skipped", "refused"]),
+  reason: z.string().max(2048).nullable(),
+});
+export type PublicScheduleOccurrence = z.infer<typeof PublicScheduleOccurrenceSchema>;
+export const PublicJobRunSchema = z
+  .strictObject({
+    job: PublicJobSchema.nullable(),
+    occurrence: PublicScheduleOccurrenceSchema.nullable(),
+  })
+  .refine(
+    ({ job, occurrence }) =>
+      job !== null || occurrence !== null,
+    { message: "A run must contain a job or schedule occurrence" },
+  )
+  .refine(
+    ({ job, occurrence }) =>
+      job === null ||
+      occurrence === null ||
+      (job.jobId === occurrence.jobId &&
+        job.machineId === occurrence.machineId &&
+        job.pluginId === occurrence.pluginId &&
+        job.operationId === occurrence.operationId &&
+        job.installationRevision === occurrence.installationRevision &&
+        job.artifactSha256 === occurrence.artifactSha256),
+    { message: "Job and occurrence targets must agree" },
+  );
+export type PublicJobRun = z.infer<typeof PublicJobRunSchema>;
+export const ListJobRunsResultSchema = z.strictObject({
+  runs: z.array(PublicJobRunSchema).max(100),
+  nextCursor: z.string().min(1).max(2048).nullable(),
+});
+export type ListJobRunsResult = z.infer<typeof ListJobRunsResultSchema>;
 export const JobOwnerSchema = z.strictObject({
   ownerId: id,
   publicKey: z.string().min(1).max(4096),

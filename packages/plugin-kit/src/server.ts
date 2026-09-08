@@ -6,6 +6,10 @@ import {
   MAX_ISOLATE_ACTIONS,
   MAX_ISOLATE_EMITS,
   ManifoldRefSchema,
+  ListJobRunsArgsSchema,
+  ListJobRunsResultSchema,
+  type ListJobRunsArgs,
+  type ListJobRunsResult,
   type ActionScope,
   type ActionRequirement,
   type ActionSummary,
@@ -149,6 +153,7 @@ export interface GuestJobFollow {
 export interface GuestJobs {
   execute(args: GuestJobRequest): Promise<GuestJobStatus>;
   status(node: GuestJobNode): Promise<GuestJobStatus>;
+  listRuns(args: ListJobRunsArgs): Promise<ListJobRunsResult>;
   input(args: { node: GuestJobNode; seq: number; data: string; eof: boolean }): Promise<void>;
   cancel(node: GuestJobNode): Promise<void>;
   output(args: {
@@ -448,6 +453,10 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       jobs: {
         execute: async (args) => (await call("jobs.execute", [args])) as GuestJobStatus,
         status: async (node) => (await call("jobs.status", [node])) as GuestJobStatus,
+        listRuns: async (args) =>
+          ListJobRunsResultSchema.parse(
+            await call("jobs.listRuns", [ListJobRunsArgsSchema.parse(args)]),
+          ),
         input: async (args) => {
           await call("jobs.input", [args]);
         },

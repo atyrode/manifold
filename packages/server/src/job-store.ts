@@ -13,6 +13,7 @@ import {
   type JobAuthority,
 } from "../../protocol/src/jobs.ts";
 import type { ServerStore, TraceAttribution } from "./stores.ts";
+import type { JobOccurrence } from "./job-schedules.ts";
 export type JobAuditOrigin = Pick<
   TraceAttribution,
   "actor" | "authority" | "door" | "containerId" | "session"
@@ -34,6 +35,17 @@ export interface JobInstallation {
   enabled: boolean;
   ready: boolean;
   purgeRequested: boolean;
+}
+export interface JobRunPosition {
+  at: number;
+  source: 0 | 1;
+  jobId: string;
+}
+export interface JobRunCandidate {
+  position: JobRunPosition;
+  request: JobRequest;
+  job: JobRecord | null;
+  occurrence: JobOccurrence | null;
 }
 export class JobStore {
   constructor(
@@ -103,6 +115,94 @@ export class JobStore {
             )
             .all(machineId);
     return rows.map((r) => this.get(r.job_id)!);
+  }
+  /** Durable discovery is bounded before any records or authority evidence are materialized. */
+  runCandidates(
+    args: {
+      pluginId: string;
+      machineId: string;
+      operationId?: string;
+      before?: JobRunPosition;
+    },
+    limit: number,
+  ): JobRunCandidate[] {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 257)
+      throw new Error("invalid-job-run-limit");
+    const rows = this.store.db
+      .query<
+        {
+          at: number;
+          source: 0 | 1;
+          job_id: string;
+          request: string;
+          persisted_job_id: string | null;
+          schedule_id: string | null;
+          revision: string | null;
+          deadline: number | null;
+          state: string | null;
+          reason: string | null;
+        },
+        [string, string, string | null, string | null, string, string, string | null, string | null,
+          number | null, number | null, number | null, string | null, number]
+      >(
+        `WITH candidates AS (
+          SELECT j.created_at AS at, 0 AS source, j.job_id, j.request,
+            j.job_id AS persisted_job_id, NULL AS schedule_id, NULL AS revision,
+            NULL AS deadline, NULL AS state, NULL AS reason
+          FROM machine_jobs j
+          WHERE j.plugin_id = ? AND j.machine_id = ?
+            AND (? IS NULL OR json_extract(j.request, '$.operationId') = ?)
+            AND NOT EXISTS (
+              SELECT 1 FROM job_schedule_occurrences o WHERE o.job_id = j.job_id
+            )
+          UNION ALL
+          SELECT o.nominal AS at, 1 AS source, o.job_id, o.request,
+            j.job_id AS persisted_job_id, o.schedule_id, o.revision,
+            o.deadline, o.state, o.reason
+          FROM job_schedule_occurrences o
+          LEFT JOIN machine_jobs j ON j.job_id = o.job_id
+          WHERE json_extract(o.request, '$.pluginId') = ?
+            AND json_extract(o.request, '$.machineId') = ?
+            AND (? IS NULL OR json_extract(o.request, '$.operationId') = ?)
+        )
+        SELECT * FROM candidates
+        WHERE ? IS NULL OR (at, source, job_id) < (?, ?, ?)
+        ORDER BY at DESC, source DESC, job_id DESC
+        LIMIT ?`,
+      )
+      .all(
+        args.pluginId,
+        args.machineId,
+        args.operationId ?? null,
+        args.operationId ?? null,
+        args.pluginId,
+        args.machineId,
+        args.operationId ?? null,
+        args.operationId ?? null,
+        args.before?.at ?? null,
+        args.before?.at ?? null,
+        args.before?.source ?? null,
+        args.before?.jobId ?? null,
+        limit,
+      );
+    return rows.map((row) => ({
+      position: { at: row.at, source: row.source, jobId: row.job_id },
+      request: JobRequestSchema.parse(JSON.parse(row.request)),
+      job: row.persisted_job_id === null ? null : this.get(row.persisted_job_id),
+      occurrence:
+        row.source === 0
+          ? null
+          : {
+              schedule_id: row.schedule_id!,
+              revision: row.revision!,
+              nominal: row.at,
+              job_id: row.job_id,
+              request: row.request,
+              deadline: row.deadline!,
+              state: row.state!,
+              reason: row.reason,
+            },
+    }));
   }
   dispatchOrigin(traceId: string): JobAuditOrigin | null {
     return this.store.db

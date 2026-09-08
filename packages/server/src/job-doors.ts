@@ -1,20 +1,24 @@
 import { defineAction } from "@manifold/plugin";
 import type { PluginJobContext } from "@manifold/plugin";
-import { CapSchema, ManifoldRefSchema } from "@manifold/protocol";
 import {
+  CapSchema,
+  ManifoldRefSchema,
+  ListJobRunsArgsSchema,
+  ListJobRunsResultSchema,
+  JobOutputRuleSchema,
+  type ListJobRunsArgs,
+  type ListJobRunsResult,
   JobEventSchema,
   JobRequestSchema,
   PublicJobSchema,
   JobDescriptionSchema,
   MachineHalfSchema,
   type PublicJob,
-} from "../../protocol/src/jobs.ts";
-import { JobOutputRuleSchema } from "../../protocol/src/jobs.ts";
+} from "@manifold/protocol";
 import { z } from "zod";
 import { ServiceError, type AuthContext } from "./auth.ts";
 import type { ActionCtx, ServerPluginDef } from "./plugin-host.ts";
 import type { JobService } from "./job-service.ts";
-import type { JobRecord } from "./job-store.ts";
 
 const id = z.string().min(1).max(256);
 const jobNode = ManifoldRefSchema.options[10];
@@ -64,6 +68,7 @@ export const jobDoorSchemas = {
   execute: execute.extend({ pluginId: id }),
   describe: z.strictObject({ machineId: id, pluginId: id, installationRevision: id.optional() }),
   status: z.strictObject({ node: jobNode }),
+  listRuns: ListJobRunsArgsSchema.extend({ pluginId: JobRequestSchema.shape.pluginId }),
   input: z.strictObject({
     node: jobNode,
     seq: z.number().int().nonnegative(),
@@ -99,23 +104,6 @@ export const jobDoorSchemas = {
 };
 const schemas = jobDoorSchemas;
 
-/** Only metadata leaves a durable job record; request input and credential lineage stay private. */
-function visibleJob(service: JobService, record: JobRecord): PublicJob {
-  const { jobId, machineId, operationId, pluginId, installationRevision, artifactSha256 } =
-    record.request;
-  return {
-    jobId,
-    machineId,
-    operationId,
-    pluginId,
-    installationRevision,
-    artifactSha256,
-    state: record.state,
-    result: record.result,
-    authority: service.jobs.authority(record),
-  };
-}
-
 /** The host binds authority and caller identity, never a caller-provided credential or parent. */
 export function jobContext(
   service: () => JobService,
@@ -132,14 +120,22 @@ export function jobContext(
     describe: (args) => service().describe(auth, schemas.describe.parse(args), pluginId),
     execute: (args) => {
       const { pluginId: requested, ...request } = args;
-      return visibleJob(
-        service(),
+      return service().publicJob(
         service().execute(auth, callee(requested), String(traceId), execute.parse(request)),
       );
     },
     status: (node: z.infer<typeof jobNode>) =>
-      visibleJob(service(), service().status(auth, jobNode.parse(node), pluginId)),
+      service().publicJob(service().status(auth, jobNode.parse(node), pluginId)),
     follow: (node, receive) => service().follow(auth, jobNode.parse(node), receive, pluginId),
+    listRuns: (args) => {
+      const { pluginId: requested, ...query } = args;
+      return service().listRuns(
+        auth,
+        callee(requested),
+        ListJobRunsArgsSchema.parse(query),
+        pluginId,
+      );
+    },
     input: (args: z.infer<typeof schemas.input>) => {
       const a = schemas.input.parse(args);
       service().input(auth, a.node, a.seq, a.data, a.eof, pluginId);
@@ -199,6 +195,7 @@ export function jobContext(
 }
 export interface JobContext extends PluginJobContext {
   execute(args: z.infer<typeof execute> & { pluginId?: string }): PublicJob;
+  listRuns(args: ListJobRunsArgs & { pluginId?: string }): ListJobRunsResult;
   install(args: z.infer<typeof schemas.install>): { accepted: true };
   consent(args: z.infer<typeof schemas.consent>): Record<string, never>;
   schedule(args: z.infer<typeof schedule> & { pluginId?: string }): Record<string, never>;
@@ -223,7 +220,13 @@ export const jobDoors: ServerPluginDef = {
     description:
       "Governed execution, private outputs, explicit installation consent and schedules.",
     capabilities: ["*"],
-    contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+    contributes: {
+      panels: [],
+      sections: [],
+      elements: [],
+      tools: [],
+      events: [{ id: "job_changed", title: "Job changed" }],
+    },
   },
   actions: Object.entries(schemas).map(([name, input]) =>
     defineAction<unknown, unknown>({
@@ -237,6 +240,8 @@ export const jobDoors: ServerPluginDef = {
           ? JobDescriptionSchema
           : name === "execute" || name === "status"
             ? publicJob
+            : name === "listRuns"
+              ? ListJobRunsResultSchema
             : name === "output"
               ? JobEventSchema
               : name === "schedules"
@@ -253,6 +258,8 @@ export const jobDoors: ServerPluginDef = {
       call(() => ctx.jobs.execute(args)),
     status: (ctx: ActionCtx, args: z.infer<typeof schemas.status>) =>
       call(() => ctx.jobs.status(args.node)),
+    listRuns: (ctx: ActionCtx, args: z.infer<typeof schemas.listRuns>) =>
+      call(() => ctx.jobs.listRuns(args)),
     input: (ctx: ActionCtx, args: z.infer<typeof schemas.input>) =>
       call(() => ctx.jobs.input(args)),
     cancel: (ctx: ActionCtx, args: z.infer<typeof schemas.cancel>) =>

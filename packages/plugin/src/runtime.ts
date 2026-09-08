@@ -4,6 +4,8 @@ import type {
   JobFollowSnapshot,
   JobFollowUpdate,
   JobRequest,
+  ListJobRunsArgs,
+  ListJobRunsResult,
   ManifoldRef,
   PublicJob,
 } from "@manifold/protocol";
@@ -45,6 +47,7 @@ export interface PluginJobContext {
   }): JobDescription;
   execute(args: JobExecution): PublicJob;
   status(node: JobNode): PublicJob;
+  listRuns(args: ListJobRunsArgs): ListJobRunsResult;
   follow(node: JobNode, receive: (update: JobFollowUpdate) => void): JobFollow;
   input(args: { node: JobNode; seq: number; data: string; eof: boolean }): { accepted: true };
   cancel(node: JobNode): { accepted: true };
