@@ -142,12 +142,26 @@ export const ServiceProxyOperationPolicySchema = z.strictObject({
   maxResponseBytes: z.number().int().positive().max(256 * 1024 * 1024),
 }).refine((operation) => operation.method !== "GET" || operation.request.kind === "none");
 
+export const ServiceRuntimeSchema = z.strictObject({
+  pluginId: name,
+  operationId: name,
+  installationRevision: name,
+  artifactSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  resourceBindingDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  input: z.record(name, z.union([
+    z.strictObject({ input: name }),
+    z.strictObject({ literal: scalar }),
+  ])).refine((value) => Object.keys(value).length <= 64),
+});
+export type ServiceRuntime = z.infer<typeof ServiceRuntimeSchema>;
+
 /** Owner-installed policy. No raw credential values or caller-selected transport controls. */
 export const ServicePolicySchema = z.strictObject({
   serviceId: name,
   revision: name,
-  origin: z.url().max(4096),
-  allowLoopbackHttp: z.boolean(),
+  origin: z.url().max(4096).optional(),
+  allowLoopbackHttp: z.boolean().optional(),
+  runtime: ServiceRuntimeSchema.optional(),
   credential: z.strictObject({
     ref: name,
     header: z.string().regex(/^[A-Za-z0-9-]{1,64}$/).refine((value) =>
@@ -161,12 +175,18 @@ export const ServicePolicySchema = z.strictObject({
     (value) => Object.keys(value).length > 0 && Object.keys(value).length <= 64,
   ),
 }).refine((policy) => {
+  if (policy.runtime) return policy.origin === undefined && policy.credential === undefined &&
+    policy.allowLoopbackHttp === undefined &&
+    Object.values(policy.operations).every((operation) => "kind" in operation && operation.kind === "http-proxy");
+  if (policy.origin === undefined || policy.allowLoopbackHttp === undefined) return false;
   const url = new URL(policy.origin);
   if (url.username || url.password || url.hash || url.search || policy.origin !== url.origin) return false;
   return url.protocol === "https:" || (
     policy.allowLoopbackHttp && url.protocol === "http:" &&
     (url.hostname === "127.0.0.1" || url.hostname === "[::1]")
   );
+}).refine((policy) => encodedBytes(policy) <= 128 * 1024, {
+  message: "Service policy exceeds the native configuration bound",
 });
 
 export type ServiceInput = z.infer<typeof ServiceInputSchema>;

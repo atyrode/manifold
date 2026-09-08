@@ -9,7 +9,7 @@ const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const component = z
   .string()
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
-  .refine((v) => v !== "." && v !== "..");
+  .refine((v) => ![".", "..", "__proto__", "constructor", "prototype"].includes(v));
 const locationComponent = z
   .string()
   .regex(/^[A-Za-z0-9.][A-Za-z0-9._-]{0,127}$/)
@@ -39,7 +39,11 @@ export const MachineArtifactSchema = z
     maxExpandedBytes: z.number().int().positive().max(1073741824),
     maxMembers: z.number().int().positive().max(10000),
     files: z
-      .record(component, z.strictObject({ entry: z.array(component).min(1).max(16), sha256: hash }))
+      .record(component, z.strictObject({
+        entry: z.array(component).min(1).max(16),
+        sha256: hash,
+        relativeTarget: z.array(locationComponent).min(1).max(16).optional(),
+      }))
       .refine((files) => Object.keys(files).length <= 8)
       .optional(),
   })
@@ -73,21 +77,39 @@ export const MachineInputFieldSchema = z.strictObject({
     .optional(),
 });
 const boundOutputName = component.refine((name) => name !== "stdout" && name !== "stderr");
+const argumentCondition = z.strictObject({
+  input: component,
+  equals: z.union([z.string().max(65536), z.number().finite(), z.boolean()]),
+});
+const inputFile = z.strictObject({
+  input: component.optional(),
+  literal: z.string().max(65536).optional(),
+  generated: z.literal("service-bearer").optional(),
+  homePath: z.array(locationComponent).min(1).max(16).optional(),
+  jsonValues: z.array(z.strictObject({
+    path: z.array(z.union([component, z.literal("*")])).min(1).max(16),
+    serviceId: component,
+    value: z.enum(["url", "bearer"]),
+  })).max(64).optional(),
+}).refine((file) => [file.input, file.literal, file.generated].filter((value) => value !== undefined).length === 1, {
+  message: "An input file needs exactly one declared source",
+});
 export const MachineOperationSchema = z.strictObject({
   argv: z
     .array(
       z.union([
-        z.strictObject({ literal: z.string().max(4096) }),
-        z.strictObject({ input: component }),
+        z.strictObject({ literal: z.string().max(4096), when: argumentCondition.optional() }),
+        z.strictObject({ input: component, when: argumentCondition.optional() }),
       ]),
     )
     .max(64),
   input: z.record(component, MachineInputFieldSchema).refine((v) => Object.keys(v).length <= 64),
   runtimeTools: z.array(component).max(8),
   executable: z.strictObject({ runtimeTool: component }).optional(),
-  inputFiles: z.record(component, z.strictObject({ input: component }))
+  inputFiles: z.record(component, inputFile)
     .refine((files) => Object.keys(files).length <= 64).optional(),
   services: z.array(ServiceBindingSchema).max(16).optional(),
+  providesService: z.boolean().optional(),
   locations: z
     .array(z.strictObject({ locationId: id, access: z.enum(["read", "write", "create"]) }))
     .max(32),
@@ -98,9 +120,14 @@ export const MachineOperationSchema = z.strictObject({
 }).refine((operation) => !operation.executable ||
   operation.runtimeTools.includes(operation.executable.runtimeTool), {
   message: "The executable must name a required runtimeTool",
-}).refine((operation) => Object.values(operation.inputFiles ?? {}).every(({ input }) =>
-  operation.input[input]?.type === "string" && operation.input[input]?.required === true), {
-  message: "Input files must name declared required string inputs",
+}).refine((operation) => Object.values(operation.inputFiles ?? {}).every((file) =>
+  (file.input === undefined || (operation.input[file.input]?.type === "string" && operation.input[file.input]?.required === true)) &&
+  (file.generated === undefined || (operation.providesService === true && file.jsonValues === undefined)) &&
+  (file.jsonValues ?? []).every((value) => operation.services?.some((binding) => binding.serviceId === value.serviceId))), {
+  message: "Input file sources and service values must be declared by the operation",
+}).refine((operation) => operation.argv.every((slot) => !slot.when ||
+  operation.input[slot.when.input]?.type === typeof slot.when.equals), {
+  message: "Conditional arguments must compare a declared input of the same type",
 }).refine((operation) => new Set(operation.runtimeTools).size === operation.runtimeTools.length, {
   message: "Runtime tools must be unique",
 });
@@ -174,7 +201,7 @@ export const TerminalRuntimeSchema = JobRequestSchema.pick({
   installationRevision: true,
   artifactSha256: true,
   input: true,
-});
+}).extend({ resourceBindingDigest: hash });
 export type TerminalRuntime = z.infer<typeof TerminalRuntimeSchema>;
 export const JobPermitSchema = z.strictObject({
   permitId: id,

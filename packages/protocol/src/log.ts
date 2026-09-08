@@ -159,6 +159,7 @@ export const LOG_EVENTS = [
   "created",
   "create_error",
   "exited",
+  "terminal_empty_unproven",
   "snapshot",
   "snapshot_abandoned",
 

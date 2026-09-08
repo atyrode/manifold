@@ -83,13 +83,19 @@ export {
   type ServiceResponsePolicy,
   type ServiceOperationPolicy,
   type ServiceProxyOperationPolicy,
+  ServiceRuntimeSchema,
+  type ServiceRuntime,
   type ServicePolicy,
 } from "./services.ts";
 export {
   JobResourceBindingsSchema,
   JobResourceInventorySchema,
+  jobResourceRequirements,
+  jobResourceRefusal,
+  jobResourceBindingsFor,
   type JobResourceBindings,
   type JobResourceInventory,
+  type JobResourceRequirements,
 } from "./job-resources.ts";
 export {
   JobLimitsSchema,
