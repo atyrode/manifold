@@ -166,6 +166,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       assembly: () => plugins.assembly(),
       terminals: broker,
       owners: FLOOR_EVENT_OWNERS,
+      canReadGoverned: (context, node) => plugins.canReadGoverned(context, node),
     },
     auth,
     store,
@@ -206,6 +207,16 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     },
   );
   plugins.setJobs(jobs);
+  jobs.setChangeNotifier({
+    run: (node, actor) => events.emit(FLOOR_EVENT_OWNERS.jobs, node, "job_changed", actor),
+    access: () =>
+      events.emit(
+        FLOOR_EVENT_OWNERS.jobs,
+        { kind: "plugin", pluginId: FLOOR_EVENT_OWNERS.jobs },
+        "job_access_changed",
+        null,
+      ),
+  });
   const jobTick = setInterval(() => jobs.tick(), 1000);
   /*
     THE element-payload boundary, installed rather than constructed for the same reason the

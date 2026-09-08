@@ -115,6 +115,20 @@ function integer(value: number, positive = false): void {
 export class JobSchedules {
   constructor(private readonly store: ServerStore) {}
 
+  private changeNotifier: ((request: JobRequest) => void) | null = null;
+
+  setChangeNotifier(notify: (request: JobRequest) => void): void {
+    this.changeNotifier = notify;
+  }
+
+  private changed(jobId: string): void {
+    if (!this.changeNotifier) return;
+    this.store.afterCommit(() => {
+      const occurrence = this.getOccurrence(jobId);
+      if (occurrence) this.changeNotifier?.(JobRequestSchema.parse(JSON.parse(occurrence.request)));
+    });
+  }
+
   putSchedule(spec: JobScheduleSpec): void {
     validateRequest(spec.request);
     if (
@@ -177,11 +191,12 @@ export class JobSchedules {
       this.store.db
         .query("UPDATE job_schedules SET disabled_reason=? WHERE schedule_id=? AND revision=?")
         .run(reason, scheduleId, revision);
-      this.store.db
-        .query(
-          "UPDATE job_schedule_occurrences SET state='refused',reason=? WHERE schedule_id=? AND revision=? AND state='pending'",
+      const changed = this.store.db
+        .query<{ job_id: string }, [string, string, string]>(
+          "UPDATE job_schedule_occurrences SET state='refused',reason=? WHERE schedule_id=? AND revision=? AND state='pending' RETURNING job_id",
         )
-        .run(reason, scheduleId, revision);
+        .all(reason, scheduleId, revision);
+      for (const row of changed) this.changed(row.job_id);
     });
   }
 
@@ -237,11 +252,12 @@ export class JobSchedules {
           this.store.db
             .query("UPDATE job_schedules SET next_nominal=? WHERE schedule_id=? AND revision=?")
             .run(next, spec.scheduleId, spec.revision);
-          this.store.db
-            .query(
-              "UPDATE job_schedule_occurrences SET state='skipped',reason='schedule-coalesced' WHERE schedule_id=? AND revision=? AND state='pending'",
+          const coalesced = this.store.db
+            .query<{ job_id: string }, [string, string]>(
+              "UPDATE job_schedule_occurrences SET state='skipped',reason='schedule-coalesced' WHERE schedule_id=? AND revision=? AND state='pending' RETURNING job_id",
             )
-            .run(spec.scheduleId, spec.revision);
+            .all(spec.scheduleId, spec.revision);
+          for (const row of coalesced) this.changed(row.job_id);
           const jobId = `schedule-${hash([spec.scheduleId, spec.revision, nominal])}`;
           const body: Omit<JobRequest, "requestDigest"> & { requestDigest?: string } = {
             ...spec.request,
@@ -265,6 +281,7 @@ export class JobSchedules {
               skipped ? "skipped" : "pending",
               skipped ? "schedule-offline-or-expired" : null,
             );
+          this.changed(jobId);
         }
         for (const pending of this.store.db
           .query<JobOccurrence, [string, string]>(
@@ -277,6 +294,7 @@ export class JobSchedules {
                 "UPDATE job_schedule_occurrences SET state='refused',reason='schedule-deadline-expired' WHERE job_id=?",
               )
               .run(pending.job_id);
+            this.changed(pending.job_id);
           } else if (online) {
             const request = JSON.parse(pending.request) as JobRequest;
             const reason = callbacks.reauthorize(request);
@@ -288,6 +306,7 @@ export class JobSchedules {
             this.store.db
               .query("UPDATE job_schedule_occurrences SET state='enqueued' WHERE job_id=?")
               .run(pending.job_id);
+            this.changed(pending.job_id);
           }
         }
       }

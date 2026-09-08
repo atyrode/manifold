@@ -4,6 +4,12 @@ import {
   MachineLocationSchema,
   MachineOperationSchema,
   JobOutputBindingSchema,
+  ListJobRunsArgsSchema,
+  ListJobRunsResultSchema,
+  PublicJobRunSchema,
+  PublicScheduleOccurrenceSchema,
+  type PublicJob,
+  type PublicScheduleOccurrence,
 } from "../src/jobs.ts";
 
 const location = { anchor: "config", components: ["vault"], revision: "r1", kind: "file" };
@@ -96,6 +102,104 @@ test("owner-retained stdout and stderr cannot be caller-declared or rebound as f
         name,
         locationId: "sample.worker.data",
         components: ["output"],
+      }).success,
+    ).toBe(false);
+  }
+});
+
+const occurrence: PublicScheduleOccurrence = {
+  scheduleId: "schedule",
+  revision: "schedule-revision",
+  nominalAt: 100,
+  jobId: "scheduled-job",
+  machineId: "machine",
+  pluginId: "sample.worker",
+  operationId: "sample.worker.run",
+  installationRevision: "retained-revision",
+  artifactSha256: "a".repeat(64),
+  state: "skipped",
+  reason: "machine-offline",
+};
+
+test("run discovery bounds its public query and pagination without admitting authority overrides", () => {
+  expect(ListJobRunsArgsSchema.parse({ machineId: "machine", limit: 100 }).limit).toBe(100);
+  for (const args of [
+    { machineId: "" },
+    { machineId: "m".repeat(129) },
+    { machineId: "machine", operationId: "" },
+    { machineId: "machine", limit: 0 },
+    { machineId: "machine", limit: 101 },
+    { machineId: "machine", limit: 1.5 },
+    { machineId: "machine", cursor: "" },
+    { machineId: "machine", cursor: "c".repeat(2049) },
+    { machineId: "machine", credential: { tokenId: "private" } },
+    { machineId: "machine", pluginId: "other-plugin" },
+  ])
+    expect(ListJobRunsArgsSchema.safeParse(args).success).toBe(false);
+  const run = { job: null, occurrence };
+  expect(
+    ListJobRunsResultSchema.parse({ runs: Array(100).fill(run), nextCursor: "opaque" }).nextCursor,
+  ).toBe("opaque");
+  expect(
+    ListJobRunsResultSchema.safeParse({ runs: Array(101).fill(run), nextCursor: null }).success,
+  ).toBe(false);
+  expect(ListJobRunsResultSchema.safeParse({ runs: [], nextCursor: "" }).success).toBe(false);
+});
+
+test("occurrence-only runs expose honest skipped state and reject private persisted fields", () => {
+  expect(PublicJobRunSchema.parse({ job: null, occurrence }).occurrence).toEqual(occurrence);
+  expect(PublicJobRunSchema.safeParse({ job: null, occurrence: null }).success).toBe(false);
+  for (const privateField of ["request", "input", "credential", "requestDigest", "permit"]) {
+    expect(
+      PublicScheduleOccurrenceSchema.safeParse({ ...occurrence, [privateField]: "private" })
+        .success,
+    ).toBe(false);
+  }
+  for (const invalid of [
+    { nominalAt: -1 },
+    { nominalAt: Number.MAX_SAFE_INTEGER + 1 },
+    { state: "exited" },
+    { reason: "r".repeat(2049) },
+  ]) {
+    expect(PublicScheduleOccurrenceSchema.safeParse({ ...occurrence, ...invalid }).success).toBe(
+      false,
+    );
+  }
+});
+
+test("a run cannot pair job metadata with a different occurrence identity or immutable pin", () => {
+  const job: PublicJob = {
+    jobId: occurrence.jobId,
+    machineId: occurrence.machineId,
+    pluginId: occurrence.pluginId,
+    operationId: occurrence.operationId,
+    installationRevision: occurrence.installationRevision,
+    artifactSha256: occurrence.artifactSha256,
+    state: "queued",
+    result: null,
+    authority: {
+      origin: { kind: "action", traceId: "trace" },
+      requester: "principal",
+      executor: null,
+      decision: null,
+    },
+  };
+  expect(PublicJobRunSchema.parse({ job, occurrence }).job).toEqual(job);
+  for (const field of [
+    "jobId",
+    "machineId",
+    "pluginId",
+    "operationId",
+    "installationRevision",
+    "artifactSha256",
+  ]) {
+    expect(
+      PublicJobRunSchema.safeParse({
+        job,
+        occurrence: {
+          ...occurrence,
+          [field]: field === "artifactSha256" ? "b".repeat(64) : "other",
+        },
       }).success,
     ).toBe(false);
   }

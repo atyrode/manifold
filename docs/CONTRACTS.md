@@ -2712,6 +2712,22 @@ provider handling and postconditions belong to plugins, never the common floor.
   Installation is not approval. Deliberately reinstalling an exact historical declaration
   is permitted; conflicting reuse of its revision is refused, and reinstall never
   resubmits a retained job.
+- **Retained discovery.** `engine.jobs.listRuns({ machineId, pluginId, operationId?, limit?, cursor? })`
+  and the plugin-scoped `ctx.jobs.listRuns` recover jobs and scheduled occurrences without
+  execution. Results are `{ runs, nextCursor }`; each run has nullable `job` and `occurrence`,
+  never both null. An occurrence without a job is not a status receipt. The public projection
+  includes no input, raw stdio or output bytes. Every candidate must pass current credential
+  ceilings, `jobs:read`, its per-job A5 check and original immutable revision/artifact consent;
+  denied candidates disappear rather than becoming existence disclosures. Pages return at
+  most 100 entries (default 50), scanning at most 256 candidates in descending timestamp,
+  scheduled-before-direct tie order, then job ID. Even an empty page can have a continuation.
+  Cursors are encrypted, filter-bound and invalidated by a server restart; restart from the
+  latest page then. Installation replacement preserves authorized history, not execution.
+  Committed lifecycle/occurrence changes emit empty-payload `job_changed`; collection fan-out
+  cannot widen the source job's read authority. Empty-payload `job_access_changed` on the
+  `engine.jobs` plugin topic is coarse access invalidation with no resource or actor identity,
+  including for readers who can no longer see a previously authorized job. Shared resource
+  feeds re-read through the same governed doors; notifications never transport private bytes.
 - **Common authority.** Admission uses the A5 waterfall and current credential/delegation
   lineage intersected with its immutable original scope, capability and expiry ceiling.
   `machines:run`, `jobs:read`, `jobs:input`, `jobs:cancel`, `locations:read`,

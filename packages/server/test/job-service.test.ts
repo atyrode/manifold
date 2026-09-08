@@ -154,6 +154,142 @@ function execute(f: Fixture, jobId = "job", value = "safe") {
   });
 }
 
+describe("retained job discovery", () => {
+  test("bounded pages omit unreadable runs and recheck current authority", () => {
+    const f = fixture();
+    try {
+      consent(f, "jobs:read");
+      execute(f, "visible");
+      for (let index = 0; index < 256; index++) {
+        f.runtime.time++;
+        execute(f, `hidden-private-reference-${index}`);
+      }
+      const token = f.auth.mintToken(
+        { principal: { name: "run-reader", kind: "agent" }, caps: ["jobs:read"] },
+        f.root,
+      );
+      const reader = f.auth.authenticate(token.token);
+      f.auth.grant(
+        {
+          principal: { kind: "principal", id: reader.principal.id },
+          node: formatManifoldUri({ kind: "operation", machineId: f.machineId, operationId }),
+          caps: ["jobs:read"],
+          effect: "deny",
+          reach: "subtree",
+        },
+        f.root,
+      );
+      f.auth.grant(
+        {
+          principal: { kind: "principal", id: reader.principal.id },
+          node: formatManifoldUri({
+            kind: "job",
+            machineId: f.machineId,
+            operationId,
+            jobId: "visible",
+          }),
+          caps: ["jobs:read"],
+          effect: "allow",
+          reach: "node",
+        },
+        f.root,
+      );
+      const consumer = jobContext(() => f.service, reader, pluginId, 1);
+      const query = { machineId: f.machineId, operationId, limit: 1 };
+      const first = consumer.listRuns(query);
+      expect(first.runs).toEqual([]);
+      if (first.nextCursor === null) throw new Error("bounded scan lost its continuation");
+      expect(
+        Buffer.from(first.nextCursor, "base64url").includes(
+          Buffer.from("hidden-private-reference"),
+        ),
+      ).toBe(false);
+      const next = consumer.listRuns({ ...query, cursor: first.nextCursor });
+      expect(next.runs.map((run) => run.job?.jobId)).toEqual(["visible"]);
+      expect(next.nextCursor).toBeNull();
+      expect(() =>
+        consumer.listRuns({ ...query, operationId: "other", cursor: first.nextCursor! }),
+      ).toThrow("invalid_job_run_cursor_refresh_required");
+      const corrupt = `${first.nextCursor[0] === "A" ? "B" : "A"}${first.nextCursor.slice(1)}`;
+      expect(() => consumer.listRuns({ ...query, cursor: corrupt })).toThrow(
+        "invalid_job_run_cursor_refresh_required",
+      );
+      expect(() => f.service.listRuns(reader, pluginId, query, "another.plugin")).toThrow();
+      f.auth.revokePrincipal(reader.principal.id, f.root);
+      expect(() => consumer.listRuns({ ...query, cursor: first.nextCursor! })).toThrow();
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("an offline occurrence is discoverable without a fabricated job and only after commit", () => {
+    const f = fixture();
+    try {
+      for (const cap of ["machines:run", "operations:invoke", "jobs:read"] as const)
+        consent(f, cap);
+      const heard: string[] = [];
+      f.service.setChangeNotifier({
+        run: (node) => {
+          const run = f.service
+            .listRuns(f.root, pluginId, { machineId: f.machineId })
+            .runs.find((row) => row.occurrence?.jobId === node.jobId);
+          heard.push(run?.occurrence?.state ?? "missing");
+        },
+        access: () => heard.push("access"),
+      });
+      f.service.schedule(f.root, pluginId, "trace", {
+        jobId: "template",
+        machineId: f.machineId,
+        operationId,
+        input: { value: "private-input" },
+        outputs: [],
+        scheduleId: "refresh",
+        revision: "first",
+        firstNominalAt: 0,
+        intervalMs: 100,
+        deadlineMs: 50,
+        expiresAt: 1000,
+        offlinePolicy: "skip",
+      });
+      expect(() =>
+        f.store.transaction(() => {
+          f.service.tick();
+          expect(heard).toEqual([]);
+          throw new Error("rollback");
+        }),
+      ).toThrow("rollback");
+      expect(heard).toEqual([]);
+      expect(f.service.listRuns(f.root, pluginId, { machineId: f.machineId }).runs).toEqual([]);
+      f.service.tick();
+      expect(heard).toEqual(["skipped"]);
+      const result = f.service.listRuns(f.root, pluginId, { machineId: f.machineId });
+      expect(result.runs).toHaveLength(1);
+      expect(result.runs[0]).toMatchObject({
+        job: null,
+        occurrence: {
+          scheduleId: "refresh",
+          state: "skipped",
+          nominalAt: 0,
+          installationRevision: "r1",
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain("private-input");
+      const occurrence = result.runs[0]!.occurrence!;
+      expect(() =>
+        f.service.status(f.root, {
+          kind: "job",
+          machineId: f.machineId,
+          operationId,
+          jobId: occurrence.jobId,
+        }),
+      ).toThrow("job_not_started");
+      expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+    } finally {
+      f.store.close();
+    }
+  });
+});
+
 describe("job lifecycle audit and inspection", () => {
   const lifecycle = (f: Fixture, jobId: string) =>
     f.store
@@ -900,6 +1036,8 @@ describe("durable job authority", () => {
       // Keep the same product consumer and canonical references across replacement/reopen.
       const consumer = jobContext(() => f.service, reader, pluginId, 1);
       const originalPublic = consumer.status(node);
+      const retainedRuns = () => consumer.listRuns({ machineId: f.machineId }).runs;
+      expect(retainedRuns()).toEqual([{ job: originalPublic, occurrence: null }]);
       const updates: JobFollowUpdate[] = [];
       consumer.follow(node, (event) => updates.push(event));
       const inFlight = consumer.output({ node: output, offset: 0, maxBytes: 3 });
@@ -944,6 +1082,7 @@ describe("durable job authority", () => {
       consent(f, "jobs:read", false);
       expect(updates).toEqual([{ type: "closed", reason: "authority_revoked" }]);
       expect(() => consumer.status(node)).toThrow();
+      expect(retainedRuns().some((run) => run.job?.jobId === node.jobId)).toBe(false);
       // A retained job reference selects its immutable revision but shares that revision's
       // operation consent, just like the canonical operation administration path.
       f.service.consent(f.root, {
@@ -954,6 +1093,7 @@ describe("durable job authority", () => {
         enabled: true,
       });
       expect(consumer.status(node)).toEqual(originalPublic);
+      expect(retainedRuns()).toContainEqual({ job: originalPublic, occurrence: null });
       const firstRead = consumer.output({ node: output, offset: 0, maxBytes: 3 });
       deliverOutput();
       expect((await firstRead).data).toBe("YWJj");
@@ -981,6 +1121,7 @@ describe("durable job authority", () => {
         f.root,
       );
       expect(() => consumer.status(node)).toThrow();
+      expect(retainedRuns().some((run) => run.job?.jobId === node.jobId)).toBe(false);
       expect(() => consumer.output({ node: output, offset: 0, maxBytes: 3 })).toThrow();
       f.auth.revokeGrant(deny.id, f.root);
       expect(consumer.status(node)).toEqual(originalPublic);
@@ -1002,6 +1143,7 @@ describe("durable job authority", () => {
         artifactSha256: nextHash,
       });
       expect(consumer.status(node)).toEqual(originalPublic);
+      expect(retainedRuns()).toContainEqual({ job: originalPublic, occurrence: null });
       const afterRestart = consumer.follow(node, () => {});
       expect(afterRestart.snapshot.result).toEqual(originalPublic.result);
       expect(afterRestart.snapshot.events).toEqual([]);
@@ -1032,6 +1174,7 @@ describe("durable job authority", () => {
       consent(f, "jobs:read");
       f.service.disablePlugin(pluginId);
       expect(() => consumer.status(node)).toThrow();
+      expect(retainedRuns()).toEqual([]);
       f.service.install(f.root, replacement);
       expect(consumer.status(node)).toEqual(originalPublic);
       f.service.disablePlugin(pluginId);

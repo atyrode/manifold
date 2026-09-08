@@ -1390,6 +1390,25 @@ is not permission to run the effect again. `status`, `input`, `cancel` and `outp
 opaque node possession does not grant access. `output` reads a sealed output node in
 bounded chunks (at most 64 KiB), not an arbitrary path.
 
+Recover existing work with `ctx.jobs.listRuns({ machineId, operationId?, limit?, cursor? })`;
+the handle is scoped to its plugin. Browser sections dispatch `engine.jobs.listRuns` with
+the same arguments plus `pluginId`. It returns `{ runs, nextCursor }`, newest first, with
+at most 100 entries (50 by default). Each entry pairs `job` and `occurrence`, either nullable
+but not both: an offline skipped occurrence is history, not a fabricated started job.
+Public job metadata is the same projection as `status`; occurrences contain their schedule,
+nominal time, immutable installation pin, state and reason, never input or output bytes.
+Each candidate needs current `jobs:read`, per-job A5 authority and its original revision's
+consent. Denied candidates are omitted. A bounded scan may return an empty page with a
+continuation; keep paging when `nextCursor` is present. Cursors are opaque and filter-bound,
+and a server restart requires starting again without one. Reading history never re-executes.
+
+Use the shared `usePolledResource` feed with the `engine.jobs` plugin topic. Committed
+job/occurrence changes emit `job_changed`; delivery to that collection still checks the
+original job's read authority. Coarse `job_access_changed` invalidation contains no job,
+machine, operation or principal identity and lets every reader recheck after consent,
+installation or grant changes. Both carry empty payloads, not output or result content.
+Do not build a product-local job registry, websocket or refresh timer to recover history.
+
 Location access `"create"` refuses an already-existing final file or directory instead of
 opening it for write; an active ancestor writer also blocks create-only resolution.
 Named output bindings require an already-provisioned bounded tmpfs backing, not an

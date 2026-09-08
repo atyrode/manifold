@@ -177,6 +177,8 @@ export interface FloorEventOwners {
   readonly terminals: string;
   /** Machine liveness: the socket registry owns the fact, a plugin owns the words. */
   readonly machines: string;
+  /** Governed job lifecycle, including scheduled occurrences that never started. */
+  readonly jobs: string;
   /** Room attendance: the room owns the roster, a plugin owns the words. */
   readonly attendance: string;
   /**
@@ -193,6 +195,7 @@ export interface EventHubDeps {
   assembly(): Assembly;
   terminals: TerminalHomePort;
   owners: FloorEventOwners;
+  canReadGoverned(auth: AuthContext, node: ManifoldRef): boolean;
 }
 
 /** Owns every subscription on every session socket, and every emission's fan-out. */
@@ -228,6 +231,13 @@ export class EventHub {
     return this.authority.allows(auth, "containers:read", containerId);
   }
 
+  private authorizedTopic(auth: AuthContext, topic: ManifoldRef): boolean {
+    if (topic.kind === "operation" || topic.kind === "location") return false;
+    if (topic.kind === "job" || topic.kind === "output")
+      return this.deps.canReadGoverned(auth, topic);
+    return this.authorized(auth, topicContainer(topic, this.deps.terminals));
+  }
+
   /**
    * Registers interest in every topic this credential may read, and silently declines the
    * rest. There is no acknowledgement by design (ADR 0012, the frame grammar): a per-topic
@@ -250,13 +260,7 @@ export class EventHub {
     for (const ref of topics) {
       const key = formatManifoldUri(ref);
       if (entry.topics.has(key)) continue;
-      if (
-        ref.kind === "operation" ||
-        ref.kind === "location" ||
-        ref.kind === "job" ||
-        ref.kind === "output" ||
-        !this.authorized(subscriber.auth, topicContainer(ref, this.deps.terminals))
-      ) {
+      if (!this.authorizedTopic(subscriber.auth, ref)) {
         forbidden += 1;
         continue;
       }
@@ -443,15 +447,16 @@ export class EventHub {
     payload: EventPayload,
   ): void {
     const reached = new Set<string>();
-    this.deliverAt(topic, containerId, kind, at, actor, payload, reached);
+    this.deliverAt(topic, topic, containerId, kind, at, actor, payload, reached);
     // Already the collection's own news (every floor door's shape): one address, not two.
     if (formatManifoldUri(collection) === formatManifoldUri(topic)) return;
-    this.deliverAt(collection, containerId, kind, at, actor, payload, reached);
+    this.deliverAt(collection, topic, containerId, kind, at, actor, payload, reached);
   }
 
   /** One address's audience, deduplicated against every address already delivered. */
   private deliverAt(
     topic: ManifoldRef,
+    governingTopic: ManifoldRef,
     containerId: string | null,
     kind: EventKind,
     at: number,
@@ -475,7 +480,13 @@ export class EventHub {
     for (const id of audience) {
       const entry = this.subscriptions.get(id);
       if (entry === undefined) continue;
-      if (!this.authorized(entry.subscriber.auth, containerId)) continue;
+      // Collection delivery cannot broaden the original resource's read authority.
+      if (
+        governingTopic.kind === "job" || governingTopic.kind === "output"
+          ? !this.deps.canReadGoverned(entry.subscriber.auth, governingTopic)
+          : !this.authorized(entry.subscriber.auth, containerId)
+      )
+        continue;
       reached.add(id);
       if (frame === null) {
         frame = JSON.stringify(

@@ -225,7 +225,29 @@ async function nativeScreenshot(browser: Browser, selector: string, name: string
   await screenshot(browser, name);
 }
 
-async function nativeProof(browser: Browser, hub: TestServer, runtime: RuntimeFixture) {
+async function openNativeHistory(browser: Browser, machineId: string) {
+  await nativeClick(browser, '[data-testid="plugin-manager-open"]');
+  await nativeClick(browser, `[data-plugin="${PLUGIN}"] [data-testid="plugin-manager-row-open"]`);
+  await nativeSelect(browser, "Machine for plugin operations", machineId);
+}
+
+async function historyContains(
+  browser: Browser,
+  jobs: readonly z.infer<typeof PublicJobSchema>[],
+  present = true,
+) {
+  return browser.evaluate<boolean>(`(() => {
+    const options = [...(document.querySelector('select[aria-label="Operation run"]')?.options ?? [])];
+    return ${JSON.stringify(jobs.map((job) => job.jobId))}.every(id => options.some(option => option.value === id) === ${present});
+  })()`);
+}
+
+async function nativeProof(
+  browser: Browser,
+  observer: Browser,
+  hub: TestServer,
+  runtime: RuntimeFixture,
+) {
   const describe = async () =>
     JobDescriptionSchema.parse(
       await ownerAction(hub, "engine.jobs.describe", {
@@ -330,15 +352,16 @@ async function nativeProof(browser: Browser, hub: TestServer, runtime: RuntimeFi
     );
     await browser.send("Input.insertText", { text: label });
     await nativeScreenshot(browser, input, `native-declared-input-${label}`);
+    const priorJobs = await browser.evaluate<string[]>(
+      "[...(document.querySelector('select[aria-label=\"Operation run\"]')?.options ?? [])].map(option => option.value)",
+    );
     await nativeClick(browser, run);
     const jobId = await waitFor(
       async () => {
         const selected = await browser.evaluate<unknown>(
-          "document.querySelector('select[aria-label=\"Requested job\"]')?.value",
+          "document.querySelector('select[aria-label=\"Operation run\"]')?.value",
         );
-        return typeof selected === "string" &&
-          selected.length > 0 &&
-          !jobs.some((job) => job.jobId === selected)
+        return typeof selected === "string" && selected.length > 0 && !priorJobs.includes(selected)
           ? selected
           : false;
       },
@@ -448,10 +471,48 @@ async function nativeProof(browser: Browser, hub: TestServer, runtime: RuntimeFi
         assert(displayed.includes(value), `native status omitted persisted result ${value}`);
     await nativeScreenshot(browser, statusSelector, `native-status-${label}`);
     jobs.push(job);
+    await waitFor(() => historyContains(observer, jobs), 5000, 20);
   }
+  const pageUrl = await browser.evaluate<string>("location.href");
+  await browser.goto(pageUrl);
+  await openNativeHistory(browser, runtime.machineId);
+  await waitFor(() => historyContains(browser, jobs), 5000, 20);
+  const retained = jobs[0]!;
+  await nativeSelect(browser, "Operation run", retained.jobId);
+  const statusSelector = '[data-testid="plugin-manager-job-status"]';
+  await waitFor(
+    () =>
+      browser.evaluate<boolean>(
+        `document.querySelector(${JSON.stringify(statusSelector)})?.innerText.includes(${JSON.stringify(retained.state)}) === true`,
+      ),
+    5000,
+    20,
+  );
+  await nativeScreenshot(browser, statusSelector, "native-recovered-history");
+  await nativeScreenshot(observer, '[aria-label="Operation run history"]', "native-shared-history");
+  await nativeSelect(browser, "Declared artifact target", target);
+  await nativeClick(
+    browser,
+    `${nativeRuntime} button[aria-label=${JSON.stringify(`Revoke jobs:read on ${operationNode}`)}]`,
+  );
+  await waitFor(() => historyContains(observer, jobs, false), 5000, 20);
+  await waitFor(
+    () =>
+      browser.evaluate<boolean>(
+        `document.querySelector(${JSON.stringify(statusSelector)})?.innerText.includes(${JSON.stringify(retained.result!.requestDigest)}) === false`,
+      ),
+    5000,
+    20,
+  );
+  await nativeClick(
+    browser,
+    `${nativeRuntime} button[aria-label=${JSON.stringify(`Approve jobs:read on ${operationNode}`)}]`,
+  );
+  await waitFor(() => historyContains(observer, jobs), 5000, 20);
+  await waitFor(() => historyContains(browser, jobs), 5000, 20);
   assert.deepEqual(runtime.starts(), nativeStarts, "native controls started unexpected executions");
   console.log(
-    "PASS native Plugins UI: proved target, exact installation, explicit consent, declared input, persisted result/authority, cancellation",
+    "PASS native Plugins UI: proved target, exact installation, explicit consent, declared input, persisted result/authority, cancellation, reload recovery, shared history, consent invalidation",
   );
   return { target, installation, jobs };
 }
@@ -603,7 +664,21 @@ async function main() {
       20_000,
       20,
     );
-    const native = await nativeProof(browser, hub, runtime);
+    const observationGrant = await mintToken(hub, {
+      principal: { kind: "human", name: "runtime-job-observer", color: "#446688" },
+      caps: ["containers:read", "jobs:read"],
+    });
+    grants.push(observationGrant.principal.id);
+    const observer = new Browser();
+    browsers.push(observer);
+    await observer.launch({ incognito: true });
+    await observer.goto(hub.httpUrl);
+    await observer.evaluate(
+      `localStorage.setItem('manifold.identity', ${JSON.stringify(JSON.stringify({ token: observationGrant.token, principal: observationGrant.principal }))})`,
+    );
+    await observer.goto(`${hub.httpUrl}/p/${container.id}`);
+    await openNativeHistory(observer, runtime.machineId);
+    const native = await nativeProof(browser, observer, hub, runtime);
     await browser.goto(`${origin}/p/${container.id}`);
     await waitFor(
       () => browser.evaluate<boolean>("document.body.innerText.includes('Runtime proof ')"),
@@ -969,8 +1044,9 @@ async function main() {
     );
   } catch (error) {
     failure = { error };
-    for (const browser of browsers) {
+    for (const [index, browser] of browsers.entries()) {
       try {
+        await screenshot(browser, `failure-browser-${index}`);
         console.error(
           "Runtime browser failure state:",
           await browser.evaluate(

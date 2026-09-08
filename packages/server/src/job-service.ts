@@ -1,5 +1,15 @@
 import type { JobExecution, JobFollow } from "@manifold/plugin";
-import { createHash, generateKeyPairSync, sign, verify, randomUUID } from "node:crypto";
+import {
+  createHash,
+  createCipheriv,
+  createDecipheriv,
+  generateKeyPairSync,
+  sign,
+  verify,
+  randomUUID,
+  randomBytes,
+} from "node:crypto";
+import { z } from "zod";
 import {
   formatManifoldUri,
   parseManifoldUri,
@@ -13,6 +23,13 @@ import {
   MachineHalfSchema,
   MAX_JOB_FOLLOW_EVENTS,
   MAX_JOB_FOLLOW_BYTES,
+  ListJobRunsArgsSchema,
+  ListJobRunsResultSchema,
+  PublicScheduleOccurrenceSchema,
+  type ListJobRunsArgs,
+  type ListJobRunsResult,
+  type PublicJob,
+  type PublicJobRun,
   type JobCommand,
   type JobEvent,
   type JobOwner,
@@ -32,7 +49,12 @@ import {
   type GovernedAdmissionRequest,
   type GovernedAdmissionDecision,
 } from "./auth.ts";
-import { JobStore, type JobRecord, type JobInstallation } from "./job-store.ts";
+import {
+  JobStore,
+  type JobRecord,
+  type JobInstallation,
+  type JobRunPosition,
+} from "./job-store.ts";
 import type { ServerStore, TraceRecord } from "./stores.ts";
 import { JobSchedules, type JobScheduleSpec, type JobInvocationEdge } from "./job-schedules.ts";
 export type { JobRecord } from "./job-store.ts";
@@ -57,8 +79,155 @@ function fail(code = "governed_authority_refused"): never {
   throw new ServiceError("forbidden", code);
 }
 const active = new Set(["queued", "admitted", "start-committed", "started"]);
+const runCursorSchema = z.strictObject({
+  filter: z.strictObject({
+    pluginId: z.string().min(1).max(256),
+    machineId: z.string().min(1).max(256),
+    operationId: z.string().min(1).max(256).nullable(),
+  }),
+  before: z.strictObject({
+    at: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    source: z.union([z.literal(0), z.literal(1)]),
+    jobId: z.string().min(1).max(256),
+  }),
+});
+interface JobChanges {
+  run(node: Extract<ManifoldRef, { kind: "job" }>, actor: string): void;
+  access(): void;
+}
+
 export class JobService {
   readonly jobSchedules: JobSchedules;
+  private readonly runCursorKey = randomBytes(32);
+  private changeNotifier: JobChanges | null = null;
+
+  setChangeNotifier(notify: JobChanges): void {
+    this.changeNotifier = notify;
+  }
+
+  private changed(request: JobRequest): void {
+    const node = {
+      kind: "job" as const,
+      jobId: request.jobId,
+      machineId: request.machineId,
+      operationId: request.operationId,
+    };
+    this.store.afterCommit(() => this.changeNotifier?.run(node, request.credential.principalId));
+  }
+
+  private accessChanged(): void {
+    this.store.afterCommit(() => this.changeNotifier?.access());
+  }
+
+  /** The same metadata-only projection serves execution, status and retained discovery. */
+  publicJob(record: JobRecord): PublicJob {
+    const { jobId, machineId, operationId, pluginId, installationRevision, artifactSha256 } =
+      record.request;
+    return {
+      jobId,
+      machineId,
+      operationId,
+      pluginId,
+      installationRevision,
+      artifactSha256,
+      state: record.state,
+      result: record.result,
+      authority: this.jobs.authority(record),
+    };
+  }
+
+  listRuns(
+    auth: AuthContext,
+    pluginId: string,
+    args: ListJobRunsArgs,
+    callerPluginId = "engine.jobs",
+  ): ListJobRunsResult {
+    const current = this.context(this.auth.credentialReference(auth));
+    if (!current || (!current.caps.includes("*") && !current.caps.includes("jobs:read")))
+      fail("governed_authority_refused");
+    if (callerPluginId !== "engine.jobs" && callerPluginId !== pluginId) fail("job_owner_mismatch");
+    const parsed = ListJobRunsArgsSchema.parse(args);
+    const filter = {
+      pluginId,
+      machineId: parsed.machineId,
+      operationId: parsed.operationId ?? null,
+    };
+    let before: JobRunPosition | undefined;
+    if (parsed.cursor !== undefined) {
+      try {
+        if (!/^[A-Za-z0-9_-]+$/.test(parsed.cursor)) throw new Error("invalid cursor");
+        const bytes = Buffer.from(parsed.cursor, "base64url");
+        if (bytes.length < 29 || bytes.toString("base64url") !== parsed.cursor)
+          throw new Error("invalid cursor");
+        const decipher = createDecipheriv("aes-256-gcm", this.runCursorKey, bytes.subarray(0, 12));
+        decipher.setAuthTag(bytes.subarray(12, 28));
+        const value = runCursorSchema.parse(
+          JSON.parse(
+            Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString("utf8"),
+          ),
+        );
+        if (canonicalJobJson(value.filter) !== canonicalJobJson(filter))
+          throw new Error("cursor filter mismatch");
+        before = value.before;
+      } catch {
+        throw new ServiceError("conflict", "invalid_job_run_cursor_refresh_required");
+      }
+    }
+    const candidates = this.jobs.runCandidates(
+      {
+        pluginId,
+        machineId: parsed.machineId,
+        ...(parsed.operationId === undefined ? {} : { operationId: parsed.operationId }),
+        ...(before === undefined ? {} : { before }),
+      },
+      257,
+    );
+    const runs: PublicJobRun[] = [];
+    const limit = parsed.limit ?? 50;
+    let scanned = 0;
+    while (scanned < candidates.length && scanned < 256 && runs.length < limit) {
+      const candidate = candidates[scanned++]!;
+      const request = candidate.request;
+      const node = {
+        kind: "job" as const,
+        jobId: request.jobId,
+        machineId: request.machineId,
+        operationId: request.operationId,
+      };
+      if (!this.canReadGoverned(current, node, callerPluginId)) continue;
+      const occurrence = candidate.occurrence;
+      runs.push({
+        job: candidate.job === null ? null : this.publicJob(candidate.job),
+        occurrence:
+          occurrence === null
+            ? null
+            : {
+                scheduleId: occurrence.schedule_id,
+                revision: occurrence.revision,
+                nominalAt: occurrence.nominal,
+                jobId: request.jobId,
+                machineId: request.machineId,
+                pluginId: request.pluginId,
+                operationId: request.operationId,
+                installationRevision: request.installationRevision,
+                artifactSha256: request.artifactSha256,
+                state: PublicScheduleOccurrenceSchema.shape.state.parse(occurrence.state),
+                reason: occurrence.reason,
+              },
+      });
+    }
+    let nextCursor: string | null = null;
+    if (scanned < candidates.length && scanned > 0) {
+      const nonce = randomBytes(12);
+      const cipher = createCipheriv("aes-256-gcm", this.runCursorKey, nonce);
+      const encrypted = Buffer.concat([
+        cipher.update(JSON.stringify({ filter, before: candidates[scanned - 1]!.position })),
+        cipher.final(),
+      ]);
+      nextCursor = Buffer.concat([nonce, cipher.getAuthTag(), encrypted]).toString("base64url");
+    }
+    return ListJobRunsResultSchema.parse({ runs, nextCursor });
+  }
   private lifecycleRecorder: ((record: TraceRecord) => void) | null = null;
   setLifecycleRecorder(record: (record: TraceRecord) => void): void {
     this.lifecycleRecorder = record;
@@ -93,6 +262,7 @@ export class JobService {
         ...(phase === "result" ? { exitCode: job.result?.exitCode ?? null } : {}),
       },
     });
+    this.changed(job.request);
   }
 
   describe(
@@ -715,6 +885,7 @@ export class JobService {
   ) {
     this.jobs = new JobStore(store, (job, phase) => this.lifecycle(job, phase));
     this.jobSchedules = new JobSchedules(store);
+    this.jobSchedules.setChangeNotifier((request) => this.changed(request));
     const keys = store.transaction(() => {
       const existing = store.getMeta("jobs:signing-key");
       if (existing) return JSON.parse(existing) as { privateKey: string; publicKey: string };
@@ -728,7 +899,10 @@ export class JobService {
     });
     this.signingKey = keys.privateKey;
     this.admissionPublicKey = keys.publicKey;
-    auth.onAuthorityChanged(() => this.reconcileAuthority());
+    auth.onAuthorityChanged(() => {
+      this.reconcileAuthority();
+      this.accessChanged();
+    });
     auth.onRevoked((principalId) => {
       for (const job of this.jobs.active()) {
         if (job.request.credential.principalId === principalId) {
@@ -768,14 +942,21 @@ export class JobService {
       ...(reference.expiresAt === undefined ? {} : { expiresAt: reference.expiresAt }),
     };
   }
+  private retainedRequest(jobId: string): JobRequest | null {
+    const job = this.jobs.get(jobId);
+    if (job) return job.request;
+    const occurrence = this.jobSchedules.getOccurrence(jobId);
+    return occurrence ? JobRequestSchema.parse(JSON.parse(occurrence.request)) : null;
+  }
+
   private resolve(node: ManifoldRef): JobInstallation | null {
     if (!("machineId" in node) || !this.store.getMachine(node.machineId)) return null;
     if (node.kind === "job" || node.kind === "output") {
-      const job = this.jobs.get(node.jobId);
+      const request = this.retainedRequest(node.jobId);
       if (
-        !job ||
-        job.request.machineId !== node.machineId ||
-        job.request.operationId !== node.operationId
+        !request ||
+        request.machineId !== node.machineId ||
+        request.operationId !== node.operationId
       )
         return null;
       if (
@@ -787,10 +968,10 @@ export class JobService {
         return null;
       const install = this.jobs.installation(
         node.machineId,
-        job.request.pluginId,
-        job.request.installationRevision,
+        request.pluginId,
+        request.installationRevision,
       );
-      return install?.artifact === job.request.artifactSha256 ? install : null;
+      return install?.artifact === request.artifactSha256 ? install : null;
     }
     return (
       this.jobs
@@ -1021,6 +1202,7 @@ export class JobService {
     });
     this.sendInstall(this.jobs.installation(args.machineId, args.pluginId)!);
     this.reconcileAuthority();
+    this.accessChanged();
   }
   consent(
     auth: AuthContext,
@@ -1079,6 +1261,7 @@ export class JobService {
         args.enabled ? 1 : 0,
       );
     this.reconcileAuthority();
+    this.accessChanged();
   }
   private requirements(request: JobRequest): AuthorityRequirement[] {
     const install = this.jobs.installation(request.machineId, request.pluginId);
@@ -1250,6 +1433,7 @@ export class JobService {
       }
       return this.jobs.get(request.jobId)!;
     });
+    this.changed(job.request);
     if (job.state === "queued") this.start(job);
     return this.jobs.get(request.jobId)!;
   }
@@ -1608,7 +1792,9 @@ export class JobService {
       !this.consentFor(install, node, cap)
     )
       return fail();
-    return this.jobs.get(node.jobId)!;
+    const job = this.jobs.get(node.jobId);
+    if (!job) return fail("job_not_started");
+    return job;
   }
   status(auth: AuthContext, node: ManifoldRef, callerPluginId = "engine.jobs"): JobRecord {
     return this.authorizedJob(auth, node, "jobs:read", callerPluginId);
@@ -1715,6 +1901,7 @@ export class JobService {
     for (const follower of this.followers)
       if (this.jobs.get(follower.node.jobId)?.request.pluginId === pluginId)
         this.closeFollower(follower, "authority_revoked");
+    this.accessChanged();
   }
   purgePlugin(pluginId: string): void {
     for (const liveJob of this.jobs.active()) {

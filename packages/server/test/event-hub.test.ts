@@ -91,7 +91,9 @@ function newContainer(runtime: FakeRuntime, name: string): Container {
   return { id: runtime.newId(), name, createdAt: runtime.now(), discipline: "canvas" };
 }
 
-async function planeFixture(): Promise<PlaneFixture> {
+async function planeFixture(
+  governedRead?: (auth: AuthService, context: AuthContext, node: ManifoldRef) => boolean,
+): Promise<PlaneFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -137,6 +139,10 @@ async function planeFixture(): Promise<PlaneFixture> {
     },
     runtime,
     logger,
+    (context, node) =>
+      governedRead
+        ? governedRead(auth, context, node)
+        : (host?.canReadGoverned(context, node) ?? false),
   );
   host = await testPluginHost(store, auth, rooms, broker, runtime, { events, logger });
   broker.setEvents(events);
@@ -215,6 +221,56 @@ function eventsOn(socket: FakeSocket): ServerEvent[] {
 const INDEX_TOPIC: ManifoldRef = { kind: "plugin", pluginId: "core.index" };
 /** The placement door's own node: where a commit's workspace-wide half is heard. */
 const SPACE_TOPIC: ManifoldRef = { kind: "plugin", pluginId: "core.space" };
+
+describe("governed event disclosure", () => {
+  test("collection delivery cannot bypass a job denial and access invalidation carries no job", async () => {
+    const fixture = await planeFixture((auth, reader, node) =>
+      auth.allowsRef(reader, "jobs:read", node),
+    );
+    try {
+      const token = context(fixture, ["containers:read", "jobs:read"]);
+      const reader = fixture.auth.authenticate(token);
+      const socket = connect(fixture, "job-reader", { token });
+      const job = {
+        kind: "job" as const,
+        machineId: "worker",
+        operationId: "inspect",
+        jobId: "private-job",
+      };
+      const collection = { kind: "plugin" as const, pluginId: FLOOR_EVENT_OWNERS.jobs };
+      subscribe(fixture, "job-reader", [collection]);
+      fixture.events.emit(FLOOR_EVENT_OWNERS.jobs, job, "job_changed", null);
+      expect(eventsOn(socket).map((event) => event.kind)).toEqual(["job_changed"]);
+      socket.clear();
+      const denial = fixture.auth.grant(
+        {
+          principal: { kind: "principal", id: reader.principal.id },
+          node: formatManifoldUri(job),
+          caps: ["jobs:read"],
+          effect: "deny",
+          reach: "subtree",
+        },
+        fixture.owner,
+      );
+      subscribe(fixture, "job-reader", [job]);
+      expect(fixture.events.held("job-reader")).toBe(1);
+      fixture.events.emit(FLOOR_EVENT_OWNERS.jobs, job, "job_changed", null);
+      expect(eventsOn(socket)).toEqual([]);
+      fixture.events.emit(FLOOR_EVENT_OWNERS.jobs, collection, "job_access_changed", null);
+      expect(eventsOn(socket).map(({ topic, payload }) => ({ topic, payload }))).toEqual([
+        { topic: collection, payload: {} },
+      ]);
+      socket.clear();
+      fixture.auth.revokeGrant(denial.id, fixture.owner);
+      fixture.events.emit(FLOOR_EVENT_OWNERS.jobs, job, "job_changed", null);
+      expect(eventsOn(socket).map((event) => event.kind)).toEqual(["job_changed"]);
+      expect(fixture.logs.some((line) => line.evt === "event_undeclared")).toBe(false);
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+});
 
 describe("event plane subscription authority", () => {
   test("an owner subscribes to a container and hears it; the OTHER container stays silent", async () => {

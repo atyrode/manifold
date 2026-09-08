@@ -728,6 +728,8 @@ export class ServerStore {
   private readonly eventCountByContainer = new Map<string, number>();
   /** Null until first counted; the container-less bucket's size, cached like the others. */
   private workspaceEventCount: number | null = null;
+  private readonly commitEffects: Array<() => void> = [];
+  private transactionDepth = 0;
 
   constructor(readonly db: Database) {
     db.exec(`
@@ -742,7 +744,28 @@ export class ServerStore {
   }
 
   transaction<T>(operation: () => T): T {
-    return this.db.transaction(operation)();
+    const firstEffect = this.commitEffects.length;
+    this.transactionDepth++;
+    let result: T;
+    try {
+      result = this.db.transaction(operation)();
+    } catch (error) {
+      this.commitEffects.length = firstEffect;
+      throw error;
+    } finally {
+      this.transactionDepth--;
+    }
+    if (this.transactionDepth === 0 && this.commitEffects.length > 0) {
+      const effects = this.commitEffects.splice(0);
+      for (const effect of effects) effect();
+    }
+    return result;
+  }
+
+  /** Nested transactions may announce committed state only after the outer commit succeeds. */
+  afterCommit(effect: () => void): void {
+    if (this.transactionDepth > 0) this.commitEffects.push(effect);
+    else effect();
   }
 
   getMeta(key: string): string | null {

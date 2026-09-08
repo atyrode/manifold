@@ -4,6 +4,7 @@ import {
   ManifoldRefSchema,
   LocalNameSchema,
   PlaceRequestSchema,
+  ListJobRunsArgsSchema,
   type ActionSummary,
   type IsolateChildFrame,
   type IsolateCtxMethod,
@@ -168,6 +169,7 @@ export async function serveCtxCall(
       );
     case "jobs.execute":
     case "jobs.status":
+    case "jobs.listRuns":
     case "jobs.input":
     case "jobs.cancel":
     case "jobs.output":
@@ -187,6 +189,8 @@ export async function serveCtxCall(
       return ctx.jobs.execute(JobExecuteArgsSchema.parse(args[0]));
     case "jobs.status":
       return ctx.jobs.status(jobDoorSchemas.status.parse({ node: args[0] }).node);
+    case "jobs.listRuns":
+      return ctx.jobs.listRuns(ListJobRunsArgsSchema.parse(args[0]));
     case "jobs.input":
       return ctx.jobs.input(jobDoorSchemas.input.parse(args[0]));
     case "jobs.cancel":
