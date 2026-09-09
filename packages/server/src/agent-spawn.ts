@@ -248,14 +248,15 @@ export function spawnLocalAgent(
   }
 
   const pidPath = resolve(config.dataDir, "agent.pid");
+  const tokenPath = resolve(config.dataDir, "agent.token");
+  let enrollment = savedEnrollment(tokenPath, auth, store);
   const existingPid = livePid(pidPath, isTransport, deps);
   if (existingPid !== null) {
+    if (enrollment !== null) store.setMeta("native_local_machine_id", enrollment.machine.id);
     logger.info("local_agent_reused", { pid: existingPid });
     return { pid: existingPid, terminalHostPid, release };
   }
 
-  const tokenPath = resolve(config.dataDir, "agent.token");
-  let enrollment = savedEnrollment(tokenPath, auth, store);
   if (enrollment === null) {
     const existingMachine = store.getMachineByName(config.localMachineName);
     enrollment =
@@ -268,6 +269,8 @@ export function spawnLocalAgent(
     });
     chmodSync(tokenPath, 0o600);
   }
+  // Instance services default to the authenticated local owner, never a mutable display name.
+  store.setMeta("native_local_machine_id", enrollment.machine.id);
 
   const pid = spawnDetached(
     pidPath,
