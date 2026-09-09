@@ -2774,6 +2774,10 @@ example.hello/
 from an in-tree one (§2 applies in full: id grammar, capability ceiling, `contributes`, the
 assembly refusals). It does not choose a runner; the installer does (§7, §9).
 
+A machine-only bundle uses `"entry": {}` and declares pinned `machine.artifacts` with
+non-empty `machine.operations`. Those declarations and any bundled executable members still
+validate normally; an empty web or server module is neither needed nor meaningful.
+
 The server half default-exports what a `packages/plugins/*` package's `server.ts` exports (§3, §4):
 actions from `defineAction`, handlers written against `ActionCtx`, optional lifecycle hooks. The
 manifest is not repeated in the module — the hub attaches the bundle's.

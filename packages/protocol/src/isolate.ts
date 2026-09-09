@@ -653,11 +653,11 @@ export const PluginBundleFileSchema = z.string().regex(PLUGIN_BUNDLE_FILE_PATTER
 export const MAX_PLUGIN_BUNDLE_FILES = 64;
 
 /**
- * The artifact, parsed. `manifest.entry` is REQUIRED here (the manifest schema leaves it
- * optional because an in-realm manifest has no entry to name) and must name at least one
- * half; every half it names must be a member of `files`, so an installed plugin never
- * discovers at enable time that its own bundle is missing its code — and a declared sheet
- * must be there too, beside a web half to dress. Members are base64 of the file's bytes, each
+ * The artifact, parsed. `manifest.entry` is required even for a machine-only plugin, where
+ * it is empty. A bundle must declare an executable web, server or machine half; every
+ * member those halves name must be present, so a plugin cannot discover its own missing
+ * code only at enable time. A declared sheet must also be present, beside a web half to
+ * dress. Members are base64 of the file's bytes, each
  * bounded by the artifact cap because nothing inside an artifact can be larger than the
  * artifact.
  */
@@ -717,12 +717,16 @@ export const PluginBundleSchema = z
         message: `entry.${half} names "${name}" but files has no such member`,
       });
     };
-    if (entry.server !== true && entry.web === undefined) {
+    if (
+      entry.server !== true &&
+      entry.web === undefined &&
+      ctx.value.manifest.machine === undefined
+    ) {
       ctx.issues.push({
         code: "custom",
         input: ctx.value,
         path: ["manifest", "entry"],
-        message: "entry names neither half: a bundle with nothing to run is not a plugin",
+        message: "a bundle must declare an executable web, server or machine half",
       });
       return;
     }

@@ -244,7 +244,7 @@ describe("the install artifact", () => {
     expect(ISOLATE_MAX_ARTIFACT_BYTES).toBe(16 * 1024 * 1024);
   });
 
-  test("every half `entry` names must be a member, and it must name at least one", () => {
+  test("declared web and server halves require their members; an empty plugin is refused", () => {
     // `entry.server: true` means `files["server.js"]`; `entry.web` is the member's key. A
     // bundle whose entry points at nothing would be discovered at enable time, in a child
     // process, as a stranger's crash — so it is refused here, naming the half.
@@ -285,6 +285,45 @@ describe("the install artifact", () => {
         }),
       ).success,
     ).toBe(true);
+  });
+
+  test("a pinned machine executable is a complete bundle without web or server code", () => {
+    const machineOnly = bundle({
+      manifest: {
+        ...bundle().manifest,
+        entry: {},
+        machine: {
+          artifacts: {
+            "linux-x64": {
+              bundleFile: "worker",
+              sha256: "a".repeat(64),
+              entrySha256: "a".repeat(64),
+              format: "raw",
+              entry: ["worker"],
+              maxBytes: 16,
+              maxExpandedBytes: 16,
+              maxMembers: 1,
+            },
+          },
+          locations: {},
+          operations: {
+            "vendor.thing.run": {
+              argv: [],
+              input: {},
+              runtimeTools: [],
+              locations: [],
+              outputs: [],
+              network: "none",
+              limits: { timeoutMs: 1000, memoryBytes: 1024, processes: 1, outputBytes: 1024 },
+              stdin: false,
+            },
+          },
+        },
+      },
+      files: { worker: "aGk=" },
+    });
+    expect(PluginBundleSchema.safeParse(machineOnly).success).toBe(true);
+    expect(PluginBundleSchema.safeParse({ ...machineOnly, files: {} }).success).toBe(false);
   });
 
   test("a declared sheet must be a member, beside a web half to wear it (#258)", () => {

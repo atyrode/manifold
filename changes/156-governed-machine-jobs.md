@@ -14,3 +14,5 @@ without introducing a second watcher or installer.
 Protected credential paths require traversal, not directory-listing access; pinned
 directory identities preserve exclusion checks and durable state commits. Native
 owner shutdown releases the runtime-owned listener socket exactly once.
+Machine-only bundles are complete plugins when their pinned artifacts and operations
+validate; they need no inert web or server entry point.
