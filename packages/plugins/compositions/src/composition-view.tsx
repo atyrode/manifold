@@ -9,6 +9,8 @@ import {
   type TileLayout,
   type Tile,
   type TileRef,
+  type TerminalInfo,
+  type TerminalRuntime,
 } from "@manifold/protocol";
 import { tileIdForRef } from "@manifold/scene";
 import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
@@ -581,10 +583,10 @@ export function CompositionView({
    * update carrying the leaf precedes the open confirmation on this same socket.
    */
   const createTerminal = useCallback(
-    async (machine?: MachineSummary): Promise<void> => {
+    async (machine?: MachineSummary, runtime?: TerminalRuntime): Promise<TerminalInfo | null> => {
       if (client.epoch === "") {
         notify("Waiting for the composition connection", { key: "open-terminal" });
-        return;
+        return null;
       }
       /*
         WHERE a new terminal is born is the terminal plugin's policy, not this renderer's:
@@ -601,21 +603,24 @@ export function CompositionView({
           cols: 80,
           rows: 24,
           ...(target === null ? {} : { machineId: target.id }),
+          ...(runtime === undefined ? {} : { runtime }),
         });
         const placed = tileIdForRef(client.layout(), {
           kind: "terminal",
           terminalId: terminal.id,
         });
         if (placed !== null) setFocusedTileId(placed);
+        return terminal;
       } catch (reason: unknown) {
         failed(reason, "Could not open a terminal in this composition", "open-terminal");
+        return null;
       }
     },
     [client, failed, machines, notify, containerId, terminals],
   );
 
   useEffect(() => {
-    onCreateTerminalChange((machine) => void createTerminal(machine));
+    onCreateTerminalChange(createTerminal);
     return () => onCreateTerminalChange(null);
   }, [createTerminal, onCreateTerminalChange]);
 

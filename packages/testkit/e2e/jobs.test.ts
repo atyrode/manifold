@@ -107,11 +107,10 @@ test.skipIf(!realBackend)(
         ].join("\n"),
       );
       const sha256 = createHash("sha256").update(executable).digest("hex");
-      writeFileSync(join(state, "artifacts", `${sha256}-${sha256}`), executable, { mode: 0o500 });
       const machine = MachineHalfSchema.parse({
         artifacts: {
           [`linux-${process.arch}`]: {
-            url: "https://example.invalid/fixture",
+            bundleFile: "worker",
             sha256,
             format: "raw",
             entry: ["fixture"],
@@ -160,6 +159,7 @@ test.skipIf(!realBackend)(
               machine,
             },
             files: {
+              worker: executable.toString("base64"),
               "web.js": Buffer.from(
                 `export default { id: ${JSON.stringify(PLUGIN)}, panels: {} };`,
               ).toString("base64"),

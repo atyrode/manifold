@@ -97,11 +97,15 @@ fi
 "$timeout" --kill-after=5s 60s "$env_bin" -i PATH="$path" HOME="$root/home" TMPDIR="$root/tmp" \
   "$cc" -static -O2 -Wall -Wextra "$repo/packages/agent/test/fixtures/job-syscall-probe.c" -o "$root/syscall-probe"
 static_elf "$root/syscall-probe"
+"$timeout" --kill-after=5s 60s "$env_bin" -i PATH="$path" HOME="$root/home" TMPDIR="$root/tmp" \
+  "$cc" -static -O2 -Wall -Wextra "$repo/packages/agent/test/fixtures/job-listener-probe.c" -o "$root/listener-probe"
+static_elf "$root/listener-probe"
 
 # Allowlist only proof inputs, never forward caller/service-manager credentials.
 proof_env=(PATH="$path" HOME="$root/home" TMPDIR="$root/tmp" LANG=C.UTF-8
   MANIFOLD_TEST_UNIT="$unit" MANIFOLD_TEST_BWRAP="$bwrap"
   MANIFOLD_TEST_STATIC_BUSYBOX="$busybox" MANIFOLD_TEST_SYSCALL_PROBE="$root/syscall-probe"
+  MANIFOLD_TEST_LISTENER_PROBE="$root/listener-probe"
   MANIFOLD_TEST_OUTPUT_ROOT="$root/mount-tree/output" MANIFOLD_TEST_MOUNT_TREE="$root/mount-tree")
 if [[ $mode == browser ]]; then
   for name in MANIFOLD_CHROMIUM MANIFOLD_GATE_DIST MANIFOLD_RUNTIME_PROOF_DIR; do

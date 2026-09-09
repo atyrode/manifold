@@ -363,6 +363,7 @@ export const ISOLATE_CTX_METHODS = [
   "streams.open",
   "streams.publish",
   "streams.close",
+  "jobs.describe",
   "jobs.execute",
   "jobs.status",
   "jobs.listRuns",
@@ -376,6 +377,7 @@ export const ISOLATE_CTX_METHODS = [
   "services.readConfiguration",
   "services.configureConfiguration",
   "services.read",
+  "services.invoke",
 ] as const;
 export const IsolateCtxMethodSchema = z.enum(ISOLATE_CTX_METHODS);
 export type IsolateCtxMethod = (typeof ISOLATE_CTX_METHODS)[number];
@@ -679,7 +681,10 @@ export const PluginBundleSchema = z
   })
   .check((ctx) => {
     const files = ctx.value.files;
-    if (Object.values(files).reduce((bytes, data) => bytes + data.length, 0) > ISOLATE_MAX_ARTIFACT_BYTES) {
+    if (
+      Object.values(files).reduce((bytes, data) => bytes + data.length, 0) >
+      ISOLATE_MAX_ARTIFACT_BYTES
+    ) {
       ctx.issues.push({
         code: "custom",
         input: ctx.value,
@@ -690,7 +695,10 @@ export const PluginBundleSchema = z
     for (const artifact of machineArtifacts(ctx.value.manifest.machine)) {
       if (artifact.bundleFile === undefined) continue;
       const data = files[artifact.bundleFile];
-      const bytes = data === undefined ? 0 : data.length / 4 * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
+      const bytes =
+        data === undefined
+          ? 0
+          : (data.length / 4) * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
       if (!Object.hasOwn(files, artifact.bundleFile) || bytes === 0 || bytes > artifact.maxBytes) {
         ctx.issues.push({
           code: "custom",

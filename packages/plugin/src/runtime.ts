@@ -10,11 +10,13 @@ import type {
   ManifoldRef,
   PublicJob,
   ServiceConfiguration,
-  ServiceCredentialReference,
+  ServiceConfigurationRead,
   ServicePolicy,
   ServiceReadArgs,
+  ServiceInvokeArgs,
   ServiceReply,
 } from "@manifold/protocol";
+export type { ServiceConfigurationRead } from "@manifold/protocol";
 
 export type JobExecution = Pick<
   JobRequest,
@@ -59,7 +61,13 @@ export interface PluginJobContext {
   status(node: JobNode): PublicJob;
   listRuns(args: ListJobRunsArgs): ListJobRunsResult;
   follow(node: JobNode, receive: (update: JobFollowUpdate) => void): JobFollow;
-  input(args: { node: JobNode; requestId: string; seq: number; data: string; eof: boolean }): Promise<{ accepted: true }>;
+  input(args: {
+    node: JobNode;
+    requestId: string;
+    seq: number;
+    data: string;
+    eof: boolean;
+  }): Promise<{ accepted: true }>;
   cancel(node: JobNode): { accepted: true };
   output(args: {
     node: OutputNode;
@@ -81,14 +89,11 @@ export interface ServiceDescription {
     operations: {
       operationId: string;
       readable: boolean;
+      invocable: boolean;
       ready: boolean;
       reason: string | null;
     }[];
   }[];
-}
-export interface ServiceConfigurationRead {
-  configuration: ServiceConfiguration;
-  credentialReferences: ServiceCredentialReference[];
 }
 export interface ConfigureServiceConfigurationArgs {
   machineId: string;
@@ -101,6 +106,7 @@ export interface PluginServiceContext {
   readConfiguration(args: { machineId: string }): ServiceConfigurationRead;
   configureConfiguration(args: ConfigureServiceConfigurationArgs): ServiceConfiguration;
   read(args: ServiceReadArgs): Promise<ServiceReply>;
+  invoke(args: ServiceInvokeArgs): Promise<ServiceReply>;
 }
 
 /** The producer validates each bounded body against its manifest's declared stream schema. */

@@ -87,9 +87,13 @@ test("artifact executable bundles pin selected members and never admit URL crede
 
 test("machine artifacts select exactly one pinned HTTPS or flat bundle source", () => {
   const { url, ...pinned } = artifact;
-  expect(MachineArtifactSchema.parse({ ...pinned, bundleFile: "worker-linux-x64" }).bundleFile).toBe("worker-linux-x64");
+  expect(
+    MachineArtifactSchema.parse({ ...pinned, bundleFile: "worker-linux-x64" }).bundleFile,
+  ).toBe("worker-linux-x64");
   expect(MachineArtifactSchema.safeParse(pinned).success).toBe(false);
-  expect(MachineArtifactSchema.safeParse({ ...pinned, url, bundleFile: "worker" }).success).toBe(false);
+  expect(MachineArtifactSchema.safeParse({ ...pinned, url, bundleFile: "worker" }).success).toBe(
+    false,
+  );
   for (const bundleFile of ["../worker", "bin/worker", ".worker", "worker\\other"]) {
     expect(MachineArtifactSchema.safeParse({ ...pinned, bundleFile }).success).toBe(false);
   }
@@ -126,32 +130,81 @@ test("managed executables require an explicit runtime dependency and readonly in
     input: { config: { type: "string", required: true } },
     inputFiles: { "config.json": { input: "config" } },
     executable: { runtimeTool: "engine" },
-    runtimeTools: ["engine"], locations: [], outputs: [], network: "none", stdin: false,
+    runtimeTools: ["engine"],
+    locations: [],
+    outputs: [],
+    network: "none",
+    stdin: false,
     limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
   };
-  expect(MachineHalfSchema.safeParse({ artifacts: { "linux-x64": artifact },
-    tools: { engine: { "linux-x64": artifact } }, operations: { run: operation }, locations: {} }).success).toBe(true);
+  expect(
+    MachineHalfSchema.safeParse({
+      artifacts: { "linux-x64": artifact },
+      tools: { engine: { "linux-x64": artifact } },
+      operations: { run: operation },
+      locations: {},
+    }).success,
+  ).toBe(true);
   expect(MachineOperationSchema.safeParse({ ...operation, runtimeTools: [] }).success).toBe(false);
-  expect(MachineOperationSchema.safeParse({ ...operation, executable: { path: "/bin/sh" } }).success).toBe(false);
-  expect(MachineOperationSchema.safeParse({ ...operation, input: { config: { type: "string", required: false } } }).success).toBe(false);
-  expect(MachineOperationSchema.safeParse({ ...operation, inputFiles: { "../config": { input: "config" } } }).success).toBe(false);
-  expect(MachineOperationSchema.safeParse({ ...operation, inputFiles: { config: { input: "missing" } } }).success).toBe(false);
+  expect(
+    MachineOperationSchema.safeParse({ ...operation, executable: { path: "/bin/sh" } }).success,
+  ).toBe(false);
+  expect(
+    MachineOperationSchema.safeParse({
+      ...operation,
+      input: { config: { type: "string", required: false } },
+    }).success,
+  ).toBe(false);
+  expect(
+    MachineOperationSchema.safeParse({
+      ...operation,
+      inputFiles: { "../config": { input: "config" } },
+    }).success,
+  ).toBe(false);
+  expect(
+    MachineOperationSchema.safeParse({ ...operation, inputFiles: { config: { input: "missing" } } })
+      .success,
+  ).toBe(false);
   expect(JobRequestSchema.shape.input.safeParse({ config: "é".repeat(32768) }).success).toBe(false);
 });
 
 test("install transport bounds all selected members together and forbids duplicate primary bytes", () => {
-  const command = { type: "install", pluginId: "fixture.jobs", installationRevision: "one",
-    artifactSha256: artifact.sha256, machine: {
-      artifacts: { "linux-x64": artifact }, locations: {},
-      operations: { run: { argv: [], input: {}, runtimeTools: [], locations: [], outputs: [],
-        network: "none", stdin: false,
-        limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 } } },
-    }, artifact: { bundleFile: "worker", data: "YQ==" }, toolArtifacts: { engine: "Yg==" } };
+  const command = {
+    type: "install",
+    pluginId: "fixture.jobs",
+    installationRevision: "one",
+    artifactSha256: artifact.sha256,
+    machine: {
+      artifacts: { "linux-x64": artifact },
+      locations: {},
+      operations: {
+        run: {
+          argv: [],
+          input: {},
+          runtimeTools: [],
+          locations: [],
+          outputs: [],
+          network: "none",
+          stdin: false,
+          limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+        },
+      },
+    },
+    artifact: { bundleFile: "worker", data: "YQ==" },
+    toolArtifacts: { engine: "Yg==" },
+  };
   expect(JobCommandSchema.safeParse(command).success).toBe(true);
-  expect(JobCommandSchema.safeParse({ ...command, toolArtifacts: { worker: "YQ==" } }).success).toBe(false);
+  expect(
+    JobCommandSchema.safeParse({ ...command, toolArtifacts: { worker: "YQ==" } }).success,
+  ).toBe(false);
   const member = "YWFh".repeat(2 * 1024 * 1024 + 1);
-  expect(JobCommandSchema.safeParse({ ...command,
-    artifact: { bundleFile: "worker", data: member }, toolArtifacts: { engine: member } }).success).toBe(false);
+  expect(
+    JobCommandSchema.safeParse({
+      ...command,
+      artifact: { bundleFile: "worker", data: member },
+      toolArtifacts: { engine: member },
+    }).success,
+  ).toBe(false);
 });
 
 const occurrence: PublicScheduleOccurrence = {

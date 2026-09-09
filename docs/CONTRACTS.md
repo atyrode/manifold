@@ -2584,9 +2584,9 @@ the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` 
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
 4403 revoked, 4409 version, or 4003 admission refused (incumbent continuity mismatch or
 supersession damp). Version acceptance is the
-`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27}` (protocol/version.ts), NOT
+`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28}` (protocol/version.ts), NOT
 strict equality: agents are long-lived and survive server deploys, so every compatible agent
-version stays accepted (session/browser joins remain strictly current at protocol 27). An unchanged agent wire
+version stays accepted (session/browser joins remain strictly current at protocol 28). An unchanged agent wire
 adds the new version to the set; a strictly additive-optional change also adds it when every old
 frame still parses and the absent-field default reproduces pre-bump semantics. Any other
 agent-wire change resets the set to the new version and requires a coordinated fleet
@@ -2623,16 +2623,20 @@ a retained host. Protocol-26 agents remain terminal-only for governed jobs: they
 `jobOwner` or exchange governed job traffic. This preserves the full terminal graphics contract in
 [ADR 0031: Bounded terminal inline graphics](decisions/0031-terminal-inline-graphics.md).
 
-**Protocol 27: governed machine jobs and plugin-owned streams.** Governed jobs add optional
-`hello.jobOwner` and new `job_command`/`job_event` variants. Only protocol-27 agents may
-advertise a job owner or exchange governed job traffic; the hub never sends job commands to
-older agents. The machine set adds 27 while retaining 16 through 26 for terminal service, and
-`GOVERNED_JOB_MIN_PROTOCOL_VERSION` is 27. The instance compatibility set independently resets
-to `{27}` because the governed closed capability/reference vocabularies expand. No fleet restart
-is owed by this additive machine extension, and no PTY, polling or alternative execution control
-path substitutes for governed jobs. This is not a claim of release, fleet installation or live
-deployment; the current [Protocol and compatibility](#protocol-and-compatibility) contract
-governs the transition.
+**Protocol 27: governed machine jobs and plugin-owned streams.** This introduced optional
+`hello.jobOwner` and new `job_command`/`job_event` variants. Its machine set added 27 while
+retaining 16 through 26 for terminal service, and its independent instance compatibility
+set reset to `{27}` for the expanded closed capability/reference vocabularies.
+
+**Protocol 28: pinned resources and scoped services.** Governed jobs now require correlated
+input receipts, resource inventory and native service configuration/authorization.
+`GOVERNED_JOB_MIN_PROTOCOL_VERSION` is 28. Protocol-27 transports remain compatible only
+without a governed owner; upgrade an owner and its transport together before reconnecting.
+Disconnected workloads remain owned by their independent owner. Terminal-only machine wire
+remains compatible, so the machine set adds 28 and retains 16–27; federation wire is
+unchanged, so the instance set becomes `{27, 28}`. No PTY, polling or alternative control
+path substitutes for governed jobs. This authorizes no release, hub/fleet activation or
+live deployment.
 The pre-v22 terminal-program guard remains; neither terminal connectivity nor version
 acceptance alone proves job readiness. Plugin streams use the exact-current session
 protocol independently of machine job ownership.

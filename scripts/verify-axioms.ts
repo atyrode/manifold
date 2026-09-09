@@ -105,6 +105,7 @@ import {
 } from "../packages/protocol/src/index.ts";
 import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../packages/server/src/assembly.ts";
 import { jobDoors } from "../packages/server/src/job-doors.ts";
+import { serviceDoors } from "../packages/server/src/service-doors.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser, type DragPayload } from "./cdp.ts";
@@ -427,7 +428,11 @@ try {
     shipped ids derived from the registration table. Passing it here is what makes S1 a real
     exercise of the reservation rather than a composition that happens to avoid it.
   */
-  const builtins = [{ manifest: enginePluginsManifest, actions: enginePluginsActions }, jobDoors];
+  const builtins = [
+    { manifest: enginePluginsManifest, actions: enginePluginsActions },
+    jobDoors,
+    serviceDoors,
+  ];
   assembly = assembleRoster([...SERVER_PLUGIN_DEFS, ...builtins], new Set(), {
     builtins: new Set(builtins.map((def) => def.manifest.id)),
     distribution: SHIPPED_PLUGIN_IDS,

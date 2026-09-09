@@ -5,10 +5,15 @@ import {
   formatManifoldUri,
   JobDescriptionSchema,
   JobRequestSchema,
+  JobResourceBindingsSchema,
+  jobResourceRequirements,
+  jobResourceRefusal,
   ListJobRunsResultSchema,
   PublicJobSchema,
   type Cap,
   type JobDescription,
+  type JobResourceBindings,
+  type JobResourceInventory,
   type ListJobRunsResult,
   type MachineHalf,
   type MachineOperation,
@@ -19,6 +24,7 @@ import {
 } from "@manifold/protocol";
 import { Cluster, Stack } from "@manifold/ui";
 import { useEffect, useState, type ReactElement } from "react";
+import { RuntimeInvocations } from "./runtime-invocations.tsx";
 
 type Host = SectionProps["host"];
 type ReadResult<T> = { value: T; failure: null } | { value: null; failure: string };
@@ -45,6 +51,52 @@ async function request(host: Host, action: string, args: unknown): Promise<unkno
 
 function failureMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : "Machine request unavailable";
+}
+
+const RESOURCE_GROUPS = ["tools", "services", "anchors"] as const;
+type ResourcePin = { group: (typeof RESOURCE_GROUPS)[number]; name: string };
+
+/** Project the public owner inventory onto this platform's declared resource boundary only. */
+function prospectiveResources(
+  declaration: MachineHalf,
+  platform: keyof MachineHalf["artifacts"],
+  inventory: JobResourceInventory | undefined,
+) {
+  const bindings: JobResourceBindings = { tools: {}, services: {}, anchors: {} };
+  const pins: ResourcePin[] = [];
+  const unavailable: Record<string, string[]> = {};
+  const definitions: JobResourceInventory["serviceDefinitions"] = {};
+  for (const [operationId, operation] of Object.entries(declaration.operations)) {
+    const missing: string[] = [];
+    unavailable[operationId] = missing;
+    if (!declaration.requiresResourceBindings && !operation.services?.length) continue;
+    const requirements = jobResourceRequirements(declaration, operationId, platform);
+    for (const group of RESOURCE_GROUPS)
+      for (const name of requirements[group]) {
+        if (!pins.some((pin) => pin.group === group && pin.name === name))
+          pins.push({ group, name });
+        const revision = inventory?.[group][name];
+        if (revision === undefined) missing.push(`${group}: ${name}`);
+        else bindings[group][name] = revision;
+      }
+    for (const binding of operation.services ?? []) {
+      const definition = inventory?.serviceDefinitions[binding.serviceId];
+      if (definition) definitions[binding.serviceId] = definition;
+    }
+    const refusal = jobResourceRefusal(declaration, operationId, platform, bindings, inventory);
+    if (refusal && missing.length === 0) missing.push(refusal);
+  }
+  return {
+    bindings,
+    pins,
+    unavailable,
+    fingerprint: canonicalJobJson({ bindings, definitions }),
+  };
+}
+
+async function installationDigest(json: string): Promise<string> {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(json));
+  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function operationRights(
@@ -525,15 +577,19 @@ function MachineSetup({
   const artifacts = Object.entries(declaration.artifacts);
   const [target, setTarget] = useState(artifacts.length === 1 ? artifacts[0]![0] : "");
   const artifact = artifacts.find(([name]) => name === target)?.[1];
-  const manifestJson = canonicalJobJson(declaration);
-  const [computedRevision, setComputedRevision] = useState<{
-    manifestJson: string;
-    result: ReadResult<string>;
+  const needsBindings =
+    declaration.requiresResourceBindings === true ||
+    Object.values(declaration.operations).some((operation) => operation.services?.length);
+  const [review, setReview] = useState<{
+    key: string;
+    bindings: JobResourceBindings;
+    revisionJson: string;
   } | null>(null);
-  const revisionResult =
-    computedRevision?.manifestJson === manifestJson ? computedRevision.result : null;
-  const revision = revisionResult?.value ?? null;
-  const revisionFailure = revisionResult?.failure ?? null;
+  const [computedRevision, setComputedRevision] = useState<{
+    revisionJson: string;
+    installedRevisionJson: string;
+    result: ReadResult<{ reviewed: string; installed: string }>;
+  } | null>(null);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -564,12 +620,42 @@ function MachineSetup({
   const supportedTargets = artifacts.filter(([name]) => description?.platforms.includes(name));
   const supported = description?.platforms.includes(target) === true;
   const installation = description?.installation;
+  const platform = artifact ? (target as keyof MachineHalf["artifacts"]) : null;
+  const prospective = platform
+    ? prospectiveResources(declaration, platform, description?.resources)
+    : null;
+  const reviewKey = canonicalJobJson({
+    machine: declaration,
+    target,
+    inventory: prospective?.fingerprint ?? null,
+  });
+  const reviewCurrent =
+    !needsBindings || (review?.key === reviewKey && description?.resources !== undefined);
+  const reviewedBindings = needsBindings ? review?.bindings : undefined;
+  const revisionJson = needsBindings
+    ? (review?.revisionJson ??
+      canonicalJobJson({
+        machine: declaration,
+        resourceBindings: prospective?.bindings ?? null,
+      }))
+    : canonicalJobJson(declaration);
+  const installedRevisionJson = installation?.resourceBindings
+    ? canonicalJobJson({ machine: declaration, resourceBindings: installation.resourceBindings })
+    : canonicalJobJson(declaration);
+  const revisionResult =
+    computedRevision?.revisionJson === revisionJson &&
+    computedRevision.installedRevisionJson === installedRevisionJson
+      ? computedRevision.result
+      : null;
+  const revision = revisionResult?.value?.reviewed ?? null;
+  const installedRevision = revisionResult?.value?.installed ?? null;
+  const revisionFailure = revisionResult?.failure ?? null;
   const matches =
-    revision !== null &&
+    installedRevision !== null &&
     installation !== undefined &&
     installation !== null &&
     artifact !== undefined &&
-    installation.revision === revision &&
+    installation.revision === installedRevision &&
     installation.artifactSha256 === artifact.sha256;
   const consentDescription = matches ? description : null;
   const connected = machine.online && machine.revoked !== true && description?.connected === true;
@@ -583,34 +669,35 @@ function MachineSetup({
     entry.enabled;
   useEffect(() => {
     let active = true;
-    void crypto.subtle
-      .digest("SHA-256", new TextEncoder().encode(manifestJson))
-      .then((bytes) => {
+    const reviewedDigest = installationDigest(revisionJson);
+    const installedDigest =
+      revisionJson === installedRevisionJson
+        ? reviewedDigest
+        : installationDigest(installedRevisionJson);
+    void Promise.all([reviewedDigest, installedDigest])
+      .then(([reviewed, installed]) => {
         if (active)
           setComputedRevision({
-            manifestJson,
-            result: {
-              value: Array.from(new Uint8Array(bytes), (byte) =>
-                byte.toString(16).padStart(2, "0"),
-              ).join(""),
-              failure: null,
-            },
+            revisionJson,
+            installedRevisionJson,
+            result: { value: { reviewed, installed }, failure: null },
           });
       })
       .catch(() => {
         if (active)
           setComputedRevision({
-            manifestJson,
+            revisionJson,
+            installedRevisionJson,
             result: {
               value: null,
-              failure: "Cannot bind the manifest revision: SHA-256 is unavailable",
+              failure: "Cannot bind the installation revision: SHA-256 is unavailable",
             },
           });
       });
     return () => {
       active = false;
     };
-  }, [manifestJson]);
+  }, [revisionJson, installedRevisionJson]);
   const perform = async (run: () => Promise<void>): Promise<void> => {
     if (pending) return;
     setPending(true);
@@ -744,12 +831,13 @@ function MachineSetup({
       ) : null}
       <div className="plugin-manager-runtime-identity">
         <small>
-          Reviewed declaration revision{" "}
+          {needsBindings && !review ? "Prospective" : "Reviewed"} installation revision{" "}
           <code>{revision ?? (revisionFailure === null ? "Computing…" : "Unavailable")}</code>
         </small>
         <small>
-          The revision hashes this exact machine declaration; the artifact hash pins downloaded
-          bytes. A change needs a fresh installation and explicit consent.
+          The revision hashes this exact machine declaration and, when required, reviewed resource
+          pins. The artifact hash pins downloaded bytes. A change needs explicit promotion and
+          consent.
         </small>
         {installation ? (
           <>
@@ -762,6 +850,111 @@ function MachineSetup({
           </>
         ) : null}
       </div>
+      {needsBindings ? (
+        <Stack
+          gap="0.5rem"
+          className="plugin-manager-runtime-operation"
+          style={{ overflowWrap: "anywhere" }}
+        >
+          <h5>Review native resource pins</h5>
+          <p className="plugin-manager-sheet-muted">
+            Only owner resources required by the chosen platform's declared operations are promoted.
+            These are public identifiers and fingerprints, never host paths or credential values.
+            Reviewing does not install, activate an operation, or grant consent.
+          </p>
+          {!description?.resources ? (
+            <p role="status">Resource inventory unavailable — review and promotion are blocked.</p>
+          ) : !prospective ? (
+            <p role="status">Choose a declared artifact target to review resources.</p>
+          ) : (
+            <>
+              {prospective.pins.length === 0 ? (
+                <p className="plugin-manager-sheet-muted">
+                  No owner resource pins required for this target.
+                </p>
+              ) : null}
+              {prospective.pins.map(({ group, name }) => (
+                <Stack
+                  key={`${group}:${name}`}
+                  gap="0.2rem"
+                  className="plugin-manager-runtime-identity"
+                >
+                  <strong>
+                    {group}: {name}
+                  </strong>
+                  <small>
+                    Installed:{" "}
+                    <code>{installation?.resourceBindings?.[group][name] ?? "Not promoted"}</code>
+                  </small>
+                  <small>
+                    Reviewed:{" "}
+                    <code>
+                      {review?.bindings[group][name] ??
+                        (review ? "Not available at review" : "Not reviewed")}
+                    </code>
+                  </small>
+                  <small>
+                    Current owner: <code>{prospective.bindings[group][name] ?? "Unavailable"}</code>
+                  </small>
+                </Stack>
+              ))}
+              {Object.entries(prospective.unavailable).map(([operationId, missing]) => (
+                <p key={operationId} className="plugin-manager-sheet-muted">
+                  {operationId}:{" "}
+                  {missing.length > 0
+                    ? `Unavailable with these pins — ${missing.join(", ")}`
+                    : "Required resources available; installation and explicit approvals still required."}
+                </p>
+              ))}
+              <p className="plugin-manager-sheet-muted">
+                Missing resources block only operations that require them. You may install available
+                pins for independent operations, then explicitly review and promote again when
+                resources change.
+              </p>
+            </>
+          )}
+          <button
+            type="button"
+            className="plugin-manager-filter"
+            style={{ whiteSpace: "normal" }}
+            disabled={
+              pending ||
+              !canApprove ||
+              !connected ||
+              !supported ||
+              !prospective ||
+              !description?.resources
+            }
+            onClick={() => {
+              if (!prospective || !description?.resources) return;
+              const bindings = JobResourceBindingsSchema.parse(prospective.bindings);
+              setReview({
+                key: reviewKey,
+                bindings,
+                revisionJson: canonicalJobJson({
+                  machine: declaration,
+                  resourceBindings: bindings,
+                }),
+              });
+              setFailure(null);
+              setNotice(
+                "Resource pins reviewed only. Apply the reviewed installation explicitly; no operation was activated.",
+              );
+            }}
+          >
+            Review and adopt current resource pins
+          </button>
+          {review ? (
+            <p role="status">
+              {reviewCurrent
+                ? "Review matches the current required inventory. Ready for explicit promotion."
+                : "Review stale — declaration, target, or required inventory changed. Review again before applying."}
+            </p>
+          ) : (
+            <p role="status">Explicit resource review required before installation.</p>
+          )}
+        </Stack>
+      ) : null}
       <p role="status" data-testid="plugin-manager-runtime-readiness">
         {state}
       </p>
@@ -778,6 +971,7 @@ function MachineSetup({
           type="button"
           className="plugin-manager-filter"
           data-action="engine.jobs.install"
+          style={{ whiteSpace: "normal" }}
           disabled={
             pending ||
             !canApprove ||
@@ -785,17 +979,44 @@ function MachineSetup({
             !connected ||
             !supported ||
             !artifact ||
-            !revision
+            !revision ||
+            !reviewCurrent
           }
           onClick={() => {
-            if (!artifact || !revision) return;
+            if (!artifact || !revision || !reviewCurrent) return;
             void perform(async () => {
+              if (needsBindings) {
+                if (!review || !platform)
+                  throw new Error("Review resource pins before installation.");
+                const current = JobDescriptionSchema.parse(
+                  await request(host, "engine.jobs.describe", { machineId: machine.id, pluginId }),
+                );
+                if (
+                  current.machineId !== machine.id ||
+                  current.pluginId !== pluginId ||
+                  !current.connected ||
+                  !current.platforms.includes(target) ||
+                  !current.resources
+                )
+                  throw new Error("Resource owner unavailable. Refresh and review again.");
+                const currentKey = canonicalJobJson({
+                  machine: declaration,
+                  target,
+                  inventory: prospectiveResources(declaration, platform, current.resources)
+                    .fingerprint,
+                });
+                if (currentKey !== review.key)
+                  throw new Error(
+                    "Resource review stale. Refresh and review the current pins before applying.",
+                  );
+              }
               const result = await request(host, "engine.jobs.install", {
                 machineId: machine.id,
                 pluginId,
                 installationRevision: revision,
                 artifactSha256: artifact.sha256,
                 machine: declaration,
+                ...(reviewedBindings === undefined ? {} : { resourceBindings: reviewedBindings }),
               });
               if (
                 typeof result !== "object" ||
@@ -805,12 +1026,14 @@ function MachineSetup({
               )
                 throw new Error("Installation acknowledgement could not be read");
               setNotice(
-                "Installation requested, not yet ready. Refresh readiness for the native acknowledgement.",
+                "Installation requested, not yet ready. No operation activated. Refresh for native acknowledgement, then review each operation's readiness and consent.",
               );
             });
           }}
         >
-          Install exact manifest artifact
+          {needsBindings
+            ? "Install / promote reviewed resource pins"
+            : "Install exact manifest artifact"}
         </button>
       </Cluster>
       {!canApprove ? (
@@ -883,6 +1106,17 @@ function MachineSetup({
           label: location.locationId,
         }));
         const approved = [...required, ...resources].every(rightApproved);
+        const operationState = matches ? description?.operations?.[operationId] : undefined;
+        const resourceReason = platform
+          ? jobResourceRefusal(
+              declaration,
+              operationId,
+              platform,
+              installation?.resourceBindings,
+              description?.resources,
+            )
+          : "artifact_target_unavailable";
+        const operationReady = ready && operationState?.ready === true && resourceReason === null;
         return (
           <section
             key={operationId}
@@ -948,12 +1182,26 @@ function MachineSetup({
                 cancellation have separate rights.
               </p>
             ) : null}
+            <p role="status">
+              Installed operation:{" "}
+              {!matches
+                ? "Unavailable — install this declaration and artifact first."
+                : resourceReason !== null
+                  ? `Unavailable — ${resourceReason}`
+                  : operationState?.ready !== true
+                    ? `Unavailable — ${operationState?.reason ?? "operation readiness not reported"}`
+                    : !ready
+                      ? "Unavailable — installation or machine not ready."
+                      : !approved
+                        ? "Unavailable — explicit approvals required."
+                        : "Ready for an explicit run request; not automatically activated."}
+            </p>
             <OperationForm
-              key={`${operationId}:${revision}`}
+              key={`${operationId}:${installation?.revision ?? "uninstalled"}`}
               operationId={operationId}
               operation={operation}
               declaration={declaration}
-              disabled={pending || !ready || !approved}
+              disabled={pending || !operationReady || !approved}
               onRun={(input, outputs) =>
                 perform(async () => {
                   const jobId = crypto.randomUUID();
@@ -984,6 +1232,7 @@ function MachineSetup({
           </section>
         );
       })}
+      <RuntimeInvocations host={host} machineId={machine.id} pluginId={pluginId} />
     </Stack>
   );
 }

@@ -58,8 +58,10 @@ export class LiveMachineChannel implements MachineChannel {
     if (this.socket.bufferedAmount === 0) this.outboundQueueLimit = MAX_SESSION_FRAME_BYTES;
     if (install) this.outboundQueueLimit = 2 * MAX_JOB_INSTALL_FRAME_BYTES;
     const frameLimit = install ? MAX_JOB_INSTALL_FRAME_BYTES : MAX_SESSION_FRAME_BYTES;
-    if (Buffer.byteLength(payload) > frameLimit ||
-        this.socket.bufferedAmount + Buffer.byteLength(payload) > this.outboundQueueLimit) {
+    if (
+      Buffer.byteLength(payload) > frameLimit ||
+      this.socket.bufferedAmount + Buffer.byteLength(payload) > this.outboundQueueLimit
+    ) {
       this.socket.close(1013, "machine outbound queue overflow");
       return false;
     }

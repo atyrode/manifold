@@ -644,8 +644,16 @@ export class TerminalBroker implements TerminalPlacementPort {
    * is mechanism: placement discipline, machine selection, and the create round trip.
    */
   open(channel: SessionChannel, message: TerminalOpen, traceId?: number): void {
-    if (message.runtime && (message.program !== undefined || message.env !== undefined || message.cwd !== undefined)) {
-      channel.send({ type: "error", code: "forbidden", message: "runtime excludes program, cwd and environment overrides", ref: message.elementId });
+    if (
+      message.runtime &&
+      (message.program !== undefined || message.env !== undefined || message.cwd !== undefined)
+    ) {
+      channel.send({
+        type: "error",
+        code: "forbidden",
+        message: "runtime excludes program, cwd and environment overrides",
+        ref: message.elementId,
+      });
       return;
     }
     /*
@@ -730,16 +738,32 @@ export class TerminalBroker implements TerminalPlacementPort {
     let runtime: Extract<ServerToAgentMessage, { type: "create" }>["runtime"];
     if (message.runtime) {
       try {
-        if (!this.jobs || !machine.terminalHostId || traceId === undefined) throw new Error("terminal_runtime_unsupported");
-        runtime = this.jobs.admitTerminal(channel.auth, message.runtime, machine.machineId, {
-          terminalId, terminalHostId: machine.terminalHostId, containerId: homeId,
-        }, traceId);
+        if (!this.jobs || !machine.terminalHostId || traceId === undefined)
+          throw new Error("terminal_runtime_unsupported");
+        runtime = this.jobs.admitTerminal(
+          channel.auth,
+          message.runtime,
+          machine.machineId,
+          {
+            terminalId,
+            terminalHostId: machine.terminalHostId,
+            containerId: homeId,
+          },
+          traceId,
+        );
       } catch {
-        channel.send({ type: "error", code: "forbidden", message: "terminal runtime admission refused", ref: message.elementId });
+        channel.send({
+          type: "error",
+          code: "forbidden",
+          message: "terminal runtime admission refused",
+          ref: message.elementId,
+        });
         return;
       }
     }
-    const grant = runtime ? null : this.auth.mintSessionAgentToken(terminalId, homeId, channel.auth.principal.id);
+    const grant = runtime
+      ? null
+      : this.auth.mintSessionAgentToken(terminalId, homeId, channel.auth.principal.id);
     const pending: PendingOpen = {
       terminalId,
       containerId: channel.containerId,
@@ -780,19 +804,21 @@ export class TerminalBroker implements TerminalPlacementPort {
       cols: message.cols,
       rows: message.rows,
       ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
-      env: runtime ? {} : {
-        // The opener's own keys go FIRST so the fixed keys below always win. The schema
-        // already refuses the `MANIFOLD_` prefix; the order makes the rule true even if it
-        // did not.
-        ...message.env,
-        MANIFOLD_URL: this.publicUrl(),
-        // The container the terminal LIVES in, which is what a program inside it should see
-        // when it asks where it is. `MANIFOLD_ELEMENT` is only meaningful for a canvas
-        // opener, which authors its portal under exactly that id.
-        MANIFOLD_CONTAINER: homeId,
-        ...(placement === "tile" ? {} : { MANIFOLD_ELEMENT: message.elementId }),
-        MANIFOLD_TOKEN: grant!.token,
-      },
+      env: runtime
+        ? {}
+        : {
+            // The opener's own keys go FIRST so the fixed keys below always win. The schema
+            // already refuses the `MANIFOLD_` prefix; the order makes the rule true even if it
+            // did not.
+            ...message.env,
+            MANIFOLD_URL: this.publicUrl(),
+            // The container the terminal LIVES in, which is what a program inside it should see
+            // when it asks where it is. `MANIFOLD_ELEMENT` is only meaningful for a canvas
+            // opener, which authors its portal under exactly that id.
+            MANIFOLD_CONTAINER: homeId,
+            ...(placement === "tile" ? {} : { MANIFOLD_ELEMENT: message.elementId }),
+            MANIFOLD_TOKEN: grant!.token,
+          },
       ...(message.program === undefined ? {} : { program: message.program }),
       ...(runtime ? { runtime } : {}),
     });

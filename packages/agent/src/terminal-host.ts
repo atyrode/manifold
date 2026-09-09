@@ -156,8 +156,11 @@ export class TerminalHost {
     this.stopping = true;
     const terminals = [...this.terminals.values()];
     const kills = terminals.map(async (terminal) => {
-      try { await terminal.kill(); }
-      catch (error) { if (!terminal.workloadEmpty) throw error; }
+      try {
+        await terminal.kill();
+      } catch (error) {
+        if (!terminal.workloadEmpty) throw error;
+      }
     });
     let graceTimer: Timer | undefined;
     try {
@@ -402,7 +405,11 @@ export class TerminalHost {
   ): Promise<void> {
     if (this.terminals.has(msg.terminalId)) {
       if (msg.runtime) {
-        connection.peer.write({ type: "create_error", terminalId: msg.terminalId, message: "terminal_admission_reused" });
+        connection.peer.write({
+          type: "create_error",
+          terminalId: msg.terminalId,
+          message: "terminal_admission_reused",
+        });
         return;
       }
       // Idempotent re-create (e.g. a retried request): acknowledge the existing terminal.
@@ -421,21 +428,30 @@ export class TerminalHost {
       try {
         if (!this.jobOwner || msg.program || msg.cwd !== undefined || Object.keys(msg.env).length)
           throw new Error("terminal_runtime_host_or_overrides_refused");
-        await this.jobOwner.startTerminal(msg.runtime, msg.terminalId, this.terminalHostId, (spec) => {
-          try {
-          terminal = new PtyTerminal({
-            terminalId: msg.terminalId,
-            cols: msg.cols,
-            rows: msg.rows,
-            onOutput: (output) => this.onOutput(msg.terminalId, output),
-            runtime: (pty) => startLinuxJob({ ...spec, terminal: pty }),
-          });
-          } catch {
-            throw new LinuxJobRefusal("terminal-allocation-failed", "terminal-allocation-failed", true);
-          }
-          this.terminals.set(msg.terminalId, terminal);
-          return terminal.runtimeHandle!;
-        });
+        await this.jobOwner.startTerminal(
+          msg.runtime,
+          msg.terminalId,
+          this.terminalHostId,
+          (spec) => {
+            try {
+              terminal = new PtyTerminal({
+                terminalId: msg.terminalId,
+                cols: msg.cols,
+                rows: msg.rows,
+                onOutput: (output) => this.onOutput(msg.terminalId, output),
+                runtime: (pty) => startLinuxJob({ ...spec, terminal: pty }),
+              });
+            } catch {
+              throw new LinuxJobRefusal(
+                "terminal-allocation-failed",
+                "terminal-allocation-failed",
+                true,
+              );
+            }
+            this.terminals.set(msg.terminalId, terminal);
+            return terminal.runtimeHandle!;
+          },
+        );
         if (!terminal || this.stopping) {
           await terminal?.kill();
           throw new Error("terminal_runtime_start_interrupted");
@@ -453,7 +469,11 @@ export class TerminalHost {
             this.jobOwner?.setDraining(true);
           }
         }
-        connection.peer.write({ type: "create_error", terminalId: msg.terminalId, message: "terminal_runtime_refused" });
+        connection.peer.write({
+          type: "create_error",
+          terminalId: msg.terminalId,
+          message: "terminal_runtime_refused",
+        });
       }
       return;
     }
@@ -520,8 +540,9 @@ export class TerminalHost {
 
   private async watchExit(terminalId: string, terminal: PtyTerminal): Promise<void> {
     let exitCode: number | null;
-    try { ({ exitCode } = await terminal.exited); }
-    catch {
+    try {
+      ({ exitCode } = await terminal.exited);
+    } catch {
       this.draining = true;
       this.jobOwner?.setDraining(true);
       this.log("warn", "terminal_empty_unproven", { terminalId });

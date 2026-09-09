@@ -1,7 +1,14 @@
 import { createHash } from "node:crypto";
 import { createGunzip, createInflateRaw } from "node:zlib";
 import { Readable } from "node:stream";
-import { JobArtifactDeliverySchema, MachineArtifactSchema, machineArtifacts, type MachineArtifact, type PluginBundle, type JobArtifactDelivery } from "@manifold/protocol";
+import {
+  JobArtifactDeliverySchema,
+  MachineArtifactSchema,
+  machineArtifacts,
+  type MachineArtifact,
+  type PluginBundle,
+  type JobArtifactDelivery,
+} from "@manifold/protocol";
 
 export interface ExtractedArtifact {
   executable: Buffer;
@@ -9,8 +16,11 @@ export interface ExtractedArtifact {
 }
 
 /** Verify transport presence and identity before cache lookup, even for an already installed worker. */
-export function deliveredArtifact(spec: MachineArtifact, delivery: JobArtifactDelivery | undefined,
-  decoded?: Map<string, Buffer>): Buffer | undefined {
+export function deliveredArtifact(
+  spec: MachineArtifact,
+  delivery: JobArtifactDelivery | undefined,
+  decoded?: Map<string, Buffer>,
+): Buffer | undefined {
   if (spec.bundleFile === undefined) {
     if (delivery !== undefined) throw new Error("artifact_unexpected_delivery");
     return undefined;
@@ -18,10 +28,13 @@ export function deliveredArtifact(spec: MachineArtifact, delivery: JobArtifactDe
   if (!delivery) throw new Error("artifact_bundle_unavailable");
   if (delivery.bundleFile !== spec.bundleFile) throw new Error("artifact_bundle_member_mismatch");
   delivery = JobArtifactDeliverySchema.parse(delivery);
-  const size = delivery.data.length / 4 * 3 - (delivery.data.endsWith("==") ? 2 : delivery.data.endsWith("=") ? 1 : 0);
+  const size =
+    (delivery.data.length / 4) * 3 -
+    (delivery.data.endsWith("==") ? 2 : delivery.data.endsWith("=") ? 1 : 0);
   if (!size || size > spec.maxBytes) throw new Error("artifact_compressed_limit");
   const bytes = decoded?.get(delivery.data) ?? Buffer.from(delivery.data, "base64");
-  if (createHash("sha256").update(bytes).digest("hex") !== spec.sha256) throw new Error("artifact_archive_digest");
+  if (createHash("sha256").update(bytes).digest("hex") !== spec.sha256)
+    throw new Error("artifact_archive_digest");
   decoded?.set(delivery.data, bytes);
   return bytes;
 }
@@ -33,7 +46,11 @@ export async function verifyBundledArtifacts(bundle: PluginBundle): Promise<void
   const decoded = new Map<string, Buffer>();
   for (const spec of machineArtifacts(bundle.manifest.machine)) {
     if (spec.bundleFile === undefined) continue;
-    const archive = deliveredArtifact(spec, { bundleFile: spec.bundleFile, data: bundle.files[spec.bundleFile]! }, decoded)!;
+    const archive = deliveredArtifact(
+      spec,
+      { bundleFile: spec.bundleFile, data: bundle.files[spec.bundleFile]! },
+      decoded,
+    )!;
     await extractArtifact(archive, spec, signal, deadline);
   }
 }
@@ -74,7 +91,16 @@ function archiveName(bytes: Buffer): string {
     nul < 0 ? bytes : bytes.subarray(0, nul),
   );
   const parts = name.replace(/\/$/, "").split("/");
-  if (parts.some((part) => !part || part === "." || part === ".." || /[\\\0]/.test(part) || Buffer.byteLength(part) > 255))
+  if (
+    parts.some(
+      (part) =>
+        !part ||
+        part === "." ||
+        part === ".." ||
+        /[\\\0]/.test(part) ||
+        Buffer.byteLength(part) > 255,
+    )
+  )
     throw new Error("unsafe_file_component");
   return name;
 }
@@ -84,6 +110,20 @@ function octal(bytes: Buffer): number {
   const value = parseInt(text, 8);
   if (!Number.isSafeInteger(value)) throw new Error("artifact_invalid_tar_number");
   return value;
+}
+function zipMetadata(archive: Buffer, start: number, end: number, local: boolean): void {
+  let seen = false;
+  while (start < end) {
+    if (start + 4 > end) throw new Error("artifact_invalid_zip_metadata");
+    const kind = archive.readUInt16LE(start);
+    const size = archive.readUInt16LE(start + 2);
+    if (start + 4 + size > end) throw new Error("artifact_invalid_zip_metadata");
+    // Info-ZIP Unix metadata contains only timestamps and ownership, neither of which is applied.
+    if (kind !== 0x5855) throw new Error("artifact_unsupported_zip");
+    if (seen || size !== (local ? 12 : 8)) throw new Error("artifact_invalid_zip_metadata");
+    seen = true;
+    start += 4 + size;
+  }
 }
 /** One bounded archive verifier for packing, hub admission, and native owner acquisition. */
 export async function extractArtifact(
@@ -153,7 +193,7 @@ export async function extractArtifact(
     }
     if (!ended) throw new Error("artifact_tar_termination");
   } else if (spec.format === "zip") {
-    // Central directory is mandatory. ZIP64, encryption, split archives and extra-field extensions refuse.
+    // Central identity is mandatory; ZIP64, encryption and split archives remain unsupported.
     let end = archive.length - 22;
     while (
       end >= Math.max(0, archive.length - 65557) &&
@@ -191,12 +231,12 @@ export async function extractArtifact(
       const local = archive.readUInt32LE(cursor + 42);
       if (
         cursor + 46 + nameLength + extra + comment > end ||
-        extra ||
         archive.readUInt16LE(cursor + 34) ||
         flags & ~0x808 ||
         ![0, 8].includes(method)
       )
         throw new Error("artifact_unsupported_zip");
+      zipMetadata(archive, cursor + 46 + nameLength, cursor + 46 + nameLength + extra, false);
       const nameBytes = archive.subarray(cursor + 46, cursor + 46 + nameLength);
       const name = archiveName(nameBytes);
       const mode = archive.readUInt32LE(cursor + 38) >>> 16;
@@ -222,11 +262,11 @@ export async function extractArtifact(
       const localExtra = archive.readUInt16LE(local + 28);
       const start = local + 30 + localNameLength + localExtra;
       if (
-        localExtra ||
         start + compressed > directoryOffset ||
         !archive.subarray(local + 30, local + 30 + localNameLength).equals(nameBytes)
       )
         throw new Error("artifact_invalid_zip_local");
+      zipMetadata(archive, local + 30 + localNameLength, start, true);
       previousEnd = start + compressed;
       const crc = archive.readUInt32LE(cursor + 16);
       if (flags & 8) {

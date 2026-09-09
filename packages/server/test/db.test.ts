@@ -2168,7 +2168,9 @@ INSERT INTO machine_job_inputs VALUES
       .query<Record<string, string | number>, []>("SELECT * FROM machine_job_installs")
       .all();
     const history = db
-      .query<Record<string, string>, []>("SELECT * FROM machine_job_installations ORDER BY revision")
+      .query<Record<string, string>, []>(
+        "SELECT * FROM machine_job_installations ORDER BY revision",
+      )
       .all();
     const receipts = db.query("SELECT * FROM machine_job_inputs ORDER BY seq").all();
     db.close();
@@ -2211,7 +2213,9 @@ INSERT INTO machine_job_inputs VALUES
     ).run(bindings);
     db.close();
     db = openDatabase(path);
-    expect(db.query("SELECT * FROM native_service_configurations ORDER BY machine_id").all()).toEqual([
+    expect(
+      db.query("SELECT * FROM native_service_configurations ORDER BY machine_id").all(),
+    ).toEqual([
       { machine_id: "machine", revision: nextRevision, configuration: nextConfiguration },
       { machine_id: "other-machine", revision, configuration },
     ]);
@@ -2219,7 +2223,9 @@ INSERT INTO machine_job_inputs VALUES
       resource_bindings: bindings,
     });
     expect(
-      db.query("SELECT revision,resource_bindings FROM machine_job_installations ORDER BY revision").all(),
+      db
+        .query("SELECT revision,resource_bindings FROM machine_job_installations ORDER BY revision")
+        .all(),
     ).toEqual([
       { revision: "install-1", resource_bindings: null },
       { revision: "install-2", resource_bindings: bindings },

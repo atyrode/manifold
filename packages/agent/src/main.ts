@@ -84,7 +84,10 @@ async function terminalHostMain(): Promise<void> {
   const jobSocket = process.env.MANIFOLD_JOB_OWNER_SOCKET;
   if (Boolean(jobConfig) !== Boolean(jobSocket))
     throw new Error("job owner configuration and socket must be configured together");
-  const owner = jobConfig && jobSocket ? await openConfiguredJobOwner(jobConfig, jobSocket, socketPath) : undefined;
+  const owner =
+    jobConfig && jobSocket
+      ? await openConfiguredJobOwner(jobConfig, jobSocket, socketPath)
+      : undefined;
   let jobListener: { stop(): void } | undefined;
   const host = new TerminalHost({
     sink: stdoutSink,
@@ -124,7 +127,6 @@ async function terminalHostMain(): Promise<void> {
     listener?.stop();
   });
 }
-
 
 function transportMain(): void {
   const serverUrl = requireEnv("MANIFOLD_SERVER_URL");

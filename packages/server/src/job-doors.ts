@@ -5,7 +5,11 @@ import {
   ManifoldRefSchema,
   ListJobRunsArgsSchema,
   ListJobRunsResultSchema,
-  JobOutputRuleSchema,
+  JobInvocationEdgeSchema,
+  JobInvocationTargetSchema,
+  InspectJobInvocationsArgsSchema,
+  InspectJobInvocationsResultSchema,
+  type InspectJobInvocationsResult,
   type ListJobRunsArgs,
   type ListJobRunsResult,
   JobEventSchema,
@@ -47,30 +51,10 @@ const schedule = execute.extend({
   expiresAt: z.number().int().nonnegative(),
   offlinePolicy: z.enum(["skip", "coalesce-one"]),
 });
-const invocationTarget = JobRequestSchema.pick({
-  machineId: true,
-  pluginId: true,
-  operationId: true,
-  installationRevision: true,
-  artifactSha256: true,
-});
-const invocationEdge = z.strictObject({
-  caller: invocationTarget,
-  callee: invocationTarget,
-  resources: z
-    .array(
-      z.strictObject({ locationId: id, revision: id, access: z.enum(["read", "write", "create"]) }),
-    )
-    .max(32),
-  outputs: z.array(JobOutputRuleSchema).max(30),
-  maxDepth: z.number().int().positive().max(64),
-  maxConcurrency: z.number().int().positive().max(4096),
-  aggregate: JobRequestSchema.shape.limits,
-});
 const publicJob = PublicJobSchema;
 const publicSchedule = schedule
   .omit({ jobId: true, input: true, outputs: true, limits: true })
-  .extend(invocationTarget.shape);
+  .extend(JobInvocationTargetSchema.shape);
 export const jobDoorSchemas = {
   execute: execute.extend({ pluginId: id }),
   describe: z.strictObject({ machineId: id, pluginId: id, installationRevision: id.optional() }),
@@ -109,7 +93,8 @@ export const jobDoorSchemas = {
   schedule: schedule.extend({ pluginId: id }),
   schedules: z.strictObject({}),
   disableSchedule: z.strictObject({ scheduleId: id, revision: id }),
-  setInvocationEdge: z.strictObject({ edge: invocationEdge, enabled: z.boolean() }),
+  inspectInvocations: InspectJobInvocationsArgsSchema,
+  setInvocationEdge: z.strictObject({ edge: JobInvocationEdgeSchema, enabled: z.boolean() }),
 };
 const schemas = jobDoorSchemas;
 
@@ -147,7 +132,16 @@ export function jobContext(
     },
     input: async (args: z.infer<typeof schemas.input>) => {
       const a = schemas.input.parse(args);
-      await service().input(auth, a.node, a.requestId, a.seq, a.data, a.eof, pluginId, String(traceId));
+      await service().input(
+        auth,
+        a.node,
+        a.requestId,
+        a.seq,
+        a.data,
+        a.eof,
+        pluginId,
+        String(traceId),
+      );
       return { accepted: true as const };
     },
     cancel: (node: z.infer<typeof jobNode>) => {
@@ -195,6 +189,10 @@ export function jobContext(
       service().disableSchedule(auth, a.scheduleId, a.revision, pluginId);
       return {};
     },
+    inspectInvocations: (args) => {
+      administrator();
+      return service().inspectInvocations(auth, schemas.inspectInvocations.parse(args));
+    },
     setInvocationEdge: (args) => {
       administrator();
       service().setInvocationEdge(auth, schemas.setInvocationEdge.parse(args));
@@ -208,6 +206,7 @@ export interface JobContext extends PluginJobContext {
   install(args: z.infer<typeof schemas.install>): { accepted: true };
   consent(args: z.infer<typeof schemas.consent>): Record<string, never>;
   schedule(args: z.infer<typeof schedule> & { pluginId?: string }): Record<string, never>;
+  inspectInvocations(args: z.infer<typeof schemas.inspectInvocations>): InspectJobInvocationsResult;
   setInvocationEdge(args: z.infer<typeof schemas.setInvocationEdge>): Record<string, never>;
 }
 
@@ -244,23 +243,31 @@ export const jobDoors: ServerPluginDef = {
     defineAction<unknown, unknown>({
       name,
       title: name,
-      caps: name === "install" || name === "consent" || name === "setInvocationEdge" ? ["*"] : [],
+      caps:
+        name === "install" ||
+        name === "consent" ||
+        name === "setInvocationEdge" ||
+        name === "inspectInvocations"
+          ? ["*"]
+          : [],
       trace: "opaque",
       input,
       result:
-        name === "describe"
-          ? JobDescriptionSchema
-          : name === "execute" || name === "status"
-            ? publicJob
-            : name === "listRuns"
-              ? ListJobRunsResultSchema
-              : name === "output"
-                ? JobEventSchema
-                : name === "schedules"
-                  ? z.array(publicSchedule)
-                  : name === "install" || name === "input" || name === "cancel"
-                    ? accepted
-                    : empty,
+        name === "inspectInvocations"
+          ? InspectJobInvocationsResultSchema
+          : name === "describe"
+            ? JobDescriptionSchema
+            : name === "execute" || name === "status"
+              ? publicJob
+              : name === "listRuns"
+                ? ListJobRunsResultSchema
+                : name === "output"
+                  ? JobEventSchema
+                  : name === "schedules"
+                    ? z.array(publicSchedule)
+                    : name === "install" || name === "input" || name === "cancel"
+                      ? accepted
+                      : empty,
     }),
   ),
   handlers: {
@@ -287,6 +294,8 @@ export const jobDoors: ServerPluginDef = {
     schedules: (ctx: ActionCtx) => call(() => ctx.jobs.schedules()),
     disableSchedule: (ctx: ActionCtx, args: z.infer<typeof schemas.disableSchedule>) =>
       call(() => ctx.jobs.disableSchedule(args)),
+    inspectInvocations: (ctx: ActionCtx, args: z.infer<typeof schemas.inspectInvocations>) =>
+      call(() => ctx.jobs.inspectInvocations(args)),
     setInvocationEdge: (ctx: ActionCtx, args: z.infer<typeof schemas.setInvocationEdge>) =>
       call(() => ctx.jobs.setInvocationEdge(args)),
   },

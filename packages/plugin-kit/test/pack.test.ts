@@ -79,17 +79,38 @@ describe("the artifact", () => {
     const source = mkdtempSync(`${tmpdir()}/managed-tool-pack-`);
     const bytes = Buffer.from("private managed executable");
     const sha256 = createHash("sha256").update(bytes).digest("hex");
-    const pinned = { bundleFile: "engine", sha256, entrySha256: sha256, format: "raw",
-      entry: ["engine"], maxBytes: bytes.length, maxExpandedBytes: bytes.length, maxMembers: 1 };
-    const manifest = { ...bundle.manifest, entry: { web: "web.js" }, machine: {
-      artifacts: { "linux-x64": { ...pinned, bundleFile: "worker" } },
-      tools: { engine: { "linux-x64": pinned }, other: { "linux-x64": pinned } },
-      locations: {}, operations: { "example.counter.run": {
-        argv: [], input: {}, runtimeTools: ["engine"], executable: { runtimeTool: "engine" },
-        locations: [], outputs: [], network: "none", stdin: false,
-        limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
-      } },
-    } };
+    const pinned = {
+      bundleFile: "engine",
+      sha256,
+      entrySha256: sha256,
+      format: "raw",
+      entry: ["engine"],
+      maxBytes: bytes.length,
+      maxExpandedBytes: bytes.length,
+      maxMembers: 1,
+    };
+    const manifest = {
+      ...bundle.manifest,
+      entry: { web: "web.js" },
+      machine: {
+        artifacts: { "linux-x64": { ...pinned, bundleFile: "worker" } },
+        tools: { engine: { "linux-x64": pinned }, other: { "linux-x64": pinned } },
+        locations: {},
+        operations: {
+          "example.counter.run": {
+            argv: [],
+            input: {},
+            runtimeTools: ["engine"],
+            executable: { runtimeTool: "engine" },
+            locations: [],
+            outputs: [],
+            network: "none",
+            stdin: false,
+            limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+          },
+        },
+      },
+    };
     try {
       await Bun.write(`${source}/manifest.json`, JSON.stringify(manifest));
       await Bun.write(`${source}/web.ts`, "export const native = true;");
@@ -101,7 +122,9 @@ describe("the artifact", () => {
       expect(Buffer.from(packed.files.engine!, "base64")).toEqual(bytes);
       await Bun.write(`${source}/engine`, Buffer.from("substituted tool bytes"));
       await expect(packPlugin(source, `${source}/bad.json`, { shared: false })).rejects.toThrow();
-    } finally { rmSync(source, { recursive: true, force: true }); }
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+    }
   });
 
   test("both halves are self-contained: the kit, the protocol and zod are inlined", () => {
@@ -189,17 +212,30 @@ describe("the artifact", () => {
       const bytes = Buffer.alloc(1024 * 1024 + 17, 0x80);
       const hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
       const spec = {
-        bundleFile: "worker", sha256: hash, entrySha256: hash, format: "raw",
-        entry: ["worker"], maxBytes: bytes.length, maxExpandedBytes: bytes.length, maxMembers: 1,
+        bundleFile: "worker",
+        sha256: hash,
+        entrySha256: hash,
+        format: "raw",
+        entry: ["worker"],
+        maxBytes: bytes.length,
+        maxExpandedBytes: bytes.length,
+        maxMembers: 1,
       };
       const manifest = {
-        ...bundle.manifest, entry: { web: "web.js" },
+        ...bundle.manifest,
+        entry: { web: "web.js" },
         machine: {
-          artifacts: { "linux-x64": spec }, locations: {},
+          artifacts: { "linux-x64": spec },
+          locations: {},
           operations: {
             "example.counter.run": {
-              argv: [], input: {}, runtimeTools: [], locations: [], outputs: [],
-              network: "none", stdin: false,
+              argv: [],
+              input: {},
+              runtimeTools: [],
+              locations: [],
+              outputs: [],
+              network: "none",
+              stdin: false,
               limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 4096 },
             },
           },

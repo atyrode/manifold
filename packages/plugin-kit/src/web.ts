@@ -57,8 +57,18 @@ export type OpenTerminalOptions = {
   readonly machineId?: string | undefined;
   readonly placement?: "tile" | undefined;
 } & (
-  | { readonly runtime: TerminalRuntime; readonly program?: never; readonly env?: never; readonly cwd?: never }
-  | { readonly runtime?: never; readonly program?: TerminalProgram | undefined; readonly env?: TerminalEnv | undefined; readonly cwd?: string | undefined }
+  | {
+      readonly runtime: TerminalRuntime;
+      readonly program?: never;
+      readonly env?: never;
+      readonly cwd?: never;
+    }
+  | {
+      readonly runtime?: never;
+      readonly program?: TerminalProgram | undefined;
+      readonly env?: TerminalEnv | undefined;
+      readonly cwd?: string | undefined;
+    }
 );
 
 export interface OpenStreamOptions {

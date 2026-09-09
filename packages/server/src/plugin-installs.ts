@@ -223,9 +223,15 @@ export function parseBundle(bytes: Uint8Array): PluginBundle {
     for (const spec of machineArtifacts(parsed.data.manifest.machine)) {
       if (spec.bundleFile === undefined) continue;
       try {
-        deliveredArtifact(spec, { bundleFile: spec.bundleFile, data: parsed.data.files[spec.bundleFile]! });
+        deliveredArtifact(spec, {
+          bundleFile: spec.bundleFile,
+          data: parsed.data.files[spec.bundleFile]!,
+        });
       } catch (error) {
-        throw new InstallRefusal("artifact_invalid", error instanceof Error ? error.message : "invalid machine member");
+        throw new InstallRefusal(
+          "artifact_invalid",
+          error instanceof Error ? error.message : "invalid machine member",
+        );
       }
     }
     return parsed.data;
@@ -288,7 +294,10 @@ export async function installArtifact(request: ArtifactRequest): Promise<Install
   try {
     await verifyBundledArtifacts(bundle);
   } catch (error) {
-    throw new InstallRefusal("artifact_invalid", error instanceof Error ? error.message : "invalid machine member");
+    throw new InstallRefusal(
+      "artifact_invalid",
+      error instanceof Error ? error.message : "invalid machine member",
+    );
   }
   const { bundlePath, dir } = installLayout(request.dataDir, bundle.manifest.id, sha256);
   mkdirSync(dirname(bundlePath), { recursive: true, mode: 0o700 });

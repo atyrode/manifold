@@ -63,11 +63,10 @@ export async function provisionRuntime(
     ].join("\n"),
   );
   const sha256 = createHash("sha256").update(executable).digest("hex");
-  writeFileSync(join(state, "artifacts", `${sha256}-${sha256}`), executable, { mode: 0o500 });
   const machine = MachineHalfSchema.parse({
     artifacts: {
       [`linux-${process.arch}`]: {
-        url: "https://example.invalid/runtime-fixture",
+        bundleFile: "worker",
         sha256,
         format: "raw",
         entry: ["fixture"],
@@ -101,6 +100,7 @@ export async function provisionRuntime(
   });
   const pluginDir = join(root, "plugin");
   cpSync(import.meta.dir, pluginDir, { recursive: true });
+  writeFileSync(join(pluginDir, "worker"), executable, { mode: 0o500 });
   const modules = join(root, "node_modules");
   mkdirSync(join(modules, "@manifold"), { recursive: true });
   symlinkSync(join(REPO, "packages/plugin-kit"), join(modules, "@manifold/plugin-kit"), "dir");
@@ -209,7 +209,9 @@ export async function provisionRuntime(
         machineToken: enrollment.machineToken,
         name: "jobs-browser-proof",
         env: { MANIFOLD_JOB_OWNER_SOCKET: socket },
-        ...(nativeHost ? { existingHost: { process: nativeHost, socketPath: `${socket}.terminal` } } : {}),
+        ...(nativeHost
+          ? { existingHost: { process: nativeHost, socketPath: `${socket}.terminal` } }
+          : {}),
       });
     },
     async startOwner() {

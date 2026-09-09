@@ -178,21 +178,28 @@ export interface SessionHandle {
    * predates programs rejects with `unsupported`, and a program the machine cannot exec is a
    * `conflict`. `timeoutMs` bounds the wait for the confirmation (default 15 s).
    */
-  openTerminal(opts: {
-    readonly elementId: string;
-    readonly cols: number;
-    readonly rows: number;
-    readonly cwd?: string;
-    readonly machineId?: string;
-    readonly placement?: "tile";
-    readonly program?: TerminalProgram;
-    readonly env?: TerminalEnv;
-    readonly runtime?: TerminalRuntime;
-    readonly timeoutMs?: number;
-  } & (
-    | { readonly runtime: TerminalRuntime; readonly program?: never; readonly env?: never; readonly cwd?: never }
-    | { readonly runtime?: never }
-  )): Promise<TerminalInfo>;
+  openTerminal(
+    opts: {
+      readonly elementId: string;
+      readonly cols: number;
+      readonly rows: number;
+      readonly cwd?: string;
+      readonly machineId?: string;
+      readonly placement?: "tile";
+      readonly program?: TerminalProgram;
+      readonly env?: TerminalEnv;
+      readonly runtime?: TerminalRuntime;
+      readonly timeoutMs?: number;
+    } & (
+      | {
+          readonly runtime: TerminalRuntime;
+          readonly program?: never;
+          readonly env?: never;
+          readonly cwd?: never;
+        }
+      | { readonly runtime?: never }
+    ),
+  ): Promise<TerminalInfo>;
   /**
    * Declares a view on a terminal: the server answers with a fresh `terminal_snapshot` and
    * every `terminal_output` after it, gap-free (CONTRACTS.md §attach). Refcounted per handle,
@@ -269,7 +276,8 @@ export function lastSpotlight(): string | null {
  * exactly the case where the affordance must not be offered.
  */
 export interface AuthoringHandle {
-  createTerminal(machine?: MachineSummary): void;
+  /** Returns null after the mounted renderer reports a refusal; runtime pins use native admission. */
+  createTerminal(machine?: MachineSummary, runtime?: TerminalRuntime): Promise<TerminalInfo | null>;
 }
 
 /**

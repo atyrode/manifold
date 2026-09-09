@@ -58,6 +58,8 @@ export interface LinuxJobSpec {
   argv: readonly string[];
   runtime: readonly LinuxJobBind[];
   locations: readonly LinuxJobBind[];
+  /** Exact directory mount selected by the reviewed operation, not a caller path. */
+  workingDirectory?: string;
   outputs: readonly LinuxJobBind[];
   /** Dedicated, empty cgroup-v2 delegation with memory and pids enabled. */
   delegatedCgroup: HeldDirectory;
@@ -272,6 +274,13 @@ export function preflightLinuxJob(spec: LinuxJobSpec): number {
   const binds = [...spec.runtime, ...spec.locations, ...spec.outputs, ...inputFiles];
   if (binds.length > 256) refuse("too-many-mounts");
   for (const bind of binds) destination(bind.target);
+  if (
+    spec.workingDirectory !== undefined &&
+    !spec.locations.some(
+      (bind) => bind.target === spec.workingDirectory && fstatSync(bind.fd).isDirectory(),
+    )
+  )
+    refuse("invalid-working-directory");
   for (let i = 0; i < binds.length; i++) {
     const a = binds[i]!;
     if (
@@ -287,21 +296,32 @@ export function preflightLinuxJob(spec: LinuxJobSpec): number {
       refuse("overlapping-mounts");
   }
   if (spec.runtime.some((bind) => bind.writable)) refuse("writable-runtime");
-  if ([...spec.runtime, ...spec.locations, ...spec.outputs].some((bind) =>
-    bind.target === "/inputs" || bind.target.startsWith("/inputs/"))) refuse("reserved-input-target");
+  if (
+    [...spec.runtime, ...spec.locations, ...spec.outputs].some(
+      (bind) => bind.target === "/inputs" || bind.target.startsWith("/inputs/"),
+    )
+  )
+    refuse("reserved-input-target");
   let inputBytes = 0;
   for (const bind of inputFiles) {
     const namedInput = /^\/inputs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(bind.target);
     const privateHomeInput = MachineLocationSchema.shape.guestPath.safeParse(bind.target).success;
-    if (bind.writable || (!namedInput && !privateHomeInput) ||
-      !fstatSync(bind.fd).isFile() || !isSealedByteFile(bind.fd)) refuse("unsafe-input-file");
+    if (
+      bind.writable ||
+      (!namedInput && !privateHomeInput) ||
+      !fstatSync(bind.fd).isFile() ||
+      !isSealedByteFile(bind.fd)
+    )
+      refuse("unsafe-input-file");
     inputBytes += fstatSync(bind.fd).size;
   }
   if (inputBytes > 65536) refuse("input-file-byte-limit");
   if (spec.executableRuntimeTool !== undefined) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(spec.executableRuntimeTool))
       refuse("invalid-runtime-executable");
-    const matches = spec.runtime.filter((bind) => bind.target === `/runtime/bin/${spec.executableRuntimeTool}`);
+    const matches = spec.runtime.filter(
+      (bind) => bind.target === `/runtime/bin/${spec.executableRuntimeTool}`,
+    );
     if (matches.length !== 1 || matches[0]!.writable) refuse("runtime-executable-unavailable");
     executable(matches[0]!.fd);
   }
@@ -552,8 +572,6 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     "--cap-drop",
     "ALL",
     "--clearenv",
-    "--chdir",
-    "/",
     "--block-fd",
     "4",
     "--info-fd",
@@ -609,16 +627,9 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     args.push(writable ? "--bind-fd" : "--ro-bind-fd", String(slot), target);
   }
   bind(spec.artifactFd, "/job/artifact", false);
-  for (const mount of [...spec.runtime, ...spec.locations, ...spec.outputs, ...(spec.inputFiles ?? [])])
+  for (const mount of [...spec.runtime, ...spec.locations, ...spec.outputs])
     bind(mount.fd, mount.target, mount.writable);
-  if (spec.nestedCgroup) {
-    bind(groups.workloads.fd, "/sys/fs/cgroup/workloads", true);
-    args.push("--setenv", "MANIFOLD_JOB_CGROUP_ROOT", "/sys/fs/cgroup/workloads");
-  }
-  args.push("--remount-ro", "/", "--",
-    spec.executableRuntimeTool === undefined ? "/job/artifact" : `/runtime/bin/${spec.executableRuntimeTool}`,
-    ...spec.argv);
-  let child: { readonly pid: number | undefined; kill(signal: "SIGKILL"): unknown };
+  let child: { readonly pid?: number | undefined; kill(signal: "SIGKILL"): unknown };
   let exited: Promise<{ code: number | null; signal: string | null }>;
   let stdin: ChildProcess["stdin"] = null;
   let stdout: ChildProcess["stdout"] = null;
@@ -642,13 +653,47 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   }
   spec.terminal?.setOutputHandler((bytes) => {
     if (!admitOutput(bytes)) return;
-    try { spec.terminal!.onOutput(bytes); }
-    catch { terminate("output-consumer"); }
+    try {
+      spec.terminal!.onOutput(bytes);
+    } catch {
+      terminate("output-consumer");
+    }
   });
+  const inputFds: number[] = [];
   try {
+    for (const file of spec.inputFiles ?? []) {
+      // --ro-bind-fd resolves a host pathname and cannot mount an anonymous memfd.
+      // Give --ro-bind-data its own offset-zero descriptor so repeated launches never
+      // consume the caller's cursor; bubblewrap closes it after making a readonly bind.
+      const fd = openSync(`/proc/self/fd/${file.fd}`, constants.O_RDONLY);
+      inputFds.push(fd);
+      const slot = stdio.length;
+      stdio.push(fd);
+      args.push("--perms", "0400", "--ro-bind-data", String(slot), file.target);
+    }
+    if (spec.nestedCgroup) {
+      bind(groups.workloads.fd, "/sys/fs/cgroup/workloads", true);
+      args.push("--setenv", "MANIFOLD_JOB_CGROUP_ROOT", "/sys/fs/cgroup/workloads");
+    }
+    args.push(
+      "--chdir",
+      spec.workingDirectory ?? "/home/job",
+      "--remount-ro",
+      "/",
+      "--",
+      spec.executableRuntimeTool === undefined
+        ? "/job/artifact"
+        : `/runtime/bin/${spec.executableRuntimeTool}`,
+      ...spec.argv,
+    );
     if (spec.terminal) {
       const proc = Bun.spawn([`/proc/${process.pid}/fd/${spec.bubblewrapFd}`, ...args], {
-        stdio: ["inherit", "inherit", "inherit", ...stdio.slice(3).map((fd) => typeof fd === "number" ? fd : "ignore")],
+        stdio: [
+          "inherit",
+          "inherit",
+          "inherit",
+          ...stdio.slice(3).map((fd) => (typeof fd === "number" ? fd : "ignore")),
+        ],
         terminal: spec.terminal.pty,
         env: {},
         cwd: "/",
@@ -660,10 +705,10 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
       }));
     } else {
       const proc = spawn(`/proc/${process.pid}/fd/${spec.bubblewrapFd}`, args, {
-      stdio,
-      env: {},
-      cwd: "/",
-    });
+        stdio,
+        env: {},
+        cwd: "/",
+      });
       child = proc;
       exited = childExit(proc);
       stdin = proc.stdin;
@@ -679,6 +724,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     closeSync(control.childFd);
     closeSync(report.childFd);
     closeSync(seccompFd);
+    for (const fd of inputFds) closeSync(fd);
   }
   // Avoid an unhandled rejection while the launch gate is being attached.
   void exited.catch(() => {});
@@ -806,8 +852,13 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     result,
     childDelegation: groups.children,
     ownsLoopbackListener(port) {
-      return !released && !settled && !terminating && spec.network === "host" &&
-        ownsWorkloadLoopbackListener(groups, port);
+      return (
+        !released &&
+        !settled &&
+        !terminating &&
+        spec.network === "host" &&
+        ownsWorkloadLoopbackListener(groups, port)
+      );
     },
     release() {
       if (released) return;

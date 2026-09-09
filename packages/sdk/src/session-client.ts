@@ -1214,21 +1214,22 @@ export class SessionClient {
    * machine whose agent predates programs rejects with `unsupported`; a program the machine
    * cannot exec is a `conflict` from the agent's `create_error`.
    */
-  openTerminal(opts: {
-    elementId: string;
-    cols: number;
-    rows: number;
-    runtime?: TerminalRuntime;
-    machineId?: string;
-    placement?: "tile";
-    program?: TerminalProgram;
-    env?: TerminalEnv;
-    cwd?: string;
-    timeoutMs?: number;
-  } & (
-    | { runtime: TerminalRuntime; program?: never; env?: never; cwd?: never }
-    | { runtime?: never }
-  )): Promise<TerminalInfo> {
+  openTerminal(
+    opts: {
+      elementId: string;
+      cols: number;
+      rows: number;
+      runtime?: TerminalRuntime;
+      machineId?: string;
+      placement?: "tile";
+      program?: TerminalProgram;
+      env?: TerminalEnv;
+      cwd?: string;
+      timeoutMs?: number;
+    } & (
+      { runtime: TerminalRuntime; program?: never; env?: never; cwd?: never } | { runtime?: never }
+    ),
+  ): Promise<TerminalInfo> {
     const { promise, resolve, reject } = Promise.withResolvers<TerminalInfo>();
     const settle = (outcome: () => void): void => {
       clearTimeout(timer);

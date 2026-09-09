@@ -1,10 +1,25 @@
-import { createPublicKey, verify, type KeyObject } from "node:crypto";
+import { createPublicKey, randomBytes, randomUUID, verify, type KeyObject } from "node:crypto";
 import { closeSync, fstatSync } from "node:fs";
 import {
   canonicalJobJson,
+  PROTOCOL_VERSION,
   JobCommandSchema,
   JobRequestSchema,
   JobResultSchema,
+  ServiceConfigurationSchema,
+  WorkerContextSchema,
+  jobResourceBindingsFor,
+  jobResourceRefusal,
+  jobResourceRequirements,
+  servicePolicyCredentialRefs,
+  type JobResourceInventory,
+  type JobResourceRequirements,
+  type ServiceAuthoritySubject,
+  type ServiceCall,
+  type ServiceConfiguration,
+  type ServiceCredentialReference,
+  type ServicePolicy,
+  type ServiceReply,
   type JobCommand,
   type JobEvent,
   type JobOwner,
@@ -14,7 +29,7 @@ import {
   type JobInstallationResources,
   type JobArtifactDelivery,
 } from "@manifold/protocol";
-import { privateByteFile, type HeldDirectory } from "./job-files.ts";
+import { type HeldDirectory } from "./job-files.ts";
 import { deliveredArtifact } from "@manifold/plugin-kit/artifacts";
 import {
   acquireArtifact,
@@ -41,6 +56,15 @@ import {
   type LinuxJobSpec,
 } from "./job-linux.ts";
 import { DirectoryExclusions, resolveJobLocation, type JobLocation } from "./job-locations.ts";
+import { JobResources } from "./job-resources.ts";
+import {
+  createJobServiceRunner,
+  heldServiceCredentialResolver,
+  type AuthorizeServiceCall,
+  type JobServiceRunner,
+} from "./job-services.ts";
+import { createJobServiceProxy, type JobServiceProxy } from "./job-service-proxy.ts";
+import { materializeJobInputs, type JobServiceEndpoint } from "./job-inputs.ts";
 
 export interface JobOwnerOptions {
   machineId: string;
@@ -55,6 +79,8 @@ export interface JobOwnerOptions {
   /** Reviewed local runtime closures, not executable/cwd/env RPC fields. */
   runtimeTools: Readonly<Record<string, readonly LinuxJobBind[]>>;
   artifactAuthority: ArtifactAuthority;
+  /** Bootstrap-held source credentials; only references and allowed origins are advertised. */
+  serviceCredentials?: ReadonlyMap<string, { fd: number; origins: readonly string[] }>;
 }
 interface Installation {
   command: Extract<JobCommand, { type: "install" }>;
@@ -95,6 +121,20 @@ interface OwnedJob {
   resolveLaunched(): void;
   finalized: Promise<void>;
   resolveFinalized(): void;
+  serviceController: AbortController;
+  serviceProxies: Map<string, JobServiceProxy>;
+  runtimeServices: Map<string, RuntimeService>;
+  serviceRuntime: RuntimeService | undefined;
+}
+
+interface RuntimeService {
+  policy: ServicePolicy;
+  invocationId: string;
+  childJobId: string | null;
+  bearer: string;
+  ready: Promise<JobServiceEndpoint & { signal: AbortSignal }>;
+  resolve(endpoint: JobServiceEndpoint & { signal: AbortSignal }): void;
+  reject(reason: Error): void;
 }
 const ACTIVE: Record<string, true> = { "start-committed": true, started: true };
 
@@ -110,14 +150,43 @@ export class MachineJobOwner {
   private draining = false;
   private ready = false;
   private terminalHostId: string | undefined;
-  private readonly inputAuthorizations = new Map<string, {
-    jobId: string; resolve(allowed: boolean): void;
-  }>();
+  private readonly inputAuthorizations = new Map<
+    string,
+    {
+      jobId: string;
+      resolve(allowed: boolean): void;
+    }
+  >();
+  private readonly resources: JobResources;
+  private serviceConfiguration: ServiceConfiguration = { revision: null, policies: [] };
+  private serviceRunner: JobServiceRunner = createJobServiceRunner({ policies: [] });
+  private seatController = new AbortController();
+  private configurationController = new AbortController();
+  private readonly serviceAuthorizations = new Map<
+    string,
+    {
+      subject: ServiceAuthoritySubject;
+      resolve(allowed: boolean): void;
+    }
+  >();
+  private readonly directServiceCalls = new Map<
+    string,
+    {
+      command: Extract<JobCommand, { type: "service_read" | "service_invoke" }>;
+      controller: AbortController;
+    }
+  >();
 
   private constructor(private readonly options: JobOwnerOptions) {
     this.admissionKey = createPublicKey(options.admissionPublicKey);
     if (options.protectedDirectories.length === 0) throw new Error("private_owner_roots_required");
     this.exclusions = new DirectoryExclusions(options.protectedDirectories);
+    this.resources = new JobResources({
+      anchors: options.anchors,
+      runtimeTools: options.runtimeTools,
+      credentialReferences: () => this.credentialReferences(),
+      runtimeAvailable: (policy, inventory) => this.runtimeAvailable(policy, inventory, new Set()),
+    });
   }
 
   static async open(options: JobOwnerOptions): Promise<MachineJobOwner> {
@@ -161,7 +230,12 @@ export class MachineJobOwner {
         const job = owner.requireJob(String(Reflect.get(raw, "jobId")));
         const seq = Reflect.get(raw, "nextInputSeq");
         const requestId = Reflect.get(raw, "requestId");
-        if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq !== job.inputSeq + 1 || typeof requestId !== "string")
+        if (
+          typeof seq !== "number" ||
+          !Number.isSafeInteger(seq) ||
+          seq !== job.inputSeq + 1 ||
+          typeof requestId !== "string"
+        )
           throw new Error("invalid_input_journal");
         job.inputSeq = seq;
         job.inputRequests.add(requestId);
@@ -207,16 +281,23 @@ export class MachineJobOwner {
     this.terminalHostId = terminalHostId;
   }
   get maintenanceReady(): boolean {
-    return this.draining && [...this.jobs.values()].every((job) => job.emptyObserved);
+    return (
+      this.draining &&
+      this.directServiceCalls.size === 0 &&
+      [...this.jobs.values()].every((job) => job.emptyObserved)
+    );
   }
 
   setDraining(draining: boolean): void {
+    // Transport resynchronization must not change inventory for an unchanged admission latch.
+    if (this.draining === draining) return;
     this.options.journal.append({ kind: "drain", draining });
     this.draining = draining;
   }
   get identity(): JobOwner {
     const journal = this.options.journal;
     return {
+      protocolVersion: PROTOCOL_VERSION,
       ownerId: journal.ownerId,
       publicKey: journal.publicKey,
       generation: journal.generation,
@@ -232,12 +313,16 @@ export class MachineJobOwner {
   attach(sink: (event: JobEvent) => boolean): () => void {
     if (this.sink) throw new Error("job_owner_seat_taken");
     this.sink = sink;
+    this.seatController = new AbortController();
     for (const job of this.jobs.values()) {
       if (job.outputGap) sink({ type: "refusal", jobId: job.request.jobId, reason: "output_gap" });
     }
     return () => {
       if (this.sink === sink) {
         this.sink = null;
+        this.seatController.abort();
+        for (const pending of this.serviceAuthorizations.values()) pending.resolve(false);
+        for (const pending of this.directServiceCalls.values()) pending.controller.abort();
         for (const pending of this.inputAuthorizations.values()) pending.resolve(false);
       }
     };
@@ -265,9 +350,16 @@ export class MachineJobOwner {
             owner: this.identity,
           };
           this.emit({ type: "owner_proof", ...body, signature: this.options.journal.proof(body) });
+          this.publishResources();
           return;
         }
         case "invocation_reply":
+          if (command.reason !== null) {
+            const parent = this.requireJob(command.parentJobId);
+            for (const runtime of parent.runtimeServices.values())
+              if (runtime.invocationId === command.invocationId)
+                runtime.reject(new Error("service_unavailable"));
+          }
           this.requireJob(command.parentJobId).context?.reply(
             command.invocationId,
             command.jobId,
@@ -294,6 +386,26 @@ export class MachineJobOwner {
         case "cancel":
           await this.cancel(command.jobId);
           return;
+        case "configure_services":
+          this.configureServices(command.configuration);
+          return;
+        case "service_authorized": {
+          const pending = this.serviceAuthorizations.get(command.authorizationId);
+          if (pending && jobDigest(pending.subject) === jobDigest(command.subject))
+            pending.resolve(command.allowed);
+          return;
+        }
+        case "service_read":
+        case "service_invoke":
+          await this.directService(command);
+          return;
+        case "service_read_cancel":
+        case "service_invoke_cancel": {
+          const pending = this.directServiceCalls.get(command.requestId);
+          if (pending && command.type === `${pending.command.type}_cancel`)
+            pending.controller.abort();
+          return;
+        }
         case "input_authorized": {
           const pending = this.inputAuthorizations.get(command.requestId);
           if (pending?.jobId === command.jobId) pending.resolve(command.allowed);
@@ -338,35 +450,597 @@ export class MachineJobOwner {
           : "job_command_refused";
       const job = this.jobs.get(jobId);
       if (command.type === "input") {
-        this.emit({
-          type: "input_result", jobId, requestId: command.requestId, seq: command.seq,
-          accepted: false, reason: "job_input_refused",
-          nextInputSeq: job?.inputSeq ?? null, stdinClosed: job?.inputEnded ?? true,
-        }, job);
+        this.emit(
+          {
+            type: "input_result",
+            jobId,
+            requestId: command.requestId,
+            seq: command.seq,
+            accepted: false,
+            reason: "job_input_refused",
+            nextInputSeq: job?.inputSeq ?? null,
+            stdinClosed: job?.inputEnded ?? true,
+          },
+          job,
+        );
         return;
       }
       this.emit({ type: "refusal", jobId, reason }, job);
     }
   }
 
+  private credentialReferences(): ServiceCredentialReference[] {
+    return [...(this.options.serviceCredentials ?? [])].map(([ref, value]) => {
+      let available = false;
+      try {
+        const stat = fstatSync(value.fd);
+        available =
+          stat.isFile() &&
+          stat.uid === process.getuid?.() &&
+          (stat.mode & 0o077) === 0 &&
+          stat.nlink === 1 &&
+          stat.size > 0 &&
+          stat.size <= 16384;
+      } catch {
+        /* A lost descriptor never becomes ambient path lookup. */
+      }
+      return { ref, origins: [...value.origins], available };
+    });
+  }
+
+  private policy(serviceId: string): ServicePolicy | undefined {
+    return this.serviceConfiguration.policies.find((policy) => policy.serviceId === serviceId);
+  }
+
+  private publishResources(): void {
+    this.emit({ type: "resources", resources: this.resources.snapshot() });
+  }
+
+  private configureServices(raw: ServiceConfiguration): void {
+    const configuration = ServiceConfigurationSchema.parse(raw);
+    if (
+      configuration.revision !== null &&
+      configuration.revision !== jobDigest(configuration.policies)
+    )
+      throw new Error("service_configuration_digest_mismatch");
+    if (jobDigest(configuration) === jobDigest(this.serviceConfiguration)) return;
+    this.configurationController.abort();
+    this.configurationController = new AbortController();
+    this.serviceRunner.close();
+    this.serviceConfiguration = configuration;
+    this.resources.configure(configuration.policies);
+    this.serviceRunner = createJobServiceRunner({
+      policies: configuration.policies,
+      resolveCredential: heldServiceCredentialResolver(
+        new Map(
+          [...(this.options.serviceCredentials ?? [])].map(([ref, value]) => [ref, value.fd]),
+        ),
+      ),
+    });
+    this.publishResources();
+  }
+
+  private serviceAvailable(
+    policy: ServicePolicy,
+    operationIds: readonly string[],
+    inventory: JobResourceInventory,
+    visiting: Set<string>,
+  ): boolean {
+    if (
+      operationIds.some((id) => !Object.hasOwn(policy.operations, id)) ||
+      servicePolicyCredentialRefs(policy, operationIds).some(
+        (ref) =>
+          !inventory.credentialReferences?.some(
+            (reference) =>
+              reference.ref === ref &&
+              reference.available &&
+              reference.origins.includes(policy.origin!),
+          ),
+      )
+    )
+      return false;
+    return !policy.runtime || this.runtimeAvailable(policy, inventory, visiting);
+  }
+
+  private runtimeAvailable(
+    policy: ServicePolicy,
+    inventory: JobResourceInventory,
+    visiting: Set<string>,
+  ): boolean {
+    const runtime = policy.runtime;
+    if (!runtime || visiting.has(policy.serviceId) || visiting.size >= 8) return false;
+    const installation = this.installs.get(
+      this.installKey(runtime.pluginId, runtime.installationRevision),
+    );
+    const operation = installation?.command.machine.operations[runtime.operationId];
+    if (
+      !installation ||
+      !operation?.providesService ||
+      operation.network !== "host" ||
+      !Object.values(operation.inputFiles ?? {}).some(
+        (file) => file.generated === "service-bearer",
+      ) ||
+      installation.command.artifactSha256 !== runtime.artifactSha256 ||
+      this.operationRuntimeUnavailable(installation, operation) ||
+      jobDigest(
+        jobResourceBindingsFor(
+          installation.command.machine,
+          runtime.operationId,
+          this.platform(),
+          installation.command.resourceBindings,
+        ) ?? null,
+      ) !== runtime.resourceBindingDigest ||
+      jobResourceRefusal(
+        installation.command.machine,
+        runtime.operationId,
+        this.platform(),
+        installation.command.resourceBindings,
+        inventory,
+      )
+    )
+      return false;
+    const next = new Set(visiting).add(policy.serviceId);
+    return (operation.services ?? []).every((binding) => {
+      const dependency = this.policy(binding.serviceId);
+      return (
+        dependency !== undefined &&
+        this.serviceAvailable(dependency, binding.operationIds, inventory, next)
+      );
+    });
+  }
+
+  private refreshOperationResources(installation: Installation, operationId: string): void {
+    const required: JobResourceRequirements = { tools: [], anchors: [], services: [] };
+    const visited = new Set<string>();
+    const collect = (current: Installation, id: string): void => {
+      const key = `${current.command.pluginId}\0${current.command.installationRevision}\0${id}`;
+      if (visited.has(key) || visited.size >= 64) return;
+      visited.add(key);
+      const next = jobResourceRequirements(current.command.machine, id, this.platform());
+      for (const group of ["tools", "anchors", "services"] as const)
+        required[group].push(...next[group]);
+      for (const serviceId of next.services) {
+        const runtime = this.policy(serviceId)?.runtime;
+        const child =
+          runtime &&
+          this.installs.get(this.installKey(runtime.pluginId, runtime.installationRevision));
+        if (child?.command.machine.operations[runtime!.operationId])
+          collect(child, runtime!.operationId);
+      }
+    };
+    collect(installation, operationId);
+    for (const group of ["tools", "anchors", "services"] as const)
+      required[group] = [...new Set(required[group])];
+    if (this.resources.refresh(required)) this.publishResources();
+  }
+
+  private serviceSubjectValid(
+    subject: ServiceAuthoritySubject,
+    request: Parameters<AuthorizeServiceCall>[0],
+    policySha256: string,
+  ): boolean {
+    const policy = this.policy(request.serviceId);
+    if (
+      !this.sink ||
+      this.draining ||
+      !policy ||
+      policy.revision !== request.revision ||
+      jobDigest(policy) !== policySha256 ||
+      !Object.hasOwn(policy.operations, request.operationId)
+    )
+      return false;
+    if (subject.kind !== "job") {
+      const pending = this.directServiceCalls.get(subject.requestId);
+      if (
+        !pending ||
+        pending.command.type !== `service_${subject.kind}` ||
+        pending.controller.signal.aborted ||
+        pending.command.serviceId !== request.serviceId ||
+        pending.command.revision !== request.revision ||
+        pending.command.operationId !== request.operationId ||
+        pending.command.policySha256 !== policySha256
+      )
+        return false;
+      if (this.resources.refresh({ tools: [], anchors: [], services: [request.serviceId] }))
+        this.publishResources();
+    } else {
+      const job = this.jobs.get(subject.jobId);
+      const installation =
+        job &&
+        this.installs.get(this.installKey(job.request.pluginId, job.request.installationRevision));
+      const operation = job && installation?.command.machine.operations[job.request.operationId];
+      if (
+        !job ||
+        !installation ||
+        !operation ||
+        job.result.state !== "started" ||
+        !job.handle ||
+        job.cancelRequested ||
+        job.serviceController.signal.aborted ||
+        job.request.resourceBindings?.services[request.serviceId] !== policySha256 ||
+        !operation.services?.some(
+          (binding) =>
+            binding.serviceId === request.serviceId &&
+            binding.revision === request.revision &&
+            binding.operationIds.includes(request.operationId),
+        )
+      )
+        return false;
+      this.refreshOperationResources(installation, job.request.operationId);
+      if (
+        jobResourceRefusal(
+          installation.command.machine,
+          job.request.operationId,
+          this.platform(),
+          job.request.resourceBindings,
+          this.resources.snapshot(),
+        )
+      )
+        return false;
+    }
+    const inventory = this.resources.snapshot();
+    return (
+      inventory.services[request.serviceId] === policySha256 &&
+      this.serviceAvailable(policy, [request.operationId], inventory, new Set())
+    );
+  }
+
+  private async authorizeService(
+    subject: ServiceAuthoritySubject,
+    request: Parameters<AuthorizeServiceCall>[0],
+    policySha256: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    if (
+      signal.aborted ||
+      this.serviceAuthorizations.size >= 256 ||
+      !this.serviceSubjectValid(subject, request, policySha256)
+    )
+      return false;
+    const seat = this.sink;
+    const authorizationId = randomUUID();
+    const pending = Promise.withResolvers<boolean>();
+    const abort = () => pending.resolve(false);
+    this.serviceAuthorizations.set(authorizationId, { subject, resolve: pending.resolve });
+    const timer = setTimeout(abort, 5000);
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      if (
+        !seat?.({
+          type: "service_authorize",
+          subject,
+          authorizationId,
+          serviceId: request.serviceId,
+          revision: request.revision,
+          policySha256,
+          operationId: request.operationId,
+        })
+      )
+        return false;
+      return (
+        (await pending.promise) &&
+        this.sink === seat &&
+        !signal.aborted &&
+        this.serviceSubjectValid(subject, request, policySha256)
+      );
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      this.serviceAuthorizations.delete(authorizationId);
+    }
+  }
+
+  private async directService(
+    command: Extract<JobCommand, { type: "service_read" | "service_invoke" }>,
+  ): Promise<void> {
+    const kind = command.type === "service_read" ? "read" : "invoke";
+    const resultType =
+      command.type === "service_read" ? "service_read_result" : "service_invoke_result";
+    const refuse = (refusal: Extract<ServiceReply, { ok: false }>["refusal"]) =>
+      this.emit({
+        type: resultType,
+        requestId: command.requestId,
+        reply: { type: "service_result", requestId: command.requestId, ok: false, refusal },
+      });
+    if (
+      command.machineId !== this.options.machineId ||
+      this.directServiceCalls.has(command.requestId) ||
+      this.directServiceCalls.size >= 64 ||
+      !this.sink ||
+      this.draining
+    ) {
+      refuse("service_unavailable");
+      return;
+    }
+    const policy = this.policy(command.serviceId);
+    const operation = policy?.operations[command.operationId];
+    if (
+      !policy ||
+      !operation ||
+      "kind" in operation ||
+      operation.response.kind !== "projected-json" ||
+      (kind === "read"
+        ? operation.readable !== true || operation.method !== "GET"
+        : operation.invocable !== true) ||
+      policy.revision !== command.revision ||
+      jobDigest(policy) !== command.policySha256
+    ) {
+      refuse("service_binding_mismatch");
+      return;
+    }
+    const controller = new AbortController();
+    const seat = this.sink;
+    this.directServiceCalls.set(command.requestId, { command, controller });
+    try {
+      const reply = await this.serviceRunner.call(
+        {
+          type: "service",
+          requestId: command.requestId,
+          serviceId: command.serviceId,
+          operationId: command.operationId,
+          input: command.input,
+        },
+        {
+          serviceId: command.serviceId,
+          revision: command.revision,
+          operationIds: [command.operationId],
+        },
+        (request, signal) =>
+          this.authorizeService(
+            { kind, requestId: command.requestId },
+            request,
+            command.policySha256,
+            signal,
+          ),
+        AbortSignal.any([
+          controller.signal,
+          this.seatController.signal,
+          this.configurationController.signal,
+        ]),
+      );
+      if (this.sink === seat) this.emit({ type: resultType, requestId: command.requestId, reply });
+    } finally {
+      controller.abort();
+      this.directServiceCalls.delete(command.requestId);
+    }
+  }
+
+  private async jobServiceCall(
+    job: OwnedJob,
+    request: ServiceCall,
+    signal: AbortSignal,
+  ): Promise<ServiceReply> {
+    await job.launched;
+    const installation = this.installs.get(
+      this.installKey(job.request.pluginId, job.request.installationRevision),
+    );
+    const binding = installation?.command.machine.operations[
+      job.request.operationId
+    ]?.services?.find((binding) => binding.serviceId === request.serviceId);
+    const fingerprint = job.request.resourceBindings?.services[request.serviceId];
+    if (!binding || !fingerprint)
+      return {
+        type: "service_result",
+        requestId: request.requestId,
+        ok: false,
+        refusal: "service_binding_mismatch",
+      };
+    return this.serviceRunner.call(
+      request,
+      binding,
+      (call, authoritySignal) =>
+        this.authorizeService(
+          { kind: "job", jobId: job.request.jobId },
+          call,
+          fingerprint,
+          authoritySignal,
+        ),
+      AbortSignal.any([
+        signal,
+        job.serviceController.signal,
+        this.seatController.signal,
+        this.configurationController.signal,
+      ]),
+    );
+  }
+
+  private async closeServices(job: OwnedJob): Promise<void> {
+    job.serviceController.abort();
+    job.context?.abortServices();
+    job.serviceRuntime?.reject(new Error("service_cancelled"));
+    for (const runtime of job.runtimeServices.values()) {
+      runtime.reject(new Error("service_cancelled"));
+      runtime.bearer = "";
+    }
+    await Promise.all([...job.serviceProxies.values()].map((proxy) => proxy.close()));
+    job.serviceProxies.clear();
+    job.runtimeServices.clear();
+  }
+
+  private async prepareServiceProxies(job: OwnedJob, operation: MachineOperation): Promise<void> {
+    const ids = new Set(
+      Object.values(operation.inputFiles ?? {}).flatMap((file) =>
+        (file.jsonValues ?? []).map((value) => value.serviceId),
+      ),
+    );
+    if (ids.size && operation.network !== "host")
+      throw new Error("service_proxy_requires_host_network");
+    for (const serviceId of ids) {
+      const policy = this.policy(serviceId);
+      const binding = operation.services?.find((binding) => binding.serviceId === serviceId);
+      const fingerprint = job.request.resourceBindings?.services[serviceId];
+      if (!policy || !binding || !fingerprint || jobDigest(policy) !== fingerprint)
+        throw new Error("service_binding_mismatch");
+      const proxy = await createJobServiceProxy({
+        policies: [policy],
+        bindings: [binding],
+        signal: job.serviceController.signal,
+        authoritySignal: () =>
+          AbortSignal.any([this.seatController.signal, this.configurationController.signal]),
+        resolveCredential: heldServiceCredentialResolver(
+          new Map(
+            [...(this.options.serviceCredentials ?? [])].map(([ref, value]) => [ref, value.fd]),
+          ),
+        ),
+        authorize: async (call, signal) => {
+          await job.launched;
+          return this.authorizeService(
+            { kind: "job", jobId: job.request.jobId },
+            call,
+            fingerprint,
+            signal,
+          );
+        },
+        resolveRuntime: (boundPolicy, signal) => this.runtimeService(job, boundPolicy, signal),
+      });
+      job.serviceProxies.set(serviceId, proxy);
+    }
+  }
+
+  private async runtimeService(
+    parent: OwnedJob,
+    policy: ServicePolicy,
+    signal: AbortSignal,
+  ): Promise<JobServiceEndpoint & { signal: AbortSignal }> {
+    signal.throwIfAborted();
+    if (
+      !policy.runtime ||
+      !parent.context ||
+      parent.cancelRequested ||
+      parent.result.state !== "started" ||
+      parent.serviceController.signal.aborted ||
+      !this.runtimeAvailable(policy, this.resources.snapshot(), new Set())
+    )
+      throw new Error("service_unavailable");
+    let instance = parent.runtimeServices.get(policy.serviceId);
+    if (!instance) {
+      if (parent.runtimeServices.size >= 16 || parent.context.invocations.size >= 64)
+        throw new Error("service_runtime_limit");
+      const ready = Promise.withResolvers<JobServiceEndpoint & { signal: AbortSignal }>();
+      const invocationId = randomUUID();
+      const input: JobRequest["input"] = {};
+      for (const [name, source] of Object.entries(policy.runtime.input)) {
+        const value = "input" in source ? parent.request.input[source.input] : source.literal;
+        if (value === undefined) throw new Error("service_runtime_input_missing");
+        input[name] = value;
+      }
+      const created: RuntimeService = {
+        policy,
+        invocationId,
+        childJobId: null,
+        bearer: randomBytes(32).toString("base64url"),
+        ready: ready.promise,
+        resolve: ready.resolve,
+        reject: ready.reject,
+      };
+      parent.runtimeServices.set(policy.serviceId, created);
+      instance = created;
+      parent.context.invocations.set(invocationId, {
+        parentJobId: parent.request.jobId,
+        invocationId,
+        origin: "owner",
+        childJobId: null,
+        operationId: policy.runtime.operationId,
+        input,
+        outputs: [],
+        refused: false,
+      });
+      const timer = setTimeout(() => ready.reject(new Error("service_start_timeout")), 30_000);
+      void ready.promise.then(
+        () => clearTimeout(timer),
+        () => {
+          clearTimeout(timer);
+          const invocation = parent.context?.invocations.get(invocationId);
+          if (invocation) invocation.refused = true;
+          if (created.childJobId && this.jobs.has(created.childJobId))
+            void this.cancel(created.childJobId).catch(() => {
+              this.draining = true;
+            });
+        },
+      );
+      const event: Extract<JobEvent, { type: "invocation" }> = {
+        type: "invocation",
+        parentJobId: parent.request.jobId,
+        invocationId,
+        operationId: policy.runtime.operationId,
+        input,
+        outputs: [],
+      };
+      this.options.journal.append({
+        kind: "invocation",
+        parentJobId: event.parentJobId,
+        invocationId,
+        digest: jobDigest(event),
+      });
+      if (!this.sink?.(event)) ready.reject(new Error("service_owner_unavailable"));
+    }
+    const endpoint = await instance.ready;
+    signal.throwIfAborted();
+    const child = instance.childJobId && this.jobs.get(instance.childJobId);
+    if (!child || child.result.state !== "started" || endpoint.signal.aborted)
+      throw new Error("service_unavailable");
+    return endpoint;
+  }
+
+  private async announceServiceReady(job: OwnedJob, port: number): Promise<void> {
+    await job.launched;
+    const runtime = job.serviceRuntime;
+    const parent = job.request.parent && this.jobs.get(job.request.parent.parentJobId);
+    if (
+      !runtime ||
+      !parent ||
+      parent.runtimeServices.get(runtime.policy.serviceId) !== runtime ||
+      parent.cancelRequested ||
+      parent.serviceController.signal.aborted ||
+      job.result.state !== "started" ||
+      job.cancelRequested ||
+      job.serviceController.signal.aborted ||
+      runtime.childJobId !== job.request.jobId ||
+      jobDigest(this.policy(runtime.policy.serviceId) ?? null) !== jobDigest(runtime.policy) ||
+      !job.handle?.ownsLoopbackListener(port)
+    )
+      throw new Error("service_listener_unproven");
+    runtime.resolve({
+      url: `http://127.0.0.1:${port}`,
+      bearer: runtime.bearer,
+      signal: job.serviceController.signal,
+    });
+  }
+
   private emitInputState(job: OwnedJob): void {
-    this.emit({
-      type: "input_state", jobId: job.request.jobId,
-      requestDigest: job.request.requestDigest, ownerId: job.result.ownerId,
-      ownerGeneration: job.result.ownerGeneration,
-      nextInputSeq: job.inputSeq, stdinClosed: job.inputEnded,
-    }, job);
+    this.emit(
+      {
+        type: "input_state",
+        jobId: job.request.jobId,
+        requestDigest: job.request.requestDigest,
+        ownerId: job.result.ownerId,
+        ownerGeneration: job.result.ownerGeneration,
+        nextInputSeq: job.inputSeq,
+        stdinClosed: job.inputEnded,
+      },
+      job,
+    );
   }
 
   private async input(
-    command: Extract<JobCommand, { type: "input" }>, parentJobId: string | null,
+    command: Extract<JobCommand, { type: "input" }>,
+    parentJobId: string | null,
   ): Promise<void> {
     const job = this.requireJob(command.jobId);
-    const reply = (accepted: boolean, reason: string | null) => this.emit({
-      type: "input_result", jobId: command.jobId, requestId: command.requestId,
-      seq: command.seq, accepted, reason, nextInputSeq: job.inputSeq,
-      stdinClosed: job.inputEnded,
-    }, job);
+    const reply = (accepted: boolean, reason: string | null) =>
+      this.emit(
+        {
+          type: "input_result",
+          jobId: command.jobId,
+          requestId: command.requestId,
+          seq: command.seq,
+          accepted,
+          reason,
+          nextInputSeq: job.inputSeq,
+          stdinClosed: job.inputEnded,
+        },
+        job,
+      );
     const data = Buffer.from(command.data, "base64");
     const seat = this.sink;
     if (job.inputRequests.has(command.requestId)) {
@@ -374,12 +1048,19 @@ export class MachineJobOwner {
       reply(false, "job_input_delivery_unknown");
       return;
     }
-    if (job.request.terminal || job.result.state !== "started" || !job.handle ||
-        job.inputEnded || job.inputBusy || command.seq !== job.inputSeq ||
-        job.inputSeq === Number.MAX_SAFE_INTEGER ||
-        job.inputRequests.size >= 4096 ||
-        job.inputBytes + data.length > job.request.limits.outputBytes ||
-        !seat || this.inputAuthorizations.has(command.requestId)) {
+    if (
+      job.request.terminal ||
+      job.result.state !== "started" ||
+      !job.handle ||
+      job.inputEnded ||
+      job.inputBusy ||
+      command.seq !== job.inputSeq ||
+      job.inputSeq === Number.MAX_SAFE_INTEGER ||
+      job.inputRequests.size >= 4096 ||
+      job.inputBytes + data.length > job.request.limits.outputBytes ||
+      !seat ||
+      this.inputAuthorizations.has(command.requestId)
+    ) {
       reply(false, "job_input_conflict_or_closed");
       return;
     }
@@ -392,25 +1073,37 @@ export class MachineJobOwner {
     try {
       const authorization = Promise.withResolvers<boolean>();
       this.inputAuthorizations.set(command.requestId, {
-        jobId: command.jobId, resolve: authorization.resolve,
+        jobId: command.jobId,
+        resolve: authorization.resolve,
       });
       timer = setTimeout(() => authorization.resolve(false), 5000);
       this.emit({
-        type: "input_authorize", jobId: command.jobId, requestId: command.requestId,
-        seq: command.seq, parentJobId,
+        type: "input_authorize",
+        jobId: command.jobId,
+        requestId: command.requestId,
+        seq: command.seq,
+        parentJobId,
       });
       const allowed = await authorization.promise;
       clearTimeout(timer);
       this.inputAuthorizations.delete(command.requestId);
-      if (!allowed || this.sink !== seat || job.cancelRequested || job.result.state !== "started" ||
-          !job.handle || job.inputEnded) {
+      if (
+        !allowed ||
+        this.sink !== seat ||
+        job.cancelRequested ||
+        job.result.state !== "started" ||
+        !job.handle ||
+        job.inputEnded
+      ) {
         reply(false, "job_input_authority_or_state_refused");
         return;
       }
       // Consume the cursor durably before touching stdin; neither a partial write nor
       // a lost receipt permits replay. The journal contains no input bytes or digest.
       this.options.journal.append({
-        kind: "input", jobId: command.jobId, requestId: command.requestId,
+        kind: "input",
+        jobId: command.jobId,
+        requestId: command.requestId,
         nextInputSeq: job.inputSeq + 1,
       });
       job.inputSeq++;
@@ -443,7 +1136,11 @@ export class MachineJobOwner {
     if (!spec || spec.sha256 !== command.artifactSha256)
       throw new Error("installed_artifact_platform_mismatch");
     let artifact: PinnedArtifact | null = null;
-    try { artifact = openCachedArtifact(spec, this.options.cache); } catch { /* Report unavailable, never ambient fallback. */ }
+    try {
+      artifact = openCachedArtifact(spec, this.options.cache);
+    } catch {
+      /* Report unavailable, never ambient fallback. */
+    }
     const key = this.installKey(command.pluginId, command.installationRevision);
     const tools = new Map<string, PinnedArtifact>();
     const toolFailures = new Map<string, string>();
@@ -452,13 +1149,19 @@ export class MachineJobOwner {
       try {
         if (!tool) throw new Error("runtime_tool_platform_unavailable");
         tools.set(alias, openCachedArtifact(tool, this.options.cache));
-      } catch { toolFailures.set(alias, "runtime_tool_cache_unavailable"); }
+      } catch {
+        toolFailures.set(alias, "runtime_tool_cache_unavailable");
+      }
     }
     this.installs.get(key)?.artifact?.close();
     for (const tool of this.installs.get(key)?.tools.values() ?? []) tool.close();
     this.installs.set(key, {
       command: { ...command, action: undefined },
-      enabled: command.action !== "disable", artifact, tools, toolFailures, runtimeAliases,
+      enabled: command.action !== "disable",
+      artifact,
+      tools,
+      toolFailures,
+      runtimeAliases,
     });
   }
 
@@ -469,17 +1172,27 @@ export class MachineJobOwner {
       throw new Error("unsupported_artifact_platform");
     const runtimeAliases = this.runtimeAliases(command);
     if (command.action) {
-      if (delivery !== undefined || toolArtifacts !== undefined) throw new Error("artifact_unexpected_delivery");
+      if (delivery !== undefined || toolArtifacts !== undefined)
+        throw new Error("artifact_unexpected_delivery");
     }
     if (this.draining && !command.action) throw new Error("owner_draining");
     const key = this.installKey(command.pluginId, command.installationRevision);
     const existing = this.installs.get(key);
     const primarySource = `${artifactSpec.url ?? artifactSpec.bundleFile}\0${artifactSpec.sha256}`;
-    const selectedTools = Object.entries(command.machine.tools ?? {}).map(([alias, platforms]) => {
-      const spec = platforms[this.platform()];
-      return [alias, spec, spec ? `${spec.url ?? spec.bundleFile}\0${spec.sha256}` : ""] as const;
-    }).sort((a, b) => a[2] === b[2] ? 0 : a[2] === primarySource ? -1 :
-      b[2] === primarySource ? 1 : a[2].localeCompare(b[2]));
+    const selectedTools = Object.entries(command.machine.tools ?? {})
+      .map(([alias, platforms]) => {
+        const spec = platforms[this.platform()];
+        return [alias, spec, spec ? `${spec.url ?? spec.bundleFile}\0${spec.sha256}` : ""] as const;
+      })
+      .sort((a, b) =>
+        a[2] === b[2]
+          ? 0
+          : a[2] === primarySource
+            ? -1
+            : b[2] === primarySource
+              ? 1
+              : a[2].localeCompare(b[2]),
+      );
     for (const name of Object.keys(toolArtifacts ?? {}))
       if (!selectedTools.some(([, spec]) => spec?.bundleFile === name))
         throw new Error("artifact_unexpected_delivery");
@@ -524,18 +1237,29 @@ export class MachineJobOwner {
         existing.artifact?.close();
         for (const tool of existing.tools.values()) tool.close();
         this.installs.delete(key);
-        const specs = [artifactSpec, ...selectedTools.flatMap(([, spec]) => spec ? [spec] : [])];
+        const specs = [artifactSpec, ...selectedTools.flatMap(([, spec]) => (spec ? [spec] : []))];
         for (const spec of specs) {
-          for (const digest of new Set([spec.entrySha256, ...Object.values(spec.files ?? {}).map((file) => file.sha256)])) {
+          for (const digest of new Set([
+            spec.entrySha256,
+            ...Object.values(spec.files ?? {}).map((file) => file.sha256),
+          ])) {
             const name = artifactCacheKey(spec, digest);
             const shared = [...this.installs.values()].some((installation) => {
               const machine = installation.command.machine;
-              const others = [machine.artifacts[this.platform()], ...Object.values(machine.tools ?? {}).map((platforms) => platforms[this.platform()])];
+              const others = [
+                machine.artifacts[this.platform()],
+                ...Object.values(machine.tools ?? {}).map(
+                  (platforms) => platforms[this.platform()],
+                ),
+              ];
               return others.some((other) => other && artifactCacheKey(other, digest) === name);
             });
             if (!shared) {
-              try { this.options.cache.unlink(name); }
-              catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+              try {
+                this.options.cache.unlink(name);
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+              }
             }
           }
         }
@@ -553,8 +1277,15 @@ export class MachineJobOwner {
       deliveredArtifact(artifactSpec, delivery, decoded);
       if (jobDigest(existing.command) !== jobDigest(command))
         throw new Error("installation_revision_changed");
-      if (!existing.artifact) existing.artifact = await acquireArtifact(
-        artifactSpec, this.options.cache, this.options.artifactAuthority, delivery, archives, decoded);
+      if (!existing.artifact)
+        existing.artifact = await acquireArtifact(
+          artifactSpec,
+          this.options.cache,
+          this.options.artifactAuthority,
+          delivery,
+          archives,
+          decoded,
+        );
       if (!existing.enabled) {
         this.options.journal.append({ kind: "install", command });
         existing.enabled = true;
@@ -575,12 +1306,20 @@ export class MachineJobOwner {
         this.options.cache,
         this.options.artifactAuthority,
         delivery,
-        archives, decoded,
+        archives,
+        decoded,
       );
       try {
         if (this.draining || this.installs.has(key)) throw new Error("installation_raced");
         this.options.journal.append({ kind: "install", command });
-        this.installs.set(key, { command, artifact, enabled: true, tools: new Map(), toolFailures: new Map(), runtimeAliases });
+        this.installs.set(key, {
+          command,
+          artifact,
+          enabled: true,
+          tools: new Map(),
+          toolFailures: new Map(),
+          runtimeAliases,
+        });
       } catch (error) {
         artifact.close();
         throw error;
@@ -590,19 +1329,34 @@ export class MachineJobOwner {
     for (const [alias, spec] of selectedTools) {
       try {
         if (!spec) throw new Error("runtime_tool_platform_unavailable");
-        const member: JobArtifactDelivery | undefined = spec.bundleFile === undefined ? undefined :
-          delivery?.bundleFile === spec.bundleFile ? delivery :
-          toolArtifacts?.[spec.bundleFile] === undefined ? undefined :
-          { bundleFile: spec.bundleFile, data: toolArtifacts[spec.bundleFile]! };
-        const artifact = await acquireArtifact(spec, this.options.cache, this.options.artifactAuthority, member, archives, decoded);
+        const member: JobArtifactDelivery | undefined =
+          spec.bundleFile === undefined
+            ? undefined
+            : delivery?.bundleFile === spec.bundleFile
+              ? delivery
+              : toolArtifacts?.[spec.bundleFile] === undefined
+                ? undefined
+                : { bundleFile: spec.bundleFile, data: toolArtifacts[spec.bundleFile]! };
+        const artifact = await acquireArtifact(
+          spec,
+          this.options.cache,
+          this.options.artifactAuthority,
+          member,
+          archives,
+          decoded,
+        );
         installation.tools.get(alias)?.close();
         installation.tools.set(alias, artifact);
         installation.toolFailures.delete(alias);
       } catch (error) {
         installation.tools.get(alias)?.close();
         installation.tools.delete(alias);
-        installation.toolFailures.set(alias, error instanceof Error && /^[a-zA-Z0-9_-]{1,128}$/.test(error.message)
-          ? error.message : "runtime_tool_acquisition_refused");
+        installation.toolFailures.set(
+          alias,
+          error instanceof Error && /^[a-zA-Z0-9_-]{1,128}$/.test(error.message)
+            ? error.message
+            : "runtime_tool_acquisition_refused",
+        );
       }
     }
     this.emit({
@@ -622,8 +1376,14 @@ export class MachineJobOwner {
     launch: (spec: LinuxJobSpec) => Promise<LinuxJobHandle>,
   ): Promise<void> {
     const binding = command.request.terminal;
-    if (!this.ready || !binding || binding.terminalId !== terminalId ||
-        binding.terminalHostId !== terminalHostId || terminalHostId !== this.terminalHostId || command.request.parent)
+    if (
+      !this.ready ||
+      !binding ||
+      binding.terminalId !== terminalId ||
+      binding.terminalHostId !== terminalHostId ||
+      terminalHostId !== this.terminalHostId ||
+      command.request.parent
+    )
       throw new Error("terminal_binding_refused");
     await this.start(command, launch);
   }
@@ -672,11 +1432,24 @@ export class MachineJobOwner {
     );
     const operation = installation?.command.machine.operations[request.operationId];
     if (
-      !installation?.enabled || !installation.artifact ||
+      !installation?.enabled ||
+      !installation.artifact ||
       !operation ||
       installation.command.artifactSha256 !== request.artifactSha256
     )
       throw new Error("operation_not_installed");
+    if (
+      jobDigest(request.resourceBindings ?? null) !==
+      jobDigest(
+        jobResourceBindingsFor(
+          installation.command.machine,
+          request.operationId,
+          this.platform(),
+          installation.command.resourceBindings,
+        ) ?? null,
+      )
+    )
+      throw new Error("resource_bindings_mismatch");
     this.validateInput(operation, request);
     if (request.terminal && !operation.stdin) throw new Error("terminal_operation_requires_stdin");
     const unavailable = this.operationUnavailable(installation, operation);
@@ -687,6 +1460,8 @@ export class MachineJobOwner {
       const invocation = parent.context?.invocations.get(request.parent.invocationId);
       if (
         !ACTIVE[parent.result.state] ||
+        parent.cancelRequested ||
+        parent.serviceController.signal.aborted ||
         !parent.handle ||
         !invocation ||
         invocation.refused ||
@@ -703,20 +1478,44 @@ export class MachineJobOwner {
     }
     const job = this.newJob(request);
     job.depth = parent ? parent.depth + 1 : 0;
+    job.serviceRuntime =
+      parent && request.parent
+        ? [...parent.runtimeServices.values()].find(
+            (runtime) => runtime.invocationId === request.parent!.invocationId,
+          )
+        : undefined;
+    if (operation.providesService && !job.serviceRuntime)
+      throw new Error("service_runtime_parent_required");
+    if (job.serviceRuntime) {
+      const expected = job.serviceRuntime.policy.runtime!;
+      if (
+        job.serviceRuntime.childJobId !== null ||
+        jobDigest(this.policy(job.serviceRuntime.policy.serviceId) ?? null) !==
+          jobDigest(job.serviceRuntime.policy) ||
+        expected.pluginId !== request.pluginId ||
+        expected.operationId !== request.operationId ||
+        expected.installationRevision !== request.installationRevision ||
+        expected.artifactSha256 !== request.artifactSha256 ||
+        expected.resourceBindingDigest !== jobDigest(request.resourceBindings ?? null)
+      )
+        throw new Error("service_runtime_binding_mismatch");
+      job.serviceRuntime.childJobId = request.jobId;
+    }
+    let spawnAttempted = false;
     try {
       preflightLinuxJobRuntime();
       if (request.outputs.length > 30) throw new Error("output_count_limit");
       if (!request.terminal) {
-      job.stdio.stdout = this.options.outputs.createByteStream(
-        request.jobId,
-        "stdout",
-        request.limits.outputBytes,
-      );
-      job.stdio.stderr = this.options.outputs.createByteStream(
-        request.jobId,
-        "stderr",
-        request.limits.outputBytes,
-      );
+        job.stdio.stdout = this.options.outputs.createByteStream(
+          request.jobId,
+          "stdout",
+          request.limits.outputBytes,
+        );
+        job.stdio.stderr = this.options.outputs.createByteStream(
+          request.jobId,
+          "stderr",
+          request.limits.outputBytes,
+        );
       }
       const locations: LinuxJobBind[] = [];
       // This token is private to synchronous preparation, before any writable fd is mounted.
@@ -745,6 +1544,11 @@ export class MachineJobOwner {
           writable: resolved.writable,
         });
       }
+      const workingDirectory = operation.workingDirectory
+        ? job.locations.get(operation.workingDirectory.locationId)
+        : undefined;
+      if (operation.workingDirectory && !workingDirectory?.directory)
+        throw new Error("working_directory_unavailable");
       for (const binding of request.outputs) {
         if (
           !operation.outputs.includes(binding.name) ||
@@ -775,28 +1579,33 @@ export class MachineJobOwner {
           this.emit(event);
         },
         command: (next) => this.execute(next, request.jobId),
+        service: (call, signal) => this.jobServiceCall(job, call, signal),
+        serviceReady: (port) => this.announceServiceReady(job, port),
         failure: (reason) => {
           const pending = [...(job.context?.invocations.values() ?? [])].some(
             (invocation) =>
+              invocation.origin === "worker" &&
               !invocation.refused &&
               (invocation.childJobId === null ||
                 !this.jobs.get(invocation.childJobId)?.childExitSent),
           );
           // Closing an unused context during ordinary process exit is not a cancellation.
-          if (reason === "context_closed" && !pending) return;
+          if (reason === "context_closed" && !pending && !operation.providesService) return;
           void this.cancel(request.jobId).catch(() => {
             this.draining = true;
           });
         },
       });
-      job.context.send({
-        type: "context",
-        locations: [...job.locations].map(([locationId, location]) => ({
-          locationId,
-          guestPath: location.guestPath,
-          access: location.access,
-        })),
-      });
+      job.context.send(
+        WorkerContextSchema.parse({
+          type: "context",
+          locations: [...job.locations].map(([locationId, location]) => ({
+            locationId,
+            guestPath: location.guestPath,
+            access: location.access,
+          })),
+        }),
+      );
       const runtime: LinuxJobBind[] = [];
       for (const tool of operation.runtimeTools) {
         const configured = this.runtimeTool(installation, tool);
@@ -805,52 +1614,6 @@ export class MachineJobOwner {
           if (!runtime.some((prior) => prior.fd === bind.fd && prior.target === bind.target))
             runtime.push(bind);
       }
-      for (const [name, declaration] of Object.entries(operation.inputFiles ?? {})) {
-        const value = request.input[declaration.input];
-        if (typeof value !== "string") throw new Error("input_file_string_required");
-        job.inputFiles.push({ fd: privateByteFile(Buffer.from(value)), target: `/inputs/${name}`, writable: false });
-      }
-      const spec: LinuxJobSpec = {
-        bubblewrapFd: this.options.bubblewrapFd,
-        artifactFd: installation.artifact.fd,
-        executableRuntimeTool: operation.executable?.runtimeTool,
-        inputFiles: job.inputFiles,
-        argv: operation.argv.map((slot) =>
-          "literal" in slot ? slot.literal : String(request.input[slot.input]),
-        ),
-        runtime,
-        locations,
-        outputs: job.leases.map((lease) => ({
-          fd: lease.directory.fd,
-          target: `/outputs/${lease.name}`,
-          writable: true,
-        })),
-        delegatedCgroup: parent?.handle?.childDelegation ?? this.options.delegatedCgroup,
-        limits: request.limits,
-        network: operation.network,
-        bidirectional: operation.stdin,
-        nestedCgroup: true,
-        contextFd: job.context.childFd,
-        ...(request.terminal ? {} : { onOutput: (output: LinuxJobOutput) => {
-          job.stdio[output.channel]!.write(output.bytes);
-          job.outputSeq = output.sequence;
-          this.emit(
-            {
-              type: "output",
-              jobId: request.jobId,
-              outputId: output.channel,
-              requestId: request.jobId,
-              seq: output.sequence,
-              data: Buffer.from(output.bytes).toString("base64"),
-              eof: false,
-            },
-            job,
-          );
-        } }),
-      };
-      preflightLinuxJob(spec);
-      for (const lease of job.leases)
-        job.releaseWriters.push(this.options.outputs.retainWriter(lease.directory.fd));
       // The immutable tombstone and single-use consumption become durable before any spawn.
       this.options.journal.append({
         kind: "reservation",
@@ -865,6 +1628,65 @@ export class MachineJobOwner {
         parent.children.add(request.jobId);
         parent.childBudgetMs += request.limits.timeoutMs;
       }
+      await this.prepareServiceProxies(job, operation);
+      if (job.cancelRequested) throw new Error("cancelled_before_start");
+      job.inputFiles = materializeJobInputs(
+        operation,
+        request.input,
+        job.serviceProxies,
+        job.serviceRuntime?.bearer,
+      );
+      const spec: LinuxJobSpec = {
+        bubblewrapFd: this.options.bubblewrapFd,
+        artifactFd: installation.artifact.fd,
+        ...(operation.executable
+          ? { executableRuntimeTool: operation.executable.runtimeTool }
+          : {}),
+        inputFiles: job.inputFiles,
+        argv: operation.argv
+          .filter((slot) => !slot.when || request.input[slot.when.input] === slot.when.equals)
+          .map((slot) => ("literal" in slot ? slot.literal : String(request.input[slot.input]))),
+        runtime,
+        locations,
+        ...(workingDirectory ? { workingDirectory: workingDirectory.guestPath } : {}),
+        outputs: job.leases.map((lease) => ({
+          fd: lease.directory.fd,
+          target: `/outputs/${lease.name}`,
+          writable: true,
+        })),
+        delegatedCgroup: parent?.handle?.childDelegation ?? this.options.delegatedCgroup,
+        limits: request.limits,
+        network: operation.network,
+        bidirectional: operation.stdin,
+        nestedCgroup: true,
+        contextFd: job.context.childFd,
+        ...(request.terminal
+          ? {}
+          : {
+              onOutput: (output: LinuxJobOutput) => {
+                job.stdio[output.channel]!.write(output.bytes);
+                job.outputSeq = output.sequence;
+                this.emit(
+                  {
+                    type: "output",
+                    jobId: request.jobId,
+                    outputId: output.channel,
+                    requestId: request.jobId,
+                    seq: output.sequence,
+                    data: Buffer.from(output.bytes).toString("base64"),
+                    eof: false,
+                  },
+                  job,
+                );
+              },
+            }),
+      };
+      preflightLinuxJob(spec);
+      for (const lease of job.leases)
+        job.releaseWriters.push(this.options.outputs.retainWriter(lease.directory.fd));
+      const changed = this.operationUnavailable(installation, operation);
+      if (changed) throw new Error(changed);
+      spawnAttempted = true;
       job.handle = await (terminalLaunch ? terminalLaunch(spec) : startLinuxJob(spec));
       job.resolveLaunched();
       job.context.releaseChildFd();
@@ -888,10 +1710,15 @@ export class MachineJobOwner {
         .catch(() => this.interrupt(job));
       if (job.cancelRequested) await job.handle?.cancel();
     } catch (error) {
+      if (!spawnAttempted || (error instanceof LinuxJobRefusal && error.workloadEmpty))
+        job.resolveEmpty();
+      if (error instanceof LinuxJobRefusal && !error.workloadEmpty)
+        job.startupCleanup = error.cleanup;
       job.resolveLaunched();
+      await this.closeServices(job);
       job.context?.close();
-      const safelyRefused = error instanceof LinuxJobRefusal && error.workloadEmpty && !job.handle;
-      if (error instanceof LinuxJobRefusal && !error.workloadEmpty) job.startupCleanup = error.cleanup;
+      const safelyRefused =
+        !spawnAttempted || (error instanceof LinuxJobRefusal && error.workloadEmpty && !job.handle);
       if (this.jobs.has(request.jobId) && !safelyRefused) {
         await this.interrupt(job);
       } else {
@@ -905,7 +1732,15 @@ export class MachineJobOwner {
         job.stdio = {};
         job.locations.clear();
         if (safelyRefused && this.jobs.has(request.jobId)) {
-          job.result = { ...job.result, state: "refused", reason: error.code, finishedAt: Date.now() };
+          job.result = {
+            ...job.result,
+            state: job.cancelRequested ? "cancelled" : "refused",
+            reason:
+              error instanceof Error && /^[a-zA-Z0-9_-]{1,128}$/.test(error.message)
+                ? error.message
+                : "job_preparation_refused",
+            finishedAt: Date.now(),
+          };
           this.options.journal.append({ kind: "result", result: job.result });
           this.emit({ type: "result", result: job.result }, job);
           job.resolveFinalized();
@@ -918,6 +1753,7 @@ export class MachineJobOwner {
 
   private async finish(job: OwnedJob, observed: LinuxJobResult, parent?: OwnedJob): Promise<void> {
     if (observed.empty !== true) throw new Error("workload_empty_proof_required");
+    await this.closeServices(job);
     const handle = job.handle;
     for (const childId of job.children) await this.cancel(childId);
     job.resolveEmpty();
@@ -938,7 +1774,7 @@ export class MachineJobOwner {
         outputBytes: observed.usage.outputBytes,
       },
     };
-    for (const channel of job.request.terminal ? [] : ["stdout", "stderr"] as const)
+    for (const channel of job.request.terminal ? [] : (["stdout", "stderr"] as const))
       this.emit(
         {
           type: "output",
@@ -963,7 +1799,7 @@ export class MachineJobOwner {
       },
       job,
     );
-    if (parent?.context) {
+    if (parent?.context && !job.serviceRuntime) {
       parent.context.send({
         type: "child_exit",
         jobId: job.request.jobId,
@@ -1027,6 +1863,7 @@ export class MachineJobOwner {
 
   private async interrupt(job: OwnedJob): Promise<void> {
     this.draining = true;
+    await this.closeServices(job);
     // Immutable inputs have no output-writer authority. Child mounts retain their own kernel
     // references; releasing our transport copies is safe even if empty proof is unavailable.
     this.closeInputFiles(job);
@@ -1057,6 +1894,7 @@ export class MachineJobOwner {
   private async cancel(jobId: string): Promise<void> {
     const job = this.requireJob(jobId);
     job.cancelRequested = true;
+    await this.closeServices(job);
     await job.launched;
     for (const child of job.children) await this.cancel(child);
     if (job.handle) {
@@ -1075,9 +1913,6 @@ export class MachineJobOwner {
   }
 
   private validateInput(operation: MachineOperation, request: JobRequest): void {
-    if (Object.values(operation.inputFiles ?? {}).reduce((bytes, { input }) =>
-      bytes + (typeof request.input[input] === "string" ? Buffer.byteLength(request.input[input]) : 0), 0) > 65536)
-      throw new Error("input_file_byte_limit");
     for (const [name, value] of Object.entries(request.input)) {
       const field = operation.input[name];
       if (
@@ -1096,7 +1931,12 @@ export class MachineJobOwner {
     for (const [name, field] of Object.entries(operation.input))
       if (field.required && !(name in request.input)) throw new Error("operation_input_missing");
     for (const slot of operation.argv)
-      if ("input" in slot && !(slot.input in request.input)) throw new Error("argv_input_missing");
+      if (
+        (!slot.when || request.input[slot.when.input] === slot.when.equals) &&
+        "input" in slot &&
+        !(slot.input in request.input)
+      )
+        throw new Error("argv_input_missing");
     for (const key of ["timeoutMs", "memoryBytes", "processes", "outputBytes"] as const)
       if (request.limits[key] > operation.limits[key]) throw new Error("operation_limit_exceeded");
   }
@@ -1152,6 +1992,10 @@ export class MachineJobOwner {
       resolveLaunched: launched.resolve,
       finalized: finalized.promise,
       resolveFinalized: finalized.resolve,
+      serviceController: new AbortController(),
+      serviceProxies: new Map(),
+      runtimeServices: new Map(),
+      serviceRuntime: undefined,
     };
   }
   private requireJob(jobId: string): OwnedJob {
@@ -1162,11 +2006,14 @@ export class MachineJobOwner {
   private emit(event: JobEvent, job?: OwnedJob): void {
     const parent = job?.request.parent && this.jobs.get(job.request.parent.parentJobId);
     if (
+      !job?.serviceRuntime &&
       parent?.context &&
       (event.type === "output" ||
         event.type === "refusal" ||
         (event.type === "result" && !job?.childExitSent) ||
-        event.type === "state" || event.type === "input_result" || event.type === "input_state")
+        event.type === "state" ||
+        event.type === "input_result" ||
+        event.type === "input_state")
     ) {
       parent.context.send(event);
       if (event.type === "output") return;
@@ -1195,49 +2042,114 @@ export class MachineJobOwner {
     }
     return aliases;
   }
-  private runtimeTool(installation: Installation, alias: string): readonly LinuxJobBind[] | undefined {
+  private runtimeTool(
+    installation: Installation,
+    alias: string,
+  ): readonly LinuxJobBind[] | undefined {
     const source = installation.runtimeAliases.get(alias);
     if (source) {
-      const artifact = source.tool === null ? installation.artifact : installation.tools.get(source.tool);
+      const artifact =
+        source.tool === null ? installation.artifact : installation.tools.get(source.tool);
       const pinned = source.companion ? artifact?.files[alias] : artifact;
-      return pinned ? [{ fd: pinned.fd, target: `/runtime/bin/${alias}`, writable: false }] : undefined;
+      const spec =
+        source.tool === null
+          ? installation.command.machine.artifacts[this.platform()]
+          : installation.command.machine.tools?.[source.tool]?.[this.platform()];
+      const relative = source.companion ? spec?.files?.[alias]?.relativeTarget : undefined;
+      const target = relative
+        ? `${source.tool === null ? "/job" : "/runtime/bin"}/${relative.join("/")}`
+        : `/runtime/bin/${alias}`;
+      return pinned ? [{ fd: pinned.fd, target, writable: false }] : undefined;
     }
-    return Object.hasOwn(this.options.runtimeTools, alias) ? this.options.runtimeTools[alias] : undefined;
+    return Object.hasOwn(this.options.runtimeTools, alias)
+      ? this.options.runtimeTools[alias]
+      : undefined;
   }
-  private operationUnavailable(installation: Installation, operation: MachineOperation): string | undefined {
+  private operationRuntimeUnavailable(
+    installation: Installation,
+    operation: MachineOperation,
+  ): string | undefined {
     if (!installation.enabled || !installation.artifact) return "operation_not_installed";
     for (const alias of operation.runtimeTools) {
       const binds = this.runtimeTool(installation, alias);
       if (!binds) return installation.toolFailures.get(alias) ?? "runtime_tool_unavailable";
       if (operation.executable?.runtimeTool === alias) {
-        const matches = binds.filter((bind) => bind.target === `/runtime/bin/${alias}` && !bind.writable);
+        const matches = binds.filter(
+          (bind) => bind.target === `/runtime/bin/${alias}` && !bind.writable,
+        );
         if (matches.length !== 1) return "runtime_executable_unavailable";
         try {
           const stat = fstatSync(matches[0]!.fd);
-          if (!stat.isFile() || !(stat.mode & 0o111) || (stat.mode & 0o6022)) return "runtime_executable_untrusted";
-        } catch { return "runtime_executable_unavailable"; }
+          if (!stat.isFile() || !(stat.mode & 0o111) || stat.mode & 0o6022)
+            return "runtime_executable_untrusted";
+        } catch {
+          return "runtime_executable_unavailable";
+        }
       }
     }
     return undefined;
+  }
+  private operationUnavailable(
+    installation: Installation,
+    operation: MachineOperation,
+  ): string | undefined {
+    const basic = this.operationRuntimeUnavailable(installation, operation);
+    if (basic) return basic;
+    const operationId = Object.keys(installation.command.machine.operations).find(
+      (id) => installation.command.machine.operations[id] === operation,
+    );
+    if (!operationId) return "unknown_operation";
+    this.refreshOperationResources(installation, operationId);
+    return (
+      jobResourceRefusal(
+        installation.command.machine,
+        operationId,
+        this.platform(),
+        installation.command.resourceBindings,
+        this.resources.snapshot(),
+      ) ?? undefined
+    );
   }
   installedResources(pluginId: string, revision: string): JobInstallationResources {
     const installation = this.installs.get(this.installKey(pluginId, revision));
     return {
       artifactAvailable: installation?.artifact !== null && installation?.artifact !== undefined,
-      tools: installation ? [...new Set([
-        ...Object.keys(installation.command.machine.tools ?? {}),
-        ...Object.values(installation.command.machine.operations).flatMap((operation) => operation.runtimeTools),
-      ])].map((alias) => {
-        const managed = Object.hasOwn(installation.command.machine.tools ?? {}, alias);
-        const artifact = installation.tools.get(alias);
-        return { alias, managed, available: this.runtimeTool(installation, alias) !== undefined,
-          ...(artifact ? { artifactSha256: artifact.archiveSha256, entrySha256: artifact.entrySha256 } : {}),
-          ...(installation.toolFailures.has(alias) ? { reason: installation.toolFailures.get(alias)! } : {}) };
-      }) : [],
-      operations: installation ? Object.entries(installation.command.machine.operations).map(([operationId, operation]) => {
-        const reason = this.operationUnavailable(installation, operation);
-        return { operationId, available: reason === undefined, ...(reason ? { reason } : {}) };
-      }) : [],
+      tools: installation
+        ? [
+            ...new Set([
+              ...Object.keys(installation.command.machine.tools ?? {}),
+              ...Object.values(installation.command.machine.operations).flatMap(
+                (operation) => operation.runtimeTools,
+              ),
+            ]),
+          ].map((alias) => {
+            const managed = Object.hasOwn(installation.command.machine.tools ?? {}, alias);
+            const artifact = installation.tools.get(alias);
+            return {
+              alias,
+              managed,
+              available: this.runtimeTool(installation, alias) !== undefined,
+              ...(artifact
+                ? { artifactSha256: artifact.archiveSha256, entrySha256: artifact.entrySha256 }
+                : {}),
+              ...(installation.toolFailures.has(alias)
+                ? { reason: installation.toolFailures.get(alias)! }
+                : {}),
+            };
+          })
+        : [],
+      operations: installation
+        ? Object.entries(installation.command.machine.operations).map(
+            ([operationId, operation]) => {
+              const reason = this.operationUnavailable(installation, operation);
+              return {
+                operationId,
+                available: reason === undefined,
+                ...(reason ? { reason } : {}),
+              };
+            },
+          )
+        : [],
     };
   }
   private platform(): "linux-x64" | "linux-arm64" {
@@ -1248,6 +2160,10 @@ export class MachineJobOwner {
   async shutdown(): Promise<void> {
     if (!this.ready) return;
     this.draining = true;
+    this.seatController.abort();
+    this.configurationController.abort();
+    this.serviceRunner.close();
+    for (const pending of this.directServiceCalls.values()) pending.controller.abort();
     this.options.journal.append({ kind: "drain", draining: true });
     await Promise.all([...this.jobs.values()].map((job) => this.cancel(job.request.jobId)));
     await Promise.all([...this.jobs.values()].map((job) => job.finalized));

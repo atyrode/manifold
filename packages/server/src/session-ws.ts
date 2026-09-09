@@ -940,7 +940,10 @@ export class SessionGateway {
         }).then((allowed) => {
           if (allowed) {
             const result = allowed.result;
-            const traceId = result !== null && typeof result === "object" ? Reflect.get(result, "traceId") : undefined;
+            const traceId =
+              result !== null && typeof result === "object"
+                ? Reflect.get(result, "traceId")
+                : undefined;
             this.broker.open(peer, message, typeof traceId === "number" ? traceId : undefined);
           }
         });

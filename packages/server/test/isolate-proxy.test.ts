@@ -373,12 +373,16 @@ describe("serveCtxCall", () => {
       "slice_unavailable: host.roster",
     );
     for (const method of [
+      "jobs.describe",
       "services.describe",
       "services.readConfiguration",
       "services.configureConfiguration",
       "services.read",
+      "services.invoke",
     ] as const) {
-      await expect(serveCtxCall(method, [{ machineId: "machine" }], served)).rejects.toThrow("slice_unavailable");
+      await expect(serveCtxCall(method, [{ machineId: "machine" }], served)).rejects.toThrow(
+        "slice_unavailable",
+      );
     }
   });
 });

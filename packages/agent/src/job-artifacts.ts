@@ -13,10 +13,14 @@ import {
   readSync,
   fstatSync,
 } from "node:fs";
-import { MachineArtifactSchema, canonicalJobJson, type MachineArtifact, type JobArtifactDelivery } from "@manifold/protocol";
+import {
+  MachineArtifactSchema,
+  canonicalJobJson,
+  type MachineArtifact,
+  type JobArtifactDelivery,
+} from "@manifold/protocol";
 import { deliveredArtifact, extractArtifact } from "@manifold/plugin-kit/artifacts";
 import type { HeldDirectory } from "./job-files.ts";
-import { safeComponent } from "./job-files.ts";
 
 export interface ArtifactAuthority {
   /** Explicit installed destination consent, exact HTTPS origins, checked on every hop. */
@@ -41,8 +45,13 @@ export interface PinnedArtifact {
 
 /** Layout identity is distinct from archive identity: equal bytes do not authorize new entries. */
 export function artifactCacheKey(spec: MachineArtifact, entrySha256: string): string {
-  const layout = { sha256: spec.sha256, format: spec.format, entry: spec.entry,
-    entrySha256: spec.entrySha256, files: spec.files ?? {} };
+  const layout = {
+    sha256: spec.sha256,
+    format: spec.format,
+    entry: spec.entry,
+    entrySha256: spec.entrySha256,
+    files: spec.files ?? {},
+  };
   return `${createHash("sha256").update(canonicalJobJson(layout)).digest("hex")}-${entrySha256}`;
 }
 
@@ -199,7 +208,8 @@ export async function acquireArtifact(
   let transferred = false;
   try {
     const sourceKey = `${spec.url ?? spec.bundleFile}\0${spec.sha256}`;
-    const archive = archives?.get(sourceKey) ?? supplied ?? await download(spec, authority, controller.signal);
+    const archive =
+      archives?.get(sourceKey) ?? supplied ?? (await download(spec, authority, controller.signal));
     if (archive.length > spec.maxBytes) throw new Error("artifact_compressed_limit");
     if (archives && !archives.has(sourceKey)) {
       // The owner groups equal sources. Retain at most one bounded archive, including

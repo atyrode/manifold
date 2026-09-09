@@ -32,7 +32,9 @@ describe.skipIf(process.platform !== "linux")("parent-bound private invocation c
     const failures: string[] = [];
     const context = new JobContext("real-parent", {
       invoke: invoked.resolve,
-      command: async () => { throw new Error("unrelated child must not reach owner"); },
+      command: async () => {
+        throw new Error("unrelated child must not reach owner");
+      },
       failure: (reason) => failures.push(reason),
     });
     const child = adoptPrivateSocket(native.symbols.dup(context.childFd));
@@ -45,14 +47,29 @@ describe.skipIf(process.platform !== "linux")("parent-bound private invocation c
     });
     child.on("error", () => {});
     try {
-      child.write(`${JSON.stringify({
-        type: "input", jobId: "unrelated", requestId: "input-one", seq: 0, data: "", eof: false,
-      })}\n`);
+      child.write(
+        `${JSON.stringify({
+          type: "input",
+          jobId: "unrelated",
+          requestId: "input-one",
+          seq: 0,
+          data: "",
+          eof: false,
+        })}\n`,
+      );
       expect(await rejected.promise).toEqual({
-        type: "input_result", jobId: "unrelated", requestId: "input-one", seq: 0,
-        accepted: false, reason: "context_child_mismatch", nextInputSeq: null, stdinClosed: true,
+        type: "input_result",
+        jobId: "unrelated",
+        requestId: "input-one",
+        seq: 0,
+        accepted: false,
+        reason: "context_child_mismatch",
+        nextInputSeq: null,
+        stdinClosed: true,
       });
-      child.write(`${JSON.stringify({ type: "invoke", operationId: "fixture.op", input: {}, outputs: [] })}\n`);
+      child.write(
+        `${JSON.stringify({ type: "invoke", operationId: "fixture.op", input: {}, outputs: [] })}\n`,
+      );
       expect((await invoked.promise).parentJobId).toBe("real-parent");
       expect(failures).toEqual([]);
     } finally {

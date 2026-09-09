@@ -16,6 +16,7 @@ import {
   ListJobRunsResultSchema,
   type ListJobRunsArgs,
   type ListJobRunsResult,
+  type JobDescription,
   type ActionScope,
   type ActionRequirement,
   type ActionSummary,
@@ -36,6 +37,7 @@ import {
   type Principal,
   type ServiceConfiguration,
   type ServiceReadArgs,
+  type ServiceInvokeArgs,
   type ServiceReply,
 } from "@manifold/protocol";
 import {
@@ -77,6 +79,8 @@ export interface ServerActionDef<In = unknown, Out = unknown> {
   readonly title: string;
   /** What invoking this action requires of the CALLER; a subset of the manifest's ceiling. */
   readonly caps: readonly Cap[];
+  /** Native job/service ceiling, not caller permission; native calls still authorize targets and consent. */
+  readonly delegates?: readonly Cap[];
   /** Absent ≡ `"workspace"`; `"container"` confines the door to `ctx.containerScope`. */
   readonly scope?: ActionScope | undefined;
   readonly requirements?: readonly ActionRequirement[];
@@ -159,10 +163,21 @@ export interface GuestJobFollow {
   close(): Promise<void>;
 }
 export interface GuestJobs {
+  describe(args: {
+    machineId: string;
+    pluginId: string;
+    installationRevision?: string;
+  }): Promise<JobDescription>;
   execute(args: GuestJobRequest): Promise<GuestJobStatus>;
   status(node: GuestJobNode): Promise<GuestJobStatus>;
   listRuns(args: ListJobRunsArgs): Promise<ListJobRunsResult>;
-  input(args: { node: GuestJobNode; requestId: string; seq: number; data: string; eof: boolean }): Promise<{ accepted: true }>;
+  input(args: {
+    node: GuestJobNode;
+    requestId: string;
+    seq: number;
+    data: string;
+    eof: boolean;
+  }): Promise<{ accepted: true }>;
   cancel(node: GuestJobNode): Promise<void>;
   output(args: {
     node: GuestOutputNode;
@@ -178,6 +193,7 @@ export interface GuestServices {
   readConfiguration(args: { machineId: string }): Promise<ServiceConfigurationRead>;
   configureConfiguration(args: ConfigureServiceConfigurationArgs): Promise<ServiceConfiguration>;
   read(args: ServiceReadArgs): Promise<ServiceReply>;
+  invoke(args: ServiceInvokeArgs): Promise<ServiceReply>;
 }
 
 export interface GuestCtx {
@@ -474,6 +490,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       newId: async () => (await call("newId", [])) as string,
       storage: storageFor(call),
       jobs: {
+        describe: async (args) => (await call("jobs.describe", [args])) as JobDescription,
         execute: async (args) => (await call("jobs.execute", [args])) as GuestJobStatus,
         status: async (node) => (await call("jobs.status", [node])) as GuestJobStatus,
         listRuns: async (args) =>
@@ -525,14 +542,13 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         },
       },
       services: {
-        describe: async (args) =>
-          (await call("services.describe", [args])) as ServiceDescription,
+        describe: async (args) => (await call("services.describe", [args])) as ServiceDescription,
         readConfiguration: async (args) =>
           (await call("services.readConfiguration", [args])) as ServiceConfigurationRead,
         configureConfiguration: async (args) =>
           (await call("services.configureConfiguration", [args])) as ServiceConfiguration,
-        read: async (args) =>
-          (await call("services.read", [args])) as ServiceReply,
+        read: async (args) => (await call("services.read", [args])) as ServiceReply,
+        invoke: async (args) => (await call("services.invoke", [args])) as ServiceReply,
       },
       streams: {
         open: async (kind, node) => {
@@ -651,6 +667,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         name: `${pluginId}.${action.name}`,
         title: action.title,
         caps: [...action.caps],
+        ...(action.delegates === undefined ? {} : { delegates: [...action.delegates] }),
         ...(action.cleanup === undefined ? {} : { cleanup: action.cleanup }),
         scope: action.scope ?? "workspace",
         ...(action.requirements === undefined ? {} : { requirements: [...action.requirements] }),

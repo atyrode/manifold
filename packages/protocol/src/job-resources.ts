@@ -2,7 +2,9 @@ import { z } from "zod";
 import type { MachineHalf } from "./jobs.ts";
 import { ServiceCredentialReferenceSchema } from "./services.ts";
 
-const name = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
+const name = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
   .refine((value) => !["__proto__", "constructor", "prototype", ".", ".."].includes(value));
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const revisions = z.record(name, digest).refine((value) => Object.keys(value).length <= 128);
@@ -17,10 +19,15 @@ export type JobResourceBindings = z.infer<typeof JobResourceBindingsSchema>;
 
 /** The owner advertises only non-secret identifiers and immutable policy fingerprints. */
 export const JobResourceInventorySchema = JobResourceBindingsSchema.extend({
-  serviceDefinitions: z.record(name, z.strictObject({
-    revision: name,
-    operationIds: z.array(name).max(64),
-  })).refine((value) => Object.keys(value).length <= 64),
+  serviceDefinitions: z
+    .record(
+      name,
+      z.strictObject({
+        revision: name,
+        operationIds: z.array(name).max(64),
+      }),
+    )
+    .refine((value) => Object.keys(value).length <= 64),
   credentialReferences: z.array(ServiceCredentialReferenceSchema).max(64).optional(),
 });
 export type JobResourceInventory = z.infer<typeof JobResourceInventorySchema>;
@@ -42,11 +49,15 @@ export function jobResourceRequirements(
   return {
     tools: operation.runtimeTools.filter((tool) => !managed.has(tool) && !artifact?.files?.[tool]),
     services: (operation.services ?? []).map((binding) => binding.serviceId),
-    anchors: [...new Set(operation.locations.map(({ locationId }) => {
-      const location = machine.locations[locationId];
-      if (!location) throw new Error("unknown_location");
-      return location.anchor;
-    }))],
+    anchors: [
+      ...new Set(
+        operation.locations.map(({ locationId }) => {
+          const location = machine.locations[locationId];
+          if (!location) throw new Error("unknown_location");
+          return location.anchor;
+        }),
+      ),
+    ],
   };
 }
 
@@ -89,8 +100,11 @@ export function jobResourceRefusal(
   }
   for (const binding of operation.services ?? []) {
     const policy = inventory.serviceDefinitions[binding.serviceId];
-    if (!policy || policy.revision !== binding.revision ||
-        binding.operationIds.some((id) => !policy.operationIds.includes(id)))
+    if (
+      !policy ||
+      policy.revision !== binding.revision ||
+      binding.operationIds.some((id) => !policy.operationIds.includes(id))
+    )
       return "service_definition_changed";
   }
   return null;

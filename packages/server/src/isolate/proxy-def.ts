@@ -62,6 +62,7 @@ export function localActionDef(pluginId: string, summary: ActionSummary): AnyAct
     name: local.data,
     title: summary.title,
     caps: summary.caps,
+    ...(summary.delegates === undefined ? {} : { delegates: summary.delegates }),
     scope: summary.scope,
     ...(summary.requirements === undefined ? {} : { requirements: summary.requirements }),
     ...(summary.trace === undefined ? {} : { trace: summary.trace }),
@@ -174,6 +175,7 @@ export async function serveCtxCall(
       return served.ctx.storage.keys(
         args[0] === undefined ? undefined : stringArg(args, 0, method),
       );
+    case "jobs.describe":
     case "jobs.execute":
     case "jobs.status":
     case "jobs.listRuns":
@@ -184,6 +186,7 @@ export async function serveCtxCall(
     case "services.readConfiguration":
     case "services.configureConfiguration":
     case "services.read":
+    case "services.invoke":
     case "auth.allows":
     case "outsideScope":
     case "newId":
@@ -196,6 +199,8 @@ export async function serveCtxCall(
   if (served.kind !== "dispatch") throw new Error(`slice_unavailable: ${method}`);
   const ctx = served.ctx;
   switch (method) {
+    case "jobs.describe":
+      return ctx.jobs.describe(jobDoorSchemas.describe.parse(args[0]));
     case "jobs.execute":
       return ctx.jobs.execute(JobExecuteArgsSchema.parse(args[0]));
     case "jobs.status":
@@ -213,9 +218,13 @@ export async function serveCtxCall(
     case "services.readConfiguration":
       return ctx.services.readConfiguration(serviceDoorSchemas.readConfiguration.parse(args[0]));
     case "services.configureConfiguration":
-      return ctx.services.configureConfiguration(serviceDoorSchemas.configureConfiguration.parse(args[0]));
+      return ctx.services.configureConfiguration(
+        serviceDoorSchemas.configureConfiguration.parse(args[0]),
+      );
     case "services.read":
       return ctx.services.read(serviceDoorSchemas.read.parse(args[0]));
+    case "services.invoke":
+      return ctx.services.invoke(serviceDoorSchemas.invoke.parse(args[0]));
     case "auth.allows": {
       const cap = CapSchema.safeParse(args[0]);
       if (!cap.success || cap.data === "*") {

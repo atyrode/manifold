@@ -1,4 +1,12 @@
-import { closeSync, constants, fstatSync, openSync, opendirSync, readSync, statfsSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  opendirSync,
+  readSync,
+  statfsSync,
+} from "node:fs";
 import { CLOSE_ON_EXEC, HeldDirectory } from "./job-files.ts";
 
 // Linux procfs, cgroup-v2 and nsfs superblock identities; never accept lookalike files.
@@ -36,7 +44,9 @@ function boundedText(directory: HeldDirectory, name: string, limit: number): str
       used += count;
     }
     throw new Error("listener_metadata_limit");
-  } finally { closeSync(fd); }
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function members(group: HeldDirectory): Set<string> {
@@ -55,7 +65,10 @@ function processStart(proc: HeldDirectory, pid: string): string {
   // comm is untrusted and may contain spaces, newlines and closing parentheses.
   const stat = boundedText(proc, "stat", 4096);
   if (!stat.startsWith(`${pid} (`)) throw new Error("listener_pid_namespace_mismatch");
-  const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+  const fields = stat
+    .slice(stat.lastIndexOf(")") + 2)
+    .trim()
+    .split(/\s+/);
   // stat fields 3 (state) and 22 (starttime), relative to the end of comm.
   if (!fields[0] || !/^[RSDTtWIKP]$/.test(fields[0]) || !/^\d+$/.test(fields[19] ?? ""))
     throw new Error("listener_process_not_live");
@@ -71,22 +84,34 @@ function netNamespace(proc: HeldDirectory): number {
       if (Number(statfsSync(`/proc/self/fd/${fd}`).type) !== NSFS_MAGIC)
         throw new Error("listener_namespace_unproven");
       return fd;
-    } catch (error) { closeSync(fd); throw error; }
-  } finally { ns.close(); }
+    } catch (error) {
+      closeSync(fd);
+      throw error;
+    }
+  } finally {
+    ns.close();
+  }
 }
 
 function listenerInode(net: HeldDirectory, port: number): bigint | undefined {
   const rows = boundedText(net, "tcp", MAX_TABLE_BYTES).trim().split("\n");
-  if (rows.length > MAX_TABLE_ROWS || !/^\s*sl\s+local_address\s+rem_address\s+st\s/.test(rows[0] ?? ""))
+  if (
+    rows.length > MAX_TABLE_ROWS ||
+    !/^\s*sl\s+local_address\s+rem_address\s+st\s/.test(rows[0] ?? "")
+  )
     throw new Error("listener_table_unproven");
   let inode: bigint | undefined;
   const hexPort = port.toString(16).toUpperCase().padStart(4, "0");
   for (const row of rows.slice(1)) {
     const fields = row.trim().split(/\s+/);
-    if (fields.length < 10 || !/^\d+:$/.test(fields[0]!) ||
+    if (
+      fields.length < 10 ||
+      !/^\d+:$/.test(fields[0]!) ||
       !/^[0-9A-F]{8}:[0-9A-F]{4}$/.test(fields[1]!) ||
       !/^[0-9A-F]{8}:[0-9A-F]{4}$/.test(fields[2]!) ||
-      !/^[0-9A-F]{2}$/.test(fields[3]!) || !/^\d+$/.test(fields[9]!))
+      !/^[0-9A-F]{2}$/.test(fields[3]!) ||
+      !/^\d+$/.test(fields[9]!)
+    )
       throw new Error("listener_table_unproven");
     // TCP_LISTEN = 0A; proc tcp IPv4 addresses are printed in native byte order.
     // The runtime supports Linux x64/arm64 little-endian hosts only.
@@ -103,18 +128,26 @@ function listenerInode(net: HeldDirectory, port: number): bigint | undefined {
 function withinAuthority(group: HeldDirectory, authority: Authority): boolean {
   const scope = identity(authority.scope.fd);
   const roots = new Set([identity(authority.main.fd), identity(authority.workloads.fd)]);
-  let fd = openSync(`${group.procPath}/.`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC);
+  let fd = openSync(
+    `${group.procPath}/.`,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
+  );
   try {
     for (let depth = 0; depth <= MAX_DEPTH; depth++) {
       const current = identity(fd);
-      const parent = openSync(`/proc/self/fd/${fd}/..`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC);
+      const parent = openSync(
+        `/proc/self/fd/${fd}/..`,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
+      );
       closeSync(fd);
       fd = parent;
       if (roots.has(current)) return identity(parent) === scope;
       if (identity(parent) === current) return false;
     }
     return false;
-  } finally { closeSync(fd); }
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** A bounded, synchronous observation, not a reservation of the port after return.
@@ -122,16 +155,23 @@ function withinAuthority(group: HeldDirectory, authority: Authority): boolean {
  * can prove ownership. The supervisor and separately admitted children are not roots.
  * Missing permissions, races, ambiguity or resource bounds all refuse readiness. */
 export function ownsWorkloadLoopbackListener(authority: Authority, port: number): boolean {
-  if (process.platform !== "linux" || !["x64", "arm64"].includes(process.arch) ||
-    !Number.isSafeInteger(port) || port < 1 || port > 65535) return false;
+  if (
+    process.platform !== "linux" ||
+    !["x64", "arm64"].includes(process.arch) ||
+    !Number.isSafeInteger(port) ||
+    port < 1 ||
+    port > 65535
+  )
+    return false;
   const held: HeldDirectory[] = [];
   const namespaces: number[] = [];
   const deadline = performance.now() + 250;
-  const checkTime = () => { if (performance.now() > deadline) throw new Error("listener_time_limit"); };
+  const checkTime = () => {
+    if (performance.now() > deadline) throw new Error("listener_time_limit");
+  };
   try {
     for (const group of [authority.scope, authority.main, authority.workloads]) {
-      if (Number(statfsSync(group.procPath).type) !== CGROUP2_SUPER_MAGIC)
-        return false;
+      if (Number(statfsSync(group.procPath).type) !== CGROUP2_SUPER_MAGIC) return false;
     }
     if (!/^populated 1$/m.test(boundedText(authority.scope, "cgroup.events", 1024))) return false;
     const procRoot = HeldDirectory.openAbsolute("/proc");
@@ -141,9 +181,15 @@ export function ownsWorkloadLoopbackListener(authority: Authority, port: number)
     held.push(self);
     processStart(self, String(process.pid));
     // cgroup.procs reports PIDs in the reader's namespace: verify procfs agrees.
-    const actualSelf = openSync(`${procRoot.procPath}/self`, constants.O_RDONLY | constants.O_DIRECTORY | CLOSE_ON_EXEC);
-    try { if (identity(actualSelf) !== identity(self.fd)) return false; }
-    finally { closeSync(actualSelf); }
+    const actualSelf = openSync(
+      `${procRoot.procPath}/self`,
+      constants.O_RDONLY | constants.O_DIRECTORY | CLOSE_ON_EXEC,
+    );
+    try {
+      if (identity(actualSelf) !== identity(self.fd)) return false;
+    } finally {
+      closeSync(actualSelf);
+    }
     const ownerNet = netNamespace(self);
     namespaces.push(ownerNet);
     const net = self.openChild("net");
@@ -151,7 +197,10 @@ export function ownsWorkloadLoopbackListener(authority: Authority, port: number)
     const inode = listenerInode(net, port);
     if (inode === undefined) return false;
 
-    const queue = [{ group: authority.main, depth: 0 }, { group: authority.workloads, depth: 0 }];
+    const queue = [
+      { group: authority.main, depth: 0 },
+      { group: authority.workloads, depth: 0 },
+    ];
     const processes: { group: HeldDirectory; pid: string }[] = [];
     const seen = new Set<string>();
     for (let index = 0; index < queue.length; index++) {
@@ -176,7 +225,9 @@ export function ownsWorkloadLoopbackListener(authority: Authority, port: number)
           held.push(child);
           queue.push({ group: child, depth: depth + 1 });
         }
-      } finally { directory.closeSync(); }
+      } finally {
+        directory.closeSync();
+      }
     }
     let descriptors = 0;
     for (const { group, pid } of processes) {
@@ -187,15 +238,23 @@ export function ownsWorkloadLoopbackListener(authority: Authority, port: number)
         const start = processStart(proc, pid);
         if (!members(group).has(pid)) return false;
         const processNet = netNamespace(proc);
-        try { if (identity(processNet) !== identity(ownerNet)) return false; }
-        finally { closeSync(processNet); }
+        try {
+          if (identity(processNet) !== identity(ownerNet)) return false;
+        } finally {
+          closeSync(processNet);
+        }
         const fds = proc.openChild("fd");
         try {
           const directory = opendirSync(fds.procPath, { bufferSize: 16 });
           try {
             for (let entry; (entry = directory.readSync()) !== null;) {
               checkTime();
-              if (++descriptors > MAX_DESCRIPTORS || !/^\d{1,10}$/.test(entry.name) || !entry.isSymbolicLink()) return false;
+              if (
+                ++descriptors > MAX_DESCRIPTORS ||
+                !/^\d{1,10}$/.test(entry.name) ||
+                !entry.isSymbolicLink()
+              )
+                return false;
               const path = `${fds.procPath}/${entry.name}`;
               // The kernel resolves one FD slot in the held task, retaining its inode.
               // No readlink/check/reopen pathname or attacker-chosen symlink is involved.
@@ -203,27 +262,49 @@ export function ownsWorkloadLoopbackListener(authority: Authority, port: number)
               try {
                 const stat = fstatSync(socket, { bigint: true });
                 if (!stat.isSocket() || stat.ino !== inode) continue;
-                if (listenerInode(net, port) !== inode || !withinAuthority(group, authority) ||
-                  !members(group).has(pid) || processStart(proc, pid) !== start) return false;
+                if (
+                  listenerInode(net, port) !== inode ||
+                  !withinAuthority(group, authority) ||
+                  !members(group).has(pid) ||
+                  processStart(proc, pid) !== start
+                )
+                  return false;
                 const finalNet = netNamespace(proc);
-                try { if (identity(finalNet) !== identity(ownerNet)) return false; }
-                finally { closeSync(finalNet); }
+                try {
+                  if (identity(finalNet) !== identity(ownerNet)) return false;
+                } finally {
+                  closeSync(finalNet);
+                }
                 // An FD closed/replaced during the observation must not pass on stale inode evidence.
                 const current = openSync(path, O_PATH | CLOSE_ON_EXEC);
                 try {
                   checkTime();
-                  return identity(current) === identity(socket) && fstatSync(current).isSocket() &&
-                    processStart(proc, pid) === start;
-                } finally { closeSync(current); }
-              } finally { closeSync(socket); }
+                  return (
+                    identity(current) === identity(socket) &&
+                    fstatSync(current).isSocket() &&
+                    processStart(proc, pid) === start
+                  );
+                } finally {
+                  closeSync(current);
+                }
+              } finally {
+                closeSync(socket);
+              }
             }
-          } finally { directory.closeSync(); }
-        } finally { fds.close(); }
-      } finally { proc.close(); }
+          } finally {
+            directory.closeSync();
+          }
+        } finally {
+          fds.close();
+        }
+      } finally {
+        proc.close();
+      }
     }
     return false;
-  } catch { return false; }
-  finally {
+  } catch {
+    return false;
+  } finally {
     for (const fd of namespaces) closeSync(fd);
     for (const directory of held.reverse()) directory.close();
   }

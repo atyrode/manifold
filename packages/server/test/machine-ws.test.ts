@@ -96,25 +96,45 @@ describe("machine channel send status", () => {
     const channel = new LiveMachineChannel("machine", "principal", socket, PROTOCOL_VERSION, null);
     const bytes = Buffer.alloc(2 * 1024 * 1024, 0x80);
     const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
-    expect(channel.send({
-      type: "job_command",
-      command: {
-        type: "install", pluginId: "fixture.worker", installationRevision: "r1",
-        artifactSha256: sha256, artifact: { bundleFile: "worker", data: bytes.toString("base64") },
-        machine: {
-          artifacts: { "linux-x64": {
-            bundleFile: "worker", sha256, entrySha256: sha256, format: "raw",
-            entry: ["worker"], maxBytes: bytes.length, maxExpandedBytes: bytes.length, maxMembers: 1,
-          } },
-          locations: {},
-          operations: { "fixture.worker.run": {
-            argv: [], input: {}, runtimeTools: [], locations: [], outputs: [],
-            network: "none", stdin: false,
-            limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 4096 },
-          } },
+    expect(
+      channel.send({
+        type: "job_command",
+        command: {
+          type: "install",
+          pluginId: "fixture.worker",
+          installationRevision: "r1",
+          artifactSha256: sha256,
+          artifact: { bundleFile: "worker", data: bytes.toString("base64") },
+          machine: {
+            artifacts: {
+              "linux-x64": {
+                bundleFile: "worker",
+                sha256,
+                entrySha256: sha256,
+                format: "raw",
+                entry: ["worker"],
+                maxBytes: bytes.length,
+                maxExpandedBytes: bytes.length,
+                maxMembers: 1,
+              },
+            },
+            locations: {},
+            operations: {
+              "fixture.worker.run": {
+                argv: [],
+                input: {},
+                runtimeTools: [],
+                locations: [],
+                outputs: [],
+                network: "none",
+                stdin: false,
+                limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 4096 },
+              },
+            },
+          },
         },
-      },
-    })).toBe(true);
+      }),
+    ).toBe(true);
     socket.bufferedAmount = Buffer.byteLength(socket.sent[0]!);
     expect(channel.send({ type: "kill", terminalId: "terminal" })).toBe(true);
     expect(socket.closed).toBeNull();
@@ -123,7 +143,13 @@ describe("machine channel send status", () => {
     expect(socket.closed?.code).toBe(1013);
 
     const ordinary = new StatusSocket(-1);
-    const terminalChannel = new LiveMachineChannel("ordinary", "principal", ordinary, PROTOCOL_VERSION, null);
+    const terminalChannel = new LiveMachineChannel(
+      "ordinary",
+      "principal",
+      ordinary,
+      PROTOCOL_VERSION,
+      null,
+    );
     ordinary.bufferedAmount = MAX_SESSION_FRAME_BYTES;
     expect(terminalChannel.send({ type: "kill", terminalId: "terminal" })).toBe(false);
     expect(ordinary.closed?.code).toBe(1013);
@@ -710,6 +736,7 @@ describe("machine admission and terminal continuity", () => {
       protocolVersion: GOVERNED_JOB_MIN_PROTOCOL_VERSION - 1,
       alive: ["t1"],
       jobOwner: {
+        protocolVersion: PROTOCOL_VERSION,
         ownerId: "job-owner",
         publicKey: "untrusted-owner-key",
         generation: 1,
@@ -768,6 +795,7 @@ describe("machine admission and terminal continuity", () => {
     fix.gateway.setJobs(jobs);
     const keys = generateKeyPairSync("ed25519");
     const owner: JobOwner = {
+      protocolVersion: PROTOCOL_VERSION,
       ownerId: "job-owner",
       publicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
       generation: 1,

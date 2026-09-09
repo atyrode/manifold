@@ -1,6 +1,7 @@
-import type { MachineSummary, Container, Attendance, PlacementItem } from "@manifold/protocol";
+import type { Container, Attendance, PlacementItem } from "@manifold/protocol";
 import type { ConnectionStatus } from "@manifold/sdk";
 import { createContext, createElement, useContext, type ReactElement, type ReactNode } from "react";
+import type { AuthoringHandle } from "./host.ts";
 
 /**
  * THE ROUTE, published — the one contract between the workspace shell and whichever plugin
@@ -35,7 +36,7 @@ export interface WorkspaceSidebarState {
   readonly savedAt: number | null;
   readonly rev: number;
   readonly terminalCount: number;
-  readonly onCreateTerminal: (machine?: MachineSummary) => void;
+  readonly onCreateTerminal: AuthoringHandle["createTerminal"];
 }
 
 export interface ContainerRoute {
@@ -55,7 +56,7 @@ export interface ContainerRoute {
   createContainer(discipline: Container["discipline"]): void;
   refreshActiveContainer(): void;
   onWorkspaceChange(state: WorkspaceSidebarState | null): void;
-  onCreateTerminalChange(create: ((machine?: MachineSummary) => void) | null): void;
+  onCreateTerminalChange(create: AuthoringHandle["createTerminal"] | null): void;
   isOverSidebar(clientX: number, clientY: number): boolean;
 }
 

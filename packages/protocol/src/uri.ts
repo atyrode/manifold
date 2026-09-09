@@ -189,8 +189,7 @@ export function parseManifoldUri(text: string): ManifoldRef | null {
     if (segments.length === 4 && mid === "location")
       return { kind: "location", machineId: first, locationId: second };
     if (mid === "service") {
-      if (segments.length === 4)
-        return { kind: "service", machineId: first, serviceId: second };
+      if (segments.length === 4) return { kind: "service", machineId: first, serviceId: second };
       const operationId = segments[5];
       if (segments.length === 6 && segments[4] === "operation" && operationId !== undefined)
         return { kind: "service", machineId: first, serviceId: second, operationId };
@@ -268,11 +267,13 @@ export function containmentPath(node: string): readonly string[] | null {
       formatManifoldUri({ kind: "machine", machineId: ref.machineId }),
     ];
     if (ref.kind === "service" && ref.operationId !== undefined)
-      path.push(formatManifoldUri({
-        kind: "service",
-        machineId: ref.machineId,
-        serviceId: ref.serviceId,
-      }));
+      path.push(
+        formatManifoldUri({
+          kind: "service",
+          machineId: ref.machineId,
+          serviceId: ref.serviceId,
+        }),
+      );
     if (ref.kind === "job" || ref.kind === "output")
       path.push(
         formatManifoldUri({

@@ -1,6 +1,7 @@
 import { basename, dirname } from "node:path";
 import { closeSync, fstatSync, readFileSync } from "node:fs";
 import { z } from "zod";
+import { ServiceCredentialReferenceSchema } from "@manifold/protocol";
 import { HeldDirectory } from "./job-files.ts";
 import { JobJournal } from "./job-journal.ts";
 import { MachineJobOwner } from "./job-owner.ts";
@@ -39,6 +40,16 @@ const ConfigSchema = z.strictObject({
         .max(128),
     )
     .refine((tools) => Object.keys(tools).length <= 128),
+  serviceCredentials: z
+    .record(
+      z
+        .string()
+        .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
+        .refine((value) => !["__proto__", "constructor", "prototype"].includes(value)),
+      z.strictObject({ source: absolute, origins: ServiceCredentialReferenceSchema.shape.origins }),
+    )
+    .refine((values) => Object.keys(values).length <= 64)
+    .optional(),
   artifactOrigins: z
     .array(
       z
@@ -74,6 +85,25 @@ export async function openConfiguredJobOwner(
     HeldDirectory.openAbsolute(dirname(terminalSocketPath), { private: true }),
     ...config.protectedDirectories.map((path) => HeldDirectory.openAbsolute(path)),
   ];
+  const serviceCredentials = new Map<string, { fd: number; origins: readonly string[] }>();
+  for (const [ref, credential] of Object.entries(config.serviceCredentials ?? {})) {
+    const directory = HeldDirectory.openAbsolute(dirname(credential.source), { private: true });
+    protectedDirectories.push(directory);
+    const fd = directory.openFile(basename(credential.source));
+    const stat = fstatSync(fd);
+    if (
+      !stat.isFile() ||
+      stat.uid !== process.getuid?.() ||
+      (stat.mode & 0o077) !== 0 ||
+      stat.nlink !== 1 ||
+      stat.size < 1 ||
+      stat.size > 16384
+    ) {
+      closeSync(fd);
+      throw new Error("unsafe_service_credential_reference");
+    }
+    serviceCredentials.set(ref, { fd, origins: credential.origins });
+  }
   const exclusions = new DirectoryExclusions(protectedDirectories);
   const journal = new JobJournal(state.openChild("journal", { create: true }));
   const cache = state.openChild("artifacts", { create: true });
@@ -122,6 +152,7 @@ export async function openConfiguredJobOwner(
     anchors,
     protectedDirectories,
     runtimeTools,
+    serviceCredentials,
     artifactAuthority: { origins: config.artifactOrigins, maxRedirects: 5, timeoutMs: 60_000 },
   });
 }

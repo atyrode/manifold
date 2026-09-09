@@ -757,13 +757,13 @@ export async function startAgent(options: StartAgentOptions): Promise<TestAgent>
   };
   try {
     if (!options.existingHost) {
-    const observedHost = observeProcess(
-      ["bun", "packages/agent/src/main.ts", "--terminal-host"],
-      hostEnv,
-      undefined,
-      rings,
-    );
-    hostProcess = observedHost;
+      const observedHost = observeProcess(
+        ["bun", "packages/agent/src/main.ts", "--terminal-host"],
+        hostEnv,
+        undefined,
+        rings,
+      );
+      hostProcess = observedHost;
     }
     // The host is ready once its socket exists; the transport fails by name without it.
     await waitFor(

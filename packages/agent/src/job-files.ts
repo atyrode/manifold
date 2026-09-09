@@ -3,6 +3,7 @@ import {
   openSync,
   closeSync,
   fstatSync,
+  fchmodSync,
   readFileSync,
   mkdirSync,
   readdirSync,
@@ -88,6 +89,7 @@ export function privateByteFile(bytes: Uint8Array): number {
       if (written === 0) throw new Error("short_policy_write");
       offset += written;
     }
+    fchmodSync(fd, 0o400);
     // F_SEAL_SEAL | SHRINK | GROW | WRITE: even reopening via proc cannot mutate the bytes.
     if (libc.symbols.fcntl(fd, 1033, 15) !== 0) throw new Error("private_file_sealing_failed");
     return openSync(`/proc/self/fd/${fd}`, constants.O_RDONLY | CLOSE_ON_EXEC);

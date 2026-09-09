@@ -7,6 +7,8 @@ import {
   type MachineSummary,
   type PlacementDestination,
   type PlacementItem,
+  type TerminalInfo,
+  type TerminalRuntime,
 } from "@manifold/protocol";
 import { itemNoun, lastSpotlight, type ViewportHandle } from "@manifold/plugin";
 import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
@@ -1238,7 +1240,7 @@ export function CanvasView({
    */
   const terminals = projection.terminals;
   const createTerminal = useCallback(
-    async (machine?: MachineSummary): Promise<void> => {
+    async (machine?: MachineSummary, runtime?: TerminalRuntime): Promise<TerminalInfo | null> => {
       if (client.status !== "open") {
         notify(
           client.status === "closed"
@@ -1248,7 +1250,7 @@ export function CanvasView({
               : "Connecting to the canvas",
           { key: "new-terminal" },
         );
-        return;
+        return null;
       }
       const facet = terminals !== null && terminals.enabled ? terminals.facet : null;
       const target = machine ?? facet?.defaultMachine(containerId, machines) ?? null;
@@ -1260,6 +1262,7 @@ export function CanvasView({
           cols: 80,
           rows: 24,
           ...(target === null ? {} : { machineId: target.id }),
+          ...(runtime === undefined ? {} : { runtime }),
         });
         // The server created the terminal's home composition with its PTY, so the
         // element this canvas authors is a portal onto that home: on a canvas a
@@ -1269,10 +1272,12 @@ export function CanvasView({
             createPortalElement(elementId, terminal.containerId, canvasCenter(), tx.nextZIndex()),
           );
         });
+        return terminal;
       } catch (reason: unknown) {
         notify(reason instanceof Error ? reason.message : "Could not open a terminal", {
           key: "new-terminal",
         });
+        return null;
       }
     },
     [canvasCenter, client, machines, notify, containerId, terminals],
@@ -1346,6 +1351,7 @@ export function CanvasView({
           }
           case "machine":
           case "operation":
+          case "service":
           case "location":
           case "job":
           case "output":

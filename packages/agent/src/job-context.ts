@@ -21,6 +21,7 @@ const MAX_CONTEXT_BYTES = 256 * 1024;
 export interface BoundInvocation {
   readonly parentJobId: string;
   readonly invocationId: string;
+  readonly origin: "worker" | "owner";
   childJobId: string | null;
   readonly operationId: string;
   readonly input: Record<string, string | number | boolean>;
@@ -105,9 +106,13 @@ export class JobContext {
           if (this.serviceController.signal.aborted) refusal = "service_closed";
         }
       }
-      this.send(ServiceReadyResultSchema.parse(refusal === null
-        ? { type: "service_ready_result", requestId: request.requestId, ok: true }
-        : { type: "service_ready_result", requestId: request.requestId, ok: false, refusal }));
+      this.send(
+        ServiceReadyResultSchema.parse(
+          refusal === null
+            ? { type: "service_ready_result", requestId: request.requestId, ok: true }
+            : { type: "service_ready_result", requestId: request.requestId, ok: false, refusal },
+        ),
+      );
       return;
     }
     if (Reflect.get(raw, "type") === "service") {
@@ -145,6 +150,7 @@ export class JobContext {
       this.invocations.set(invocationId, {
         parentJobId: this.parentJobId,
         invocationId,
+        origin: "worker",
         childJobId: null,
         operationId,
         input,
@@ -170,9 +176,14 @@ export class JobContext {
     ) {
       if (command.type !== "input") throw new Error("context_child_mismatch");
       this.send({
-        type: "input_result", jobId: command.jobId, requestId: command.requestId,
-        seq: command.seq, accepted: false, reason: "context_child_mismatch",
-        nextInputSeq: null, stdinClosed: true,
+        type: "input_result",
+        jobId: command.jobId,
+        requestId: command.requestId,
+        seq: command.seq,
+        accepted: false,
+        reason: "context_child_mismatch",
+        nextInputSeq: null,
+        stdinClosed: true,
       });
       return;
     }
@@ -181,9 +192,14 @@ export class JobContext {
         await this.callbacks.command(command);
       } catch {
         this.send({
-          type: "input_result", jobId: command.jobId, requestId: command.requestId,
-          seq: command.seq, accepted: false, reason: "job_input_delivery_unknown",
-          nextInputSeq: null, stdinClosed: true,
+          type: "input_result",
+          jobId: command.jobId,
+          requestId: command.requestId,
+          seq: command.seq,
+          accepted: false,
+          reason: "job_input_delivery_unknown",
+          nextInputSeq: null,
+          stdinClosed: true,
         });
       }
     } else await this.callbacks.command(command);
@@ -194,12 +210,14 @@ export class JobContext {
     if (!invocation || invocation.childJobId !== null || invocation.refused)
       throw new Error("invocation_replayed");
     invocation.childJobId = childJobId;
-    this.send({ type: "child", invocationId, jobId: childJobId });
+    if (invocation.origin === "worker")
+      this.send({ type: "child", invocationId, jobId: childJobId });
   }
   reply(invocationId: string, jobId: string | null, reason: string | null): void {
     const invocation = this.invocations.get(invocationId);
     if (!invocation) throw new Error("unknown_invocation");
     if (reason !== null) invocation.refused = true;
+    if (invocation.origin === "owner") return;
     this.send({
       type: "invocation_reply",
       parentJobId: this.parentJobId,

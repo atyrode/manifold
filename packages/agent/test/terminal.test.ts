@@ -111,8 +111,13 @@ test("unknown native startup rejects exit and retains disposal authority until p
     if (!proofAvailable) throw new Error("still unproven");
   });
   const terminal = new PtyTerminal({
-    terminalId: "unknown-native", cols: 80, rows: 24, onOutput() {},
-    runtime: async () => { throw failure; },
+    terminalId: "unknown-native",
+    cols: 80,
+    rows: 24,
+    onOutput() {},
+    runtime: async () => {
+      throw failure;
+    },
   });
   try {
     await expect(terminal.exited).rejects.toBe(failure);

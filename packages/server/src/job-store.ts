@@ -91,21 +91,40 @@ export class JobStore {
       : null;
   }
   inputCursor(jobId: string, seq: number, closed: boolean): void {
-    this.store.db.query(
-      `UPDATE machine_jobs SET next_input_seq=?,stdin_closed=MAX(stdin_closed,?)
+    this.store.db
+      .query(
+        `UPDATE machine_jobs SET next_input_seq=?,stdin_closed=MAX(stdin_closed,?)
        WHERE job_id=? AND (next_input_seq IS NULL OR next_input_seq<=?)`,
-    ).run(seq, closed ? 1 : 0, jobId, seq);
+      )
+      .run(seq, closed ? 1 : 0, jobId, seq);
   }
-  reserveInput(job: JobRecord, requestId: string, seq: number, actor: string, traceId: string): boolean {
-    return this.store.db.query(
-      `INSERT INTO machine_job_inputs(job_id,request_id,seq,actor,trace_id,decision_id,state)
+  reserveInput(
+    job: JobRecord,
+    requestId: string,
+    seq: number,
+    actor: string,
+    traceId: string,
+  ): boolean {
+    return (
+      this.store.db
+        .query(
+          `INSERT INTO machine_job_inputs(job_id,request_id,seq,actor,trace_id,decision_id,state)
        VALUES(?,?,?,?,?,?,'pending') ON CONFLICT(job_id,request_id) DO NOTHING`,
-    ).run(job.request.jobId, requestId, seq, actor, traceId, job.decisionId).changes === 1;
+        )
+        .run(job.request.jobId, requestId, seq, actor, traceId, job.decisionId).changes === 1
+    );
   }
-  inputResult(jobId: string, requestId: string, state: "accepted" | "rejected" | "unknown", reason: string | null): void {
-    this.store.db.query(
-      "UPDATE machine_job_inputs SET state=?,reason=? WHERE job_id=? AND request_id=? AND state!='accepted'",
-    ).run(state, reason, jobId, requestId);
+  inputResult(
+    jobId: string,
+    requestId: string,
+    state: "accepted" | "rejected" | "unknown",
+    reason: string | null,
+  ): void {
+    this.store.db
+      .query(
+        "UPDATE machine_job_inputs SET state=?,reason=? WHERE job_id=? AND request_id=? AND state!='accepted'",
+      )
+      .run(state, reason, jobId, requestId);
   }
   reserve(request: JobRequest, now: number): JobRecord {
     const previous = this.get(request.jobId);
@@ -299,7 +318,12 @@ export class JobStore {
       : null;
     return {
       origin: request.parent
-        ? { kind: "invocation", traceId: request.traceId, door: job.auditOrigin?.door ?? null, ...request.parent }
+        ? {
+            kind: "invocation",
+            traceId: request.traceId,
+            door: job.auditOrigin?.door ?? null,
+            ...request.parent,
+          }
         : occurrence
           ? {
               kind: "schedule",
@@ -409,7 +433,9 @@ export class JobStore {
           machine: MachineHalfSchema.parse(JSON.parse(r.manifest)),
           ...(r.resource_bindings === null
             ? {}
-            : { resourceBindings: JobResourceBindingsSchema.parse(JSON.parse(r.resource_bindings)) }),
+            : {
+                resourceBindings: JobResourceBindingsSchema.parse(JSON.parse(r.resource_bindings)),
+              }),
           enabled: r.enabled === 1,
           ready: r.ready === 1,
           purgeRequested: r.purge_requested === 1,

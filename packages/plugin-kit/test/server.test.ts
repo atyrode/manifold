@@ -147,15 +147,42 @@ test("a retained producer works after dispatch while other captured authority ex
   if (producer === undefined || captured === undefined)
     throw new Error("handler did not retain its producer");
   await expect(captured.storage.get("x")).rejects.toThrow("already answered");
-  await expect(captured.services.describe({ machineId: "machine" })).rejects.toThrow("already answered");
-  await expect(captured.services.readConfiguration({ machineId: "machine" })).rejects.toThrow("already answered");
-  await expect(captured.services.configureConfiguration({
-    machineId: "machine", expectedRevision: null, policies: [],
-  })).rejects.toThrow("already answered");
-  await expect(captured.services.read({
-    machineId: "machine", serviceId: "service", revision: "revision",
-    policySha256: "a".repeat(64), operationId: "read", input: {},
-  })).rejects.toThrow("already answered");
+  await expect(
+    captured.jobs.describe({ machineId: "machine", pluginId: "plugin" }),
+  ).rejects.toThrow("already answered");
+  await expect(captured.services.describe({ machineId: "machine" })).rejects.toThrow(
+    "already answered",
+  );
+  await expect(captured.services.readConfiguration({ machineId: "machine" })).rejects.toThrow(
+    "already answered",
+  );
+  await expect(
+    captured.services.configureConfiguration({
+      machineId: "machine",
+      expectedRevision: null,
+      policies: [],
+    }),
+  ).rejects.toThrow("already answered");
+  await expect(
+    captured.services.read({
+      machineId: "machine",
+      serviceId: "service",
+      revision: "revision",
+      policySha256: "a".repeat(64),
+      operationId: "read",
+      input: {},
+    }),
+  ).rejects.toThrow("already answered");
+  await expect(
+    captured.services.invoke({
+      machineId: "machine",
+      serviceId: "service",
+      revision: "revision",
+      policySha256: "a".repeat(64),
+      operationId: "write",
+      input: {},
+    }),
+  ).rejects.toThrow("already answered");
   const publishing = producer.publish({ line: "after return" });
   const publication = await serve(fake, null);
   expect(publication).toMatchObject({
@@ -573,4 +600,67 @@ describe("hooks, shutdown and stray frames", () => {
     ]);
     expect(fake.sent).toEqual([]);
   });
+});
+
+test("guest service invocation preserves a native refusal across the correlated host call", async () => {
+  const args = {
+    machineId: "machine",
+    serviceId: "inventory",
+    revision: "r1",
+    policySha256: "a".repeat(64),
+    operationId: "update",
+    input: { enabled: true },
+  };
+  const fake = host({
+    manifest,
+    actions: [echo],
+    handlers: {
+      echo: async (ctx) => {
+        const reply = await ctx.services.invoke(args);
+        return { text: reply.ok ? "updated" : reply.refusal };
+      },
+    },
+  });
+  load(fake);
+  await fake.next();
+  fake.send({ t: "dispatch", id: "d1", action: "echo", args: { text: "update" }, ctx: ctxOf() });
+  const frame = await serve(fake, {
+    type: "service_result",
+    requestId: "invocation",
+    ok: false,
+    refusal: "service_upstream_refused",
+  });
+  expect(frame).toMatchObject({ method: "services.invoke", args: [args] });
+  expect(await fake.next()).toMatchObject({
+    t: "dispatched",
+    outcome: { ok: true, result: { text: "service_upstream_refused" } },
+  });
+});
+
+test("guest job discovery cannot hide a host authority refusal", async () => {
+  const fake = host({
+    manifest,
+    actions: [echo],
+    handlers: {
+      echo: async (ctx) => {
+        await ctx.jobs.describe({
+          machineId: "machine",
+          pluginId: "worker",
+          installationRevision: "r1",
+        });
+        return { text: "unexpected access" };
+      },
+    },
+  });
+  load(fake);
+  await fake.next();
+  fake.send({ t: "dispatch", id: "d1", action: "echo", args: { text: "describe" }, ctx: ctxOf() });
+  const frame = await fake.next();
+  if (frame.t !== "call") throw new Error("missing discovery call");
+  expect(frame).toMatchObject({
+    method: "jobs.describe",
+    args: [{ machineId: "machine", pluginId: "worker", installationRevision: "r1" }],
+  });
+  fake.send({ t: "reply", id: frame.id, ok: false, error: "governed_authority_refused" });
+  expect(await fake.next()).toMatchObject({ t: "dispatched", outcome: { ok: false } });
 });

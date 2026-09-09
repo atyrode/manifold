@@ -176,14 +176,22 @@ export async function packPlugin(
   for (const artifact of machineArtifacts(manifest.machine)) {
     const name = artifact.bundleFile;
     if (name === undefined) continue;
-    if (name === PLUGIN_BUNDLE_SERVER_FILE || name === manifest.entry.web || name === PLUGIN_BUNDLE_STYLES_FILE)
+    if (
+      name === PLUGIN_BUNDLE_SERVER_FILE ||
+      name === manifest.entry.web ||
+      name === PLUGIN_BUNDLE_STYLES_FILE
+    )
       throw new Error(`machine member collides with a plugin entry: ${name}`);
     if (Object.hasOwn(files, name)) continue;
     const file = await open(join(pluginDir, name), constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const stat = await file.stat();
-      if (!stat.isFile() || stat.size <= 0 || stat.size > artifact.maxBytes ||
-          4 * Math.ceil(stat.size / 3) > ISOLATE_MAX_ARTIFACT_BYTES)
+      if (
+        !stat.isFile() ||
+        stat.size <= 0 ||
+        stat.size > artifact.maxBytes ||
+        4 * Math.ceil(stat.size / 3) > ISOLATE_MAX_ARTIFACT_BYTES
+      )
         throw new Error(`machine member exceeds its byte budget or is not a regular file: ${name}`);
       const bytes = Buffer.alloc(stat.size + 1);
       let offset = 0;

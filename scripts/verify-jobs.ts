@@ -10,11 +10,12 @@ if (
   !process.env.MANIFOLD_TEST_BWRAP ||
   !process.env.MANIFOLD_TEST_STATIC_BUSYBOX ||
   !process.env.MANIFOLD_TEST_SYSCALL_PROBE ||
+  !process.env.MANIFOLD_TEST_LISTENER_PROBE ||
   !process.env.MANIFOLD_TEST_OUTPUT_ROOT ||
   !process.env.MANIFOLD_TEST_MOUNT_TREE
 ) {
   throw new Error(
-    "verify:jobs requires a private manifold-jobs-* delegated Linux unit, bubblewrap/static BusyBox/syscall probe, and bounded output/mount fixtures",
+    "verify:jobs requires a private manifold-jobs-* delegated Linux unit, bubblewrap/static BusyBox/syscall and listener probes, and bounded output/mount fixtures",
   );
 }
 const membership = readFileSync("/proc/self/cgroup", "utf8")

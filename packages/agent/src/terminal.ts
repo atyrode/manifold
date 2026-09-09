@@ -229,7 +229,7 @@ export class PtyTerminal {
   constructor(opts: PtyTerminalOptions) {
     // Resolve the shell FIRST: a missing shell throws PtyError before any resource is
     // allocated, so the agent can ref it as create_error with nothing to clean up.
-    const command = opts.runtime ? [] : opts.command ?? resolveShellCommand();
+    const command = opts.runtime ? [] : (opts.command ?? resolveShellCommand());
     this.terminalId = opts.terminalId;
     this.colsValue = opts.cols;
     this.rowsValue = opts.rows;
@@ -271,27 +271,34 @@ export class PtyTerminal {
           data: (_pty, chunk) => outputHandler(chunk),
         });
         // Defer the callback so even synchronous launch errors retain this terminal's ownership.
-        this.runtimeHandle = Promise.resolve().then(() => opts.runtime!({
-          pty: this.pty,
-          onOutput: (bytes) => this.ingest(bytes),
-          setOutputHandler: (handler) => { outputHandler = handler; },
-        }));
-        this.exited = this.runtimeHandle.then(async (handle) => {
-          if (this.runtimeCancelled) await handle.cancel();
-          const result = await handle.result;
-          if (result.empty !== true) throw new PtyError("native workload empty proof required");
-          this.emptyObserved = true;
-          this.aliveFlag = false;
-          this.exitCodeValue = result.exitCode;
-          return { exitCode: result.exitCode };
-        }, (error: unknown) => {
-          if (error instanceof LinuxJobRefusal) {
-            this.startupFailure = error;
-            this.emptyObserved = error.workloadEmpty;
-            if (this.emptyObserved) this.aliveFlag = false;
-          }
-          throw error;
-        });
+        this.runtimeHandle = Promise.resolve().then(() =>
+          opts.runtime!({
+            pty: this.pty,
+            onOutput: (bytes) => this.ingest(bytes),
+            setOutputHandler: (handler) => {
+              outputHandler = handler;
+            },
+          }),
+        );
+        this.exited = this.runtimeHandle.then(
+          async (handle) => {
+            if (this.runtimeCancelled) await handle.cancel();
+            const result = await handle.result;
+            if (result.empty !== true) throw new PtyError("native workload empty proof required");
+            this.emptyObserved = true;
+            this.aliveFlag = false;
+            this.exitCodeValue = result.exitCode;
+            return { exitCode: result.exitCode };
+          },
+          (error: unknown) => {
+            if (error instanceof LinuxJobRefusal) {
+              this.startupFailure = error;
+              this.emptyObserved = error.workloadEmpty;
+              if (this.emptyObserved) this.aliveFlag = false;
+            }
+            throw error;
+          },
+        );
         // Startup refusal is observed by the host's create path, not an unhandled exit.
         void this.exited.catch(() => {});
         return;
@@ -394,7 +401,8 @@ export class PtyTerminal {
   /** Escalates a terminal that survived graceful shutdown; SIGKILL cannot be trapped. */
   forceKill(): void {
     this.runtimeCancelled = true;
-    if (this.runtimeHandle) void this.runtimeHandle.then((handle) => handle.cancel()).catch(() => {});
+    if (this.runtimeHandle)
+      void this.runtimeHandle.then((handle) => handle.cancel()).catch(() => {});
     this.proc?.kill("SIGKILL");
     if (!this.runtimeHandle && !this.pty.closed) this.pty.close();
   }

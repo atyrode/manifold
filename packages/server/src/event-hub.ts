@@ -483,7 +483,9 @@ export class EventHub {
       if (entry === undefined) continue;
       // Collection delivery cannot broaden the original resource's read authority.
       if (
-        governingTopic.kind === "job" || governingTopic.kind === "output" || governingTopic.kind === "service"
+        governingTopic.kind === "job" ||
+        governingTopic.kind === "output" ||
+        governingTopic.kind === "service"
           ? !this.deps.canReadGoverned(entry.subscriber.auth, governingTopic)
           : !this.authorized(entry.subscriber.auth, containerId)
       )

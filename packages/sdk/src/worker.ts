@@ -17,7 +17,11 @@ import {
 import { JsonFrameReader, WorkerError, type WorkerErrorCode } from "./worker-input.ts";
 
 export { JsonFrameReader, WorkerError, attachWorkerInput } from "./worker-input.ts";
-export type { JsonFrameReaderOptions, WorkerErrorCode, WorkerInputOptions } from "./worker-input.ts";
+export type {
+  JsonFrameReaderOptions,
+  WorkerErrorCode,
+  WorkerInputOptions,
+} from "./worker-input.ts";
 export type { WorkerLocation } from "@manifold/protocol";
 
 export interface WorkerContextOptions {
@@ -80,10 +84,16 @@ class NativeWorkerContext implements WorkerContext {
   #announced = false;
   #failure: WorkerError | undefined;
 
-  constructor(private readonly socket: Socket, private readonly parentSignal: AbortSignal | undefined) {
+  constructor(
+    private readonly socket: Socket,
+    private readonly parentSignal: AbortSignal | undefined,
+  ) {
     // The lifetime may end before the application starts awaiting context readiness.
     void this.ready.catch(() => undefined);
-    this.#reader = new JsonFrameReader({ parse: (value) => value, receive: (value) => this.#receive(value) });
+    this.#reader = new JsonFrameReader({
+      parse: (value) => value,
+      receive: (value) => this.#receive(value),
+    });
     socket.on("data", this.#data);
     socket.on("error", this.#disconnect);
     socket.on("end", this.#disconnect);
@@ -92,27 +102,37 @@ class NativeWorkerContext implements WorkerContext {
     if (parentSignal?.aborted) this.#cancel();
   }
 
-  async callService(request: Pick<ServiceCall, "serviceId" | "operationId" | "input">): Promise<unknown> {
+  async callService(
+    request: Pick<ServiceCall, "serviceId" | "operationId" | "input">,
+  ): Promise<unknown> {
     if (this.#failure) throw this.#failure;
     // Check before validation/serialization so saturation cannot accumulate waiting closures.
     if (this.#pending.size >= WORKER_MAX_PENDING) throw new WorkerError("worker_busy");
     let call: ServiceCall;
-    try { call = ServiceCallSchema.parse({ ...request, type: "service", requestId: randomUUID() }); }
-    catch { throw new WorkerError("service_input_invalid"); }
+    try {
+      call = ServiceCallSchema.parse({ ...request, type: "service", requestId: randomUUID() });
+    } catch {
+      throw new WorkerError("service_input_invalid");
+    }
     return this.#request(call.requestId, "service", call);
   }
 
   async announceServiceReady(port: number): Promise<void> {
     if (this.#failure) throw this.#failure;
     if (this.#announced) throw new WorkerError("service_ready_duplicate");
-    const request = ServiceReadySchema.safeParse({ type: "service_ready", requestId: randomUUID(), port });
+    const request = ServiceReadySchema.safeParse({
+      type: "service_ready",
+      requestId: randomUUID(),
+      port,
+    });
     if (!request.success) throw new WorkerError("service_invalid_request");
     this.#announced = true;
     await this.#request(request.data.requestId, "service_ready", request.data);
   }
 
   #request(requestId: string, kind: PendingRequest["kind"], value: unknown): Promise<unknown> {
-    if (this.#pending.size >= WORKER_MAX_PENDING) return Promise.reject(new WorkerError("worker_busy"));
+    if (this.#pending.size >= WORKER_MAX_PENDING)
+      return Promise.reject(new WorkerError("worker_busy"));
     const frame = Buffer.from(`${JSON.stringify(value)}\n`);
     if (frame.length > WORKER_FRAME_BYTES) {
       frame.fill(0);
@@ -123,7 +143,13 @@ class NativeWorkerContext implements WorkerContext {
       return Promise.reject(new WorkerError("worker_busy"));
     }
     const reply = Promise.withResolvers<unknown>();
-    const pending: PendingRequest = { kind, frame, sent: false, resolve: reply.resolve, reject: reply.reject };
+    const pending: PendingRequest = {
+      kind,
+      frame,
+      sent: false,
+      resolve: reply.resolve,
+      reject: reply.reject,
+    };
     this.#pending.set(requestId, pending);
     this.#pendingBytes += frame.length;
     if (this.#receivedContext) this.#send(pending);
@@ -157,11 +183,16 @@ class NativeWorkerContext implements WorkerContext {
     if (!this.#receivedContext) {
       const context = WorkerContextSchema.parse(raw);
       this.#receivedContext = true;
-      this.#ready.resolve(Object.freeze(context.locations.map((location) => Object.freeze(location))));
+      this.#ready.resolve(
+        Object.freeze(context.locations.map((location) => Object.freeze(location))),
+      );
       for (const pending of this.#pending.values()) this.#send(pending);
       return;
     }
-    const readiness = typeof raw === "object" && raw !== null && Reflect.get(raw, "type") === "service_ready_result";
+    const readiness =
+      typeof raw === "object" &&
+      raw !== null &&
+      Reflect.get(raw, "type") === "service_ready_result";
     const reply = readiness ? ServiceReadyResultSchema.parse(raw) : ServiceReplySchema.parse(raw);
     const pending = this.#pending.get(reply.requestId);
     if (!pending || !pending.sent || pending.kind !== (readiness ? "service_ready" : "service"))
@@ -173,10 +204,14 @@ class NativeWorkerContext implements WorkerContext {
   }
 
   readonly #data = (chunk: Buffer): void => {
-    try { this.#reader.push(chunk); }
-    catch (error) {
-      this.#finish(error instanceof WorkerError && error.code === "worker_frame_limit"
-        ? "worker_frame_limit" : "worker_protocol_error");
+    try {
+      this.#reader.push(chunk);
+    } catch (error) {
+      this.#finish(
+        error instanceof WorkerError && error.code === "worker_frame_limit"
+          ? "worker_frame_limit"
+          : "worker_protocol_error",
+      );
     }
   };
   readonly #disconnect = (): void => this.#finish("worker_disconnected");

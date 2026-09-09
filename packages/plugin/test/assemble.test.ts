@@ -68,6 +68,52 @@ const shell: PluginDef = {
 };
 
 describe("assembleRoster", () => {
+  test("native delegates cannot expand manifest authority or bypass direct target requirements", () => {
+    const orchestrator = (
+      delegates: PluginManifest["capabilities"],
+      capabilities = delegates,
+    ): PluginDef => ({
+      manifest: manifest({ id: "acme.orchestrator", capabilities }),
+      actions: [
+        defineAction({
+          name: "run",
+          title: "Run",
+          caps: [],
+          delegates,
+          input: z.strictObject({}),
+          result: z.strictObject({}),
+        }),
+      ],
+    });
+    const accepted = assembleRoster([orchestrator(["services:invoke"])], NONE);
+    expect(accepted.roster[0]?.actions[0]).toMatchObject({
+      caps: [],
+      delegates: ["services:invoke"],
+    });
+    for (const delegates of [
+      ["services:invoke", "services:invoke"],
+      ["*"],
+      ["tokens:mint"],
+      ["containers:write"],
+    ] satisfies PluginManifest["capabilities"][]) {
+      expect(() => assembleRoster([orchestrator(delegates, ["*"])], NONE)).toThrow(AssemblyError);
+    }
+    expect(() =>
+      assembleRoster([orchestrator(["services:invoke"], ["services:read"])], NONE),
+    ).toThrow(AssemblyError);
+    const direct = orchestrator(["services:invoke"]);
+    expect(() =>
+      assembleRoster(
+        [
+          {
+            ...direct,
+            actions: [{ ...direct.actions[0]!, caps: ["services:invoke"], requirements: [] }],
+          },
+        ],
+        NONE,
+      ),
+    ).toThrow(AssemblyError);
+  });
   test("stream kinds are plugin-qualified and disabled contributors retain their claims", () => {
     const descriptor: StreamDescriptor = {
       id: "output",

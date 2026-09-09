@@ -1,10 +1,22 @@
 import type { Readable } from "node:stream";
-import { WORKER_FRAME_BYTES, type ServiceReadyRefusal, type ServiceRefusal } from "@manifold/protocol";
+import {
+  WORKER_FRAME_BYTES,
+  type ServiceReadyRefusal,
+  type ServiceRefusal,
+} from "@manifold/protocol";
 
-export type WorkerErrorCode = ServiceRefusal | ServiceReadyRefusal
-  | "worker_invalid_fd" | "worker_protocol_error" | "worker_frame_limit"
-  | "worker_busy" | "worker_disconnected" | "worker_closed" | "worker_cancelled"
-  | "worker_input_invalid" | "worker_input_closed";
+export type WorkerErrorCode =
+  | ServiceRefusal
+  | ServiceReadyRefusal
+  | "worker_invalid_fd"
+  | "worker_protocol_error"
+  | "worker_frame_limit"
+  | "worker_busy"
+  | "worker_disconnected"
+  | "worker_closed"
+  | "worker_cancelled"
+  | "worker_input_invalid"
+  | "worker_input_closed";
 
 /** Only named refusals cross the application boundary; never raw transport/payload errors. */
 export class WorkerError extends Error {
@@ -44,14 +56,15 @@ export class JsonFrameReader<T> {
         const newline = chunk.indexOf(10, offset);
         const end = newline < 0 ? chunk.length : newline;
         const count = end - offset;
-        if (this.#length + count > this.#buffer.length)
-          throw new WorkerError("worker_frame_limit");
+        if (this.#length + count > this.#buffer.length) throw new WorkerError("worker_frame_limit");
         this.#buffer.set(chunk.subarray(offset, end), this.#length);
         this.#length += count;
         if (newline < 0) return;
         let value: T;
         try {
-          const json: unknown = JSON.parse(this.#decoder.decode(this.#buffer.subarray(0, this.#length)));
+          const json: unknown = JSON.parse(
+            this.#decoder.decode(this.#buffer.subarray(0, this.#length)),
+          );
           value = this.options.parse(json);
         } catch {
           throw new WorkerError("worker_input_invalid");
@@ -113,12 +126,18 @@ export function attachWorkerInput<T>(options: WorkerInputOptions<T>): () => void
   };
   const onData = (chunk: unknown): void => {
     if (!(chunk instanceof Uint8Array)) return finish("worker_input_invalid");
-    try { reader.push(chunk); }
-    catch (error) { finish(error instanceof WorkerError ? error.code : "worker_input_invalid"); }
+    try {
+      reader.push(chunk);
+    } catch (error) {
+      finish(error instanceof WorkerError ? error.code : "worker_input_invalid");
+    }
   };
   const onEnd = (): void => {
-    try { reader.end(); }
-    catch { return finish("worker_input_invalid"); }
+    try {
+      reader.end();
+    } catch {
+      return finish("worker_input_invalid");
+    }
     finish("worker_input_closed");
   };
   const onError = (): void => finish("worker_disconnected");

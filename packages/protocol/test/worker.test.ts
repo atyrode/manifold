@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { ServiceReadySchema, ServiceReadyResultSchema, WorkerContextSchema } from "../src/worker.ts";
+import {
+  ServiceReadySchema,
+  ServiceReadyResultSchema,
+  WorkerContextSchema,
+} from "../src/worker.ts";
 
 test("readiness names a port and correlation only, never authority or an endpoint", () => {
   const ready = { type: "service_ready", requestId: "ready-1", port: 4321 };
@@ -12,19 +16,40 @@ test("readiness names a port and correlation only, never authority or an endpoin
 });
 
 test("readiness acknowledgment requires a correlation and bounded named refusal, not raw owner diagnostics", () => {
-  expect(ServiceReadyResultSchema.safeParse({ type: "service_ready_result", requestId: "ready-1", ok: true }).success).toBe(true);
-  expect(ServiceReadyResultSchema.safeParse({ type: "service_ready_result", requestId: "ready-1", ok: false, refusal: "service_unavailable" }).success).toBe(true);
+  expect(
+    ServiceReadyResultSchema.safeParse({
+      type: "service_ready_result",
+      requestId: "ready-1",
+      ok: true,
+    }).success,
+  ).toBe(true);
+  expect(
+    ServiceReadyResultSchema.safeParse({
+      type: "service_ready_result",
+      requestId: "ready-1",
+      ok: false,
+      refusal: "service_unavailable",
+    }).success,
+  ).toBe(true);
   for (const response of [
     { type: "service_ready_result", ok: true },
     { type: "service_ready_result", requestId: "ready-1", ok: false },
     { type: "service_ready_result", requestId: "ready-1", ok: true, grant: "injected" },
-    { type: "service_ready_result", requestId: "ready-1", ok: false, refusal: "private owner exception" },
-  ]) expect(ServiceReadyResultSchema.safeParse(response).success).toBe(false);
+    {
+      type: "service_ready_result",
+      requestId: "ready-1",
+      ok: false,
+      refusal: "private owner exception",
+    },
+  ])
+    expect(ServiceReadyResultSchema.safeParse(response).success).toBe(false);
 });
 
 test("context locations are strict unique owner-resolved descriptors with bounded native paths", () => {
   const location = { locationId: "workspace", guestPath: "/locations/workspace", access: "write" };
-  expect(WorkerContextSchema.safeParse({ type: "context", locations: [location] }).success).toBe(true);
+  expect(WorkerContextSchema.safeParse({ type: "context", locations: [location] }).success).toBe(
+    true,
+  );
   for (const locations of [
     [location, location],
     [{ ...location, access: "admin" }],
@@ -33,5 +58,6 @@ test("context locations are strict unique owner-resolved descriptors with bounde
     [{ ...location, guestPath: `/${"a".repeat(4096)}` }],
     [{ ...location, authority: "injected" }],
     Array.from({ length: 33 }, (_, i) => ({ ...location, locationId: `location-${i}` })),
-  ]) expect(WorkerContextSchema.safeParse({ type: "context", locations }).success).toBe(false);
+  ])
+    expect(WorkerContextSchema.safeParse({ type: "context", locations }).success).toBe(false);
 });

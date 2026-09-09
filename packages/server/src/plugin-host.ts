@@ -325,7 +325,9 @@ function unverifiedDef(row: PluginInstallRow, refusal: PluginInstallRefusal): Se
     };
     return action;
   });
-  const capabilities = [...new Set(actions.flatMap((action) => action.caps))].sort();
+  const capabilities = [
+    ...new Set(actions.flatMap((action) => [...action.caps, ...(action.delegates ?? [])])),
+  ].sort();
   return {
     manifest: {
       id: row.pluginId,
@@ -2019,7 +2021,9 @@ export class PluginHost {
       does can change it, which is what lets the row be written before the handler runs.
     */
     const opaque =
-      entry.def.trace === "opaque" || entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap));
+      entry.def.trace === "opaque" ||
+      entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap)) ||
+      entry.def.delegates?.some((cap) => GOVERNED_CAPS.includes(cap)) === true;
     const attribution: TraceAttribution = {
       ts: this.runtime.now(),
       actor: auth.principal.id,
@@ -2078,9 +2082,10 @@ export class PluginHost {
       the cap is still refused when the installer withheld it, and the message says which. A
       first-party row has no grant and skips this half unchanged.
     */
+    const nativeCaps = [...entry.def.caps, ...(entry.def.delegates ?? [])];
     const install = this.installed.get(pluginId);
     if (install !== undefined) {
-      for (const cap of entry.def.caps) {
+      for (const cap of nativeCaps) {
         // Governed consent is checked separately against exact resource/artifact revisions.
         if (GOVERNED_CAPS.includes(cap) || withinCeiling(cap, install.row.grantedCaps)) continue;
         return refuse("forbidden", `${cap} not granted to plugin ${pluginId}`);
@@ -2160,6 +2165,18 @@ export class PluginHost {
     const targets: ManifoldRef[] = [];
     let streamAdmissionOpen = true;
     const openedStreams: StreamProducer[] = [];
+    // Attenuate only the native bridge, retaining the original token, grant, scope and
+    // expiry. Jobs persist this cap ceiling and recheck it at every deferred effect.
+    // The engine's native doors resolve their own authority; they are not orchestrators.
+    const nativeAuth =
+      pluginId === "engine.jobs" || pluginId === "engine.services"
+        ? auth
+        : {
+            ...auth,
+            caps: CAPS.filter(
+              (cap) => withinCeiling(cap, auth.caps) && withinCeiling(cap, nativeCaps),
+            ),
+          };
     const ctx: ActionCtx = {
       traceId,
       credential: this.authService.credentialReference(auth),
@@ -2169,18 +2186,23 @@ export class PluginHost {
           if (this.jobs === null) throw new ServiceError("forbidden", "job service unavailable");
           return this.jobs;
         },
-        auth,
+        nativeAuth,
         pluginId,
         traceId,
       ),
       services: serviceContext(
         () => {
-          if (this.jobs === null) throw new ServiceError("forbidden", "service authority unavailable");
+          if (this.jobs === null)
+            throw new ServiceError("forbidden", "service authority unavailable");
           return this.jobs;
         },
-        auth,
+        nativeAuth,
         pluginId,
         traceId,
+        (pluginId === "engine.services" && entry.def.name === "invoke") ||
+          withinCeiling("services:invoke", nativeCaps)
+          ? "invoke"
+          : "read",
       ),
       streams: {
         open: (kind, node) => {
