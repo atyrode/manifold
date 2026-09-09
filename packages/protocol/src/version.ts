@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 27;
+export const PROTOCOL_VERSION = 28;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -285,9 +285,18 @@ export const PROTOCOL_VERSION = 27;
  * Instance shares carry expanded closed resource/capability vocabularies, so the
  * separate instance acceptance set RESETS to `{27}`; federation peers require a
  * coordinated upgrade. This source change authorizes no production/fleet activation.
+ *
+ * v27 -> v28: PINNED RESOURCES AND SCOPED SERVICES. Governed jobs now require the
+ * correlated input-receipt and service-authorization contracts, resource inventory,
+ * and native service configuration/read messages. Protocol-27 transports remain
+ * compatible only when they do not advertise a job owner; governed owners must
+ * upgrade together with their transport before reconnecting. Existing workloads
+ * remain owned by their independent owner while disconnected. Terminal-only wire
+ * and federation resource vocabularies are unchanged, so their sets add 28.
+ * This source change authorizes no hub activation or fleet replacement.
  */
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+  16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
 ]);
 
 /**
@@ -300,8 +309,8 @@ export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
  */
 export const TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION = 22;
 
-/** The first machine protocol that may advertise ownership or exchange governed-job frames. */
-export const GOVERNED_JOB_MIN_PROTOCOL_VERSION = 27;
+/** The first machine protocol supporting the current governed-job owner contract. */
+export const GOVERNED_JOB_MIN_PROTOCOL_VERSION = 28;
 
 /** Feature support requires both an accepted wire and the governed-job extension. */
 export function supportsGovernedJobs(protocolVersion: number): boolean {
@@ -343,9 +352,9 @@ export function supportsGovernedJobs(protocolVersion: number): boolean {
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27 alone.
+ * instance compatibility resets to protocol 27. v28 leaves that instance wire unchanged.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([27]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([27, 28]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the
