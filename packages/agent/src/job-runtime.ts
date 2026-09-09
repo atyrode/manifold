@@ -1,64 +1,12 @@
 import { basename, dirname } from "node:path";
 import { closeSync, fstatSync, readFileSync } from "node:fs";
-import { z } from "zod";
-import { ServiceCredentialReferenceSchema } from "@manifold/protocol";
+import { JobOwnerConfigSchema, type JobOwnerConfig } from "@manifold/protocol";
 import { HeldDirectory } from "./job-files.ts";
 import { JobJournal } from "./job-journal.ts";
 import { MachineJobOwner } from "./job-owner.ts";
 import { JobOutputStore } from "./job-outputs.ts";
 import { type LinuxJobBind } from "./job-linux.ts";
 import { DirectoryExclusions } from "./job-locations.ts";
-
-const absolute = z
-  .string()
-  .startsWith("/")
-  .max(4096)
-  .refine((value) => !value.includes("\0"));
-const ConfigSchema = z.strictObject({
-  machineId: z.string().min(1).max(128),
-  admissionPublicKey: z.string().min(1).max(4096),
-  stateDirectory: absolute,
-  delegatedCgroup: absolute,
-  bubblewrap: absolute,
-  protectedDirectories: z.array(absolute).max(32),
-  anchors: z.partialRecord(
-    z.enum(["home", "data", "state", "cache", "config", "runtime"]),
-    absolute,
-  ),
-  runtimeTools: z
-    .record(
-      z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
-      z
-        .array(
-          z.strictObject({
-            source: absolute,
-            target: absolute,
-            kind: z.enum(["file", "directory"]),
-          }),
-        )
-        .min(1)
-        .max(128),
-    )
-    .refine((tools) => Object.keys(tools).length <= 128),
-  serviceCredentials: z
-    .record(
-      z
-        .string()
-        .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
-        .refine((value) => !["__proto__", "constructor", "prototype"].includes(value)),
-      z.strictObject({ source: absolute, origins: ServiceCredentialReferenceSchema.shape.origins }),
-    )
-    .refine((values) => Object.keys(values).length <= 64)
-    .optional(),
-  artifactOrigins: z
-    .array(
-      z
-        .url()
-        .refine((value) => new URL(value).protocol === "https:" && new URL(value).origin === value),
-    )
-    .min(1)
-    .max(128),
-});
 
 /** Opens reviewed local config through held descriptors. No job RPC can modify this authority. */
 export async function openConfiguredJobOwner(
@@ -68,12 +16,12 @@ export async function openConfiguredJobOwner(
 ): Promise<MachineJobOwner> {
   const parent = HeldDirectory.openAbsolute(dirname(configPath), { private: true });
   const configFd = parent.openFile(basename(configPath));
-  let config: z.infer<typeof ConfigSchema>;
+  let config: JobOwnerConfig;
   try {
     const stat = fstatSync(configFd);
     if (stat.uid !== process.getuid?.() || (stat.mode & 0o022) !== 0 || stat.size > 65536)
       throw new Error("unsafe_job_owner_configuration");
-    config = ConfigSchema.parse(JSON.parse(readFileSync(configFd, "utf8")));
+    config = JobOwnerConfigSchema.parse(JSON.parse(readFileSync(configFd, "utf8")));
   } finally {
     closeSync(configFd);
   }

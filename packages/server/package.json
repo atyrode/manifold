@@ -6,6 +6,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@manifold/agent": "workspace:*",
     "@manifold-plugin/access": "workspace:*",
     "@manifold-plugin/arrange": "workspace:*",
     "@manifold-plugin/brand": "workspace:*",

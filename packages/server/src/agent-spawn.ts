@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { TERMINAL_HOST_SOCKET_ENV } from "@manifold/protocol";
 import type { AuthService, MachineEnrollment } from "./auth.ts";
@@ -6,6 +6,12 @@ import { ServiceError } from "./auth.ts";
 import type { ServerConfig } from "./config.ts";
 import type { Logger } from "./log.ts";
 import type { ServerStore } from "./stores.ts";
+import {
+  configureLocalJobOwner,
+  loadLocalJobOwnerTemplate,
+  readPrivateLocalFile,
+  writePrivateLocalFile,
+} from "./local-job-owner-config.ts";
 
 const AGENT_ENTRY_MARKER = "packages/agent/src/main.ts";
 const SERVER_ENTRY_MARKER = "packages/server/src/main.ts";
@@ -74,10 +80,13 @@ function livePid(
   path: string,
   claim: (cmdline: string) => boolean,
   deps: AgentSpawnDeps,
+  privateFile = false,
 ): number | null {
   let raw: string;
   try {
-    raw = readFileSync(path, "utf8").trim();
+    const contents = privateFile ? readPrivateLocalFile(path) : readFileSync(path, "utf8");
+    if (contents === null) return null;
+    raw = contents.trim();
   } catch (error) {
     if (error instanceof Error && Reflect.get(error, "code") === "ENOENT") return null;
     throw error;
@@ -164,15 +173,18 @@ function savedEnrollment(
   tokenPath: string,
   auth: AuthService,
   store: ServerStore,
+  privateFile = false,
 ): MachineEnrollment | null {
   let token: string;
   try {
-    token = readFileSync(tokenPath, "utf8").trim();
+    const contents = privateFile ? readPrivateLocalFile(tokenPath) : readFileSync(tokenPath, "utf8");
+    if (contents === null) return null;
+    token = contents.trim();
   } catch (error) {
     if (error instanceof Error && Reflect.get(error, "code") === "ENOENT") return null;
     throw error;
   }
-  chmodSync(tokenPath, 0o600);
+  if (!privateFile) chmodSync(tokenPath, 0o600);
   if (token.length === 0) return null;
   try {
     const authenticated = auth.authenticateMachine(token);
@@ -191,6 +203,7 @@ function spawnDetached(
   args: readonly string[],
   environment: Readonly<Record<string, string>>,
   deps: AgentSpawnDeps,
+  privateFile = false,
 ): number {
   const child = deps.spawn(["bun", AGENT_ENTRY_MARKER, ...args], {
     cwd: resolve(import.meta.dir, "../../.."),
@@ -201,15 +214,19 @@ function spawnDetached(
     detached: true,
   });
   child.unref();
-  writeFileSync(pidPath, `${child.pid}\n`, { encoding: "utf8", mode: 0o600 });
-  chmodSync(pidPath, 0o600);
+  if (privateFile) {
+    writePrivateLocalFile(pidPath, `${child.pid}\n`);
+  } else {
+    writeFileSync(pidPath, `${child.pid}\n`, { encoding: "utf8", mode: 0o600 });
+    chmodSync(pidPath, 0o600);
+  }
   return child.pid;
 }
 
 /**
  * Reuses or starts the detached local terminal host and transport, and persists only their
- * respawn handles. Enrolment happens only when a transport must be started: the host holds
- * no token, and a reused transport already holds its own.
+ * respawn handles. Native bootstrap binds authenticated enrollment before starting either half;
+ * the terminal host receives only public owner configuration, never the machine token.
  */
 export function spawnLocalAgent(
   config: ServerConfig,
@@ -218,72 +235,100 @@ export function spawnLocalAgent(
   store: ServerStore,
   logger: Logger,
   deps: AgentSpawnDeps = defaultAgentSpawnDeps,
+  nativeOwner?: { admissionPublicKey: string },
 ): LocalAgentLease | null {
   if (!config.spawnAgent) return null;
+  const templatePath = config.localJobOwnerTemplate;
+  if (templatePath !== undefined && (deps.platform !== "linux" || nativeOwner === undefined))
+    throw new Error("local_job_owner_requires_linux_and_admission_key");
+  const template = templatePath === undefined
+    ? undefined
+    : loadLocalJobOwnerTemplate(config.dataDir, templatePath, nativeOwner!.admissionPublicKey);
   const release = acquireBootLock(resolve(config.dataDir, "agent.lock"), deps);
   if (release === null) {
     logger.info("local_agent_spawn_locked");
     return null;
   }
 
-  const inherited: Record<string, string> = {};
-  for (const [name, value] of Object.entries(process.env)) {
-    if (value !== undefined) inherited[name] = value;
-  }
-  // The socket lives in a directory the host makes private (0700) on first start.
-  const socketPath = resolve(config.dataDir, "terminal-host", "host.sock");
-
-  const hostPidPath = resolve(config.dataDir, "terminal-host.pid");
-  let terminalHostPid = livePid(hostPidPath, isTerminalHost, deps);
-  if (terminalHostPid !== null) {
-    logger.info("local_terminal_host_reused", { pid: terminalHostPid });
-  } else {
-    terminalHostPid = spawnDetached(
-      hostPidPath,
-      [TERMINAL_HOST_FLAG],
-      { ...inherited, [TERMINAL_HOST_SOCKET_ENV]: socketPath },
-      deps,
-    );
-    logger.info("local_terminal_host_spawned", { pid: terminalHostPid });
-  }
-
-  const pidPath = resolve(config.dataDir, "agent.pid");
-  const tokenPath = resolve(config.dataDir, "agent.token");
-  let enrollment = savedEnrollment(tokenPath, auth, store);
-  const existingPid = livePid(pidPath, isTransport, deps);
-  if (existingPid !== null) {
-    if (enrollment !== null) store.setMeta("native_local_machine_id", enrollment.machine.id);
-    logger.info("local_agent_reused", { pid: existingPid });
-    return { pid: existingPid, terminalHostPid, release };
-  }
-
-  if (enrollment === null) {
-    const existingMachine = store.getMachineByName(config.localMachineName);
-    enrollment =
-      existingMachine === null
+  try {
+    const hostPidPath = resolve(config.dataDir, "terminal-host.pid");
+    const pidPath = resolve(config.dataDir, "agent.pid");
+    const tokenPath = resolve(config.dataDir, "agent.token");
+    const ownerConfigPath = resolve(config.dataDir, "job-owner", "config.json");
+    let terminalHostPid = livePid(hostPidPath, isTerminalHost, deps, template !== undefined);
+    const existingPid = livePid(pidPath, isTransport, deps, template !== undefined);
+    if (template === undefined && existsSync(resolve(config.dataDir, "job-owner")))
+      throw new Error("local_job_owner_definition_conflict: removing the template cannot reconfigure retained owners");
+    let enrollment = savedEnrollment(tokenPath, auth, store, template !== undefined);
+    if (
+      template !== undefined && enrollment === null &&
+      (terminalHostPid !== null || existingPid !== null || existsSync(ownerConfigPath))
+    ) throw new Error("local_job_owner_enrollment_unavailable: retained native identity cannot be replaced");
+    if (enrollment === null && existingPid === null) {
+      const existingMachine = store.getMachineByName(config.localMachineName);
+      enrollment = existingMachine === null
         ? auth.enrollLocalMachine(config.localMachineName)
         : auth.rotateMachineToken(existingMachine);
-    writeFileSync(tokenPath, `${enrollment.machineToken}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-    chmodSync(tokenPath, 0o600);
-  }
-  // Instance services default to the authenticated local owner, never a mutable display name.
-  store.setMeta("native_local_machine_id", enrollment.machine.id);
-
-  const pid = spawnDetached(
-    pidPath,
-    [],
-    {
+      if (template !== undefined) {
+        writePrivateLocalFile(tokenPath, `${enrollment.machineToken}\n`);
+      } else {
+        writeFileSync(tokenPath, `${enrollment.machineToken}\n`, { encoding: "utf8", mode: 0o600 });
+        chmodSync(tokenPath, 0o600);
+      }
+    }
+    const owner = template === undefined ? undefined : configureLocalJobOwner(
+      config.dataDir,
+      template,
+      enrollment!.machine.id,
+      nativeOwner!.admissionPublicKey,
+      { host: terminalHostPid, transport: existingPid },
+    );
+    const inherited: Record<string, string> = {};
+    for (const [name, value] of Object.entries(process.env)) {
+      if (value !== undefined) inherited[name] = value;
+    }
+    // The declaration is the only owner source. The retained host holds no enrollment secret.
+    delete inherited.MANIFOLD_JOB_OWNER_CONFIG;
+    delete inherited.MANIFOLD_JOB_OWNER_SOCKET;
+    delete inherited.MANIFOLD_MACHINE_TOKEN;
+    delete inherited.MANIFOLD_MACHINE_TOKEN_FILE;
+    const socketPath = resolve(config.dataDir, "terminal-host", "host.sock");
+    const environment = {
       ...inherited,
-      MANIFOLD_SERVER_URL: `http://127.0.0.1:${boundPort}`,
-      MANIFOLD_MACHINE_TOKEN: enrollment.machineToken,
-      MANIFOLD_MACHINE_NAME: config.localMachineName,
+      ...owner?.environment,
       [TERMINAL_HOST_SOCKET_ENV]: socketPath,
-    },
-    deps,
-  );
-  logger.info("local_agent_spawned", { machineId: enrollment.machine.id, pid, terminalHostPid });
-  return { pid, terminalHostPid, release };
+    };
+    if (terminalHostPid !== null) {
+      logger.info("local_terminal_host_reused", { pid: terminalHostPid });
+    } else {
+      terminalHostPid = spawnDetached(hostPidPath, [TERMINAL_HOST_FLAG], environment, deps, owner !== undefined);
+      owner?.record("host", terminalHostPid);
+      logger.info("local_terminal_host_spawned", { pid: terminalHostPid });
+    }
+    // This is authenticated placement identity, not a native capability/readiness assertion.
+    if (enrollment !== null) store.setMeta("native_local_machine_id", enrollment.machine.id);
+    if (existingPid !== null) {
+      logger.info("local_agent_reused", { pid: existingPid });
+      return { pid: existingPid, terminalHostPid, release };
+    }
+    if (enrollment === null) throw new Error("local_agent_enrollment_unavailable");
+    const pid = spawnDetached(
+      pidPath,
+      [],
+      {
+        ...environment,
+        MANIFOLD_SERVER_URL: `http://127.0.0.1:${boundPort}`,
+        MANIFOLD_MACHINE_TOKEN: enrollment.machineToken,
+        MANIFOLD_MACHINE_NAME: config.localMachineName,
+      },
+      deps,
+      owner !== undefined,
+    );
+    owner?.record("transport", pid);
+    logger.info("local_agent_spawned", { machineId: enrollment.machine.id, pid, terminalHostPid });
+    return { pid, terminalHostPid, release };
+  } catch (error) {
+    release();
+    throw error;
+  }
 }
