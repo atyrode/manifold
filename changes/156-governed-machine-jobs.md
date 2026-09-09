@@ -16,3 +16,6 @@ directory identities preserve exclusion checks and durable state commits. Native
 owner shutdown releases the runtime-owned listener socket exactly once.
 Machine-only bundles are complete plugins when their pinned artifacts and operations
 validate; they need no inert web or server entry point.
+Native revalidation preserves root authority for ordinary browser tokens as well
+as the owner key. Service-configuration delegates retain their explicit capability
+ceiling; non-owner, insufficiently delegated and revoked credentials remain refused.

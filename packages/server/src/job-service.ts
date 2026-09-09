@@ -1990,6 +1990,7 @@ export class JobService {
     const principal = this.store.getPrincipal(reference.principalId);
     if (!principal) return null;
     if (reference.expiresAt !== undefined && reference.expiresAt <= this.runtime.now()) return null;
+    let isRoot = reference.tokenId === null;
     if (reference.tokenId !== null) {
       const token = this.store.getToken(reference.tokenId);
       if (
@@ -2002,6 +2003,7 @@ export class JobService {
         reference.caps.some((c) => !token.caps.includes(c) && !token.caps.includes("*"))
       )
         return null;
+      isRoot = token.caps.includes("*");
     } else if (reference.principalId !== this.auth.ownerPrincipal.id) return null;
     return {
       principal,
@@ -2009,7 +2011,7 @@ export class JobService {
       containerScope: reference.containerScope,
       tokenId: reference.tokenId,
       grantId: reference.grantId,
-      isRoot: reference.tokenId === null,
+      isRoot,
       ...(reference.expiresAt === undefined ? {} : { expiresAt: reference.expiresAt }),
     };
   }

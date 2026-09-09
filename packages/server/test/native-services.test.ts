@@ -268,6 +268,47 @@ test("configuration CAS is canonical, root-only, and synchronization never impli
   }
 });
 
+test("root browser tokens retain bounded service configuration authority until revoked", () => {
+  const f = fixture();
+  try {
+    const grant = f.auth.bootstrapPrincipal({ kind: "human", name: "Browser owner" }, f.root);
+    const browser = f.auth.authenticate(grant.token);
+    const delegated: AuthContext = { ...browser, caps: ["services:configure"] };
+    expect(
+      f.service.readServiceConfiguration(delegated, { machineId: f.machineId }).configuration,
+    ).toEqual(f.configuration);
+    expect(() =>
+      f.service.readServiceConfiguration({ ...browser, caps: [] }, { machineId: f.machineId }),
+    ).toThrow();
+    const nonOwner = f.auth.authenticate(
+      f.auth.mintToken(
+        {
+          principal: { kind: "agent", name: "Configuration delegate" },
+          caps: ["services:configure"],
+        },
+        f.root,
+      ).token,
+    );
+    expect(() =>
+      f.service.readServiceConfiguration(nonOwner, { machineId: f.machineId }),
+    ).toThrow();
+    const changed = f.service.configureServiceConfiguration(delegated, {
+      machineId: f.machineId,
+      expectedRevision: f.configuration.revision,
+      policies: [],
+    });
+    expect(
+      f.service.readServiceConfiguration(browser, { machineId: f.machineId }).configuration,
+    ).toEqual(changed);
+    f.auth.revokePrincipal(browser.principal.id, f.root);
+    expect(() =>
+      f.service.readServiceConfiguration(delegated, { machineId: f.machineId }),
+    ).toThrow();
+  } finally {
+    f.store.close();
+  }
+});
+
 test("stale policy fingerprints and non-readable full or mutating policies cannot use direct reads", async () => {
   const f = fixture();
   try {
@@ -858,17 +899,19 @@ test("guest declarations cannot borrow root native methods or replace owner conf
   const f = invocationFixture();
   try {
     const host = await orchestratorHost(f);
-    expect(await host.dispatch(f.root, "native.orchestrator.readOnly", {})).toMatchObject({
+    const grant = f.auth.bootstrapPrincipal({ kind: "human", name: "Browser owner" }, f.root);
+    const browser = f.auth.authenticate(grant.token);
+    expect(await host.dispatch(browser, "native.orchestrator.readOnly", {})).toMatchObject({
       ok: false,
     });
-    expect(await host.dispatch(f.root, "native.orchestrator.undeclared", {})).toMatchObject({
+    expect(await host.dispatch(browser, "native.orchestrator.undeclared", {})).toMatchObject({
       ok: false,
     });
     expect(await host.dispatch(f.reader, "native.orchestrator.configure", {})).toMatchObject({
       ok: false,
     });
     expect(f.commands.some((command) => command.type === "service_invoke")).toBe(false);
-    expect(await host.dispatch(f.root, "native.orchestrator.configure", {})).toMatchObject({
+    expect(await host.dispatch(browser, "native.orchestrator.configure", {})).toMatchObject({
       ok: true,
       result: { policies: [] },
     });
