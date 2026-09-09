@@ -373,3 +373,76 @@ test("retained native owners refuse definition drift and incomplete bootstrap wi
     value.store.close();
   }
 });
+
+test("external supervision prepares one authenticated identity without spawning and refuses supervisor or config drift", () => {
+  const value = fixture(() => "");
+  value.config.localAgentSupervision = "external";
+  const template: JobOwnerConfigTemplate = {
+    delegatedCgroup: "/sys/fs/cgroup/system.slice/manifold-owner.service/jobs",
+    bubblewrap: "/usr/bin/bwrap",
+    protectedDirectories: [],
+    anchors: {},
+    runtimeTools: {},
+    artifactOrigins: ["https://artifacts.example"],
+  };
+  const templatePath = join(value.config.dataDir, "owner-template.json");
+  value.config.localJobOwnerTemplate = templatePath;
+  writeFileSync(templatePath, JSON.stringify(template), { mode: 0o600 });
+  const admissionPublicKey = generateKeyPairSync("ed25519").publicKey
+    .export({ type: "spki", format: "pem" }).toString();
+  const boot = () => spawnLocalAgent(
+    value.config, 7777, value.auth, value.store, value.logger, value.deps, { admissionPublicKey },
+  );
+  try {
+    expect(boot()).toBeNull();
+    const configPath = join(value.config.dataDir, "job-owner", "config.json");
+    const configured = readFileSync(configPath, "utf8");
+    const owner = JobOwnerConfigSchema.parse(JSON.parse(configured));
+    const token = readFileSync(join(value.config.dataDir, "agent.token"), "utf8").trim();
+    expect(value.auth.authenticateMachine(token).id).toBe(owner.machineId);
+    expect(value.store.getMeta("native_local_machine_id")).toBe(owner.machineId);
+    expect(boot()).toBeNull();
+    expect(readFileSync(configPath, "utf8")).toBe(configured);
+    expect(existsSync(join(value.config.dataDir, "agent.lock"))).toBe(false);
+    expect(value.spawned).toEqual([]);
+
+    delete value.config.localAgentSupervision;
+    expect(boot).toThrow("local_agent_supervision_conflict");
+    value.config.localAgentSupervision = "external";
+    writeFileSync(templatePath, JSON.stringify({ ...template, artifactOrigins: ["https://changed.example"] }));
+    expect(boot).toThrow("local_job_owner_definition_conflict");
+    expect(readFileSync(configPath, "utf8")).toBe(configured);
+    expect(value.auth.authenticateMachine(token).id).toBe(owner.machineId);
+    expect(value.spawned).toEqual([]);
+  } finally {
+    value.store.close();
+  }
+});
+
+test("native provisioning never rotates another enrolled machine selected only by name", () => {
+  const value = fixture(() => "");
+  const incumbent = value.auth.enrollLocalMachine("local");
+  value.config.localAgentSupervision = "external";
+  const path = join(value.config.dataDir, "owner-template.json");
+  value.config.localJobOwnerTemplate = path;
+  writeFileSync(path, JSON.stringify({
+    delegatedCgroup: "/sys/fs/cgroup/manifold",
+    bubblewrap: "/usr/bin/bwrap",
+    protectedDirectories: [],
+    anchors: {},
+    runtimeTools: {},
+    artifactOrigins: ["https://artifacts.example"],
+  }), { mode: 0o600 });
+  const admissionPublicKey = generateKeyPairSync("ed25519").publicKey
+    .export({ type: "spki", format: "pem" }).toString();
+  try {
+    expect(() => spawnLocalAgent(
+      value.config, 7777, value.auth, value.store, value.logger, value.deps, { admissionPublicKey },
+    )).toThrow("local_job_owner_enrollment_unavailable");
+    expect(value.auth.authenticateMachine(incumbent.machineToken).id).toBe(incumbent.machine.id);
+    expect(value.spawned).toEqual([]);
+    expect(existsSync(join(value.config.dataDir, "agent.token"))).toBe(false);
+  } finally {
+    value.store.close();
+  }
+});

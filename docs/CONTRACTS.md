@@ -207,6 +207,29 @@ throwaway server with `MANIFOLD_SPAWN_AGENT=1` owns BOTH processes, and the gate
 (`scripts/gate-lib.ts`, `teardownServer`) reaps both verified pidfile claims before removing
 the data directory. This destructive teardown is for owned test processes, never production.
 
+**Externally supervised native local bootstrap.** A Linux hub with
+`MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE=<normalized absolute private path>` receives the current
+job-admission public key from its composed jobs authority; the template cannot choose the
+machine ID, issuer key or owner state directory. Bootstrap authenticates the retained
+`agent.token` before deriving identity. With native configuration, an existing machine name
+without that credential refuses rather than implicitly rotating another owner's token.
+`MANIFOLD_LOCAL_AGENT_SUPERVISION=external` additionally prepares configuration only:
+`MANIFOLD_SPAWN_AGENT=1` still enables bootstrap, but no child process is started, no source
+entrypoint is executed, and the boot lock is released only after private configuration and
+supervision publication. `native_local_machine_id` records authenticated placement identity
+after successful configuration, not owner capability/readiness. The immutable reviewed
+definition and supervision marker survive restart; configuration drift, missing retained
+enrollment or a detached/external supervisor change refuses without replacing an incumbent.
+
+Detachment is not cgroup independence: a child in a hub service/container cgroup dies when
+that group is torn down. The provider-neutral `nixosModules.native` deployment therefore
+uses separate hub, retained terminal/native-owner and transport units. The owner has its
+own delegated cgroup, durable control/workload storage and no restart/stop dependency on
+the hub or transport. The packaged hub defaults to hub-only outside this declared profile;
+installed hardened plugin children use the package's real pinned Bun interpreter, not a
+re-executed compiled server. Exact setup, output-backing constraints and drain/atomic-shutdown
+maintenance are in [SELF-HOST.md](SELF-HOST.md#full-native-linux-nixos).
+
 **Cross-instance sharing adds NO variable, and that is a ruling rather than an omission.** An
 instance's ORIGIN — the identity a share is minted for, the string a `hello` declares and a
 host compares, the value a remote principal carries — is `MANIFOLD_PUBLIC_URL`'s origin and

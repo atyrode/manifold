@@ -10,11 +10,9 @@
   # MANIFOLD_TERMINAL_HOST_SOCKET. Plain agent is the replaceable transport and
   # also takes MANIFOLD_SERVER_URL + MANIFOLD_MACHINE_TOKEN(_FILE) +
   # MANIFOLD_MACHINE_NAME; --terminal-host owns PTYs independently.
-  # The server takes its MANIFOLD_* set. The packaged server defaults
-  # MANIFOLD_SPAWN_AGENT=0 because source-tree host/transport respawn
-  # (agent-spawn.ts) execs `bun` against a repo checkout absent on packaged nodes;
-  # a packaged hub's machine enrolls like any other node. Packaging does not
-  # authorize stopping a terminal host during transport replacement.
+  # The standalone packaged server defaults to hub-only. The native NixOS module
+  # enables authenticated preparation, then independently supervises the packaged
+  # owner and transport. No packaged process tries to execute a source checkout.
   description = "manifold - agent-native shared spatial workspace";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -65,16 +63,41 @@
       };
     in
     {
+      nixosModules.native = import ./infra/native/module.nix { inherit self; };
       packages = eachSystem (
         pkgs:
         let
           inherit (pkgs.stdenv.hostPlatform) system;
-          # A compiled agent embeds this runtime. Never silently package the
-          # borrowed-descriptor ownership bug from an older nixpkgs input (ADR 0032).
-          bun =
-            assert pkgs.lib.assertMsg (pkgs.lib.versionAtLeast pkgs.bun.version "1.4.2")
-              "Manifold requires Bun >= 1.4.2 for borrowed descriptor ownership; update the nixpkgs input before building.";
-            pkgs.bun;
+          # nixpkgs currently packages 1.3.13. Pin the required existing runtime
+          # directly instead of claiming a >=1.4.2 assertion upgrades that input.
+          # Digests: official bun-v1.4.2 release asset metadata (2026-09-09),
+          # https://api.github.com/repos/oven-sh/bun/releases/tags/bun-v1.4.2
+          bunSources = {
+            x86_64-linux = {
+              archive = "bun-linux-x64-baseline.zip";
+              sha256 = "c678040f14fe0440eb839d37cbd0ce4c051a32da72806ac97de6a6aab6bf728f";
+            };
+            aarch64-linux = {
+              archive = "bun-linux-aarch64.zip";
+              sha256 = "54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7";
+            };
+            x86_64-darwin = {
+              archive = "bun-darwin-x64-baseline.zip";
+              sha256 = "bad5bbd6cf14d0980d115f5954c9ff904df619d5e994d2da1ffccd3f316300b0";
+            };
+            aarch64-darwin = {
+              archive = "bun-darwin-aarch64.zip";
+              sha256 = "90987a3a16d7db556d886ac3d551e7b6d3edf0a1cf43acaed622e8676be1d12f";
+            };
+          };
+          bun = pkgs.bun.overrideAttrs (_final: previous: {
+            version = "1.4.2";
+            src = pkgs.fetchurl {
+              url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/${bunSources.${system}.archive}";
+              inherit (bunSources.${system}) sha256;
+            };
+            meta = previous.meta // { platforms = systems; };
+          });
 
           # Vendored node_modules keyed on bun.lock: the only network-touching
           # derivation. It must produce the installed tree, not bun's download
@@ -197,10 +220,13 @@
           #   nix build .#bun-deps
           #   nix build .#bun-deps --rebuild   # must not report a hash mismatch
           bun-deps = bunDeps;
+          bun-runtime = bun;
 
           manifold-agent = compiled {
             pname = "manifold-agent";
             entry = "packages/agent/src/main.ts";
+            wrapperArgs = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux
+              ''--prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath [ pkgs.glibc ]}"'';
           };
 
           manifold-server = compiled {
@@ -213,7 +239,7 @@
               mkdir -p "$out/share/manifold"
               cp -r packages/web/dist "$out/share/manifold/web"
             '';
-            wrapperArgs = ''--set-default MANIFOLD_WEB_DIST "$out/share/manifold/web" --set-default MANIFOLD_SPAWN_AGENT 0'';
+            wrapperArgs = ''--set-default MANIFOLD_WEB_DIST "$out/share/manifold/web" --set-default MANIFOLD_SPAWN_AGENT 0 --prefix PATH : "${bun}/bin"'';
           };
         }
       );

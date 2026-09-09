@@ -16,6 +16,8 @@ export interface ServerConfig {
   publicUrlExplicit: boolean;
   webDist: string;
   spawnAgent: boolean;
+  /** External supervision prepares authenticated local configuration without spawning children. */
+  localAgentSupervision?: "external";
   localMachineName: string;
   /** Private declarative native-owner template; absent leaves local execution unconfigured. */
   localJobOwnerTemplate?: string;
@@ -188,6 +190,12 @@ export function loadConfig(
   if (localJobOwnerTemplate !== undefined && env.MANIFOLD_SPAWN_AGENT === "0") {
     throw new Error("MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE requires local agent spawning");
   }
+  const localAgentSupervision = env.MANIFOLD_LOCAL_AGENT_SUPERVISION;
+  if (localAgentSupervision !== undefined && localAgentSupervision !== "external")
+    throw new Error("MANIFOLD_LOCAL_AGENT_SUPERVISION must be external when set");
+  if (localAgentSupervision === "external" &&
+      (localJobOwnerTemplate === undefined || env.MANIFOLD_SPAWN_AGENT === "0"))
+    throw new Error("external local supervision requires native local bootstrap");
   const serviceOwnerMachineId = env.MANIFOLD_SERVICE_OWNER_MACHINE_ID;
   if (
     serviceOwnerMachineId !== undefined &&
@@ -213,6 +221,7 @@ export function loadConfig(
     webDist: resolve(cwd, env.MANIFOLD_WEB_DIST ?? "packages/web/dist"),
     spawnAgent: env.MANIFOLD_SPAWN_AGENT !== "0",
     localMachineName,
+    ...(localAgentSupervision === undefined ? {} : { localAgentSupervision }),
     ...(localJobOwnerTemplate === undefined ? {} : { localJobOwnerTemplate }),
     ...(serviceOwnerMachineId === undefined ? {} : { serviceOwnerMachineId }),
     announceKey: env.MANIFOLD_ANNOUNCE_KEY === "1",

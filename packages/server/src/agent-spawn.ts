@@ -21,9 +21,9 @@ const TERMINAL_HOST_FLAG = "--terminal-host";
  * The local machine is TWO detached processes with two lifetimes (issue #278): the terminal
  * host that owns the PTYs and the transport that dials this server. Each has its own pid
  * file and is reused independently, so a server restart finds both, a transport restart
- * finds the host, and neither is ever this server's child to tear down — `release` drops the
- * boot lock and nothing else. The host is started FIRST and its socket handed to the
- * transport; the transport never spawns a host of its own (agent main.ts).
+ * finds the host. `release` drops the boot lock and nothing else. Detachment is only a
+ * process-lifetime guarantee, NOT escape from a service cgroup. Packaged deployments use
+ * external preparation and independent service units rather than detached children.
  */
 
 interface SpawnedAgent {
@@ -104,7 +104,9 @@ function livePid(
   }
 }
 
-const isServer = (cmdline: string): boolean => cmdline.includes(SERVER_ENTRY_MARKER);
+const isServer = (cmdline: string): boolean =>
+  cmdline.includes(SERVER_ENTRY_MARKER) ||
+  cmdline.split("\0").some((arg) => /\/(?:\.?manifold-server(?:-wrapped)?)$/.test(arg));
 const isTerminalHost = (cmdline: string): boolean =>
   cmdline.includes(AGENT_ENTRY_MARKER) && cmdline.includes(TERMINAL_HOST_FLAG);
 const isTransport = (cmdline: string): boolean =>
@@ -241,6 +243,9 @@ export function spawnLocalAgent(
   const templatePath = config.localJobOwnerTemplate;
   if (templatePath !== undefined && (deps.platform !== "linux" || nativeOwner === undefined))
     throw new Error("local_job_owner_requires_linux_and_admission_key");
+  const external = config.localAgentSupervision === "external";
+  if (external && templatePath === undefined)
+    throw new Error("external_local_supervision_requires_native_template");
   const template = templatePath === undefined
     ? undefined
     : loadLocalJobOwnerTemplate(config.dataDir, templatePath, nativeOwner!.admissionPublicKey);
@@ -257,6 +262,13 @@ export function spawnLocalAgent(
     const ownerConfigPath = resolve(config.dataDir, "job-owner", "config.json");
     let terminalHostPid = livePid(hostPidPath, isTerminalHost, deps, template !== undefined);
     const existingPid = livePid(pidPath, isTransport, deps, template !== undefined);
+    const supervisionPath = resolve(config.dataDir, "agent.supervision");
+    const previousSupervision = template === undefined ? null : readPrivateLocalFile(supervisionPath);
+    const supervision = external ? "external\n" : "detached\n";
+    if (previousSupervision !== null && previousSupervision !== supervision)
+      throw new Error("local_agent_supervision_conflict: retained lifetimes cannot change supervisors");
+    if (external && (terminalHostPid !== null || existingPid !== null))
+      throw new Error("local_agent_supervision_conflict: detached owners require explicit drained maintenance");
     if (template === undefined && existsSync(resolve(config.dataDir, "job-owner")))
       throw new Error("local_job_owner_definition_conflict: removing the template cannot reconfigure retained owners");
     let enrollment = savedEnrollment(tokenPath, auth, store, template !== undefined);
@@ -266,6 +278,8 @@ export function spawnLocalAgent(
     ) throw new Error("local_job_owner_enrollment_unavailable: retained native identity cannot be replaced");
     if (enrollment === null && existingPid === null) {
       const existingMachine = store.getMachineByName(config.localMachineName);
+      if (template !== undefined && existingMachine !== null)
+        throw new Error("local_job_owner_enrollment_unavailable: an existing machine requires its retained credential");
       enrollment = existingMachine === null
         ? auth.enrollLocalMachine(config.localMachineName)
         : auth.rotateMachineToken(existingMachine);
@@ -283,6 +297,15 @@ export function spawnLocalAgent(
       nativeOwner!.admissionPublicKey,
       { host: terminalHostPid, transport: existingPid },
     );
+    if (template !== undefined && previousSupervision === null)
+      writePrivateLocalFile(supervisionPath, supervision, true);
+    // This is authenticated placement identity, not a native capability/readiness assertion.
+    if (enrollment !== null) store.setMeta("native_local_machine_id", enrollment.machine.id);
+    if (external) {
+      logger.info("local_agent_prepared", { machineId: enrollment!.machine.id });
+      release();
+      return null;
+    }
     const inherited: Record<string, string> = {};
     for (const [name, value] of Object.entries(process.env)) {
       if (value !== undefined) inherited[name] = value;
@@ -305,8 +328,6 @@ export function spawnLocalAgent(
       owner?.record("host", terminalHostPid);
       logger.info("local_terminal_host_spawned", { pid: terminalHostPid });
     }
-    // This is authenticated placement identity, not a native capability/readiness assertion.
-    if (enrollment !== null) store.setMeta("native_local_machine_id", enrollment.machine.id);
     if (existingPid !== null) {
       logger.info("local_agent_reused", { pid: existingPid });
       return { pid: existingPid, terminalHostPid, release };

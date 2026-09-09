@@ -1,8 +1,223 @@
 # Self-hosting manifold
 
-One `docker compose up -d --build` turns any box with a DNS record into a manifold
-master node: the hub serving HTTP, both WebSocket endpoints, and the canonical scene
-store — and a regular terminal-serving machine at the same time.
+Choose the deployment profile, not a hosting provider:
+
+- **Full native Linux:** the NixOS module below runs the hub, an independently supervised
+  terminal/native owner and a replaceable transport on one node. Execution-only remote nodes
+  use the same owner and authority protocol, with explicit enrolled IDs.
+- **Container hub:** Compose serves the web app and canonical store. Set
+  `MANIFOLD_SPAWN_AGENT=0` for a hub-only deployment and enroll native execution nodes.
+  The existing default also serves disposable in-container terminals, not governed native
+  execution. Container privileges, tmpfs alone and detached children are not native
+  enforcement or survival across container replacement.
+
+## Full native Linux (NixOS)
+
+`nixosModules.native` is the supported declarative Linux profile. It is not tied to any
+cloud, hostname or product plugin. It requires Linux x64/arm64, unified cgroup v2 with
+`cpu`, `memory`, `pids`, user namespaces, and systemd 254 or newer. The pinned flake packages
+embed Bun >= 1.4.2 and the web bundle; no source checkout is consulted by a running unit.
+The server package also carries that pinned Bun interpreter for installed hardened plugin
+children; it never re-executes a compiled hub as a plugin.
+The owner also needs a bubblewrap build with FD-backed bind, block, info and seccomp support.
+Startup checks its advertised switches; actual namespace, cgroup migration, `memory.peak`,
+`pids.peak`, `memory.swap.max` and `cgroup.kill` enforcement still require disposable-owner
+verification on the target kernel. Missing facilities refuse jobs, never launch a fallback.
+The Bun ZIP digests are pinned from the official
+[1.4.2 release metadata](https://api.github.com/repos/oven-sh/bun/releases/tags/bun-v1.4.2);
+the older locked nixpkgs Bun is not used. Package verification must also establish the
+vendored dependency-tree hash for each target platform; unfilled `depsHashes` entries in
+`flake.nix` are not a verified package and must be populated from real build output before
+that target's deployment. A runtime source pin alone is not a successful package build.
+
+### Declare one node
+
+Add a pinned Manifold input to the flake that already owns your NixOS configuration:
+
+```nix
+inputs.manifold.url = "github:atyrode/manifold/<exact-revision-or-release-tag>";
+```
+
+Include `inputs.manifold.nixosModules.native` in that host's `modules` list, then declare:
+
+```nix
+services.manifold = {
+  enable = true;
+  hub.enable = true;
+  hub.publicUrl = "https://manifold.example.com";
+  execution = {
+    enable = true;
+    machineName = "local";
+    artifactOrigins = [ "https://artifacts.example.com" ];
+  };
+};
+```
+
+Replace the example origin with the actual reviewed HTTPS artifact host(s), including any
+allowed redirect destinations. No plugin, tool, artifact, resource consent or provider
+credential is implicitly installed. The empty `runtimeTools` default supports self-contained
+artifacts; operations declaring tools require reviewed closures as described below.
+Keep the flake lock committed. Provision a persistent disk for `/var/lib`; configure TLS
+on your own reverse proxy forwarding to `127.0.0.1:7777` (including WebSocket upgrades).
+The module does not open firewall ports or install a hosting provider's ingress.
+
+For a **new, disposable node**, build and activate through your ordinary NixOS configuration:
+
+```sh
+sudo nixos-rebuild switch --flake /etc/nixos#<host>
+systemctl status manifold-server manifold-owner manifold-transport
+curl -fsS https://manifold.example.com/healthz
+```
+
+These are setup commands, not authorization to migrate occupied owners. For existing nodes,
+follow the maintenance hold below before changing the execution declaration.
+
+The hub's private environment enables `MANIFOLD_SPAWN_AGENT=1`,
+`MANIFOLD_LOCAL_AGENT_SUPERVISION=external` and
+`MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE=/var/lib/manifold/owner-template.json`.
+Here `SPAWN_AGENT=1` enables **bootstrap**, not child process creation: the hub authenticates
+the retained enrollment or creates a new local identity, derives the current public admission
+key, validates the reviewed template and atomically publishes owner configuration under the
+boot lock. It records that authenticated canonical local ID for default instance-service
+placement. It starts no children; no source-tree `bun` invocation is hidden in the package.
+The owner waits up to 60 seconds for initial local configuration. Failed preparation is
+visible, not a request to guess another machine.
+
+The same module can be hub-only (`execution.enable = false`). In that case it creates no
+local machine. `hub.serviceOwnerMachineId = "<enrolled-id>"` selects an explicitly configured
+remote service owner, including when local execution is enabled. Absence selects the canonical
+local identity only when provisioned. Offline, revoked or unready placement refuses; machine
+names, arrival order, provider labels and other machines are never fallback choices.
+
+### Independent lifetimes and storage
+
+| Unit / path | Ownership |
+| --- | --- |
+| `manifold-server.service` | Hub HTTP/WebSockets, SQLite, instance authority and local configuration preparation |
+| `manifold-owner.service` | Retained terminal host plus native owner; no machine token or hub key in its environment |
+| `manifold-transport.service` | Replaceable outbound machine channel; reads only its enrolled machine token file |
+| `/var/lib/manifold` | Private 0700 hub/control storage; owner key, machine token, immutable `job-owner/config.json`, durable owner state/journal/artifacts/sealed outputs |
+| `/var/lib/manifold-workload/{home,data,state,cache,config}` | Persistent declared workload anchors, separate from protected control storage |
+| `/var/lib/manifold-output` | Dedicated bounded tmpfs, the `runtime` anchor for named-output locations; temporary, not durable owner state |
+
+The owner has **no** `PartOf`, `BindsTo` or `Requires` relationship to the hub or transport.
+Detaching a child would leave it inside the hub cgroup; the module instead starts the owner
+in its own `system.slice/manifold-owner.service` cgroup. `DelegateSubgroup=supervisor` keeps
+owner/startup processes out of the delegated root. Its separate empty `jobs` subtree enables
+`+cpu +memory +pids`; the runtime builds per-job enforcing ancestors above writable nested
+workload subgroups. Do not put the owner in the `jobs` subtree, substitute a user-session
+cgroup or grant unrestricted cgroup writes to a workload.
+
+All control files are 0600, with private parents. Templates and generated configuration are
+immutable while retained: changes refuse rather than rewrite, restart or replace the owner.
+`/var/lib/manifold` is excluded from workload sources, including recursive ancestor mounts;
+add other existing credential/control directories with `execution.protectedDirectories`.
+Do not make protected control storage an anchor or copy desktop/tool credentials into the
+service account. Unconfined terminals run as the trusted `manifold` OS account; neither these
+exclusions nor cgroups protect against root or other unconfined same-UID processes. Give this
+account only the host authority you intend to grant.
+
+Named output backing is **not just a tmpfs directory**. The runtime counts the total capacity
+of each distinct backing device once, requires positive byte/inode bounds, and reserves its
+whole capacity before stdout/stderr. The module's defaults are 1 MiB and 4096 inodes
+(`execution.outputBytes`, `execution.outputInodes`). A job using this filesystem needs an
+`outputBytes` limit greater than its full capacity if it also emits stdio, and enough aggregate
+budget for canonical archive headers. Multiple jobs share this finite backing; space
+exhaustion is a real refusal/failure, not a per-job quota or an implicit remount.
+The sum across all named-output devices must be within the job limit and at most 10,000 inodes.
+Configure output locations relative to `anchor: "runtime"`: resolving a descendant mount
+through `home`/`data` would correctly fail with `mount_escape`.
+
+The output tmpfs is deliberately not inside `job-owner/state`: the runtime's held child
+directories refuse mount crossings. The owner seals bounded output into its **disk-backed**
+private output store only after all writers are closed. That preserves acknowledged outputs
+across owner restart, but it is not an aggregate disk quota or an automatic retention policy.
+Size/monitor the persistent filesystem, use explicit governed release/purge, and back up the
+hub and owner control state as secrets. Named-output scratch disappears at reboot; retained
+sealed outputs, job identities and workload data do not. Never treat tmpfs as a durable receipt.
+
+`execution.runtimeTools` maps the manifest's tool names to reviewed
+`{ source, target, kind }` bindings. Include the exact executable at
+`/runtime/bin/<tool>` plus its complete runtime loader/library closure. Sources must be
+real files/directories, not symlink aliases, and directory bindings cannot contain foreign
+mounts or protected data. A dynamically linked executable without its loader cannot run in
+the empty sandbox. Do not bind all of `/`, `/usr` or `/nix/store`, discover a host PATH, or
+claim installing a package automatically makes a tool available to jobs.
+
+### Explicit remote execution
+
+Run the same module on each execution-only node with `hub.enable = false` and
+`execution.enable = true`. Before activation, use the existing
+`core.machines.enroll { name }` action with authorized `machines:mint` authority on the hub.
+Read the successful outcome's `machine.id` and one-time `machineToken`; retain the token in
+a 0600 file owned by `manifold`, inside a private directory on that node. Enrollment's
+name idempotence is provisioning, never service placement. Do not rotate an incumbent token
+to make installation succeed.
+
+Use authenticated `engine.jobs.describe { machineId, pluginId }` with `machines:run`
+authority for the public `admissionPublicKey`; this works independently of job readiness.
+The selected plugin ID is the plugin whose native installation you intend to administer.
+Only that **public** SPKI key and enrolled ID enter the reviewed node configuration:
+
+```nix
+services.manifold = {
+  enable = true;
+  hub.enable = false;
+  execution = {
+    enable = true;
+    machineName = "execution-a";
+    serverUrl = "https://manifold.example.com";
+    machineId = "<machine.id from successful enrollment>";
+    admissionPublicKey = builtins.readFile ./hub-admission-public.pem;
+    tokenFile = "/var/lib/manifold/machine.token";
+    artifactOrigins = [ "https://artifacts.example.com" ];
+  };
+};
+```
+
+The token file contents are never a Nix expression or store object. If creating the account
+before first activation, use your normal secret-provisioning mechanism; do not start the
+transport until the declared private file exists. Nodes dial outbound to the hub; no
+inbound native-owner port is exposed. Never ship `owner.key`, the hub database or its signing
+key to an execution node. The machine token is not a tool/provider token or a principal
+credential. Installation and revision/resource consent remain the existing `engine.jobs`
+administration actions; enrollment alone grants neither.
+
+### Maintenance and disposable-owner acceptance
+
+Routine hub restart (`systemctl restart manifold-server`) and transport replacement
+(`systemctl restart manifold-transport`) leave the owner cgroup intact. Owner definitions
+have `restartIfChanged=false`, `stopIfChanged=false`, `Restart=on-failure` and
+`RefuseManualStop=true`: a rebuild does not opt into killing retained work, and a successful
+atomic maintenance shutdown stays stopped. Old immutable store paths must remain rooted
+until the retained owner exits; do not garbage-collect its old system generation mid-session.
+Changing a unit definition does not mean the retained owner is running that new version.
+
+Before changing owner configuration, output backing, identity, package or supervisor:
+close admission with `core.machines.drain`, let jobs/services finish or explicitly cancel
+them through their governed doors, remove retained terminal entries, and use the existing
+private terminal-host `shutdown_request`. Its atomic job/terminal refusal is a **hold**,
+not permission to signal, force restart, replace a container or infer idle from zero PTYs.
+Do not remove the profile or change its mount while retained work exists. After acknowledged
+shutdown, retain journals/workload storage, explicitly retire only the old reviewed
+`owner-template.json` / `job-owner/config.json` and supervision marker if that configuration
+is actually changing, then activate and `systemctl start manifold-owner`.
+Reopen drain explicitly after owner proof/readiness. A lost enrollment token or conflicting
+machine name refuses native bootstrap; recover through the supported enrollment authority
+flow, never implicit rotation. No live detached-to-systemd adoption is implemented.
+
+Before preview activation Main/integration must exercise this profile on **disposable**
+Linux owners: build/evaluate the pinned module and both binaries; prove actual namespace,
+FD mount and controller support; execute a hash-pinned operation with declared closures and
+bounded outputs; test over-capacity, inode, protected-source and cgroup-migration refusals;
+retain a terminal and service across hub-unit and transport-unit restarts; compare owner
+PID/generation and prove no replay; verify multi-node explicit ID routing and offline refusal;
+attempt configuration/supervision drift and prove the incumbent remains untouched; drain
+and atomically shut down before owner restart; confirm output/journal recovery on disk and
+honest loss of unsealed tmpfs scratch. A successful build or online terminal transport alone
+does not prove native readiness. This profile's source is not a claim of runtime verification.
+
+## Container profile
 
 ## Prerequisites
 
