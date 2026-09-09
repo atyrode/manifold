@@ -14,6 +14,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
+import { request as httpRequest } from "node:http";
+import { connectWorkloadLoopback } from "./job-listener-proof.ts";
+import { createJobServiceProxy, type JobServiceProxy } from "./job-service-proxy.ts";
 import {
   HeldDirectory,
   privateSocketPair,
@@ -676,7 +679,7 @@ interface ListeningJob {
 
 async function listeningJob(
   spec: LinuxJobSpec,
-  mode: "loopback" | "wildcard" | "nested",
+  mode: "loopback" | "wildcard" | "nested" | "http",
 ): Promise<ListeningJob> {
   const fd = openSync(listenerProbe!, constants.O_RDONLY | constants.O_NOFOLLOW);
   const ready = Promise.withResolvers<number>();
@@ -754,6 +757,121 @@ test.skipIf(!realLinux || !listenerProbe).each(["loopback", "nested"] as const)(
     } finally {
       await new Promise<void>((resolve) => foreign.close(() => resolve()));
     }
+  },
+);
+
+test.skipIf(!realLinux || !listenerProbe)(
+  "scoped runtime HTTP uses the proved connection and refuses a live runtime's rebound port",
+  async () => {
+    await withLinux("exit 91", async (spec) => {
+      const { handle, port, closed } = await listeningJob(spec, "http");
+      let exited = false;
+      void handle.result.then(() => { exited = true; });
+      let connections = 0;
+      let foreignBytes = 0;
+      const foreignClosed = Promise.withResolvers<void>();
+      const foreign = createServer((socket) => {
+        connections++;
+        socket.on("data", (bytes: Buffer) => { foreignBytes += bytes.length; });
+        socket.on("error", () => socket.destroy());
+        socket.once("close", foreignClosed.resolve);
+      });
+      let proxy: JobServiceProxy | undefined;
+      let accepting: Promise<void> | undefined;
+      let dropProvedConnection = false;
+      const lifetime = new AbortController();
+      try {
+        expect(handle.ownsLoopbackListener(port)).toBe(true);
+        proxy = await createJobServiceProxy({
+          policies: [{
+            serviceId: "listener",
+            revision: "r1",
+            maxConcurrent: 1,
+            runtime: {
+              pluginId: "fixture", operationId: "serve", installationRevision: "r1",
+              artifactSha256: "a".repeat(64), resourceBindingDigest: "b".repeat(64), input: {},
+            },
+            operations: {
+              probe: {
+                kind: "http-proxy", method: "POST", path: "/probe",
+                request: { kind: "json", disclosure: "full" },
+                response: {
+                  kind: "stream", disclosure: "full", contentTypes: ["application/json"], headers: [],
+                },
+                timeoutMs: 2000, maxRequestBytes: 4096, maxResponseBytes: 4096,
+              },
+            },
+          }],
+          bindings: [{ serviceId: "listener", revision: "r1", operationIds: ["probe"] }],
+          authorize: async () => true,
+          resolveRuntime: async (_policy, signal) => {
+            const socket = await connectWorkloadLoopback(port, (connected) => {
+              const owned = handle.ownsLoopbackConnection(connected);
+              if (!accepting) {
+                // The fixture intentionally delays accept until after the first proof
+                // observation. Connectivity alone cannot authorize application bytes.
+                expect(owned).toBe(false);
+                accepting = handle.input(Buffer.from("a"));
+              }
+              return owned;
+            }, signal);
+            if (dropProvedConnection) {
+              dropProvedConnection = false;
+              const disconnected = new Promise<void>((resolve) => socket.once("close", resolve));
+              await handle.input(Buffer.from("c"));
+              await closed;
+              socket.destroy();
+              await disconnected;
+              await new Promise<void>((resolve, reject) => {
+                foreign.once("error", reject);
+                foreign.listen(port, "127.0.0.1", resolve);
+              });
+            }
+            return {
+              url: `http://127.0.0.1:${port}`,
+              bearer: "listener-fixture-bearer-000000000000",
+              signal: lifetime.signal,
+              socket,
+            };
+          },
+        });
+        const send = () => new Promise<{ status: number; body: string }>((resolve, reject) => {
+          const outgoing = httpRequest(`${proxy!.url}/probe`, {
+            method: "POST", agent: false,
+            headers: {
+              authorization: `Bearer ${proxy!.bearer}`, "content-type": "application/json",
+            },
+          }, (incoming) => {
+            let body = "";
+            incoming.on("data", (bytes: Buffer) => { body += bytes.toString(); });
+            incoming.once("error", reject);
+            incoming.once("end", () => resolve({ status: incoming.statusCode!, body }));
+          });
+          outgoing.once("error", reject);
+          outgoing.end('{"probe":true}');
+        });
+        // The fixture only responds after receiving the exact synthetic bearer/body.
+        expect(await send()).toEqual({ status: 200, body: '{"received":true}' });
+        await accepting;
+        dropProvedConnection = true;
+        expect((await send()).status).toBe(503);
+        expect(connections).toBe(0); // A lost proved socket must never trigger a new dial.
+        expect(exited).toBe(false);
+        expect((await send()).status).toBeGreaterThanOrEqual(400);
+        await foreignClosed.promise;
+        expect(connections).toBe(1); // Exactly one credential-free TCP proof attempt.
+        expect(foreignBytes).toBe(0);
+        expect(exited).toBe(false); // Cached readiness still refers to a live job.
+        handle.endInput();
+        expect((await handle.result).exitCode).toBe(0);
+      } finally {
+        lifetime.abort();
+        await proxy?.close();
+        await new Promise<void>((resolve) => foreign.close(() => resolve()));
+        await handle.cancel();
+        handle.release();
+      }
+    });
   },
 );
 

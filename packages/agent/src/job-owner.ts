@@ -1,5 +1,7 @@
 import { createPublicKey, randomBytes, randomUUID, verify, type KeyObject } from "node:crypto";
 import { closeSync, fstatSync } from "node:fs";
+import type { Socket } from "node:net";
+import { connectWorkloadLoopback } from "./job-listener-proof.ts";
 import {
   canonicalJobJson,
   PROTOCOL_VERSION,
@@ -901,7 +903,7 @@ export class MachineJobOwner {
     parent: OwnedJob,
     policy: ServicePolicy,
     signal: AbortSignal,
-  ): Promise<JobServiceEndpoint & { signal: AbortSignal }> {
+  ): Promise<JobServiceEndpoint & { signal: AbortSignal; socket: Socket }> {
     signal.throwIfAborted();
     if (
       !policy.runtime ||
@@ -979,7 +981,23 @@ export class MachineJobOwner {
     const child = instance.childJobId && this.jobs.get(instance.childJobId);
     if (!child || child.result.state !== "started" || endpoint.signal.aborted)
       throw new Error("service_unavailable");
-    return endpoint;
+    const lifetime = AbortSignal.any([
+      signal,
+      endpoint.signal,
+      parent.serviceController.signal,
+    ]);
+    const socket = await connectWorkloadLoopback(
+      Number(new URL(endpoint.url).port),
+      (connected) =>
+        !parent.cancelRequested &&
+        parent.result.state === "started" &&
+        !child.cancelRequested &&
+        child.result.state === "started" &&
+        jobDigest(this.policy(policy.serviceId) ?? null) === jobDigest(policy) &&
+        child.handle?.ownsLoopbackConnection(connected) === true,
+      lifetime,
+    );
+    return { ...endpoint, socket };
   }
 
   private async announceServiceReady(job: OwnedJob, port: number): Promise<void> {

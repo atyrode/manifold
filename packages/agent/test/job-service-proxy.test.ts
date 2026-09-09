@@ -6,6 +6,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import { finished } from "node:stream/promises";
+import type { Socket } from "node:net";
 import type {
   ServiceBinding,
   ServicePolicy,
@@ -13,6 +14,7 @@ import type {
 } from "@manifold/protocol";
 import { createJobServiceProxy, type JobServiceProxy } from "../src/job-service-proxy.ts";
 import { createJobServiceRunner } from "../src/job-services.ts";
+import { connectWorkloadLoopback } from "../src/job-listener-proof.ts";
 
 const binding: ServiceBinding = {
   serviceId: "gateway",
@@ -111,6 +113,87 @@ async function send(
   return result.promise;
 }
 const secret = "zz-owner-secret";
+
+test.each(["live", "lost"] as const)(
+  "runtime proxy uses only its exact proved %s connection without redialing",
+  async (state) => {
+    let connections = 0;
+    let applicationBytes = 0;
+    let peer: Socket | undefined;
+    let proved: Socket | undefined;
+    let provedPort: number | undefined;
+    const server = createServer(async (request, response) => {
+      let body = "";
+      for await (const bytes of request) body += bytes.toString();
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        port: request.socket.remotePort,
+        authorized: request.headers.authorization === `Bearer ${"x".repeat(32)}`,
+        body,
+      }));
+    });
+    server.on("connection", (socket) => {
+      connections++;
+      peer = socket;
+      socket.on("data", (bytes: Buffer) => { applicationBytes += bytes.length; });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing runtime port");
+    const lifetime = new AbortController();
+    const { origin: _origin, allowLoopbackHttp: _loopback, credential: _credential, ...spec } =
+      policy(`http://127.0.0.1:${address.port}`);
+    const proxy = await createJobServiceProxy({
+      policies: [{
+        ...spec,
+        runtime: {
+          pluginId: "fixture", operationId: "serve", installationRevision: "r1",
+          artifactSha256: "a".repeat(64), resourceBindingDigest: "b".repeat(64), input: {},
+        },
+      }],
+      bindings: [binding],
+      authorize: async () => {
+        // Revoke the actual connection after ownership proof but before HTTP handoff.
+        if (state === "lost") proved?.destroy();
+        return true;
+      },
+      resolveRuntime: async (_policy, signal) => {
+        proved = await connectWorkloadLoopback(address.port, (socket) =>
+          peer?.remoteAddress === socket.localAddress &&
+          peer?.remotePort === socket.localPort &&
+          peer?.localAddress === socket.remoteAddress &&
+          peer?.localPort === socket.remotePort,
+        signal);
+        provedPort = proved.localPort;
+        return {
+          url: `http://127.0.0.1:${address.port}`,
+          bearer: "x".repeat(32), signal: lifetime.signal, socket: proved,
+        };
+      },
+    });
+    try {
+      const result = await send(proxy, { body: '{"probe":true}' });
+      if (state === "live") {
+        expect(result.status).toBe(200);
+        expect(JSON.parse(result.body)).toEqual({
+          port: provedPort, authorized: true, body: '{"probe":true}',
+        });
+      } else {
+        expect(result.status).toBe(503);
+        expect(applicationBytes).toBe(0);
+      }
+      expect(connections).toBe(1);
+    } finally {
+      lifetime.abort();
+      await proxy.close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);
 
 test("fixed route streams before completion with owner-only credentials and no forwarded authority headers", async () => {
   const release = Promise.withResolvers<void>();

@@ -11,9 +11,13 @@ import {
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
+import type { Socket } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { MachineLocationSchema } from "@manifold/protocol";
-import { ownsWorkloadLoopbackListener } from "./job-listener-proof.ts";
+import {
+  ownsWorkloadLoopbackConnection,
+  ownsWorkloadLoopbackListener,
+} from "./job-listener-proof.ts";
 import type { HeldDirectory } from "./job-files.ts";
 import {
   fdMountId,
@@ -99,6 +103,8 @@ export interface LinuxJobHandle {
   childDelegation: HeldDirectory;
   /** Kernel-backed live workload ownership, never a connectivity probe. */
   ownsLoopbackListener(port: number): boolean;
+  /** Exact retained TCP peer, including accepted socket ownership in this workload. */
+  ownsLoopbackConnection(socket: Socket): boolean;
   /** Close retained group handles after result and child/output sealing; idempotent. */
   release(): void;
   input(bytes: Uint8Array): Promise<void>;
@@ -858,6 +864,15 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
         !terminating &&
         spec.network === "host" &&
         ownsWorkloadLoopbackListener(groups, port)
+      );
+    },
+    ownsLoopbackConnection(socket) {
+      return (
+        !released &&
+        !settled &&
+        !terminating &&
+        spec.network === "host" &&
+        ownsWorkloadLoopbackConnection(groups, socket)
       );
     },
     release() {

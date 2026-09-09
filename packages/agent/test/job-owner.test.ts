@@ -480,6 +480,7 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
           result: stdinExit.promise,
           childDelegation: spec.delegatedCgroup,
           ownsLoopbackListener: () => false,
+          ownsLoopbackConnection: () => false,
           input: async () => {
             inputCalls++;
             await write.promise;
@@ -771,6 +772,7 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
                 result: Promise.reject(new LinuxJobRefusal("cgroup-empty-unproven")),
                 childDelegation: spec.delegatedCgroup,
                 ownsLoopbackListener: () => false,
+                ownsLoopbackConnection: () => false,
                 input: async () => {},
                 endInput() {},
                 release() {},

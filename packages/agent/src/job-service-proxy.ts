@@ -1,11 +1,13 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
+  Agent,
   createServer,
   request as httpRequest,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
 import { request as httpsRequest } from "node:https";
+import type { Socket } from "node:net";
 import { Transform, type TransformCallback } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
@@ -36,11 +38,12 @@ export interface JobServiceProxyOptions {
   signal?: AbortSignal;
   /** Active requests lose authority on owner-seat/configuration revocation; listeners remain reusable. */
   authoritySignal?: () => AbortSignal;
-  /** Only the owner can bind an admitted runtime and its acknowledged private listener. */
+  /** Returns a fresh ownership-proved connection, not permission to dial a cached URL.
+   * The resolver must destroy pending/returned sockets when signal aborts. */
   resolveRuntime?: (
     policy: ServicePolicy,
     signal: AbortSignal,
-  ) => Promise<{ url: string; bearer: string; signal: AbortSignal }>;
+  ) => Promise<{ url: string; bearer: string; signal: AbortSignal; socket: Socket }>;
 }
 class ProxyFailure extends Error {
   constructor(
@@ -483,6 +486,8 @@ export async function createJobServiceProxy(
     response.once("close", disconnect);
     let upstream: IncomingMessage | undefined;
     let secret: string | undefined;
+    let runtimeSocket: Socket | undefined;
+    let runtimeAgent: Agent | undefined;
     try {
       const authority = Object.freeze({
         serviceId: entry.policy.serviceId,
@@ -515,10 +520,15 @@ export async function createJobServiceProxy(
           options.resolveRuntime(entry.policy, controller.signal),
           controller.signal,
         );
+        runtimeSocket = runtime.socket;
         if (
           !/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/.test(runtime.url) ||
           Number(new URL(runtime.url).port) > 65535 ||
-          !/^[A-Za-z0-9_-]{32,128}$/.test(runtime.bearer)
+          !/^[A-Za-z0-9_-]{32,128}$/.test(runtime.bearer) ||
+          !runtimeSocket || runtimeSocket.destroyed || runtimeSocket.connecting ||
+          !runtimeSocket.readable || !runtimeSocket.writable ||
+          runtimeSocket.remoteAddress !== "127.0.0.1" ||
+          runtimeSocket.remotePort !== Number(new URL(runtime.url).port)
         )
           throw new ProxyFailure(503, "service_unavailable");
         origin = runtime.url;
@@ -551,13 +561,29 @@ export async function createJobServiceProxy(
       if (url.origin !== origin || url.pathname !== path)
         throw new ProxyFailure(400, "service_input_invalid");
       const received = Promise.withResolvers<IncomingMessage>();
+      if (entry.policy.runtime) {
+        const socket = runtimeSocket;
+        if (!socket || socket.destroyed) throw new ProxyFailure(503, "service_unavailable");
+        runtimeAgent = new Agent({ keepAlive: false, maxSockets: 1 });
+        let claimed = false;
+        // Never delegate to Agent's dialer, including when this socket dies during
+        // handoff. Each request gets one connection and cannot recreate or reuse it.
+        runtimeAgent.createConnection = (_options, callback) => {
+          if (claimed || socket.destroyed) {
+            callback?.(new ProxyFailure(503, "service_unavailable"), socket);
+            return undefined;
+          }
+          claimed = true;
+          return socket;
+        };
+      }
       const outgoing = (url.protocol === "https:" ? httpsRequest : httpRequest)(
         url,
         {
           method: operation.method,
           headers,
           signal: controller.signal,
-          agent: false,
+          agent: runtimeAgent ?? false,
           maxHeaderSize: 16384,
           ...(url.protocol === "https:" ? { rejectUnauthorized: true } : {}),
         },
@@ -640,6 +666,8 @@ export async function createJobServiceProxy(
     } finally {
       controller.abort();
       upstream?.destroy();
+      runtimeAgent?.destroy();
+      runtimeSocket?.destroy();
       secret = undefined;
       clearTimeout(timer);
       request.removeListener("aborted", abandoned);

@@ -7,6 +7,8 @@ import {
   readSync,
   statfsSync,
 } from "node:fs";
+import { createConnection, type Socket } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 import { CLOSE_ON_EXEC, HeldDirectory } from "./job-files.ts";
 
 // Linux procfs, cgroup-v2 and nsfs superblock identities; never accept lookalike files.
@@ -93,7 +95,11 @@ function netNamespace(proc: HeldDirectory): number {
   }
 }
 
-function listenerInode(net: HeldDirectory, port: number): bigint | undefined {
+function socketInode(
+  net: HeldDirectory,
+  port: number,
+  peerPort?: number,
+): bigint | undefined {
   const rows = boundedText(net, "tcp", MAX_TABLE_BYTES).trim().split("\n");
   if (
     rows.length > MAX_TABLE_ROWS ||
@@ -102,6 +108,9 @@ function listenerInode(net: HeldDirectory, port: number): bigint | undefined {
     throw new Error("listener_table_unproven");
   let inode: bigint | undefined;
   const hexPort = port.toString(16).toUpperCase().padStart(4, "0");
+  const peer = peerPort === undefined
+    ? "00000000:0000"
+    : `0100007F:${peerPort.toString(16).toUpperCase().padStart(4, "0")}`;
   for (const row of rows.slice(1)) {
     const fields = row.trim().split(/\s+/);
     if (
@@ -113,12 +122,17 @@ function listenerInode(net: HeldDirectory, port: number): bigint | undefined {
       !/^\d+$/.test(fields[9]!)
     )
       throw new Error("listener_table_unproven");
-    // TCP_LISTEN = 0A; proc tcp IPv4 addresses are printed in native byte order.
-    // The runtime supports Linux x64/arm64 little-endian hosts only.
-    if (fields[3] !== "0A" || fields[1]!.slice(9) !== hexPort) continue;
-    if (fields[1]!.startsWith("00000000:")) throw new Error("listener_wildcard");
-    if (!fields[1]!.startsWith("0100007F:")) continue;
-    if (inode !== undefined || fields[2] !== "00000000:0000" || fields[9] === "0")
+    // TCP_LISTEN = 0A, TCP_ESTABLISHED = 01. The server-side tuple is
+    // the reverse of the retained client's tuple; both addresses are exact loopback.
+    // proc tcp prints IPv4 in native byte order (supported Linux x64/arm64 are LE).
+    if (fields[3] !== (peerPort === undefined ? "0A" : "01") ||
+        fields[1]!.slice(9) !== hexPort) continue;
+    if (peerPort === undefined && fields[1]!.startsWith("00000000:"))
+      throw new Error("listener_wildcard");
+    if (!fields[1]!.startsWith("0100007F:") || fields[2] !== peer) continue;
+    // Before accept(), the established kernel socket can have inode zero.
+    if (fields[9] === "0") continue;
+    if (inode !== undefined)
       throw new Error("listener_ambiguous");
     inode = BigInt(fields[9]!);
   }
@@ -150,11 +164,77 @@ function withinAuthority(group: HeldDirectory, authority: Authority): boolean {
   }
 }
 
-/** A bounded, synchronous observation, not a reservation of the port after return.
- * Only cgroup members with a retained live proc directory and a pinned socket inode
- * can prove ownership. The supervisor and separately admitted children are not roots.
- * Missing permissions, races, ambiguity or resource bounds all refuse readiness. */
+/** Readiness is only a point-in-time observation, never a port reservation. */
 export function ownsWorkloadLoopbackListener(authority: Authority, port: number): boolean {
+  return ownsWorkloadSocket(authority, port);
+}
+
+/** A live retained client connection cannot be redirected by a listener rebind.
+ * Prove its exact server-side established socket, not the listening socket. */
+export function ownsWorkloadLoopbackConnection(authority: Authority, socket: Socket): boolean {
+  if (
+    socket.destroyed || socket.connecting || !socket.readable || !socket.writable ||
+    socket.localAddress !== "127.0.0.1" || socket.remoteAddress !== "127.0.0.1" ||
+    !Number.isSafeInteger(socket.localPort) || !Number.isSafeInteger(socket.remotePort)
+  ) return false;
+  return ownsWorkloadSocket(authority, socket.remotePort!, socket.localPort!);
+}
+
+/** Connect without application bytes, allow bounded accept scheduling, then return
+ * only that proved socket. The caller must destroy it; cancellation owns it throughout.
+ * There is exactly one TCP attempt and no reconnect, including after proof failure. */
+export async function connectWorkloadLoopback(
+  port: number,
+  owns: (socket: Socket) => boolean,
+  signal: AbortSignal,
+): Promise<Socket> {
+  signal.throwIfAborted();
+  const socket = createConnection({ host: "127.0.0.1", port, signal });
+  const failed = new AbortController();
+  const abort = () => {
+    failed.abort();
+    socket.destroy();
+  };
+  const closed = () => {
+    failed.abort();
+    signal.removeEventListener("abort", abort);
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  socket.once("close", closed);
+  // Keep errors handled until close, including the gap between proof and HTTP handoff.
+  socket.on("error", abort);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        socket.removeListener("connect", connected);
+        socket.removeListener("close", refused);
+        socket.removeListener("error", refused);
+      };
+      const connected = () => { cleanup(); resolve(); };
+      const refused = () => { cleanup(); reject(new Error("service_connection_unproven")); };
+      socket.once("connect", connected);
+      socket.once("close", refused);
+      socket.once("error", refused);
+    });
+    const deadline = performance.now() + 1000;
+    const lifetime = AbortSignal.any([signal, failed.signal]);
+    while (true) {
+      lifetime.throwIfAborted();
+      const proved = owns(socket);
+      lifetime.throwIfAborted();
+      if (performance.now() >= deadline) throw new Error("service_connection_unproven");
+      if (proved && !socket.destroyed) return socket;
+      await delay(Math.min(10, deadline - performance.now()), undefined, { signal: lifetime });
+    }
+  } catch (error) {
+    socket.destroy();
+    throw error;
+  }
+}
+
+/** Only cgroup members with retained live proc directories and a pinned socket inode
+ * prove ownership. Missing permissions, races, ambiguity and bounds fail closed. */
+function ownsWorkloadSocket(authority: Authority, port: number, peerPort?: number): boolean {
   if (
     process.platform !== "linux" ||
     !["x64", "arm64"].includes(process.arch) ||
@@ -194,7 +274,7 @@ export function ownsWorkloadLoopbackListener(authority: Authority, port: number)
     namespaces.push(ownerNet);
     const net = self.openChild("net");
     held.push(net);
-    const inode = listenerInode(net, port);
+    const inode = socketInode(net, port, peerPort);
     if (inode === undefined) return false;
 
     const queue = [
@@ -263,7 +343,7 @@ export function ownsWorkloadLoopbackListener(authority: Authority, port: number)
                 const stat = fstatSync(socket, { bigint: true });
                 if (!stat.isSocket() || stat.ino !== inode) continue;
                 if (
-                  listenerInode(net, port) !== inode ||
+                  socketInode(net, port, peerPort) !== inode ||
                   !withinAuthority(group, authority) ||
                   !members(group).has(pid) ||
                   processStart(proc, pid) !== start
