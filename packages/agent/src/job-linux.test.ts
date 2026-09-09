@@ -766,13 +766,17 @@ test.skipIf(!realLinux || !listenerProbe)(
     await withLinux("exit 91", async (spec) => {
       const { handle, port, closed } = await listeningJob(spec, "http");
       let exited = false;
-      void handle.result.then(() => { exited = true; });
+      void handle.result.then(() => {
+        exited = true;
+      });
       let connections = 0;
       let foreignBytes = 0;
       const foreignClosed = Promise.withResolvers<void>();
       const foreign = createServer((socket) => {
         connections++;
-        socket.on("data", (bytes: Buffer) => { foreignBytes += bytes.length; });
+        socket.on("data", (bytes: Buffer) => {
+          foreignBytes += bytes.length;
+        });
         socket.on("error", () => socket.destroy());
         socket.once("close", foreignClosed.resolve);
       });
@@ -783,38 +787,55 @@ test.skipIf(!realLinux || !listenerProbe)(
       try {
         expect(handle.ownsLoopbackListener(port)).toBe(true);
         proxy = await createJobServiceProxy({
-          policies: [{
-            serviceId: "listener",
-            revision: "r1",
-            maxConcurrent: 1,
-            runtime: {
-              pluginId: "fixture", operationId: "serve", installationRevision: "r1",
-              artifactSha256: "a".repeat(64), resourceBindingDigest: "b".repeat(64), input: {},
-            },
-            operations: {
-              probe: {
-                kind: "http-proxy", method: "POST", path: "/probe",
-                request: { kind: "json", disclosure: "full" },
-                response: {
-                  kind: "stream", disclosure: "full", contentTypes: ["application/json"], headers: [],
+          policies: [
+            {
+              serviceId: "listener",
+              revision: "r1",
+              maxConcurrent: 1,
+              runtime: {
+                pluginId: "fixture",
+                operationId: "serve",
+                installationRevision: "r1",
+                artifactSha256: "a".repeat(64),
+                resourceBindingDigest: "b".repeat(64),
+                input: {},
+              },
+              operations: {
+                probe: {
+                  kind: "http-proxy",
+                  method: "POST",
+                  path: "/probe",
+                  request: { kind: "json", disclosure: "full" },
+                  response: {
+                    kind: "stream",
+                    disclosure: "full",
+                    contentTypes: ["application/json"],
+                    headers: [],
+                  },
+                  timeoutMs: 2000,
+                  maxRequestBytes: 4096,
+                  maxResponseBytes: 4096,
                 },
-                timeoutMs: 2000, maxRequestBytes: 4096, maxResponseBytes: 4096,
               },
             },
-          }],
+          ],
           bindings: [{ serviceId: "listener", revision: "r1", operationIds: ["probe"] }],
           authorize: async () => true,
           resolveRuntime: async (_policy, signal) => {
-            const socket = await connectWorkloadLoopback(port, (connected) => {
-              const owned = handle.ownsLoopbackConnection(connected);
-              if (!accepting) {
-                // The fixture intentionally delays accept until after the first proof
-                // observation. Connectivity alone cannot authorize application bytes.
-                expect(owned).toBe(false);
-                accepting = handle.input(Buffer.from("a"));
-              }
-              return owned;
-            }, signal);
+            const socket = await connectWorkloadLoopback(
+              port,
+              (connected) => {
+                const owned = handle.ownsLoopbackConnection(connected);
+                if (!accepting) {
+                  // The fixture intentionally delays accept until after the first proof
+                  // observation. Connectivity alone cannot authorize application bytes.
+                  expect(owned).toBe(false);
+                  accepting = handle.input(Buffer.from("a"));
+                }
+                return owned;
+              },
+              signal,
+            );
             if (dropProvedConnection) {
               dropProvedConnection = false;
               const disconnected = new Promise<void>((resolve) => socket.once("close", resolve));
@@ -835,21 +856,30 @@ test.skipIf(!realLinux || !listenerProbe)(
             };
           },
         });
-        const send = () => new Promise<{ status: number; body: string }>((resolve, reject) => {
-          const outgoing = httpRequest(`${proxy!.url}/probe`, {
-            method: "POST", agent: false,
-            headers: {
-              authorization: `Bearer ${proxy!.bearer}`, "content-type": "application/json",
-            },
-          }, (incoming) => {
-            let body = "";
-            incoming.on("data", (bytes: Buffer) => { body += bytes.toString(); });
-            incoming.once("error", reject);
-            incoming.once("end", () => resolve({ status: incoming.statusCode!, body }));
+        const send = () =>
+          new Promise<{ status: number; body: string }>((resolve, reject) => {
+            const outgoing = httpRequest(
+              `${proxy!.url}/probe`,
+              {
+                method: "POST",
+                agent: false,
+                headers: {
+                  authorization: `Bearer ${proxy!.bearer}`,
+                  "content-type": "application/json",
+                },
+              },
+              (incoming) => {
+                let body = "";
+                incoming.on("data", (bytes: Buffer) => {
+                  body += bytes.toString();
+                });
+                incoming.once("error", reject);
+                incoming.once("end", () => resolve({ status: incoming.statusCode!, body }));
+              },
+            );
+            outgoing.once("error", reject);
+            outgoing.end('{"probe":true}');
           });
-          outgoing.once("error", reject);
-          outgoing.end('{"probe":true}');
-        });
         // The fixture only responds after receiving the exact synthetic bearer/body.
         expect(await send()).toEqual({ status: 200, body: '{"received":true}' });
         await accepting;

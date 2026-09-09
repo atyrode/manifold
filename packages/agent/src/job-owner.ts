@@ -981,11 +981,7 @@ export class MachineJobOwner {
     const child = instance.childJobId && this.jobs.get(instance.childJobId);
     if (!child || child.result.state !== "started" || endpoint.signal.aborted)
       throw new Error("service_unavailable");
-    const lifetime = AbortSignal.any([
-      signal,
-      endpoint.signal,
-      parent.serviceController.signal,
-    ]);
+    const lifetime = AbortSignal.any([signal, endpoint.signal, parent.serviceController.signal]);
     const socket = await connectWorkloadLoopback(
       Number(new URL(endpoint.url).port),
       (connected) =>

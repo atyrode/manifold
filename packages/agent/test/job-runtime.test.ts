@@ -77,14 +77,18 @@ function openCredentialFixture(options: FixtureOptions = {}) {
       configPath,
       JSON.stringify({
         machineId: "credential-source-fixture",
-        admissionPublicKey: generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }).toString(),
+        admissionPublicKey: generateKeyPairSync("ed25519")
+          .publicKey.export({ type: "spki", format: "pem" })
+          .toString(),
         stateDirectory: join(root, "state"),
         delegatedCgroup: join(root, "cgroup"),
         bubblewrap,
         protectedDirectories: [],
         anchors: {},
         runtimeTools: {},
-        serviceCredentials: { fixture: { source: reference, origins: ["https://service.invalid"] } },
+        serviceCredentials: {
+          fixture: { source: reference, origins: ["https://service.invalid"] },
+        },
         artifactOrigins: ["https://artifacts.invalid"],
       }),
       { mode: 0o600 },
@@ -93,17 +97,26 @@ function openCredentialFixture(options: FixtureOptions = {}) {
       chownSync(configPath, options.runnerUid, 0);
       chownSync(bubblewrap, options.runnerUid, 0);
     }
-    const child = Bun.spawnSync([process.execPath, "-e", openFixture, root, String(options.runnerUid ?? "")], {
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: 10_000,
-    });
+    const child = Bun.spawnSync(
+      [process.execPath, "-e", openFixture, root, String(options.runnerUid ?? "")],
+      {
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 10_000,
+      },
+    );
     expect(child.exitCode, child.stderr.toString()).toBe(0);
-    const result: { generation?: number; error?: string; code?: string } = JSON.parse(child.stdout.toString());
+    const result: { generation?: number; error?: string; code?: string } = JSON.parse(
+      child.stdout.toString(),
+    );
     // Opening must retain the original private source, not chmod, copy or relocate it.
     const retained = lstatSync(source);
     expect([retained.dev, retained.ino, retained.mode, retained.uid, retained.nlink]).toEqual([
-      original.dev, original.ino, original.mode, original.uid, original.nlink,
+      original.dev,
+      original.ino,
+      original.mode,
+      original.uid,
+      original.nlink,
     ]);
     return result;
   } finally {
@@ -117,11 +130,15 @@ describe.skipIf(process.platform !== "linux")("native credential source opening"
   });
 
   test.each([0o640, 0o604])("refuses an exposed credential with mode %o", (fileMode) => {
-    expect(openCredentialFixture({ fileMode })).toEqual({ error: "unsafe_service_credential_reference" });
+    expect(openCredentialFixture({ fileMode })).toEqual({
+      error: "unsafe_service_credential_reference",
+    });
   });
 
   test.each([0o775, 0o757])("refuses a mutable source parent with mode %o", (parentMode) => {
-    expect(openCredentialFixture({ parentMode })).toEqual({ error: "unsafe_service_credential_reference" });
+    expect(openCredentialFixture({ parentMode })).toEqual({
+      error: "unsafe_service_credential_reference",
+    });
   });
 
   test.each(["file", "parent"] as const)("refuses a symlink %s source", (symlink) => {
@@ -132,19 +149,34 @@ describe.skipIf(process.platform !== "linux")("native credential source opening"
   test.each(["config", "state", "socket", "terminal"] as const)(
     "still requires a private %s directory",
     (exposedDirectory) => {
-      expect(openCredentialFixture({ exposedDirectory })).toEqual({ error: "directory_not_private" });
+      expect(openCredentialFixture({ exposedDirectory })).toEqual({
+        error: "directory_not_private",
+      });
     },
   );
 
-  test.skipIf(process.getuid?.() !== 0)("accepts a root-managed parent for a non-root owner's private file", () => {
-    expect(openCredentialFixture({ runnerUid: 65534, parentUid: 0 })).toEqual({ generation: 1 });
-  });
+  test.skipIf(process.getuid?.() !== 0)(
+    "accepts a root-managed parent for a non-root owner's private file",
+    () => {
+      expect(openCredentialFixture({ runnerUid: 65534, parentUid: 0 })).toEqual({ generation: 1 });
+    },
+  );
 
-  test.skipIf(process.getuid?.() !== 0)("refuses a non-writable parent owned by an unrelated user", () => {
-    expect(openCredentialFixture({ parentUid: 65534 })).toEqual({ error: "unsafe_service_credential_reference" });
-  });
+  test.skipIf(process.getuid?.() !== 0)(
+    "refuses a non-writable parent owned by an unrelated user",
+    () => {
+      expect(openCredentialFixture({ parentUid: 65534 })).toEqual({
+        error: "unsafe_service_credential_reference",
+      });
+    },
+  );
 
-  test.skipIf(process.getuid?.() !== 0)("refuses a private credential owned by another user", () => {
-    expect(openCredentialFixture({ fileUid: 65534 })).toEqual({ error: "unsafe_service_credential_reference" });
-  });
+  test.skipIf(process.getuid?.() !== 0)(
+    "refuses a private credential owned by another user",
+    () => {
+      expect(openCredentialFixture({ fileUid: 65534 })).toEqual({
+        error: "unsafe_service_credential_reference",
+      });
+    },
+  );
 });

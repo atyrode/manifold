@@ -1421,6 +1421,11 @@ invocable projected operation. Installer-fixed transport, bounded input mappings
 response projection prevent callers from choosing an origin, forwarding arbitrary headers
 or exposing unprojected upstream bodies. Static policy fields may name an owner-held
 `credentialRef`; only the native resolver reads that source, for its permitted origin.
+Credential sources remain at their declared locations. Their held parent directories must
+be owned by root or the native owner and not writable by group or others; each source
+itself must still be a private, singly linked regular file owned by the native owner.
+This permits root-managed secret directories without copying credentials. Native owner
+configuration, state and socket directories retain their stricter private-directory rules.
 
 `ctx.services.readConfiguration` and `configureConfiguration` are owner-only, target-bound
 native setup APIs, not credential import or provisioning. Reads return the current
@@ -1441,6 +1446,11 @@ Machine workers import `openWorkerContext` and `attachWorkerInput` from
 only declared scoped services; a provider calls `announceServiceReady` once after binding
 its listener. The native framed channel handles correlation, bounds, backpressure and
 disconnect cancellation. Do not reimplement that ABI or open a product-owned control socket.
+Readiness does not authenticate a port forever. Before sending a scoped HTTP request,
+the native owner opens a credential-free connection and proves that its established peer
+socket belongs to the admitted runtime workload. The proxy uses that exact connection,
+without reconnecting if it closes. Releasing a listening port while a runtime remains
+alive cannot transfer its later requests or bearer to a different workload.
 
 `ctx.jobs.execute({ jobId, machineId, operationId, input, outputs, limits? })` returns safe
 job metadata. `outputs` contains exact `{ name, locationId, components }` bindings.
@@ -2570,6 +2580,13 @@ parent's directory, ADR 0023; `node_modules` and `dist` are never entered), pack
 temporary directory, installs parents before parts, then watches the directory and repeats on
 change, debounced, installing only the bundles whose sha moved. One JSON line per cycle. The same
 loop without `--hardened` is the in-realm author's loop, walked through in §10.
+
+Repositories with generated worker artifacts can call the exported `devLoop` with a
+`build(packDir)` callback. It returns the complete family in parent-before-part order as
+`{ id, file, sha256, bytes }` entries produced by the kit's packer. The callback finishes
+every bundle before installation begins; a failed build leaves installed bundles alone.
+The native loop still owns watching, change coalescing, hash checks, delivery and temporary
+output cleanup. Keep source staging outside the watched root.
 
 ```sh
 # from a manifold checkout, pointing at your plugins directory

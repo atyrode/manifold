@@ -95,11 +95,7 @@ function netNamespace(proc: HeldDirectory): number {
   }
 }
 
-function socketInode(
-  net: HeldDirectory,
-  port: number,
-  peerPort?: number,
-): bigint | undefined {
+function socketInode(net: HeldDirectory, port: number, peerPort?: number): bigint | undefined {
   const rows = boundedText(net, "tcp", MAX_TABLE_BYTES).trim().split("\n");
   if (
     rows.length > MAX_TABLE_ROWS ||
@@ -108,9 +104,10 @@ function socketInode(
     throw new Error("listener_table_unproven");
   let inode: bigint | undefined;
   const hexPort = port.toString(16).toUpperCase().padStart(4, "0");
-  const peer = peerPort === undefined
-    ? "00000000:0000"
-    : `0100007F:${peerPort.toString(16).toUpperCase().padStart(4, "0")}`;
+  const peer =
+    peerPort === undefined
+      ? "00000000:0000"
+      : `0100007F:${peerPort.toString(16).toUpperCase().padStart(4, "0")}`;
   for (const row of rows.slice(1)) {
     const fields = row.trim().split(/\s+/);
     if (
@@ -125,15 +122,14 @@ function socketInode(
     // TCP_LISTEN = 0A, TCP_ESTABLISHED = 01. The server-side tuple is
     // the reverse of the retained client's tuple; both addresses are exact loopback.
     // proc tcp prints IPv4 in native byte order (supported Linux x64/arm64 are LE).
-    if (fields[3] !== (peerPort === undefined ? "0A" : "01") ||
-        fields[1]!.slice(9) !== hexPort) continue;
+    if (fields[3] !== (peerPort === undefined ? "0A" : "01") || fields[1]!.slice(9) !== hexPort)
+      continue;
     if (peerPort === undefined && fields[1]!.startsWith("00000000:"))
       throw new Error("listener_wildcard");
     if (!fields[1]!.startsWith("0100007F:") || fields[2] !== peer) continue;
     // Before accept(), the established kernel socket can have inode zero.
     if (fields[9] === "0") continue;
-    if (inode !== undefined)
-      throw new Error("listener_ambiguous");
+    if (inode !== undefined) throw new Error("listener_ambiguous");
     inode = BigInt(fields[9]!);
   }
   return inode;
@@ -173,10 +169,16 @@ export function ownsWorkloadLoopbackListener(authority: Authority, port: number)
  * Prove its exact server-side established socket, not the listening socket. */
 export function ownsWorkloadLoopbackConnection(authority: Authority, socket: Socket): boolean {
   if (
-    socket.destroyed || socket.connecting || !socket.readable || !socket.writable ||
-    socket.localAddress !== "127.0.0.1" || socket.remoteAddress !== "127.0.0.1" ||
-    !Number.isSafeInteger(socket.localPort) || !Number.isSafeInteger(socket.remotePort)
-  ) return false;
+    socket.destroyed ||
+    socket.connecting ||
+    !socket.readable ||
+    !socket.writable ||
+    socket.localAddress !== "127.0.0.1" ||
+    socket.remoteAddress !== "127.0.0.1" ||
+    !Number.isSafeInteger(socket.localPort) ||
+    !Number.isSafeInteger(socket.remotePort)
+  )
+    return false;
   return ownsWorkloadSocket(authority, socket.remotePort!, socket.localPort!);
 }
 
@@ -210,8 +212,14 @@ export async function connectWorkloadLoopback(
         socket.removeListener("close", refused);
         socket.removeListener("error", refused);
       };
-      const connected = () => { cleanup(); resolve(); };
-      const refused = () => { cleanup(); reject(new Error("service_connection_unproven")); };
+      const connected = () => {
+        cleanup();
+        resolve();
+      };
+      const refused = () => {
+        cleanup();
+        reject(new Error("service_connection_unproven"));
+      };
       socket.once("connect", connected);
       socket.once("close", refused);
       socket.once("error", refused);

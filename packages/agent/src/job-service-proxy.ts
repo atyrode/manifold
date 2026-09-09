@@ -525,8 +525,11 @@ export async function createJobServiceProxy(
           !/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/.test(runtime.url) ||
           Number(new URL(runtime.url).port) > 65535 ||
           !/^[A-Za-z0-9_-]{32,128}$/.test(runtime.bearer) ||
-          !runtimeSocket || runtimeSocket.destroyed || runtimeSocket.connecting ||
-          !runtimeSocket.readable || !runtimeSocket.writable ||
+          !runtimeSocket ||
+          runtimeSocket.destroyed ||
+          runtimeSocket.connecting ||
+          !runtimeSocket.readable ||
+          !runtimeSocket.writable ||
           runtimeSocket.remoteAddress !== "127.0.0.1" ||
           runtimeSocket.remotePort !== Number(new URL(runtime.url).port)
         )
