@@ -17,8 +17,9 @@ import { randomUUID } from "node:crypto";
 import { dlopen, FFIType, ptr, type Library } from "bun:ffi";
 import { connect, type Socket } from "node:net";
 
-// Linux O_CLOEXEC is not exposed by every Node-compatible constants table.
+// Linux O_CLOEXEC and O_PATH are not exposed by every Node-compatible constants table.
 export const CLOSE_ON_EXEC = 0x80000;
+const DIRECTORY_FLAGS = 0x200000 | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC;
 
 export function safeComponent(name: string): void {
   if (
@@ -107,18 +108,12 @@ export function isSealedByteFile(fd: number): boolean {
 /** Identity ancestry of a held directory, never a checked-and-reopened pathname. */
 export function directoryAncestry(directoryFd: number): string[] {
   const identities: string[] = [];
-  let current = openSync(
-    `/proc/self/fd/${directoryFd}/.`,
-    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
-  );
+  let current = openSync(`/proc/self/fd/${directoryFd}/.`, DIRECTORY_FLAGS);
   try {
     for (let depth = 0; depth < 256; depth++) {
       const stat = fstatSync(current, { bigint: true });
       identities.push(`${stat.dev}:${stat.ino}`);
-      const parent = openSync(
-        `/proc/self/fd/${current}/..`,
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
-      );
+      const parent = openSync(`/proc/self/fd/${current}/..`, DIRECTORY_FLAGS);
       const parentStat = fstatSync(parent, { bigint: true });
       if (parentStat.dev === stat.dev && parentStat.ino === stat.ino) {
         closeSync(parent);
@@ -148,17 +143,11 @@ export class HeldDirectory {
     if (process.platform !== "linux" || !path.startsWith("/") || path.includes("\0"))
       throw new Error("unsupported_directory_anchor");
     const parts = path.split("/").filter(Boolean);
-    let fd = openSync(
-      "/",
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
-    );
+    let fd = openSync("/", DIRECTORY_FLAGS);
     try {
       for (const part of parts) {
         safeComponent(part);
-        const next = openSync(
-          `/proc/self/fd/${fd}/${part}`,
-          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
-        );
+        const next = openSync(`/proc/self/fd/${fd}/${part}`, DIRECTORY_FLAGS);
         closeSync(fd);
         fd = next;
       }
@@ -186,10 +175,7 @@ export class HeldDirectory {
         if (options.exclusive || (error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
     }
-    const fd = openSync(
-      `${this.procPath}/${name}`,
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
-    );
+    const fd = openSync(`${this.procPath}/${name}`, DIRECTORY_FLAGS);
     try {
       const child = new HeldDirectory(fd);
       if (child.mountId !== this.mountId) throw new Error("mount_escape");
@@ -231,6 +217,17 @@ export class HeldDirectory {
     safeComponent(name);
     unlinkSync(`${this.procPath}/${name}`);
   }
+  sync(): void {
+    const fd = openSync(
+      `${this.procPath}/.`,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
+    );
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  }
   /** Only private, trusted-writer directories may publish or replace names. */
   publish(temporary: string, destination: string): void {
     safeComponent(temporary);
@@ -238,8 +235,18 @@ export class HeldDirectory {
     const stat = this.stat();
     if (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0)
       throw new Error("directory_not_private");
-    renameSync(`${this.procPath}/${temporary}`, `${this.procPath}/${destination}`);
-    fsyncSync(this.fd);
+    // Searchable handles retain identity without directory-listing authority.
+    // Publication additionally needs a readable descriptor for the durability fence.
+    const syncFd = openSync(
+      `${this.procPath}/.`,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
+    );
+    try {
+      renameSync(`${this.procPath}/${temporary}`, `${this.procPath}/${destination}`);
+      fsyncSync(syncFd);
+    } finally {
+      closeSync(syncFd);
+    }
   }
   atomicWrite(name: string, data: Uint8Array | string, mode = 0o600): void {
     safeComponent(name);

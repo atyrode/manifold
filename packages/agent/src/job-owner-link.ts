@@ -106,9 +106,11 @@ export async function listenJobOwner(
       if (stopped) return;
       stopped = true;
       for (const socket of connections) socket.end();
-      server.stop(true);
-      directory.unlink(name);
-      directory.close();
+      try {
+        server.stop(true);
+      } finally {
+        directory.close();
+      }
     },
   };
 }

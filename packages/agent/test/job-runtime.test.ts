@@ -14,12 +14,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Each opening runs in a subprocess so refused startup descriptors and module
-// spies cannot leak into another test. Only cgroup recovery is replaced: no live
-// delegation, service, socket or credential is used by these filesystem fixtures.
+// spies cannot leak into another test. Only cgroup recovery is replaced; the
+// credential, private listener and filesystem state belong entirely to the fixture.
 const openFixture = `
   import { spyOn } from "bun:test";
   import * as linux from ${JSON.stringify(new URL("../src/job-linux.ts", import.meta.url).href)};
   import { openConfiguredJobOwner } from ${JSON.stringify(new URL("../src/job-runtime.ts", import.meta.url).href)};
+  import { listenJobOwner } from ${JSON.stringify(new URL("../src/job-owner-link.ts", import.meta.url).href)};
   spyOn(linux, "recoverLinuxJobs").mockResolvedValue(undefined);
   const [root, uid] = process.argv.slice(1);
   if (uid !== "") process.setuid(Number(uid));
@@ -27,8 +28,11 @@ const openFixture = `
     const owner = await openConfiguredJobOwner(
       root + "/config/owner.json", root + "/socket/owner.sock", root + "/terminal/host.sock",
     );
-    console.log(JSON.stringify({ generation: owner.identity.generation }));
+    const generation = owner.identity.generation;
+    const listener = await listenJobOwner(owner, root + "/socket/owner.sock");
     await owner.shutdown();
+    listener.stop();
+    console.log(JSON.stringify({ generation }));
   } catch (error) {
     console.log(JSON.stringify({ error: error.message, code: error.code }));
   }
@@ -53,7 +57,6 @@ function openCredentialFixture(options: FixtureOptions = {}) {
       if (options.runnerUid !== undefined) chownSync(join(root, name), options.runnerUid, 0);
     }
     if (options.runnerUid !== undefined) chownSync(root, options.runnerUid, 0);
-    chmodSync(join(root, "source"), options.parentMode ?? 0o755);
     writeFileSync(source, "synthetic-credential", { mode: 0o600 });
     chmodSync(source, options.fileMode ?? 0o600);
     if (options.parentUid !== undefined) chownSync(join(root, "source"), options.parentUid, 0);
@@ -97,6 +100,8 @@ function openCredentialFixture(options: FixtureOptions = {}) {
       chownSync(configPath, options.runnerUid, 0);
       chownSync(bubblewrap, options.runnerUid, 0);
     }
+    chmodSync(join(root, "source"), options.parentMode ?? 0o755);
+    const originalParent = lstatSync(join(root, "source"));
     const child = Bun.spawnSync(
       [process.execPath, "-e", openFixture, root, String(options.runnerUid ?? "")],
       {
@@ -110,6 +115,15 @@ function openCredentialFixture(options: FixtureOptions = {}) {
       child.stdout.toString(),
     );
     // Opening must retain the original private source, not chmod, copy or relocate it.
+    const retainedParent = lstatSync(join(root, "source"));
+    expect([
+      retainedParent.dev,
+      retainedParent.ino,
+      retainedParent.mode,
+      retainedParent.uid,
+    ]).toEqual([originalParent.dev, originalParent.ino, originalParent.mode, originalParent.uid]);
+    // Restore only this fixture after checking the owner left its permissions alone.
+    chmodSync(join(root, "source"), 0o700);
     const retained = lstatSync(source);
     expect([retained.dev, retained.ino, retained.mode, retained.uid, retained.nlink]).toEqual([
       original.dev,
@@ -120,6 +134,7 @@ function openCredentialFixture(options: FixtureOptions = {}) {
     ]);
     return result;
   } finally {
+    chmodSync(join(root, "source"), 0o700);
     rmSync(root, { recursive: true, force: true });
   }
 }
@@ -127,6 +142,24 @@ function openCredentialFixture(options: FixtureOptions = {}) {
 describe.skipIf(process.platform !== "linux")("native credential source opening", () => {
   test("accepts a private credential in its existing traversable user-owned parent", () => {
     expect(openCredentialFixture()).toEqual({ generation: 1 });
+  });
+
+  test("opens a private credential without directory-listing authority", () => {
+    expect(
+      openCredentialFixture({
+        parentMode: 0o111,
+        ...(process.getuid?.() === 0 ? { runnerUid: 65534, parentUid: 0 } : {}),
+      }),
+    ).toEqual({ generation: 1 });
+  });
+
+  test("still refuses a credential when its directory cannot be searched", () => {
+    expect(
+      openCredentialFixture({
+        parentMode: 0o400,
+        ...(process.getuid?.() === 0 ? { runnerUid: 65534, parentUid: 0 } : {}),
+      }),
+    ).toMatchObject({ code: "EACCES" });
   });
 
   test.each([0o640, 0o604])("refuses an exposed credential with mode %o", (fileMode) => {

@@ -11,3 +11,6 @@ Owner-declared credential references can remain in integrity-protected root-mana
 directories; the credential files themselves remain private and owner-held. Plugin
 development can prepare generated worker bundles through the native development loop,
 without introducing a second watcher or installer.
+Protected credential paths require traversal, not directory-listing access; pinned
+directory identities preserve exclusion checks and durable state commits. Native
+owner shutdown releases the runtime-owned listener socket exactly once.
