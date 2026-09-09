@@ -87,7 +87,17 @@ export async function openConfiguredJobOwner(
   ];
   const serviceCredentials = new Map<string, { fd: number; origins: readonly string[] }>();
   for (const [ref, credential] of Object.entries(config.serviceCredentials ?? {})) {
-    const directory = HeldDirectory.openAbsolute(dirname(credential.source), { private: true });
+    const directory = HeldDirectory.openAbsolute(dirname(credential.source));
+    // Existing secret stores may be root-managed and traversable. Only trusted
+    // writers may control the source name; the credential itself must stay private.
+    const directoryStat = directory.stat();
+    if (
+      (directoryStat.uid !== 0 && directoryStat.uid !== process.getuid?.()) ||
+      (directoryStat.mode & 0o022) !== 0
+    ) {
+      directory.close();
+      throw new Error("unsafe_service_credential_reference");
+    }
     protectedDirectories.push(directory);
     const fd = directory.openFile(basename(credential.source));
     const stat = fstatSync(fd);
