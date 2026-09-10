@@ -4,6 +4,7 @@ import {
   chmodSync,
   chownSync,
   lstatSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -46,6 +47,7 @@ type FixtureOptions = {
   runnerUid?: number;
   symlink?: "file" | "parent";
   exposedDirectory?: "config" | "state" | "socket" | "terminal";
+  hardlinks?: "runtime" | "bubblewrap" | "credential";
 };
 
 function openCredentialFixture(options: FixtureOptions = {}) {
@@ -62,6 +64,8 @@ function openCredentialFixture(options: FixtureOptions = {}) {
     if (options.parentUid !== undefined) chownSync(join(root, "source"), options.parentUid, 0);
     const fileUid = options.fileUid ?? options.runnerUid;
     if (fileUid !== undefined) chownSync(source, fileUid, 0);
+    if (options.hardlinks === "credential")
+      linkSync(source, join(root, "source", "credential-alias"));
     const original = lstatSync(source);
     let reference = source;
     if (options.symlink === "file") {
@@ -75,6 +79,13 @@ function openCredentialFixture(options: FixtureOptions = {}) {
     // Merely opened, never executed: the fixture does not launch a sandbox.
     const bubblewrap = join(root, "bubblewrap");
     writeFileSync(bubblewrap, "synthetic-executable", { mode: 0o600 });
+    if (options.hardlinks === "bubblewrap") linkSync(bubblewrap, join(root, "bubblewrap-alias"));
+    const runtimeSource = join(root, "runtime", "value");
+    if (options.hardlinks === "runtime") {
+      mkdirSync(join(root, "runtime"), { mode: 0o755 });
+      writeFileSync(runtimeSource, "immutable-runtime-fixture", { mode: 0o444 });
+      linkSync(runtimeSource, join(root, "runtime", "alias"));
+    }
     const configPath = join(root, "config", "owner.json");
     writeFileSync(
       configPath,
@@ -88,7 +99,10 @@ function openCredentialFixture(options: FixtureOptions = {}) {
         bubblewrap,
         protectedDirectories: [],
         anchors: {},
-        runtimeTools: {},
+        runtimeTools:
+          options.hardlinks === "runtime"
+            ? { fixture: [{ source: runtimeSource, target: "/runtime/value", kind: "file" }] }
+            : {},
         serviceCredentials: {
           fixture: { source: reference, origins: ["https://service.invalid"] },
         },
@@ -188,6 +202,12 @@ describe.skipIf(process.platform !== "linux")("native credential source opening"
     },
   );
 
+  test("refuses a hard-linked private credential", () => {
+    expect(openCredentialFixture({ hardlinks: "credential" })).toEqual({
+      error: "unsafe_file_identity",
+    });
+  });
+
   test.skipIf(process.getuid?.() !== 0)(
     "accepts a root-managed parent for a non-root owner's private file",
     () => {
@@ -210,6 +230,15 @@ describe.skipIf(process.platform !== "linux")("native credential source opening"
       expect(openCredentialFixture({ fileUid: 65534 })).toEqual({
         error: "unsafe_service_credential_reference",
       });
+    },
+  );
+});
+
+describe.skipIf(process.platform !== "linux")("native runtime source opening", () => {
+  test.each(["runtime", "bubblewrap"] as const)(
+    "opens the owner with a hard-linked %s resource",
+    (hardlinks) => {
+      expect(openCredentialFixture({ hardlinks })).toEqual({ generation: 1 });
     },
   );
 });

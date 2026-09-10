@@ -7,6 +7,7 @@ import {
   symlinkSync,
   linkSync,
   writeFileSync,
+  writeSync,
   renameSync,
   mkdirSync,
   closeSync,
@@ -271,6 +272,27 @@ test("held descriptors reject symlinks and hardlinks and survive ancestor replac
     } finally {
       child.close();
     }
+  } finally {
+    root.close();
+    rmSync(path, { recursive: true, force: true });
+  }
+});
+
+test("runtime file handles read shared storage without granting writes or following symlinks", () => {
+  const path = mkdtempSync(join(tmpdir(), "runtime-files-"));
+  const root = HeldDirectory.openAbsolute(path, { private: true });
+  try {
+    writeFileSync(join(path, "original"), "runtime bytes", { mode: 0o444 });
+    linkSync(join(path, "original"), join(path, "shared"));
+    symlinkSync("original", join(path, "symbolic"));
+    const fd = root.openRuntimeFile("shared");
+    try {
+      expect(readFileSync(fd, "utf8")).toBe("runtime bytes");
+      expect(() => writeSync(fd, "changed")).toThrow(/EBADF/);
+    } finally {
+      closeSync(fd);
+    }
+    expect(() => root.openRuntimeFile("symbolic")).toThrow(/ELOOP/);
   } finally {
     root.close();
     rmSync(path, { recursive: true, force: true });

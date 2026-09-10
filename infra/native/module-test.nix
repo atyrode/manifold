@@ -1,6 +1,10 @@
 { self, pkgs }:
 let
   platform = "linux-${if pkgs.stdenv.hostPlatform.isAarch64 then "arm64" else "x64"}";
+  closureMessage = pkgs.writeText "native-runtime-message" "native-module:closures\n";
+  closureReader = pkgs.writeShellScriptBin "closure-reader" ''
+    exec ${pkgs.gitMinimal}/bin/git hash-object --stdin < ${closureMessage}
+  '';
   inspect = pkgs.writeText "manifold-native-profile-inspect.py" ''
     import base64
     import hashlib
@@ -30,7 +34,9 @@ let
     owner = action("engine.jobs.describe", {"machineId": machine["id"], "pluginId": "sample.worker"})
     assert owner["connected"] and "${platform}" in owner["platforms"]
     mode = sys.argv[1] if len(sys.argv) > 1 else "inspect"
-    plugin_id = "fixture.native-profile"
+    tools = mode.endswith("-tools")
+    mode = mode.removesuffix("-tools")
+    plugin_id = "fixture.native-profile-tools" if tools else "fixture.native-profile"
     operation_id = plugin_id + (".hold" if mode.endswith("-hold") else ".run")
     mode = mode.removesuffix("-hold")
     job_id = sys.argv[2] if len(sys.argv) > 2 else "module-native-first"
@@ -39,6 +45,20 @@ let
 
     if mode == "install":
         executable = b"#!/bin/busybox sh\nif test -e /var/lib/manifold/owner.key || test -e /etc/manifold-fixture/private/enrollment-token || test -e /run/credentials/manifold-transport.service/enrollment-token; then exit 90; fi\nif test \"$1\" = hold; then /bin/busybox sleep 60; fi\nprintf 'native-module:bounded\\n'\nexit 23\n"
+        if tools:
+            executable = (
+                b"#!/bin/sh\nset -eu\nset -o pipefail\n"
+                b"if test -e /var/lib/manifold/owner.key || test -e /etc/manifold-fixture/private/enrollment-token || test -e /run/credentials/manifold-transport.service/enrollment-token; then exit 90; fi\n"
+                b"if test -e ${pkgs.hello} || test -e ${pkgs.hello}/bin/hello; then exit 91; fi\n"
+                b"test -x ${pkgs.bash}/bin/bash\n"
+                b"test -x ${pkgs.gitMinimal}/bin/git\n"
+                b"if /bin/sh -c 'printf denied > ${pkgs.gitMinimal}/manifold-write-probe' 2>/dev/null; then exit 92; fi\n"
+                b"test ! -e ${pkgs.gitMinimal}/manifold-write-probe\n"
+                b"digest=$(/usr/bin/closure-reader)\n"
+                b"test \"$digest\" = \"$(printf '%s\\n' native-module:closures | /usr/bin/git hash-object --stdin)\"\n"
+                b"printf '%s\\n' \"$digest\"\n"
+                b"exit 23\n"
+            )
         artifact_hash = hashlib.sha256(executable).hexdigest()
         declaration = {
             "artifacts": {"${platform}": {
@@ -49,9 +69,9 @@ let
             "locations": {},
             "operations": {operation: {
                 "argv": [{"literal": "hold"}] if operation.endswith(".hold") else [],
-                "input": {}, "runtimeTools": ["busybox"], "locations": [],
+                "input": {}, "runtimeTools": ["shell", "git"] if tools else ["busybox"], "locations": [],
                 "outputs": [], "network": "none", "limits": limits, "stdin": False,
-            } for operation in [operation_id, plugin_id + ".hold"]},
+            } for operation in ([operation_id] if tools else [operation_id, plugin_id + ".hold"])},
         }
         bundle = json.dumps({
             "format": 1,
@@ -63,7 +83,7 @@ let
             },
             "files": {"worker": base64.b64encode(executable).decode()},
         }).encode()
-        bundle_path = Path("/var/lib/manifold/native-profile-fixture.json")
+        bundle_path = Path("/var/lib/manifold/native-profile-tools-fixture.json" if tools else "/var/lib/manifold/native-profile-fixture.json")
         with os.fdopen(os.open(bundle_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as output:
             output.write(bundle)
         os.chown(bundle_path, Path("/var/lib/manifold/owner.key").stat().st_uid, -1)
@@ -92,15 +112,16 @@ let
         assert job["state"] == "started", job
     elif mode == "result":
         job = action("engine.jobs.status", {"node": node})
-        assert job["state"] == "exited", job
-        assert job["result"]["exitCode"] == 23, job
+        assert job["state"] == "exited", (job["state"], (job.get("result") or {}).get("reason"))
+        assert job["result"]["exitCode"] == 23, job["result"]["exitCode"]
         stdout = next(output for output in job["result"]["outputs"] if output["name"] == "stdout")
         output = action("engine.jobs.output", {
             "node": {**node, "kind": "output", "outputId": stdout["outputId"]},
             "offset": 0, "maxBytes": 1024,
         })
         assert output["type"] == "output" and output["eof"], output
-        assert base64.b64decode(output["data"]) == b"native-module:bounded\n"
+        expected = b"265121870c1fc35841a1affca90eb074a5f1ee53\n" if tools else b"native-module:bounded\n"
+        assert base64.b64decode(output["data"]) == expected, output
     elif mode == "drained":
         assert machine["draining"], "maintenance refusal must leave admission closed"
     else:
@@ -134,6 +155,10 @@ in
       lib.mkForce [ "https://changed.example.test" ];
     virtualisation.cores = 4;
     virtualisation.memorySize = 4096;
+    virtualisation.useNixStoreImage = true;
+    # System switches re-register store paths; the immutable image needs a VM-local overlay.
+    virtualisation.writableStore = true;
+    virtualisation.additionalPaths = [ inspect pkgs.python3 ];
     system.stateVersion = "26.05";
   };
   in {
@@ -143,7 +168,17 @@ in
       services.manifold.execution = {
         tokenCredentialFile = "/etc/manifold-fixture/private/enrollment-token";
         protectedDirectories = [ "/etc/manifold-fixture" ];
+        runtimeTools.shell = [
+          { source = "${pkgs.bash}/bin/bash"; target = "/bin/sh"; kind = "file"; }
+        ];
+        runtimeTools.git = [
+          { source = "${pkgs.gitMinimal}/bin/git"; target = "/usr/bin/git"; kind = "file"; }
+          { source = "${closureReader}/bin/closure-reader"; target = "/usr/bin/closure-reader"; kind = "file"; }
+        ];
+        runtimeToolClosures.shell = [ pkgs.bash ];
+        runtimeToolClosures.git = [ pkgs.gitMinimal closureReader ];
       };
+      environment.systemPackages = [ pkgs.hello ];
       users.groups.credential-writers = {};
       systemd.services.manifold-owner.serviceConfig.SupplementaryGroups = [ "credential-writers" ];
       systemd.tmpfiles.rules = [
@@ -211,10 +246,11 @@ in
     machine.succeed("${inspectCommand} result")
     original = machine.succeed("readlink -f /run/current-system").strip()
     retained = machine.succeed("sha256sum /var/lib/manifold/owner-template.json /var/lib/manifold/job-owner/config.json")
-    machine.fail("/run/current-system/specialisation/changed-native/bin/switch-to-configuration test")
+    machine.succeed("systemctl is-active register-nix-paths.service")
+    machine.fail("/run/current-system/specialisation/changed-native/bin/switch-to-configuration test", timeout=180)
     assert machine.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == owner
     assert machine.succeed("sha256sum /var/lib/manifold/owner-template.json /var/lib/manifold/job-owner/config.json") == retained
-    machine.succeed(f"{original}/bin/switch-to-configuration test")
+    machine.succeed(f"{original}/bin/switch-to-configuration test", timeout=180)
     machine.wait_until_succeeds("${inspectCommand}", timeout=180)
     machine.succeed("${inspectCommand} result")
     machine.succeed("${maintenanceCommand} --help")
@@ -285,6 +321,11 @@ in
     credential.succeed("${inspectCommand} install")
     credential.succeed("${inspectCommand} execute")
     credential.wait_until_succeeds("${inspectCommand} result", timeout=180)
+    # Selected closures supply the real shell/Git ABI, never unrelated host store paths.
+    assert credential.succeed("${pkgs.hello}/bin/hello").strip() == "Hello, world!"
+    credential.succeed("${inspectCommand} install-tools")
+    credential.succeed("${inspectCommand} execute-tools module-credential-tools")
+    credential.wait_until_succeeds("${inspectCommand} result-tools module-credential-tools", timeout=180)
     credential.succeed("${inspectCommand} execute-hold module-credential-live")
     credential.wait_until_succeeds("${inspectCommand} started-hold module-credential-live", timeout=30)
     credential.succeed("systemctl restart manifold-transport.service")

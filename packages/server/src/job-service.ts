@@ -4055,6 +4055,7 @@ export class JobService {
     const live = this.channels.get(job.request.machineId);
     if (
       live?.proved &&
+      job.permit !== null &&
       this.inputSync.get(job.request.jobId) !== live.channel &&
       !this.inputs.has(job.request.jobId)
     )

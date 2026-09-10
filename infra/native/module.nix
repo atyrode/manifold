@@ -40,12 +40,58 @@ let
     inherit anchors;
     inherit (cfg.execution) runtimeTools artifactOrigins serviceCredentials;
   };
-  templateFile = pkgs.writeText "manifold-owner-template.json" (builtins.toJSON template);
-  remoteConfig = pkgs.writeText "manifold-owner-config.json" (builtins.toJSON (template // {
+  runtimeToolClosures = lib.filterAttrs (_: roots: roots != []) cfg.execution.runtimeToolClosures;
+  closurePaths = pkgs.writeText "manifold-runtime-tool-closures.json" (builtins.toJSON
+    (lib.mapAttrs (_: roots: "${pkgs.closureInfo { rootPaths = roots; }}/store-paths") runtimeToolClosures));
+  # Read closureInfo only in the builder: evaluation must not import built outputs.
+  expandRuntimeToolClosures = pkgs.writeText "manifold-expand-runtime-tool-closures.ts" ''
+    import { lstatSync, readFileSync, writeFileSync } from "node:fs";
+
+    const [source, metadata, destination] = process.argv.slice(2);
+    const config = JSON.parse(readFileSync(source, "utf8"));
+    const closures: Record<string, string> = JSON.parse(readFileSync(metadata, "utf8"));
+    for (const [alias, storePaths] of Object.entries(closures)) {
+      if (!Object.hasOwn(config.runtimeTools, alias))
+        throw new Error("runtime_tool_closure_requires_explicit_alias: " + alias);
+      const targets = new Map<string, { source: string; target: string; kind: string }>();
+      const bindings: { source: string; target: string; kind: string }[] = [];
+      const append = (binding: { source: string; target: string; kind: string }) => {
+        const previous = targets.get(binding.target);
+        if (previous) {
+          if (previous.source !== binding.source || previous.kind !== binding.kind)
+            throw new Error("conflicting_runtime_tool_target: " + alias + ": " + binding.target);
+          return;
+        }
+        targets.set(binding.target, binding);
+        bindings.push(binding);
+      };
+      for (const binding of config.runtimeTools[alias]) append(binding);
+      for (const path of readFileSync(storePaths, "utf8").split("\n").filter(Boolean).sort()) {
+        const stat = lstatSync(path);
+        if (!stat.isFile() && !stat.isDirectory())
+          throw new Error("unsupported_runtime_tool_closure_object: " + alias + ": " + path);
+        append({ source: path, target: path, kind: stat.isDirectory() ? "directory" : "file" });
+      }
+      config.runtimeTools[alias] = bindings;
+    }
+    const contents = JSON.stringify(config);
+    // The retained owner and exact publisher keep their independent admission checks.
+    // Local bootstrap still checks the final configuration after adding its identity.
+    if (Buffer.byteLength(contents) > 65536)
+      throw new Error("oversized_configuration: expanded runtime tool closures exceed 65536 bytes");
+    writeFileSync(destination, contents);
+  '';
+  writePublicConfig = name: value:
+    let source = pkgs.writeText name (builtins.toJSON value);
+    in if runtimeToolClosures == {} then source else pkgs.runCommand name {} ''
+      ${packages.bun-runtime}/bin/bun ${expandRuntimeToolClosures} ${source} ${closurePaths} "$out"
+    '';
+  templateFile = writePublicConfig "manifold-owner-template.json" template;
+  remoteConfig = writePublicConfig "manifold-owner-config.json" (template // {
     machineId = cfg.execution.machineId;
     admissionPublicKey = cfg.execution.admissionPublicKey;
     stateDirectory = "${control}/state";
-  }));
+  });
   # Never overwrite an incumbent configuration, even if no process appears online.
   # Explicit drained maintenance owns removing a retired configuration.
   # The immutable store copy uses the runtime's descriptor/publication implementation.
@@ -192,6 +238,11 @@ in
       };
       artifactOrigins = mkOption { type = types.listOf types.str; default = []; description = "Reviewed HTTPS origins for artifact acquisition, including permitted redirect origins."; };
       runtimeTools = mkOption { type = types.attrsOf (types.listOf (types.attrsOf types.str)); default = {}; description = "Reviewed source/target/kind runtime closure bindings, keyed by declared tool name. No host PATH discovery."; };
+      runtimeToolClosures = mkOption {
+        type = types.attrsOf (types.listOf types.package);
+        default = {};
+        description = "Explicit packages whose exact immutable Nix closures supplement an existing runtimeTools alias at build time. Store paths are read-only file or directory bindings at their original paths; declare executable entrypoints separately in runtimeTools. No ambient PATH or broad store mount. Expanded bindings remain subject to the owner's configuration limits (128 bindings per alias and 65536 bytes), including identity fields added by local bootstrap.";
+      };
       serviceCredentials = mkOption {
         type = types.attrsOf (types.submodule {
           options = {
@@ -221,6 +272,7 @@ in
       { assertion = !local || cfg.hub.port > 0 && builtins.elem cfg.hub.bind [ "127.0.0.1" "0.0.0.0" ]; message = "Single-node Manifold requires a fixed port reachable on IPv4 loopback by its transport."; }
       { assertion = !native || lib.versionAtLeast config.systemd.package.version "254"; message = "Native Manifold requires systemd >= 254 (DelegateSubgroup)."; }
       { assertion = !native || cfg.execution.artifactOrigins != []; message = "Declare reviewed Manifold artifact origins."; }
+      { assertion = !native || lib.all (alias: builtins.hasAttr alias cfg.execution.runtimeTools) (builtins.attrNames runtimeToolClosures); message = "runtimeToolClosures must supplement aliases explicitly declared in runtimeTools."; }
       { assertion = !native || cfg.execution.outputBytes <= 1073741824; message = "Named output backing cannot exceed the runtime's 1 GiB aggregate output ceiling."; }
       { assertion = !native || cfg.execution.outputBytes >= 4096 && lib.mod cfg.execution.outputBytes 4096 == 0; message = "Named output capacity must be a positive whole number of 4 KiB pages."; }
       { assertion = !native || local || (cfg.execution.serverUrl != "" && cfg.execution.machineId != "" && cfg.execution.admissionPublicKey != "" && (cfg.execution.tokenFile != null || credentialMode)); message = "Execution-only nodes require explicit supported enrollment, verifier key and a private token file or systemd credential reference."; }
