@@ -144,12 +144,35 @@ hub and owner control state as secrets. Named-output scratch disappears at reboo
 sealed outputs, job identities and workload data do not. Never treat tmpfs as a durable receipt.
 
 `execution.runtimeTools` maps the manifest's tool names to reviewed
-`{ source, target, kind }` bindings. Include the exact executable at
-`/runtime/bin/<tool>` plus its complete runtime loader/library closure. Sources must be
-real files/directories, not symlink aliases, and directory bindings cannot contain foreign
-mounts or protected data. A dynamically linked executable without its loader cannot run in
-the empty sandbox. Do not bind all of `/`, `/usr` or `/nix/store`, discover a host PATH, or
-claim installing a package automatically makes a tool available to jobs.
+`{ source, target, kind }` bindings. Choose explicit executable targets such as
+`/runtime/bin/<tool>`, `/bin/sh` or `/usr/bin/git`; sources must be real files/directories,
+not symlink aliases. Directory bindings cannot contain foreign mounts or protected data.
+A dynamically linked executable without its loader cannot run in the empty sandbox.
+
+For Nix-packaged tools, `execution.runtimeToolClosures` selects packages by the same alias
+and adds their exact transitive store paths as read-only directory bindings at Nix build
+time. These bindings merge with that alias's explicit `runtimeTools` entrypoints, for both
+local and remote nodes:
+
+```nix
+services.manifold.execution = {
+  runtimeTools.shellGit = [
+    { source = "${pkgs.bash}/bin/bash"; target = "/bin/sh"; kind = "file"; }
+    { source = "${pkgs.gitMinimal}/bin/git"; target = "/usr/bin/git"; kind = "file"; }
+  ];
+  runtimeToolClosures.shellGit = [ pkgs.bash pkgs.gitMinimal ];
+};
+```
+
+An operation must declare the `shellGit` runtime tool to receive those bindings. The
+package selection exposes each selected package's complete closure, not only its `bin`
+directory, but never the whole host store or unrelated installed packages. It does not
+populate PATH or choose entrypoints automatically. The empty default adds no bindings;
+explicit bindings still work without this option. Do not bind all of `/`, `/usr` or
+`/nix/store`, discover a host PATH, or assume installing a host package makes it available
+to jobs. Runtime binding and closure changes alter retained owner configuration: use
+drained maintenance and the atomic owner shutdown below before activating them, never
+overwrite an occupied owner's configuration in place.
 
 `execution.serviceCredentials` maps a service policy's `credentialRef` to a private runtime
 file and reviewed allowed origins, on both local and execution-only nodes:
