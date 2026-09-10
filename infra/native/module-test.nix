@@ -1,6 +1,10 @@
 { self, pkgs }:
 let
   platform = "linux-${if pkgs.stdenv.hostPlatform.isAarch64 then "arm64" else "x64"}";
+  closureMessage = pkgs.writeText "native-runtime-message" "native-module:closures\n";
+  closureReader = pkgs.writeShellScriptBin "closure-reader" ''
+    exec ${pkgs.gitMinimal}/bin/git hash-object --stdin < ${closureMessage}
+  '';
   inspect = pkgs.writeText "manifold-native-profile-inspect.py" ''
     import base64
     import hashlib
@@ -50,7 +54,9 @@ let
                 b"test -x ${pkgs.gitMinimal}/bin/git\n"
                 b"if /bin/sh -c 'printf denied > ${pkgs.gitMinimal}/manifold-write-probe' 2>/dev/null; then exit 92; fi\n"
                 b"test ! -e ${pkgs.gitMinimal}/manifold-write-probe\n"
-                b"printf '%s\\n' native-module:closures | /usr/bin/git hash-object --stdin\n"
+                b"digest=$(/usr/bin/closure-reader)\n"
+                b"test \"$digest\" = \"$(printf '%s\\n' native-module:closures | /usr/bin/git hash-object --stdin)\"\n"
+                b"printf '%s\\n' \"$digest\"\n"
                 b"exit 23\n"
             )
         artifact_hash = hashlib.sha256(executable).hexdigest()
@@ -63,7 +69,7 @@ let
             "locations": {},
             "operations": {operation: {
                 "argv": [{"literal": "hold"}] if operation.endswith(".hold") else [],
-                "input": {}, "runtimeTools": ["shellGit"] if tools else ["busybox"], "locations": [],
+                "input": {}, "runtimeTools": ["shell", "git"] if tools else ["busybox"], "locations": [],
                 "outputs": [], "network": "none", "limits": limits, "stdin": False,
             } for operation in ([operation_id] if tools else [operation_id, plugin_id + ".hold"])},
         }
@@ -158,11 +164,15 @@ in
       services.manifold.execution = {
         tokenCredentialFile = "/etc/manifold-fixture/private/enrollment-token";
         protectedDirectories = [ "/etc/manifold-fixture" ];
-        runtimeTools.shellGit = [
+        runtimeTools.shell = [
           { source = "${pkgs.bash}/bin/bash"; target = "/bin/sh"; kind = "file"; }
-          { source = "${pkgs.gitMinimal}/bin/git"; target = "/usr/bin/git"; kind = "file"; }
         ];
-        runtimeToolClosures.shellGit = [ pkgs.bash pkgs.gitMinimal ];
+        runtimeTools.git = [
+          { source = "${pkgs.gitMinimal}/bin/git"; target = "/usr/bin/git"; kind = "file"; }
+          { source = "${closureReader}/bin/closure-reader"; target = "/usr/bin/closure-reader"; kind = "file"; }
+        ];
+        runtimeToolClosures.shell = [ pkgs.bash ];
+        runtimeToolClosures.git = [ pkgs.gitMinimal closureReader ];
       };
       environment.systemPackages = [ pkgs.hello ];
       users.groups.credential-writers = {};

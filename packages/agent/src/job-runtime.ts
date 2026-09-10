@@ -74,29 +74,35 @@ export async function openConfiguredJobOwner(
   for (const [name, path] of Object.entries(config.anchors))
     anchors[name] = HeldDirectory.openAbsolute(path);
   const runtimeTools: Record<string, LinuxJobBind[]> = {};
+  // These sources live with the retained owner. Sharing their descriptors lets
+  // independent tool groups compose without relaxing target-conflict checks.
+  const runtimeSources = { directory: new Map<string, number>(), file: new Map<string, number>() };
   for (const [tool, definitions] of Object.entries(config.runtimeTools)) {
     runtimeTools[tool] = definitions.map((definition) => {
-      if (definition.kind === "directory") {
-        const source = HeldDirectory.openAbsolute(definition.source);
-        try {
-          exclusions.assertSource(source.fd, true);
-        } catch (error) {
-          source.close();
-          throw error;
+      const sources = runtimeSources[definition.kind];
+      let fd = sources.get(definition.source);
+      if (fd === undefined) {
+        if (definition.kind === "directory") {
+          const source = HeldDirectory.openAbsolute(definition.source);
+          try {
+            exclusions.assertSource(source.fd, true);
+          } catch (error) {
+            source.close();
+            throw error;
+          }
+          fd = source.fd;
+        } else {
+          const sourceParent = HeldDirectory.openAbsolute(dirname(definition.source));
+          try {
+            exclusions.assertSource(sourceParent.fd, false);
+            fd = sourceParent.openFile(basename(definition.source));
+          } finally {
+            sourceParent.close();
+          }
         }
-        return { fd: source.fd, target: definition.target, writable: false };
+        sources.set(definition.source, fd);
       }
-      const sourceParent = HeldDirectory.openAbsolute(dirname(definition.source));
-      try {
-        exclusions.assertSource(sourceParent.fd, false);
-        return {
-          fd: sourceParent.openFile(basename(definition.source)),
-          target: definition.target,
-          writable: false,
-        };
-      } finally {
-        sourceParent.close();
-      }
+      return { fd, target: definition.target, writable: false };
     });
   }
   return MachineJobOwner.open({

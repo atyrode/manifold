@@ -150,9 +150,10 @@ not symlink aliases. Directory bindings cannot contain foreign mounts or protect
 A dynamically linked executable without its loader cannot run in the empty sandbox.
 
 For Nix-packaged tools, `execution.runtimeToolClosures` selects packages by the same alias
-and adds their exact transitive store paths as read-only directory bindings at Nix build
-time. These bindings merge with that alias's explicit `runtimeTools` entrypoints, for both
-local and remote nodes:
+and adds their exact transitive store paths as read-only file or directory bindings at
+Nix build time. Unsupported store-root object types are rejected rather than followed.
+These bindings merge with that alias's explicit `runtimeTools` entrypoints, for both
+local and remote nodes; shared sources are retained once so separate aliases compose:
 
 ```nix
 services.manifold.execution = {

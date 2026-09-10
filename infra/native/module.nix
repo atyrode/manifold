@@ -45,7 +45,7 @@ let
     (lib.mapAttrs (_: roots: "${pkgs.closureInfo { rootPaths = roots; }}/store-paths") runtimeToolClosures));
   # Read closureInfo only in the builder: evaluation must not import built outputs.
   expandRuntimeToolClosures = pkgs.writeText "manifold-expand-runtime-tool-closures.ts" ''
-    import { readFileSync, writeFileSync } from "node:fs";
+    import { lstatSync, readFileSync, writeFileSync } from "node:fs";
 
     const [source, metadata, destination] = process.argv.slice(2);
     const config = JSON.parse(readFileSync(source, "utf8"));
@@ -66,8 +66,12 @@ let
         bindings.push(binding);
       };
       for (const binding of config.runtimeTools[alias]) append(binding);
-      for (const path of readFileSync(storePaths, "utf8").split("\n").filter(Boolean).sort())
-        append({ source: path, target: path, kind: "directory" });
+      for (const path of readFileSync(storePaths, "utf8").split("\n").filter(Boolean).sort()) {
+        const stat = lstatSync(path);
+        if (!stat.isFile() && !stat.isDirectory())
+          throw new Error("unsupported_runtime_tool_closure_object: " + alias + ": " + path);
+        append({ source: path, target: path, kind: stat.isDirectory() ? "directory" : "file" });
+      }
       config.runtimeTools[alias] = bindings;
     }
     const contents = JSON.stringify(config);
