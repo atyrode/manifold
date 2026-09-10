@@ -68,11 +68,60 @@ prove_transport() {
     [[ ! -d $child ]] || retirement_hold 'transport supervisor contains an unproved child cgroup'
   done
 }
+# A dependency can tear down unrelated work without a reverse stop-propagation
+# edge: its last active user disappearing is enough when StopWhenUnneeded=yes.
+# Checking the direct pinning dependencies is sufficient to prevent that cascade.
+require_no_unneeded_stop() {
+  local unit=$1 property dependencies dependency
+  [[ $(unit_property "$unit" StopWhenUnneeded) == no ]] ||
+    retirement_hold 'supervisor can stop automatically when unneeded or policy is unknown'
+  for property in Requires Requisite Wants BindsTo Upholds; do
+    dependencies=$(unit_property "$unit" "$property") ||
+      retirement_hold 'supervisor forward dependencies are unknown'
+    local -a units=()
+    read -r -a units <<<"$dependencies"
+    for dependency in "${units[@]}"; do
+      [[ $(unit_property "$dependency" StopWhenUnneeded) == no ]] ||
+        retirement_hold 'forward dependency can stop automatically when unneeded or policy is unknown'
+    done
+  done
+}
+require_transport_kill_policy() {
+  case $(unit_property "$transport_unit" KillMode) in
+    control-group|mixed) ;;
+    *) retirement_hold 'transport kill policy does not prove process-group termination' ;;
+  esac
+  [[ $(unit_property "$transport_unit" SendSIGKILL) == yes ]] ||
+    retirement_hold 'transport final kill policy is disabled or unknown'
+}
+# Manager MainPID=0 is not kernel exit evidence. Fail closed on a surviving or
+# reused PID, unreadable cgroup, or populated descendants. Prove absence one
+# directory at a time so an inaccessible ancestor cannot masquerade as absence.
+transport_exited() {
+  local pid=$1 cgroup=$2 directory=/sys/fs/cgroup component key value populated=
+  [[ $pid =~ ^[1-9][0-9]*$ && -r /proc/self/stat && -r /proc && -x /proc &&
+     ! -e /proc/$pid && $cgroup == /* && -r $directory/cgroup.controllers ]] || return 1
+  local -a components=()
+  IFS=/ read -r -a components <<<"${cgroup#/}"
+  for component in "${components[@]}"; do
+    [[ -n $component && $component != . && $component != .. &&
+       -d $directory && -r $directory && -x $directory ]] || return 1
+    directory+=/"$component"
+    [[ ! -L $directory ]] || return 1
+    [[ -e $directory ]] || return 0
+  done
+  [[ -r $directory/cgroup.events ]] || return 1
+  while read -r key value; do
+    [[ $key != populated ]] || populated=$value
+  done <"$directory/cgroup.events"
+  [[ $populated == 0 ]]
+}
 # Exiting an empty owner is as significant as stopping its transport. Inspect both
 # sides of the supervisor graph before either process can become inactive.
 require_no_propagation() {
   local unit=$1 property result
-  for property in ConsistsOf BoundBy RequiredBy PropagatesStopTo; do
+  require_no_unneeded_stop "$unit"
+  for property in ConsistsOf BoundBy RequiredBy RequisiteOf UpheldBy PropagatesStopTo; do
     result=$(unit_property "$unit" "$property") || retirement_hold 'supervisor propagation metadata is unknown'
     # The proved non-owning transport is stopped before the owner can exit.
     [[ -z $result || ( $unit == "$terminal_host_unit" && $result == "$transport_unit" ) ]] ||
@@ -177,6 +226,7 @@ retire_spoke() {
     retirement_hold 'transport cgroup contains the owner or is unknown'
   require_no_propagation "$terminal_host_unit"
   require_no_propagation "$transport_unit"
+  require_transport_kill_policy
   prove_transport
   result=$(drain_cli) || retirement_hold 'drain refused or reported unknown work'
   jq -e --arg machine "$machine_id" --arg host "$terminal_host_id" '
@@ -190,14 +240,19 @@ retire_spoke() {
   inhibit_supervisor_restarts
   require_no_propagation "$terminal_host_unit"
   require_no_propagation "$transport_unit"
+  require_transport_kill_policy
   prove_transport
   [[ $(require_running_unit "$transport_unit") == "$transport_pid" &&
      $(unit_property "$transport_unit" InvocationID) == "$transport_invocation" ]] || retirement_hold 'proved transport generation changed'
+  retiring_transport_pid=$transport_pid
+  retiring_transport_cgroup=$transport_cgroup
   recover_transport=1
   userctl stop "$transport_unit" || retirement_hold 'transport stop failed'
   [[ $(unit_property "$transport_unit" ActiveState) == inactive &&
      $(unit_property "$transport_unit" SubState) == dead &&
      $(unit_property "$transport_unit" MainPID) == 0 ]] || retirement_hold 'transport did not stop'
+  transport_exited "$retiring_transport_pid" "$retiring_transport_cgroup" ||
+    retirement_hold 'original transport process or cgroup has not proved empty'
   require_restart_inhibited
   result=$(shutdown_cli) || retirement_hold 'atomic empty shutdown refused or unknown'
   jq -e --arg host "$terminal_host_id" '
@@ -233,7 +288,13 @@ retirement_cleanup() {
     code=1
   fi
   if [[ ${recover_transport:-0} == 1 ]]; then
-    if ! userctl start "$transport_unit" || ! recovery_pid=$(require_running_unit "$transport_unit"); then
+    if [[ $(unit_property "$transport_unit" ActiveState) != inactive ||
+          $(unit_property "$transport_unit" SubState) != dead ||
+          $(unit_property "$transport_unit" MainPID) != 0 ]] ||
+       ! transport_exited "$retiring_transport_pid" "$retiring_transport_cgroup"; then
+      printf 'retire-spoke: HOLD: original transport exit is unproved; no second transport is authorized\n' >&2
+      code=1
+    elif ! userctl start "$transport_unit" || ! recovery_pid=$(require_running_unit "$transport_unit"); then
       printf 'retire-spoke: HOLD: transport recovery failed; keep admission closed and investigate\n' >&2
       code=1
     fi

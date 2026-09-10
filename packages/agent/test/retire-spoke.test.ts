@@ -24,7 +24,18 @@ type Scenario =
   | "restart-override-ignored"
   | "replacement-generation"
   | "transport-stop-command"
-  | "missing-propagation-metadata";
+  | "missing-propagation-metadata"
+  | "owner-unneeded"
+  | "transport-unneeded"
+  | "dependency-unneeded"
+  | "dependency-unneeded-unknown"
+  | "owner-unneeded-unknown"
+  | "transport-kill-none"
+  | "transport-kill-unknown"
+  | "transport-no-sigkill"
+  | "transport-surviving-pid"
+  | "transport-populated-group"
+  | "transport-exit-unknown";
 interface State {
   draining: boolean;
   ownerAlive: boolean;
@@ -41,6 +52,8 @@ interface State {
   transportRestartOverride: string;
   replacementKilled: boolean;
   dependentAlive: boolean;
+  transportProcessAlive: boolean;
+  transportGroupPopulated: boolean;
 }
 
 async function retirement(scenario: Scenario) {
@@ -65,6 +78,8 @@ async function retirement(scenario: Scenario) {
     replacementKilled: false,
     dependentAlive: true,
     transportRestartOverride: "",
+    transportProcessAlive: true,
+    transportGroupPopulated: true,
   });
   const ownerKey = "cdef".repeat(16);
   const ownerKeyPath = join(directory, "owner.key");
@@ -188,9 +203,17 @@ if (op === "show") {
     DropInPaths: owner ? state.restartOverride : state.transportRestartOverride,
     ConsistsOf: "", BoundBy: (owner && process.env.FIXTURE_SCENARIO === "owner-propagation") || (!owner && process.env.FIXTURE_SCENARIO === "transport-propagation") ? "busy-dependent.service" : "",
     RequiredBy: owner ? "old-transport.service" : "", PropagatesStopTo: "", OnSuccess: "", OnFailure: "", TriggeredBy: "",
+    RequisiteOf: "", UpheldBy: "",
+    Requires: owner ? "basic.target app.slice" : "basic.target app.slice old-owner.service",
+    Requisite: "", Wants: !owner && ["dependency-unneeded", "dependency-unneeded-unknown"].includes(process.env.FIXTURE_SCENARIO) ? "busy-dependent.service" : "",
+    BindsTo: "", Upholds: "",
+    StopWhenUnneeded: (owner && process.env.FIXTURE_SCENARIO === "owner-unneeded") || (args[0] === "old-transport.service" && process.env.FIXTURE_SCENARIO === "transport-unneeded") || (args[0] === "busy-dependent.service" && process.env.FIXTURE_SCENARIO === "dependency-unneeded") ? "yes" : "no",
+    KillMode: process.env.FIXTURE_SCENARIO === "transport-kill-none" ? "none" : "control-group",
+    SendSIGKILL: process.env.FIXTURE_SCENARIO === "transport-no-sigkill" ? "no" : "yes",
     SuccessAction: "none", FailureAction: "none", StartLimitAction: "none",
     ExecStop: "", ExecStopPost: !owner && process.env.FIXTURE_SCENARIO === "transport-stop-command" ? "kill-busy-owner" : "",
   };
+  if ((property === "StopWhenUnneeded" && ((owner && process.env.FIXTURE_SCENARIO === "owner-unneeded-unknown") || (args[0] === "busy-dependent.service" && process.env.FIXTURE_SCENARIO === "dependency-unneeded-unknown"))) || (property === "KillMode" && process.env.FIXTURE_SCENARIO === "transport-kill-unknown")) process.exit(0);
   if (!(property in properties) || (property === "BoundBy" && process.env.FIXTURE_SCENARIO === "missing-propagation-metadata")) process.exit(0);
   console.log(property + "=" + properties[property]);
 } else if (op === "daemon-reload") {
@@ -215,10 +238,15 @@ if (op === "show") {
         if (process.env.FIXTURE_SCENARIO === "owner-propagation") state.dependentAlive = false;
       } else {
         state.transportRunning = false;
+        state.transportProcessAlive = ["transport-kill-none", "transport-surviving-pid"].includes(process.env.FIXTURE_SCENARIO);
+        state.transportGroupPopulated = state.transportProcessAlive || process.env.FIXTURE_SCENARIO === "transport-populated-group";
+        if (process.env.FIXTURE_SCENARIO === "owner-unneeded") { state.ownerKilled ||= state.ownerAlive; state.ownerAlive = false; }
+        if (process.env.FIXTURE_SCENARIO === "dependency-unneeded") state.dependentAlive = false;
         if (process.env.FIXTURE_SCENARIO === "transport-propagation") state.dependentAlive = false;
       }
     } else if (op === "start" && !owner) {
       state.transportRunning = true; state.transportStarts++;
+      state.transportProcessAlive = true; state.transportGroupPopulated = true;
     } else if (op === "disable") {
       if (process.env.FIXTURE_SCENARIO !== "still-enabled") {
         if (owner) state.ownerEnabled = false; else state.transportEnabled = false;
@@ -272,6 +300,12 @@ source "$1"; shift
 # This fixture covers the supervisor/maintenance flow, not kernel identity.
 # retire-spoke-systemd.test.ts exercises the unmodified real transport proof.
 prove_transport() { :; }
+# Kernel exit evidence is also explicitly substituted. Unlike manager state, this
+# retains a surviving original PID/group after the fake stop cleared MainPID.
+transport_exited() {
+  [[ $FIXTURE_SCENARIO != transport-exit-unknown ]] &&
+    jq -e '.transportProcessAlive == false and .transportGroupPopulated == false' "$FIXTURE_STATE" >/dev/null
+}
 retirement_main "$@"
 `,
       "retirement-fixture",
@@ -431,3 +465,57 @@ test("an unexpected replacement after acknowledgement is held and never stopped"
     restartOverride: "",
   });
 }, 30_000);
+
+for (const scenario of [
+  "owner-unneeded",
+  "transport-unneeded",
+  "dependency-unneeded",
+  "dependency-unneeded-unknown",
+  "owner-unneeded-unknown",
+  "transport-kill-none",
+  "transport-kill-unknown",
+  "transport-no-sigkill",
+] as const) {
+  test(`retirement rejects ${scenario} before drain or any automatic teardown`, async () => {
+    const { code, state } = await retirement(scenario);
+    expect(code).toBe(1);
+    expect(state).toMatchObject({
+      draining: false,
+      ownerAlive: true,
+      ownerKilled: false,
+      dependentAlive: true,
+      transportRunning: true,
+      transportStarts: 0,
+      shutdownRequests: 0,
+      ownerEnabled: true,
+      transportEnabled: true,
+      restart: "always",
+      restartOverride: "",
+      transportRestartOverride: "",
+    });
+  }, 30_000);
+}
+
+for (const scenario of [
+  "transport-surviving-pid",
+  "transport-populated-group",
+  "transport-exit-unknown",
+] as const) {
+  test(`manager inactivity with ${scenario} authorizes neither owner shutdown nor a second transport`, async () => {
+    const { code, state } = await retirement(scenario);
+    expect(code).toBe(1);
+    expect(state).toMatchObject({
+      draining: true,
+      transportRunning: false,
+      transportStarts: 0,
+      shutdownRequests: 0,
+      ownerAlive: true,
+      ownerKilled: false,
+      ownerEnabled: true,
+      transportEnabled: true,
+      restart: "always",
+      restartOverride: "",
+      transportRestartOverride: "",
+    });
+  }, 30_000);
+}
