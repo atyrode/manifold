@@ -303,6 +303,109 @@ describe("a subscription-backed feed", () => {
     index.release();
   });
 
+  test("an unchanged successful read recovers every reader without republishing data", async () => {
+    const socket = fakeSocket("open");
+    const failures = new Set<string>();
+    let failing = false;
+    let reads = 0;
+    let notices = 0;
+    const attach = (id: string) =>
+      attachFeed({
+        feedId: "core.machines.list|null",
+        intervalMs: 2_000,
+        initial: null,
+        fetchFn: async () => {
+          reads += 1;
+          if (failing) throw new Error("temporary read failure");
+          return { machines: [{ id: "machine", online: true }] };
+        },
+        notify: () => {
+          notices += 1;
+        },
+        onError: () => {
+          failures.add(id);
+        },
+        onSuccess: () => {
+          failures.delete(id);
+        },
+        events: socket,
+        topics: [MACHINES_TOPIC],
+      });
+    const releaseFirst = attach("first");
+    const releaseSecond = attach("second");
+    await flush();
+    expect(notices).toBe(2);
+
+    failing = true;
+    socket.fire();
+    clock.advance(50);
+    await flush();
+    expect(failures).toEqual(new Set(["first", "second"]));
+
+    failing = false;
+    socket.fire();
+    clock.advance(50);
+    await flush();
+    expect(failures.size).toBe(0);
+    expect(notices).toBe(2);
+    expect(reads).toBe(3);
+    releaseFirst();
+    releaseSecond();
+  });
+
+  test("a held successful response does not report recovery before acceptance", async () => {
+    const socket = fakeSocket("open");
+    let holding = true;
+    let recovered = false;
+    const release = attachFeed({
+      feedId: "core.machines.list|null",
+      intervalMs: 2_000,
+      initial: null,
+      fetchFn: async () => [],
+      hold: () => holding,
+      onSuccess: () => {
+        recovered = true;
+      },
+      notify: () => undefined,
+      events: socket,
+      topics: [MACHINES_TOPIC],
+    });
+    await flush();
+    expect(recovered).toBe(false);
+    holding = false;
+    clock.advance(250);
+    await flush();
+    expect(recovered).toBe(true);
+    release();
+  });
+
+  test("a detached generation cannot report recovery to a replacement reader", async () => {
+    const oldRead = Promise.withResolvers<unknown>();
+    const currentRead = Promise.withResolvers<unknown>();
+    const recovered: string[] = [];
+    const attach = (id: string, response: Promise<unknown>) =>
+      attachFeed({
+        feedId: "core.machines.list|null",
+        intervalMs: 2_000,
+        initial: null,
+        fetchFn: () => response,
+        onSuccess: () => {
+          recovered.push(id);
+        },
+        notify: () => undefined,
+      });
+    const releaseOld = attach("old", oldRead.promise);
+    releaseOld();
+    const releaseCurrent = attach("current", currentRead.promise);
+    oldRead.resolve([]);
+    await flush();
+    expect(recovered).toEqual([]);
+    currentRead.resolve([]);
+    await flush();
+    expect(recovered).toEqual(["current"]);
+    releaseCurrent();
+  });
+
   test("two readers of one resource share one subscription and one request", async () => {
     const socket = fakeSocket("open");
     const shell = reader(socket);

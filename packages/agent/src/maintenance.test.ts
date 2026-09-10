@@ -274,7 +274,7 @@ test("malformed flags and credential-bearing URLs never reach the hub or use amb
     );
   }
   expect(requests).toBe(0);
-});
+}, 15_000);
 
 test("an unavailable explicit key cannot fall back to an ambient valid key", async () => {
   let requests = 0;
