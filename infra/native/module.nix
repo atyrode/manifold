@@ -138,17 +138,16 @@ let
     test -f "$source"
     path="$source"
     while :; do
-      # A service-owned read-only inode is not protected: its owner can chmod it.
-      # Check every component before PID 1 loads the credential; reject symlink
-      # indirection and writable ancestors, including ACL-granted service access.
+      # Ownership alone is insufficient: an owner can chmod an inode, while
+      # unit-only supplementary groups may grant access absent from NSS. POSIX
+      # ACL write grants require a writable group-class mask, rejected here too.
       test ! -L "$path"
-      test "$(${pkgs.coreutils}/bin/stat -c %u "$path")" != "$service_uid"
-      # A distinct success code prevents a privilege-drop failure from being
-      # mistaken for "not writable". The probe never opens credential bytes.
-      status=0
-      ${pkgs.util-linux}/bin/setpriv --reuid=manifold --regid=manifold --init-groups \
-        ${pkgs.runtimeShell} -c 'if test -w "$1"; then exit 10; else exit 20; fi' -- "$path" || status=$?
-      if test "$status" != 20; then
+      metadata="$(${pkgs.coreutils}/bin/stat -c %u:%a "$path")"
+      owner="''${metadata%:*}"
+      mode="''${metadata#*:}"
+      if test "$owner" = "$service_uid" ||
+        test "$((8#$mode & 022))" -ne 0 ||
+        { test "$path" = "$source" && test "$mode" != 400 && test "$mode" != 600; }; then
         echo 'Manifold enrollment credential source custody check failed' >&2
         exit 1
       fi
@@ -189,7 +188,7 @@ in
       tokenCredentialFile = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Explicit static absolute enrollment credential source under its declaring tool's custody, not writable or owned by manifold. PID 1 delivers it with LoadCredential; never put bytes or a Nix path literal here. Mutually exclusive with tokenFile. No symlinks, path traversal or systemd specifiers. The source parent must be traversable by manifold for workload exclusion, or lie beneath a traversable directory declared in protectedDirectories; private descendants and the source itself need not be readable. Changing the owner exclusion configuration requires positive drain/shutdown maintenance.";
+        description = "Explicit static absolute enrollment credential source under its declaring tool's custody, mode 0400 or 0600. Neither it nor any ancestor may be owned by manifold or writable by group/others (including ACL masks). PID 1 delivers it with LoadCredential; never put bytes or a Nix path literal here. Mutually exclusive with tokenFile. No symlinks, path traversal or systemd specifiers. The source parent must be traversable by manifold for workload exclusion, or lie beneath a traversable directory declared in protectedDirectories; private descendants and the source itself need not be readable. Changing the owner exclusion configuration requires positive drain/shutdown maintenance.";
       };
       artifactOrigins = mkOption { type = types.listOf types.str; default = []; description = "Reviewed HTTPS origins for artifact acquisition, including permitted redirect origins."; };
       runtimeTools = mkOption { type = types.attrsOf (types.listOf (types.attrsOf types.str)); default = {}; description = "Reviewed source/target/kind runtime closure bindings, keyed by declared tool name. No host PATH discovery."; };

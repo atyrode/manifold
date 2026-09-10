@@ -155,6 +155,8 @@ in
         tokenCredentialFile = "/etc/manifold-fixture/private/enrollment-token";
         protectedDirectories = [ "/etc/manifold-fixture" ];
       };
+      users.groups.credential-writers = {};
+      systemd.services.manifold-owner.serviceConfig.SupplementaryGroups = [ "credential-writers" ];
       systemd.tmpfiles.rules = [
         "d /etc/manifold-fixture 0755 root root -"
         "d /etc/manifold-fixture/private 0700 root root -"
@@ -269,5 +271,33 @@ in
     credential.wait_until_succeeds("${inspectCommand} result-hold module-credential-live", timeout=180)
     credential.succeed("${inspectCommand} execute module-credential-restarted")
     credential.wait_until_succeeds("${inspectCommand} result module-credential-restarted", timeout=180)
+
+    # Extra unit groups are not NSS membership. Custody must still refuse a
+    # parent writable to the retained owner before PID 1 loads any bytes.
+    credential.succeed("systemctl stop manifold-transport.service")
+    credential.succeed("chgrp credential-writers /etc/manifold-fixture/private && chmod 0775 /etc/manifold-fixture/private")
+    writer_gid = credential.succeed("getent group credential-writers").split(":")[2]
+    owner_groups = credential.succeed(f"cat /proc/{credential_owner}/status")
+    assert writer_gid in next(line.split()[1:] for line in owner_groups.splitlines() if line.startswith("Groups:"))
+    credential.fail("systemctl start manifold-transport.service")
+    credential.succeed("systemctl is-failed --quiet manifold-token-credential-source.service")
+    assert credential.succeed("systemctl show -p MainPID --value manifold-transport.service").strip() == "0"
+    assert credential.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == credential_owner
+    credential.succeed(f"cmp -s {source} /var/lib/manifold/agent.token")
+    credential.succeed("chmod 0700 /etc/manifold-fixture/private && chgrp root /etc/manifold-fixture/private")
+
+    # Read-only delivery cannot make an exposed original token confidential.
+    credential.succeed(f"chmod 0644 {source}")
+    credential.fail("systemctl start manifold-transport.service")
+    credential.succeed("systemctl is-failed --quiet manifold-token-credential-source.service")
+    assert credential.succeed("systemctl show -p MainPID --value manifold-transport.service").strip() == "0"
+    credential.succeed(f"chmod 0400 {source}")
+    credential.succeed("systemctl reset-failed manifold-token-credential-source.service manifold-transport.service")
+    credential.succeed("systemctl start manifold-transport.service")
+    credential.wait_until_succeeds("${inspectCommand}", timeout=180)
+    check_private_credential()
+    assert credential.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == credential_owner
+    credential.succeed(f"cmp -s {source} /var/lib/manifold/agent.token")
+    credential.succeed("${inspectCommand} result module-credential-restarted")
   '';
 }

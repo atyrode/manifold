@@ -177,10 +177,11 @@ change them only through drained owner maintenance, not an in-place config overw
 Run the same module on each execution-only node with `hub.enable = false` and
 `execution.enable = true`. Before activation, use the existing
 `core.machines.enroll { name }` action with authorized `machines:mint` authority on the hub.
-Read the successful outcome's `machine.id` and one-time `machineToken`; retain the token in
-a 0600 file owned by `manifold`, inside a private directory on that node. Enrollment's
-name idempotence is provisioning, never service placement. Do not rotate an incumbent token
-to make installation succeed.
+For a new enrollment, retain the successful outcome's `machineToken` in a 0600 file
+owned by `manifold`, inside a private directory on that node. If a tool already retains
+the enrolled credential there, use the existing-source mode below instead of copying or
+changing its custody. Enrollment's name idempotence is provisioning, never service
+placement. Do not rotate an incumbent token to make installation succeed.
 
 Use authenticated `engine.jobs.describe { machineId, pluginId }` with `machines:run`
 authority for the public `admissionPublicKey`; this works independently of job readiness.
@@ -210,6 +211,43 @@ inbound native-owner port is exposed. Never ship `owner.key`, the hub database o
 key to an execution node. The machine token is not a tool/provider token or a principal
 credential. Installation and revision/resource consent remain the existing `engine.jobs`
 administration actions; enrollment alone grants neither.
+
+#### Existing enrollment credential custody
+
+Instead of `tokenFile`, declare the exact source already retained by the enrollment
+tool. This example names a private source beneath an explicitly excluded, traversable
+directory; it is not an instruction to copy a token to a new location:
+
+```nix
+services.manifold.execution = {
+  tokenCredentialFile = "/etc/manifold-enrollment/private/machine.token";
+  protectedDirectories = [ "/etc/manifold-enrollment" ];
+};
+```
+
+Use a quoted absolute path string, never a Nix path literal or `builtins.readFile`.
+The source must be a regular file with mode 0400 or 0600. Neither it nor any ancestor
+may be owned by `manifold` or writable by group/others, including ACL write masks.
+Symlinks, traversal components and systemd specifiers are refused. These checks also
+cover access granted by unit-only supplementary groups; they do not infer custody
+from the account's NSS groups.
+
+The owner holds exclusion descriptors before serving work. The source's parent must
+therefore be traversable by `manifold`, or lie below an explicitly declared traversable
+`protectedDirectories` ancestor. Private descendants and the token itself need not
+be readable by that account. The source boundary and `/run/credentials` are excluded
+from workload bindings.
+
+An independent root prerequisite validates custody before systemd loads the credential.
+The transport consumes the resulting private, read-only systemd credential through
+`CREDENTIALS_DIRECTORY`; the module does not copy, chmod, chown or rotate the original,
+and creates no additional persistent token. Failed validation refuses the transport,
+not the retained owner. `tokenCredentialFile` and `tokenFile` are mutually exclusive,
+with no fallback between them; default local bootstrap is unchanged.
+
+Changing a source reference or its exclusion boundary changes retained owner
+configuration. Use the positive-drain/shutdown maintenance below, not an in-place
+configuration rewrite or a blind owner restart.
 
 ### Maintenance and disposable-owner acceptance
 
@@ -254,6 +292,12 @@ not visible inside the job, private control-file modes hold, and exit status and
 output survive hub/transport restarts and a positively drained owner replacement. It also
 activates a changed configuration and proves the incumbent PID and private configuration
 remain unchanged when that drift is refused:
+
+A second node exercises systemd credential delivery from root-owned private custody.
+It verifies source bytes and metadata survive normal transport replacement, the delivered
+credential is private and read-only, and in-flight work retains its owner. It also refuses
+a source parent writable through an owner unit's supplementary group and an unsafe
+source-file mode, then proves transport recovery without replacing the owner.
 
 ```sh
 nix build .#checks.x86_64-linux.native-profile
