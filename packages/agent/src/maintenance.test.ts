@@ -31,14 +31,20 @@ interface Result {
   readonly stderr: string;
 }
 
-async function cli(args: readonly string[], extraEnv: Record<string, string> = {}): Promise<Result> {
-  const child = Bun.spawn([process.execPath, join(import.meta.dir, "main.ts"), "--maintenance", ...args], {
-    cwd: directory,
-    env: { HOME: directory, PATH: process.env.PATH ?? "", ...extraEnv },
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+async function cli(
+  args: readonly string[],
+  extraEnv: Record<string, string> = {},
+): Promise<Result> {
+  const child = Bun.spawn(
+    [process.execPath, join(import.meta.dir, "main.ts"), "--maintenance", ...args],
+    {
+      cwd: directory,
+      env: { HOME: directory, PATH: process.env.PATH ?? "", ...extraEnv },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
   cleanups.push(async () => {
     if (child.exitCode === null) child.kill();
     await child.exited;
@@ -70,7 +76,15 @@ function hold(result: Result, command: string, reason: string) {
 }
 
 function admissionArgs(command: "drain" | "reopen", hub: string) {
-  return [command, "--hub", hub, "--machine-id", MACHINE_ID, "--owner-key-file", join(directory, "owner.key")];
+  return [
+    command,
+    "--hub",
+    hub,
+    "--machine-id",
+    MACHINE_ID,
+    "--owner-key-file",
+    join(directory, "owner.key"),
+  ];
 }
 
 function httpFixture(handler: (request: Request) => Response | Promise<Response>) {
@@ -116,7 +130,10 @@ async function ownerFixture(onCommand: (type: unknown, socket: Socket) => void) 
         const frame: unknown = JSON.parse(pending.slice(0, newline));
         pending = pending.slice(newline + 1);
         commands.push(frame);
-        onCommand(typeof frame === "object" && frame !== null && "type" in frame ? frame.type : undefined, socket);
+        onCommand(
+          typeof frame === "object" && frame !== null && "type" in frame ? frame.type : undefined,
+          socket,
+        );
       }
     });
   });
@@ -134,6 +151,22 @@ async function ownerFixture(onCommand: (type: unknown, socket: Socket) => void) 
     connections: () => connections,
   };
 }
+
+test("a retained IPC 1 owner can acknowledge its own empty shutdown without an execution declaration", async () => {
+  const owner = await ownerFixture((command, socket) => {
+    if (command === "status_request") send(socket, status({ terminalHostProtocolVersion: 1 }));
+    else if (command === "shutdown_request")
+      send(socket, { type: "shutting_down", terminalHostId: HOST_ID });
+  });
+  const result = await cli(owner.args);
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(JSON.parse(result.stdout)).toEqual({
+    ok: true,
+    command: "shutdown",
+    terminalHostId: HOST_ID,
+  });
+});
 
 for (const httpStatus of [200, 403]) {
   test(`HTTP ${httpStatus} refusal cannot reflect the file credential into CLI output`, async () => {
@@ -165,9 +198,13 @@ test("drain and explicit reopen affect only admission on the named machine", asy
   const hub = httpFixture(async (request) => {
     const args: unknown = await request.json();
     requests.push({ method: request.method, path: new URL(request.url).pathname, args });
-    if (typeof args !== "object" || args === null || !("draining" in args)) return new Response(null, { status: 400 });
+    if (typeof args !== "object" || args === null || !("draining" in args))
+      return new Response(null, { status: 400 });
     draining = args.draining === true;
-    return Response.json({ ok: true, result: { terminalHostId: HOST_ID, draining, terminalIds: ["still-retained"] } });
+    return Response.json({
+      ok: true,
+      result: { terminalHostId: HOST_ID, draining, terminalIds: ["still-retained"] },
+    });
   });
   for (const command of ["drain", "reopen"] as const) {
     const result = await cli(admissionArgs(command, hub));
@@ -175,14 +212,22 @@ test("drain and explicit reopen affect only admission on the named machine", asy
     expect(result.stderr).toBe("");
     expect(result.stdout.trim().split("\n")).toHaveLength(1);
     expect(JSON.parse(result.stdout)).toEqual({
-      ok: true, command, machineId: MACHINE_ID, terminalHostId: HOST_ID,
-      draining: command === "drain", terminalIds: ["still-retained"],
+      ok: true,
+      command,
+      machineId: MACHINE_ID,
+      terminalHostId: HOST_ID,
+      draining: command === "drain",
+      terminalIds: ["still-retained"],
     });
     expect(draining).toBe(command === "drain");
   }
-  expect(requests).toEqual([true, false].map((value) => ({
-    method: "POST", path: "/api/actions/core.machines.drain", args: { machineId: MACHINE_ID, draining: value },
-  })));
+  expect(requests).toEqual(
+    [true, false].map((value) => ({
+      method: "POST",
+      path: "/api/actions/core.machines.drain",
+      args: { machineId: MACHINE_ID, draining: value },
+    })),
+  );
 });
 
 test("a mismatched or malformed drain acknowledgement holds without reversing a possibly persisted latch", async () => {
@@ -195,14 +240,21 @@ test("a mismatched or malformed drain acknowledgement holds without reversing a 
       requests++;
       return Response.json({ ok: true, result: response });
     });
-    hold(await cli(admissionArgs("drain", hub)), "drain", response.draining ? "invalid_response" : "drain_state_mismatch");
+    hold(
+      await cli(admissionArgs("drain", hub)),
+      "drain",
+      response.draining ? "invalid_response" : "drain_state_mismatch",
+    );
     expect(requests).toBe(1);
   }
 });
 
 test("malformed flags and credential-bearing URLs never reach the hub or use ambient credentials", async () => {
   let requests = 0;
-  const hub = httpFixture(() => { requests++; return new Response(null, { status: 500 }); });
+  const hub = httpFixture(() => {
+    requests++;
+    return new Response(null, { status: 500 });
+  });
   const valid = admissionArgs("drain", hub);
   const malformed = [
     valid.slice(0, -2),
@@ -215,17 +267,28 @@ test("malformed flags and credential-bearing URLs never reach the hub or use amb
     admissionArgs("drain", `${hub}/#${OWNER_KEY}`),
   ];
   for (const args of malformed) {
-    hold(await cli(args, { MANIFOLD_OWNER_KEY_FILE: join(directory, "owner.key") }), "drain", "invalid_arguments");
+    hold(
+      await cli(args, { MANIFOLD_OWNER_KEY_FILE: join(directory, "owner.key") }),
+      "drain",
+      "invalid_arguments",
+    );
   }
   expect(requests).toBe(0);
 });
 
 test("an unavailable explicit key cannot fall back to an ambient valid key", async () => {
   let requests = 0;
-  const hub = httpFixture(() => { requests++; return new Response(null, { status: 500 }); });
+  const hub = httpFixture(() => {
+    requests++;
+    return new Response(null, { status: 500 });
+  });
   const args = admissionArgs("drain", hub);
   args[args.length - 1] = join(directory, `missing-${OWNER_KEY}`);
-  hold(await cli(args, { MANIFOLD_OWNER_KEY_FILE: join(directory, "owner.key") }), "drain", "credential_unavailable");
+  hold(
+    await cli(args, { MANIFOLD_OWNER_KEY_FILE: join(directory, "owner.key") }),
+    "drain",
+    "credential_unavailable",
+  );
   expect(requests).toBe(0);
 });
 
@@ -247,9 +310,12 @@ for (const reason of ["not_draining", "terminals_retained", "jobs_retained"] as 
   test(`${reason} is an atomic HOLD even when the preceding status looked empty`, async () => {
     const owner = await ownerFixture((type, socket) => {
       if (type === "status_request") send(socket, status());
-      if (type === "shutdown_request") send(socket, {
-        type: "shutdown_refused", reason, terminalIds: reason === "terminals_retained" ? ["raced-terminal"] : [],
-      });
+      if (type === "shutdown_request")
+        send(socket, {
+          type: "shutdown_refused",
+          reason,
+          terminalIds: reason === "terminals_retained" ? ["raced-terminal"] : [],
+        });
     });
     hold(await cli(owner.args), "shutdown", reason);
     expect(owner.commands).toEqual([{ type: "status_request" }, { type: "shutdown_request" }]);
@@ -276,14 +342,19 @@ test("only a matching positive shutdown acknowledgement succeeds on the status c
       socket.write(frame.slice(17));
       socket.write("\n");
     }
-    if (type === "shutdown_request") socket.end(`${JSON.stringify({ type: "shutting_down", terminalHostId: HOST_ID })}\n`);
+    if (type === "shutdown_request")
+      socket.end(`${JSON.stringify({ type: "shutting_down", terminalHostId: HOST_ID })}\n`);
   });
   const result = await cli(owner.args);
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
   expect(result.stdout.endsWith("\n")).toBe(true);
   expect(result.stdout.trim().split("\n")).toHaveLength(1);
-  expect(JSON.parse(result.stdout)).toEqual({ ok: true, command: "shutdown", terminalHostId: HOST_ID });
+  expect(JSON.parse(result.stdout)).toEqual({
+    ok: true,
+    command: "shutdown",
+    terminalHostId: HOST_ID,
+  });
   expect(owner.commands).toEqual([{ type: "status_request" }, { type: "shutdown_request" }]);
   expect(owner.connections()).toBe(1);
 });
@@ -291,7 +362,8 @@ test("only a matching positive shutdown acknowledgement succeeds on the status c
 test("a different owner's shutdown acknowledgement holds rather than authorizing replacement", async () => {
   const owner = await ownerFixture((type, socket) => {
     if (type === "status_request") send(socket, status());
-    if (type === "shutdown_request") send(socket, { type: "shutting_down", terminalHostId: "replacement-owner" });
+    if (type === "shutdown_request")
+      send(socket, { type: "shutting_down", terminalHostId: "replacement-owner" });
   });
   hold(await cli(owner.args), "shutdown", "owner_identity_mismatch");
   expect(owner.connections()).toBe(1);
@@ -307,7 +379,10 @@ test("a shutdown acknowledgement before identity proof grants no shutdown author
 
 test("an oversized owner frame holds without echoing its contents or requesting shutdown", async () => {
   const owner = await ownerFixture((type, socket) => {
-    if (type === "status_request") socket.write(OWNER_KEY.repeat(Math.ceil((MAX_TERMINAL_HOST_FRAME_BYTES + 1) / OWNER_KEY.length)));
+    if (type === "status_request")
+      socket.write(
+        OWNER_KEY.repeat(Math.ceil((MAX_TERMINAL_HOST_FRAME_BYTES + 1) / OWNER_KEY.length)),
+      );
   });
   hold(await cli(owner.args), "shutdown", "invalid_response");
   expect(owner.commands).toEqual([{ type: "status_request" }]);

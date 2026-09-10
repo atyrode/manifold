@@ -258,7 +258,7 @@ have `restartIfChanged=false`, `stopIfChanged=false`, `Restart=on-failure` and
 atomic maintenance shutdown stays stopped. Old immutable store paths must remain rooted
 until the retained owner exits; do not garbage-collect its old system generation mid-session.
 Changing a unit definition does not mean the retained owner is running that new version.
-Hub/transport protocol 30 is independent of native owner RPC 29. A compatible retained owner
+Hub/transport protocol 30 is independent of native owner RPC 2. A compatible retained owner
 keeps its work through a transport upgrade; its missing IPC-2 execution declaration cannot
 be treated as permission to create an unconfined shell.
 
@@ -285,8 +285,10 @@ URLs are not accepted; do not extract a key into an argument, environment variab
 substitution, host file or log. Shutdown needs no hub key: run it on the explicitly selected
 execution host with access to that owner's private Unix socket. Bind `TERMINAL_HOST_ID` to
 the reviewed owner's identity reported by successful drain, not to an automatically selected
-replacement. Shutdown checks that identity and the supported terminal-host protocol via
-status on the same observer connection before making the atomic shutdown request.
+replacement. Shutdown checks that identity and a supported maintenance protocol via status
+on the same observer connection before making the atomic shutdown request. IPC 1 and IPC 2
+share these maintenance frames; accepting an older owner's empty-shutdown acknowledgment
+does not enable unconfined execution. Unknown protocols hold.
 
 For the source-shipping Docker image, use the identical CLI **inside the owning container**;
 the credential read stays inside Manifold:
@@ -296,6 +298,17 @@ docker exec "$CONTAINER_ID" bun packages/agent/src/main.ts --maintenance drain \
   --hub http://127.0.0.1:7777 --machine-id "$MACHINE_ID" --owner-key-file /data/owner.key
 docker exec "$CONTAINER_ID" bun packages/agent/src/main.ts --maintenance shutdown \
   --socket "$TERMINAL_HOST_SOCKET" --terminal-host-id "$TERMINAL_HOST_ID"
+```
+
+If the retained container predates this CLI, build the reviewed source into a public Bun
+bundle and stream that code into the same container. This changes no deployed files and
+does not move the credential out of its existing custody:
+
+```sh
+bun build --target bun packages/agent/src/main.ts --outfile /tmp/manifold-maintenance.js
+docker exec -i "$CONTAINER_ID" bun - --maintenance drain \
+  --hub http://127.0.0.1:7777 --machine-id "$MACHINE_ID" \
+  --owner-key-file /data/owner.key < /tmp/manifold-maintenance.js
 ```
 
 These are explicit existing container/socket references, not discovery or a private preview

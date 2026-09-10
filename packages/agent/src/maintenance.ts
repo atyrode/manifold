@@ -9,6 +9,9 @@ import { ZodError } from "zod";
 import { unixTerminalHostDialer, type TerminalHostLink } from "./terminal-host-link.ts";
 
 const OWNER_TIMEOUT_MS = 30_000;
+// IPC 1 and IPC 2 share these maintenance frames. Accepting a retained IPC 1
+// owner's shutdown decision grants no authority to launch unconfined work.
+const MAINTENANCE_PROTOCOL_VERSIONS = new Set([1, TERMINAL_HOST_PROTOCOL_VERSION]);
 const HELP = `usage:
   manifold-agent --maintenance drain --hub URL --machine-id ID --owner-key-file FILE
   manifold-agent --maintenance reopen --hub URL --machine-id ID --owner-key-file FILE
@@ -99,7 +102,7 @@ function parseOptions(args: readonly string[]): Options {
       value === undefined ||
       value.trim() === "" ||
       value.startsWith("--") ||
-      /[\x00-\x1f\x7f]/.test(value)
+      /\p{Cc}/u.test(value)
     ) {
       throw new Error("invalid_arguments");
     }
@@ -120,7 +123,13 @@ function parseOptions(args: readonly string[]): Options {
   const rawHub = required("--hub");
   const url = new URL(rawHub);
   // The kit accepts origins; reject credentials instead of silently stripping them.
-  if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "" || url.pathname !== "/") {
+  if (
+    url.username !== "" ||
+    url.password !== "" ||
+    url.search !== "" ||
+    url.hash !== "" ||
+    url.pathname !== "/"
+  ) {
     throw new Error("invalid_arguments");
   }
   return {
@@ -132,7 +141,9 @@ function parseOptions(args: readonly string[]): Options {
   };
 }
 
-async function setDrain(options: Extract<Options, { command: "drain" | "reopen" }>): Promise<Outcome> {
+async function setDrain(
+  options: Extract<Options, { command: "drain" | "reopen" }>,
+): Promise<Outcome> {
   let ownerKey: string;
   try {
     ownerKey = await resolveOwnerKey(options.ownerKeyFile, undefined);
@@ -151,7 +162,9 @@ async function setDrain(options: Extract<Options, { command: "drain" | "reopen" 
     if (error instanceof ZodError) return failure("invalid_response");
     if (error instanceof HubHttpError) {
       return {
-        ...failure(error.status >= 200 && error.status < 300 ? "invalid_response" : "request_failed"),
+        ...failure(
+          error.status >= 200 && error.status < 300 ? "invalid_response" : "request_failed",
+        ),
         status: error.status,
       };
     }
@@ -203,7 +216,7 @@ function shutdownOwner(options: Extract<Options, { command: "shutdown" }>): Prom
         if (event.type === "status") {
           if (event.terminalHostId !== options.terminalHostId) {
             finish(failure("owner_identity_mismatch"));
-          } else if (event.terminalHostProtocolVersion !== TERMINAL_HOST_PROTOCOL_VERSION) {
+          } else if (!MAINTENANCE_PROTOCOL_VERSIONS.has(event.terminalHostProtocolVersion)) {
             finish(failure("owner_protocol_mismatch"));
           } else if (phase !== "status" || link === undefined) {
             finish(failure("unexpected_owner_event"));
@@ -278,12 +291,15 @@ export async function runMaintenanceCLI(args: readonly string[]): Promise<number
   try {
     options = parseOptions(args);
   } catch {
-    process.stderr.write(`${JSON.stringify({ ...failure("invalid_arguments"), ...(command ? { command } : {}) })}\n`);
+    process.stderr.write(
+      `${JSON.stringify({ ...failure("invalid_arguments"), ...(command ? { command } : {}) })}\n`,
+    );
     return 1;
   }
   let outcome: Outcome;
   try {
-    outcome = options.command === "shutdown" ? await shutdownOwner(options) : await setDrain(options);
+    outcome =
+      options.command === "shutdown" ? await shutdownOwner(options) : await setDrain(options);
   } catch {
     outcome = failure("request_failed");
   }
