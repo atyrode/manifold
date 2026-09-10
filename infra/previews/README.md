@@ -319,14 +319,19 @@ automatically trusted from the live process or its reported build. Review the ex
 Nix output's source and compiled entrypoint: the supported flake installs compiled
 `packages/agent/src/main.ts` at `/nix/store/HASH-manifold-agent-VERSION/libexec/manifold-agent`
 with its launcher in `bin/manifold-agent`. That reviewed source must implement the
-split non-owning default mode. The helper compares the kernel executable inode with
-that immutable root-owned artifact, permits only the single package-local executable
-argument, and requires the transport cgroup to contain exactly that PID and no child
-cgroups. A bare Bun executable plus mutable repository entrypoint, missing provenance,
+split non-owning default mode. The helper compares the kernel executable bytes with
+that immutable root-owned artifact. A retained compiled binary outside the store is
+accepted only when it matches this independently reviewed reference byte-for-byte.
+It permits only the single executable argument and requires the transport cgroup to
+contain exactly that PID and no child cgroups. A bare Bun executable plus mutable
+repository entrypoint, missing provenance,
 or any owner-mode argument is **unknown and refused**. Legacy owner IPC alone cannot
 establish a transport's role; do not infer it from a different PID, cgroup or owner revision.
-Both units must have no destructive propagation, activation edges, exit actions or stop
-hooks. Distinct PID/cgroup alone is insufficient.
+Both units must have no external stop propagation, activation edges, exit actions or stop
+hooks. The owner's sole permitted stop-dependent is its proved non-owning transport,
+which is stopped before the owner can exit. Hook lists are checked through typed
+`busctl` replies: an empty-looking `systemctl` rendering is not proof of no commands.
+Distinct PID/cgroup alone is insufficient.
 Both old services must initially be proved running; uncertain or already-partially-retired state is a manual hold.
 Do not concurrently change/activate unit definitions, start replacement owners or reopen admission.
 
@@ -378,8 +383,8 @@ These default fixtures substitute supervisor metadata and explicitly bypass kern
 transport-role proof; they cannot establish real systemd drop-in reload semantics.
 The opt-in kernel fixture builds inert public C code into a root-owned immutable Nix
 output and runs UUID-named, time-limited user services. It exercises the unmodified
-production `/proc`/cgroup proof against a valid transport, an owner-mode argument,
-a different executable inode, and a hidden child process. It needs Linux cgroup v2,
+production `/proc`/cgroup proof against a valid transport, a byte-identical copy outside
+the store, an owner-mode argument, different executable bytes, and a hidden child process. It needs Linux cgroup v2,
 a functioning user systemd manager and Nix access to this flake's pinned dependencies:
 
 ```sh

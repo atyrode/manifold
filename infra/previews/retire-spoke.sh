@@ -4,7 +4,12 @@ set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 retirement_hold() { printf 'retire-spoke: HOLD: %s; admission is not reopened\n' "$*" >&2; exit 1; }
 userctl() { systemctl --user "$@"; }
-unit_property() { userctl show "$1" --property="$2" --value; }
+unit_property() {
+  local response
+  response=$(userctl show "$1" --property="$2" --all) || return 1
+  [[ $response == "$2="* && $response != *$'\n'* ]] || return 1
+  printf '%s' "${response#*=}"
+}
 require_running_unit() {
   local unit=$1 pid
   [[ $(unit_property "$unit" LoadState) == loaded &&
@@ -36,17 +41,24 @@ shutdown_cli() {
 # value discovered from this process. Its compiled main.ts must have the split
 # non-owning default mode (flake.nix), not a Bun interpreter plus mutable source.
 prove_transport() {
-  local executable="$transport_package/libexec/manifold-agent" arg mode child
+  local executable="$transport_package/libexec/manifold-agent" actual_executable arg mode child
   local -a argv=() processes=()
   mode=$(stat -c %a "$executable") || retirement_hold 'transport artifact permissions are unknown'
   [[ $(readlink -f -- "$executable") == "$executable" &&
      -f $executable && -x $executable &&
-     $(stat -c %u "$executable") == 0 && $mode =~ ^[0145]{3}$ &&
-     "/proc/$transport_pid/exe" -ef $executable ]] ||
-    retirement_hold 'transport is not the explicitly reviewed immutable compiled executable'
+     $(stat -c %u "$executable") == 0 && $mode =~ ^[0145]{3}$ ]] ||
+    retirement_hold 'transport approval is not an immutable compiled executable'
+  # Independently reproduced bytes also identify retained compiled deployments
+  # outside the store. Never approve an artifact from the running process itself.
+  cmp -s -- "/proc/$transport_pid/exe" "$executable" ||
+    retirement_hold 'transport bytes differ from the independently reviewed executable'
+  actual_executable=$(readlink -- "/proc/$transport_pid/exe") ||
+    retirement_hold 'transport executable identity is unknown'
+  actual_executable=${actual_executable%" (deleted)"}
   while IFS= read -r -d '' arg; do argv+=("$arg"); done <"/proc/$transport_pid/cmdline"
   [[ ${#argv[@]} == 1 &&
-     ( ${argv[0]} == "$executable" || ${argv[0]} == "$transport_package/bin/manifold-agent" ) ]] ||
+     ( ${argv[0]} == "$actual_executable" || ${argv[0]} == "$executable" ||
+       ${argv[0]} == "$transport_package/bin/manifold-agent" ) ]] ||
     retirement_hold 'transport executable arguments do not prove the reviewed non-owning mode'
   mapfile -t processes <"/sys/fs/cgroup$transport_cgroup/cgroup.procs" ||
     retirement_hold 'transport cgroup membership is unknown'
@@ -60,16 +72,32 @@ prove_transport() {
 # sides of the supervisor graph before either process can become inactive.
 require_no_propagation() {
   local unit=$1 property result
-  for property in ConsistsOf BoundBy RequiredBy PropagatesStopTo OnSuccess OnFailure TriggeredBy; do
+  for property in ConsistsOf BoundBy RequiredBy PropagatesStopTo; do
     result=$(unit_property "$unit" "$property") || retirement_hold 'supervisor propagation metadata is unknown'
-    [[ -z $result ]] || retirement_hold 'supervisor exit or stop has external effects or activation paths'
+    # The proved non-owning transport is stopped before the owner can exit.
+    [[ -z $result || ( $unit == "$terminal_host_unit" && $result == "$transport_unit" ) ]] ||
+      retirement_hold 'supervisor exit or stop has external effects'
+  done
+  for property in OnSuccess OnFailure TriggeredBy; do
+    result=$(unit_property "$unit" "$property") || retirement_hold 'supervisor activation metadata is unknown'
+    [[ -z $result ]] || retirement_hold 'supervisor has unproved activation paths'
   done
   for property in SuccessAction FailureAction StartLimitAction; do
     [[ $(unit_property "$unit" "$property") == none ]] || retirement_hold 'supervisor exit action is not inert'
   done
+  # systemctl omits empty command arrays even with --all. Typed D-Bus replies
+  # distinguish an empty hook list from an unsupported or missing property.
+  local unit_path
+  unit_path=$(busctl --user --json=short call org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+    org.freedesktop.systemd1.Manager GetUnit s "$unit" |
+    jq -er 'select(.type == "o" and (.data | length) == 1) | .data[0] |
+      select(startswith("/org/freedesktop/systemd1/unit/"))') ||
+    retirement_hold 'supervisor service object is unknown'
   for property in ExecStop ExecStopPost; do
-    result=$(unit_property "$unit" "$property") || retirement_hold 'supervisor stop commands are unknown'
-    [[ -z $result ]] || retirement_hold 'supervisor has unproved stop commands'
+    result=$(busctl --user --json=short get-property org.freedesktop.systemd1 "$unit_path" \
+      org.freedesktop.systemd1.Service "$property") || retirement_hold 'supervisor stop commands are unknown'
+    jq -e '.type == "a(sasbttttuii)" and .data == []' <<<"$result" >/dev/null ||
+      retirement_hold 'supervisor has unproved stop commands'
   done
 }
 inhibit_supervisor_restarts() {

@@ -205,10 +205,17 @@ async function inspectContainer(): Promise<{
   Image: string;
   SizeRw?: number;
 }> {
-  return JSON.parse((await docker([
-    "inspect", "--size", await containerId(), "--format",
-    '{"Id":{{json .Id}},"State":{"Status":{{json .State.Status}},"StartedAt":{{json .State.StartedAt}},"Health":{"Status":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}}},"Image":{{json .Image}},"SizeRw":{{json .SizeRw}}}',
-  ])).out);
+  return JSON.parse(
+    (
+      await docker([
+        "inspect",
+        "--size",
+        await containerId(),
+        "--format",
+        '{"Id":{{json .Id}},"State":{"Status":{{json .State.Status}},"StartedAt":{{json .State.StartedAt}},"Health":{"Status":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}}},"Image":{{json .Image}},"SizeRw":{{json .SizeRw}}}',
+      ])
+    ).out,
+  );
 }
 async function health(): Promise<{ build: string; ok: boolean }> {
   const response = await fetch(`${origin}/healthz`, { signal: AbortSignal.timeout(3_000) });
@@ -1037,7 +1044,8 @@ async function preserveLive(
   restore: () => Promise<void>,
   expectedError?: string,
 ): Promise<void> {
-  const terminal = !integrated || machineId !== "" ? await newTerminalProbe(`before-${name}`) : null;
+  const terminal =
+    !integrated || machineId !== "" ? await newTerminalProbe(`before-${name}`) : null;
   const before = await inspectContainer();
   try {
     await mutate();
@@ -1179,58 +1187,91 @@ console.log(JSON.stringify({
   identity: createHash('sha256').update(await Bun.file('/data/preview-identity.key').text()).digest('hex')
 }));`;
       const before = await execBun(retainedState, true);
-      const networks = (await docker(["inspect", await containerId(), "--format", "{{json .NetworkSettings.Networks}}"])).out;
+      const networks = (
+        await docker([
+          "inspect",
+          await containerId(),
+          "--format",
+          "{{json .NetworkSettings.Networks}}",
+        ])
+      ).out;
       // A shared hub must not consult the disposable image pin or lifecycle program.
       rmSync(pinPath);
       rmSync(join(tooling, "terminal-lifecycle.ts"));
       await up();
       await ready();
-      requireThat(await execBun(retainedState, true) === before, "retained identity or file ownership changed");
+      requireThat(
+        (await execBun(retainedState, true)) === before,
+        "retained identity or file ownership changed",
+      );
       const reread = ContainerResponseSchema.parse(
         await act("core.index.readContainer", { containerId: made.id }),
       ).container;
       requireThat(reread.name === made.name, "retained canvas data changed");
-      const afterNetworks = (await docker(["inspect", await containerId(), "--format", "{{json .NetworkSettings.Networks}}"])).out;
+      const afterNetworks = (
+        await docker([
+          "inspect",
+          await containerId(),
+          "--format",
+          "{{json .NetworkSettings.Networks}}",
+        ])
+      ).out;
       requireThat(
         Object.keys(JSON.parse(networks)).join() === Object.keys(JSON.parse(afterNetworks)).join(),
         "retained network selection changed",
       );
       const machines = MachinesResponseSchema.parse(await act("core.machines.list", {})).machines;
-      requireThat(!machines.some(machine => machine.online), "server-only image spawned a local execution owner");
-      await preserveLive("missing-native-owner", async () => {
-        delete env["MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID"];
-      }, async () => {
-        env["MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID"] = `fixture-native-${number}`;
-      });
-      await preserveLive("local-agent-forbidden", async () => {
-        env["MANIFOLD_DEV_SPAWN_AGENT"] = "1";
-      }, async () => {
-        env["MANIFOLD_DEV_SPAWN_AGENT"] = "0";
-      });
+      requireThat(
+        !machines.some((machine) => machine.online),
+        "server-only image spawned a local execution owner",
+      );
+      await preserveLive(
+        "missing-native-owner",
+        async () => {
+          delete env["MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID"];
+        },
+        async () => {
+          env["MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID"] = `fixture-native-${number}`;
+        },
+      );
+      await preserveLive(
+        "local-agent-forbidden",
+        async () => {
+          env["MANIFOLD_DEV_SPAWN_AGENT"] = "1";
+        },
+        async () => {
+          env["MANIFOLD_DEV_SPAWN_AGENT"] = "0";
+        },
+      );
     });
-    await step("retained replacement holds a real incumbent execution owner and live work", async () => {
-      // Reproduce the old default-spawning deployment, independently of the desired
-      // server-only overlay that deploy-dev resolves. Null removes the inherited
-      // replacement setting; the old image defaults to a local execution owner.
-      const oldOverlay = join(tooling, "fixture-old-owner.yaml");
-      writeFileSync(oldOverlay, `services:
+    await step(
+      "retained replacement holds a real incumbent execution owner and live work",
+      async () => {
+        // Reproduce the old default-spawning deployment, independently of the desired
+        // server-only overlay that deploy-dev resolves. Null removes the inherited
+        // replacement setting; the old image defaults to a local execution owner.
+        const oldOverlay = join(tooling, "fixture-old-owner.yaml");
+        writeFileSync(
+          oldOverlay,
+          `services:
   manifold:
     environment:
       MANIFOLD_SPAWN_AGENT: null
       MANIFOLD_SERVICE_OWNER_MACHINE_ID: null
-`);
-      await compose(finalImage(), ["up", "-d", "--no-build", "--no-deps", "manifold"], {
-        env: { COMPOSE_FILE: `${composeEnv(finalImage())["COMPOSE_FILE"]}:${oldOverlay}` },
-      });
-      await ready();
-      await acquireIdentity();
-      machineId = await onlineMachine();
-      await processOwners(0);
-      canvasId = ContainerResponseSchema.parse(
-        await act("core.index.createContainer", { name: `retained-live-${number}` }),
-      ).container.id;
-      const work = await newTerminalProbe("retained-owner-before");
-      const ownerProcesses = `import { readdirSync, readFileSync } from 'node:fs';
+`,
+        );
+        await compose(finalImage(), ["up", "-d", "--no-build", "--no-deps", "manifold"], {
+          env: { COMPOSE_FILE: `${composeEnv(finalImage())["COMPOSE_FILE"]}:${oldOverlay}` },
+        });
+        await ready();
+        await acquireIdentity();
+        machineId = await onlineMachine();
+        await processOwners(0);
+        canvasId = ContainerResponseSchema.parse(
+          await act("core.index.createContainer", { name: `retained-live-${number}` }),
+        ).container.id;
+        const work = await newTerminalProbe("retained-owner-before");
+        const ownerProcesses = `import { readdirSync, readFileSync } from 'node:fs';
 const rows = readdirSync('/proc').filter(pid => /^\\d+$/.test(pid)).flatMap(pid => {
   const args = readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\\0');
   if (!args.includes('packages/agent/src/main.ts')) return [];
@@ -1238,138 +1279,151 @@ const rows = readdirSync('/proc').filter(pid => /^\\d+$/.test(pid)).flatMap(pid 
   return [{ pid, start: stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] }];
 });
 console.log(JSON.stringify(rows.sort((a, b) => Number(a.pid) - Number(b.pid))));`;
-      const beforeOwners = await execBun(ownerProcesses);
-      // Only the one-off Compose call used oldOverlay. up() still requests the
-      // ordinary retained server-only replacement (MANIFOLD_DEV_SPAWN_AGENT=0).
-      await preserveLive("actual-incumbent-owner", async () => {}, async () => {},
-        "HOLD: retained incumbent is owning or has unsupported spawn configuration");
-      requireThat(await execBun(ownerProcesses) === beforeOwners,
-        "retained refusal restarted the real local execution owner");
-      requireThat(await onlineMachine() === machineId, "retained refusal changed the execution owner identity");
-      await processOwners(0);
-      requireThat((await terminals()).some(terminal => terminal.id === work.id),
-        "retained refusal removed live work");
-      await terminalProbe(work.id, work.homeId, "retained-owner-after");
-    });
+        const beforeOwners = await execBun(ownerProcesses);
+        // Only the one-off Compose call used oldOverlay. up() still requests the
+        // ordinary retained server-only replacement (MANIFOLD_DEV_SPAWN_AGENT=0).
+        await preserveLive(
+          "actual-incumbent-owner",
+          async () => {},
+          async () => {},
+          "HOLD: retained incumbent is owning or has unsupported spawn configuration",
+        );
+        requireThat(
+          (await execBun(ownerProcesses)) === beforeOwners,
+          "retained refusal restarted the real local execution owner",
+        );
+        requireThat(
+          (await onlineMachine()) === machineId,
+          "retained refusal changed the execution owner identity",
+        );
+        await processOwners(0);
+        requireThat(
+          (await terminals()).some((terminal) => terminal.id === work.id),
+          "retained refusal removed live work",
+        );
+        await terminalProbe(work.id, work.homeId, "retained-owner-after");
+      },
+    );
   } else {
-  await step("fresh development volume and unchanged PR artifact", async () => {
-    await up();
-    await ready();
-    await acquireIdentity();
-    await processOwners(1000);
-    canvasId = ContainerResponseSchema.parse(
-      await act("core.index.createContainer", { name: `fresh-${number}` }),
-    ).container.id;
-    machineId = await onlineMachine();
-    await newTerminalProbe("fresh-developer");
-    await assertDataWrites();
-    const labels = JSON.parse(
-      (await docker(["image", "inspect", finalImage(), "--format", "{{json .Config.Labels}}"])).out,
-    ) as Record<string, string>;
-    const pin = readFileSync(pinPath, "utf8").trim();
-    requireThat(
-      labels["org.opencontainers.image.revision"] === revision,
-      "derived image revision does not identify the PR checkout",
-    );
-    requireThat(
-      labels["org.opencontainers.image.base.name"] === pin &&
-        labels["org.opencontainers.image.base.digest"] === pin.split("@")[1],
-      "derived OCI base provenance does not identify the independent environment digest",
-    );
-    closeClients();
-    await compose(finalImage(), ["down", "-v"]);
-    active = false;
-  });
-  await step("real root hub, root agents, scene and SDK terminal before migration", async () => {
-    appUid = 0;
-    await compose(baseImage(), ["up", "-d", "--no-build", "manifold"]);
-    active = true;
-    await ready();
-    await acquireIdentity();
-    machineId = await onlineMachine();
-    canvasId = ContainerResponseSchema.parse(
-      await act("core.index.createContainer", { name: `migration-${number}` }),
-    ).container.id;
-    const canvas = await session(canvasId);
-    sceneId = crypto.randomUUID();
-    const element = {
-      id: sceneId,
-      type: "draw",
-      x: 120,
-      y: 120,
-      width: 240,
-      height: 180,
-      zIndex: 1,
-      points: [0, 0, 40, 60, 120, 30, 200, 140],
-      strokeWidth: 3,
-      color: "#e03131",
-    };
-    const saved = Promise.withResolvers<void>();
-    const off = canvas.on("saved", () => saved.resolve());
-    canvas.transact((tx) => tx.create(element));
-    await Promise.race([
-      saved.promise,
-      sleep(10_000).then(() => {
-        throw new Error("root scene write not acknowledged");
-      }),
-    ]);
-    off();
-    expectedScene = canvas.elements.get(sceneId);
-    const terminal = await newTerminalProbe("root-migration");
-    originalTerminalId = terminal.id;
-    await processOwners(0);
-    identityDigests = await digests();
-    closeClients();
-  });
-  await step("same-volume root to UID1000 migration and persistent server writes", async () => {
-    appUid = 1000;
-    await up();
-    await ready();
-    await processOwners(1000);
-    await sceneSurvives();
-    await newTerminalProbe("migrated-developer");
-    await assertDataWrites();
-  });
-  await step("native browser shell, OMP draft, Code dial and Index reattachment", browserProof);
-  await step("stop/start preserves home; actual recreation resets home, not data", async () => {
-    const marker = `home-${crypto.randomUUID()}`;
-    await execBun(
-      `await Bun.write('/home/developer/.preview-home-marker', ${JSON.stringify(marker)});`,
-    );
-    closeClients();
-    await compose(finalImage(), ["exec", "-T", "manifold", "bun", "-", "retire"], {
-      input: readFileSync(join(tooling, "terminal-lifecycle.ts"), "utf8"),
+    await step("fresh development volume and unchanged PR artifact", async () => {
+      await up();
+      await ready();
+      await acquireIdentity();
+      await processOwners(1000);
+      canvasId = ContainerResponseSchema.parse(
+        await act("core.index.createContainer", { name: `fresh-${number}` }),
+      ).container.id;
+      machineId = await onlineMachine();
+      await newTerminalProbe("fresh-developer");
+      await assertDataWrites();
+      const labels = JSON.parse(
+        (await docker(["image", "inspect", finalImage(), "--format", "{{json .Config.Labels}}"]))
+          .out,
+      ) as Record<string, string>;
+      const pin = readFileSync(pinPath, "utf8").trim();
+      requireThat(
+        labels["org.opencontainers.image.revision"] === revision,
+        "derived image revision does not identify the PR checkout",
+      );
+      requireThat(
+        labels["org.opencontainers.image.base.name"] === pin &&
+          labels["org.opencontainers.image.base.digest"] === pin.split("@")[1],
+        "derived OCI base provenance does not identify the independent environment digest",
+      );
+      closeClients();
+      await compose(finalImage(), ["down", "-v"]);
+      active = false;
     });
-    await compose(finalImage(), ["stop", "manifold"]);
-    await compose(finalImage(), ["start", "manifold"]);
-    await ready();
-    await compose(finalImage(), ["exec", "-T", "manifold", "bun", "-", "resume"], {
-      input: readFileSync(join(tooling, "terminal-lifecycle.ts"), "utf8"),
+    await step("real root hub, root agents, scene and SDK terminal before migration", async () => {
+      appUid = 0;
+      await compose(baseImage(), ["up", "-d", "--no-build", "manifold"]);
+      active = true;
+      await ready();
+      await acquireIdentity();
+      machineId = await onlineMachine();
+      canvasId = ContainerResponseSchema.parse(
+        await act("core.index.createContainer", { name: `migration-${number}` }),
+      ).container.id;
+      const canvas = await session(canvasId);
+      sceneId = crypto.randomUUID();
+      const element = {
+        id: sceneId,
+        type: "draw",
+        x: 120,
+        y: 120,
+        width: 240,
+        height: 180,
+        zIndex: 1,
+        points: [0, 0, 40, 60, 120, 30, 200, 140],
+        strokeWidth: 3,
+        color: "#e03131",
+      };
+      const saved = Promise.withResolvers<void>();
+      const off = canvas.on("saved", () => saved.resolve());
+      canvas.transact((tx) => tx.create(element));
+      await Promise.race([
+        saved.promise,
+        sleep(10_000).then(() => {
+          throw new Error("root scene write not acknowledged");
+        }),
+      ]);
+      off();
+      expectedScene = canvas.elements.get(sceneId);
+      const terminal = await newTerminalProbe("root-migration");
+      originalTerminalId = terminal.id;
+      await processOwners(0);
+      identityDigests = await digests();
+      closeClients();
     });
-    requireThat(
-      (await execBun(
-        "console.log(await Bun.file('/home/developer/.preview-home-marker').text())",
-      )) === marker,
-      "stop/start discarded the same container's home",
-    );
-    await sceneSurvives();
-    await processOwners(1000);
-    const before = await containerId();
-    await compose(finalImage(), ["stop", "manifold"]);
-    await compose(finalImage(), ["rm", "-f", "manifold"]);
-    await up();
-    await ready();
-    requireThat((await containerId()) !== before, "recreation reused the original container");
-    requireThat(
-      (await execBun(
-        "console.log(await Bun.file('/home/developer/.preview-home-marker').exists())",
-      )) === "false",
-      "new container inherited the disposable home",
-    );
-    await sceneSurvives();
-    await newTerminalProbe("recreated-developer");
-    await assertDataWrites();
-  });
+    await step("same-volume root to UID1000 migration and persistent server writes", async () => {
+      appUid = 1000;
+      await up();
+      await ready();
+      await processOwners(1000);
+      await sceneSurvives();
+      await newTerminalProbe("migrated-developer");
+      await assertDataWrites();
+    });
+    await step("native browser shell, OMP draft, Code dial and Index reattachment", browserProof);
+    await step("stop/start preserves home; actual recreation resets home, not data", async () => {
+      const marker = `home-${crypto.randomUUID()}`;
+      await execBun(
+        `await Bun.write('/home/developer/.preview-home-marker', ${JSON.stringify(marker)});`,
+      );
+      closeClients();
+      await compose(finalImage(), ["exec", "-T", "manifold", "bun", "-", "retire"], {
+        input: readFileSync(join(tooling, "terminal-lifecycle.ts"), "utf8"),
+      });
+      await compose(finalImage(), ["stop", "manifold"]);
+      await compose(finalImage(), ["start", "manifold"]);
+      await ready();
+      await compose(finalImage(), ["exec", "-T", "manifold", "bun", "-", "resume"], {
+        input: readFileSync(join(tooling, "terminal-lifecycle.ts"), "utf8"),
+      });
+      requireThat(
+        (await execBun(
+          "console.log(await Bun.file('/home/developer/.preview-home-marker').text())",
+        )) === marker,
+        "stop/start discarded the same container's home",
+      );
+      await sceneSurvives();
+      await processOwners(1000);
+      const before = await containerId();
+      await compose(finalImage(), ["stop", "manifold"]);
+      await compose(finalImage(), ["rm", "-f", "manifold"]);
+      await up();
+      await ready();
+      requireThat((await containerId()) !== before, "recreation reused the original container");
+      requireThat(
+        (await execBun(
+          "console.log(await Bun.file('/home/developer/.preview-home-marker').exists())",
+        )) === "false",
+        "new container inherited the disposable home",
+      );
+      await sceneSurvives();
+      await newTerminalProbe("recreated-developer");
+      await assertDataWrites();
+    });
   }
   if (integrated) {
     await step("misdirected integrated machine refuses before touching the live hub", async () => {
@@ -1405,18 +1459,31 @@ console.log(JSON.stringify(rows.sort((a, b) => Number(a.pid) - Number(b.pid))));
       );
     });
   } else {
-  const goodPin = readFileSync(pinPath, "utf8");
-  for (const malformed of [
-    "",
-    "development:latest\n",
-    goodPin + "extra\n",
-    goodPin.trim() + " \n",
-  ]) {
-    await step("malformed pin refuses without touching the live preview", () =>
+    const goodPin = readFileSync(pinPath, "utf8");
+    for (const malformed of [
+      "",
+      "development:latest\n",
+      goodPin + "extra\n",
+      goodPin.trim() + " \n",
+    ]) {
+      await step("malformed pin refuses without touching the live preview", () =>
+        preserveLive(
+          "malformed-pin",
+          async () => {
+            writeFileSync(pinPath, malformed);
+          },
+          async () => {
+            writeFileSync(pinPath, goodPin);
+          },
+          "preview: expected a digest-pinned development image",
+        ),
+      );
+    }
+    await step("missing pin refuses before stop", () =>
       preserveLive(
-        "malformed-pin",
+        "missing-pin",
         async () => {
-          writeFileSync(pinPath, malformed);
+          rmSync(pinPath);
         },
         async () => {
           writeFileSync(pinPath, goodPin);
@@ -1424,139 +1491,132 @@ console.log(JSON.stringify(rows.sort((a, b) => Number(a.pid) - Number(b.pid))));
         "preview: expected a digest-pinned development image",
       ),
     );
-  }
-  await step("missing pin refuses before stop", () =>
-    preserveLive(
-      "missing-pin",
-      async () => {
-        rmSync(pinPath);
-      },
-      async () => {
-        writeFileSync(pinPath, goodPin);
-      },
-      "preview: expected a digest-pinned development image",
-    ),
-  );
-  await step("nonexistent digest fails a real build before stop", () =>
-    preserveLive(
-      "nonexistent-pin",
-      async () => {
-        writeFileSync(pinPath, goodPin.replace(/sha256:[0-9a-f]{64}/, `sha256:${"0".repeat(64)}`));
-      },
-      async () => {
-        writeFileSync(pinPath, goodPin);
-      },
-    ),
-  );
-  await step("owned incompatible Buildx builder selected only in fixture environment", async () => {
-    const candidate = `preview-environment-${crypto.randomUUID()}`;
-    requireThat(
-      (await docker(["buildx", "inspect", candidate], { allowFailure: true })).code !== 0,
-      "generated Buildx builder name is already owned",
+    await step("nonexistent digest fails a real build before stop", () =>
+      preserveLive(
+        "nonexistent-pin",
+        async () => {
+          writeFileSync(
+            pinPath,
+            goodPin.replace(/sha256:[0-9a-f]{64}/, `sha256:${"0".repeat(64)}`),
+          );
+        },
+        async () => {
+          writeFileSync(pinPath, goodPin);
+        },
+      ),
     );
-    await docker(["buildx", "create", "--name", candidate, "--driver", "docker-container"]);
-    builder = candidate;
-    await preserveLive(
-      "incompatible-builder",
+    await step(
+      "owned incompatible Buildx builder selected only in fixture environment",
       async () => {
-        env["BUILDX_BUILDER"] = builder;
-      },
-      async () => {
-        delete env["BUILDX_BUILDER"];
-      },
-      "preview: development image composition requires the docker Buildx driver",
-    );
-    await docker(["buildx", "rm", "--force", builder]);
-    builder = "";
-  });
-  await step("real failing derived protocol import refuses before stop", async () => {
-    const adapter = readFileSync(adapterPath, "utf8");
-    await preserveLive(
-      "protocol-probe",
-      async () => {
-        writeFileSync(
-          adapterPath,
-          adapter +
-            "\nRUN printf 'throw new Error(\"fixture-derived-protocol-probe\");\\n' > /app/packages/protocol/src/index.ts\n",
+        const candidate = `preview-environment-${crypto.randomUUID()}`;
+        requireThat(
+          (await docker(["buildx", "inspect", candidate], { allowFailure: true })).code !== 0,
+          "generated Buildx builder name is already owned",
         );
+        await docker(["buildx", "create", "--name", candidate, "--driver", "docker-container"]);
+        builder = candidate;
+        await preserveLive(
+          "incompatible-builder",
+          async () => {
+            env["BUILDX_BUILDER"] = builder;
+          },
+          async () => {
+            delete env["BUILDX_BUILDER"];
+          },
+          "preview: development image composition requires the docker Buildx driver",
+        );
+        await docker(["buildx", "rm", "--force", builder]);
+        builder = "";
       },
-      async () => {
-        writeFileSync(adapterPath, adapter);
-      },
-      "fixture-derived-protocol-probe",
     );
-  });
-  await step("restored public pin redeploys successfully", async () => {
-    closeClients();
-    await up();
-    await ready();
-    await processOwners(1000);
-    await sceneSurvives();
-    await newTerminalProbe("restored-good-image");
-  });
-  const firstStorage = await storage("oneBase");
-  if (measureStorage) {
-    await step("second distinct PR app base and measured incremental storage", async () => {
-      const oldBase = (
-        await docker(["image", "inspect", baseImage(), "--format", "{{.Id}}"])
-      ).out.trim();
-      revision = await fixtureRevision(crypto.randomUUID());
-      const output = (
-        await command(["bun", "scripts/build-identity.ts", "--env"], { cwd: fixtureRepo })
-      ).out;
-      for (const line of output.trim().split("\n")) {
-        const match = /^export (MANIFOLD_(?:VERSION|BUILD|CHANNEL))=(.*)$/.exec(line);
-        requireThat(match, "invalid second build identity");
-        baseIdentity[match[1]!] = match[2]!;
-      }
-      baseIdentity["MANIFOLD_CHANNEL"] = "development";
-      expectedBuild = baseIdentity["MANIFOLD_BUILD"]!;
+    await step("real failing derived protocol import refuses before stop", async () => {
+      const adapter = readFileSync(adapterPath, "utf8");
+      await preserveLive(
+        "protocol-probe",
+        async () => {
+          writeFileSync(
+            adapterPath,
+            adapter +
+              "\nRUN printf 'throw new Error(\"fixture-derived-protocol-probe\");\\n' > /app/packages/protocol/src/index.ts\n",
+          );
+        },
+        async () => {
+          writeFileSync(adapterPath, adapter);
+        },
+        "fixture-derived-protocol-probe",
+      );
+    });
+    await step("restored public pin redeploys successfully", async () => {
+      closeClients();
       await up();
       await ready();
+      await processOwners(1000);
       await sceneSurvives();
-      await newTerminalProbe("second-app-base");
-      requireThat(
-        (await docker(["image", "inspect", baseImage(), "--format", "{{.Id}}"])).out.trim() !==
-          oldBase,
-        "measurement did not build a distinct application base",
-      );
-      const secondStorage = await storage("twoBases");
-      metrics["secondBaseIncrementalDaemonLayerBytes"] =
-        secondStorage.LayersSize - firstStorage.LayersSize;
-      metrics["secondBaseIncrementalDaemonBuildCacheBytes"] =
-        secondStorage.BuildCache.reduce((sum, row) => sum + row.Size, 0) -
-        firstStorage.BuildCache.reduce((sum, row) => sum + row.Size, 0);
+      await newTerminalProbe("restored-good-image");
     });
-  }
-  metrics["oneBaseIncrementalDaemonLayerBytes"] =
-    firstStorage.LayersSize - initialStorage.LayersSize;
-  await step("missing-pin down removes only fixture project, volume and app tags", async () => {
-    closeClients();
-    rmSync(pinPath);
-    await command(["bash", join(tooling, "preview.sh"), "down", number], { timeoutMs: 120_000 });
-    active = false;
-    requireThat(
-      (
-        await docker(["ps", "-aq", "--filter", `label=com.docker.compose.project=${project()}`])
-      ).out.trim() === "",
-      "down retained a fixture container",
-    );
-    requireThat(
-      (await docker(["volume", "inspect", volume()], { allowFailure: true })).code !== 0,
-      "down retained the data volume",
-    );
-    for (const image of [baseImage(), finalImage()])
+    const firstStorage = await storage("oneBase");
+    if (measureStorage) {
+      await step("second distinct PR app base and measured incremental storage", async () => {
+        const oldBase = (
+          await docker(["image", "inspect", baseImage(), "--format", "{{.Id}}"])
+        ).out.trim();
+        revision = await fixtureRevision(crypto.randomUUID());
+        const output = (
+          await command(["bun", "scripts/build-identity.ts", "--env"], { cwd: fixtureRepo })
+        ).out;
+        for (const line of output.trim().split("\n")) {
+          const match = /^export (MANIFOLD_(?:VERSION|BUILD|CHANNEL))=(.*)$/.exec(line);
+          requireThat(match, "invalid second build identity");
+          baseIdentity[match[1]!] = match[2]!;
+        }
+        baseIdentity["MANIFOLD_CHANNEL"] = "development";
+        expectedBuild = baseIdentity["MANIFOLD_BUILD"]!;
+        await up();
+        await ready();
+        await sceneSurvives();
+        await newTerminalProbe("second-app-base");
+        requireThat(
+          (await docker(["image", "inspect", baseImage(), "--format", "{{.Id}}"])).out.trim() !==
+            oldBase,
+          "measurement did not build a distinct application base",
+        );
+        const secondStorage = await storage("twoBases");
+        metrics["secondBaseIncrementalDaemonLayerBytes"] =
+          secondStorage.LayersSize - firstStorage.LayersSize;
+        metrics["secondBaseIncrementalDaemonBuildCacheBytes"] =
+          secondStorage.BuildCache.reduce((sum, row) => sum + row.Size, 0) -
+          firstStorage.BuildCache.reduce((sum, row) => sum + row.Size, 0);
+      });
+    }
+    metrics["oneBaseIncrementalDaemonLayerBytes"] =
+      firstStorage.LayersSize - initialStorage.LayersSize;
+    await step("missing-pin down removes only fixture project, volume and app tags", async () => {
+      closeClients();
+      rmSync(pinPath);
+      await command(["bash", join(tooling, "preview.sh"), "down", number], { timeoutMs: 120_000 });
+      active = false;
       requireThat(
-        (await docker(["image", "inspect", image], { allowFailure: true })).code !== 0,
-        `down retained ${image}`,
+        (
+          await docker(["ps", "-aq", "--filter", `label=com.docker.compose.project=${project()}`])
+        ).out.trim() === "",
+        "down retained a fixture container",
       );
-    requireThat(
-      !readFileSync(join(deployment, "registry"), "utf8")
-        .split("\n")
-        .some((row) => row.startsWith(number + " ")),
-      "down retained fixture registry entry",
-    );
-  });
+      requireThat(
+        (await docker(["volume", "inspect", volume()], { allowFailure: true })).code !== 0,
+        "down retained the data volume",
+      );
+      for (const image of [baseImage(), finalImage()])
+        requireThat(
+          (await docker(["image", "inspect", image], { allowFailure: true })).code !== 0,
+          `down retained ${image}`,
+        );
+      requireThat(
+        !readFileSync(join(deployment, "registry"), "utf8")
+          .split("\n")
+          .some((row) => row.startsWith(number + " ")),
+        "down retained fixture registry entry",
+      );
+    });
   }
 } catch (error) {
   failure = error;

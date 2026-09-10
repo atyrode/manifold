@@ -266,13 +266,15 @@ test("malformed flags and credential-bearing URLs never reach the hub or use amb
     admissionArgs("drain", `${hub}/?key=${OWNER_KEY}`),
     admissionArgs("drain", `${hub}/#${OWNER_KEY}`),
   ];
-  for (const args of malformed) {
-    hold(
-      await cli(args, { MANIFOLD_OWNER_KEY_FILE: join(directory, "owner.key") }),
-      "drain",
-      "invalid_arguments",
-    );
-  }
+  await Promise.all(
+    malformed.map(async (args) => {
+      hold(
+        await cli(args, { MANIFOLD_OWNER_KEY_FILE: join(directory, "owner.key") }),
+        "drain",
+        "invalid_arguments",
+      );
+    }),
+  );
   expect(requests).toBe(0);
 }, 15_000);
 
