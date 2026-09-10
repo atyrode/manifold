@@ -291,13 +291,15 @@ hash-pinned worker with its declared static runtime. It verifies that hub contro
 not visible inside the job, private control-file modes hold, and exit status and sealed
 output survive hub/transport restarts and a positively drained owner replacement. It also
 activates a changed configuration and proves the incumbent PID and private configuration
-remain unchanged when that drift is refused:
+remain unchanged when that drift is refused.
 
 A second node exercises systemd credential delivery from root-owned private custody.
 It verifies source bytes and metadata survive normal transport replacement, the delivered
 credential is private and read-only, and in-flight work retains its owner. It also refuses
 a source parent writable through an owner unit's supplementary group and an unsafe
 source-file mode, then proves transport recovery without replacing the owner.
+
+Run both packaged scenarios:
 
 ```sh
 nix build .#checks.x86_64-linux.native-profile
