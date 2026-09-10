@@ -225,6 +225,9 @@ in
         return result
 
     start_all()
+    # TCG bootstrap can outlast the driver's fixed shell-connect deadline.
+    for node in (machine, credential):
+        node.wait_for_console_text("Started backdoor.service", timeout=900)
     machine.wait_for_unit("manifold-server.service", timeout=180)
     machine.wait_for_unit("manifold-owner.service", timeout=180)
     machine.wait_for_unit("manifold-transport.service", timeout=180)
