@@ -55,6 +55,8 @@ for (const path of [home, deployment, tooling, shims, join(home, ".docker")])
 const secrets = new Set<string>();
 const clients = new Set<SessionClient>();
 const ownedImages = new Set<string>();
+const ownedTopologyVolumes = new Set<string>();
+const ownedTopologyNetworks = new Set<string>();
 const processes = new Set<Bun.Subprocess>();
 const metrics: Record<string, unknown> = { integrated, measureStorage, artifacts: evidence };
 const reports: { name: string; elapsedMs: number }[] = [];
@@ -274,8 +276,11 @@ async function execBun(source: string, confidential = false): Promise<string> {
     })
   ).out.trim();
 }
-async function acquireIdentity(): Promise<void> {
-  ownerKey = await execBun("console.log((await Bun.file('/data/owner.key').text()).trim())", true);
+async function acquireIdentity(dataDir = "/data"): Promise<void> {
+  ownerKey = await execBun(
+    `console.log((await Bun.file(${JSON.stringify(`${dataDir}/owner.key`)}).text()).trim())`,
+    true,
+  );
   requireThat(/^[0-9a-f]{64}$/.test(ownerKey), "fixture app did not generate an owner key");
   secrets.add(ownerKey);
 }
@@ -1113,7 +1118,7 @@ async function teardown(): Promise<void> {
       ],
       [
         "network",
-        ["network", "ls", "-q", "--filter", `label=com.docker.compose.project=${project()}`],
+        ["network", "ls", "-q", "--no-trunc", "--filter", `label=com.docker.compose.project=${project()}`],
         ["network", "rm"],
       ],
       ["volume", ["volume", "ls", "-q", "--filter", `name=^${project()}_`], ["volume", "rm"]],
@@ -1123,7 +1128,11 @@ async function teardown(): Promise<void> {
         failures.push(`could not list owned ${kind}`);
         continue;
       }
-      for (const id of found.out.trim().split(/\s+/).filter(Boolean)) {
+      const owned = new Set([
+        ...found.out.trim().split(/\s+/).filter(Boolean),
+        ...(kind === "volume" ? ownedTopologyVolumes : kind === "network" ? ownedTopologyNetworks : []),
+      ]);
+      for (const id of owned) {
         if ((await docker([...removal, id], { allowFailure: true })).code !== 0)
           failures.push(`could not remove owned ${kind} ${id}`);
       }
@@ -1244,6 +1253,156 @@ console.log(JSON.stringify({
         },
       );
     });
+    // Each actual overlay is used only to create this verifier's incumbent. The
+    // deployment callback still resolves the ordinary desired retained stack.
+    // Track auxiliary resource identities explicitly as well as labeling them for
+    // project cleanup, including partial Compose failures.
+    for (const scenario of [
+      {
+        name: "actual retained volume differs while expected volume still exists",
+        actual: `volumes:\n  manifold-data:\n    name: ${project()}_wrong-data\n    external: true\n`,
+        volume: `${project()}_wrong-data`,
+      },
+      {
+        name: "actual retained machine differs from desired dev-hub",
+        actual: "services:\n  manifold:\n    environment:\n      MANIFOLD_MACHINE_NAME: other-hub\n",
+      },
+      {
+        name: "actual retained selected network differs from desired network",
+        actual: `networks:\n  default:\n    name: ${project()}_actual-other\n    external: true\n`,
+        network: `${project()}_actual-other`,
+      },
+      {
+        name: "actual retained data root uses the container writable layer",
+        actual: "services:\n  manifold:\n    environment:\n      MANIFOLD_DATA_DIR: /app/other-data\n",
+        dataDir: "/app/other-data",
+      },
+      {
+        name: "desired retained network differs from actual selected network",
+        desiredNetwork: true,
+      },
+      {
+        name: "desired base data root overrides the image persisted root",
+        desiredDataRoot: "base",
+      },
+      {
+        name: "desired final Compose merge overrides the persisted root",
+        desiredDataRoot: "final",
+      },
+    ]) {
+      await step(scenario.name, async () => {
+        const actualOverlay = join(tooling, "fixture-incumbent-topology.yaml");
+        const finalOverlay = join(tooling, "compose.development.yaml");
+        const baseConfig = readFileSync(developmentOverlay, "utf8");
+        const finalConfig = readFileSync(finalOverlay, "utf8");
+        const dataDir = scenario.dataDir ?? "/data";
+        const restoreDesired = async (): Promise<void> => {
+          writeFileSync(developmentOverlay, baseConfig);
+          writeFileSync(finalOverlay, finalConfig);
+        };
+        try {
+          for (const [kind, name, owned] of [
+            ["volume", scenario.volume, ownedTopologyVolumes],
+            ["network", scenario.network, ownedTopologyNetworks],
+          ] as const) {
+            if (!name) continue;
+            const exists = await docker([kind, "inspect", name], {
+              allowFailure: true,
+              confidential: true,
+            });
+            requireThat(exists.code !== 0, `refusing to adopt an existing fixture ${kind}`);
+            const created = await docker([
+              kind,
+              "create",
+              "--label",
+              `com.docker.compose.project=${project()}`,
+              name,
+            ]);
+            owned.add(created.out.trim());
+          }
+          if (scenario.actual) {
+            writeFileSync(actualOverlay, scenario.actual);
+            await compose(finalImage(), ["up", "-d", "--no-build", "--no-deps", "manifold"], {
+              env: { COMPOSE_FILE: `${composeEnv(finalImage())["COMPOSE_FILE"]}:${actualOverlay}` },
+            });
+            await ready();
+            await acquireIdentity(dataDir);
+          }
+          // The wrong actual volume must not reduce to the already-covered
+          // missing desired volume case.
+          await docker(["volume", "inspect", volume(), "--format", "{{.Name}}"]);
+          const made = ContainerResponseSchema.parse(
+            await act("core.index.createContainer", { name: `topology-${crypto.randomUUID()}` }),
+          ).container;
+          const marker = `${dataDir}/topology-preservation`;
+          await execBun(
+            `await Bun.write(${JSON.stringify(marker)}, ${JSON.stringify(crypto.randomUUID())});`,
+          );
+          // Only fixture-owned keys are hashed; neither key material nor the
+          // database is emitted. PID1 starttime proves the actual process survives.
+          const state = `import { readFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+const root = ${JSON.stringify(dataDir)};
+const marker = ${JSON.stringify(marker)};
+const stat = readFileSync('/proc/1/stat', 'utf8');
+console.log(JSON.stringify({
+  start: stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19],
+  uid: statSync(marker).uid, gid: statSync(marker).gid,
+  marker: readFileSync(marker, 'utf8'),
+  keys: ['owner.key', 'preview-identity.key'].map(name =>
+    createHash('sha256').update(readFileSync(root + '/' + name)).digest('hex'))
+}));`;
+          const before = await execBun(state, true);
+          await preserveLive(
+            scenario.name,
+            async () => {
+              if (scenario.desiredNetwork)
+                writeFileSync(
+                  developmentOverlay,
+                  `${baseConfig}\nnetworks:\n  default:\n    name: ${project()}_desired-other\n`,
+                );
+              if (scenario.desiredDataRoot === "base")
+                writeFileSync(
+                  developmentOverlay,
+                  baseConfig.replace(
+                    "MANIFOLD_MACHINE_NAME: dev-hub",
+                    "MANIFOLD_MACHINE_NAME: dev-hub\n      MANIFOLD_DATA_DIR: /app/other-data",
+                  ),
+                );
+              if (scenario.desiredDataRoot === "final")
+                writeFileSync(
+                  finalOverlay,
+                  finalConfig.replace(
+                    'MANIFOLD_SPAWN_AGENT: "0"',
+                    'MANIFOLD_SPAWN_AGENT: "0"\n      MANIFOLD_DATA_DIR: /app/other-data',
+                  ),
+                );
+            },
+            restoreDesired,
+            scenario.desiredDataRoot
+              ? "HOLD: retained replacement requires supported final topology and /data data root"
+              : "HOLD: retained incumbent topology or /data data root does not match the replacement",
+          );
+          requireThat(
+            (await execBun(state, true)) === before,
+            `${scenario.name} changed the incumbent process, identity, data or ownership`,
+          );
+          const reread = ContainerResponseSchema.parse(
+            await act("core.index.readContainer", { containerId: made.id }),
+          ).container;
+          requireThat(reread.name === made.name, `${scenario.name} changed retained canvas data`);
+        } finally {
+          await restoreDesired();
+          if (scenario.actual) {
+            // Fixture repair, never the deployment helper: the held mismatched
+            // incumbent has already been checked intact before this replacement.
+            await compose(finalImage(), ["up", "-d", "--no-build", "--no-deps", "manifold"]);
+            await ready();
+            await acquireIdentity();
+          }
+        }
+      });
+    }
     await step(
       "retained replacement holds a real incumbent execution owner and live work",
       async () => {

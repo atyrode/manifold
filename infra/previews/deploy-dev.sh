@@ -34,9 +34,21 @@ echo "deploy-dev: version=$MANIFOLD_VERSION build=$MANIFOLD_BUILD channel=$MANIF
 configuration_dir=$(mktemp -d /dev/shm/manifold-dev-compose.XXXXXX)
 configuration="$configuration_dir/compose.json"
 trap 'rm -rf -- "$configuration_dir"' EXIT
-(cd "$checkout" && MANIFOLD_DOMAIN="preview.$PREVIEW_DOMAIN" MANIFOLD_IDENTITY_AUTHORITY="https://$PREVIEW_DOMAIN" docker compose config --format json) >"$configuration"
+(cd "$checkout" && MANIFOLD_DOMAIN="preview.$PREVIEW_DOMAIN" MANIFOLD_IDENTITY_AUTHORITY="https://$PREVIEW_DOMAIN" docker compose config --format json) >"$configuration" 2>/dev/null ||
+  fail 'cannot resolve the existing development stack'
 project=$(jq -er '.name' "$configuration")
 [[ $project =~ ^manifold-dev(-[a-z0-9-]+)?$ ]] || fail 'integrated deployment requires a manifold-dev Compose project'
+final_image="$project:local"
+dev_compose() {
+  local image=$1; shift
+  (cd "$checkout" && PREVIEW_IMAGE="$image" docker compose --project-name "$project" \
+    --file "$configuration" --file "$here/compose.development.yaml" "$@")
+}
+# Check the final merge, including the deployment overlay, not just the host base.
+# Keep this credential-bearing configuration in the same private memory directory.
+final_configuration="$configuration_dir/final-compose.json"
+dev_compose "$final_image" config --format json >"$final_configuration" 2>/dev/null ||
+  fail 'cannot resolve the final development stack'
 # Refuse a misdirected stack before building, draining, or stopping any service. Preserve
 # the existing dev-hub identity, selected volume and networks rather than create a new hub.
 jq -e --arg port "$PREVIEW_DEV_PORT" --arg url "https://preview.$PREVIEW_DOMAIN" '
@@ -44,21 +56,13 @@ jq -e --arg port "$PREVIEW_DEV_PORT" --arg url "https://preview.$PREVIEW_DOMAIN"
   .services.manifold.environment.MANIFOLD_PUBLIC_URL == $url and
   ([.services.manifold.ports[]? | select(.target == 7777 and .host_ip == "127.0.0.1" and (.published | tostring) == $port)] | length) == 1 and
   ([.services.manifold.volumes[]? | select(.target == "/data" and .type == "volume")] | length) == 1
-' "$configuration" >/dev/null || fail 'integrated deployment requires the existing dev-hub, preview URL, loopback port and named /data volume'
-volume=$(jq -er '.services.manifold.volumes[] | select(.target == "/data") | .source as $source | $source' "$configuration")
-volume=$(jq -er --arg source "$volume" '.volumes[$source].name' "$configuration")
+' "$final_configuration" >/dev/null 2>&1 || fail 'integrated deployment requires the existing dev-hub, preview URL, loopback port and named /data volume'
+volume=$(jq -er '.services.manifold.volumes[] | select(.target == "/data") | .source' "$final_configuration")
+volume=$(jq -er --arg source "$volume" '.volumes[$source].name' "$final_configuration")
 # A shared/external production volume is not a development migration target.
 [[ $volume == "${project}_manifold-data" ]] || fail 'integrated deployment requires its project-owned manifold-data volume'
-final_image="$project:local"
-dev_compose() {
-  local image=$1; shift
-  (cd "$checkout" && PREVIEW_IMAGE="$image" docker compose --project-name "$project" \
-    --file "$configuration" --file "$here/compose.development.yaml" "$@")
-}
 # Build the ordinary application image, not the disposable development environment.
 dev_compose "$final_image" build manifold
-# Resolve and validate the final merge before any live mutation as well.
-dev_compose "$final_image" config --quiet
 # Retained data must already exist: a typo must not silently create a fresh identity.
 docker volume inspect "$volume" >/dev/null 2>&1 || fail 'retained development data volume is missing'
 replace_environment retained "$volume" "$final_image" "$project" "$public_url" dev_compose
