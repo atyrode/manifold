@@ -372,14 +372,6 @@ try {
   */
   const workerPath = join(serveDir, "sw.js");
   const deployed = "deployed-cafe1234";
-  await Bun.write(
-    workerPath,
-    (await Bun.file(workerPath).text()).replace(/"build":"([^"]+)"/, `"build":"${deployed}"`) +
-      `\nself.addEventListener("install", event => event.waitUntil(new Promise(resolve => {
-      const release = new BroadcastChannel("manifold-pwa-install");
-      release.onmessage = () => { release.close(); resolve(); };
-    })));\n`,
-  );
   // Delay only the app's registration handoff, not the native worker lifecycle:
   // its updatefound event has already fired when the app receives the registration.
   const registrationObserver = await driver.send("Page.addScriptToEvaluateOnNewDocument", {
@@ -387,15 +379,40 @@ try {
       const register = navigator.serviceWorker.register.bind(navigator.serviceWorker);
       navigator.serviceWorker.register = async (...args) => {
         const registration = await register(...args);
-        if (registration.installing === null && registration.waiting === null) {
-          await new Promise(resolve => registration.addEventListener("updatefound", resolve, { once: true }));
-        }
+        const updateFound = new Promise(resolve =>
+          registration.addEventListener("updatefound", resolve, { once: true }));
+        const control = new BroadcastChannel("manifold-pwa-install");
+        control.onmessage = event => {
+          if (event.data === "ready") window.__pwaInstallListenerReady = true;
+        };
+        window.__pwaReleaseInstall = () => { control.postMessage("release"); control.close(); };
+        window.__pwaRegistrationObserverReady = true;
+        await updateFound;
         window.__pwaRegistrationState = registration.installing?.state ?? null;
         return registration;
       };
     })()`,
   });
   await driver.goto(`${originA}/`);
+  await until(
+    () => driver.evaluate<boolean>("window.__pwaRegistrationObserverReady === true"),
+    20_000,
+    "the registration observer before deploying new worker bytes",
+  );
+  await Bun.write(
+    workerPath,
+    (await Bun.file(workerPath).text()).replace(/"build":"([^"]+)"/, `"build":"${deployed}"`) +
+      `\nself.addEventListener("install", event => event.waitUntil(new Promise(resolve => {
+      const release = new BroadcastChannel("manifold-pwa-install");
+      release.onmessage = message => {
+        if (message.data === "release") { release.close(); resolve(); }
+      };
+      release.postMessage("ready");
+    })));\n`,
+  );
+  await driver.evaluate(
+    "navigator.serviceWorker.getRegistration().then(registration => registration.update())",
+  );
   await until(
     () => driver.evaluate<boolean>("window.__pwaRegistrationState === 'installing'"),
     20_000,
@@ -405,11 +422,12 @@ try {
     "an installing replacement is not offered before it is ready",
     !(await seenTestId(driver, "lens-update")),
   );
-  await driver.evaluate(`(() => {
-    const release = new BroadcastChannel("manifold-pwa-install");
-    release.postMessage(null);
-    release.close();
-  })()`);
+  await until(
+    () => driver.evaluate<boolean>("window.__pwaInstallListenerReady === true"),
+    20_000,
+    "the worker's installation release listener",
+  );
+  await driver.evaluate("window.__pwaReleaseInstall()");
   await until(async () => await seenTestId(driver, "lens-update"), 20_000, "the update offer");
   await driver.send("Page.removeScriptToEvaluateOnNewDocument", {
     identifier: registrationObserver.result?.["identifier"],
