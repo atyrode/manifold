@@ -8,6 +8,7 @@ import {
 import { Agent } from "./agent.ts";
 import type { AgentLogRecord } from "./log.ts";
 import { resolveMachineToken } from "./machine-token.ts";
+import { runMaintenanceCLI } from "./maintenance.ts";
 import { unixTerminalHostDialer } from "./terminal-host-link.ts";
 import { listenTerminalHost } from "./terminal-host-listener.ts";
 import { TerminalHost } from "./terminal-host.ts";
@@ -161,6 +162,14 @@ function transportMain(): void {
 
 function main(): void {
   const args = process.argv.slice(2);
+  if (args.some((arg) => arg === "--maintenance" || arg.startsWith("--maintenance="))) {
+    // Route malformed maintenance invocations here too: never enter a supervised mode
+    // or expose an argument through its ordinary parser's error message.
+    void runMaintenanceCLI(args[0] === "--maintenance" ? args.slice(1) : args).then((code) => {
+      process.exit(code);
+    });
+    return;
+  }
   const unknown = args.find((arg) => arg !== TERMINAL_HOST_FLAG);
   if (unknown !== undefined) throw new Error(`unknown argument: ${unknown}`);
   if (args.length > 1) throw new Error("only one supervised owner mode may be selected");
