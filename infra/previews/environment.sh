@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One composition and replacement path for numbered and integrated development.
+# Explicit retained hub replacement and disposable numbered-preview composition.
 # The caller supplies its Compose command prefix; image is its next argument.
 environment_image() {
   local image
@@ -59,19 +59,29 @@ build_environment() {
     fail 'development image did not execute the supplied command probe'
 }
 replace_environment() {
-  local volume=$1 final_image=$2 project=$3 health_url=$4
-  shift 4
-  log "redeploying $project retires existing PTYs and terminal entries and replaces the disposable development home"
-  if [[ -n $("$@" "$final_image" ps --status running --quiet manifold) ]]; then
-    "$@" "$final_image" exec -T manifold bun - retire <"$here/terminal-lifecycle.ts"
-  fi
+  local lifecycle=$1 volume=$2 final_image=$3 project=$4 health_url=$5
+  shift 5
+  case "$lifecycle" in
+    retained) log "replacing only $project hub; retained owners and data are untouched" ;;
+    disposable)
+      log "redeploying $project retires existing PTYs and terminal entries and replaces the disposable development home"
+      if [[ -n $("$@" "$final_image" ps --status running --quiet manifold) ]]; then
+        "$@" "$final_image" exec -T manifold bun - retire <"$here/terminal-lifecycle.ts"
+      fi
+      ;;
+    *) fail 'replacement requires an explicit retained or disposable lifecycle' ;;
+  esac
   "$@" "$final_image" stop manifold
-  docker run --rm --network none --label "com.docker.compose.project=$project" --user 0:0 --entrypoint /bin/bash \
-    --mount "type=volume,src=$volume,dst=/data" "$final_image" \
-    -c 'chown -R --no-dereference 1000:1000 /data' ||
-    fail "$project deployment failed while setting /data ownership"
-  "$@" "$final_image" up -d --no-build manifold
+  if [[ $lifecycle == disposable ]]; then
+    docker run --rm --network none --label "com.docker.compose.project=$project" --user 0:0 --entrypoint /bin/bash \
+      --mount "type=volume,src=$volume,dst=/data" "$final_image" \
+      -c 'chown -R --no-dereference 1000:1000 /data' ||
+      fail "$project deployment failed while setting /data ownership"
+  fi
+  "$@" "$final_image" up -d --no-build --no-deps manifold
   log "waiting for $project health"
   wait_health "$health_url" "$MANIFOLD_BUILD" || fail "$project deployment failed health check"
-  "$@" "$final_image" exec -T manifold bun - resume <"$here/terminal-lifecycle.ts"
+  if [[ $lifecycle == disposable ]]; then
+    "$@" "$final_image" exec -T manifold bun - resume <"$here/terminal-lifecycle.ts"
+  fi
 }

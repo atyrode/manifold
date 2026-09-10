@@ -522,7 +522,7 @@ async function fixtureRevision(marker: string): Promise<string> {
 async function setup(): Promise<void> {
   for (const binary of ["bun", "docker", "git", "bash", "flock", "curl", "jq"])
     requireThat(Bun.which(binary) !== null, `missing runtime prerequisite: ${binary}`);
-  Browser.detect();
+  if (!integrated) Browser.detect();
   const hostEnv = Object.fromEntries(
     Object.entries(process.env).filter(
       (entry): entry is [string, string] => entry[1] !== undefined,
@@ -606,6 +606,8 @@ async function setup(): Promise<void> {
   if (integrated) {
     env["PREVIEW_DEV_PORT"] = String(port);
     env["PREVIEW_DEV_URL"] = origin;
+    env["MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID"] = `fixture-native-${number}`;
+    env["MANIFOLD_DEV_SPAWN_AGENT"] = "0";
     env["COMPOSE_PROJECT_NAME"] = project();
     env["COMPOSE_FILE"] = `${join(fixtureRepo, "compose.yaml")}:${developmentOverlay}`;
     // The real host overlay's shape, scoped to this run's private project and port.
@@ -645,12 +647,14 @@ async function setup(): Promise<void> {
   ]) {
     cpSync(join(repo, "infra/previews", name), join(tooling, name));
   }
-  const pin = readFileSync(pinPath, "utf8");
-  requireThat(
-    /^[^\s@]+@sha256:[0-9a-f]{64}\n?$/.test(pin),
-    "fixture requires the real public digest pin in infra/previews/environment-image.txt",
-  );
-  metrics["environmentImage"] = pin.trim();
+  if (!integrated) {
+    const pin = readFileSync(pinPath, "utf8");
+    requireThat(
+      /^[^\s@]+@sha256:[0-9a-f]{64}\n?$/.test(pin),
+      "fixture requires the real public digest pin in infra/previews/environment-image.txt",
+    );
+    metrics["environmentImage"] = pin.trim();
+  }
   metrics["project"] = project();
   await command(["git", "clone", "--bare", "--no-hardlinks", repo, originRepo]);
   await command(["git", "clone", "--no-hardlinks", originRepo, fixtureRepo]);
@@ -1029,7 +1033,7 @@ async function preserveLive(
   restore: () => Promise<void>,
   expectedError?: string,
 ): Promise<void> {
-  const terminal = await newTerminalProbe(`before-${name}`);
+  const terminal = integrated ? null : await newTerminalProbe(`before-${name}`);
   const before = await inspectContainer();
   try {
     await mutate();
@@ -1053,7 +1057,7 @@ async function preserveLive(
       40_000,
       `${name} old container remains healthy`,
     );
-    await terminalProbe(terminal.id, terminal.homeId, `after-${name}`);
+    if (terminal) await terminalProbe(terminal.id, terminal.homeId, `after-${name}`);
   } finally {
     await restore();
   }
@@ -1146,6 +1150,61 @@ let failure: unknown;
 try {
   await step("private fixture prerequisites and local Git origin", setup);
   const initialStorage = await storage("before");
+  if (integrated) {
+    await step("retained server-only hub replacement preserves data and ownership", async () => {
+      appUid = 0;
+      await compose(finalImage(), ["up", "-d", "--build", "--no-deps", "manifold"], {
+        timeoutMs: 18 * 60_000,
+      });
+      active = true;
+      await rememberImages();
+      await ready();
+      await acquireIdentity();
+      const made = ContainerResponseSchema.parse(
+        await act("core.index.createContainer", { name: `retained-${number}` }),
+      ).container;
+      const retainedState = `import { statSync, chownSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+const marker = '/data/retained-ownership';
+if (!await Bun.file(marker).exists()) {
+  await Bun.write(marker, 'retained'); chownSync(marker, 1234, 2345);
+}
+console.log(JSON.stringify({
+  uid: statSync(marker).uid, gid: statSync(marker).gid,
+  key: createHash('sha256').update(await Bun.file('/data/owner.key').text()).digest('hex'),
+  identity: createHash('sha256').update(await Bun.file('/data/preview-identity.key').text()).digest('hex')
+}));`;
+      const before = await execBun(retainedState, true);
+      const networks = (await docker(["inspect", await containerId(), "--format", "{{json .NetworkSettings.Networks}}"])).out;
+      // A shared hub must not consult the disposable image pin or lifecycle program.
+      rmSync(pinPath);
+      rmSync(join(tooling, "terminal-lifecycle.ts"));
+      await up();
+      await ready();
+      requireThat(await execBun(retainedState, true) === before, "retained identity or file ownership changed");
+      const reread = ContainerResponseSchema.parse(
+        await act("core.index.readContainer", { containerId: made.id }),
+      ).container;
+      requireThat(reread.name === made.name, "retained canvas data changed");
+      const afterNetworks = (await docker(["inspect", await containerId(), "--format", "{{json .NetworkSettings.Networks}}"])).out;
+      requireThat(
+        Object.keys(JSON.parse(networks)).join() === Object.keys(JSON.parse(afterNetworks)).join(),
+        "retained network selection changed",
+      );
+      const machines = MachinesResponseSchema.parse(await act("core.machines.list", {})).machines;
+      requireThat(!machines.some(machine => machine.online), "server-only image spawned a local execution owner");
+      await preserveLive("missing-native-owner", async () => {
+        delete env["MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID"];
+      }, async () => {
+        env["MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID"] = `fixture-native-${number}`;
+      });
+      await preserveLive("local-agent-forbidden", async () => {
+        env["MANIFOLD_DEV_SPAWN_AGENT"] = "1";
+      }, async () => {
+        env["MANIFOLD_DEV_SPAWN_AGENT"] = "0";
+      });
+    });
+  } else {
   await step("fresh development volume and unchanged PR artifact", async () => {
     await up();
     await ready();
@@ -1264,6 +1323,7 @@ try {
     await newTerminalProbe("recreated-developer");
     await assertDataWrites();
   });
+  }
   if (integrated) {
     await step("misdirected integrated machine refuses before touching the live hub", async () => {
       const overlay = readFileSync(developmentOverlay, "utf8");
@@ -1297,7 +1357,7 @@ try {
         "integrated deployment requires its project-owned manifold-data volume",
       );
     });
-  }
+  } else {
   const goodPin = readFileSync(pinPath, "utf8");
   for (const malformed of [
     "",
@@ -1426,12 +1486,7 @@ try {
   await step("missing-pin down removes only fixture project, volume and app tags", async () => {
     closeClients();
     rmSync(pinPath);
-    if (integrated) {
-      await compose(finalImage(), ["down", "-v"]);
-      for (const image of [baseImage(), finalImage()]) await docker(["image", "rm", image]);
-    } else {
-      await command(["bash", join(tooling, "preview.sh"), "down", number], { timeoutMs: 120_000 });
-    }
+    await command(["bash", join(tooling, "preview.sh"), "down", number], { timeoutMs: 120_000 });
     active = false;
     requireThat(
       (
@@ -1448,14 +1503,14 @@ try {
         (await docker(["image", "inspect", image], { allowFailure: true })).code !== 0,
         `down retained ${image}`,
       );
-    if (!integrated)
-      requireThat(
-        !readFileSync(join(deployment, "registry"), "utf8")
-          .split("\n")
-          .some((row) => row.startsWith(number + " ")),
-        "down retained fixture registry entry",
-      );
+    requireThat(
+      !readFileSync(join(deployment, "registry"), "utf8")
+        .split("\n")
+        .some((row) => row.startsWith(number + " ")),
+      "down retained fixture registry entry",
+    );
   });
+  }
 } catch (error) {
   failure = error;
   try {

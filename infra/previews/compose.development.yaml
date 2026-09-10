@@ -3,6 +3,8 @@ services:
   manifold:
     image: ${PREVIEW_IMAGE:?preview tooling must select an image}
     environment:
+      MANIFOLD_SPAWN_AGENT: "0"
+      MANIFOLD_SERVICE_OWNER_MACHINE_ID: ${MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID:?shared development requires an explicit native owner}
       MANIFOLD_PLUGIN_DEV_PATHS: "1"
       MANIFOLD_ANNOUNCE_KEY: "0"
       MANIFOLD_IDENTITY_AUTHORITY: https://${PREVIEW_DOMAIN}

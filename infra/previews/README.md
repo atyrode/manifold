@@ -22,7 +22,7 @@ build inputs; the PR number comes from the deployment's `PREVIEW_MACHINE`.
 
 ## Development environment
 
-Numbered previews and integrated `main` compose their application artifact with the standalone
+Numbered disposable previews compose their application artifact with the standalone
 portable development environment published by dotfiles. The one environment pin
 is `infra/previews/environment-image.txt` in the stable tooling checkout; it must
 be an immutable, anonymously pullable OCI digest. Updating it is a reviewed code
@@ -30,31 +30,30 @@ change, not a startup installation or a registry login on the preview host.
 
 The environment provides the configured zsh, OMP, Code and the portable profile's
 other tools. It does not provide provider credentials or a model service.
-Production continues using the ordinary application image; no preview operation promotes
-an image, edits a host service or replaces a spoke terminal host.
+Shared integrated development instead uses the ordinary production-style application
+image as a server-only hub. Its execution owner is the separately declared native profile;
+there is no shared-preview container-shell fallback. Neither deployment path promotes production.
 
-`up` and `deploy-dev.sh` use the same `environment.sh` composition, offline probe and
-terminal replacement path and require the selected Buildx builder's `docker` driver.
-Numbered previews build the application as `manifold-pr-pr-N:base`, then compose
-`manifold-pr-pr-N:local` with the environment as its base. Integrated development uses
-its existing Compose project (`manifold-dev`) and project-local `:base`/`:local` tags,
-never the shared `manifold:local` tag. The application artifact must contain an executable
-`/app/infra/entrypoint.sh` and a nonempty `engines.bun` requirement that the environment's
-Bun satisfies. Its `/app` is copied with UID/GID 1000 ownership; no Bun binary,
-libraries, home or Nix store are copied out of the application image.
+Numbered `up` uses `environment.sh` composition and an offline probe, requiring the
+selected Buildx builder's `docker` driver. It builds `manifold-pr-pr-N:base`, then
+composes `manifold-pr-pr-N:local` with the environment as its base. The application
+artifact must contain an executable `/app/infra/entrypoint.sh` and a nonempty
+`engines.bun` requirement that the environment's Bun satisfies. Its `/app` is copied
+with UID/GID 1000 ownership; no Bun binary, libraries, home or Nix store are copied
+out of the application image.
 
 The current application requires Bun >= 1.4.2 for borrowed-descriptor ownership
 ([ADR 0032](../../docs/decisions/0032-bun-descriptor-ownership.md)). Updating the application
-Dockerfile does not update the independently pinned development runtime. Before deploying
-this cutover, the dotfiles environment owner must publish an environment with the corrected
+Dockerfile does not update the independently pinned disposable development runtime. Before
+deploying numbered previews, the dotfiles environment owner must publish an environment with corrected
 Bun and its reviewed immutable digest must replace `environment-image.txt`; do not substitute
 an unverified digest or copy Bun from the application layer. Until that dependency is met,
 an older environment is refused before the existing service is stopped. Host-side source
 builds and live worktrees also require the corrected Bun; changing source pins does not
 upgrade installed tools or authorize a service restart.
 
-Both builds and an offline activation/application-import probe complete before
-the existing service is stopped. The probe checks application ownership, `omp`/`code`
+For numbered previews, both builds and an offline activation/application-import probe
+complete before the existing service is stopped. The probe checks application ownership, `omp`/`code`
 availability, the activated user/home, Bun compatibility and the real protocol import.
 Invalid pins, incompatible runtimes and failed probes leave the running preview alone.
 After preflight, deployment announces
@@ -77,6 +76,15 @@ identity files and ordinary canvas data stay in the same volume; no production d
 seeded into integrated development. The resolved configuration is mode-private and removed
 on exit, never printed. Existing host proxy configuration remains operator-owned.
 
+`deploy-dev.sh` builds the ordinary application directly as `<project>:local`, never the
+shared `manifold:local` tag. It requires explicit `MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID`
+and `MANIFOLD_DEV_SPAWN_AGENT=0`. Build and final Compose validation precede replacement.
+Its **retained** lifecycle stops and updates only `manifold`, with `--no-deps`: no terminal
+retire/resume, recursive ownership rewrite, spoke compilation, build-stamp writes or
+supervisor restart. The existing named volume must already exist; missing data fails closed.
+The resolved Compose configuration stays in a private `/dev/shm` directory and is removed
+on exit, not persisted or printed. The environment digest is irrelevant to this hub path.
+
 `down` and `url` do not need the environment pin. Teardown removes the preview's
 base and final tags, not the shared environment image. No global environment
 cache pruning is performed.
@@ -85,11 +93,12 @@ The independent CI job runs `bun scripts/verify-preview-environment.ts` with a
 private local deployment fixture, real Docker/Compose, SDK clients and Chromium.
 It exercises root-to-developer migration, native terminal interaction and
 reattachment, home recreation and non-disruptive preflight refusals. Pass `--integrated`
-to exercise the actual `deploy-dev.sh` path with a unique `manifold-dev-N` project,
-private checkout, loopback port and volume; no existing development stack is selected.
-Both modes use real Docker, image activation, protocol probes and lifecycle actions.
-Only the fixture's fixed host-service calls to Caddy and systemd are shimmed; the optional
-external spoke is not configured. Run both modes before shipping composition changes:
+to exercise server-only retained replacement through the actual `deploy-dev.sh` with a unique
+`manifold-dev-N` project, private checkout, loopback port and volume. It checks persisted
+canvas/identity, unchanged nonstandard data ownership and network selection, no local owner,
+and non-disruptive configuration refusals with the disposable pin/lifecycle helper absent.
+No existing development stack is selected. Only fixed host-service calls to Caddy/systemd
+are shimmed. Run both modes before shipping composition changes:
 
 ```sh
 bun scripts/verify-preview-environment.ts
@@ -178,19 +187,17 @@ The CLI also reads this file; file values override inherited environment values.
   production assertion signing key is always excluded so every preview generates its own.
 - `PREVIEW_PORT_RANGE`: default `7920-7999`; live servers use routed port + 1000.
 - `PREVIEW_ROUTER_PORT`: default `7900`; change the public proxy and ask URL to match.
-- `MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID`: optional opaque enrolled native service-owner ID,
-  forwarded to the existing dev hub; never a machine-name lookup or automatic fallback.
-- `MANIFOLD_DEV_SPAWN_AGENT`: optional `0` or `1`, overriding the dev checkout's setting.
-  Use `0` with the [native execution-only profile](../../docs/SELF-HOST.md#explicit-remote-execution)
-  so the existing container remains a hub, not an unconfined execution substitute.
-- `MANIFOLD_DEV_SPOKE_UNIT`: optional user unit; unset skips the dev spoke rebuild.
-- `MANIFOLD_DEV_SPOKE_BINARY`: default `$HOME/.local/share/manifold-dev-agent/manifold-agent`.
-- `MANIFOLD_DEV_SPOKE_ENV`: build stamp file; default `$HOME/.config/manifold/dev/agent.env`.
+- `MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID`: required opaque enrolled native service-owner ID
+  for shared development; never a machine-name lookup or automatic fallback.
+- `MANIFOLD_DEV_SPAWN_AGENT`: required literal `0`. The [native execution-only
+  profile](../../docs/SELF-HOST.md#explicit-remote-execution) owns execution; the hub cannot substitute.
 
 The native profile's owner and transport are activated from their pinned declaration, not
-rebuilt from the preview checkout. Leave the legacy `MANIFOLD_DEV_SPOKE_*` settings unset after
-the explicitly drained, positively empty migration to that profile. Hub deployment retains
-the existing Compose project and `/data` volume and does not restart the native owner.
+rebuilt from the preview checkout. Remove obsolete `MANIFOLD_DEV_SPOKE_*` entries from the
+public configuration; they are no longer accepted. Before native startup, explicitly retire
+the old owner using the operation below. Native activation must fail closed while either
+declared old user supervisor is active, enabled/restartable, or its user-manager state
+cannot be proved. Activation is not permission to stop or mask those supervisors.
 
 Production browser identity is the normal preview admission path. Set
 `MANIFOLD_PREVIEW_DOMAIN=<domain>` on the production manifold instance whose public URL is
@@ -208,7 +215,7 @@ handoff through its ordinary public URL.
 
 Set `PREVIEW_HOME` in the invoking environment, not inside its own env file. The dev
 checkout keeps its existing Compose project, data and host-proxy configuration;
-`dev <sha>` replaces only its `manifold` service through the shared development-image path.
+`dev <sha>` replaces only its `manifold` service through the retained server-only application path.
 Create `preview` and `*` DNS A records pointing to the host's public address.
 In the operator-owned public Caddy configuration **outside this repository**, substitute
 `<domain>` and add the global option to your existing global block:
@@ -273,35 +280,66 @@ Observe live processes with `journalctl --user -u manifold-live-feature` and res
 with `systemctl --user restart manifold-live-feature`. Install worktree dependencies
 with `bun install --frozen-lockfile` before `live`; source changes update without redeploy.
 
-### Development spoke build skew
+### Retire an old development spoke before native activation
 
-The optional `MANIFOLD_DEV_SPOKE_UNIT` restart updates only the network transport.
-Its successful `welcome` is not evidence that the separately supervised terminal host
-adopted the new build. Transport replacement intentionally preserves the old host and
-all of its PTYs, so host-side features (including terminal mode snapshot tracking) can
-remain on an older build even while the hub and transport report the new revision.
-The deployment prints that distinction explicitly; use `dev-hub` for terminals in the
-newly composed environment. Host `dev-01` terminals are a different machine and do not
-inherit the container's tools or host build.
+Run this source-managed operation **only with separate operator authorization**, from the
+stable reviewed checkout with dependencies already installed. It is not a `dev` receiver verb.
+Run as the user owning the two old user services, with the existing hub container accessible,
+a private mode-0700 runtime directory, and Bun, Docker, jq, flock and systemctl available:
 
-On 2026-09-07, read-only inspection found development transport `0.14.0` paired with
-terminal host `0.7.0+9.g494973f` (an old deleted executable); its two live terminals
-prevent an empty-host upgrade. This is a deployment hold, not permission to kill them.
-The host service definitions and restart policy are owned by dotfiles, not this tooling.
+```sh
+bash infra/previews/retire-spoke.sh \
+  --container "$DEV_HUB_CONTAINER" \
+  --machine-id "$OLD_MACHINE_ID" \
+  --terminal-host-id "$OLD_TERMINAL_HOST_ID" \
+  --terminal-host-unit "$OLD_TERMINAL_HOST_UNIT" \
+  --transport-unit "$OLD_TRANSPORT_UNIT" \
+  --socket "$OLD_TERMINAL_HOST_SOCKET" \
+  --runtime-dir "$XDG_RUNTIME_DIR"
+```
 
-Safe host maintenance is a separate bounded operation: update the host binary without
-signalling the current process, close admission with `core.machines.drain`, then use the
-local terminal-host `status_request` to inspect the retained inventory. Wait only to a
-declared deadline for workloads to finish normally. Request `shutdown_request` through
-that same local protocol; only its atomic `shutting_down` acceptance proves draining and
-zero retained terminals. `shutdown_refused` (including exited-but-retained terminals),
-timeout or an unreachable host is a visible hold: restore admission if abandoning the
-maintenance attempt, report the remaining terminal IDs, and do not escalate to a signal.
-After an accepted shutdown, the dotfiles-owned supervisor can start the updated host;
-confirm its new build and transport attachment before reopening admission.
-Do not use `systemctl restart` on an occupied terminal-host unit, cgroup teardown or
-container recreation as a shortcut. Integrated `dev-hub` replacement is separately
-announced and explicitly retires only that container machine's terminals.
+All arguments are explicit **public references**, not credentials or discovered names.
+Review the machine and live terminal-host identities, the exact `.service` units and the
+absolute socket before invoking it. The container must be the existing owning dev hub;
+its admission endpoint is `http://127.0.0.1:7777` and key reference `/data/owner.key`.
+The transport must be genuinely non-owning and independently supervised: distinct PID/cgroup,
+no owner beneath its cgroup, and no stop-propagating dependencies. Both old services must
+initially be proved running; uncertain or already-partially-retired state is a manual hold.
+Do not concurrently change/activate unit definitions, start replacement owners or reopen admission.
+
+The helper bundles **only public maintenance CLI source** in the private runtime directory
+and streams it into the existing container. This also supports containers predating
+`--maintenance`, without invoking an old main entrypoint that could ignore the flag.
+Only that container reads its owner key. No key/token is exported, logged or copied;
+neither the retained executable nor any credential/data file is rewritten.
+
+It closes machine admission using the merged `manifold-agent --maintenance` implementation.
+Busy terminal inventory, unavailable/unknown work, or an identity mismatch holds without
+stopping an owner. An empty terminal list is not job-idle proof. After drain confirms the
+named host, it stops only the non-owning transport, then uses the local observer socket for
+the named owner's atomic drained-and-empty shutdown. Jobs/services and retained terminal
+entries must finish or be resolved through their governed controls; this command never
+kills, cancels, force-retires, retries or escalates them.
+
+Only the exact successful `shutting_down` identity acknowledgement permits stopping and
+disabling the two old supervisors. Actual loaded/inactive/dead, PID-zero, disabled state is
+checked afterward: a successful `systemctl disable` exit alone is insufficient, including
+with `Restart=always`. A shutdown refusal, mismatch, disconnect or timeout attempts to restore
+the previously running transport, but **leaves admission closed**. Failed recovery or final
+supervisor proof is a visible hold, never permission to activate native execution.
+
+The helper never invokes Nix, activates a native profile, deploys a hub/production, changes
+credentials, or reopens admission. Only a proved empty shutdown and stopped/disabled old
+supervisors permit the separate native-owner startup. Preserve identity, journals and data;
+review the source-owned native declaration and its fail-closed old-unit guard before activation.
+Hub deployment itself uses the retained path and does not perform this retirement.
+
+Offline lifecycle regression scenarios (fixture credentials, loopback/Unix protocol peers and
+a stateful supervisor boundary; no real user manager) are:
+
+```sh
+bun test packages/agent/test/retire-spoke.test.ts packages/agent/src/maintenance.test.ts
+```
 
 ## Disk / gc
 
