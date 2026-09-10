@@ -555,6 +555,16 @@ export class MachineJobOwner {
     });
   }
 
+  private publishInstallationChange(command: Extract<JobCommand, { type: "install" }>): void {
+    if (this.resources.refresh({ tools: [], anchors: [], services: [] })) {
+      this.publishResources();
+      const changed = this.installKey(command.pluginId, command.installationRevision);
+      for (const [key, installation] of this.installs)
+        if (key !== changed) this.publishInstallation(installation.command);
+    }
+    this.publishInstallation(command);
+  }
+
   private configureServices(raw: ServiceConfiguration): void {
     const configuration = ServiceConfigurationSchema.parse(raw);
     if (
@@ -694,17 +704,16 @@ export class MachineJobOwner {
     if (subject.kind === "tunnel") {
       const tunnel = this.serviceTunnels.get(subject.channelId);
       const command = tunnel?.command;
-      return (
-        !!command &&
-        !tunnel.signal.aborted &&
-        command.serviceId === request.serviceId &&
-        command.revision === request.revision &&
-        command.policySha256 === policySha256 &&
-        command.operationIds.includes(request.operationId) &&
-        this.serviceAvailable(policy, [request.operationId], this.resources.snapshot(), new Set())
-      );
-    }
-    if (subject.kind !== "job") {
+      if (
+        !command ||
+        tunnel.signal.aborted ||
+        command.serviceId !== request.serviceId ||
+        command.revision !== request.revision ||
+        command.policySha256 !== policySha256 ||
+        !command.operationIds.includes(request.operationId)
+      )
+        return false;
+    } else if (subject.kind !== "job") {
       const pending = this.directServiceCalls.get(subject.requestId);
       if (
         !pending ||
@@ -716,8 +725,6 @@ export class MachineJobOwner {
         pending.command.policySha256 !== policySha256
       )
         return false;
-      if (this.resources.refresh({ tools: [], anchors: [], services: [request.serviceId] }))
-        this.publishResources();
     } else {
       const job = this.jobs.get(subject.jobId);
       const installation =
@@ -752,6 +759,17 @@ export class MachineJobOwner {
         )
       )
         return false;
+    }
+    if (subject.kind !== "job") {
+      const runtime = policy.runtime;
+      const installation =
+        runtime &&
+        this.installs.get(this.installKey(runtime.pluginId, runtime.installationRevision));
+      if (runtime) {
+        if (!installation?.command.machine.operations[runtime.operationId]) return false;
+        this.refreshOperationResources(installation, runtime.operationId);
+      } else if (this.resources.refresh({ tools: [], anchors: [], services: [request.serviceId] }))
+        this.publishResources();
     }
     const inventory = this.resources.snapshot();
     return (
@@ -1592,7 +1610,7 @@ export class MachineJobOwner {
           }
         }
       }
-      this.publishInstallation(command);
+      this.publishInstallationChange(command);
       return;
     }
     if (existing) {
@@ -1681,7 +1699,7 @@ export class MachineJobOwner {
         );
       }
     }
-    this.publishInstallation(command);
+    this.publishInstallationChange(command);
   }
 
   /** Private in-process handoff from the sole TerminalHost, never a job RPC command. */

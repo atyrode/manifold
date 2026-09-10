@@ -2,6 +2,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { createHash, generateKeyPairSync, sign, verify, createPublicKey } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import {
+  chmodSync,
   closeSync,
   lstatSync,
   mkdtempSync,
@@ -1639,6 +1640,311 @@ test.skipIf(!linux || !cgroupRoot)(
       for (const directory of held) directory.close();
       await server.stop(true);
       rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+async function resourceServiceOwner(scope: "job" | "instance") {
+  const root = mkdtempSync(join(tmpdir(), "owner-resource-service-"));
+  const held: HeldDirectory[] = [];
+  mkdirSync(join(root, "private"), { mode: 0o700 });
+  mkdirSync(join(root, "tool"), { mode: 0o700 });
+  const toolPath = join(root, "tool", "helper");
+  writeFileSync(toolPath, "reviewed runtime", { mode: 0o400 });
+  const state = HeldDirectory.openAbsolute(join(root, "private"), { private: true });
+  const tool = HeldDirectory.openAbsolute(join(root, "tool"));
+  const cache = state.openChild("cache", { create: true });
+  const managedState = state.openChild("locations", { create: true });
+  const outputDirectory = state.openChild("outputs", { create: true });
+  const delegatedCgroup = HeldDirectory.openAbsolute(cgroupRoot!);
+  held.push(state, tool, cache, managedState, outputDirectory, delegatedCgroup);
+  const outputs = JobOutputStore.open(outputDirectory);
+  const keys = generateKeyPairSync("ed25519");
+  const options = {
+    machineId: "machine",
+    admissionPublicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    cache,
+    managedState,
+    outputs,
+    delegatedCgroup,
+    bubblewrapFd: -1,
+    anchors: {},
+    runtimeTools: { tool: [{ fd: tool.fd, target: "/runtime/tool", writable: false }] },
+    protectedDirectories: [state],
+    artifactAuthority: { origins: [], maxRedirects: 0, timeoutMs: 1000 },
+  };
+  const open = () =>
+    MachineJobOwner.open({
+      ...options,
+      journal: new JobJournal(state.openChild("journal", { create: true })),
+    });
+  let owner = await open();
+  const events: JobEvent[] = [];
+  const attach = () =>
+    owner.attach((event) => {
+      events.push(event);
+      if (event.type === "service_authorize")
+        void owner.execute({
+          type: "service_authorized",
+          subject: event.subject,
+          authorizationId: event.authorizationId,
+          allowed: true,
+        });
+      return true;
+    });
+  let detach = attach();
+  const limits = { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 1024 };
+  const makeInstall = (pluginId: string): Extract<JobCommand, { type: "install" }> => {
+    const bytes = Buffer.from(`#!/bin/sh\n# ${pluginId}\nexit 0\n`);
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    return {
+      type: "install",
+      pluginId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+      artifact: { bundleFile: "worker", data: bytes.toString("base64") },
+      resourceBindings: { tools: {}, anchors: {}, services: {} },
+      machine: {
+        requiresResourceBindings: true,
+        artifacts: {
+          [`linux-${process.arch}`]: {
+            bundleFile: "worker",
+            sha256: hash,
+            format: "raw",
+            entry: ["worker"],
+            entrySha256: hash,
+            maxBytes: bytes.length,
+            maxExpandedBytes: bytes.length,
+            maxMembers: 1,
+          },
+        },
+        locations: {},
+        operations: {
+          [`${pluginId}.run`]: {
+            argv: [],
+            input: {},
+            runtimeTools: [],
+            locations: [],
+            outputs: [],
+            network: "none",
+            limits,
+            stdin: false,
+          },
+        },
+      },
+    };
+  };
+  const provider = makeInstall("fixture.provider");
+  provider.resourceBindings!.tools.tool = owner.identity.resources!.tools.tool!;
+  Object.assign(provider.machine.operations["fixture.provider.run"]!, {
+    runtimeTools: ["tool"],
+    network: "host",
+    providesService: true,
+    inputFiles: { bearer: { generated: "service-bearer" } },
+  });
+  const policy: ServicePolicy = {
+    serviceId: "fixture.runtime",
+    revision: "r1",
+    maxConcurrent: 1,
+    runtime: {
+      scope,
+      pluginId: provider.pluginId,
+      operationId: "fixture.provider.run",
+      installationRevision: "r1",
+      artifactSha256: provider.artifactSha256,
+      resourceBindingDigest: jobDigest(provider.resourceBindings),
+      input: {},
+    },
+    operations: {
+      read: {
+        readable: true,
+        method: "GET",
+        path: "/items",
+        input: {},
+        query: {},
+        body: [],
+        timeoutMs: 1000,
+        maxRequestBytes: 1024,
+        maxResponseBytes: 1024,
+        maxResultBytes: 1024,
+        response: { kind: "projected-json", fields: [["value"]], maxArrayItems: 1 },
+      },
+      generate: {
+        kind: "http-proxy",
+        method: "POST",
+        path: "/generate",
+        request: { kind: "json", disclosure: "full" },
+        response: {
+          kind: "stream",
+          disclosure: "full",
+          contentTypes: ["application/json"],
+          headers: [],
+        },
+        timeoutMs: 1000,
+        maxRequestBytes: 1024,
+        maxResponseBytes: 1024,
+      },
+    },
+  };
+  if (scope === "job") delete policy.operations.read;
+  const configuration = { revision: jobDigest([policy]), policies: [policy] };
+  const consumer = makeInstall("fixture.consumer");
+  consumer.resourceBindings!.services[policy.serviceId] = jobDigest(policy);
+  consumer.machine.operations["fixture.consumer.run"]!.services = [
+    { serviceId: policy.serviceId, revision: policy.revision, operationIds: ["generate"] },
+  ];
+  try {
+    await owner.execute(provider);
+    await owner.execute({ type: "configure_services", configuration });
+    await owner.execute(consumer);
+    expect(owner.identity.resources!.services[policy.serviceId]).toBe(jobDigest(policy));
+  } catch (error) {
+    detach();
+    await owner.shutdown();
+    outputs.close();
+    for (const directory of held.reverse()) directory.close();
+    rmSync(root, { recursive: true, force: true });
+    throw error;
+  }
+  return {
+    get owner() {
+      return owner;
+    },
+    events,
+    policy,
+    provider,
+    consumer,
+    mutateTool() {
+      chmodSync(toolPath, 0o600);
+      writeFileSync(toolPath, "unpromoted replacement");
+      chmodSync(toolPath, 0o400);
+    },
+    async recoverWithoutProviderArtifact() {
+      detach();
+      await owner.shutdown();
+      const artifact = Object.values(provider.machine.artifacts)[0]!;
+      cache.unlink(artifactCacheKey(artifact, artifact.entrySha256));
+      owner = await open();
+      detach = attach();
+      await owner.execute({ type: "configure_services", configuration });
+      await owner.execute({
+        type: "owner_challenge",
+        machineId: options.machineId,
+        admissionPublicKey: options.admissionPublicKey,
+        nonce: "recovered",
+        serverEpoch: "hub",
+      });
+      await owner.execute({ type: "drain", draining: false });
+    },
+    async close() {
+      detach();
+      await owner.shutdown();
+      outputs.close();
+      for (const directory of held.reverse()) directory.close();
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+test.skipIf(!linux || !cgroupRoot)(
+  "reacquired runtime artifacts restore dependent service readiness without new configuration",
+  async () => {
+    const fixture = await resourceServiceOwner("job");
+    try {
+      await fixture.recoverWithoutProviderArtifact();
+      expect(fixture.owner.identity.resources!.services[fixture.policy.serviceId]).toBeUndefined();
+      expect(
+        fixture.events.findLast(
+          (event) => event.type === "installed" && event.pluginId === fixture.consumer.pluginId,
+        ),
+      ).toMatchObject({
+        resources: {
+          operations: [
+            {
+              operationId: "fixture.consumer.run",
+              available: false,
+              reason: "services_unavailable",
+            },
+          ],
+        },
+      });
+      fixture.events.length = 0;
+      await fixture.owner.execute(fixture.provider);
+      expect(fixture.owner.identity.resources!.services[fixture.policy.serviceId]).toBe(
+        jobDigest(fixture.policy),
+      );
+      expect(
+        fixture.events.findLast(
+          (event) => event.type === "installed" && event.pluginId === fixture.consumer.pluginId,
+        ),
+      ).toMatchObject({
+        resources: { operations: [{ operationId: "fixture.consumer.run", available: true }] },
+      });
+    } finally {
+      await fixture.close();
+    }
+  },
+);
+
+test.skipIf(!linux || !cgroupRoot).each(["read", "tunnel"] as const)(
+  "%s service authority refreshes a changed runtime before seeking a hub grant",
+  async (mode) => {
+    const fixture = await resourceServiceOwner("instance");
+    try {
+      const call = async () => {
+        if (mode === "read") {
+          const requestId = `read-${fixture.events.length}`;
+          await fixture.owner.execute({
+            type: "service_read",
+            requestId,
+            machineId: "machine",
+            serviceId: fixture.policy.serviceId,
+            revision: fixture.policy.revision,
+            policySha256: jobDigest(fixture.policy),
+            operationId: "read",
+            input: {},
+          });
+          const result = fixture.events.findLast(
+            (event) => event.type === "service_read_result" && event.requestId === requestId,
+          );
+          if (result?.type !== "service_read_result") throw new Error("missing_service_result");
+          return result.reply.ok ? "ok" : result.reply.refusal;
+        }
+        const channelId = `tunnel-${fixture.events.length}`;
+        await fixture.owner.execute({
+          type: "service_tunnel_open",
+          channelId,
+          serviceId: fixture.policy.serviceId,
+          revision: fixture.policy.revision,
+          policySha256: jobDigest(fixture.policy),
+          operationIds: ["generate"],
+        });
+        const ready = fixture.events.findLast(
+          (event) => event.type === "service_tunnel_ready" && event.channelId === channelId,
+        );
+        if (ready?.type !== "service_tunnel_ready" || !ready.endpoint)
+          throw new Error("missing_service_tunnel");
+        const response = await fetch(`${ready.endpoint.url}/generate`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${ready.endpoint.bearer}`,
+            "content-type": "application/json",
+          },
+          body: "{}",
+        });
+        await response.arrayBuffer();
+        return response.status;
+      };
+      // Authorization precedes endpoint resolution, so no workload needs to be spawned.
+      await call();
+      expect(fixture.events.some((event) => event.type === "service_authorize")).toBe(true);
+      fixture.events.length = 0;
+      fixture.mutateTool();
+      expect(await call()).toBe(mode === "read" ? "service_unauthorized" : 403);
+      expect(fixture.events.some((event) => event.type === "service_authorize")).toBe(false);
+      expect(fixture.owner.identity.resources!.services[fixture.policy.serviceId]).toBeUndefined();
+    } finally {
+      await fixture.close();
     }
   },
 );
