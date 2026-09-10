@@ -8,6 +8,8 @@
     "./web": "./src/web.ts",
     "./ui": "./src/ui.ts",
     "./pack": "./src/pack.ts",
+    "./hub": "./src/hub.ts",
+    "./install": "./src/install.ts",
     "./artifacts": "./src/artifacts.ts"
   },
   "bin": {

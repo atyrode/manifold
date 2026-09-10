@@ -258,22 +258,96 @@ have `restartIfChanged=false`, `stopIfChanged=false`, `Restart=on-failure` and
 atomic maintenance shutdown stays stopped. Old immutable store paths must remain rooted
 until the retained owner exits; do not garbage-collect its old system generation mid-session.
 Changing a unit definition does not mean the retained owner is running that new version.
-Hub/transport protocol 30 is independent of native owner RPC 29. A compatible retained owner
+Hub/transport protocol 30 is independent of native owner RPC 2. A compatible retained owner
 keeps its work through a transport upgrade; its missing IPC-2 execution declaration cannot
 be treated as permission to create an unconfined shell.
 
-Before changing owner configuration, output backing, identity, package or supervisor:
-close admission with `core.machines.drain`, let jobs/services finish or explicitly cancel
-them through their governed doors, remove retained terminal entries, and use the existing
-private terminal-host `shutdown_request`. Its atomic job/terminal refusal is a **hold**,
-not permission to signal, force restart, replace a container or infer idle from zero PTYs.
-Do not remove the profile or change its mount while retained work exists. After acknowledged
-shutdown, retain journals/workload storage, explicitly retire only the old reviewed
-`owner-template.json` / `job-owner/config.json` and supervision marker if that configuration
-is actually changing, then activate and `systemctl start manifold-owner`.
-Reopen drain explicitly after owner proof/readiness. A lost enrollment token or conflicting
-machine name refuses native bootstrap; recover through the supported enrollment authority
-flow, never implicit rotation. No live detached-to-systemd adoption is implemented.
+The supported command is `manifold-agent --maintenance`; it does not run the transport,
+acquire its seat, discover machines or credential files, retire terminals, cancel jobs,
+send signals, stop a supervisor, or automatically retry/reopen. Run `manifold-agent
+--maintenance --help` for its argument contract. Before changing owner configuration,
+output backing, identity, package or supervisor, explicitly bind maintenance to the reviewed
+machine and owner process:
+
+```sh
+manifold-agent --maintenance drain \
+  --hub http://127.0.0.1:7777 --machine-id "$MACHINE_ID" \
+  --owner-key-file /var/lib/manifold/owner.key
+
+manifold-agent --maintenance shutdown \
+  --socket /var/lib/manifold/terminal-host/host.sock \
+  --terminal-host-id "$TERMINAL_HOST_ID"
+```
+
+Run drain/reopen where the named owner-key file already resides and is readable by the
+authorized Manifold process. Key **values**, ambient key discovery and credential-bearing
+URLs are not accepted; do not extract a key into an argument, environment variable, shell
+substitution, host file or log. Shutdown needs no hub key: run it on the explicitly selected
+execution host with access to that owner's private Unix socket. Bind `TERMINAL_HOST_ID` to
+the reviewed owner's identity reported by successful drain, not to an automatically selected
+replacement. Shutdown checks that identity and a supported maintenance protocol via status
+on the same observer connection before making the atomic shutdown request. IPC 1 and IPC 2
+share these maintenance frames; accepting an older owner's empty-shutdown acknowledgment
+does not enable unconfined execution. Unknown protocols hold.
+
+For the source-shipping Docker image, use the identical CLI **inside the owning container**;
+the credential read stays inside Manifold:
+
+```sh
+docker exec "$CONTAINER_ID" bun packages/agent/src/main.ts --maintenance drain \
+  --hub http://127.0.0.1:7777 --machine-id "$MACHINE_ID" --owner-key-file /data/owner.key
+docker exec "$CONTAINER_ID" bun packages/agent/src/main.ts --maintenance shutdown \
+  --socket "$TERMINAL_HOST_SOCKET" --terminal-host-id "$TERMINAL_HOST_ID"
+```
+
+If the retained container predates this CLI, build the reviewed source into a public Bun
+bundle and stream that code into the same container. This changes no deployed files and
+does not move the credential out of its existing custody:
+
+```sh
+bun build --target bun packages/agent/src/main.ts --outfile /tmp/manifold-maintenance.js
+docker exec -i "$CONTAINER_ID" bun - --maintenance drain \
+  --hub http://127.0.0.1:7777 --machine-id "$MACHINE_ID" \
+  --owner-key-file /data/owner.key < /tmp/manifold-maintenance.js
+```
+
+These are explicit existing container/socket references, not discovery or a private preview
+retirement helper. They do not authorize container replacement or activation.
+
+Each successful command exits 0 and prints one JSON line. Drain/reopen report
+`{ok:true,command,machineId,terminalHostId,draining,terminalIds}`; drain proves the admission
+latch, **not idle or shutdown**, even when `terminalIds` is empty. Let retained jobs/services
+finish or explicitly resolve them through their governed doors, and explicitly resolve
+retained terminal entries. Only shutdown's matching
+`{ok:true,command:"shutdown",terminalHostId}` acknowledgement proves the owner accepted the
+atomic drained-and-empty check. A preceding status report cannot substitute for that check.
+
+Failures exit 1 with one stderr JSON line containing `ok:false`, `hold:true`, a stable
+`reason`, and the valid command when known; typed refusal IDs/rules/status may be included,
+but no raw owner frames, exception text or remote denial messages are printed. `not_draining`,
+`terminals_retained` and `jobs_retained` are **HOLD**, as are identity/protocol mismatch,
+disconnect, invalid response and the bounded 30-second timeout. Disconnect is not a shutdown
+acknowledgement. A failed drain may already have persisted the admission latch: keep the
+current owner and workload intact, do not infer a rollback, and do not automatically retry,
+reopen, signal, force restart or replace a container. Do not remove the profile or change
+its mount while retained work exists.
+
+After acknowledged shutdown, retain journals/workload storage, explicitly retire only the
+old reviewed `owner-template.json` / `job-owner/config.json` and supervision marker if that
+configuration is actually changing, then activate and `systemctl start manifold-owner`.
+Reopen explicitly only after owner proof/readiness:
+
+```sh
+manifold-agent --maintenance reopen \
+  --hub http://127.0.0.1:7777 --machine-id "$MACHINE_ID" \
+  --owner-key-file /var/lib/manifold/owner.key
+```
+
+For container-local reopen, use the same `docker exec` invocation as drain with `reopen`
+instead. A lost enrollment token or conflicting machine name refuses native bootstrap;
+recover through the supported enrollment authority flow, never implicit rotation. No live
+detached-to-systemd adoption is implemented. Delivering this source is not activation
+authorization or evidence that a live cutover has occurred.
 
 Before preview activation Main/integration must exercise this profile on **disposable**
 Linux owners: build/evaluate the pinned module and both binaries; prove actual namespace,
@@ -286,12 +360,17 @@ and atomically shut down before owner restart; confirm output/journal recovery o
 honest loss of unsealed tmpfs scratch. A successful build or online terminal transport alone
 does not prove native readiness. This profile's source is not a claim of runtime verification.
 
-The flake's disposable NixOS acceptance check boots the declared services and executes a
-hash-pinned worker with its declared static runtime. It verifies that hub control state is
-not visible inside the job, private control-file modes hold, and exit status and sealed
-output survive hub/transport restarts and a positively drained owner replacement. It also
-activates a changed configuration and proves the incumbent PID and private configuration
-remain unchanged when that drift is refused.
+The flake's disposable NixOS acceptance check is configured to boot the declared services
+and execute a hash-pinned worker with its declared static runtime. Its assertions cover
+control-state exclusion, private control-file modes, and exit status/sealed output surviving
+hub/transport restarts and positively drained owner replacement. It uses the packaged
+`manifold-agent --maintenance` entry point for drain, explicit reopen and atomic shutdown,
+including a live retained-job `jobs_retained` HOLD with unchanged owner PID, closed admission
+and a still-running workload. The worker must then finish normally with its expected result;
+an empty process listing is not substituted for that evidence. It also attempts changed
+configuration activation and requires the incumbent PID and private configuration to remain
+unchanged on refusal. These describe the acceptance assertions, not a claim they have run
+for the current revision.
 
 A second node exercises systemd credential delivery from root-owned private custody.
 It verifies source bytes and metadata survive normal transport replacement, the delivered

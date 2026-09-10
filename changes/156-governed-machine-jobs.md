@@ -33,3 +33,8 @@ systemd `LoadCredential` while its original tool retains custody. Unsafe ownersh
 permissions, ACL write masks and path indirection refuse transport startup; no token
 copy, rotation or owner restart is performed. The packaged VM check covers private
 read-only delivery, custody refusals and retained work across transport replacement.
+Packaged `manifold-agent --maintenance` commands accept explicit owner-key file references
+for drain/reopen and bind atomic shutdown to an explicit socket and terminal-host identity.
+Credential reads stay inside Manifold, including container-local invocations; retained work,
+unproved owner identity and missing acknowledgements HOLD without signals, supervisor stops,
+automatic reopen or credential-bearing diagnostics. Source delivery does not activate a cutover.
