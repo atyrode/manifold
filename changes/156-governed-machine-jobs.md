@@ -28,3 +28,8 @@ Native NixOS startup enables delegated controllers from the owner's main subgrou
 not an `ExecStartPre` process that prevents systemd from starting its executor.
 The disposable module check covers authenticated native readiness and retained
 machine identity and owner PID across hub and transport restarts.
+Native NixOS execution can consume an explicitly declared enrollment credential through
+systemd `LoadCredential` while its original tool retains custody. Unsafe ownership,
+permissions, ACL write masks and path indirection refuse transport startup; no token
+copy, rotation or owner restart is performed. The packaged VM check covers private
+read-only delivery, custody refusals and retained work across transport replacement.
