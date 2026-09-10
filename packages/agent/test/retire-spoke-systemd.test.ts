@@ -88,6 +88,7 @@ test.skipIf(!enabled)(
           : null;
       let originalPid: string | undefined;
       let originalGroup: string | undefined;
+      const failures: unknown[] = [];
       try {
         const executable = copyDirectory
           ? join(copyDirectory, "manifold-agent")
@@ -153,43 +154,73 @@ test.skipIf(!enabled)(
         ).toBe("active");
         if (approved) {
           const policy = await command([
-            "bash", "-c",
+            "bash",
+            "-c",
             'source "$1"; transport_unit=$2; require_transport_kill_policy',
-            "retirement-kill-policy", `${repo}/infra/previews/retire-spoke.sh`, unit,
+            "retirement-kill-policy",
+            `${repo}/infra/previews/retire-spoke.sh`,
+            unit,
           ]);
           expect(policy.code).toBe(scenario === "kill-none" ? 1 : 0);
           await checked(["systemctl", "--user", "stop", unit]);
           const exited = await command([
-            "bash", "-c", 'source "$1"; transport_exited "$2" "$3"',
-            "retirement-kernel-exit", `${repo}/infra/previews/retire-spoke.sh`, pid, cgroup,
+            "bash",
+            "-c",
+            'source "$1"; transport_exited "$2" "$3"',
+            "retirement-kernel-exit",
+            `${repo}/infra/previews/retire-spoke.sh`,
+            pid,
+            cgroup,
           ]);
           expect(exited.code).toBe(scenario === "kill-none" ? 1 : 0);
           if (scenario === "kill-none") {
-            expect(await checked(["systemctl", "--user", "show", unit, "--property=MainPID", "--value"])).toBe("0");
+            expect(
+              await checked(["systemctl", "--user", "show", unit, "--property=MainPID", "--value"]),
+            ).toBe("0");
             expect(readFileSync(`/sys/fs/cgroup${cgroup}/cgroup.procs`, "utf8").trim()).toBe(pid);
           }
         }
+      } catch (error) {
+        failures.push(error);
       } finally {
         // This exact UUID service belongs to this fixture and runs only inert code.
         try {
           // KillMode=none can leave a process in an inactive unit. Explicitly kill
           // ONLY this UUID fixture's cgroup; alarm(60) also bounds hard interruption.
-          await command(["systemctl", "--user", "kill", "--signal=SIGKILL", "--kill-whom=all", unit]);
+          await command([
+            "systemctl",
+            "--user",
+            "kill",
+            "--signal=SIGKILL",
+            "--kill-whom=all",
+            unit,
+          ]);
           await command(["systemctl", "--user", "stop", unit]);
           // Real kernel cgroup teardown cannot be advanced by Bun's fake clock.
           const deadline = Date.now() + 10_000;
           while (
             (originalPid && existsSync(`/proc/${originalPid}`)) ||
-            (originalGroup && existsSync(originalGroup) &&
+            (originalGroup &&
+              existsSync(originalGroup) &&
               !/^populated 0$/m.test(readFileSync(join(originalGroup, "cgroup.events"), "utf8")))
           ) {
-            if (Date.now() >= deadline) throw new Error(`Inert fixture cleanup did not empty ${unit}`);
+            if (Date.now() >= deadline) {
+              failures.push(new Error(`Inert fixture cleanup did not empty ${unit}`));
+              break;
+            }
             await Bun.sleep(20);
           }
-        } finally {
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
           if (copyDirectory) rmSync(copyDirectory, { recursive: true, force: true });
+        } catch (error) {
+          failures.push(error);
         }
       }
+      if (failures.length)
+        throw new AggregateError(failures, `Retirement fixture failed: ${scenario}`);
     }
   },
   180_000,

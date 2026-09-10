@@ -1118,7 +1118,14 @@ async function teardown(): Promise<void> {
       ],
       [
         "network",
-        ["network", "ls", "-q", "--no-trunc", "--filter", `label=com.docker.compose.project=${project()}`],
+        [
+          "network",
+          "ls",
+          "-q",
+          "--no-trunc",
+          "--filter",
+          `label=com.docker.compose.project=${project()}`,
+        ],
         ["network", "rm"],
       ],
       ["volume", ["volume", "ls", "-q", "--filter", `name=^${project()}_`], ["volume", "rm"]],
@@ -1130,7 +1137,11 @@ async function teardown(): Promise<void> {
       }
       const owned = new Set([
         ...found.out.trim().split(/\s+/).filter(Boolean),
-        ...(kind === "volume" ? ownedTopologyVolumes : kind === "network" ? ownedTopologyNetworks : []),
+        ...(kind === "volume"
+          ? ownedTopologyVolumes
+          : kind === "network"
+            ? ownedTopologyNetworks
+            : []),
       ]);
       for (const id of owned) {
         if ((await docker([...removal, id], { allowFailure: true })).code !== 0)
@@ -1265,7 +1276,8 @@ console.log(JSON.stringify({
       },
       {
         name: "actual retained machine differs from desired dev-hub",
-        actual: "services:\n  manifold:\n    environment:\n      MANIFOLD_MACHINE_NAME: other-hub\n",
+        actual:
+          "services:\n  manifold:\n    environment:\n      MANIFOLD_MACHINE_NAME: other-hub\n",
       },
       {
         name: "actual retained selected network differs from desired network",
@@ -1274,7 +1286,8 @@ console.log(JSON.stringify({
       },
       {
         name: "actual retained data root uses the container writable layer",
-        actual: "services:\n  manifold:\n    environment:\n      MANIFOLD_DATA_DIR: /app/other-data\n",
+        actual:
+          "services:\n  manifold:\n    environment:\n      MANIFOLD_DATA_DIR: /app/other-data\n",
         dataDir: "/app/other-data",
       },
       {
@@ -1814,7 +1827,7 @@ console.log(JSON.stringify(rows.sort((a, b) => Number(a.pid) - Number(b.pid))));
     metrics["steps"] = reports;
     metrics["ok"] = failure === undefined;
     writeFileSync(join(evidence, "metrics.json"), JSON.stringify(metrics, null, 2) + "\n");
-    const summary = `## Preview development environment\n\n${failure === undefined ? "PASS" : "FAIL"} — ${((Date.now() - started) / 1000).toFixed(1)} seconds.\n\nScreenshots and nonsecret evidence: \`${evidence}\`.\n\nStorage values are Docker Engine measurements in bytes. Per-image shared/unique sizes and owned volume/container writable bytes are explicit; daemon layer/cache deltas may include concurrent daemon users and are not claimed as exclusively owned. No shared cache or environment-image pruning is performed.\n\n\`\`\`json\n${JSON.stringify(metrics, null, 2)}\n\`\`\`\n`;
+    const summary = `## Preview development environment\n\n${failure === undefined ? "PASS" : "FAIL"} — ${((Date.now() - started) / 1000).toFixed(1)} seconds.\n\n${integrated ? "Nonsecret evidence" : "Screenshots and nonsecret evidence"}: \`${evidence}\`.\n\nStorage values are Docker Engine measurements in bytes. Per-image shared/unique sizes and owned volume/container writable bytes are explicit; daemon layer/cache deltas may include concurrent daemon users and are not claimed as exclusively owned. No shared cache or environment-image pruning is performed.\n\n\`\`\`json\n${JSON.stringify(metrics, null, 2)}\n\`\`\`\n`;
     const summaryPath = process.env["GITHUB_STEP_SUMMARY"];
     if (summaryPath) appendFileSync(summaryPath, summary);
     console.log(summary);
@@ -1825,4 +1838,9 @@ if (failure !== undefined) {
     `preview-environment: FAIL\n${redact(failure instanceof Error ? failure.message : String(failure))}`,
   );
   process.exitCode = 1;
-} else console.log("preview-environment: PASS (screenshots require visual inspection)");
+} else
+  console.log(
+    integrated
+      ? "preview-environment: PASS (retained server-only topology and state preservation)"
+      : "preview-environment: PASS (screenshots require visual inspection)",
+  );

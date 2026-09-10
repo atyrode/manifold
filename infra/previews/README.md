@@ -87,6 +87,10 @@ its existing container configuration explicitly disables local spawning, uses th
 supported ordinary entrypoint without execution overrides or non-data mounts, and
 a credential-free `/proc` probe finds only the PID1 hub and the stock read-only
 healthcheck. Desired replacement settings never prove the old process tree safe.
+Its actual named volume, machine identity and selected networks must match the final
+Compose merge; both generations must use `/data` as the effective application data
+directory. An unused `/data` mount is not persistence proof. Absent or mismatched
+incumbents hold without creating a replacement identity.
 An old default-spawning container, an in-container owner, custom wrappers (including
 Litestream), or unknown process/configuration shapes cause HOLD without stopping it.
 Resolve old execution ownership separately; preserved `/data` cannot preserve PTYs
@@ -106,6 +110,9 @@ to exercise server-only retained replacement through the actual `deploy-dev.sh` 
 `manifold-dev-N` project, private checkout, loopback port and volume. It checks persisted
 canvas/identity, unchanged nonstandard data ownership and network selection, no local owner,
 and non-disruptive configuration refusals with the disposable pin/lifecycle helper absent.
+Actual-incumbent volume, machine, network and writable-layer data-root mismatches, plus
+desired base/final-overlay data-root and network overrides, must leave the original
+container generation, identity, data ownership and canvas state unchanged.
 It also creates an incumbent local owner with live PTYs, requests server-only replacement,
 and requires refusal to preserve its process generation, identity and working terminals.
 No existing development stack is selected. Only fixed host-service calls to Caddy/systemd
@@ -329,8 +336,11 @@ or any owner-mode argument is **unknown and refused**. Legacy owner IPC alone ca
 establish a transport's role; do not infer it from a different PID, cgroup or owner revision.
 Both units must have no external stop propagation, activation edges, exit actions or stop
 hooks. The owner's sole permitted stop-dependent is its proved non-owning transport,
-which is stopped before the owner can exit. Hook lists are checked through typed
-`busctl` replies: an empty-looking `systemctl` rendering is not proof of no commands.
+which is stopped before the owner can exit. Both units and their direct pinning
+dependencies must have `StopWhenUnneeded=no`; otherwise stopping one can implicitly
+terminate its owner or unrelated work. Hook lists are checked through typed `busctl`
+replies: an empty-looking `systemctl` rendering is not proof of no commands.
+The transport requires `KillMode=control-group` or `mixed` and `SendSIGKILL=yes`.
 Distinct PID/cgroup alone is insufficient.
 Both old services must initially be proved running; uncertain or already-partially-retired state is a manual hold.
 Do not concurrently change/activate unit definitions, start replacement owners or reopen admission.
@@ -356,6 +366,9 @@ uniquely owned runtime drop-ins, then checks actual `DropInPaths`, `Restart=no`,
 `RestartForceExitStatus` and unchanged process/invocation identities. This does not stop,
 restart, mask or replace an owner. Overrides are removed only when their inode/content
 still belongs to this operation; original effective restart policies are checked on restoration.
+After transport stop, the original PID must be absent and its original cgroup absent
+or positively unpopulated, including descendants. Manager `MainPID=0` alone never
+authorizes the owner's shutdown or starting a recovery transport.
 
 Only the exact successful `shutting_down` identity acknowledgement permits disabling
 the old supervisors. The helper **never sends a unit-name stop to the owner**, even
@@ -379,13 +392,15 @@ a stateful supervisor boundary; no real user manager) are:
 bun test packages/agent/test/retire-spoke.test.ts packages/agent/src/maintenance.test.ts
 ```
 
-These default fixtures substitute supervisor metadata and explicitly bypass kernel
-transport-role proof; they cannot establish real systemd drop-in reload semantics.
+These default fixtures substitute supervisor metadata and model kernel role/exit
+evidence; they cannot establish real systemd drop-in reload semantics.
 The opt-in kernel fixture builds inert public C code into a root-owned immutable Nix
 output and runs UUID-named, time-limited user services. It exercises the unmodified
 production `/proc`/cgroup proof against a valid transport, a byte-identical copy outside
-the store, an owner-mode argument, different executable bytes, and a hidden child process. It needs Linux cgroup v2,
-a functioning user systemd manager and Nix access to this flake's pinned dependencies:
+the store, an owner-mode argument, different executable bytes, and a hidden child process.
+It also proves that `KillMode=none` can leave a live process behind manager PID-zero
+state and must be refused. It needs Linux cgroup v2, a functioning user systemd manager
+and Nix access to this flake's pinned dependencies:
 
 ```sh
 MANIFOLD_RETIREMENT_SYSTEMD_FIXTURE=1 bun test packages/agent/test/retire-spoke-systemd.test.ts
@@ -393,7 +408,8 @@ MANIFOLD_RETIREMENT_SYSTEMD_FIXTURE=1 bun test packages/agent/test/retire-spoke-
 
 Before activation, a disposable real user-manager handoff fixture must additionally
 exercise `Restart=always` with zero restart delay, `RestartForceExitStatus`, owner and
-transport stop propagation/hooks, a mismatched owner PID, ignored/overridden drop-ins,
+transport stop propagation/hooks, automatic teardown of an owner or direct dependency,
+a surviving `KillMode=none` transport, a mismatched owner PID, ignored/overridden drop-ins,
 policy restoration on refusal, and an unexpected replacement generation. The kernel
 fixture does not exercise that maintenance/restart handshake. No fixture result may
 be inferred from source review, and its inert test artifact is not provenance for an
