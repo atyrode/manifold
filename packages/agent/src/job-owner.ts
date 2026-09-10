@@ -2605,6 +2605,9 @@ export class MachineJobOwner {
   }
   installedResources(pluginId: string, revision: string): JobInstallationResources {
     const installation = this.installs.get(this.installKey(pluginId, revision));
+    // Publishing observations must not block the control loop on tool trees.
+    // Admission and the pre-spawn check refresh their required resource fingerprints.
+    const inventory = installation ? this.resources.snapshot() : undefined;
     return {
       artifactAvailable: installation?.artifact !== null && installation?.artifact !== undefined,
       tools: installation
@@ -2634,7 +2637,16 @@ export class MachineJobOwner {
       operations: installation
         ? Object.entries(installation.command.machine.operations).map(
             ([operationId, operation]) => {
-              const reason = this.operationUnavailable(installation, operation);
+              const reason =
+                this.operationRuntimeUnavailable(installation, operation) ??
+                jobResourceRefusal(
+                  installation.command.machine,
+                  operationId,
+                  this.platform(),
+                  installation.command.resourceBindings,
+                  inventory!,
+                ) ??
+                undefined;
               return {
                 operationId,
                 available: reason === undefined,
