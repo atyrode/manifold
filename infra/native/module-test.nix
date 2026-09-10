@@ -6,7 +6,6 @@ let
     import hashlib
     import json
     import os
-    import socket
     import sys
     from pathlib import Path
     from urllib.request import Request, urlopen
@@ -36,10 +35,10 @@ let
     mode = mode.removesuffix("-hold")
     job_id = sys.argv[2] if len(sys.argv) > 2 else "module-native-first"
     node = {"kind": "job", "machineId": machine["id"], "operationId": operation_id, "jobId": job_id}
-    limits = {"timeoutMs": 30000, "memoryBytes": 134217728, "processes": 32, "outputBytes": 1024}
+    limits = {"timeoutMs": 120000, "memoryBytes": 134217728, "processes": 32, "outputBytes": 1024}
 
     if mode == "install":
-        executable = b"#!/bin/busybox sh\nif test -e /var/lib/manifold/owner.key || test -e /etc/manifold-fixture/private/enrollment-token || test -e /run/credentials/manifold-transport.service/enrollment-token; then exit 90; fi\nif test \"$1\" = hold; then /bin/busybox sleep 15; fi\nprintf 'native-module:bounded\\n'\nexit 23\n"
+        executable = b"#!/bin/busybox sh\nif test -e /var/lib/manifold/owner.key || test -e /etc/manifold-fixture/private/enrollment-token || test -e /run/credentials/manifold-transport.service/enrollment-token; then exit 90; fi\nif test \"$1\" = hold; then /bin/busybox sleep 60; fi\nprintf 'native-module:bounded\\n'\nexit 23\n"
         artifact_hash = hashlib.sha256(executable).hexdigest()
         declaration = {
             "artifacts": {"${platform}": {
@@ -102,24 +101,14 @@ let
         })
         assert output["type"] == "output" and output["eof"], output
         assert base64.b64decode(output["data"]) == b"native-module:bounded\n"
-    elif mode == "shutdown":
-        drained = action("core.machines.drain", {"machineId": machine["id"], "draining": True})
-        assert drained["draining"] and drained["terminalIds"] == [], drained
-        with socket.socket(socket.AF_UNIX) as connection:
-            connection.settimeout(10)
-            connection.connect("/var/lib/manifold/terminal-host/host.sock")
-            connection.sendall(b'{"type":"shutdown_request"}\n')
-            with connection.makefile("rb") as response:
-                acknowledgement = json.loads(response.readline(4096))
-            assert acknowledgement["type"] == "shutting_down", acknowledgement
-    elif mode == "reopen":
-        reopened = action("core.machines.drain", {"machineId": machine["id"], "draining": False})
-        assert not reopened["draining"], reopened
+    elif mode == "drained":
+        assert machine["draining"], "maintenance refusal must leave admission closed"
     else:
         assert mode == "inspect"
         print(machine["id"])
   '';
   inspectCommand = "${pkgs.python3}/bin/python3 ${inspect}";
+  maintenanceCommand = "${self.packages.${pkgs.stdenv.hostPlatform.system}.manifold-agent}/bin/manifold-agent --maintenance";
 in
 {
   name = "manifold-native-profile";
@@ -186,6 +175,20 @@ in
     };
   };
   testScript = ''
+    import json
+    import shlex
+
+    def maintenance(node, command, expected_code=0, **flags):
+        words = [command]
+        for flag, value in flags.items():
+            words.extend(["--" + flag.replace("_", "-"), value])
+        code, output = node.execute("${maintenanceCommand} " + shlex.join(words) + " 2>&1")
+        assert code == expected_code, output
+        assert len(output.strip().splitlines()) == 1, output
+        result = json.loads(output)
+        assert result["ok"] == (expected_code == 0) and result["command"] == command, result
+        return result
+
     start_all()
     machine.wait_for_unit("manifold-server.service", timeout=180)
     machine.wait_for_unit("manifold-owner.service", timeout=180)
@@ -214,7 +217,31 @@ in
     machine.succeed(f"{original}/bin/switch-to-configuration test")
     machine.wait_until_succeeds("${inspectCommand}", timeout=180)
     machine.succeed("${inspectCommand} result")
-    machine.succeed("${inspectCommand} shutdown")
+    machine.succeed("${maintenanceCommand} --help")
+    admission = dict(hub="http://127.0.0.1:7777", machine_id=identity, owner_key_file="/var/lib/manifold/owner.key")
+    machine.succeed("${inspectCommand} execute-hold module-maintenance-live")
+    machine.wait_until_succeeds("${inspectCommand} started-hold module-maintenance-live", timeout=30)
+    drained = maintenance(machine, "drain", **admission)
+    assert drained["machineId"] == identity and drained["draining"], drained
+    # No terminals is deliberately NOT idle proof: this owner still has a real running job.
+    assert drained["terminalIds"] == [], drained
+    expected_host = drained["terminalHostId"]
+    shutdown = dict(socket="/var/lib/manifold/terminal-host/host.sock", terminal_host_id=expected_host)
+    held = maintenance(machine, "shutdown", expected_code=1, **shutdown)
+    assert held["hold"] and held["reason"] == "jobs_retained", held
+    assert machine.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == owner
+    machine.succeed("${inspectCommand} started-hold module-maintenance-live")
+    machine.succeed("${inspectCommand} drained")
+    # An explicit reopen is distinct from a HOLD; neither command stops the supervisor.
+    reopened = maintenance(machine, "reopen", **admission)
+    assert not reopened["draining"] and reopened["terminalHostId"] == expected_host, reopened
+    machine.succeed("${inspectCommand} execute module-maintenance-reopened")
+    machine.wait_until_succeeds("${inspectCommand} result module-maintenance-reopened", timeout=180)
+    drained = maintenance(machine, "drain", **admission)
+    assert drained["draining"] and drained["terminalHostId"] == expected_host, drained
+    machine.wait_until_succeeds("${inspectCommand} result-hold module-maintenance-live", timeout=180)
+    acknowledged = maintenance(machine, "shutdown", **shutdown)
+    assert acknowledged["terminalHostId"] == expected_host, acknowledged
     machine.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value manifold-owner.service)\" = inactive", timeout=30)
     machine.succeed("systemctl start manifold-owner.service")
     machine.wait_until_succeeds("${inspectCommand}", timeout=180)
@@ -222,7 +249,9 @@ in
     assert int(replacement) > 1 and replacement != owner
     assert machine.succeed("${inspectCommand}").strip() == identity
     machine.succeed("${inspectCommand} result")
-    machine.succeed("${inspectCommand} reopen")
+    machine.succeed("${inspectCommand} result-hold module-maintenance-live")
+    reopened = maintenance(machine, "reopen", **admission)
+    assert not reopened["draining"] and reopened["terminalHostId"] != expected_host, reopened
     machine.succeed("${inspectCommand} execute module-native-recovered")
     machine.wait_until_succeeds("${inspectCommand} result module-native-recovered", timeout=180)
 
