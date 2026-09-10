@@ -113,15 +113,16 @@ export function useRemoteCursors(
     };
   }, [client]);
 
+  const hasCursors = cursors.length > 0;
+
   useEffect(() => {
+    if (!hasCursors) return;
     let animationFrame = 0;
     let previous = performance.now();
     const tick = (now: number): void => {
       const elapsed = Math.max(0, now - previous);
       previous = now;
-      // Idle rooms cost one comparison per cursor: stepping an unchanged map returns
-      // false and never touches React state. Expiry rides the same pass rather than a
-      // timer of its own — the frame loop is already the room's clock.
+      // Live cursors share one clock for easing and expiry; empty rooms need neither.
       const stepped = stepRemoteCursors(cursorsRef.current, elapsed, SNAP_EPSILON[space]);
       const expired = expireRemoteCursors(cursorsRef.current, now);
       if (stepped || expired) setCursors([...cursorsRef.current.values()]);
@@ -129,7 +130,7 @@ export function useRemoteCursors(
     };
     animationFrame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animationFrame);
-  }, [space]);
+  }, [space, hasCursors]);
 
   const labelFor = useCallback(
     (cursor: RemoteCursor): string => {
