@@ -146,6 +146,8 @@ export interface PolledResourceOptions<T> {
    */
   readonly equal?: PolledEquality<T>;
   readonly onError?: (reason: unknown) => void;
+  /** Accepted reads, including unchanged answers; lets a reader clear a transient error. */
+  readonly onSuccess?: () => void;
   /**
    * Anything outside the fetch that makes the answer stale right now — a route id, a count a
    * placement just moved. It PARTITIONS the feed: two routes are two answers, never one answer
@@ -194,6 +196,7 @@ interface Subscriber {
   readonly intervalMs: number;
   readonly hold: () => boolean | undefined;
   readonly onError: (reason: unknown) => void;
+  readonly onSuccess: (() => void) | undefined;
   readonly notify: () => void;
 }
 
@@ -350,6 +353,7 @@ function fetchOnce(feed: Feed, reason: ReadReason): void {
         return;
       }
       publish(feed, incoming);
+      for (const subscriber of feed.subscribers) subscriber.onSuccess?.();
     })
     .catch((reason_: unknown) => {
       if (issued !== feed.generation) return;
@@ -526,6 +530,8 @@ export interface FeedAttachment {
   readonly equal?: PolledEquality<never> | undefined;
   readonly hold?: (() => boolean | undefined) | undefined;
   readonly onError?: ((reason: unknown) => void) | undefined;
+  /** Successful accepted reads, independently of whether the value changed. */
+  readonly onSuccess?: (() => void) | undefined;
   /** Called when the published answer CHANGES; never on an equal response. */
   readonly notify: () => void;
   readonly events?: FeedEvents | null | undefined;
@@ -574,6 +580,7 @@ export function attachFeed(attachment: FeedAttachment): () => void {
     intervalMs: attachment.intervalMs,
     hold: () => attachment.hold?.(),
     onError: (reason) => attachment.onError?.(reason),
+    onSuccess: attachment.onSuccess,
     notify: attachment.notify,
   };
   feed.subscribers.add(subscriber);
@@ -623,6 +630,7 @@ export function usePolledResource<T>(
     hold,
     equal,
     onError,
+    onSuccess,
     restartKey = null,
     topics = NO_TOPICS,
     events,
@@ -641,10 +649,10 @@ export function usePolledResource<T>(
    * naming them as dependencies: one changed identity there and React would tear the feed
    * down and rebuild it on every parent render.
    */
-  const policy = useRef({ fetchFn, hold, equal, onError, initial });
+  const policy = useRef({ fetchFn, hold, equal, onError, onSuccess, initial });
   const wiring = useRef({ events, topics, topicKey });
   useEffect(() => {
-    policy.current = { fetchFn, hold, equal, onError, initial };
+    policy.current = { fetchFn, hold, equal, onError, onSuccess, initial };
     wiring.current = { events, topics, topicKey };
   });
 
@@ -673,6 +681,7 @@ export function usePolledResource<T>(
         equal: policy.current.equal as PolledEquality<never> | undefined,
         hold: () => policy.current.hold?.(),
         onError: (reason) => policy.current.onError?.(reason),
+        onSuccess: () => policy.current.onSuccess?.(),
         notify,
         events: door,
         topics: nodes,

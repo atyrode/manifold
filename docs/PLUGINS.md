@@ -1261,6 +1261,10 @@ Source for this entire contract:
   provide a comparator only when that is wrong for the resource.
 - **`onError?: (reason: unknown) => void`:** receives read failures. The existing value
   remains; there is no separate error field in the return value.
+- **`onSuccess?: () => void`:** receives accepted successful reads, including answers
+  equal to the current value. Use it to clear a transient read error without requiring
+  data to change. Held responses, detached generations and local `setValue` calls do
+  not report successful reads; unchanged answers still do not publish a new snapshot.
 - **`restartKey?: string | number | boolean | null` (default `null`):** partitions answers
   along with `key`, for example by route id. Readers sharing the pair must read the same
   resource with compatible policies. The current identity uses `String(restartKey)`, so
