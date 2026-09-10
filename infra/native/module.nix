@@ -11,7 +11,15 @@ let
   output = "/var/lib/manifold-output";
   control = "${data}/job-owner";
   cgroup = "/sys/fs/cgroup/system.slice/manifold-owner.service";
-  tokenFile = if local then "${data}/agent.token" else cfg.execution.tokenFile;
+  credentialSource = cfg.execution.tokenCredentialFile;
+  credentialMode = credentialSource != null;
+  tokenFile = if credentialMode then "%d/enrollment-token" else if local then "${data}/agent.token" else cfg.execution.tokenFile;
+  containsPath = parent: path: parent == path || lib.hasPrefix "${parent}/" path;
+  # The owner holds exclusion descriptors. A private source can sit beneath an
+  # explicitly protected, traversable ancestor without opening its private parent.
+  credentialSourceDirectories = lib.optional
+    (credentialMode && !lib.any (path: containsPath path credentialSource) cfg.execution.protectedDirectories)
+    (builtins.dirOf credentialSource);
   anchors = {
     home = "${workload}/home";
     data = "${workload}/data";
@@ -27,6 +35,7 @@ let
     bubblewrap = "${pkgs.bubblewrap}/bin/bwrap";
     protectedDirectories = lib.unique ([ data ] ++ cfg.execution.protectedDirectories
       ++ lib.optional (cfg.execution.tokenFile != null) (builtins.dirOf cfg.execution.tokenFile)
+      ++ lib.optionals credentialMode ([ "/run/credentials" ] ++ credentialSourceDirectories)
       ++ map (credential: builtins.dirOf credential.source) (builtins.attrValues cfg.execution.serviceCredentials));
     inherit anchors;
     inherit (cfg.execution) runtimeTools artifactOrigins serviceCredentials;
@@ -122,6 +131,32 @@ let
     echo 'Manifold authenticated local bootstrap did not prepare owner configuration' >&2
     exit 1
   '';
+  checkCredentialSource = pkgs.writeShellScript "manifold-check-enrollment-credential-source" ''
+    set -eu
+    source=${lib.escapeShellArg (if credentialMode then credentialSource else "")}
+    service_uid="$(${pkgs.coreutils}/bin/id -u manifold)"
+    test -f "$source"
+    path="$source"
+    while :; do
+      # A service-owned read-only inode is not protected: its owner can chmod it.
+      # Check every component before PID 1 loads the credential; reject symlink
+      # indirection and writable ancestors, including ACL-granted service access.
+      test ! -L "$path"
+      test "$(${pkgs.coreutils}/bin/stat -c %u "$path")" != "$service_uid"
+      # A distinct success code prevents a privilege-drop failure from being
+      # mistaken for "not writable". The probe never opens credential bytes.
+      status=0
+      ${pkgs.util-linux}/bin/setpriv --reuid=manifold --regid=manifold --init-groups \
+        ${pkgs.runtimeShell} -c 'if test -w "$1"; then exit 10; else exit 20; fi' -- "$path" || status=$?
+      if test "$status" != 20; then
+        echo 'Manifold enrollment credential source custody check failed' >&2
+        exit 1
+      fi
+      if test "$path" = /; then break; fi
+      path="$(${pkgs.coreutils}/bin/dirname "$path")"
+      test -d "$path"
+    done
+  '';
   commonService = {
     User = "manifold";
     Group = "manifold";
@@ -151,6 +186,11 @@ in
       machineId = mkOption { type = types.str; default = ""; description = "Execution-only node's ID returned by core.machines.enroll."; };
       admissionPublicKey = mkOption { type = types.str; default = ""; description = "Public SPKI key from authenticated engine.jobs.describe; never the hub private key."; };
       tokenFile = mkOption { type = types.nullOr types.str; default = null; description = "Execution-only node's retained 0600 machine token file, owned by manifold. Never put its contents in Nix."; };
+      tokenCredentialFile = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Explicit static absolute enrollment credential source under its declaring tool's custody, not writable or owned by manifold. PID 1 delivers it with LoadCredential; never put bytes or a Nix path literal here. Mutually exclusive with tokenFile. No symlinks, path traversal or systemd specifiers. The source parent must be traversable by manifold for workload exclusion, or lie beneath a traversable directory declared in protectedDirectories; private descendants and the source itself need not be readable. Changing the owner exclusion configuration requires positive drain/shutdown maintenance.";
+      };
       artifactOrigins = mkOption { type = types.listOf types.str; default = []; description = "Reviewed HTTPS origins for artifact acquisition, including permitted redirect origins."; };
       runtimeTools = mkOption { type = types.attrsOf (types.listOf (types.attrsOf types.str)); default = {}; description = "Reviewed source/target/kind runtime closure bindings, keyed by declared tool name. No host PATH discovery."; };
       serviceCredentials = mkOption {
@@ -184,7 +224,17 @@ in
       { assertion = !native || cfg.execution.artifactOrigins != []; message = "Declare reviewed Manifold artifact origins."; }
       { assertion = !native || cfg.execution.outputBytes <= 1073741824; message = "Named output backing cannot exceed the runtime's 1 GiB aggregate output ceiling."; }
       { assertion = !native || cfg.execution.outputBytes >= 4096 && lib.mod cfg.execution.outputBytes 4096 == 0; message = "Named output capacity must be a positive whole number of 4 KiB pages."; }
-      { assertion = !native || local || (cfg.execution.serverUrl != "" && cfg.execution.machineId != "" && cfg.execution.admissionPublicKey != "" && cfg.execution.tokenFile != null); message = "Execution-only nodes require explicit supported enrollment, verifier key and private token file."; }
+      { assertion = !native || local || (cfg.execution.serverUrl != "" && cfg.execution.machineId != "" && cfg.execution.admissionPublicKey != "" && (cfg.execution.tokenFile != null || credentialMode)); message = "Execution-only nodes require explicit supported enrollment, verifier key and a private token file or systemd credential reference."; }
+      { assertion = !native || !credentialMode || cfg.execution.tokenFile == null; message = "Select only one Manifold enrollment token input: tokenFile or tokenCredentialFile."; }
+      {
+        assertion = !native || !credentialMode || (
+          lib.hasPrefix "/" credentialSource
+          && lib.all (part: part != "" && part != "." && part != "..") (lib.drop 1 (lib.splitString "/" credentialSource))
+          && lib.all (character: !lib.hasInfix character credentialSource) [ "%" ":" "\n" "\r" "\\" ]
+          && !lib.any (path: containsPath path credentialSource) [ data workload output "/run/credentials" "/proc" "/sys" "/dev" "/nix/store" ]
+        );
+        message = "tokenCredentialFile must be a static normalized absolute runtime path outside Manifold's service/workload areas, systemd credentials, kernel interfaces and the Nix store.";
+      }
     ];
 
     users.groups.manifold = {};
@@ -198,6 +248,11 @@ in
       "d ${data} 0700 manifold manifold -"
       "d ${workload} 0700 manifold manifold -"
     ] ++ map (path: "d ${path} 0700 manifold manifold -") (builtins.attrValues (builtins.removeAttrs anchors [ "runtime" ]))
+      ++ lib.optionals (native && credentialMode) [
+        # Unspecified metadata creates the default root 0755 directory only if
+        # absent; it never chmods/chowns an existing systemd credential store.
+        "d /run/credentials - - - -"
+      ]
       ++ lib.optionals native [
         "d ${control} 0700 manifold manifold -"
         "d ${control}/state 0700 manifold manifold -"
@@ -272,25 +327,49 @@ in
       };
     };
 
+    # A separate prerequisite, rather than ExecStartPre, runs before PID 1 reads
+    # LoadCredential. It never reads bytes or repairs the declaring tool's custody.
+    # No RemainAfterExit: every transport start rechecks the source and its parents.
+    systemd.services.manifold-token-credential-source = mkIf (native && credentialMode) {
+      description = "Check Manifold enrollment credential source custody";
+      after = [ "systemd-tmpfiles-setup.service" ];
+      script = "${checkCredentialSource}";
+      serviceConfig = {
+        Type = "oneshot";
+        User = "root";
+        Group = "root";
+      };
+    };
+
     systemd.services.manifold-transport = mkIf native {
       description = "Manifold replaceable machine transport";
       wantedBy = [ "multi-user.target" ];
-      after = [ "manifold-owner.service" "network-online.target" ];
+      after = [ "manifold-owner.service" "network-online.target" ] ++ lib.optional credentialMode "manifold-token-credential-source.service";
+      requires = lib.optional credentialMode "manifold-token-credential-source.service";
       wants = [ "network-online.target" ];
       environment = sockets // {
         MANIFOLD_SERVER_URL = if local then "http://127.0.0.1:${toString cfg.hub.port}" else cfg.execution.serverUrl;
         MANIFOLD_MACHINE_NAME = cfg.execution.machineName;
         MANIFOLD_MACHINE_TOKEN_FILE = tokenFile;
       };
-      preStart = lib.optionalString local "${waitForConfig}\n" + ''
+      preStart = lib.optionalString local "${waitForConfig}\n" + (if credentialMode then ''
+        token="$CREDENTIALS_DIRECTORY/enrollment-token"
+        test ! -L "$token"
+        test -f "$token"
+        test -r "$token"
+        test ! -w "$token"
+        test ! -w "$CREDENTIALS_DIRECTORY"
+      '' else ''
         token=${lib.escapeShellArg (if tokenFile == null then "" else tokenFile)}
         test ! -L "$token"
         test -f "$token"
         test "$(stat -c '%u:%a' "$token")" = "$(id -u):600"
         test "$(stat -c '%u:%a' "$(dirname "$token")")" = "$(id -u):700"
-      '';
+      '');
       serviceConfig = commonService // {
         ExecStart = "${packages.manifold-agent}/bin/manifold-agent";
+      } // lib.optionalAttrs credentialMode {
+        LoadCredential = [ "enrollment-token:${credentialSource}" ];
       };
     };
   };
