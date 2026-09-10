@@ -34,6 +34,7 @@ import {
   CORE_NAMESPACE_PREFIX,
   ENGINE_NAMESPACE_PREFIX,
   PLUGIN_BUNDLE_SERVER_FILE,
+  type TerminalExecution,
   PLUGIN_BUNDLE_STYLES_FILE,
   formatManifoldUri,
   TRACE_AUTHORITY_OPEN,
@@ -422,6 +423,7 @@ interface InstalledPlugin {
  */
 export interface MachineAdmission {
   isOnline(machineId: string): boolean;
+  getTerminalExecution(machineId: string): TerminalExecution | null;
   drain(machineId: string, draining: boolean): Promise<DrainOutcome>;
 }
 

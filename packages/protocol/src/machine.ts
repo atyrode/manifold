@@ -40,6 +40,10 @@ export const TerminalProgramSchema = z.strictObject({
 });
 export type TerminalProgram = z.infer<typeof TerminalProgramSchema>;
 
+/** An owner declaration, never inferred from whether its native job socket is reachable. */
+export const TerminalExecutionSchema = z.enum(["unconfined", "governed"]);
+export type TerminalExecution = z.infer<typeof TerminalExecutionSchema>;
+
 export const AdvertisedTerminalSchema = z.strictObject({
   terminalId,
   ...geometry,
@@ -75,6 +79,7 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
      * with it.
      */
     terminalHostId: z.string().min(1).optional(),
+    terminalExecution: TerminalExecutionSchema.optional(),
     jobOwner: JobOwnerSchema.optional(),
   }),
   z.strictObject({ type: z.literal("created"), terminalId }),

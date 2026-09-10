@@ -5,7 +5,6 @@ import { join } from "node:path";
 import {
   ActionOutcomeSchema,
   ContainerTerminalsResponseSchema,
-  PROTOCOL_VERSION,
   IndexResponseSchema,
   ServerToAgentMessageSchema,
   TerminalsResponseSchema,
@@ -67,8 +66,8 @@ const MACHINE_NAME = "index machine";
 const temporaryDirectories: string[] = [];
 
 class FakeMachine implements MachineChannel {
+  readonly terminalExecution: MachineChannel["terminalExecution"] = "unconfined";
   readonly sent: ServerToAgentMessage[] = [];
-  readonly protocolVersion = PROTOCOL_VERSION;
   readonly terminalHostId: string | null = null;
   constructor(readonly machineId: string) {}
 

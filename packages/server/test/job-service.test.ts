@@ -7,7 +7,7 @@ import { join } from "node:path";
 import {
   formatManifoldUri,
   PluginBundleSchema,
-  PROTOCOL_VERSION,
+  JOB_OWNER_PROTOCOL_VERSION,
   type Cap,
 } from "@manifold/protocol";
 import {
@@ -90,7 +90,7 @@ function fixture(path = ":memory:"): Fixture {
   };
   const pair = generateKeyPairSync("ed25519");
   const owner: JobOwner = {
-    protocolVersion: PROTOCOL_VERSION,
+    protocolVersion: JOB_OWNER_PROTOCOL_VERSION,
     ownerId: "test-owner",
     publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(),
     generation: 1,
@@ -159,6 +159,131 @@ function execute(f: Fixture, jobId = "job", value = "safe") {
     outputs: [],
   });
 }
+
+test("uncertain service completion holds its lifetime until a fenced empty-tree proof arrives", () => {
+  const f = fixture();
+  try {
+    consent(f, "machines:run");
+    prove(f);
+    const admitted = execute(f);
+    if (!admitted.permit) throw new Error("fixture did not commit a native start");
+    const serviceId = `${pluginId}.broker`;
+    const unsigned: Omit<typeof admitted.request, "requestDigest"> & { requestDigest?: string } = {
+      ...admitted.request,
+      jobId: "service-producer",
+      service: { serviceId, revision: "service-r1", policySha256: hash },
+    };
+    delete unsigned.requestDigest;
+    const request = {
+      ...unsigned,
+      requestDigest: createHash("sha256").update(canonicalJobJson(unsigned)).digest("hex"),
+    };
+    f.service.jobs.reserve(request, f.runtime.now());
+    f.service.jobs.state(request.jobId, "start-committed", {
+      ...admitted.permit,
+      jobId: request.jobId,
+      requestDigest: request.requestDigest,
+    });
+    f.service.event(f.channel, {
+      type: "refusal",
+      jobId: request.jobId,
+      reason: "resource_owner_unavailable",
+    });
+    expect(f.service.jobs.get(request.jobId)?.state).toBe("interrupted");
+    const outstanding = () =>
+      f.service.jobs.instanceServiceJobs(serviceId).map((job) => job.request.jobId);
+    expect(outstanding()).toEqual([request.jobId]);
+    const proof = {
+      type: "workload_empty" as const,
+      jobId: request.jobId,
+      requestDigest: request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+    };
+    f.service.event(f.channel, { ...proof, ownerGeneration: f.owner.generation + 1 });
+    expect(outstanding()).toEqual([request.jobId]);
+    f.service.event(f.channel, proof);
+    expect(outstanding()).toEqual([]);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("same-generation reconnect recovers a lost started notification without reviving closed work", () => {
+  const f = fixture();
+  try {
+    consent(f, "machines:run");
+    prove(f);
+    const job = execute(f);
+    const result = {
+      jobId: job.request.jobId,
+      requestDigest: job.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+      state: "started" as const,
+      exitCode: null,
+      reason: null,
+      startedAt: f.runtime.now(),
+      finishedAt: null,
+      usage: null,
+      limits: job.request.limits,
+      outputs: [],
+    };
+    f.service.offline(f.channel);
+    prove(f);
+    f.service.event(f.channel, {
+      type: "result",
+      result: { ...result, requestDigest: "f".repeat(64) },
+    });
+    f.service.event(f.channel, { type: "result", result: { ...result, ownerGeneration: 0 } });
+    expect(f.service.jobs.get(job.request.jobId)?.state).toBe("start-committed");
+    f.service.event(f.channel, { type: "result", result });
+    expect(f.service.jobs.get(job.request.jobId)?.state).toBe("started");
+    f.service.event(f.channel, { type: "result", result: { ...result, state: "start-committed" } });
+    expect(f.service.jobs.get(job.request.jobId)?.state).toBe("started");
+    f.service.event(f.channel, {
+      type: "result",
+      result: { ...result, state: "exited", exitCode: 0, finishedAt: f.runtime.now() },
+    });
+    f.service.event(f.channel, { type: "result", result });
+    expect(f.service.jobs.get(job.request.jobId)?.state).toBe("exited");
+
+    const closed = execute(f, "closed-before-started");
+    f.service.event(f.channel, {
+      type: "workload_empty",
+      jobId: closed.request.jobId,
+      requestDigest: closed.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: 1,
+    });
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        ...result,
+        jobId: closed.request.jobId,
+        requestDigest: closed.request.requestDigest,
+      },
+    });
+    expect(f.service.jobs.get(closed.request.jobId)?.state).toBe("start-committed");
+    expect(f.service.jobs.get(closed.request.jobId)?.ownerClosed).toBe(true);
+
+    const priorGeneration = execute(f, "old-generation");
+    f.service.offline(f.channel);
+    f.owner.generation++;
+    prove(f);
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        ...result,
+        jobId: priorGeneration.request.jobId,
+        requestDigest: priorGeneration.request.requestDigest,
+      },
+    });
+    expect(f.service.jobs.get(priorGeneration.request.jobId)?.state).toBe("start-committed");
+  } finally {
+    f.store.close();
+  }
+});
 
 function inputFixture() {
   const f = fixture();

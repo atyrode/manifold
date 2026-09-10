@@ -59,6 +59,7 @@ export const LOG_EVENTS = [
   "local_agent_reused",
   "local_agent_spawn_locked",
   "local_agent_spawned",
+  "local_agent_prepared",
 
   // Server: machine transport — enrolment, version negotiation, supersession, liveness, and
   // (#278) admission: a claimant refused for unproven continuity, and the drain round trip.
@@ -67,7 +68,6 @@ export const LOG_EVENTS = [
   "machine_drain_timeout",
   "machine_forgotten",
   "machine_hello_timeout",
-  "machine_job_protocol_rejected",
   "machine_liveness_timeout",
   "machine_malformed_frame",
   "machine_rejected",
@@ -127,7 +127,6 @@ export const LOG_EVENTS = [
   "terminal_create_failed",
   "terminal_create_timeout",
   "terminal_home_failed",
-  "terminal_program_unsupported",
   "terminal_snapshot_timeout",
 
   // Agent: process lifecycle. `shutdown_failed` is shared with the server half above — one

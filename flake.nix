@@ -15,7 +15,8 @@
   # owner and transport. No packaged process tries to execute a source checkout.
   description = "manifold - agent-native shared spatial workspace";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  # The stable branch still supports every advertised target, including Intel macOS.
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
   outputs =
     { self, nixpkgs }:
@@ -31,13 +32,13 @@
       eachSystem = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
       # Fixed-output hash of the vendored node_modules tree, per system (the
       # native optionalDependencies bun materializes differ per platform).
-      # Filled in the first time a system builds: leave the entry as
-      # lib.fakeHash, run `nix build .#bun-deps`, copy the "got:" hash here.
+      # Measured with the pinned Bun's explicit optional-dependency target selectors.
+      # Regenerate and independently rebuild these trees when their inputs change.
       depsHashes = {
-        x86_64-linux = "sha256-cbjDbZqe+wkPN7HbitqeYimniuBfkdjpgiUC+jTxVuE=";
-        aarch64-linux = nixpkgs.lib.fakeHash;
-        x86_64-darwin = nixpkgs.lib.fakeHash;
-        aarch64-darwin = nixpkgs.lib.fakeHash;
+        x86_64-linux = "sha256-0paLt9t5ds7yb1qNvL55jI7iqq3jVLVa0CX2HQO2DBs=";
+        aarch64-linux = "sha256-hOVg3G0Urms8rulRfQMhyX4dS23GOmFIAm3PW6V/BAc=";
+        x86_64-darwin = "sha256-gT5aDGDbf2yybZaGUbbETgyibZwCxRH8wW5MvXwlWSM=";
+        aarch64-darwin = "sha256-PL/Ez5Y4VYgmzziKupeE+ySsRuDt1WCt7cXW7S5dl5E=";
       };
 
       # Input of the vendored-dependency FOD. Deliberately not `self`: keying it
@@ -64,12 +65,19 @@
     in
     {
       nixosModules.native = import ./infra/native/module.nix { inherit self; };
+      checks = eachSystem (
+        pkgs: nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          native-profile = (import (nixpkgs + "/nixos/lib") { inherit (pkgs) lib; }).runTest (
+            import ./infra/native/module-test.nix { inherit self pkgs; }
+          );
+        }
+      );
       packages = eachSystem (
         pkgs:
         let
           inherit (pkgs.stdenv.hostPlatform) system;
-          # nixpkgs currently packages 1.3.13. Pin the required existing runtime
-          # directly instead of claiming a >=1.4.2 assertion upgrades that input.
+          # Pin the required runtime independently of the package collection;
+          # an assertion cannot upgrade its older Bun.
           # Digests: official bun-v1.4.2 release asset metadata (2026-09-09),
           # https://api.github.com/repos/oven-sh/bun/releases/tags/bun-v1.4.2
           bunSources = {
@@ -141,7 +149,9 @@
               export HOME="$TMPDIR"
               export BUN_INSTALL_CACHE_DIR="$TMPDIR/bun-install-cache"
               bun install --frozen-lockfile --ignore-scripts --no-progress \
-                --backend=copyfile --linker=hoisted
+                --backend=copyfile --linker=hoisted \
+                --os=${if pkgs.stdenv.hostPlatform.isLinux then "linux" else "darwin"} \
+                --cpu=${if pkgs.stdenv.hostPlatform.isAarch64 then "arm64" else "x64"}
             '';
             installPhase = ''
               mkdir -p "$out"
@@ -233,6 +243,7 @@
             pname = "manifold-server";
             entry = "packages/server/src/main.ts";
             extraBuild = ''
+              bun run changelog:generate
               (cd packages/web && bun run build)
             '';
             extraInstall = ''

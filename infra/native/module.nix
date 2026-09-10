@@ -26,9 +26,10 @@ let
     delegatedCgroup = "${cgroup}/jobs";
     bubblewrap = "${pkgs.bubblewrap}/bin/bwrap";
     protectedDirectories = lib.unique ([ data ] ++ cfg.execution.protectedDirectories
-      ++ lib.optional (cfg.execution.tokenFile != null) (builtins.dirOf cfg.execution.tokenFile));
+      ++ lib.optional (cfg.execution.tokenFile != null) (builtins.dirOf cfg.execution.tokenFile)
+      ++ map (credential: builtins.dirOf credential.source) (builtins.attrValues cfg.execution.serviceCredentials));
     inherit anchors;
-    inherit (cfg.execution) runtimeTools artifactOrigins;
+    inherit (cfg.execution) runtimeTools artifactOrigins serviceCredentials;
   };
   templateFile = pkgs.writeText "manifold-owner-template.json" (builtins.toJSON template);
   remoteConfig = pkgs.writeText "manifold-owner-config.json" (builtins.toJSON (template // {
@@ -38,19 +39,58 @@ let
   }));
   # Never overwrite an incumbent configuration, even if no process appears online.
   # Explicit drained maintenance owns removing a retired configuration.
-  installOnce = source: destination: ''
-    if test -L ${destination}; then
-      echo 'Manifold refuses a symlink configuration' >&2
-      exit 1
-    fi
-    if test -e ${destination}; then
-      ${pkgs.coreutils}/bin/cmp -s ${source} ${destination} || {
-        echo 'Manifold configuration drift: hold for drained owner maintenance' >&2
-        exit 1
+  # The immutable store copy uses the runtime's descriptor/publication implementation.
+  installPrivateConfig = pkgs.writeText "manifold-install-private-config.ts" ''
+    import { closeSync, fstatSync, readFileSync } from "node:fs";
+    import { basename, dirname } from "node:path";
+    import { HeldDirectory } from "${../../packages/agent/src/job-files.ts}";
+
+    function install(source: string, destination: string): void {
+      const parent = HeldDirectory.openAbsolute(dirname(destination), { private: true });
+      try {
+        const contents = readFileSync(source);
+        if (contents.length > 65536) throw new Error("oversized_configuration");
+        const name = basename(destination);
+        try {
+          parent.atomicWrite(name, contents, 0o600, true);
+        } catch (error) {
+          if (!(error instanceof Error) || Reflect.get(error, "code") !== "EEXIST") throw error;
+        }
+        // A concurrent publisher wins without replacement; compare its final inode and bytes.
+        const fd = parent.openFile(name);
+        try {
+          const identity = fstatSync(fd);
+          if (identity.uid !== process.getuid?.() || (identity.mode & 0o777) !== 0o600
+              || identity.size > 65536 || !readFileSync(fd).equals(contents))
+            throw new Error("unsafe_or_changed_configuration");
+          const current = parent.openFile(name);
+          try {
+            const published = fstatSync(current);
+            if (published.dev !== identity.dev || published.ino !== identity.ino)
+              throw new Error("changed_configuration_identity");
+          } finally {
+            closeSync(current);
+          }
+        } finally {
+          closeSync(fd);
+        }
+        parent.sync();
+      } finally {
+        parent.close();
       }
-    else
-      ${pkgs.coreutils}/bin/install -m 600 ${source} ${destination}
-    fi
+    }
+
+    try {
+      const [source, destination] = process.argv.slice(2);
+      if (!source || !destination) throw new Error("missing_configuration_paths");
+      install(source, destination);
+    } catch {
+      console.error("Manifold refuses unsafe or changed configuration: hold for drained owner maintenance");
+      process.exitCode = 1;
+    }
+  '';
+  installOnce = source: destination: ''
+    ${packages.bun-runtime}/bin/bun ${installPrivateConfig} ${lib.escapeShellArg (toString source)} ${lib.escapeShellArg destination}
   '';
   prepareCgroup = pkgs.writeShellScript "manifold-owner-cgroup" ''
     set -eu
@@ -113,6 +153,22 @@ in
       tokenFile = mkOption { type = types.nullOr types.str; default = null; description = "Execution-only node's retained 0600 machine token file, owned by manifold. Never put its contents in Nix."; };
       artifactOrigins = mkOption { type = types.listOf types.str; default = []; description = "Reviewed HTTPS origins for artifact acquisition, including permitted redirect origins."; };
       runtimeTools = mkOption { type = types.attrsOf (types.listOf (types.attrsOf types.str)); default = {}; description = "Reviewed source/target/kind runtime closure bindings, keyed by declared tool name. No host PATH discovery."; };
+      serviceCredentials = mkOption {
+        type = types.attrsOf (types.submodule {
+          options = {
+            source = mkOption {
+              type = types.strMatching "/.*";
+              description = "Absolute private runtime credential file owned by manifold, never secret bytes or a Nix path literal.";
+            };
+            origins = mkOption {
+              type = types.listOf types.str;
+              description = "Allowed canonical HTTPS origins (HTTP only for 127.0.0.1 or [::1]), checked by the owner schema.";
+            };
+          };
+        });
+        default = {};
+        description = "Reviewed credentialRef sources keyed by reference name. Parent directories are excluded from workload mounts; credential bytes never enter the Nix store.";
+      };
       protectedDirectories = mkOption { type = types.listOf types.str; default = []; description = "Existing control/credential directories excluded from all workload mounts in addition to /var/lib/manifold."; };
       outputBytes = mkOption { type = types.ints.positive; default = 1048576; description = "Dedicated named-output tmpfs capacity. Every job using it reserves the entire capacity from outputBytes, before stdout/stderr."; };
       outputInodes = mkOption { type = types.ints.between 1 10000; default = 4096; };
@@ -201,11 +257,16 @@ in
       unitConfig.RefuseManualStop = true;
       environment = sockets // { MANIFOLD_JOB_OWNER_CONFIG = "${control}/config.json"; };
       preStart = if local then "${waitForConfig}" else installOnce remoteConfig "${control}/config.json";
+      # The main executor must enter its delegated subgroup before parent controllers
+      # are enabled; doing this in ExecStartPre prevents systemd from spawning it.
+      script = ''
+        set -eu
+        ${prepareCgroup}
+        exec ${packages.manifold-agent}/bin/manifold-agent --terminal-host
+      '';
       serviceConfig = commonService // {
         Delegate = "cpu memory pids";
         DelegateSubgroup = "supervisor";
-        ExecStartPre = [ "${prepareCgroup}" ];
-        ExecStart = "${packages.manifold-agent}/bin/manifold-agent --terminal-host";
         TimeoutStartSec = 75;
         TimeoutStopSec = 90;
       };

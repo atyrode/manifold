@@ -133,6 +133,7 @@ export class TerminalHost {
       build: this.build,
       pid: process.pid,
       draining: this.draining,
+      terminalExecution: this.jobOwner ? "governed" : "unconfined",
       transportAttached: this.transport !== null,
       terminals: this.inventory(),
     };
@@ -403,6 +404,14 @@ export class TerminalHost {
     connection: Connection,
     msg: Extract<TerminalHostCommand, { type: "create" }>,
   ): Promise<void> {
+    if (this.jobOwner && !msg.runtime) {
+      connection.peer.write({
+        type: "create_error",
+        terminalId: msg.terminalId,
+        message: "terminal_runtime_required",
+      });
+      return;
+    }
     if (this.terminals.has(msg.terminalId)) {
       if (msg.runtime) {
         connection.peer.write({

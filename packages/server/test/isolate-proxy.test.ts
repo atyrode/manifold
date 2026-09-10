@@ -115,6 +115,7 @@ function ctxWith(
     },
     machines: {
       isOnline: (machineId) => machineId === "m-online",
+      getTerminalExecution: () => null,
       drain: () => Promise.resolve({ ok: false, reason: "fixture has no terminal owner" }),
     },
   };

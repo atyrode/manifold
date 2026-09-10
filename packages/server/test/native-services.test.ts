@@ -8,7 +8,7 @@ import {
   formatManifoldUri,
   JobCommandSchema,
   JobEventSchema,
-  PROTOCOL_VERSION,
+  JOB_OWNER_PROTOCOL_VERSION,
   type JobCommand,
   type JobOwner,
   type MachineHalf,
@@ -75,7 +75,7 @@ function fixture(servicePolicy = policy, mode: "read" | "invoke" = "read") {
   service.setLifecycleRecorder((record) => store.appendTrace(record));
   const pair = generateKeyPairSync("ed25519");
   const owner: JobOwner = {
-    protocolVersion: PROTOCOL_VERSION,
+    protocolVersion: JOB_OWNER_PROTOCOL_VERSION,
     ownerId: "owner",
     generation: 1,
     inventoryDigest: "a".repeat(64),
@@ -304,6 +304,72 @@ test("root browser tokens retain bounded service configuration authority until r
     expect(() =>
       f.service.readServiceConfiguration(delegated, { machineId: f.machineId }),
     ).toThrow();
+  } finally {
+    f.store.close();
+  }
+});
+
+test("instance setup requires configuration authority, not service invocation authority", async () => {
+  const f = fixture();
+  const serviceId = "native.orchestrator.instance";
+  const definition: ServicePolicy = {
+    serviceId,
+    revision: "1",
+    maxConcurrent: 1,
+    operations: policy.operations,
+    runtime: {
+      scope: "instance",
+      pluginId: "native.orchestrator",
+      operationId: "native.orchestrator.serve",
+      installationRevision: "install-1",
+      artifactSha256: "a".repeat(64),
+      resourceBindingDigest: "b".repeat(64),
+      input: {},
+    },
+  };
+  try {
+    const administrator = serviceContext(
+      () => f.service,
+      { ...f.root, caps: ["services:configure"] },
+      "native.orchestrator",
+      1,
+      "read",
+    );
+    const configured = await administrator.configureInstance({
+      serviceId,
+      expectedRevision: null,
+      machineId: f.machineId,
+      policy: definition,
+      enabled: false,
+    });
+    expect(f.service.describeInstanceService(f.root, { serviceId })).toMatchObject({
+      state: "stopped",
+      owner: { machineId: f.machineId },
+      configuration: {
+        revision: configured.configuration!.revision,
+        pluginId: "native.orchestrator",
+        enabled: false,
+      },
+    });
+    const invoker = serviceContext(
+      () => f.service,
+      { ...f.root, caps: ["services:invoke"] },
+      "native.orchestrator",
+      2,
+      "invoke",
+    );
+    await expect(
+      invoker.configureInstance({
+        serviceId,
+        expectedRevision: configured.configuration!.revision,
+        machineId: f.machineId,
+        policy: { ...definition, revision: "2" },
+        enabled: false,
+      }),
+    ).rejects.toThrow();
+    expect(f.service.describeInstanceService(f.root, { serviceId }).configuration!.revision).toBe(
+      configured.configuration!.revision,
+    );
   } finally {
     f.store.close();
   }

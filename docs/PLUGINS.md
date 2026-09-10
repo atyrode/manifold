@@ -1451,6 +1451,11 @@ the native owner opens a credential-free connection and proves that its establis
 socket belongs to the admitted runtime workload. The proxy uses that exact connection,
 without reconnecting if it closes. Releasing a listening port while a runtime remains
 alive cannot transfer its later requests or bearer to a different workload.
+For Linux service providers, `setsockopt(IPPROTO_TCP, TCP_DEFER_ACCEPT)` returns
+`EOPNOTSUPP`: the owner must prove an accepted peer before releasing any request bytes.
+Servers may omit that optimization; neither queued connections nor inherited deferred
+listeners receive an ownership exception. A server that still waits for request bytes
+before accepting cannot satisfy this boundary.
 
 `ctx.jobs.execute({ jobId, machineId, operationId, input, outputs, limits? })` returns safe
 job metadata. `outputs` contains exact `{ name, locationId, components }` bindings.

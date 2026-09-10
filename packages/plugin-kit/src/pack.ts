@@ -18,7 +18,7 @@ import {
 
 /** Packing changes linkage, not trust: only the installer chooses `install.hardened`. */
 export interface PackOptions {
-  /** Resolve floor imports through the host registry; false preserves self-contained kit guests. */
+  /** Resolve browser floor imports through the host registry; server processes stay self-contained. */
   readonly shared?: boolean;
 }
 
@@ -207,9 +207,13 @@ export async function packPlugin(
     }
   }
   const builtAgainst: Record<string, string> = {};
-  const plugins = options.shared === false ? [] : [await sharedModules(pluginDir, builtAgainst)];
+  const plugins =
+    manifest.entry.web === undefined || options.shared === false
+      ? []
+      : [await sharedModules(pluginDir, builtAgainst)];
   if (manifest.entry.server === true) {
-    const source = await build(`${pluginDir}/server.ts`, "bun", plugins);
+    // A hardened server has no browser realm or shared-module registry.
+    const source = await build(`${pluginDir}/server.ts`, "bun", []);
     files[PLUGIN_BUNDLE_SERVER_FILE] = Buffer.from(source, "utf8").toString("base64");
   }
   if (manifest.entry.web !== undefined) {

@@ -22,6 +22,7 @@ services:
     environment:
       - MANIFOLD_PUBLIC_URL=https://${MANIFOLD_DOMAIN:?set MANIFOLD_DOMAIN in .env}
       - MANIFOLD_MACHINE_NAME=${MANIFOLD_MACHINE_NAME:-hub}
+      - MANIFOLD_SERVICE_OWNER_MACHINE_ID
       # Passthrough only when set in .env: pins the owner key instead of
       # generating one at /data/owner.key on first boot.
       - MANIFOLD_OWNER_KEY

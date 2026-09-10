@@ -6,7 +6,7 @@ import { migrateToSoloCompositions } from "./migrate-solo.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 27;
+export const SCHEMA_VERSION = 28;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -676,6 +676,20 @@ ALTER TABLE machine_job_installs ADD COLUMN resource_bindings TEXT;
 ALTER TABLE machine_job_installations ADD COLUMN resource_bindings TEXT;
 CREATE TABLE native_service_configurations(machine_id TEXT PRIMARY KEY,revision TEXT NOT NULL,configuration TEXT NOT NULL);
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','27');
+`,
+  28: `
+ALTER TABLE machine_jobs ADD COLUMN owner_closed INTEGER NOT NULL DEFAULT 0 CHECK(owner_closed IN (0,1));
+CREATE TABLE native_instance_services(
+ service_id TEXT PRIMARY KEY, revision TEXT NOT NULL, machine_id TEXT NOT NULL,
+ plugin_id TEXT NOT NULL, configuration TEXT NOT NULL, credential TEXT, job_id TEXT,
+ configured_by TEXT NOT NULL, configured_at INTEGER NOT NULL
+);
+CREATE INDEX machine_jobs_instance_service
+ ON machine_jobs(json_extract(request,'$.service.serviceId'))
+ WHERE json_extract(request,'$.service.serviceId') IS NOT NULL AND
+ (state IN ('queued','admitted','start-committed','started') OR
+  (permit IS NOT NULL AND owner_closed=0));
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','28');
 `,
 };
 

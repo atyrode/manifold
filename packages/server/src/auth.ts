@@ -650,13 +650,14 @@ export class AuthService {
         !this.allowsRef(current, "services:configure", { kind: "machine", machineId }) ||
         requirements.length === 0 ||
         !requirements.some(({ ref }) => ref.kind === "operation") ||
-        requirements.some(({ cap, ref }) =>
-          !CONCRETE_CAPS.includes(cap) ||
-          !ManifoldRefSchema.safeParse(ref).success ||
-          !["operation", "location", "service"].includes(ref.kind) ||
-          !("machineId" in ref) ||
-          ref.machineId !== machineId ||
-          !this.allowsRef(current, cap, ref),
+        requirements.some(
+          ({ cap, ref }) =>
+            !CONCRETE_CAPS.includes(cap) ||
+            !ManifoldRefSchema.safeParse(ref).success ||
+            !["operation", "location", "service"].includes(ref.kind) ||
+            !("machineId" in ref) ||
+            ref.machineId !== machineId ||
+            !this.allowsRef(current, cap, ref),
         )
       )
         throw new ServiceError("forbidden", "native_service_authority_required");
@@ -721,8 +722,10 @@ export class AuthService {
     this.store.transaction(() => {
       const token = this.store.getToken(tokenId);
       if (
-        !token || token.principalId !== reference.principalId ||
-        (token.revokedAt === null && token.grantId !== reference.grantId) || token.caps.includes("*")
+        !token ||
+        token.principalId !== reference.principalId ||
+        (token.revokedAt === null && token.grantId !== reference.grantId) ||
+        token.caps.includes("*")
       )
         throw new ServiceError("forbidden", "native_service_credential_required");
       if (token.revokedAt !== null) return;

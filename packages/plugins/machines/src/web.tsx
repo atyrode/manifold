@@ -104,7 +104,9 @@ export function MachinesSection({ host }: SectionProps): ReactElement {
               <span className="machine-state">
                 {machine.revoked === true ? "Revoked" : machine.online ? "Online" : "Offline"}
               </span>
-              {machine.online && authoring !== null ? (
+              {machine.online &&
+              machine.terminalExecution === "unconfined" &&
+              authoring !== null ? (
                 <button
                   className="sidebar-machine-create"
                   type="button"

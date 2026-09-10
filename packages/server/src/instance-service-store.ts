@@ -1,6 +1,9 @@
+import { z } from "zod";
 import {
   canonicalJobJson,
   ServicePolicySchema,
+  JobCredentialSchema,
+  type ConfigureInstanceServiceArgs,
   type RuntimeDeps,
   type ServicePolicy,
 } from "@manifold/protocol";
@@ -24,14 +27,7 @@ export interface InstanceServiceRecord {
   jobId: string | null;
   configuredBy: string;
   configuredAt: number;
-}
-
-export interface ConfigureInstanceServiceArgs {
-  serviceId: string;
-  expectedRevision: string | null;
-  machineId?: string;
-  policy: ServicePolicy;
-  enabled: boolean;
+  traceId: string;
 }
 
 interface InstanceServiceRow {
@@ -46,8 +42,14 @@ interface InstanceServiceRow {
   configured_at: number;
 }
 
+const storedConfiguration = z.strictObject({
+  policy: ServicePolicySchema,
+  enabled: z.boolean(),
+  traceId: z.string().min(1).max(256),
+});
+
 function record(row: InstanceServiceRow): InstanceServiceRecord {
-  const configuration = JSON.parse(row.configuration) as { policy: ServicePolicy; enabled: boolean };
+  const configuration = storedConfiguration.parse(JSON.parse(row.configuration));
   return {
     serviceId: row.service_id,
     revision: row.revision,
@@ -55,10 +57,12 @@ function record(row: InstanceServiceRow): InstanceServiceRecord {
     pluginId: row.plugin_id,
     policy: configuration.policy,
     enabled: configuration.enabled,
-    credential: row.credential === null ? null : JSON.parse(row.credential),
+    credential:
+      row.credential === null ? null : JobCredentialSchema.parse(JSON.parse(row.credential)),
     jobId: row.job_id,
     configuredBy: row.configured_by,
     configuredAt: row.configured_at,
+    traceId: configuration.traceId,
   };
 }
 
@@ -68,11 +72,14 @@ export class InstanceServiceStore {
     private readonly store: ServerStore,
     private readonly auth: AuthService,
     private readonly runtime: RuntimeDeps,
+    private readonly configuredOwnerId?: string,
   ) {}
 
   get(serviceId: string): InstanceServiceRecord | null {
     const row = this.store.db
-      .query<InstanceServiceRow, [string]>("SELECT * FROM native_instance_services WHERE service_id=?")
+      .query<InstanceServiceRow, [string]>(
+        "SELECT * FROM native_instance_services WHERE service_id=?",
+      )
       .get(serviceId);
     return row === null ? null : record(row);
   }
@@ -86,14 +93,18 @@ export class InstanceServiceStore {
 
   /** Identity established by native bootstrap, never a display-name search or fallback. */
   defaultOwnerId(): string | null {
-    const id = this.store.getMeta("native_local_machine_id");
+    const id = this.configuredOwnerId ?? this.store.getMeta("native_local_machine_id");
     if (id === null) return null;
     const machine = this.store.getMachine(id);
     const token = machine === null ? null : this.store.getToken(machine.tokenId);
     if (
-      !machine || !token || token.principalId !== id || token.revokedAt !== null ||
+      !machine ||
+      !token ||
+      token.principalId !== id ||
+      token.revokedAt !== null ||
       (token.expiresAt !== null && token.expiresAt <= this.runtime.now())
-    ) return null;
+    )
+      return null;
     return id;
   }
 
@@ -113,29 +124,44 @@ export class InstanceServiceStore {
       const machineId = args.machineId ?? previous?.machineId ?? this.defaultOwnerId();
       const currentActor = this.auth.restoreCredential(this.auth.credentialReference(actor));
       if (
-        machineId === null || !this.store.getMachine(machineId) || !currentActor?.isRoot ||
+        machineId === null ||
+        !this.store.getMachine(machineId) ||
+        !currentActor?.isRoot ||
         (!currentActor.caps.includes("*") && !currentActor.caps.includes("services:configure")) ||
         !this.auth.allowsRef(currentActor, "services:configure", { kind: "machine", machineId }) ||
-        (previous !== null && !this.auth.allowsRef(currentActor, "services:configure", {
-          kind: "machine", machineId: previous.machineId,
-        }))
-      ) throw new ServiceError("forbidden", "instance_service_configuration_forbidden");
+        (previous !== null &&
+          !this.auth.allowsRef(currentActor, "services:configure", {
+            kind: "machine",
+            machineId: previous.machineId,
+          }))
+      )
+        throw new ServiceError("forbidden", "instance_service_configuration_forbidden");
       const policy = ServicePolicySchema.parse(args.policy);
       const serviceRuntime = policy.runtime;
       if (
-        policy.serviceId !== args.serviceId || !serviceRuntime || serviceRuntime.scope !== "instance" ||
+        policy.serviceId !== args.serviceId ||
+        !serviceRuntime ||
+        serviceRuntime.scope !== "instance" ||
         !args.serviceId.startsWith(`${serviceRuntime.pluginId}.`) ||
         !serviceRuntime.operationId.startsWith(`${serviceRuntime.pluginId}.`) ||
         (previous !== null && previous.pluginId !== serviceRuntime.pluginId) ||
         Object.values(serviceRuntime.input).some((binding) => !("literal" in binding))
-      ) throw new ServiceError("conflict", "invalid_instance_service_runtime");
+      )
+        throw new ServiceError("conflict", "invalid_instance_service_runtime");
       const configuration = canonicalJobJson({ policy, enabled: args.enabled });
       if (
-        previous !== null && previous.machineId === machineId &&
+        previous !== null &&
+        previous.machineId === machineId &&
         canonicalJobJson({ policy: previous.policy, enabled: previous.enabled }) === configuration
-      ) return { previous, current: previous };
+      )
+        return { previous, current: previous };
       const credential = args.enabled
-        ? this.auth.mintNativeServiceCredential(args.serviceId, machineId, currentActor, requirements)
+        ? this.auth.mintNativeServiceCredential(
+            args.serviceId,
+            machineId,
+            currentActor,
+            requirements,
+          )
         : null;
       if (previous?.credential)
         this.auth.revokeNativeServiceCredential(previous.credential, currentActor.principal.id);
@@ -151,29 +177,51 @@ export class InstanceServiceStore {
         jobId: null,
         configuredBy: currentActor.principal.id,
         configuredAt: this.runtime.now(),
+        traceId,
       };
-      this.store.db.query(
-        `INSERT INTO native_instance_services(service_id,revision,machine_id,plugin_id,configuration,credential,job_id,configured_by,configured_at)
+      this.store.db
+        .query(
+          `INSERT INTO native_instance_services(service_id,revision,machine_id,plugin_id,configuration,credential,job_id,configured_by,configured_at)
          VALUES(?,?,?,?,?,?,NULL,?,?) ON CONFLICT(service_id) DO UPDATE SET
          revision=excluded.revision,machine_id=excluded.machine_id,plugin_id=excluded.plugin_id,
          configuration=excluded.configuration,credential=excluded.credential,job_id=NULL,
          configured_by=excluded.configured_by,configured_at=excluded.configured_at`,
-      ).run(
-        current.serviceId, current.revision, machineId, current.pluginId, configuration,
-        credential === null ? null : canonicalJobJson(credential), current.configuredBy, current.configuredAt,
+        )
+        .run(
+          current.serviceId,
+          current.revision,
+          machineId,
+          current.pluginId,
+          canonicalJobJson({ policy, enabled: args.enabled, traceId }),
+          credential === null ? null : canonicalJobJson(credential),
+          current.configuredBy,
+          current.configuredAt,
+        );
+      this.store.addEvent(
+        null,
+        current.configuredAt,
+        current.configuredBy,
+        "instance_service_configured",
+        {
+          serviceId: current.serviceId,
+          machineId,
+          revision: current.revision,
+          previousRevision: previous?.revision ?? null,
+          enabled: current.enabled,
+          callerPluginId,
+          traceId,
+        },
       );
-      this.store.addEvent(null, current.configuredAt, current.configuredBy, "instance_service_configured", {
-        serviceId: current.serviceId, machineId, revision: current.revision,
-        previousRevision: previous?.revision ?? null, enabled: current.enabled, callerPluginId, traceId,
-      });
       return { previous, current };
     });
   }
 
   /** A delayed launch/exit can update only the configuration that caused it. */
   setJob(serviceId: string, revision: string, jobId: string | null): boolean {
-    return this.store.db.query(
-      "UPDATE native_instance_services SET job_id=? WHERE service_id=? AND revision=?",
-    ).run(jobId, serviceId, revision).changes > 0;
+    return (
+      this.store.db
+        .query("UPDATE native_instance_services SET job_id=? WHERE service_id=? AND revision=?")
+        .run(jobId, serviceId, revision).changes > 0
+    );
   }
 }

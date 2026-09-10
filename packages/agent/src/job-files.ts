@@ -14,8 +14,9 @@ import {
   type Stats,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dlopen, FFIType, ptr, type Library } from "bun:ffi";
+import { dlopen, FFIType, ptr, read as readNative, type Library } from "bun:ffi";
 import { connect, type Socket } from "node:net";
+import { getSystemErrorName } from "node:util";
 
 // Linux O_CLOEXEC and O_PATH are not exposed by every Node-compatible constants table.
 export const CLOSE_ON_EXEC = 0x80000;
@@ -41,6 +42,11 @@ const FILE_SYMBOLS = {
   socketpair: { args: [FFIType.i32, FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 },
   memfd_create: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
   fcntl: { args: [FFIType.i32, FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+  renameat2: {
+    args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.u32],
+    returns: FFIType.i32,
+  },
+  __errno_location: { args: [], returns: FFIType.ptr },
 } as const;
 let libc: Library<typeof FILE_SYMBOLS> | undefined;
 /** Lock remains owned by the open description until the caller closes it. */
@@ -229,7 +235,7 @@ export class HeldDirectory {
     }
   }
   /** Only private, trusted-writer directories may publish or replace names. */
-  publish(temporary: string, destination: string): void {
+  publish(temporary: string, destination: string, exclusive = false): void {
     safeComponent(temporary);
     safeComponent(destination);
     const stat = this.stat();
@@ -242,13 +248,25 @@ export class HeldDirectory {
       constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
     );
     try {
-      renameSync(`${this.procPath}/${temporary}`, `${this.procPath}/${destination}`);
+      if (exclusive) {
+        libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
+        const source = Buffer.from(`${temporary}\0`);
+        const target = Buffer.from(`${destination}\0`);
+        // A link/unlink substitute exposes nlink=2 and can leave that identity after a crash.
+        if (libc.symbols.renameat2(this.fd, ptr(source), this.fd, ptr(target), 1) !== 0) {
+          const address = libc.symbols.__errno_location();
+          const code = address === null ? "UNKNOWN" : getSystemErrorName(-readNative.i32(address));
+          throw Object.assign(new Error("exclusive_file_publication_failed"), { code });
+        }
+      } else {
+        renameSync(`${this.procPath}/${temporary}`, `${this.procPath}/${destination}`);
+      }
       fsyncSync(syncFd);
     } finally {
       closeSync(syncFd);
     }
   }
-  atomicWrite(name: string, data: Uint8Array | string, mode = 0o600): void {
+  atomicWrite(name: string, data: Uint8Array | string, mode = 0o600, exclusive = false): void {
     safeComponent(name);
     const temporary = `.stage-${randomUUID()}`;
     const fd = this.createFile(temporary, mode);
@@ -261,7 +279,7 @@ export class HeldDirectory {
         offset += written;
       }
       fsyncSync(fd);
-      this.publish(temporary, name);
+      this.publish(temporary, name, exclusive);
     } catch (error) {
       try {
         this.unlink(temporary);

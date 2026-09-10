@@ -15,6 +15,11 @@ import type {
   ServiceReadArgs,
   ServiceInvokeArgs,
   ServiceReply,
+  ConfigureInstanceServiceArgs,
+  InstanceServiceDescription,
+  InstanceServicesDescription,
+  InstanceServiceConfigurationRead,
+  InstanceServiceReadArgs,
 } from "@manifold/protocol";
 export type { ServiceConfigurationRead } from "@manifold/protocol";
 
@@ -107,6 +112,12 @@ export interface PluginServiceContext {
   configureConfiguration(args: ConfigureServiceConfigurationArgs): ServiceConfiguration;
   read(args: ServiceReadArgs): Promise<ServiceReply>;
   invoke(args: ServiceInvokeArgs): Promise<ServiceReply>;
+  describeInstance(args: { serviceId: string }): InstanceServiceDescription;
+  listInstances(args: Record<string, never>): InstanceServicesDescription;
+  readInstanceConfiguration(args: { serviceId: string }): InstanceServiceConfigurationRead;
+  configureInstance(args: ConfigureInstanceServiceArgs): Promise<InstanceServiceDescription>;
+  readInstance(args: InstanceServiceReadArgs): Promise<ServiceReply>;
+  invokeInstance(args: InstanceServiceReadArgs): Promise<ServiceReply>;
 }
 
 /** The producer validates each bounded body against its manifest's declared stream schema. */

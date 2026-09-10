@@ -388,6 +388,7 @@ export const ServiceProxyOperationPolicySchema = z
   });
 
 export const ServiceRuntimeSchema = z.strictObject({
+  scope: z.enum(["job", "instance"]).optional(),
   pluginId: name,
   operationId: name,
   installationRevision: name,
@@ -407,6 +408,14 @@ export const ServicePolicySchema = z
     origin: z.url().max(4096).optional(),
     allowLoopbackHttp: z.boolean().optional(),
     runtime: ServiceRuntimeSchema.optional(),
+    remote: z
+      .strictObject({
+        machineId: name,
+        serviceId: name,
+        revision: name,
+        policySha256: z.string().regex(/^[a-f0-9]{64}$/),
+      })
+      .optional(),
     credential: z
       .strictObject({
         ref: name,
@@ -442,14 +451,20 @@ export const ServicePolicySchema = z
       .refine((value) => Object.keys(value).length > 0 && Object.keys(value).length <= 64),
   })
   .refine((policy) => {
-    if (policy.runtime)
+    if (policy.runtime || policy.remote)
       return (
+        !(policy.runtime && policy.remote) &&
         policy.origin === undefined &&
         policy.credential === undefined &&
         policy.allowLoopbackHttp === undefined &&
         Object.values(policy.operations).every(
-          (operation) => "kind" in operation && operation.kind === "http-proxy",
-        )
+          (operation) =>
+            "kind" in operation ||
+            (policy.runtime?.scope === "instance" &&
+              operation.body.every((field) => !("credentialRef" in field.value))),
+        ) &&
+        (policy.runtime?.scope !== "instance" ||
+          Object.values(policy.runtime.input).every((source) => "literal" in source))
       );
     if (policy.origin === undefined || policy.allowLoopbackHttp === undefined) return false;
     const url = new URL(policy.origin);
@@ -537,6 +552,7 @@ export const ServiceAuthoritySubjectSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("job"), jobId: name }),
   z.strictObject({ kind: z.literal("read"), requestId: name }),
   z.strictObject({ kind: z.literal("invoke"), requestId: name }),
+  z.strictObject({ kind: z.literal("tunnel"), channelId: name }),
 ]);
 export type ServiceConfiguration = z.infer<typeof ServiceConfigurationSchema>;
 export type ServiceCredentialReference = z.infer<typeof ServiceCredentialReferenceSchema>;
@@ -553,6 +569,28 @@ export type ServiceResponsePolicy = z.infer<typeof ServiceResponsePolicySchema>;
 export type ServiceOperationPolicy = z.infer<typeof ServiceOperationPolicySchema>;
 export type ServicePolicy = z.infer<typeof ServicePolicySchema>;
 export type ServiceProxyOperationPolicy = z.infer<typeof ServiceProxyOperationPolicySchema>;
+
+/** Native peers bind channels to proved owners; frames carry no authority of their own. */
+export const ServiceTunnelFrameSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("data"),
+    channelId: name,
+    sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    data: z.base64().min(4).max(21848),
+  }),
+  z.strictObject({
+    type: z.literal("ack"),
+    channelId: name,
+    sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  }),
+  z.strictObject({
+    type: z.literal("end"),
+    channelId: name,
+    sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  }),
+  z.strictObject({ type: z.literal("close"), channelId: name }),
+]);
+export type ServiceTunnelFrame = z.infer<typeof ServiceTunnelFrameSchema>;
 
 /** Deduplicated owner-held sources for the selected operations plus the common header.
  * Omit operationIds for the whole policy; pass [] to inspect only the common header. */

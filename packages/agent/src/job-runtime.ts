@@ -104,6 +104,7 @@ export async function openConfiguredJobOwner(
     admissionPublicKey: config.admissionPublicKey,
     journal,
     cache,
+    managedState: state.openChild("locations", { create: true }),
     outputs,
     delegatedCgroup,
     bubblewrapFd,

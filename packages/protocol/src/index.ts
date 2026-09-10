@@ -1,4 +1,10 @@
 export {
+  JobOwnerConfigSchema,
+  JobOwnerConfigTemplateSchema,
+  type JobOwnerConfig,
+  type JobOwnerConfigTemplate,
+} from "./job-owner-config.ts";
+export {
   encodeTerminalRgba,
   decodeTerminalRgba,
   validTerminalRgba,
@@ -82,6 +88,8 @@ export {
   ServiceReadArgsSchema,
   ServiceInvokeArgsSchema,
   ServiceAuthoritySubjectSchema,
+  ServiceTunnelFrameSchema,
+  type ServiceTunnelFrame,
   servicePolicyCredentialRefs,
   type ServiceConfiguration,
   type ServiceConfigurationRead,
@@ -102,6 +110,21 @@ export {
   type ServiceRuntime,
   type ServicePolicy,
 } from "./services.ts";
+export {
+  InstanceServiceTargetSchema,
+  InstanceServiceOwnerSchema,
+  InstanceServiceDescriptionSchema,
+  InstanceServicesDescriptionSchema,
+  InstanceServiceConfigurationReadSchema,
+  ConfigureInstanceServiceArgsSchema,
+  InstanceServiceReadArgsSchema,
+  type InstanceServiceOwner,
+  type InstanceServiceDescription,
+  type InstanceServicesDescription,
+  type InstanceServiceConfigurationRead,
+  type ConfigureInstanceServiceArgs,
+  type InstanceServiceReadArgs,
+} from "./instance-services.ts";
 export {
   WORKER_CONTEXT_FD_ENV,
   WORKER_FRAME_BYTES,
@@ -171,6 +194,7 @@ export {
   type PublicJobRun,
   type ListJobRunsResult,
   JobOwnerSchema,
+  JOB_OWNER_PROTOCOL_VERSION,
   JobCommandSchema,
   JobArtifactDeliverySchema,
   type JobArtifactDelivery,
@@ -205,9 +229,6 @@ export {
   INSTANCE_PROTOCOL_COMPAT_VERSIONS,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
   PROTOCOL_VERSION,
-  TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION,
-  GOVERNED_JOB_MIN_PROTOCOL_VERSION,
-  supportsGovernedJobs,
 } from "./version.ts";
 export {
   MAX_TERMINAL_HOST_FRAME_BYTES,
@@ -588,10 +609,12 @@ export {
   SERVER_TO_AGENT_MESSAGE_TYPES,
   ServerToAgentMessageSchema,
   TerminalProgramSchema,
+  TerminalExecutionSchema,
   type AdvertisedTerminal,
   type AgentMessage,
   type ServerToAgentMessage,
   type TerminalProgram,
+  type TerminalExecution,
 } from "./machine.ts";
 export {
   InstanceOriginSchema,

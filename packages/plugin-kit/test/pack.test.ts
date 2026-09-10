@@ -263,11 +263,20 @@ describe("the artifact", () => {
 });
 
 describe("the packed server half, as a real isolate", () => {
-  test("answers load, dispatch and shutdown over Bun ipc", async () => {
+  test("default packing keeps server dispatch independent of browser shared modules", async () => {
+    const defaultBundlePath = `${dir}/default-linkage.json`;
+    const pack = Bun.spawn(["bun", `${KIT}/src/pack.ts`, SAMPLE, "--out", defaultBundlePath], {
+      cwd: KIT,
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const [code, stderr] = await Promise.all([pack.exited, new Response(pack.stderr).text()]);
+    if (code !== 0) throw new Error(stderr);
+    const defaultBundle = PluginBundleSchema.parse(await Bun.file(defaultBundlePath).json());
     const serverFile = `${dir}/${PLUGIN_BUNDLE_SERVER_FILE}`;
     await Bun.write(
       serverFile,
-      Buffer.from(bundle.files[PLUGIN_BUNDLE_SERVER_FILE] ?? "", "base64"),
+      Buffer.from(defaultBundle.files[PLUGIN_BUNDLE_SERVER_FILE] ?? "", "base64"),
     );
     const queue: IsolateChildFrame[] = [];
     const waiting: ((frame: IsolateChildFrame) => void)[] = [];
@@ -292,7 +301,7 @@ describe("the packed server half, as a real isolate", () => {
       return promise;
     };
     try {
-      send({ t: "load", pluginId: "example.counter", manifest: bundle.manifest, dir });
+      send({ t: "load", pluginId: "example.counter", manifest: defaultBundle.manifest, dir });
       const loaded = await next();
       expect(loaded).toMatchObject({
         t: "loaded",

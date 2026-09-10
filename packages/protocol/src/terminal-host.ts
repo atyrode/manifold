@@ -3,6 +3,7 @@ import {
   AdvertisedTerminalSchema,
   AgentMessageSchema,
   ServerToAgentMessageSchema,
+  TerminalExecutionSchema,
   type AgentMessage,
   type ServerToAgentMessage,
 } from "./machine.ts";
@@ -36,7 +37,7 @@ export const TERMINAL_HOST_SOCKET_ENV = "MANIFOLD_TERMINAL_HOST_SOCKET";
  * separately supervised host plus a replaceable transport. Bumped only when a host and a
  * transport of different builds can no longer share a socket.
  */
-export const TERMINAL_HOST_PROTOCOL_VERSION = 1;
+export const TERMINAL_HOST_PROTOCOL_VERSION = 2;
 
 /**
  * One frame's ceiling on the IPC socket. A machine frame never exceeds the session frame
@@ -121,8 +122,8 @@ export const TerminalHostStatusRequestSchema = z.strictObject({
 
 /**
  * The one non-destructive way to stop a host: maintenance asks, and the host exits ONLY when
- * admission is latched closed AND it retains no terminal — checked in the same synchronous
- * step that would otherwise admit a `create`, so nothing slips between the check and the
+ * admission is latched closed AND it retains no terminal or native work — checked in the same
+ * step that would otherwise admit new work, so nothing slips between the check and the
  * exit. Anything else is `shutdown_refused` by name; there is no force flag on this seam.
  */
 export const TerminalHostShutdownRequestSchema = z.strictObject({
@@ -158,6 +159,8 @@ export const TerminalHostStatusSchema = z.strictObject({
   build: z.string(),
   pid: z.number().int().positive(),
   draining: z.boolean(),
+  /** Older retained owners omit this; absence grants no unconfined terminal authority. */
+  terminalExecution: TerminalExecutionSchema.optional(),
   transportAttached: z.boolean(),
   terminals: z.array(AdvertisedTerminalSchema),
 });

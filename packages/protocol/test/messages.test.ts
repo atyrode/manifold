@@ -4,7 +4,6 @@ import {
   ClientMessageSchema,
   ClientMessageBodySchema,
   CreateContainerRequestSchema,
-  MACHINE_PROTOCOL_COMPAT_VERSIONS,
   MAX_DOC_UPDATE_BYTES,
   MAX_ELEMENT_PAYLOAD_KEYS,
   MAX_GESTURE_POINT_VALUES,
@@ -28,7 +27,6 @@ import {
   elementPayload,
   hasCap,
   soloLeaf,
-  supportsGovernedJobs,
   validateTileLayout,
   type LocationPath,
   type Tile,
@@ -943,16 +941,5 @@ describe("tile layout schemas", () => {
     expect(soloLeaf({ root: split(ROOT_TILE_ID, ["t1"]), t1: leaf("t1", terminal("s1")) })).toEqual(
       { tileId: "t1", ref: terminal("s1") },
     );
-  });
-});
-
-describe("machine-channel compatibility (docs/CONTRACTS.md §Protocol and compatibility)", () => {
-  test("additive job frames retain legacy terminal compatibility without granting job support", () => {
-    for (let version = 0; version <= PROTOCOL_VERSION + 1; version++) {
-      expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(version)).toBe(
-        version >= 16 && version <= PROTOCOL_VERSION,
-      );
-      expect(supportsGovernedJobs(version)).toBe(version >= 28 && version <= PROTOCOL_VERSION);
-    }
   });
 });

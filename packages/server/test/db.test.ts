@@ -2156,6 +2156,7 @@ INSERT INTO meta VALUES ('schema_version', '26');
 CREATE TABLE machine_job_installs(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, enabled INTEGER NOT NULL, ready INTEGER NOT NULL DEFAULT 0, purge_requested INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(machine_id,plugin_id));
 CREATE TABLE machine_job_installations(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, PRIMARY KEY(machine_id,plugin_id,revision));
 CREATE TABLE machine_job_inputs(job_id TEXT NOT NULL, request_id TEXT NOT NULL, seq INTEGER NOT NULL, actor TEXT NOT NULL, trace_id TEXT NOT NULL, decision_id TEXT, state TEXT NOT NULL, reason TEXT, PRIMARY KEY(job_id,request_id));
+CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, digest TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, permit TEXT, result TEXT, created_at INTEGER NOT NULL, audit_origin TEXT, decision_id TEXT, cancel_reason TEXT, event_seq INTEGER NOT NULL DEFAULT 0, output_seq INTEGER, next_input_seq INTEGER, stdin_closed INTEGER NOT NULL DEFAULT 0);
 INSERT INTO machine_job_installs VALUES ('machine', 'vendor.worker', 'install-2', 'artifact-2', '{}', 1, 1, 0);
 INSERT INTO machine_job_installations VALUES
   ('machine', 'vendor.worker', 'install-1', 'artifact-1', '{}'),

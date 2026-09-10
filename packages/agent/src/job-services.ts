@@ -1,6 +1,7 @@
 import { fstatSync, readSync } from "node:fs";
-import { request as httpRequest, type IncomingMessage } from "node:http";
+import { Agent, request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
+import type { Socket } from "node:net";
 import {
   SERVICE_FRAME_BYTES,
   ServiceBindingSchema,
@@ -15,6 +16,7 @@ import {
   type ServiceRefusal,
   type ServiceReply,
 } from "@manifold/protocol";
+import type { JobServiceEndpoint } from "./job-inputs.ts";
 
 /** The owner captures job identity, lineage and current native authority in this closure.
  * Returning true must include the native write-ahead trace before any upstream effect.
@@ -117,8 +119,7 @@ function abortable<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
 function prepareRequest(
   operation: ServiceOperationPolicy,
   input: ServiceInput,
-  origin: string,
-): { url: URL; body?: string } {
+): { path: string; body?: string } {
   if (Object.keys(input).some((key) => !Object.hasOwn(operation.input, key)))
     throw new ServiceFailure("service_input_invalid");
   for (const [key, field] of Object.entries(operation.input)) {
@@ -157,22 +158,21 @@ function prepareRequest(
       return value;
     })
     .join("/");
-  const url = new URL(path, origin);
-  if (url.origin !== origin || url.pathname !== path)
-    throw new ServiceFailure("service_input_invalid");
+  const query = new URLSearchParams();
   for (const [target, source] of Object.entries(operation.query)) {
     const value = input[source];
-    if (value !== undefined) url.searchParams.set(target, String(value));
+    if (value !== undefined) query.set(target, String(value));
   }
   // Empty credential leaves bound caller-controlled bytes without reading a source.
-  const body = requestBody(operation, input, url);
-  return body === undefined ? { url } : { url, body };
+  const target = query.size ? `${path}?${query}` : path;
+  const body = requestBody(operation, input, target);
+  return body === undefined ? { path: target } : { path: target, body };
 }
 
 function requestBody(
   operation: ServiceOperationPolicy,
   input: ServiceInput,
-  url: URL,
+  target: string,
   credentials?: ReadonlyMap<string, string>,
 ): string | undefined {
   const bodyFields: Record<string, unknown> = Object.create(null);
@@ -203,10 +203,7 @@ function requestBody(
     Reflect.set(node, field.path[field.path.length - 1]!, value);
   }
   const body = operation.body.length ? JSON.stringify(bodyFields) : undefined;
-  if (
-    Buffer.byteLength(url.pathname + url.search) + Buffer.byteLength(body ?? "") >
-    operation.maxRequestBytes
-  )
+  if (Buffer.byteLength(target) + Buffer.byteLength(body ?? "") > operation.maxRequestBytes)
     throw new ServiceFailure("service_input_invalid");
   return body;
 }
@@ -217,16 +214,32 @@ async function transport(
   body: string | undefined,
   headers: Record<string, string>,
   signal: AbortSignal,
+  socket?: Socket,
 ): Promise<Buffer> {
   signal.throwIfAborted();
   let response: IncomingMessage | undefined;
+  let runtimeAgent: Agent | undefined;
   try {
+    if (socket) {
+      if (socket.destroyed) throw new ServiceFailure("service_unavailable");
+      runtimeAgent = new Agent({ keepAlive: false, maxSockets: 1 });
+      let claimed = false;
+      // Same single-use handoff as the native proxy: never fall back to Agent's dialer.
+      runtimeAgent.createConnection = (_options, callback) => {
+        if (claimed || socket.destroyed) {
+          callback?.(new ServiceFailure("service_unavailable"), socket);
+          return undefined;
+        }
+        claimed = true;
+        return socket;
+      };
+    }
     const { promise, resolve, reject } = Promise.withResolvers<IncomingMessage>();
     const req = (url.protocol === "https:" ? httpsRequest : httpRequest)(
       url,
       {
         method: operation.method,
-        agent: false,
+        agent: runtimeAgent ?? false,
         signal,
         maxHeaderSize: 16384,
         headers,
@@ -269,6 +282,7 @@ async function transport(
     return Buffer.concat(chunks, size);
   } finally {
     response?.destroy();
+    runtimeAgent?.destroy();
   }
 }
 
@@ -351,6 +365,13 @@ function inspectJson(value: unknown, credentials: ReadonlyMap<string, string>): 
 export function createJobServiceRunner(options: {
   policies: readonly ServicePolicy[];
   resolveCredential?: ResolveServiceCredential;
+  /** Resolve only within admitted authority. Transfer one fresh, already-proved socket;
+   * signal covers producer/owner/configuration revocation, not merely process exit.
+   * The resolver must also close pending connections when the request signal aborts. */
+  resolveRuntime?: (
+    policy: ServicePolicy,
+    signal: AbortSignal,
+  ) => Promise<JobServiceEndpoint & { signal: AbortSignal; socket: Socket }>;
 }): JobServiceRunner {
   const policies = new Map<
     string,
@@ -404,7 +425,13 @@ export function createJobServiceRunner(options: {
       const operation = Object.hasOwn(entry.policy.operations, request.operationId)
         ? entry.policy.operations[request.operationId]
         : undefined;
-      if (!operation || "kind" in operation || !entry.policy.origin)
+      const instanceRuntime = entry.policy.runtime?.scope === "instance";
+      if (
+        !operation ||
+        "kind" in operation ||
+        (!entry.policy.origin && !instanceRuntime) ||
+        (instanceRuntime && operation.response.kind !== "projected-json")
+      )
         return refusal("service_operation_unknown");
       if (entry.active >= entry.policy.maxConcurrent) return refusal("service_busy");
       const controller = new AbortController();
@@ -418,23 +445,30 @@ export function createJobServiceRunner(options: {
       active.add(controller);
       entry.active++;
       const credentials = new Map<string, string>();
+      let runtimeSocket: Socket | undefined;
+      let runtimeSignal: AbortSignal | undefined;
+      const destroyRuntime = () => runtimeSocket?.destroy();
+      controller.signal.addEventListener("abort", destroyRuntime, { once: true });
       try {
-        const prepared = prepareRequest(operation, request.input, entry.policy.origin);
+        const prepared = prepareRequest(operation, request.input);
         const authority = Object.freeze({
           serviceId: request.serviceId,
           revision: entry.policy.revision,
           operationId: request.operationId,
           input: Object.freeze(request.input),
         });
-        try {
-          if (
-            (await abortable(authorize(authority, controller.signal), controller.signal)) !== true
-          )
-            throw new Error("denied");
-        } catch {
-          throw new ServiceFailure("service_unauthorized");
-        }
-        controller.signal.throwIfAborted();
+        const check = async () => {
+          try {
+            if (
+              (await abortable(authorize(authority, controller.signal), controller.signal)) !== true
+            )
+              throw new Error("denied");
+          } catch {
+            throw new ServiceFailure("service_unauthorized");
+          }
+          controller.signal.throwIfAborted();
+        };
+        await check();
         const headers: Record<string, string> = {
           ...operation.requestHeaders,
           "accept-encoding": "identity",
@@ -442,6 +476,41 @@ export function createJobServiceRunner(options: {
             operation.response.kind === "bytes" ? "application/octet-stream" : "application/json",
         };
         if (prepared.body !== undefined) headers["content-type"] = "application/json";
+        let origin = entry.policy.origin;
+        if (instanceRuntime) {
+          if (!options.resolveRuntime) throw new ServiceFailure("service_unavailable");
+          const pending = options
+            .resolveRuntime(entry.policy, controller.signal)
+            .then((runtime) => {
+              // A resolver can finish after the bounded wait has already been cancelled.
+              if (controller.signal.aborted) {
+                runtime.socket.destroy();
+                throw new ServiceFailure("service_cancelled");
+              }
+              runtimeSocket = runtime.socket;
+              return runtime;
+            });
+          const runtime = await abortable(pending, controller.signal);
+          if (
+            !/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/.test(runtime.url) ||
+            Number(new URL(runtime.url).port) > 65535 ||
+            !/^[A-Za-z0-9_-]{32,128}$/.test(runtime.bearer) ||
+            !runtimeSocket ||
+            runtimeSocket.destroyed ||
+            runtimeSocket.connecting ||
+            !runtimeSocket.readable ||
+            !runtimeSocket.writable ||
+            runtimeSocket.remoteAddress !== "127.0.0.1" ||
+            runtimeSocket.remotePort !== Number(new URL(runtime.url).port)
+          )
+            throw new ServiceFailure("service_unavailable");
+          origin = runtime.url;
+          credentials.set("runtime", runtime.bearer);
+          runtimeSignal = runtime.signal;
+          runtimeSignal.addEventListener("abort", abort, { once: true });
+          if (runtimeSignal.aborted) controller.abort();
+          headers.authorization = `Bearer ${runtime.bearer}`;
+        }
         for (const ref of servicePolicyCredentialRefs(entry.policy, [request.operationId])) {
           controller.signal.throwIfAborted();
           try {
@@ -461,22 +530,26 @@ export function createJobServiceRunner(options: {
         if (credential)
           headers[credential.header.toLowerCase()] =
             credential.prefix + credentials.get(credential.ref)!;
-        const body = credentials.size
-          ? requestBody(operation, request.input, prepared.url, credentials)
-          : prepared.body;
+        const body =
+          credentials.size && !instanceRuntime
+            ? requestBody(operation, request.input, prepared.path, credentials)
+            : prepared.body;
         controller.signal.throwIfAborted();
         // Source reads may await rotation. Recheck live authority/availability before I/O.
-        if (credentials.size) {
-          try {
-            if (
-              (await abortable(authorize(authority, controller.signal), controller.signal)) !== true
-            )
-              throw new Error("denied");
-          } catch {
-            throw new ServiceFailure("service_unauthorized");
-          }
-        }
-        const bytes = await transport(prepared.url, operation, body, headers, controller.signal);
+        if (credentials.size) await check();
+        controller.signal.throwIfAborted();
+        if (!origin) throw new ServiceFailure("service_unavailable");
+        const url = new URL(prepared.path, origin);
+        if (url.origin !== origin || url.pathname + url.search !== prepared.path)
+          throw new ServiceFailure("service_input_invalid");
+        const bytes = await transport(
+          url,
+          operation,
+          body,
+          headers,
+          controller.signal,
+          runtimeSocket,
+        );
         let result: unknown;
         if (operation.response.kind === "bytes") {
           for (const secret of credentials.values())
@@ -504,6 +577,7 @@ export function createJobServiceRunner(options: {
         const serialized = JSON.stringify(result);
         if (Buffer.byteLength(serialized) > operation.maxResultBytes)
           throw new ServiceFailure("service_response_limit");
+        if (instanceRuntime) await check();
         controller.signal.throwIfAborted();
         // Result is JSON from bounded parsing/projection, never upstream headers or exception text.
         const reply = {
@@ -524,6 +598,9 @@ export function createJobServiceRunner(options: {
           error instanceof ServiceFailure ? error.refusal : "service_upstream_refused",
         );
       } finally {
+        runtimeSignal?.removeEventListener("abort", abort);
+        controller.signal.removeEventListener("abort", destroyRuntime);
+        runtimeSocket?.destroy();
         credentials.clear();
         clearTimeout(timer);
         callerSignal?.removeEventListener("abort", abort);

@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { closeSync, mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createTCPServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -12,6 +14,7 @@ import type {
 import { createJobServiceRunner, heldServiceCredentialResolver } from "../src/job-services.ts";
 import { HeldDirectory } from "../src/job-files.ts";
 import { JobResources } from "../src/job-resources.ts";
+import { connectWorkloadLoopback } from "../src/job-listener-proof.ts";
 
 const binding: ServiceBinding = { serviceId: "inventory", revision: "r1", operationIds: ["read"] };
 const call: ServiceCall = {
@@ -91,6 +94,271 @@ test("real service reads reconstruct only declared metadata across arrays", asyn
   } finally {
     runner.close();
     await server.stop(true);
+  }
+});
+
+function instancePolicy(origin: string): ServicePolicy {
+  const spec = policy(origin);
+  delete spec.origin;
+  delete spec.allowLoopbackHttp;
+  spec.runtime = {
+    scope: "instance",
+    pluginId: "fixture",
+    operationId: "serve",
+    installationRevision: "r1",
+    artifactSha256: "a".repeat(64),
+    resourceBindingDigest: "b".repeat(64),
+    input: {},
+  };
+  return spec;
+}
+
+async function runtimeUpstream(
+  handler: (request: IncomingMessage, response: ServerResponse) => void,
+) {
+  const server = createServer(handler);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("missing runtime port");
+  return {
+    server,
+    port: address.port,
+    url: `http://127.0.0.1:${address.port}`,
+    async close() {
+      const stopped = new Promise<void>((resolve) => server.close(() => resolve()));
+      server.closeAllConnections();
+      await stopped;
+    },
+  };
+}
+
+test("instance reads and invokes use only proved connections and disclose only safe projection leaves", async () => {
+  const bearer = "native-sealed-bearer".repeat(2);
+  const lifetime = new AbortController();
+  const provedPorts = new Set<number>();
+  const sockets: Socket[] = [];
+  let connections = 0;
+  let echo = false;
+  const items = [{ id: "a", enabled: true }];
+  const server = await runtimeUpstream(async (request, response) => {
+    if (
+      !provedPorts.has(request.socket.remotePort!) ||
+      request.headers.authorization !== `Bearer ${bearer}`
+    ) {
+      response.writeHead(403).end();
+      return;
+    }
+    if (request.method === "POST") {
+      let body = "";
+      for await (const chunk of request) body += chunk.toString();
+      const input = JSON.parse(body);
+      items.push({ id: input.id, enabled: true });
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        credential: { token: bearer },
+        items: items.map((item) => ({
+          ...item,
+          id: echo ? bearer : item.id,
+          privateSnapshot: { token: bearer },
+        })),
+      }),
+    );
+  });
+  server.server.on("connection", () => connections++);
+  const spec = instancePolicy(server.url);
+  spec.operations.invoke = {
+    ...(spec.operations.read as ServiceOperationPolicy),
+    method: "POST",
+    input: { id: { type: "string", required: true, maxBytes: 32 } },
+    body: [{ path: ["id"], value: { input: "id" } }],
+  };
+  const runner = createJobServiceRunner({
+    policies: [spec],
+    resolveRuntime: async (_policy, signal) => {
+      const socket = await connectWorkloadLoopback(server.port, () => true, signal);
+      sockets.push(socket);
+      provedPorts.add(socket.localPort!);
+      return { url: server.url, bearer, signal: lifetime.signal, socket };
+    },
+  });
+  try {
+    expect(await runner.call(call, binding, allow)).toEqual({
+      type: "service_result",
+      requestId: call.requestId,
+      ok: true,
+      result: { items: [{ id: "a", enabled: true }] },
+    });
+    expect(
+      await runner.call(
+        { ...call, operationId: "invoke", input: { id: "b" } },
+        { ...binding, operationIds: ["read", "invoke"] },
+        allow,
+      ),
+    ).toMatchObject({
+      ok: true,
+      result: {
+        items: [
+          { id: "a", enabled: true },
+          { id: "b", enabled: true },
+        ],
+      },
+    });
+    echo = true;
+    expect(await runner.call(call, binding, allow)).toEqual({
+      type: "service_result",
+      requestId: call.requestId,
+      ok: false,
+      refusal: "service_response_invalid",
+    });
+    expect(connections).toBe(3);
+    expect(sockets.every((socket) => socket.destroyed)).toBe(true);
+  } finally {
+    lifetime.abort();
+    runner.close();
+    await server.close();
+  }
+});
+
+test("instance transport never redials when its proved socket dies before HTTP handoff", async () => {
+  let requestBytes = 0;
+  let connections = 0;
+  let proved: Socket | undefined;
+  const peers = new Set<Socket>();
+  const lifetime = new AbortController();
+  const accepted = Promise.withResolvers<void>();
+  const server = createTCPServer((socket) => {
+    connections++;
+    peers.add(socket);
+    socket.on("data", (chunk) => {
+      requestBytes += chunk.length;
+    });
+    socket.once("close", () => peers.delete(socket));
+    accepted.resolve();
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("missing runtime port");
+  const url = `http://127.0.0.1:${address.port}`;
+  const runner = createJobServiceRunner({
+    policies: [instancePolicy(url)],
+    resolveRuntime: async (_policy, signal) => {
+      proved = await connectWorkloadLoopback(address.port, () => true, signal);
+      await accepted.promise;
+      return { url, bearer: "x".repeat(32), signal: lifetime.signal, socket: proved };
+    },
+  });
+  try {
+    expect(
+      await runner.call(call, binding, async () => {
+        proved?.destroy();
+        return true;
+      }),
+    ).toMatchObject({ ok: false, refusal: "service_unavailable" });
+    expect(connections).toBe(1);
+    expect(requestBytes).toBe(0);
+    expect(proved?.destroyed).toBe(true);
+  } finally {
+    lifetime.abort();
+    runner.close();
+    for (const peer of peers) peer.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("instance resolution and response waits cannot retain revoked authority", async () => {
+  let granted = false;
+  let requests = 0;
+  let resolutions = 0;
+  let revokeAt: "resolution" | "response" = "resolution";
+  const sockets: Socket[] = [];
+  const lifetime = new AbortController();
+  const server = await runtimeUpstream((_request, response) => {
+    requests++;
+    granted = false;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"items":[{"id":"private-after-revocation","enabled":true}]}');
+  });
+  const runner = createJobServiceRunner({
+    policies: [instancePolicy(server.url)],
+    resolveRuntime: async (_policy, signal) => {
+      resolutions++;
+      const socket = await connectWorkloadLoopback(server.port, () => true, signal);
+      sockets.push(socket);
+      if (revokeAt === "resolution") granted = false;
+      return { url: server.url, bearer: "x".repeat(32), signal: lifetime.signal, socket };
+    },
+  });
+  const authorize = async () => granted;
+  const denied = {
+    type: "service_result",
+    requestId: call.requestId,
+    ok: false,
+    refusal: "service_unauthorized",
+  } as const;
+  try {
+    expect(await runner.call(call, binding, authorize)).toEqual(denied);
+    expect(resolutions).toBe(0);
+    granted = true;
+    expect(await runner.call(call, binding, authorize)).toEqual(denied);
+    expect(requests).toBe(0);
+    revokeAt = "response";
+    granted = true;
+    expect(await runner.call(call, binding, authorize)).toEqual(denied);
+    expect(requests).toBe(1);
+    expect(sockets.every((socket) => socket.destroyed)).toBe(true);
+  } finally {
+    lifetime.abort();
+    runner.close();
+    await server.close();
+  }
+});
+
+test("instance sockets returned after cancellation are closed without upstream effects", async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const resolved = Promise.withResolvers<Socket>();
+  const controller = new AbortController();
+  const lifetime = new AbortController();
+  let requests = 0;
+  const server = await runtimeUpstream((_request, response) => {
+    requests++;
+    response.end();
+  });
+  const runner = createJobServiceRunner({
+    policies: [instancePolicy(server.url)],
+    resolveRuntime: async () => {
+      // Deliberately ignore request cancellation to exercise late-result ownership.
+      const socket = await connectWorkloadLoopback(server.port, () => true, lifetime.signal);
+      entered.resolve();
+      await release.promise;
+      resolved.resolve(socket);
+      return { url: server.url, bearer: "x".repeat(32), signal: controller.signal, socket };
+    },
+  });
+  try {
+    const reply = runner.call(call, binding, allow, controller.signal);
+    await entered.promise;
+    controller.abort();
+    expect(await reply).toMatchObject({ ok: false, refusal: "service_cancelled" });
+    release.resolve();
+    const socket = await resolved.promise;
+    // Run after the resolver's settlement handler, without relying on a wall-clock delay.
+    await Promise.resolve();
+    expect(socket.destroyed).toBe(true);
+    expect(requests).toBe(0);
+  } finally {
+    lifetime.abort();
+    release.resolve();
+    runner.close();
+    await server.close();
   }
 });
 

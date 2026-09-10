@@ -454,6 +454,9 @@ export class Agent {
       protocolVersion: PROTOCOL_VERSION,
       terminals: status.terminals,
       terminalHostId: seat.terminalHostId,
+      ...(status.terminalExecution === undefined
+        ? {}
+        : { terminalExecution: status.terminalExecution }),
       ...(this.jobOwnerLink ? { jobOwner: this.jobOwnerLink.identity } : {}),
     });
     this.helloSent = socket;

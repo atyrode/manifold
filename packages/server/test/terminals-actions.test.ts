@@ -42,8 +42,8 @@ import {
 const OWNER_KEY = "c".repeat(64);
 
 class FakeMachine implements MachineChannel {
+  readonly terminalExecution: MachineChannel["terminalExecution"] = "unconfined";
   readonly sent: ServerToAgentMessage[] = [];
-  readonly protocolVersion = PROTOCOL_VERSION;
   readonly terminalHostId: string | null = null;
   constructor(readonly machineId: string) {}
 
@@ -130,6 +130,7 @@ async function fixture(): Promise<TerminalsFixture> {
   host = await testPluginHost(store, auth, rooms, broker, runtime, {
     machines: {
       isOnline: () => true,
+      getTerminalExecution: () => machine.terminalExecution,
       drain: () => Promise.resolve({ ok: false, reason: "fixture has no terminal owner" }),
     },
     events,

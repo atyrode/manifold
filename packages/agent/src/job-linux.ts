@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
 import type { Socket } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
-import { MachineLocationSchema } from "@manifold/protocol";
+import { MachineLocationSchema, MachineOperationSchema } from "@manifold/protocol";
 import {
   ownsWorkloadLoopbackConnection,
   ownsWorkloadLoopbackListener,
@@ -64,10 +64,15 @@ export interface LinuxJobSpec {
   locations: readonly LinuxJobBind[];
   /** Exact directory mount selected by the reviewed operation, not a caller path. */
   workingDirectory?: string;
+  environment?: Readonly<Record<string, string>>;
   outputs: readonly LinuxJobBind[];
   /** Dedicated, empty cgroup-v2 delegation with memory and pids enabled. */
   delegatedCgroup: HeldDirectory;
   limits: LinuxJobLimits;
+  /** Only native instance-service admission may remove the elapsed-time deadline. */
+  persistentService?: true;
+  /** Service peers must be accepted before the owner releases any application bytes. */
+  providesService?: boolean;
   network: "none" | "host";
   bidirectional: boolean;
   /** Exposes only /sys/fs/cgroup/workloads; the enforcing ancestor is never mounted. */
@@ -216,7 +221,7 @@ function inspectMountDirectory(
 /** Exporting FDs invalidates output-writer closure, even across disjoint declared mounts.
  * The byte-only job context uses read/write, not ancillary SCM_RIGHTS messages.
  * sendmsg/sendmmsg and io_uring are deliberately unavailable, including for host networking. */
-function jobSeccompFilter(): Buffer {
+function jobSeccompFilter(providesService: boolean): Buffer {
   const arch = process.arch === "x64" ? 0xc000003e : process.arch === "arm64" ? 0xc00000b7 : null;
   if (arch === null) refuse("unsupported-seccomp-architecture");
   const denied = process.arch === "x64" ? [46, 307, 425, 426, 427] : [211, 269, 425, 426, 427];
@@ -228,6 +233,19 @@ function jobSeccompFilter(): Buffer {
   ];
   if (process.arch === "x64") instructions.push([0x35, 0, 1, 0x40000000], [0x06, 0, 0, 0x00050001]); // reject x32
   for (const syscall of denied) instructions.push([0x15, 0, 1, syscall], [0x06, 0, 0, 0x00050001]); // ERRNO(EPERM)
+  if (providesService) {
+    // Deferred accept needs request bytes before the owner can prove the accepted peer.
+    // Make the optimization unsupported rather than weakening that ownership boundary.
+    // Both supported kernel ABIs truncate these integer arguments to their low 32 bits.
+    instructions.push(
+      [0x15, 0, 5, process.arch === "x64" ? 54 : 208],
+      [0x20, 0, 0, 24],
+      [0x15, 0, 3, 6], // IPPROTO_TCP
+      [0x20, 0, 0, 32],
+      [0x15, 0, 1, 9], // TCP_DEFER_ACCEPT
+      [0x06, 0, 0, 0x0005005f], // ERRNO(EOPNOTSUPP)
+    );
+  }
   instructions.push([0x06, 0, 0, 0x7fff0000]); // ALLOW
   const bytes = Buffer.alloc(instructions.length * 8);
   for (const [index, instruction] of instructions.entries()) {
@@ -258,16 +276,18 @@ export function preflightLinuxJobRuntime(): void {
 export function preflightLinuxJob(spec: LinuxJobSpec): number {
   preflightLinuxJobRuntime();
   if (
-    ![
-      spec.limits.memoryBytes,
-      spec.limits.processes,
-      spec.limits.outputBytes,
-      spec.limits.timeoutMs,
-    ].every((value) => Number.isSafeInteger(value) && value > 0) ||
+    ![spec.limits.memoryBytes, spec.limits.processes, spec.limits.outputBytes].every(
+      (value) => Number.isSafeInteger(value) && value > 0,
+    ) ||
+    !Number.isSafeInteger(spec.limits.timeoutMs) ||
+    spec.limits.timeoutMs < 0 ||
+    (spec.limits.timeoutMs === 0) !== (spec.persistentService === true) ||
     spec.limits.processes >= Number.MAX_SAFE_INTEGER ||
     spec.limits.timeoutMs > 2_147_483_647
   )
     refuse("invalid-limits");
+  if (!MachineOperationSchema.shape.environment.safeParse(spec.environment).success)
+    refuse("invalid-fixed-environment");
   if (spec.network !== "none" && spec.network !== "host") refuse("unsupported-network");
   if (
     spec.argv.length > 1024 ||
@@ -522,7 +542,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   let seccompFd: number;
   try {
     namedOutputCapacity = preflightLinuxJob(spec);
-    seccompFd = privateByteFile(jobSeccompFilter());
+    seccompFd = privateByteFile(jobSeccompFilter(spec.providesService === true));
   } catch (error) {
     throw observedStartRefusal(error);
   }
@@ -621,6 +641,8 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   ]) {
     args.push("--perms", "0700", "--dir", path!, "--setenv", name!, path!);
   }
+  for (const [name, value] of Object.entries(spec.environment ?? {}))
+    args.push("--setenv", name, value);
   if (spec.network === "none") args.push("--unshare-net");
   if (spec.terminal)
     args.push("--setenv", "TERM", "xterm-256color", "--setenv", "COLORTERM", "truecolor");
@@ -815,7 +837,9 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     throw observedStartRefusal(error);
   }
   const startedAt = Date.now();
-  const timer = setTimeout(() => terminate("timeout"), spec.limits.timeoutMs);
+  const timer = spec.persistentService
+    ? undefined
+    : setTimeout(() => terminate("timeout"), spec.limits.timeoutMs);
   const result = (async (): Promise<LinuxJobResult> => {
     try {
       const exit = await Promise.race([exited, terminalFailure.promise]);

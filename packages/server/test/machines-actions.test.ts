@@ -41,6 +41,7 @@ interface Fixture {
 function liveness(online: ReadonlySet<string>): MachineAdmission {
   return {
     isOnline: (machineId) => online.has(machineId),
+    getTerminalExecution: () => null,
     drain: (machineId, draining) =>
       Promise.resolve(
         online.has(machineId)

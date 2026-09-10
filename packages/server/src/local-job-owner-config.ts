@@ -1,5 +1,5 @@
 import { createHash, createPublicKey } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { DirectoryExclusions, HeldDirectory } from "@manifold/agent/job-configuration";
 import {
@@ -21,10 +21,15 @@ function readPrivateFile(parent: HeldDirectory, name: string): string | null {
   }
   try {
     const stat = fstatSync(fd);
-    if (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0 || stat.size > MAX_CONFIG_BYTES)
+    if (
+      stat.uid !== process.getuid?.() ||
+      (stat.mode & 0o077) !== 0 ||
+      stat.size > MAX_CONFIG_BYTES
+    )
       throw new Error("unsafe_local_job_owner_file");
     const contents = readFileSync(fd, "utf8");
-    if (Buffer.byteLength(contents) > MAX_CONFIG_BYTES) throw new Error("local_job_owner_file_too_large");
+    if (Buffer.byteLength(contents) > MAX_CONFIG_BYTES)
+      throw new Error("local_job_owner_file_too_large");
     return contents;
   } finally {
     closeSync(fd);
@@ -43,22 +48,12 @@ export function readPrivateLocalFile(path: string): string | null {
 
 /** Existing files must also be private; never chmod or truncate through an unchecked path. */
 export function writePrivateLocalFile(path: string, contents: string, exclusive = false): void {
-  if (Buffer.byteLength(contents) > MAX_CONFIG_BYTES) throw new Error("local_job_owner_file_too_large");
+  if (Buffer.byteLength(contents) > MAX_CONFIG_BYTES)
+    throw new Error("local_job_owner_file_too_large");
   const parent = HeldDirectory.openAbsolute(dirname(path), { private: true });
   try {
-    if (exclusive) {
-      const fd = parent.openFile(basename(path), constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
-      try {
-        writeFileSync(fd, contents, "utf8");
-        fsyncSync(fd);
-        parent.sync();
-      } finally {
-        closeSync(fd);
-      }
-    } else {
-      readPrivateFile(parent, basename(path));
-      parent.atomicWrite(basename(path), contents);
-    }
+    if (!exclusive) readPrivateFile(parent, basename(path));
+    parent.atomicWrite(basename(path), contents, 0o600, exclusive);
   } finally {
     parent.close();
   }
@@ -69,10 +64,17 @@ export function loadLocalJobOwnerTemplate(
   path: string,
   admissionPublicKey: string,
 ): JobOwnerConfigTemplate {
-  if (process.platform !== "linux" || !path.startsWith("/") || path.includes("\0") || resolve(path) !== path)
+  if (
+    process.platform !== "linux" ||
+    !path.startsWith("/") ||
+    path.includes("\0") ||
+    resolve(path) !== path
+  )
     throw new Error("local_job_owner_requires_normalized_linux_paths");
-  if (!admissionPublicKey.startsWith("-----BEGIN PUBLIC KEY-----") ||
-      createPublicKey(admissionPublicKey).asymmetricKeyType !== "ed25519")
+  if (
+    !admissionPublicKey.startsWith("-----BEGIN PUBLIC KEY-----") ||
+    createPublicKey(admissionPublicKey).asymmetricKeyType !== "ed25519"
+  )
     throw new Error("local_job_owner_requires_public_admission_key");
   HeldDirectory.openAbsolute(dataDir, { private: true }).close();
   const contents = readPrivateLocalFile(path);
@@ -130,7 +132,9 @@ export function configureLocalJobOwner(
       control = root.openChild("job-owner", { create: !hasRetainedProcess });
     } catch (error) {
       if (hasRetainedProcess && error instanceof Error && Reflect.get(error, "code") === "ENOENT")
-        throw new Error("local_job_owner_reuse_conflict: retained processes were not bootstrapped as native owners");
+        throw new Error(
+          "local_job_owner_reuse_conflict: retained processes were not bootstrapped as native owners",
+        );
       throw error;
     }
   } finally {
@@ -149,20 +153,31 @@ export function configureLocalJobOwner(
       protectedDirectories: [...new Set([...template.protectedDirectories, dataDir])],
     });
     const encoded = canonicalJobJson(config);
-    if (Buffer.byteLength(encoded) > MAX_CONFIG_BYTES) throw new Error("local_job_owner_file_too_large");
+    if (Buffer.byteLength(encoded) > MAX_CONFIG_BYTES)
+      throw new Error("local_job_owner_file_too_large");
     const previous = readPrivateFile(control, "config.json");
-    if (previous !== null && canonicalJobJson(JobOwnerConfigSchema.parse(JSON.parse(previous))) !== encoded)
-      throw new Error("local_job_owner_definition_conflict: drain the owner before explicitly replacing its configuration");
+    if (
+      previous !== null &&
+      canonicalJobJson(JobOwnerConfigSchema.parse(JSON.parse(previous))) !== encoded
+    )
+      throw new Error(
+        "local_job_owner_definition_conflict: drain the owner before explicitly replacing its configuration",
+      );
     if (hasRetainedProcess && previous === null)
-      throw new Error("local_job_owner_reuse_conflict: retained processes have no recorded native configuration");
+      throw new Error(
+        "local_job_owner_reuse_conflict: retained processes have no recorded native configuration",
+      );
     const digest = createHash("sha256").update(encoded).digest("hex");
-    const snapshot = (pid: number): string => canonicalJobJson({ pid, digest, configPath, socketPath, terminalSocketPath });
+    const snapshot = (pid: number): string =>
+      canonicalJobJson({ pid, digest, configPath, socketPath, terminalSocketPath });
     for (const role of ["host", "transport"] as const) {
       const pid = retained[role];
       if (pid === null) continue;
       const recorded = readPrivateFile(control, `${role}.json`);
       if (recorded === null || canonicalJobJson(JSON.parse(recorded)) !== snapshot(pid))
-        throw new Error(`local_job_owner_reuse_conflict: retained ${role} has no matching bootstrap identity`);
+        throw new Error(
+          `local_job_owner_reuse_conflict: retained ${role} has no matching bootstrap identity`,
+        );
     }
     const state = control.openChild("state", { create: !hasRetainedProcess });
     try {

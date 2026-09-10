@@ -21,38 +21,49 @@ function fakeStorage(initial: Record<string, string> = {}): MachineStorage & {
 }
 
 function machine(id: string, online: boolean): MachineSummary {
-  return { id, name: `name-${id}`, online };
+  return { id, name: `name-${id}`, online, terminalExecution: "unconfined" };
 }
 
 describe("chooseDefaultMachine", () => {
   test("prefers the remembered machine when it is online", () => {
     const machines = [machine("a", true), machine("b", true)];
-    expect(chooseDefaultMachine(machines, "b")?.id).toBe("b");
+    expect(chooseDefaultMachine(machines, "b", "unconfined")?.id).toBe("b");
   });
 
   test("ignores a remembered machine that is offline", () => {
     const machines = [machine("a", true), machine("b", false)];
-    expect(chooseDefaultMachine(machines, "b")?.id).toBe("a");
+    expect(chooseDefaultMachine(machines, "b", "unconfined")?.id).toBe("a");
   });
 
   test("ignores a remembered machine that no longer exists", () => {
     const machines = [machine("a", true)];
-    expect(chooseDefaultMachine(machines, "gone")?.id).toBe("a");
+    expect(chooseDefaultMachine(machines, "gone", "unconfined")?.id).toBe("a");
   });
 
   test("falls back to the sole online machine without memory", () => {
     const machines = [machine("a", false), machine("b", true)];
-    expect(chooseDefaultMachine(machines, null)?.id).toBe("b");
+    expect(chooseDefaultMachine(machines, null, "unconfined")?.id).toBe("b");
   });
 
   test("returns null when several machines are online and none remembered", () => {
     const machines = [machine("a", true), machine("b", true)];
-    expect(chooseDefaultMachine(machines, null)).toBeNull();
+    expect(chooseDefaultMachine(machines, null, "unconfined")).toBeNull();
   });
 
   test("returns null when nothing is online", () => {
-    expect(chooseDefaultMachine([machine("a", false)], "a")).toBeNull();
-    expect(chooseDefaultMachine([], null)).toBeNull();
+    expect(chooseDefaultMachine([machine("a", false)], "a", "unconfined")).toBeNull();
+    expect(chooseDefaultMachine([], null, "unconfined")).toBeNull();
+  });
+
+  test("memory cannot cross execution authority and unknown owners never grant shell access", () => {
+    const shell = machine("shell", true);
+    const native: MachineSummary = { ...machine("native", true), terminalExecution: "governed" };
+    const unknown: MachineSummary = { id: "unknown", name: "retained owner", online: true };
+    expect(chooseDefaultMachine([native, unknown, shell], native.id, "unconfined")?.id).toBe(
+      shell.id,
+    );
+    expect(chooseDefaultMachine([native, unknown], unknown.id, "unconfined")).toBeNull();
+    expect(chooseDefaultMachine([native, shell], shell.id, "governed")?.id).toBe(native.id);
   });
 });
 

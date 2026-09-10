@@ -129,6 +129,184 @@ const busybox = process.env.MANIFOLD_TEST_STATIC_BUSYBOX;
 const cgroupRoot = process.env.MANIFOLD_TEST_CGROUP;
 const compiledProbe = process.env.MANIFOLD_TEST_SYSCALL_PROBE;
 const realBackend = linux && Boolean(bwrap && busybox && cgroupRoot);
+test
+  .skipIf(!linux || !cgroupRoot)
+  .each(["expired", "status", "cancel", "recovered-status"] as const)(
+  "never-admitted %s starts close durably without accepting forged absence or replay",
+  async (mode) => {
+    const root = mkdtempSync(join(tmpdir(), "owner-unadmitted-"));
+    const held: HeldDirectory[] = [];
+    const keys = generateKeyPairSync("ed25519");
+    let owner: MachineJobOwner | undefined;
+    let outputs: JobOutputStore | undefined;
+    try {
+      const protectedRoot = HeldDirectory.openAbsolute(root, { private: true });
+      held.push(protectedRoot);
+      const cache = protectedRoot.openChild("cache", { create: true });
+      const managedState = protectedRoot.openChild("locations", { create: true });
+      const outputDirectory = protectedRoot.openChild("outputs", { create: true });
+      const delegatedCgroup = HeldDirectory.openAbsolute(cgroupRoot!);
+      held.push(cache, managedState, outputDirectory, delegatedCgroup);
+      outputs = JobOutputStore.open(outputDirectory);
+      const options: Omit<JobOwnerOptions, "journal"> = {
+        machineId: "machine",
+        admissionPublicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+        cache,
+        managedState,
+        outputs,
+        delegatedCgroup,
+        bubblewrapFd: -1,
+        anchors: {},
+        runtimeTools: {},
+        protectedDirectories: [protectedRoot],
+        artifactAuthority: { origins: [], maxRedirects: 0, timeoutMs: 1000 },
+      };
+      const open = async () =>
+        MachineJobOwner.open({
+          ...options,
+          journal: new JobJournal(protectedRoot.openChild("journal", { create: true })),
+        });
+      owner = await open();
+      const events: JobEvent[] = [];
+      const receive = (event: JobEvent) => {
+        events.push(JobEventSchema.parse(event));
+        return true;
+      };
+      owner.attach(receive);
+      const immutable = {
+        jobId: "never-admitted",
+        machineId: "machine",
+        pluginId: "fixture.jobs",
+        operationId: "fixture.jobs.run",
+        installationRevision: "r1",
+        artifactSha256: "a".repeat(64),
+        input: {},
+        outputs: [],
+        limits: { timeoutMs: 0, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+        credential: {
+          principalId: "root",
+          tokenId: null,
+          grantId: null,
+          containerScope: null,
+          caps: ["machines:run"],
+        },
+        parent: null,
+        traceId: "test",
+        service: {
+          serviceId: "fixture.jobs.service",
+          revision: "r1",
+          policySha256: "b".repeat(64),
+        },
+      };
+      const request = { ...immutable, requestDigest: jobDigest(immutable) };
+      const signed = {
+        permitId: "unused-permit",
+        jobId: request.jobId,
+        requestDigest: request.requestDigest,
+        ownerId: owner.identity.ownerId,
+        ownerGeneration: owner.identity.generation,
+        decisionId: "decision",
+        policyRevision: "revision",
+        issuedAt: mode === "expired" ? 1 : Date.now(),
+        expiresAt: mode === "expired" ? 2 : Date.now() + 30000,
+      };
+      const permit = {
+        ...signed,
+        signature: sign(null, Buffer.from(canonicalJobJson(signed)), keys.privateKey).toString(
+          "base64",
+        ),
+      };
+      const command =
+        mode === "expired"
+          ? { type: "start", request, permit }
+          : {
+              type: mode === "cancel" ? "cancel" : "status",
+              jobId: request.jobId,
+              ...(mode === "cancel" ? { reason: "requested" } : {}),
+              admission: { request, permit },
+            };
+      await owner.execute({
+        type: "status",
+        jobId: request.jobId,
+        admission: {
+          request,
+          permit: { ...permit, signature: Buffer.alloc(64).toString("base64") },
+        },
+      });
+      const wrongOwner = { ...signed, ownerId: "another-owner" };
+      await owner.execute({
+        type: "status",
+        jobId: request.jobId,
+        admission: {
+          request,
+          permit: {
+            ...wrongOwner,
+            signature: sign(
+              null,
+              Buffer.from(canonicalJobJson(wrongOwner)),
+              keys.privateKey,
+            ).toString("base64"),
+          },
+        },
+      });
+      await owner.execute({ type: "cancel", jobId: request.jobId, reason: "requested" });
+      expect(events.some((event) => event.type === "workload_empty")).toBe(false);
+      if (mode === "recovered-status") {
+        await owner.shutdown();
+        owner = await open();
+        owner.attach(receive);
+      }
+      events.length = 0;
+      await owner.execute(command);
+      const proof = {
+        type: "workload_empty" as const,
+        jobId: request.jobId,
+        requestDigest: request.requestDigest,
+        ownerId: signed.ownerId,
+        ownerGeneration: signed.ownerGeneration,
+      };
+      expect(events).toContainEqual(proof);
+      expect(events).toContainEqual({
+        type: "result",
+        result: expect.objectContaining({ state: "refused", reason: "start_not_admitted" }),
+      });
+      await owner.shutdown();
+      owner = await open();
+      owner.attach(receive);
+      await owner.execute({ type: "drain", draining: false });
+      events.length = 0;
+      // A newly signed, currently valid permit cannot undo an already proved empty identity.
+      const renewed = {
+        ...signed,
+        permitId: "renewed-permit",
+        ownerGeneration: owner.identity.generation,
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 30000,
+      };
+      await owner.execute({
+        type: "start",
+        request,
+        permit: {
+          ...renewed,
+          signature: sign(null, Buffer.from(canonicalJobJson(renewed)), keys.privateKey).toString(
+            "base64",
+          ),
+        },
+      });
+      expect(events).toContainEqual(proof);
+      expect(events).toContainEqual({
+        type: "result",
+        result: expect.objectContaining({ state: "refused", reason: "start_not_admitted" }),
+      });
+      expect(events.some((event) => event.type === "state")).toBe(false);
+    } finally {
+      await owner?.shutdown();
+      outputs?.close();
+      for (const directory of held.reverse()) directory.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () => {
   test.each(["primary", "managed", "companion"] as const)(
@@ -238,10 +416,13 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
         const protectedRoot = HeldDirectory.openAbsolute(root, { private: true });
         held.push(protectedRoot);
         const outputs = JobOutputStore.open(outputDirectory);
+        const managedState = protectedRoot.openChild("locations", { create: true });
+        held.push(managedState);
         const options: Omit<JobOwnerOptions, "journal"> = {
           machineId: "machine",
           admissionPublicKey,
           cache,
+          managedState,
           outputs,
           delegatedCgroup,
           bubblewrapFd: bwrapFd,
@@ -513,6 +694,30 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
             ).toString("base64"),
           },
         });
+        await owner.execute({
+          type: "status",
+          jobId: stdinBody.jobId,
+          admission: {
+            request: stdinRequest,
+            permit: {
+              ...stdinPermit,
+              signature: sign(
+                null,
+                Buffer.from(canonicalJobJson(stdinPermit)),
+                keys.privateKey,
+              ).toString("base64"),
+            },
+          },
+        });
+        expect(events).toContainEqual({
+          type: "result",
+          result: expect.objectContaining({ jobId: stdinBody.jobId, state: "started" }),
+        });
+        expect(
+          events.some(
+            (event) => event.type === "workload_empty" && event.jobId === stdinBody.jobId,
+          ),
+        ).toBe(false);
         const sendInput = (requestId: string, seq: number) =>
           owner!.execute({
             type: "input",
@@ -602,6 +807,7 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
         let emptyFailure = Promise.withResolvers<void>();
         const host = new TerminalHost({
           jobOwner: owner,
+          shellCommand: [busybox!, "echo", "unconfined terminal started"],
           sink: (record) => {
             if (record.evt === "terminal_empty_unproven") emptyFailure.resolve();
           },
@@ -656,6 +862,23 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
           runtime: boundCommand,
         };
         try {
+          for (const kind of ["shell", "program"] as const) {
+            const terminalId = `runtime-free-${kind}`;
+            seat.deliver({
+              type: "create",
+              terminalId,
+              cols: 80,
+              rows: 24,
+              env: {},
+              cwd: root,
+              ...(kind === "program"
+                ? { program: { argv: [busybox!, "echo", "unconfined program started"] } }
+                : {}),
+            });
+            expect(terminalEvents.at(-1)).toMatchObject({ type: "create_error", terminalId });
+            expect(host.status().terminals).toEqual([]);
+            terminalRefused = Promise.withResolvers<void>();
+          }
           // A signed job cannot take the ordinary job RPC path or another terminal's PTY.
           await owner.execute(boundCommand);
           expect(events.at(-1)).toMatchObject({
@@ -674,11 +897,25 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
             terminalId: "other-terminal",
           });
           terminalRefused = Promise.withResolvers<void>();
-          const stalePermit = { ...boundPermit, ownerGeneration: boundPermit.ownerGeneration - 1 };
+          // A verified rejected identity is permanently fenced, so a fresh terminal needs
+          // its own job identity rather than renewing a rejected generation's admission.
+          const staleUnsigned: Omit<typeof boundRequest, "requestDigest"> & {
+            requestDigest?: string;
+          } = { ...boundRequest, jobId: "stale-generation-terminal" };
+          delete staleUnsigned.requestDigest;
+          const staleRequest = { ...staleUnsigned, requestDigest: jobDigest(staleUnsigned) };
+          const stalePermit = {
+            ...boundPermit,
+            jobId: staleRequest.jobId,
+            requestDigest: staleRequest.requestDigest,
+            permitId: staleRequest.jobId,
+            ownerGeneration: boundPermit.ownerGeneration - 1,
+          };
           seat.deliver({
             ...create,
             runtime: {
               ...boundCommand,
+              request: staleRequest,
               permit: {
                 ...stalePermit,
                 signature: sign(
@@ -894,25 +1131,40 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
             HeldDirectory.openAbsolute(join(root, "journal"), { private: true }),
           ),
         });
+        release = owner.attach((event) => {
+          events.push(event);
+          return true;
+        });
+        events.length = 0;
+        await owner.execute({
+          type: "owner_challenge",
+          machineId: options.machineId,
+          admissionPublicKey: options.admissionPublicKey,
+          nonce: "restored-owner-resource-proof",
+          serverEpoch: "restored-hub",
+        });
         expect(
-          owner.installedResources(install.pluginId, install.installationRevision).operations,
-        ).toEqual(
-          expect.arrayContaining([
-            { operationId: "fixture.jobs.run", available: true },
-            expect.objectContaining({ operationId: "fixture.jobs.managed", available: false }),
-            expect.objectContaining({ operationId: "fixture.jobs.absent", available: false }),
-            expect.objectContaining({ operationId: "fixture.jobs.companion", available: false }),
-          ]),
-        );
+          events.findLast(
+            (event) =>
+              event.type === "installed" &&
+              event.pluginId === install.pluginId &&
+              event.installationRevision === install.installationRevision,
+          ),
+        ).toMatchObject({
+          resources: {
+            operations: expect.arrayContaining([
+              { operationId: "fixture.jobs.run", available: true },
+              expect.objectContaining({ operationId: "fixture.jobs.managed", available: false }),
+              expect.objectContaining({ operationId: "fixture.jobs.absent", available: false }),
+              expect.objectContaining({ operationId: "fixture.jobs.companion", available: false }),
+            ]),
+          },
+        });
         await owner.execute({ type: "drain", draining: false });
         await owner.execute(install);
         expect(
           owner.installedResources(install.pluginId, install.installationRevision).operations,
         ).toContainEqual({ operationId: "fixture.jobs.managed", available: true });
-        release = owner.attach((event) => {
-          events.push(event);
-          return true;
-        });
         await owner.execute({ type: "status", jobId: stdinBody.jobId });
         expect(events.at(-1)).toMatchObject({
           type: "input_state",
@@ -922,8 +1174,10 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
         await owner.execute(command);
         expect(events.at(-1)).toEqual({ type: "result", result });
         expect(owner.identity.generation).toBeGreaterThan(firstGeneration);
-        await owner.execute({ ...command, request: interruptedRequest });
-        const recovered = events.at(-1);
+        await owner.execute({ type: "status", jobId: interruptedRequest.jobId });
+        const recovered = events.findLast(
+          (event) => event.type === "result" && event.result.jobId === interruptedRequest.jobId,
+        );
         expect(recovered?.type).toBe("result");
         if (recovered?.type !== "result") throw new Error("missing_recovery_result");
         expect(recovered.result.state).toBe("interrupted");
@@ -931,9 +1185,19 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
         expect(recovered.result.usage).toBeNull();
         expect(recovered.result.outputs).toEqual([]);
         const changed = { ...requestBody, input: { changed: true } };
+        const changedRequest = { ...changed, requestDigest: jobDigest(changed) };
+        const changedPermit = { ...permitBody, requestDigest: changedRequest.requestDigest };
         await owner.execute({
           ...command,
-          request: { ...changed, requestDigest: jobDigest(changed) },
+          request: changedRequest,
+          permit: {
+            ...changedPermit,
+            signature: sign(
+              null,
+              Buffer.from(canonicalJobJson(changedPermit)),
+              keys.privateKey,
+            ).toString("base64"),
+          },
         });
         expect(events.at(-1)).toEqual({
           type: "refusal",
@@ -1105,6 +1369,7 @@ test.skipIf(!realBackend || !outputRoot)(
           HeldDirectory.openAbsolute(join(root, "journal"), { private: true }),
         ),
         cache,
+        managedState: protectedRoot.openChild("locations", { create: true }),
         outputs: store,
         delegatedCgroup,
         bubblewrapFd: bwrapFd,
@@ -1260,6 +1525,7 @@ test.skipIf(!linux || !cgroupRoot)(
         admissionPublicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
         journal,
         cache,
+        managedState: protectedRoot.openChild("locations", { create: true }),
         outputs,
         delegatedCgroup,
         protectedDirectories: [protectedRoot],

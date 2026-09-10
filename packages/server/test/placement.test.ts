@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ActionOutcomeSchema,
-  PROTOCOL_VERSION,
   DESTINATION_KINDS,
   ITEM_KINDS,
   PlaceResponseSchema,
@@ -73,8 +72,8 @@ const OWNER_KEY = "f".repeat(64);
 const temporaryDirectories: string[] = [];
 
 class FakeMachine implements MachineChannel {
+  readonly terminalExecution: MachineChannel["terminalExecution"] = "unconfined";
   readonly sent: ServerToAgentMessage[] = [];
-  readonly protocolVersion = PROTOCOL_VERSION;
   readonly terminalHostId: string | null = null;
   constructor(readonly machineId: string) {}
 

@@ -357,6 +357,7 @@ export const ISOLATE_CTX_METHODS = [
   "outsideScope",
   "newId",
   "machines.isOnline",
+  "machines.getTerminalExecution",
   "placement.place",
   "host.roster",
   "host.enabled",
@@ -378,6 +379,12 @@ export const ISOLATE_CTX_METHODS = [
   "services.configureConfiguration",
   "services.read",
   "services.invoke",
+  "services.describeInstance",
+  "services.listInstances",
+  "services.readInstanceConfiguration",
+  "services.configureInstance",
+  "services.readInstance",
+  "services.invokeInstance",
 ] as const;
 export const IsolateCtxMethodSchema = z.enum(ISOLATE_CTX_METHODS);
 export type IsolateCtxMethod = (typeof ISOLATE_CTX_METHODS)[number];

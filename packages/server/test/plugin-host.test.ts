@@ -77,6 +77,7 @@ const OWNER_KEY = "a".repeat(64);
 /** No machine is connected in a bare fixture, which is the honest state of a fresh store. */
 const OFFLINE_MACHINES: MachineAdmission = {
   isOnline: () => false,
+  getTerminalExecution: () => null,
   drain: () =>
     Promise.resolve({ ok: false, reason: "machine is offline: its terminals are unknown" }),
 };

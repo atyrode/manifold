@@ -14,6 +14,13 @@ exec 9>"$PREVIEW_HOME/dev.lock"
 flock 9
 checkout=$PREVIEW_DEV_CHECKOUT
 public_url=${PREVIEW_DEV_URL:-https://preview.$PREVIEW_DOMAIN}
+if [[ -n ${MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID:-} ]]; then
+  export MANIFOLD_SERVICE_OWNER_MACHINE_ID="$MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID"
+fi
+if [[ -n ${MANIFOLD_DEV_SPAWN_AGENT:-} ]]; then
+  [[ $MANIFOLD_DEV_SPAWN_AGENT == 0 || $MANIFOLD_DEV_SPAWN_AGENT == 1 ]] || fail 'MANIFOLD_DEV_SPAWN_AGENT must be 0 or 1'
+  export MANIFOLD_SPAWN_AGENT="$MANIFOLD_DEV_SPAWN_AGENT"
+fi
 development_image=$(environment_image)
 require_environment_builder
 echo "deploy-dev: converging on $1"

@@ -19,6 +19,13 @@ import {
   type PluginBundle,
   type JobArtifactDelivery,
   type ServiceConfigurationRead,
+  type ConfigureInstanceServiceArgs,
+  type InstanceServiceConfigurationRead,
+  type InstanceServiceDescription,
+  type InstanceServiceOwner,
+  type InstanceServiceReadArgs,
+  type InstanceServicesDescription,
+  type ServiceTunnelFrame,
 } from "@manifold/protocol";
 import {
   canonicalJobJson,
@@ -56,12 +63,14 @@ import {
 } from "../../protocol/src/job-resources.ts";
 import {
   ServiceConfigurationSchema,
+  ServicePolicySchema,
   ServiceReadArgsSchema,
   ServiceInvokeArgsSchema,
   ServiceReplySchema,
   servicePolicyCredentialRefs,
   type ServiceConfiguration,
   type ServicePolicy,
+  type ServiceBinding,
   type ServiceReadArgs,
   type ServiceInvokeArgs,
   type ServiceReply,
@@ -83,6 +92,7 @@ import {
 } from "./job-store.ts";
 import type { ServerStore, TraceRecord } from "./stores.ts";
 import { JobSchedules, type JobScheduleSpec } from "./job-schedules.ts";
+import { InstanceServiceStore, type InstanceServiceRecord } from "./instance-service-store.ts";
 export type { JobRecord } from "./job-store.ts";
 import { deliveredArtifact } from "@manifold/plugin-kit/artifacts";
 interface JobFollower {
@@ -99,6 +109,23 @@ interface JobReplay {
 interface JobChannel {
   machineId: string;
   send(message: { type: "job_command"; command: JobCommand }): boolean;
+}
+interface ServiceTunnelDirection {
+  next: number;
+  waiting: number | null;
+  ended: boolean;
+}
+interface HubServiceTunnel {
+  request: Extract<JobEvent, { type: "service_tunnel_open" }>;
+  consumer: JobChannel;
+  producer: JobChannel;
+  policy: ServicePolicy;
+  instanceRevision: string;
+  operationIds: string[];
+  ready: boolean;
+  timer: ReturnType<typeof setTimeout>;
+  outward: ServiceTunnelDirection;
+  inward: ServiceTunnelDirection;
 }
 const digest = (value: unknown) =>
   createHash("sha256").update(canonicalJobJson(value)).digest("hex");
@@ -127,6 +154,20 @@ export class JobService {
   readonly jobSchedules: JobSchedules;
   private readonly runCursorKey = randomBytes(32);
   private changeNotifier: JobChanges | null = null;
+  readonly instanceServices: InstanceServiceStore;
+  private readonly effectiveServices = new Map<string, ServiceConfiguration>();
+  private readonly instanceStarts = new Set<string>();
+  private readonly instanceFailures = new Map<string, { revision: string; reason: string }>();
+  private readonly instanceReadiness = new Map<
+    string,
+    { revision: string; jobId: string; channel: JobChannel }
+  >();
+  private machinePresence: ((machineId: string) => boolean) | null = null;
+  private readonly serviceTunnels = new Map<string, HubServiceTunnel>();
+
+  setMachinePresence(presence: (machineId: string) => boolean): void {
+    this.machinePresence = presence;
+  }
 
   private readonly directServiceCalls = new Map<
     string,
@@ -160,8 +201,375 @@ export class JobService {
       ? ServiceConfigurationSchema.parse(JSON.parse(row.configuration))
       : { revision: null, policies: [] };
   }
+  private instancePolicy(record: InstanceServiceRecord): ServicePolicy {
+    return record.policy;
+  }
+  private effectiveConfiguration(machineId: string): ServiceConfiguration {
+    const cached = this.effectiveServices.get(machineId);
+    if (cached) return cached;
+    const local = this.configuration(machineId);
+    const policies = new Map(local.policies.map((policy) => [policy.serviceId, policy]));
+    let inherited = false;
+    for (const record of this.instanceServices.list()) {
+      if (!record.enabled) continue;
+      const policy = this.instancePolicy(record);
+      if (record.machineId === machineId) {
+        policies.set(record.serviceId, policy);
+      } else {
+        const operations = Object.fromEntries(
+          Object.entries(policy.operations).filter(([, operation]) => "kind" in operation),
+        );
+        if (!Object.keys(operations).length) continue;
+        const definition = { ...policy };
+        delete definition.runtime;
+        policies.set(
+          record.serviceId,
+          ServicePolicySchema.parse({
+            ...definition,
+            operations,
+            remote: {
+              machineId: record.machineId,
+              serviceId: record.serviceId,
+              revision: record.revision,
+              policySha256: digest(policy),
+            },
+          }),
+        );
+      }
+      inherited = true;
+    }
+    const values = [...policies.values()];
+    const configuration = inherited
+      ? ServiceConfigurationSchema.parse({ revision: digest(values), policies: values })
+      : local;
+    this.effectiveServices.set(machineId, configuration);
+    return configuration;
+  }
+  private instanceOwner(machineId: string | null): InstanceServiceOwner | null {
+    if (machineId === null) return null;
+    const machine = this.store.getMachine(machineId);
+    if (!machine) return null;
+    const token = this.store.getToken(machine.tokenId);
+    return {
+      machineId,
+      name: machine.name,
+      online:
+        token?.revokedAt === null &&
+        (token.expiresAt === null || token.expiresAt > this.runtime.now()) &&
+        this.machinePresence?.(machineId) === true,
+    };
+  }
+  private instanceReason(record: InstanceServiceRecord): string | null {
+    if (!record.enabled) return "instance_service_disabled";
+    if (this.store.getMachine(record.machineId)?.draining) return "machine_draining";
+    const live = this.channels.get(record.machineId);
+    if (!live?.proved) return "resource_owner_unavailable";
+    if (!record.credential || !this.auth.restoreCredential(record.credential))
+      return "credential_revoked_or_expired";
+    const ready = this.instanceReadiness.get(record.serviceId);
+    if (
+      ready?.revision === record.revision &&
+      ready.jobId === record.jobId &&
+      ready.channel === live.channel &&
+      this.jobs.get(ready.jobId)?.state === "started"
+    )
+      return null;
+    const failure = this.instanceFailures.get(record.serviceId);
+    if (failure?.revision === record.revision) return failure.reason;
+    const job = record.jobId ? this.jobs.get(record.jobId) : null;
+    if (job && active.has(job.state)) return "instance_service_starting";
+    return this.instanceStarts.has(record.serviceId)
+      ? "instance_service_starting"
+      : (job?.result?.reason ?? "instance_service_unavailable");
+  }
+  private instanceDescription(
+    record: InstanceServiceRecord | null,
+    serviceId: string,
+    showDefaultOwner: boolean,
+  ): InstanceServiceDescription {
+    const defaultOwner = showDefaultOwner
+      ? this.instanceOwner(this.instanceServices.defaultOwnerId())
+      : null;
+    const owner = record ? this.instanceOwner(record.machineId) : null;
+    const target = owner ?? defaultOwner;
+    const reason = record ? this.instanceReason(record) : null;
+    return {
+      serviceId,
+      defaultOwner,
+      owner,
+      configuration: record
+        ? {
+            revision: record.revision,
+            pluginId: record.pluginId,
+            enabled: record.enabled,
+            policySha256: digest(this.instancePolicy(record)),
+          }
+        : null,
+      connected: target !== null && this.channels.get(target.machineId)?.proved === true,
+      state: !record
+        ? "unconfigured"
+        : !record.enabled
+          ? "stopped"
+          : reason === null
+            ? "ready"
+            : reason === "instance_service_starting"
+              ? "starting"
+              : "unavailable",
+      reason,
+    };
+  }
+  private canInspectInstance(current: AuthContext, record: InstanceServiceRecord): boolean {
+    return (
+      current.isRoot ||
+      Object.keys(record.policy.operations).some((operationId) =>
+        (["services:read", "services:invoke"] as const).some(
+          (cap) =>
+            (current.caps.includes("*") || current.caps.includes(cap)) &&
+            this.auth.allowsRef(current, cap, {
+              kind: "service",
+              machineId: record.machineId,
+              serviceId: record.serviceId,
+              operationId,
+            }),
+        ),
+      )
+    );
+  }
+  describeInstanceService(
+    auth: AuthContext,
+    args: { serviceId: string },
+  ): InstanceServiceDescription {
+    const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
+    const record = this.instanceServices.get(args.serviceId);
+    if (!current || (!current.isRoot && (!record || !this.canInspectInstance(current, record))))
+      fail("service_unauthorized");
+    return this.instanceDescription(record, args.serviceId, current.isRoot);
+  }
+  listInstanceServices(auth: AuthContext): InstanceServicesDescription {
+    const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
+    if (!current) fail("service_unauthorized");
+    return {
+      defaultOwner: current.isRoot
+        ? this.instanceOwner(this.instanceServices.defaultOwnerId())
+        : null,
+      services: this.instanceServices
+        .list()
+        .filter((record) => this.canInspectInstance(current, record))
+        .map((record) => this.instanceDescription(record, record.serviceId, current.isRoot)),
+    };
+  }
+  readInstanceServiceConfiguration(
+    auth: AuthContext,
+    args: { serviceId: string },
+  ): InstanceServiceConfigurationRead {
+    const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
+    if (!current?.isRoot) fail("instance_service_configuration_forbidden");
+    const record = this.instanceServices.get(args.serviceId);
+    if (record) this.configurationAuthority(current, record.machineId);
+    return {
+      description: this.instanceDescription(record, args.serviceId, true),
+      policy: record?.policy ?? null,
+    };
+  }
+  private instanceRuntimeRequest(
+    auth: AuthContext,
+    policy: ServicePolicy,
+    machineId: string,
+    traceId: string,
+  ): JobRequest {
+    const runtime = policy.runtime;
+    if (!runtime || runtime.scope !== "instance") fail("invalid_instance_service_runtime");
+    const install = this.jobs.installation(machineId, runtime.pluginId);
+    const operation = install?.machine.operations[runtime.operationId];
+    if (
+      !install?.enabled ||
+      !operation?.providesService ||
+      !install.ready ||
+      install.purgeRequested ||
+      this.store.disabledPlugins().has(install.pluginId)
+    )
+      fail("instance_service_runtime_unavailable");
+    const input: JobRequest["input"] = {};
+    for (const [name, value] of Object.entries(runtime.input)) {
+      if (!("literal" in value)) fail("invalid_instance_service_runtime");
+      input[name] = value.literal;
+    }
+    return this.build(auth, runtime.pluginId, traceId, {
+      jobId: this.runtime.newId(),
+      machineId,
+      operationId: runtime.operationId,
+      installationRevision: runtime.installationRevision,
+      artifactSha256: runtime.artifactSha256,
+      resourceBindingDigest: runtime.resourceBindingDigest,
+      input,
+      outputs: [],
+    });
+  }
+  async configureInstanceService(
+    auth: AuthContext,
+    args: ConfigureInstanceServiceArgs,
+    callerPluginId = "engine.services",
+    traceId = "native-services",
+  ): Promise<InstanceServiceDescription> {
+    const previous = this.instanceServices.get(args.serviceId);
+    if ((previous?.revision ?? null) !== args.expectedRevision)
+      throw new ServiceError("conflict", "instance_service_configuration_changed");
+    const machineId =
+      args.machineId ?? previous?.machineId ?? this.instanceServices.defaultOwnerId();
+    if (machineId === null) throw new ServiceError("conflict", "instance_service_owner_required");
+    const current = this.configurationAuthority(auth, machineId);
+    if (previous) this.configurationAuthority(current, previous.machineId);
+    if (callerPluginId !== "engine.services" && args.policy.runtime?.pluginId !== callerPluginId)
+      fail("instance_service_plugin_mismatch");
+    if (!previous && this.instanceServices.list().length >= 64)
+      throw new ServiceError("conflict", "instance_service_capacity");
+    const template = args.enabled
+      ? this.instanceRuntimeRequest(current, args.policy, machineId, traceId)
+      : null;
+    const requirements = template ? this.requirements(template) : [];
+    const result = this.store.transaction(() => {
+      const result = this.instanceServices.configure(
+        current,
+        args,
+        callerPluginId,
+        traceId,
+        requirements,
+      );
+      this.effectiveServices.clear();
+      this.serviceTrace(current, callerPluginId, traceId, "configure-instance", {
+        serviceId: args.serviceId,
+        machineId,
+        previousRevision: args.expectedRevision,
+        revision: result.current.revision,
+        enabled: result.current.enabled,
+      });
+      return result;
+    });
+    if (result.previous?.revision !== result.current.revision) {
+      this.instanceReadiness.delete(args.serviceId);
+      this.instanceFailures.delete(args.serviceId);
+      if (result.previous?.jobId) {
+        const previousJob = this.jobs.get(result.previous.jobId);
+        if (previousJob) this.cancelRecord(previousJob, "instance_service_configuration_changed");
+      }
+    }
+    for (const live of [...this.channels.values()])
+      if (live.proved && !this.synchronizeServices(live.channel)) this.offline(live.channel);
+    if (result.current.enabled) {
+      this.instanceStarts.add(args.serviceId);
+      this.ensureInstanceService(args.serviceId);
+    } else this.instanceStarts.delete(args.serviceId);
+    this.reconcileAuthority();
+    this.accessChanged();
+    return this.instanceDescription(
+      this.instanceServices.get(args.serviceId),
+      args.serviceId,
+      true,
+    );
+  }
+  private instanceServiceReadArgs(args: InstanceServiceReadArgs): ServiceReadArgs {
+    const record = this.instanceServices.get(args.serviceId);
+    if (!record || record.revision !== args.expectedRevision)
+      throw new ServiceError("conflict", "instance_service_configuration_changed");
+    const reason = this.instanceReason(record);
+    if (reason !== null) throw new ServiceError("conflict", reason);
+    return {
+      machineId: record.machineId,
+      serviceId: record.serviceId,
+      revision: record.policy.revision,
+      policySha256: digest(this.instancePolicy(record)),
+      operationId: args.operationId,
+      input: args.input,
+    };
+  }
+  readInstanceService(
+    auth: AuthContext,
+    args: InstanceServiceReadArgs,
+    callerPluginId = "engine.services",
+    traceId = "native-services",
+  ): Promise<ServiceReply> {
+    return this.readService(auth, this.instanceServiceReadArgs(args), callerPluginId, traceId);
+  }
+  invokeInstanceService(
+    auth: AuthContext,
+    args: InstanceServiceReadArgs,
+    callerPluginId = "engine.services",
+    traceId = "native-services",
+  ): Promise<ServiceReply> {
+    return this.invokeService(auth, this.instanceServiceReadArgs(args), callerPluginId, traceId);
+  }
+  private ensureInstanceService(serviceId: string): void {
+    const record = this.instanceServices.get(serviceId);
+    if (!record?.enabled) {
+      this.instanceStarts.delete(serviceId);
+      return;
+    }
+    if (
+      !this.channels.get(record.machineId)?.proved ||
+      !this.jobs.installation(record.machineId, record.pluginId)?.ready
+    )
+      return;
+    const owned = this.jobs.instanceServiceJobs(serviceId);
+    const existing = record.jobId ? this.jobs.get(record.jobId) : null;
+    if (existing && active.has(existing.state)) {
+      this.instanceStarts.delete(serviceId);
+      return;
+    }
+    if (owned.length || (record.jobId !== null && existing === null)) {
+      this.instanceFailures.set(serviceId, {
+        revision: record.revision,
+        reason: "instance_service_lifetime_unconfirmed",
+      });
+      return;
+    }
+    this.instanceStarts.delete(serviceId);
+    try {
+      const current = record.credential ? this.auth.restoreCredential(record.credential) : null;
+      if (!current) fail("credential_revoked_or_expired");
+      const base = this.instanceRuntimeRequest(
+        current,
+        record.policy,
+        record.machineId,
+        record.traceId,
+      );
+      const unsigned: Omit<JobRequest, "requestDigest"> & { requestDigest?: string } = {
+        ...base,
+        limits: { ...base.limits, timeoutMs: 0 },
+        service: {
+          serviceId,
+          revision: record.revision,
+          policySha256: digest(this.instancePolicy(record)),
+        },
+      };
+      delete unsigned.requestDigest;
+      const request = JobRequestSchema.parse({ ...unsigned, requestDigest: digest(unsigned) });
+      const job = this.store.transaction(() => {
+        if (!this.instanceServices.setJob(serviceId, record.revision, request.jobId))
+          throw new ServiceError("conflict", "instance_service_configuration_changed");
+        this.jobs.reserve(request, this.runtime.now());
+        const decision = this.decide({
+          credential: request.credential,
+          pluginId: request.pluginId,
+          action: "engine.services.configureInstance",
+          evidence: this.requirements(request).map((requirement) =>
+            this.auth.explain(current, requirement),
+          ),
+        });
+        this.jobs.decision(request.jobId, decision.decisionId);
+        if (!decision.allowed) this.jobs.state(request.jobId, "refused");
+        return this.jobs.get(request.jobId)!;
+      });
+      this.instanceFailures.delete(serviceId);
+      this.changed(job.request);
+      if (job.state === "queued") this.start(job);
+    } catch (error) {
+      if (!(error instanceof ServiceError)) throw error;
+      this.instanceFailures.set(serviceId, { revision: record.revision, reason: error.message });
+    }
+    this.accessChanged();
+  }
   private configurationAuthority(auth: AuthContext, machineId: string): AuthContext {
-    const current = this.context(this.auth.credentialReference(auth));
+    const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (
       !current?.isRoot ||
       !this.store.getMachine(machineId) ||
@@ -218,6 +626,15 @@ export class JobService {
     traceId = "native-services",
   ): ServiceConfiguration {
     const current = this.configurationAuthority(auth, args.machineId);
+    if (
+      args.policies.some(
+        (policy) =>
+          policy.remote ||
+          policy.runtime?.scope === "instance" ||
+          this.instanceServices.get(policy.serviceId) !== null,
+      )
+    )
+      throw new ServiceError("conflict", "native_instance_service_configuration_required");
     const configuration = ServiceConfigurationSchema.parse({
       revision: digest(args.policies),
       policies: args.policies,
@@ -240,6 +657,7 @@ export class JobService {
           "INSERT INTO native_service_configurations(machine_id,revision,configuration) VALUES(?,?,?) ON CONFLICT(machine_id) DO UPDATE SET revision=excluded.revision,configuration=excluded.configuration",
         )
         .run(args.machineId, configuration.revision!, canonicalJobJson(configuration));
+      this.effectiveServices.clear();
     });
     const live = this.channels.get(args.machineId);
     if (live?.proved && !this.synchronizeServices(live.channel)) this.offline(live.channel);
@@ -253,7 +671,7 @@ export class JobService {
         type: "job_command",
         command: {
           type: "configure_services",
-          configuration: this.configuration(channel.machineId),
+          configuration: this.effectiveConfiguration(channel.machineId),
         },
       });
     } catch {
@@ -265,13 +683,13 @@ export class JobService {
     args: { machineId: string },
     _callerPluginId = "engine.services",
   ) {
-    const current = this.context(this.auth.credentialReference(auth));
+    const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (!current || !this.store.getMachine(args.machineId)) fail();
     const live = this.channels.get(args.machineId);
     return {
       machineId: args.machineId,
       connected: live?.proved === true,
-      services: this.configuration(args.machineId).policies.flatMap((policy) => {
+      services: this.effectiveConfiguration(args.machineId).policies.flatMap((policy) => {
         const operations = Object.entries(policy.operations).flatMap(([operationId, operation]) => {
           const ref: ManifoldRef = {
             kind: "service",
@@ -321,7 +739,7 @@ export class JobService {
       !this.store.getMachine(node.machineId)
     )
       return null;
-    const policy = (policies ?? this.configuration(node.machineId).policies).find(
+    const policy = (policies ?? this.effectiveConfiguration(node.machineId).policies).find(
       (policy) =>
         policy.serviceId === node.serviceId && Object.hasOwn(policy.operations, node.operationId!),
     );
@@ -370,13 +788,13 @@ export class JobService {
     channel: JobChannel,
     mode: "read" | "invoke",
   ) {
-    const current = this.context(credential);
+    const current = this.auth.restoreCredential(credential);
     const live = this.channels.get(args.machineId);
     if (!current || !live?.proved || live.channel !== channel) fail("service_unauthorized");
     const machine = this.store.getMachine(args.machineId);
     if (!machine || this.store.getToken(machine.tokenId)?.revokedAt !== null)
       fail("service_unavailable");
-    const policy = this.configuration(args.machineId).policies.find(
+    const policy = this.effectiveConfiguration(args.machineId).policies.find(
       (policy) => policy.serviceId === args.serviceId,
     );
     const operation = policy?.operations[args.operationId];
@@ -427,11 +845,16 @@ export class JobService {
     if (!this.lifecycleRecorder) throw new Error("job_lifecycle_recorder_required");
     this.lifecycleRecorder({
       actor: current.principal.id,
-      authority: phase === "configure" ? "services:configure" : `services:${mode}`,
+      authority:
+        phase === "configure" || phase === "configure-instance"
+          ? "services:configure"
+          : `services:${mode}`,
       door:
         phase === "configure"
           ? "engine.services.configureConfiguration"
-          : `engine.services.${mode}`,
+          : phase === "configure-instance"
+            ? "engine.services.configureInstance"
+            : `engine.services.${mode}`,
       containerId: current.containerScope,
       session: null,
       ts: this.runtime.now(),
@@ -608,6 +1031,23 @@ export class JobService {
       install.resourceBindings,
     );
   }
+  private boundServicePolicy(
+    install: JobInstallation,
+    binding: ServiceBinding,
+  ): ServicePolicy | undefined {
+    const policy = this.effectiveConfiguration(install.machineId).policies.find(
+      (policy) => policy.serviceId === binding.serviceId,
+    );
+    if (
+      !policy ||
+      policy.revision !== binding.revision ||
+      install.resourceBindings?.services[binding.serviceId] !== digest(policy) ||
+      binding.operationIds.some((id) => !Object.hasOwn(policy.operations, id))
+    )
+      return undefined;
+    return policy;
+  }
+
   private resourceRefusal(install: JobInstallation, operationId: string): string | null {
     const live = this.channels.get(install.machineId);
     const refusal = jobResourceRefusal(
@@ -619,16 +1059,8 @@ export class JobService {
     );
     if (refusal) return refusal;
     for (const binding of install.machine.operations[operationId]?.services ?? []) {
-      const policy = this.configuration(install.machineId).policies.find(
-        (policy) => policy.serviceId === binding.serviceId,
-      );
-      if (
-        !policy ||
-        policy.revision !== binding.revision ||
-        install.resourceBindings?.services[binding.serviceId] !== digest(policy) ||
-        binding.operationIds.some((id) => !Object.hasOwn(policy.operations, id))
-      )
-        return "service_definition_changed";
+      const policy = this.boundServicePolicy(install, binding);
+      if (!policy) return "service_definition_changed";
       const availability = this.serviceAvailability(
         policy,
         install.machineId,
@@ -710,6 +1142,25 @@ export class JobService {
     callerOperationId?: string,
     visiting: ReadonlySet<string> = new Set(),
   ): string | null {
+    if (policy.remote) {
+      const remote = policy.remote;
+      const record = this.instanceServices.get(remote.serviceId);
+      if (
+        !record?.enabled ||
+        record.machineId !== remote.machineId ||
+        record.machineId === machineId ||
+        record.revision !== remote.revision ||
+        digest(this.instancePolicy(record)) !== remote.policySha256
+      )
+        return "service_definition_changed";
+      return this.runtimeServiceRefusal(
+        this.instancePolicy(record),
+        record.machineId,
+        undefined,
+        undefined,
+        visiting,
+      );
+    }
     const runtime = policy.runtime;
     if (!runtime) return null;
     if (visiting.has(policy.serviceId) || visiting.size >= 8) return "service_runtime_unavailable";
@@ -727,7 +1178,7 @@ export class JobService {
     );
     if (resourceReason) return resourceReason;
     for (const binding of callee.machine.operations[runtime.operationId]?.services ?? []) {
-      const dependency = this.configuration(machineId).policies.find(
+      const dependency = this.effectiveConfiguration(machineId).policies.find(
         (policy) => policy.serviceId === binding.serviceId,
       );
       if (
@@ -751,6 +1202,17 @@ export class JobService {
       )
     )
       return "service_runtime_unavailable";
+    if (runtime.scope === "instance") {
+      const record = this.instanceServices.get(policy.serviceId);
+      if (
+        !record ||
+        record.machineId !== machineId ||
+        record.policy.revision !== policy.revision ||
+        digest(this.instancePolicy(record)) !== digest(policy)
+      )
+        return "service_definition_changed";
+      return this.instanceReason(record);
+    }
     const edges = this.store.db
       .query<{ edge: string }, []>("SELECT edge FROM job_invocation_edges WHERE enabled=1")
       .all();
@@ -791,7 +1253,7 @@ export class JobService {
     if (event.subject.kind !== "job") return false;
     const job = this.jobs.get(event.subject.jobId);
     if (!job || job.state !== "started" || !this.inputOwner(job, channel)) return false;
-    const policy = this.configuration(channel.machineId).policies.find(
+    const policy = this.effectiveConfiguration(channel.machineId).policies.find(
       (policy) => policy.serviceId === event.serviceId,
     );
     const install = this.jobs.installation(channel.machineId, job.request.pluginId);
@@ -830,7 +1292,7 @@ export class JobService {
         ? this.jobs.get(ancestor.request.parent.parentJobId)
         : null;
     }
-    const current = this.context(job.request.credential);
+    const current = this.auth.restoreCredential(job.request.credential);
     const requirement: AuthorityRequirement = {
       cap: "services:invoke",
       ref: {
@@ -840,17 +1302,28 @@ export class JobService {
         operationId: event.operationId,
       },
     };
+    const requirements = [requirement];
+    if (policy?.remote)
+      requirements.push({
+        cap: "services:invoke",
+        ref: {
+          kind: "service",
+          machineId: policy.remote.machineId,
+          serviceId: policy.remote.serviceId,
+          operationId: event.operationId,
+        },
+      });
     return this.store.transaction(() => {
       const decision = this.decide(
         {
           credential: job.request.credential,
           pluginId: job.request.pluginId,
           action: "engine.services.invoke",
-          evidence: [
+          evidence: requirements.map((requirement) =>
             current
               ? this.auth.explain(current, requirement)
               : { requirement, winner: null, allowed: false },
-          ],
+          ),
         },
         refusal,
       );
@@ -939,7 +1412,7 @@ export class JobService {
     args: ListJobRunsArgs,
     callerPluginId = "engine.jobs",
   ): ListJobRunsResult {
-    const current = this.context(this.auth.credentialReference(auth));
+    const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (!current || (!current.caps.includes("*") && !current.caps.includes("jobs:read")))
       fail("governed_authority_refused");
     if (callerPluginId !== "engine.jobs" && callerPluginId !== pluginId) fail("job_owner_mismatch");
@@ -1068,7 +1541,7 @@ export class JobService {
     args: { machineId: string; pluginId: string; installationRevision?: string | undefined },
     callerPluginId = "engine.jobs",
   ): JobDescription {
-    const current = this.context(this.auth.credentialReference(auth));
+    const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
     const node: ManifoldRef = { kind: "machine", machineId: args.machineId };
     if (
       !current ||
@@ -1188,12 +1661,12 @@ export class JobService {
   }
 
   private reauthorizeDeferred(request: JobRequest): string | null {
-    const context = this.context(request.credential);
+    const context = this.auth.restoreCredential(request.credential);
     if (!context) return "credential_revoked_or_expired";
     try {
       const requirements = this.requirements(request);
       const policies = requirements.some((requirement) => requirement.ref.kind === "service")
-        ? this.configuration(request.machineId).policies
+        ? this.effectiveConfiguration(request.machineId).policies
         : [];
       for (const { cap, ref } of requirements) {
         const terminalSpawn = cap === "terminals:spawn" && ref.kind === "container";
@@ -1285,7 +1758,7 @@ export class JobService {
   }
 
   schedules(auth: AuthContext, callerPluginId = "engine.jobs"): JobScheduleSpec[] {
-    const context = this.context(this.auth.credentialReference(auth));
+    const context = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (!context) return [];
     return this.jobSchedules.listSchedules().filter(
       (spec) =>
@@ -1311,7 +1784,7 @@ export class JobService {
     revision: string,
     callerPluginId = "engine.jobs",
   ): void {
-    const context = this.context(this.auth.credentialReference(auth));
+    const context = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (!context) fail();
     const spec = this.jobSchedules
       .listSchedules()
@@ -1351,9 +1824,12 @@ export class JobService {
       },
     });
     for (const job of this.jobs.active()) if (job.state === "queued") this.start(job);
+    for (const serviceId of [...this.instanceStarts]) this.ensureInstanceService(serviceId);
   }
 
   private reconcileAuthority(): void {
+    for (const tunnel of this.serviceTunnels.values())
+      if (!this.serviceTunnelCurrent(tunnel)) this.closeServiceTunnel(tunnel);
     for (const pending of [...this.directServiceCalls.values()]) {
       try {
         this.directServiceAuthority(
@@ -1366,7 +1842,7 @@ export class JobService {
         pending.finish(new ServiceError("forbidden", "service_unauthorized"));
       }
     }
-    for (const job of this.jobs.active()) {
+    for (const job of this.jobs.reconcilable()) {
       if (job.state === "queued") continue; // Admission independently checks current authority.
       const reason =
         this.jobs.cancellation(job.request.jobId) ??
@@ -1383,7 +1859,7 @@ export class JobService {
     auth: AuthContext,
     args: { machineId: string; pluginId: string },
   ): InspectJobInvocationsResult {
-    if (!this.context(this.auth.credentialReference(auth))?.isRoot) fail();
+    if (!this.auth.restoreCredential(this.auth.credentialReference(auth))?.isRoot) fail();
     const result: InspectJobInvocationsResult = {
       ...args,
       candidates: [],
@@ -1401,7 +1877,7 @@ export class JobService {
     }
     const caller = this.jobs.installation(args.machineId, args.pluginId);
     if (!caller) return result;
-    const policies = this.configuration(args.machineId).policies;
+    const policies = this.effectiveConfiguration(args.machineId).policies;
     for (const [operationId, operation] of Object.entries(caller.machine.operations)) {
       const callerRef: JobInvocationEdge["caller"] = {
         machineId: caller.machineId,
@@ -1504,7 +1980,7 @@ export class JobService {
   }
 
   setInvocationEdge(auth: AuthContext, args: { edge: JobInvocationEdge; enabled: boolean }): void {
-    if (!this.context(this.auth.credentialReference(auth))?.isRoot) fail();
+    if (!this.auth.restoreCredential(this.auth.credentialReference(auth))?.isRoot) fail();
     const edge = JobInvocationEdgeSchema.parse(args.edge);
     const { enabled } = args;
     if (enabled) this.validateInvocationEdge(edge);
@@ -1636,7 +2112,7 @@ export class JobService {
       .get(canonicalJobJson(caller), event.operationId);
     if (!stored?.enabled) fail("invocation_edge_missing");
     const edge = JSON.parse(stored.edge) as JobInvocationEdge;
-    const context = this.context(parent.request.credential);
+    const context = this.auth.restoreCredential(parent.request.credential);
     if (!context) fail("invocation_credential_revoked");
     const template = this.build(
       context,
@@ -1940,8 +2416,10 @@ export class JobService {
     readonly store: ServerStore,
     readonly auth: AuthService,
     readonly runtime: RuntimeDeps,
+    serviceOwnerMachineId?: string,
   ) {
     this.jobs = new JobStore(store, (job, phase) => this.lifecycle(job, phase));
+    this.instanceServices = new InstanceServiceStore(store, auth, runtime, serviceOwnerMachineId);
     store.db
       .query(
         "UPDATE machine_job_inputs SET state='unknown',reason='job_input_delivery_unknown' WHERE state='pending'",
@@ -1985,35 +2463,6 @@ export class JobService {
           this.cancelRecord(job, "executor_revoked");
       }
     });
-  }
-  private context(reference: CredentialReference): AuthContext | null {
-    const principal = this.store.getPrincipal(reference.principalId);
-    if (!principal) return null;
-    if (reference.expiresAt !== undefined && reference.expiresAt <= this.runtime.now()) return null;
-    let isRoot = reference.tokenId === null;
-    if (reference.tokenId !== null) {
-      const token = this.store.getToken(reference.tokenId);
-      if (
-        !token ||
-        token.revokedAt !== null ||
-        token.principalId !== reference.principalId ||
-        token.grantId !== reference.grantId ||
-        token.containerId !== reference.containerScope ||
-        (token.expiresAt !== null && token.expiresAt <= this.runtime.now()) ||
-        reference.caps.some((c) => !token.caps.includes(c) && !token.caps.includes("*"))
-      )
-        return null;
-      isRoot = token.caps.includes("*");
-    } else if (reference.principalId !== this.auth.ownerPrincipal.id) return null;
-    return {
-      principal,
-      caps: [...reference.caps],
-      containerScope: reference.containerScope,
-      tokenId: reference.tokenId,
-      grantId: reference.grantId,
-      isRoot,
-      ...(reference.expiresAt === undefined ? {} : { expiresAt: reference.expiresAt }),
-    };
   }
   private retainedRequest(jobId: string): JobRequest | null {
     const job = this.jobs.get(jobId);
@@ -2100,8 +2549,8 @@ export class JobService {
   }
   canReadGoverned(auth: AuthContext, node: ManifoldRef, callerPluginId = "engine.jobs"): boolean {
     if (node.kind === "service") {
-      const current = this.context(this.auth.credentialReference(auth));
-      const policy = this.configuration(node.machineId).policies.find(
+      const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
+      const policy = this.effectiveConfiguration(node.machineId).policies.find(
         (policy) => policy.serviceId === node.serviceId,
       );
       return (
@@ -2124,7 +2573,7 @@ export class JobService {
             ? "operations:invoke"
             : null;
     if (cap === null) return true;
-    const current = this.context(this.auth.credentialReference(auth));
+    const current = this.auth.restoreCredential(this.auth.credentialReference(auth));
     const install = this.resolve(node);
     return (
       this.callerOwnsNode(callerPluginId, node) &&
@@ -2140,7 +2589,7 @@ export class JobService {
     refusal: string | null = null,
   ): GovernedAdmissionDecision & { decisionId: string; policyRevision: string } {
     return this.store.transaction(() => {
-      const context = this.context(request.credential);
+      const context = this.auth.restoreCredential(request.credential);
       let allowed = context !== null && request.evidence.length > 0 && refusal === null;
       const consents: { node: string; revision: string; artifactSha256: string }[] = [];
       const evidence: unknown[] = [];
@@ -2151,7 +2600,7 @@ export class JobService {
         if (ref.kind === "service") {
           policies = servicePolicies.get(ref.machineId);
           if (!policies) {
-            policies = this.configuration(ref.machineId).policies;
+            policies = this.effectiveConfiguration(ref.machineId).policies;
             servicePolicies.set(ref.machineId, policies);
           }
         }
@@ -2241,7 +2690,7 @@ export class JobService {
       machine: MachineHalf;
     },
   ): void {
-    if (!auth.isRoot || !this.context(this.auth.credentialReference(auth))) fail();
+    if (!auth.isRoot || !this.auth.restoreCredential(this.auth.credentialReference(auth))) fail();
     const machine = MachineHalfSchema.parse(args.machine);
     if (
       !this.store.getMachine(args.machineId) ||
@@ -2268,7 +2717,7 @@ export class JobService {
       for (const group of ["tools", "services", "anchors"] as const)
         for (const [key, value] of Object.entries(resourceBindings[group]))
           if (live.owner.resources[group][key] !== value) fail("resource_revision_changed");
-      const policies = this.configuration(args.machineId).policies;
+      const policies = this.effectiveConfiguration(args.machineId).policies;
       for (const [serviceId, value] of Object.entries(resourceBindings.services)) {
         const policy = policies.find((policy) => policy.serviceId === serviceId);
         if (!policy || digest(policy) !== value) fail("resource_revision_changed");
@@ -2357,7 +2806,7 @@ export class JobService {
       enabled: boolean;
     },
   ): void {
-    if (!auth.isRoot || !this.context(this.auth.credentialReference(auth))) fail();
+    if (!auth.isRoot || !this.auth.restoreCredential(this.auth.credentialReference(auth))) fail();
     const node = parseManifoldUri(args.node);
     if (!node) fail();
     const install =
@@ -2421,8 +2870,26 @@ export class JobService {
       digest(this.operationBindings(install, request.operationId) ?? null)
     )
       fail("resource_bindings_changed");
-    const resourceReason = this.resourceRefusal(install, request.operationId);
-    if (resourceReason) fail(resourceReason);
+    // Retained work keeps its pinned resources across transport loss. Live availability
+    // gates new admission and service effects, not the continued validity of its grants.
+    for (const binding of op.services ?? [])
+      if (!this.boundServicePolicy(install, binding)) fail("service_definition_changed");
+    if (request.service) {
+      const record = this.instanceServices.get(request.service.serviceId);
+      if (
+        !record?.enabled ||
+        record.jobId !== request.jobId ||
+        record.machineId !== request.machineId ||
+        record.revision !== request.service.revision ||
+        record.policy.runtime?.operationId !== request.operationId ||
+        digest(this.instancePolicy(record)) !== request.service.policySha256 ||
+        digest(record.credential) !== digest(request.credential) ||
+        request.limits.timeoutMs !== 0 ||
+        request.parent ||
+        request.terminal
+      )
+        fail("instance_service_configuration_changed");
+    } else if (request.limits.timeoutMs <= 0) fail("invalid_limits");
     const terminalOrigin = request.terminal
       ? (this.jobs.get(request.jobId)?.auditOrigin ?? this.jobs.dispatchOrigin(request.traceId))
       : null;
@@ -2551,6 +3018,7 @@ export class JobService {
     }
     if (Object.keys(args.input).some((k) => !Object.hasOwn(op.input, k))) fail("invalid_input");
     const limits = args.limits ?? op.limits;
+    if (limits.timeoutMs <= 0) fail("invalid_limits");
     for (const key of Object.keys(op.limits) as (keyof typeof limits)[])
       if (limits[key] > op.limits[key]) fail("limit_exceeded");
     const outputInstall = outputParent
@@ -2603,7 +3071,8 @@ export class JobService {
   }
   execute(auth: AuthContext, pluginId: string, traceId: string, args: JobExecution): JobRecord {
     if ("terminal" in args) fail("native_terminal_admission_required");
-    const context = this.context(this.auth.credentialReference(auth));
+    if ("service" in args) fail("native_service_admission_required");
+    const context = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (!context) fail("credential_revoked_or_expired");
     const request = this.build(context, pluginId, traceId, args);
     const job = this.store.transaction(() => {
@@ -2665,7 +3134,7 @@ export class JobService {
       fail("installation_changed");
     if (!install.machine.operations[runtime.operationId]?.stdin)
       fail("terminal_operation_requires_stdin");
-    const context = this.context(this.auth.credentialReference(auth));
+    const context = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (!context) fail("credential_revoked_or_expired");
     const pinned = this.build(
       context,
@@ -2714,7 +3183,7 @@ export class JobService {
       const install = this.jobs.installation(request.machineId, request.pluginId);
       if (!machine || machine.draining || !install?.ready) return null;
       const operationReason = this.operationRefusal(install, request.operationId);
-      const context = this.context(request.credential);
+      const context = this.auth.restoreCredential(request.credential);
       let refusal = !context
         ? "credential_revoked_or_expired"
         : (operationReason ??
@@ -2818,7 +3287,183 @@ export class JobService {
         .run(channel.machineId);
     }
   }
+  private serviceTunnelCurrent(tunnel: HubServiceTunnel): boolean {
+    const job = this.jobs.get(tunnel.request.jobId);
+    const record = this.instanceServices.get(tunnel.policy.serviceId);
+    const current = job && this.auth.restoreCredential(job.request.credential);
+    const consumer = this.channels.get(tunnel.consumer.machineId);
+    const producer = this.channels.get(tunnel.producer.machineId);
+    if (
+      !job ||
+      job.state !== "started" ||
+      job.ownerClosed ||
+      !current ||
+      !consumer?.proved ||
+      consumer.channel !== tunnel.consumer ||
+      !producer?.proved ||
+      producer.channel !== tunnel.producer ||
+      !this.inputOwner(job, tunnel.consumer) ||
+      this.jobs.cancellation(job.request.jobId) !== null ||
+      this.reauthorizeDeferred(job.request) !== null ||
+      !record?.enabled ||
+      record.machineId !== tunnel.producer.machineId ||
+      record.revision !== tunnel.instanceRevision ||
+      digest(this.instancePolicy(record)) !== digest(tunnel.policy) ||
+      this.instanceReason(record) !== null
+    )
+      return false;
+    return tunnel.operationIds.every((operationId) =>
+      this.auth.allowsRef(current, "services:invoke", {
+        kind: "service",
+        machineId: tunnel.producer.machineId,
+        serviceId: tunnel.policy.serviceId,
+        operationId,
+      }),
+    );
+  }
+  private closeServiceTunnel(tunnel: HubServiceTunnel): void {
+    const channelId = tunnel.request.channelId;
+    if (this.serviceTunnels.get(channelId) !== tunnel) return;
+    this.serviceTunnels.delete(channelId);
+    clearTimeout(tunnel.timer);
+    for (const peer of [tunnel.consumer, tunnel.producer]) {
+      try {
+        peer.send({
+          type: "job_command",
+          command: {
+            type: "service_tunnel_frame",
+            frame: { type: "close", channelId },
+          },
+        });
+      } catch {
+        // The removed channel cannot regain authority when a disconnected peer returns.
+      }
+    }
+  }
+  private openServiceTunnel(
+    consumer: JobChannel,
+    request: Extract<JobEvent, { type: "service_tunnel_open" }>,
+  ): void {
+    let tunnel: HubServiceTunnel | undefined;
+    try {
+      if (this.serviceTunnels.has(request.channelId) || this.serviceTunnels.size >= 256)
+        fail("service_unavailable");
+      const policy = this.effectiveConfiguration(consumer.machineId).policies.find(
+        (policy) => policy.serviceId === request.serviceId,
+      );
+      const job = this.jobs.get(request.jobId);
+      const binding =
+        job &&
+        this.jobs
+          .installation(consumer.machineId, job.request.pluginId)
+          ?.machine.operations[job.request.operationId]?.services?.find(
+            (binding) => binding.serviceId === request.serviceId,
+          );
+      const record = policy?.remote && this.instanceServices.get(policy.remote.serviceId);
+      const producer = record && this.channels.get(record.machineId)?.channel;
+      if (
+        !policy?.remote ||
+        policy.revision !== request.revision ||
+        digest(policy) !== request.policySha256 ||
+        !binding ||
+        !record ||
+        !producer ||
+        record.machineId === consumer.machineId ||
+        record.revision !== policy.remote.revision ||
+        digest(this.instancePolicy(record)) !== policy.remote.policySha256 ||
+        !binding.operationIds.length
+      )
+        fail("service_binding_mismatch");
+      for (const operationId of binding.operationIds)
+        if (
+          !this.authorizeJobService(consumer, {
+            type: "service_authorize",
+            subject: { kind: "job", jobId: request.jobId },
+            authorizationId: request.channelId,
+            serviceId: request.serviceId,
+            revision: request.revision,
+            policySha256: request.policySha256,
+            operationId,
+          })
+        )
+          fail("service_unauthorized");
+      tunnel = {
+        request,
+        consumer,
+        producer,
+        policy: this.instancePolicy(record),
+        instanceRevision: record.revision,
+        operationIds: binding.operationIds,
+        ready: false,
+        timer: setTimeout(() => {
+          if (tunnel) this.closeServiceTunnel(tunnel);
+        }, 5000),
+        outward: { next: 0, waiting: null, ended: false },
+        inward: { next: 0, waiting: null, ended: false },
+      };
+      this.serviceTunnels.set(request.channelId, tunnel);
+      if (
+        !this.serviceTunnelCurrent(tunnel) ||
+        !producer.send({
+          type: "job_command",
+          command: {
+            type: "service_tunnel_open",
+            channelId: request.channelId,
+            serviceId: record.serviceId,
+            revision: tunnel.policy.revision,
+            policySha256: digest(tunnel.policy),
+            operationIds: binding.operationIds,
+          },
+        })
+      )
+        this.closeServiceTunnel(tunnel);
+    } catch {
+      if (tunnel) this.closeServiceTunnel(tunnel);
+      else
+        consumer.send({
+          type: "job_command",
+          command: {
+            type: "service_tunnel_ready",
+            channelId: request.channelId,
+            endpoint: null,
+          },
+        });
+    }
+  }
+  private relayServiceTunnel(channel: JobChannel, frame: ServiceTunnelFrame): void {
+    const tunnel = this.serviceTunnels.get(frame.channelId);
+    if (!tunnel || (channel !== tunnel.consumer && channel !== tunnel.producer)) return;
+    if (frame.type === "close" || !tunnel.ready || !this.serviceTunnelCurrent(tunnel)) {
+      this.closeServiceTunnel(tunnel);
+      return;
+    }
+    const outward = channel === tunnel.consumer;
+    const sent = outward ? tunnel.outward : tunnel.inward;
+    const received = outward ? tunnel.inward : tunnel.outward;
+    if (frame.type === "ack") {
+      if (received.waiting !== frame.sequence) {
+        this.closeServiceTunnel(tunnel);
+        return;
+      }
+      received.waiting = null;
+    } else {
+      if (sent.ended || sent.waiting !== null || frame.sequence !== sent.next) {
+        this.closeServiceTunnel(tunnel);
+        return;
+      }
+      sent.waiting = sent.next++;
+      sent.ended = frame.type === "end";
+    }
+    const target = outward ? tunnel.producer : tunnel.consumer;
+    if (!target.send({ type: "job_command", command: { type: "service_tunnel_frame", frame } }))
+      this.closeServiceTunnel(tunnel);
+  }
   private disconnectInputs(channel: JobChannel): void {
+    for (const tunnel of this.serviceTunnels.values())
+      if (tunnel.consumer === channel || tunnel.producer === channel)
+        this.closeServiceTunnel(tunnel);
+    for (const [serviceId, ready] of this.instanceReadiness)
+      if (ready.channel === channel) this.instanceReadiness.delete(serviceId);
     for (const pending of [...this.directServiceCalls.values()])
       if (pending.channel === channel)
         pending.finish(new ServiceError("conflict", "service_unavailable"));
@@ -2906,6 +3551,9 @@ export class JobService {
         return;
       }
       this.reconcileAuthority();
+      for (const record of this.instanceServices.list())
+        if (record.enabled && record.machineId === channel.machineId && record.jobId === null)
+          this.instanceStarts.add(record.serviceId);
       for (const install of this.jobs.installations(channel.machineId)) this.sendInstall(install);
       channel.send({
         type: "job_command",
@@ -2914,19 +3562,76 @@ export class JobService {
           draining: this.store.getMachine(channel.machineId)?.draining ?? true,
         },
       });
-      for (const job of this.jobs.active(channel.machineId)) {
+      for (const job of this.jobs.reconcilable(channel.machineId)) {
         const cancellation = this.jobs.cancellation(job.request.jobId);
         if (cancellation !== null) this.cancelRecord(job, cancellation);
         else if (job.state === "queued") this.start(job);
         else
           channel.send({
             type: "job_command",
-            command: { type: "status", jobId: job.request.jobId },
+            command: {
+              type: "status",
+              jobId: job.request.jobId,
+              ...(job.permit ? { admission: { request: job.request, permit: job.permit } } : {}),
+            },
           });
       }
       return;
     }
     if (!live.proved) return;
+    if (event.type === "service_tunnel_open") {
+      this.openServiceTunnel(channel, event);
+      return;
+    }
+    if (event.type === "service_tunnel_ready") {
+      const tunnel = this.serviceTunnels.get(event.channelId);
+      if (!tunnel || tunnel.producer !== channel) return;
+      if (tunnel.ready || !event.endpoint || !this.serviceTunnelCurrent(tunnel)) {
+        this.closeServiceTunnel(tunnel);
+        return;
+      }
+      tunnel.ready = true;
+      clearTimeout(tunnel.timer);
+      const timeout = Math.max(
+        ...tunnel.operationIds.map((id) => tunnel.policy.operations[id]!.timeoutMs),
+      );
+      tunnel.timer = setTimeout(() => this.closeServiceTunnel(tunnel), timeout + 5000);
+      if (!tunnel.consumer.send({ type: "job_command", command: event }))
+        this.closeServiceTunnel(tunnel);
+      return;
+    }
+    if (event.type === "service_tunnel_frame") {
+      this.relayServiceTunnel(channel, event.frame);
+      return;
+    }
+    if (event.type === "service_ready") {
+      const binding = event.service;
+      const record = this.instanceServices.get(binding.serviceId);
+      const job = this.jobs.get(event.jobId);
+      if (
+        !record?.enabled ||
+        record.jobId !== event.jobId ||
+        record.machineId !== channel.machineId ||
+        record.revision !== binding.revision ||
+        !job?.request.service ||
+        canonicalJobJson(job.request.service) !== canonicalJobJson(binding) ||
+        job.request.service.revision !== record.revision ||
+        job.permit?.ownerId !== live.owner.ownerId ||
+        job.permit.ownerGeneration !== live.owner.generation ||
+        this.jobs.cancellation(event.jobId) !== null ||
+        job.ownerClosed ||
+        !active.has(job.state)
+      )
+        return;
+      this.instanceReadiness.set(binding.serviceId, {
+        revision: binding.revision,
+        jobId: event.jobId,
+        channel,
+      });
+      this.instanceFailures.delete(binding.serviceId);
+      this.accessChanged();
+      return;
+    }
     if (event.type === "resources") {
       live.owner = { ...live.owner, resources: event.resources };
       this.reconcileAuthority();
@@ -2936,7 +3641,26 @@ export class JobService {
     if (event.type === "service_authorize") {
       let allowed = false;
       try {
-        if (event.subject.kind !== "job") {
+        if (event.subject.kind === "tunnel") {
+          const tunnel = this.serviceTunnels.get(event.subject.channelId);
+          if (
+            tunnel?.producer === channel &&
+            tunnel.ready &&
+            this.serviceTunnelCurrent(tunnel) &&
+            event.serviceId === tunnel.policy.serviceId &&
+            event.revision === tunnel.policy.revision &&
+            event.policySha256 === digest(tunnel.policy) &&
+            tunnel.operationIds.includes(event.operationId)
+          ) {
+            allowed = this.authorizeJobService(tunnel.consumer, {
+              ...event,
+              subject: { kind: "job", jobId: tunnel.request.jobId },
+              serviceId: tunnel.request.serviceId,
+              revision: tunnel.request.revision,
+              policySha256: tunnel.request.policySha256,
+            });
+          }
+        } else if (event.subject.kind !== "job") {
           const pending = this.directServiceCalls.get(event.subject.requestId);
           if (
             !pending ||
@@ -2971,7 +3695,10 @@ export class JobService {
       } catch {
         /* Send failure is not authorization delivery. */
       }
-      if ((!allowed || !delivered) && event.subject.kind !== "job")
+      if (
+        (!allowed || !delivered) &&
+        (event.subject.kind === "read" || event.subject.kind === "invoke")
+      )
         this.directServiceCalls
           .get(event.subject.requestId)
           ?.finish(new ServiceError("forbidden", "service_unauthorized"));
@@ -3018,13 +3745,13 @@ export class JobService {
             pending.authorized
           )
             fail("job_input_request_missing");
-          context = this.context(this.auth.credentialReference(pending.auth))!;
+          context = this.auth.restoreCredential(this.auth.credentialReference(pending.auth))!;
           this.authorizedJob(pending.auth, pending.node, "jobs:input", pending.callerPluginId);
           requirements = [{ cap: "jobs:input", ref: pending.node }];
         } else {
           if (job.request.parent?.parentJobId !== event.parentJobId || pending)
             fail("job_input_parent_mismatch");
-          context = this.context(job.request.credential)!;
+          context = this.auth.restoreCredential(job.request.credential)!;
           requirements = this.requirements(job.request);
           if (
             !this.jobs.reserveInput(
@@ -3204,7 +3931,12 @@ export class JobService {
       return;
     }
     const job = this.jobs.get(event.type === "result" ? event.result.jobId : event.jobId);
-    if (!job || job.request.machineId !== channel.machineId || !active.has(job.state)) return;
+    if (
+      !job ||
+      job.request.machineId !== channel.machineId ||
+      (!active.has(job.state) && event.type !== "workload_empty")
+    )
+      return;
     if (event.type === "refusal") {
       if (job.state === "queued") this.jobs.state(job.request.jobId, "refused");
       else this.interrupt(job, "owner_refusal_unknown");
@@ -3219,10 +3951,31 @@ export class JobService {
       fact.ownerGeneration > live.owner.generation
     )
       return;
-    if (event.type === "state") {
-      if (event.state === "started" && job.state === "start-committed") {
+    if (event.type === "workload_empty") {
+      if (this.jobs.confirmEmpty(job.request.jobId)) {
+        const serviceId = job.request.service?.serviceId;
+        if (serviceId && this.instanceReadiness.get(serviceId)?.jobId === job.request.jobId)
+          this.instanceReadiness.delete(serviceId);
+        this.accessChanged();
+      }
+      return;
+    }
+    if (event.type === "state" || event.result.state === "started") {
+      if (
+        (event.type === "state" ? event.state : event.result.state) === "started" &&
+        job.state === "start-committed" &&
+        !job.ownerClosed &&
+        fact.ownerGeneration === live.owner.generation
+      ) {
         this.jobs.state(job.request.jobId, "started");
-        this.publishJobEvent(job.request.jobId, event);
+        this.publishJobEvent(job.request.jobId, {
+          type: "state",
+          jobId: job.request.jobId,
+          requestDigest: fact.requestDigest,
+          ownerId: fact.ownerId,
+          ownerGeneration: fact.ownerGeneration,
+          state: "started",
+        });
       }
       return;
     }
@@ -3282,7 +4035,7 @@ export class JobService {
     callerPluginId = "engine.jobs",
   ): JobRecord {
     if (node.kind !== "job" && node.kind !== "output") return fail();
-    const context = this.context(this.auth.credentialReference(auth));
+    const context = this.auth.restoreCredential(this.auth.credentialReference(auth));
     const install = this.resolve(node);
     if (
       !this.callerOwnsNode(callerPluginId, node) ||
@@ -3307,7 +4060,11 @@ export class JobService {
     )
       live.channel.send({
         type: "job_command",
-        command: { type: "status", jobId: job.request.jobId },
+        command: {
+          type: "status",
+          jobId: job.request.jobId,
+          ...(job.permit ? { admission: { request: job.request, permit: job.permit } } : {}),
+        },
       });
     return this.jobs.get(job.request.jobId)!;
   }
@@ -3414,7 +4171,7 @@ export class JobService {
         this.cancelRecord(job, "terminal_closed");
   }
   private cancelRecord(job: JobRecord, reason: string): void {
-    if (!active.has(job.state)) return;
+    if (!active.has(job.state) && (!job.request.service || !job.permit || job.ownerClosed)) return;
     this.jobs.cancel(job.request.jobId, reason);
     if (job.state === "queued") {
       this.jobs.state(job.request.jobId, "cancelled");
@@ -3427,7 +4184,12 @@ export class JobService {
     } else
       this.channels.get(job.request.machineId)?.channel.send({
         type: "job_command",
-        command: { type: "cancel", jobId: job.request.jobId, reason },
+        command: {
+          type: "cancel",
+          jobId: job.request.jobId,
+          reason,
+          ...(job.permit ? { admission: { request: job.request, permit: job.permit } } : {}),
+        },
       });
     for (const child of this.jobs.active())
       if (child.request.parent?.parentJobId === job.request.jobId) this.cancelRecord(child, reason);

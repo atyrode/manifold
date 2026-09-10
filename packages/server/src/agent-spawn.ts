@@ -1,4 +1,12 @@
-import { chmodSync, closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { resolve } from "node:path";
 import { TERMINAL_HOST_SOCKET_ENV } from "@manifold/protocol";
 import type { AuthService, MachineEnrollment } from "./auth.ts";
@@ -179,7 +187,9 @@ function savedEnrollment(
 ): MachineEnrollment | null {
   let token: string;
   try {
-    const contents = privateFile ? readPrivateLocalFile(tokenPath) : readFileSync(tokenPath, "utf8");
+    const contents = privateFile
+      ? readPrivateLocalFile(tokenPath)
+      : readFileSync(tokenPath, "utf8");
     if (contents === null) return null;
     token = contents.trim();
   } catch (error) {
@@ -246,9 +256,10 @@ export function spawnLocalAgent(
   const external = config.localAgentSupervision === "external";
   if (external && templatePath === undefined)
     throw new Error("external_local_supervision_requires_native_template");
-  const template = templatePath === undefined
-    ? undefined
-    : loadLocalJobOwnerTemplate(config.dataDir, templatePath, nativeOwner!.admissionPublicKey);
+  const template =
+    templatePath === undefined
+      ? undefined
+      : loadLocalJobOwnerTemplate(config.dataDir, templatePath, nativeOwner!.admissionPublicKey);
   const release = acquireBootLock(resolve(config.dataDir, "agent.lock"), deps);
   if (release === null) {
     logger.info("local_agent_spawn_locked");
@@ -263,26 +274,40 @@ export function spawnLocalAgent(
     let terminalHostPid = livePid(hostPidPath, isTerminalHost, deps, template !== undefined);
     const existingPid = livePid(pidPath, isTransport, deps, template !== undefined);
     const supervisionPath = resolve(config.dataDir, "agent.supervision");
-    const previousSupervision = template === undefined ? null : readPrivateLocalFile(supervisionPath);
+    const previousSupervision =
+      template === undefined ? null : readPrivateLocalFile(supervisionPath);
     const supervision = external ? "external\n" : "detached\n";
     if (previousSupervision !== null && previousSupervision !== supervision)
-      throw new Error("local_agent_supervision_conflict: retained lifetimes cannot change supervisors");
+      throw new Error(
+        "local_agent_supervision_conflict: retained lifetimes cannot change supervisors",
+      );
     if (external && (terminalHostPid !== null || existingPid !== null))
-      throw new Error("local_agent_supervision_conflict: detached owners require explicit drained maintenance");
+      throw new Error(
+        "local_agent_supervision_conflict: detached owners require explicit drained maintenance",
+      );
     if (template === undefined && existsSync(resolve(config.dataDir, "job-owner")))
-      throw new Error("local_job_owner_definition_conflict: removing the template cannot reconfigure retained owners");
+      throw new Error(
+        "local_job_owner_definition_conflict: removing the template cannot reconfigure retained owners",
+      );
     let enrollment = savedEnrollment(tokenPath, auth, store, template !== undefined);
     if (
-      template !== undefined && enrollment === null &&
+      template !== undefined &&
+      enrollment === null &&
       (terminalHostPid !== null || existingPid !== null || existsSync(ownerConfigPath))
-    ) throw new Error("local_job_owner_enrollment_unavailable: retained native identity cannot be replaced");
+    )
+      throw new Error(
+        "local_job_owner_enrollment_unavailable: retained native identity cannot be replaced",
+      );
     if (enrollment === null && existingPid === null) {
       const existingMachine = store.getMachineByName(config.localMachineName);
       if (template !== undefined && existingMachine !== null)
-        throw new Error("local_job_owner_enrollment_unavailable: an existing machine requires its retained credential");
-      enrollment = existingMachine === null
-        ? auth.enrollLocalMachine(config.localMachineName)
-        : auth.rotateMachineToken(existingMachine);
+        throw new Error(
+          "local_job_owner_enrollment_unavailable: an existing machine requires its retained credential",
+        );
+      enrollment =
+        existingMachine === null
+          ? auth.enrollLocalMachine(config.localMachineName)
+          : auth.rotateMachineToken(existingMachine);
       if (template !== undefined) {
         writePrivateLocalFile(tokenPath, `${enrollment.machineToken}\n`);
       } else {
@@ -290,13 +315,16 @@ export function spawnLocalAgent(
         chmodSync(tokenPath, 0o600);
       }
     }
-    const owner = template === undefined ? undefined : configureLocalJobOwner(
-      config.dataDir,
-      template,
-      enrollment!.machine.id,
-      nativeOwner!.admissionPublicKey,
-      { host: terminalHostPid, transport: existingPid },
-    );
+    const owner =
+      template === undefined
+        ? undefined
+        : configureLocalJobOwner(
+            config.dataDir,
+            template,
+            enrollment!.machine.id,
+            nativeOwner!.admissionPublicKey,
+            { host: terminalHostPid, transport: existingPid },
+          );
     if (template !== undefined && previousSupervision === null)
       writePrivateLocalFile(supervisionPath, supervision, true);
     // This is authenticated placement identity, not a native capability/readiness assertion.
@@ -324,7 +352,13 @@ export function spawnLocalAgent(
     if (terminalHostPid !== null) {
       logger.info("local_terminal_host_reused", { pid: terminalHostPid });
     } else {
-      terminalHostPid = spawnDetached(hostPidPath, [TERMINAL_HOST_FLAG], environment, deps, owner !== undefined);
+      terminalHostPid = spawnDetached(
+        hostPidPath,
+        [TERMINAL_HOST_FLAG],
+        environment,
+        deps,
+        owner !== undefined,
+      );
       owner?.record("host", terminalHostPid);
       logger.info("local_terminal_host_spawned", { pid: terminalHostPid });
     }

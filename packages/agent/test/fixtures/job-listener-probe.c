@@ -1,12 +1,15 @@
 /* Build statically in the disposable Linux harness; never a shipped runtime tool. */
+#define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
 #include <poll.h>
+#include <netinet/tcp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 int main(int argc, char **argv) {
@@ -20,11 +23,24 @@ int main(int argc, char **argv) {
     FILE *group = fopen(path, "w");
     if (!group || fprintf(group, "%ld\n", (long)getpid()) < 0 || fclose(group)) return 14;
   } else if (strcmp(argv[1], "loopback") && strcmp(argv[1], "wildcard") &&
-             strcmp(argv[1], "http")) return 15;
+             strcmp(argv[1], "http") && strcmp(argv[1], "deferred")) return 15;
   int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (fd < 0) return 16;
   int reuse = 1;
   if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse))) return 21;
+  if (!strcmp(argv[1], "deferred")) {
+    int enabled = 1, seconds = 60;
+    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled))) return 28;
+    for (unsigned long wide = 0; wide <= 1; wide++) {
+      long result = syscall(SYS_setsockopt, fd, IPPROTO_TCP | (wide << 32),
+                            TCP_DEFER_ACCEPT | (wide << 32), &seconds, sizeof(seconds));
+      if (result < 0 && errno != EOPNOTSUPP) return 29;
+      int actual = -1;
+      socklen_t option_size = sizeof(actual);
+      if (getsockopt(fd, IPPROTO_TCP, TCP_DEFER_ACCEPT, &actual, &option_size) ||
+          (result == 0 ? actual <= 0 : actual != 0)) return 30;
+    }
+  }
   struct sockaddr_in address = { .sin_family = AF_INET, .sin_port = 0 };
   address.sin_addr.s_addr = htonl(!strcmp(argv[1], "wildcard") ? INADDR_ANY : INADDR_LOOPBACK);
   if (bind(fd, (struct sockaddr *)&address, sizeof(address)) || listen(fd, 8)) return 17;

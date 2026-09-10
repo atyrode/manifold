@@ -6,7 +6,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import { finished } from "node:stream/promises";
-import type { Socket } from "node:net";
+import { createConnection, type Socket } from "node:net";
 import type {
   ServiceBinding,
   ServicePolicy,
@@ -15,6 +15,7 @@ import type {
 import { createJobServiceProxy, type JobServiceProxy } from "../src/job-service-proxy.ts";
 import { createJobServiceRunner } from "../src/job-services.ts";
 import { connectWorkloadLoopback } from "../src/job-listener-proof.ts";
+import { createServiceTunnel } from "../src/job-service-tunnel.ts";
 
 const binding: ServiceBinding = {
   serviceId: "gateway",
@@ -113,6 +114,109 @@ async function send(
   return result.promise;
 }
 const secret = "zz-owner-secret";
+
+test("remote scoped HTTP uses the bounded owner channel without redial or source credential disclosure", async () => {
+  const lifetime = new AbortController();
+  let calls = 0;
+  const source = await upstream(async (request, response) => {
+    calls++;
+    expect(request.headers.authorization).toBe(`Bearer ${secret}`);
+    let body = "";
+    for await (const chunk of request) body += chunk.toString();
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ received: JSON.parse(body).prompt }));
+  });
+  const producer = await createJobServiceProxy({
+    policies: [policy(source.origin)],
+    bindings: [binding],
+    resolveCredential: async () => secret,
+    authorize: async () => !lifetime.signal.aborted,
+    signal: lifetime.signal,
+  });
+  const remote = policy(source.origin);
+  delete remote.origin;
+  delete remote.allowLoopbackHttp;
+  delete remote.credential;
+  remote.remote = {
+    machineId: "source-owner",
+    serviceId: binding.serviceId,
+    revision: binding.revision,
+    policySha256: "a".repeat(64),
+  };
+  let connections = 0;
+  const consumer = await createJobServiceProxy({
+    policies: [remote],
+    bindings: [binding],
+    authorize: async () => true,
+    resolveRuntime: async (_policy, signal) => {
+      const combined = AbortSignal.any([signal, lifetime.signal]);
+      combined.throwIfAborted();
+      const channelId = `request-${++connections}`;
+      const left = createServiceTunnel({
+        channelId,
+        signal: combined,
+        send(frame) {
+          queueMicrotask(() => right.receive(frame));
+          return true;
+        },
+      });
+      const right = createServiceTunnel({
+        channelId,
+        signal: combined,
+        send(frame) {
+          queueMicrotask(() => left.receive(frame));
+          return true;
+        },
+      });
+      left.stream.on("error", () => {});
+      right.stream.on("error", () => {});
+      const socket = createConnection({
+        host: "127.0.0.1",
+        port: Number(new URL(producer.url).port),
+        signal: combined,
+      });
+      const connected = Promise.withResolvers<void>();
+      socket.once("connect", connected.resolve);
+      socket.once("error", connected.reject);
+      try {
+        await connected.promise;
+        right.stream.once("close", () => socket.destroy());
+        socket.once("close", () => right.close());
+        right.stream.pipe(socket).pipe(right.stream);
+        return {
+          url: producer.url,
+          bearer: producer.bearer,
+          signal: combined,
+          socket: left.stream,
+        };
+      } catch (error) {
+        left.close();
+        right.close();
+        socket.destroy();
+        throw error;
+      }
+    },
+  });
+  try {
+    const response = await send(consumer, {
+      body: JSON.stringify({ prompt: "from another native owner" }),
+    });
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ received: "from another native owner" });
+    expect(response.body).not.toContain(secret);
+    expect(response.body).not.toContain(producer.bearer);
+    expect(calls).toBe(1);
+    lifetime.abort();
+    expect((await send(consumer)).status).toBe(503);
+    expect(calls).toBe(1);
+    expect(connections).toBe(1);
+  } finally {
+    lifetime.abort();
+    await consumer.close();
+    await producer.close();
+    await source.close();
+  }
+});
 
 test.each(["live", "lost"] as const)(
   "runtime proxy uses only its exact proved %s connection without redialing",
@@ -450,18 +554,22 @@ test("full-disclosure application errors preserve status/body but redirects and 
 });
 
 test("split source credential echoes terminate streaming without disclosing the held suffix", async () => {
-  for (const echoed of [
-    secret,
-    secret
-      .split("")
-      .map((character) => `\\u00${character.charCodeAt(0).toString(16)}`)
-      .join(""),
-  ]) {
+  for (const [sourceKey, echoed] of [
+    [secret, secret],
+    [
+      secret,
+      secret
+        .split("")
+        .map((character) => `\\u00${character.charCodeAt(0).toString(16)}`)
+        .join(""),
+    ],
+    ["zz-owner\\nkey\\u0041", "zz-owner\\nkey\\u0041"],
+  ] as const) {
     const release = Promise.withResolvers<void>();
     const midpoint = Math.floor(echoed.length / 2);
     const server = await upstream(async (request, response) => {
       await finished(request.resume());
-      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.writeHead(200, { "content-type": "text/event-stream", "x-request-id": echoed });
       response.write(`OK:${echoed.slice(0, midpoint)}`);
       await release.promise;
       response.end(echoed.slice(midpoint));
@@ -470,7 +578,7 @@ test("split source credential echoes terminate streaming without disclosing the 
       policies: [policy(server.origin)],
       bindings: [binding],
       authorize: async () => true,
-      resolveCredential: async () => secret,
+      resolveCredential: async () => sourceKey,
     });
     try {
       const response = await fetch(`${proxy.url}/v1/generate`, {
@@ -478,6 +586,7 @@ test("split source credential echoes terminate streaming without disclosing the 
         headers: { authorization: `Bearer ${proxy.bearer}`, "content-type": "application/json" },
         body: "{}",
       });
+      expect(response.headers.get("x-request-id")).toBeNull();
       const reader = response.body!.getReader();
       expect(new TextDecoder().decode((await reader.read()).value)).toBe("OK:");
       release.resolve();

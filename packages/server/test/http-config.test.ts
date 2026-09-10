@@ -38,16 +38,28 @@ test("external supervision cannot silently bypass native bootstrap", () => {
     MANIFOLD_OWNER_KEY: "f".repeat(64),
     MANIFOLD_LOCAL_AGENT_SUPERVISION: "external",
   };
-  expect(() => loadConfig(common, cwd)).toThrow("external local supervision requires native local bootstrap");
-  expect(() => loadConfig({
-    ...common,
-    MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE: join(cwd, "owner.json"),
-    MANIFOLD_SPAWN_AGENT: "0",
-  }, cwd)).toThrow("requires local agent spawning");
-  expect(() => loadConfig({
-    ...common,
-    MANIFOLD_LOCAL_AGENT_SUPERVISION: "external-typo",
-  }, cwd)).toThrow("must be external");
+  expect(() => loadConfig(common, cwd)).toThrow(
+    "external local supervision requires native local bootstrap",
+  );
+  expect(() =>
+    loadConfig(
+      {
+        ...common,
+        MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE: join(cwd, "owner.json"),
+        MANIFOLD_SPAWN_AGENT: "0",
+      },
+      cwd,
+    ),
+  ).toThrow("requires local agent spawning");
+  expect(() =>
+    loadConfig(
+      {
+        ...common,
+        MANIFOLD_LOCAL_AGENT_SUPERVISION: "external-typo",
+      },
+      cwd,
+    ),
+  ).toThrow("must be external");
 });
 
 describe("server bind policy", () => {

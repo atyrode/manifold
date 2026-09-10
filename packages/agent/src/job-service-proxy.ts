@@ -7,8 +7,8 @@ import {
   type ServerResponse,
 } from "node:http";
 import { request as httpsRequest } from "node:https";
-import type { Socket } from "node:net";
-import { Transform, type TransformCallback } from "node:stream";
+import { Socket } from "node:net";
+import { Transform, type Duplex, type TransformCallback } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
   ServiceBindingSchema,
@@ -43,7 +43,7 @@ export interface JobServiceProxyOptions {
   resolveRuntime?: (
     policy: ServicePolicy,
     signal: AbortSignal,
-  ) => Promise<{ url: string; bearer: string; signal: AbortSignal; socket: Socket }>;
+  ) => Promise<{ url: string; bearer: string; signal: AbortSignal; socket: Duplex }>;
 }
 class ProxyFailure extends Error {
   constructor(
@@ -84,6 +84,12 @@ function normalizedEcho(value: string): string {
       hex ? String.fromCharCode(Number.parseInt(hex, 16)) : (JSON_ESCAPES[escaped] ?? escaped),
   );
 }
+function containsCredentialEcho(value: string, patterns: readonly string[]): boolean {
+  if (patterns.some((pattern) => value.includes(pattern))) return true;
+  if (!value.includes("\\")) return false;
+  const normalized = normalizedEcho(value);
+  return patterns.some((pattern) => normalized.includes(pattern));
+}
 /** Withhold the longest possible encoded credential suffix before releasing bytes.
  * The window is bounded by credential length, not response length; handles split chunks. */
 class BoundedBody extends Transform {
@@ -113,12 +119,9 @@ class BoundedBody extends Transform {
       return;
     }
     const bytes = this.tail.length ? Buffer.concat([this.tail, chunk]) : chunk;
-    if (this.patterns.length) {
-      const text = normalizedEcho(bytes.toString("latin1"));
-      if (this.patterns.some((pattern) => text.includes(pattern))) {
-        done(new ProxyFailure(502, "service_response_invalid"));
-        return;
-      }
+    if (this.patterns.length && containsCredentialEcho(bytes.toString("latin1"), this.patterns)) {
+      done(new ProxyFailure(502, "service_response_invalid"));
+      return;
     }
     let released = bytes.length;
     // Release immediately unless a suffix could start an echo (including JSON escapes).
@@ -486,7 +489,7 @@ export async function createJobServiceProxy(
     response.once("close", disconnect);
     let upstream: IncomingMessage | undefined;
     let secret: string | undefined;
-    let runtimeSocket: Socket | undefined;
+    let runtimeSocket: Duplex | undefined;
     let runtimeAgent: Agent | undefined;
     try {
       const authority = Object.freeze({
@@ -514,12 +517,17 @@ export async function createJobServiceProxy(
       };
       if (operation.request.kind === "json") headers["content-type"] = "application/json";
       let origin = entry.policy.origin;
-      if (entry.policy.runtime) {
+      if (entry.policy.runtime || entry.policy.remote) {
         if (!options.resolveRuntime) throw new ProxyFailure(503, "service_unavailable");
-        const runtime = await boundedWait(
-          options.resolveRuntime(entry.policy, controller.signal),
-          controller.signal,
-        );
+        let runtime: Awaited<ReturnType<NonNullable<JobServiceProxyOptions["resolveRuntime"]>>>;
+        try {
+          runtime = await boundedWait(
+            options.resolveRuntime(entry.policy, controller.signal),
+            controller.signal,
+          );
+        } catch {
+          throw new ProxyFailure(503, "service_unavailable");
+        }
         runtimeSocket = runtime.socket;
         if (
           !/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/.test(runtime.url) ||
@@ -527,11 +535,13 @@ export async function createJobServiceProxy(
           !/^[A-Za-z0-9_-]{32,128}$/.test(runtime.bearer) ||
           !runtimeSocket ||
           runtimeSocket.destroyed ||
-          runtimeSocket.connecting ||
           !runtimeSocket.readable ||
           !runtimeSocket.writable ||
-          runtimeSocket.remoteAddress !== "127.0.0.1" ||
-          runtimeSocket.remotePort !== Number(new URL(runtime.url).port)
+          (!entry.policy.remote &&
+            (!(runtimeSocket instanceof Socket) ||
+              runtimeSocket.connecting ||
+              runtimeSocket.remoteAddress !== "127.0.0.1" ||
+              runtimeSocket.remotePort !== Number(new URL(runtime.url).port)))
         )
           throw new ProxyFailure(503, "service_unavailable");
         origin = runtime.url;
@@ -564,7 +574,7 @@ export async function createJobServiceProxy(
       if (url.origin !== origin || url.pathname !== path)
         throw new ProxyFailure(400, "service_input_invalid");
       const received = Promise.withResolvers<IncomingMessage>();
-      if (entry.policy.runtime) {
+      if (entry.policy.runtime || entry.policy.remote) {
         const socket = runtimeSocket;
         if (!socket || socket.destroyed) throw new ProxyFailure(503, "service_unavailable");
         runtimeAgent = new Agent({ keepAlive: false, maxSockets: 1 });
@@ -637,6 +647,9 @@ export async function createJobServiceProxy(
         throw new ProxyFailure(502, "service_response_invalid");
       const safeHeaders: Record<string, string> = { "cache-control": "no-store" };
       if (mime) safeHeaders["content-type"] = `${mime}; charset=utf-8`;
+      const credentialPatterns = secret
+        ? [secret, encodeURIComponent(secret), Buffer.from(secret).toString("base64")]
+        : [];
       for (const name of operation.response.headers) {
         const value = upstream.headers[name];
         if (
@@ -645,10 +658,7 @@ export async function createJobServiceProxy(
           /^[\x20-\x7e]*$/.test(value) &&
           !hopHeaders.has(name) &&
           (!credential || name !== credential.header.toLowerCase()) &&
-          (!secret ||
-            ![secret, encodeURIComponent(secret), Buffer.from(secret).toString("base64")].some(
-              (pattern) => normalizedEcho(value).includes(pattern),
-            ))
+          !containsCredentialEcho(value, credentialPatterns)
         )
           safeHeaders[name] = value;
       }

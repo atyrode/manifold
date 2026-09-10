@@ -313,27 +313,6 @@ export const PROTOCOL_VERSION = 30;
 export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([30]);
 
 /**
- * The first protocol at which `create` may carry `program` (issue #192). The broker compares
- * the target machine's HELLO version against this before sending one: an older agent parses
- * `create` strictly, so the key would be a malformed frame to it and it would drop the socket.
- * Refusing the opener by name (`unsupported`) instead is what lets the field be additive —
- * an old agent never sees a byte it cannot read, which is the whole reason 22 could be
- * ADDED to `MACHINE_PROTOCOL_COMPAT_VERSIONS` rather than resetting it.
- */
-export const TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION = 22;
-
-/** The first machine protocol supporting the current governed-job owner contract. */
-export const GOVERNED_JOB_MIN_PROTOCOL_VERSION = 28;
-
-/** Feature support requires both an accepted wire and the governed-job extension. */
-export function supportsGovernedJobs(protocolVersion: number): boolean {
-  return (
-    MACHINE_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion) &&
-    protocolVersion >= GOVERNED_JOB_MIN_PROTOCOL_VERSION
-  );
-}
-
-/**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
  *
  * A guest instance is long-lived in the same way an agent is, so its wire needs

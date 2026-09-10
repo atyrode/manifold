@@ -25,10 +25,11 @@ Startup checks its advertised switches; actual namespace, cgroup migration, `mem
 verification on the target kernel. Missing facilities refuse jobs, never launch a fallback.
 The Bun ZIP digests are pinned from the official
 [1.4.2 release metadata](https://api.github.com/repos/oven-sh/bun/releases/tags/bun-v1.4.2);
-the older locked nixpkgs Bun is not used. Package verification must also establish the
-vendored dependency-tree hash for each target platform; unfilled `depsHashes` entries in
-`flake.nix` are not a verified package and must be populated from real build output before
-that target's deployment. A runtime source pin alone is not a successful package build.
+the older locked nixpkgs Bun is not used. Vendored dependency trees are pinned for all
+four package targets and were reproduced with that Bun's explicit `--os`/`--cpu`
+optional-dependency selectors; the Linux x64 control matches its native installed tree.
+This establishes dependency bytes, not execution of another target's compiled binary.
+Build and exercise each target's actual package before deploying it.
 
 ### Declare one node
 
@@ -91,14 +92,14 @@ names, arrival order, provider labels and other machines are never fallback choi
 
 ### Independent lifetimes and storage
 
-| Unit / path | Ownership |
-| --- | --- |
-| `manifold-server.service` | Hub HTTP/WebSockets, SQLite, instance authority and local configuration preparation |
-| `manifold-owner.service` | Retained terminal host plus native owner; no machine token or hub key in its environment |
-| `manifold-transport.service` | Replaceable outbound machine channel; reads only its enrolled machine token file |
-| `/var/lib/manifold` | Private 0700 hub/control storage; owner key, machine token, immutable `job-owner/config.json`, durable owner state/journal/artifacts/sealed outputs |
-| `/var/lib/manifold-workload/{home,data,state,cache,config}` | Persistent declared workload anchors, separate from protected control storage |
-| `/var/lib/manifold-output` | Dedicated bounded tmpfs, the `runtime` anchor for named-output locations; temporary, not durable owner state |
+| Unit / path                                                 | Ownership                                                                                                                                           |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `manifold-server.service`                                   | Hub HTTP/WebSockets, SQLite, instance authority and local configuration preparation                                                                 |
+| `manifold-owner.service`                                    | Retained terminal host plus native owner; no machine token or hub key in its environment                                                            |
+| `manifold-transport.service`                                | Replaceable outbound machine channel; reads only its enrolled machine token file                                                                    |
+| `/var/lib/manifold`                                         | Private 0700 hub/control storage; owner key, machine token, immutable `job-owner/config.json`, durable owner state/journal/artifacts/sealed outputs |
+| `/var/lib/manifold-workload/{home,data,state,cache,config}` | Persistent declared workload anchors, separate from protected control storage                                                                       |
+| `/var/lib/manifold-output`                                  | Dedicated bounded tmpfs, the `runtime` anchor for named-output locations; temporary, not durable owner state                                        |
 
 The owner has **no** `PartOf`, `BindsTo` or `Requires` relationship to the hub or transport.
 Detaching a child would leave it inside the hub cgroup; the module instead starts the owner
@@ -110,12 +111,18 @@ cgroup or grant unrestricted cgroup writes to a workload.
 
 All control files are 0600, with private parents. Templates and generated configuration are
 immutable while retained: changes refuse rather than rewrite, restart or replace the owner.
+First publication stages and fsyncs a complete private file, then atomically renames it without
+replacing an incumbent and fsyncs its parent. Concurrent native installation compares the winning
+configuration; an interrupted write cannot expose a partial config or supervision marker.
 `/var/lib/manifold` is excluded from workload sources, including recursive ancestor mounts;
 add other existing credential/control directories with `execution.protectedDirectories`.
 Do not make protected control storage an anchor or copy desktop/tool credentials into the
-service account. Unconfined terminals run as the trusted `manifold` OS account; neither these
-exclusions nor cgroups protect against root or other unconfined same-UID processes. Give this
-account only the host authority you intend to grant.
+service account. Native owners refuse runtime-free shells and programs, including when their
+job channel is unavailable; ordinary terminal creation requires an explicitly unconfined owner.
+The hub, owner and transport remain trusted processes under the `manifold` OS account:
+neither these exclusions nor cgroups isolate a compromised daemon from same-UID control state.
+Give this account only the host authority you intend to grant; use separate execution nodes
+when the hub must not hold the node's OS authority.
 
 Named output backing is **not just a tmpfs directory**. The runtime counts the total capacity
 of each distinct backing device once, requires positive byte/inode bounds, and reserves its
@@ -143,6 +150,27 @@ real files/directories, not symlink aliases, and directory bindings cannot conta
 mounts or protected data. A dynamically linked executable without its loader cannot run in
 the empty sandbox. Do not bind all of `/`, `/usr` or `/nix/store`, discover a host PATH, or
 claim installing a package automatically makes a tool available to jobs.
+
+`execution.serviceCredentials` maps a service policy's `credentialRef` to a private runtime
+file and reviewed allowed origins, on both local and execution-only nodes:
+
+```nix
+services.manifold.execution.serviceCredentials.service-api = {
+  source = "/var/lib/manifold-credentials/service-api";
+  origins = [ "https://api.example.com" ];
+};
+```
+
+Use a **quoted path string**, not a Nix path literal or `builtins.readFile`: only the
+reference, path and origins belong in Nix, never credential bytes. Provision the source
+before starting the owner: a nonempty, single-link regular file (at most 16 KiB), 0600 and
+owned by `manifold`, without symlinks in its path. Its parent must be owned by root or
+`manifold` and not group/world-writable; a 0700 `manifold`-owned credential directory is
+the simplest choice. The module adds these parent roots to `protectedDirectories`.
+Origins must be canonical HTTPS origins; HTTP is allowed only for explicit `127.0.0.1`
+or `[::1]` loopback origins. This declares a credential source, not resource consent or
+permission to invoke a service. Owner configuration and source references are retained;
+change them only through drained owner maintenance, not an in-place config overwrite.
 
 ### Explicit remote execution
 
@@ -192,6 +220,9 @@ have `restartIfChanged=false`, `stopIfChanged=false`, `Restart=on-failure` and
 atomic maintenance shutdown stays stopped. Old immutable store paths must remain rooted
 until the retained owner exits; do not garbage-collect its old system generation mid-session.
 Changing a unit definition does not mean the retained owner is running that new version.
+Hub/transport protocol 30 is independent of native owner RPC 29. A compatible retained owner
+keeps its work through a transport upgrade; its missing IPC-2 execution declaration cannot
+be treated as permission to create an unconfined shell.
 
 Before changing owner configuration, output backing, identity, package or supervisor:
 close admission with `core.machines.drain`, let jobs/services finish or explicitly cancel
@@ -216,6 +247,21 @@ attempt configuration/supervision drift and prove the incumbent remains untouche
 and atomically shut down before owner restart; confirm output/journal recovery on disk and
 honest loss of unsealed tmpfs scratch. A successful build or online terminal transport alone
 does not prove native readiness. This profile's source is not a claim of runtime verification.
+
+The flake's disposable NixOS acceptance check boots the declared services and executes a
+hash-pinned worker with its declared static runtime. It verifies that hub control state is
+not visible inside the job, private control-file modes hold, and exit status and sealed
+output survive hub/transport restarts and a positively drained owner replacement. It also
+activates a changed configuration and proves the incumbent PID and private configuration
+remain unchanged when that drift is refused:
+
+```sh
+nix build .#checks.x86_64-linux.native-profile
+```
+
+Use the corresponding `aarch64-linux` check on that target. QEMU can use CPU emulation on
+builders without nested virtualization. This lifecycle check complements, rather than
+replaces, the workload, escape-boundary and occupied-owner acceptance above.
 
 ## Container profile
 

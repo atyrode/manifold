@@ -1,5 +1,4 @@
 import {
-  TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION,
   hasCap,
   type AdvertisedTerminal,
   type AgentMessage,
@@ -10,6 +9,7 @@ import {
   type RuntimeDeps,
   type ServerToAgentMessage,
   type TerminalInfo,
+  type TerminalExecution,
 } from "@manifold/protocol";
 import type { AuthService } from "./auth.ts";
 import type { EventHub } from "./event-hub.ts";
@@ -47,16 +47,12 @@ const DRAIN_DEADLINE_MS = 10_000;
 export interface MachineChannel {
   readonly machineId: string;
   /**
-   * The protocol the agent's `hello` named — one of `MACHINE_PROTOCOL_COMPAT_VERSIONS`. The
-   * broker reads it before sending a frame an older agent parses as malformed (`program`).
-   */
-  readonly protocolVersion: number;
-  /**
    * The identity of the process that owns this connection's PTYs (`hello.terminalHostId`,
    * #278), or null for an agent that is its own owner. Null is also the CAPABILITY gate: an
    * agent that named no owner parses `drain` as a malformed frame, so it is never sent one.
    */
   readonly terminalHostId: string | null;
+  readonly terminalExecution: TerminalExecution | null;
   send(message: ServerToAgentMessage): boolean;
 }
 
@@ -703,25 +699,15 @@ export class TerminalBroker implements TerminalPlacementPort {
       });
       return;
     }
-    if (
-      message.program !== undefined &&
-      machine.protocolVersion < TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION
-    ) {
-      /*
-        A pre-v22 agent parses `create` strictly, so a `program` key would be a malformed
-        frame to it — it would drop the socket and re-dial, and the opener would learn
-        nothing. Naming the skew here, before anything is minted, is what makes the field
-        additive for the fleet: the old agent never sees a byte it cannot read.
-      */
+    if (!message.runtime && machine.terminalExecution !== "unconfined") {
       channel.send({
         type: "error",
-        code: "unsupported",
-        message: `machine agent speaks protocol ${machine.protocolVersion}; programs need ${TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION}`,
+        code: machine.terminalExecution === "governed" ? "forbidden" : "unsupported",
+        message:
+          machine.terminalExecution === "governed"
+            ? "machine requires a declared terminal runtime"
+            : "terminal owner has not declared unconfined terminal support",
         ref: message.elementId,
-      });
-      this.logger.warn("terminal_program_unsupported", {
-        machineId: machine.machineId,
-        agentProtocolVersion: machine.protocolVersion,
       });
       return;
     }

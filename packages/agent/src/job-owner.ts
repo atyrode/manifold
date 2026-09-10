@@ -1,10 +1,11 @@
 import { createPublicKey, randomBytes, randomUUID, verify, type KeyObject } from "node:crypto";
 import { closeSync, fstatSync } from "node:fs";
-import type { Socket } from "node:net";
+import { createConnection, type Socket } from "node:net";
+import type { Duplex } from "node:stream";
 import { connectWorkloadLoopback } from "./job-listener-proof.ts";
 import {
   canonicalJobJson,
-  PROTOCOL_VERSION,
+  JOB_OWNER_PROTOCOL_VERSION,
   JobCommandSchema,
   JobRequestSchema,
   JobResultSchema,
@@ -57,7 +58,12 @@ import {
   type LinuxJobResult,
   type LinuxJobSpec,
 } from "./job-linux.ts";
-import { DirectoryExclusions, resolveJobLocation, type JobLocation } from "./job-locations.ts";
+import {
+  DirectoryExclusions,
+  resolveJobLocation,
+  resolveManagedJobLocation,
+  type JobLocation,
+} from "./job-locations.ts";
 import { JobResources } from "./job-resources.ts";
 import {
   createJobServiceRunner,
@@ -67,12 +73,22 @@ import {
 } from "./job-services.ts";
 import { createJobServiceProxy, type JobServiceProxy } from "./job-service-proxy.ts";
 import { materializeJobInputs, type JobServiceEndpoint } from "./job-inputs.ts";
+import { createServiceTunnel, type ServiceTunnel } from "./job-service-tunnel.ts";
+
+interface OwnedServiceTunnel {
+  wire: ServiceTunnel;
+  signal: AbortSignal;
+  controller: AbortController;
+  command?: Extract<JobCommand, { type: "service_tunnel_open" }>;
+  ready?: (endpoint: JobServiceEndpoint | null) => void;
+}
 
 export interface JobOwnerOptions {
   machineId: string;
   admissionPublicKey: string;
   journal: JobJournal;
   cache: HeldDirectory;
+  managedState: HeldDirectory;
   outputs: JobOutputStore;
   delegatedCgroup: HeldDirectory;
   bubblewrapFd: number;
@@ -138,12 +154,21 @@ interface RuntimeService {
   resolve(endpoint: JobServiceEndpoint & { signal: AbortSignal }): void;
   reject(reason: Error): void;
 }
+interface InstanceRuntimeService {
+  policy: ServicePolicy;
+  job: OwnedJob;
+  bearer: string;
+  port: number | null;
+  startupTimer: ReturnType<typeof setTimeout> | undefined;
+}
 const ACTIVE: Record<string, true> = { "start-committed": true, started: true };
 
 /** Independently supervised machine authority. No workload is owned by the websocket transport. */
 export class MachineJobOwner {
   private readonly installs = new Map<string, Installation>();
   private readonly jobs = new Map<string, OwnedJob>();
+  private readonly pendingStarts = new Map<string, Promise<void>>();
+  private readonly instanceRuntimeServices = new Map<string, InstanceRuntimeService>();
   private readonly permits = new Set<string>();
   private readonly challenges = new Set<string>();
   private readonly admissionKey: KeyObject;
@@ -164,6 +189,7 @@ export class MachineJobOwner {
   private serviceRunner: JobServiceRunner = createJobServiceRunner({ policies: [] });
   private seatController = new AbortController();
   private configurationController = new AbortController();
+  private readonly serviceTunnels = new Map<string, OwnedServiceTunnel>();
   private readonly serviceAuthorizations = new Map<
     string,
     {
@@ -213,7 +239,7 @@ export class MachineJobOwner {
         );
         continue;
       }
-      if (kind === "reservation") {
+      if (kind === "reservation" || kind === "rejection") {
         const request = JobRequestSchema.parse(Reflect.get(raw, "request"));
         const permitId = Reflect.get(raw, "permitId");
         if (
@@ -295,11 +321,12 @@ export class MachineJobOwner {
     if (this.draining === draining) return;
     this.options.journal.append({ kind: "drain", draining });
     this.draining = draining;
+    if (draining) for (const tunnel of this.serviceTunnels.values()) tunnel.controller.abort();
   }
   get identity(): JobOwner {
     const journal = this.options.journal;
     return {
-      protocolVersion: PROTOCOL_VERSION,
+      protocolVersion: JOB_OWNER_PROTOCOL_VERSION,
       ownerId: journal.ownerId,
       publicKey: journal.publicKey,
       generation: journal.generation,
@@ -308,6 +335,7 @@ export class MachineJobOwner {
           ? [`linux-${process.arch}`]
           : [],
       inventoryDigest: journal.inventoryDigest(),
+      resources: this.resources.snapshot(),
       ...(this.terminalHostId ? { terminalHostId: this.terminalHostId } : {}),
     };
   }
@@ -353,6 +381,8 @@ export class MachineJobOwner {
           };
           this.emit({ type: "owner_proof", ...body, signature: this.options.journal.proof(body) });
           this.publishResources();
+          for (const installation of this.installs.values())
+            this.publishInstallation(installation.command);
           return;
         }
         case "invocation_reply":
@@ -379,15 +409,23 @@ export class MachineJobOwner {
           this.setDraining(command.draining);
           return;
         case "status": {
-          const job = this.requireJob(command.jobId);
+          const job = await this.reconcileStart(command);
+          this.emitEmpty(job);
           this.emit({ type: "result", result: job.result }, job);
+          if (job.request.service) {
+            const instance = this.instanceRuntimeServices.get(job.request.service.serviceId);
+            if (instance?.job === job) this.publishInstanceReady(instance);
+          }
           await job.inputTail;
           this.emitInputState(job);
           return;
         }
-        case "cancel":
+        case "cancel": {
+          const job = await this.reconcileStart(command);
+          this.emitEmpty(job);
           await this.cancel(command.jobId);
           return;
+        }
         case "configure_services":
           this.configureServices(command.configuration);
           return;
@@ -397,6 +435,15 @@ export class MachineJobOwner {
             pending.resolve(command.allowed);
           return;
         }
+        case "service_tunnel_open":
+          await this.acceptServiceTunnel(command);
+          return;
+        case "service_tunnel_ready":
+          this.serviceTunnels.get(command.channelId)?.ready?.(command.endpoint);
+          return;
+        case "service_tunnel_frame":
+          this.serviceTunnels.get(command.frame.channelId)?.wire.receive(command.frame);
+          return;
         case "service_read":
         case "service_invoke":
           await this.directService(command);
@@ -498,6 +545,16 @@ export class MachineJobOwner {
     this.emit({ type: "resources", resources: this.resources.snapshot() });
   }
 
+  private publishInstallation(command: Extract<JobCommand, { type: "install" }>): void {
+    this.emit({
+      type: "installed",
+      pluginId: command.pluginId,
+      installationRevision: command.installationRevision,
+      artifactSha256: command.artifactSha256,
+      resources: this.installedResources(command.pluginId, command.installationRevision),
+    });
+  }
+
   private configureServices(raw: ServiceConfiguration): void {
     const configuration = ServiceConfigurationSchema.parse(raw);
     if (
@@ -518,8 +575,11 @@ export class MachineJobOwner {
           [...(this.options.serviceCredentials ?? [])].map(([ref, value]) => [ref, value.fd]),
         ),
       ),
+      resolveRuntime: (policy, signal) => this.instanceService(policy, signal),
     });
     this.publishResources();
+    for (const installation of this.installs.values())
+      this.publishInstallation(installation.command);
   }
 
   private serviceAvailable(
@@ -631,6 +691,19 @@ export class MachineJobOwner {
       !Object.hasOwn(policy.operations, request.operationId)
     )
       return false;
+    if (subject.kind === "tunnel") {
+      const tunnel = this.serviceTunnels.get(subject.channelId);
+      const command = tunnel?.command;
+      return (
+        !!command &&
+        !tunnel.signal.aborted &&
+        command.serviceId === request.serviceId &&
+        command.revision === request.revision &&
+        command.policySha256 === policySha256 &&
+        command.operationIds.includes(request.operationId) &&
+        this.serviceAvailable(policy, [request.operationId], this.resources.snapshot(), new Set())
+      );
+    }
     if (subject.kind !== "job") {
       const pending = this.directServiceCalls.get(subject.requestId);
       if (
@@ -849,6 +922,14 @@ export class MachineJobOwner {
   private async closeServices(job: OwnedJob): Promise<void> {
     job.serviceController.abort();
     job.context?.abortServices();
+    const instance =
+      job.request.service && this.instanceRuntimeServices.get(job.request.service.serviceId);
+    if (instance && instance.job === job) {
+      instance.port = null;
+      instance.bearer = "";
+      clearTimeout(instance.startupTimer);
+      instance.startupTimer = undefined;
+    }
     job.serviceRuntime?.reject(new Error("service_cancelled"));
     for (const runtime of job.runtimeServices.values()) {
       runtime.reject(new Error("service_cancelled"));
@@ -893,7 +974,12 @@ export class MachineJobOwner {
             signal,
           );
         },
-        resolveRuntime: (boundPolicy, signal) => this.runtimeService(job, boundPolicy, signal),
+        resolveRuntime: (boundPolicy, signal) =>
+          boundPolicy.remote
+            ? this.remoteService(job, boundPolicy, signal)
+            : boundPolicy.runtime?.scope === "instance"
+              ? this.instanceService(boundPolicy, signal)
+              : this.runtimeService(job, boundPolicy, signal),
       });
       job.serviceProxies.set(serviceId, proxy);
     }
@@ -996,8 +1082,236 @@ export class MachineJobOwner {
     return { ...endpoint, socket };
   }
 
+  private openServiceTunnel(channelId: string, signal: AbortSignal): OwnedServiceTunnel {
+    if (
+      !this.sink ||
+      this.draining ||
+      this.serviceTunnels.has(channelId) ||
+      this.serviceTunnels.size >= 64
+    )
+      throw new Error("service_unavailable");
+    const controller = new AbortController();
+    const lifetime = AbortSignal.any([
+      signal,
+      controller.signal,
+      this.seatController.signal,
+      this.configurationController.signal,
+    ]);
+    lifetime.throwIfAborted();
+    const wire = createServiceTunnel({
+      channelId,
+      signal: lifetime,
+      send: (frame) => this.sink?.({ type: "service_tunnel_frame", frame }) === true,
+    });
+    const tunnel: OwnedServiceTunnel = { wire, signal: lifetime, controller };
+    this.serviceTunnels.set(channelId, tunnel);
+    wire.stream.on("error", () => controller.abort());
+    wire.stream.once("close", () => {
+      controller.abort();
+      tunnel.ready?.(null);
+      if (this.serviceTunnels.get(channelId) === tunnel) this.serviceTunnels.delete(channelId);
+    });
+    return tunnel;
+  }
+
+  private async remoteService(
+    job: OwnedJob,
+    policy: ServicePolicy,
+    signal: AbortSignal,
+  ): Promise<JobServiceEndpoint & { signal: AbortSignal; socket: Duplex }> {
+    if (
+      !policy.remote ||
+      job.result.state !== "started" ||
+      job.cancelRequested ||
+      jobDigest(this.policy(policy.serviceId) ?? null) !== jobDigest(policy)
+    )
+      throw new Error("service_unavailable");
+    const channelId = randomUUID();
+    const tunnel = this.openServiceTunnel(
+      channelId,
+      AbortSignal.any([signal, job.serviceController.signal]),
+    );
+    const ready = Promise.withResolvers<JobServiceEndpoint | null>();
+    tunnel.ready = ready.resolve;
+    const timer = setTimeout(() => tunnel.controller.abort(), 5000);
+    try {
+      if (
+        !this.sink?.({
+          type: "service_tunnel_open",
+          channelId,
+          jobId: job.request.jobId,
+          serviceId: policy.serviceId,
+          revision: policy.revision,
+          policySha256: jobDigest(policy),
+        })
+      )
+        tunnel.controller.abort();
+      const endpoint = await ready.promise;
+      delete tunnel.ready;
+      if (!endpoint || tunnel.signal.aborted) throw new Error("service_unavailable");
+      return { ...endpoint, signal: tunnel.signal, socket: tunnel.wire.stream };
+    } catch {
+      tunnel.controller.abort();
+      throw new Error("service_unavailable");
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async acceptServiceTunnel(
+    command: Extract<JobCommand, { type: "service_tunnel_open" }>,
+  ): Promise<void> {
+    const policy = this.policy(command.serviceId);
+    if (
+      !policy ||
+      policy.runtime?.scope !== "instance" ||
+      policy.revision !== command.revision ||
+      jobDigest(policy) !== command.policySha256 ||
+      command.operationIds.some(
+        (id) => !policy.operations[id] || !("kind" in policy.operations[id]!),
+      )
+    ) {
+      this.emit({ type: "service_tunnel_ready", channelId: command.channelId, endpoint: null });
+      return;
+    }
+    let tunnel: OwnedServiceTunnel | undefined;
+    let proxy: JobServiceProxy | undefined;
+    let socket: Socket | undefined;
+    try {
+      tunnel = this.openServiceTunnel(command.channelId, this.seatController.signal);
+      tunnel.command = command;
+      const signal = tunnel.signal;
+      proxy = await createJobServiceProxy({
+        policies: [policy],
+        bindings: [
+          {
+            serviceId: policy.serviceId,
+            revision: policy.revision,
+            operationIds: command.operationIds,
+          },
+        ],
+        signal,
+        authorize: (call, requestSignal) =>
+          this.authorizeService(
+            { kind: "tunnel", channelId: command.channelId },
+            call,
+            command.policySha256,
+            requestSignal,
+          ),
+        resolveRuntime: (bound, requestSignal) => this.instanceService(bound, requestSignal),
+      });
+      const connected = Promise.withResolvers<void>();
+      socket = createConnection({
+        host: "127.0.0.1",
+        port: Number(new URL(proxy.url).port),
+        signal,
+      });
+      socket.once("connect", connected.resolve);
+      socket.on("error", () => {
+        connected.reject(new Error("service_unavailable"));
+        tunnel?.controller.abort();
+      });
+      await connected.promise;
+      signal.throwIfAborted();
+      const heldProxy = proxy;
+      const heldSocket = socket;
+      tunnel.wire.stream.once("close", () => {
+        heldSocket.destroy();
+        void heldProxy.close();
+      });
+      socket.once("close", () => tunnel?.controller.abort());
+      tunnel.wire.stream.pipe(socket).pipe(tunnel.wire.stream);
+      if (
+        !this.sink?.({
+          type: "service_tunnel_ready",
+          channelId: command.channelId,
+          endpoint: { url: proxy.url, bearer: proxy.bearer },
+        })
+      )
+        throw new Error("service_unavailable");
+    } catch {
+      tunnel?.controller.abort();
+      socket?.destroy();
+      await proxy?.close();
+      this.emit({ type: "service_tunnel_ready", channelId: command.channelId, endpoint: null });
+    }
+  }
+
+  private async instanceService(
+    policy: ServicePolicy,
+    signal: AbortSignal,
+  ): Promise<JobServiceEndpoint & { signal: AbortSignal; socket: Socket }> {
+    signal.throwIfAborted();
+    const instance = this.instanceRuntimeServices.get(policy.serviceId);
+    if (
+      !instance ||
+      instance.port === null ||
+      policy.runtime?.scope !== "instance" ||
+      instance.job.result.state !== "started" ||
+      instance.job.cancelRequested ||
+      instance.job.serviceController.signal.aborted ||
+      jobDigest(instance.policy) !== jobDigest(policy) ||
+      jobDigest(this.policy(policy.serviceId) ?? null) !== jobDigest(policy)
+    )
+      throw new Error("service_unavailable");
+    const lifetime = AbortSignal.any([
+      signal,
+      instance.job.serviceController.signal,
+      this.configurationController.signal,
+    ]);
+    const socket = await connectWorkloadLoopback(
+      instance.port,
+      (connected) =>
+        !instance.job.cancelRequested &&
+        instance.job.result.state === "started" &&
+        jobDigest(this.policy(policy.serviceId) ?? null) === jobDigest(policy) &&
+        instance.job.handle?.ownsLoopbackConnection(connected) === true,
+      lifetime,
+    );
+    return {
+      url: `http://127.0.0.1:${instance.port}`,
+      bearer: instance.bearer,
+      signal: lifetime,
+      socket,
+    };
+  }
+  private publishInstanceReady(instance: InstanceRuntimeService): void {
+    const job = instance.job;
+    if (
+      instance.port !== null &&
+      job.request.service &&
+      job.result.state === "started" &&
+      !job.cancelRequested &&
+      !job.serviceController.signal.aborted &&
+      jobDigest(this.policy(instance.policy.serviceId) ?? null) === jobDigest(instance.policy) &&
+      job.handle?.ownsLoopbackListener(instance.port)
+    )
+      this.emit(
+        { type: "service_ready", jobId: job.request.jobId, service: job.request.service },
+        job,
+      );
+  }
   private async announceServiceReady(job: OwnedJob, port: number): Promise<void> {
     await job.launched;
+    if (job.request.service) {
+      const instance = this.instanceRuntimeServices.get(job.request.service.serviceId);
+      if (
+        !instance ||
+        instance.job !== job ||
+        instance.port !== null ||
+        job.result.state !== "started" ||
+        job.cancelRequested ||
+        job.serviceController.signal.aborted ||
+        jobDigest(this.policy(instance.policy.serviceId) ?? null) !== jobDigest(instance.policy) ||
+        !job.handle?.ownsLoopbackListener(port)
+      )
+        throw new Error("service_listener_unproven");
+      instance.port = port;
+      clearTimeout(instance.startupTimer);
+      instance.startupTimer = undefined;
+      this.publishInstanceReady(instance);
+      return;
+    }
     const runtime = job.serviceRuntime;
     const parent = job.request.parent && this.jobs.get(job.request.parent.parentJobId);
     if (
@@ -1278,13 +1592,7 @@ export class MachineJobOwner {
           }
         }
       }
-      this.emit({
-        type: "installed",
-        pluginId: command.pluginId,
-        installationRevision: command.installationRevision,
-        artifactSha256: command.artifactSha256,
-        resources: this.installedResources(command.pluginId, command.installationRevision),
-      });
+      this.publishInstallation(command);
       return;
     }
     if (existing) {
@@ -1373,13 +1681,7 @@ export class MachineJobOwner {
         );
       }
     }
-    this.emit({
-      type: "installed",
-      pluginId: command.pluginId,
-      installationRevision: command.installationRevision,
-      artifactSha256: command.artifactSha256,
-      resources: this.installedResources(command.pluginId, command.installationRevision),
-    });
+    this.publishInstallation(command);
   }
 
   /** Private in-process handoff from the sole TerminalHost, never a job RPC command. */
@@ -1402,41 +1704,129 @@ export class MachineJobOwner {
     await this.start(command, launch);
   }
 
-  private async start(
-    command: Extract<JobCommand, { type: "start" }>,
-    terminalLaunch?: (spec: LinuxJobSpec) => Promise<LinuxJobHandle>,
-  ): Promise<void> {
-    const { request, permit } = command;
+  /** Signature/identity authentication is independent of admission freshness. Old permits
+   * may reconcile absence after recovery, but can never admit into a new generation. */
+  private verifyAdmission({
+    request,
+    permit,
+  }: Pick<Extract<JobCommand, { type: "start" }>, "request" | "permit">): void {
     const { requestDigest, ...immutable } = request;
-    if (jobDigest(immutable) !== requestDigest) throw new Error("request_digest_mismatch");
-    const existing = this.jobs.get(request.jobId);
-    if (existing) {
-      if (request.terminal) throw new Error("terminal_admission_reused");
-      if (existing.request.requestDigest !== requestDigest) throw new Error("job_identity_changed");
-      this.emit({ type: "result", result: existing.result }, existing);
-      return;
-    }
-    if ([...this.jobs.values()].filter((job) => !job.emptyObserved).length >= 64)
-      throw new Error("owner_active_job_limit");
-    const now = Date.now();
     const { signature, ...signedPermit } = permit;
     if (
-      this.draining ||
+      jobDigest(immutable) !== requestDigest ||
       request.machineId !== this.options.machineId ||
       permit.jobId !== request.jobId ||
       permit.requestDigest !== requestDigest ||
       permit.ownerId !== this.options.journal.ownerId ||
-      permit.ownerGeneration !== this.options.journal.generation ||
-      permit.expiresAt <= now ||
-      permit.issuedAt > now ||
-      permit.expiresAt - permit.issuedAt > 30_000 ||
-      this.permits.has(permit.permitId) ||
+      permit.ownerGeneration > this.options.journal.generation ||
       !verify(
         null,
         Buffer.from(canonicalJobJson(signedPermit)),
         this.admissionKey,
         Buffer.from(signature, "base64"),
       )
+    )
+      throw new Error("start_permit_refused");
+  }
+
+  private rejectUnadmitted(
+    admission: Pick<Extract<JobCommand, { type: "start" }>, "request" | "permit">,
+  ): OwnedJob {
+    const { request, permit } = admission;
+    if (this.jobs.has(request.jobId) || this.permits.has(permit.permitId))
+      throw new Error("job_identity_changed");
+    const job = this.newJob(request);
+    job.result = {
+      ...job.result,
+      ownerGeneration: permit.ownerGeneration,
+      state: "refused",
+      reason: "start_not_admitted",
+      finishedAt: Date.now(),
+    };
+    // No proof leaves this process until replay is fenced by an fsynced identity.
+    this.options.journal.append({
+      kind: "rejection",
+      request,
+      permitId: permit.permitId,
+      result: job.result,
+    });
+    this.jobs.set(request.jobId, job);
+    this.permits.add(permit.permitId);
+    job.inputEnded = true;
+    job.resolveEmpty();
+    job.resolveLaunched();
+    job.resolveFinalized();
+    this.emit({ type: "result", result: job.result }, job);
+    return job;
+  }
+
+  private async reconcileStart(
+    command: Extract<JobCommand, { type: "status" | "cancel" }>,
+  ): Promise<OwnedJob> {
+    if (command.admission) {
+      this.verifyAdmission(command.admission);
+      if (command.jobId !== command.admission.request.jobId)
+        throw new Error("job_identity_changed");
+    }
+    await this.pendingStarts.get(command.jobId);
+    const job = this.jobs.get(command.jobId);
+    if (job) {
+      if (
+        command.admission &&
+        (job.request.requestDigest !== command.admission.request.requestDigest ||
+          job.result.ownerGeneration !== command.admission.permit.ownerGeneration)
+      )
+        throw new Error("job_identity_changed");
+      return job;
+    }
+    if (!command.admission) throw new Error("unknown_job");
+    return this.rejectUnadmitted(command.admission);
+  }
+
+  private async start(
+    command: Extract<JobCommand, { type: "start" }>,
+    terminalLaunch?: (spec: LinuxJobSpec) => Promise<LinuxJobHandle>,
+  ): Promise<void> {
+    this.verifyAdmission(command);
+    if (this.pendingStarts.has(command.request.jobId))
+      await this.pendingStarts.get(command.request.jobId);
+    const pending = Promise.withResolvers<void>();
+    this.pendingStarts.set(command.request.jobId, pending.promise);
+    try {
+      await this.prepareStart(command, terminalLaunch);
+    } catch (error) {
+      if (!this.jobs.has(command.request.jobId)) this.rejectUnadmitted(command);
+      throw error;
+    } finally {
+      this.pendingStarts.delete(command.request.jobId);
+      pending.resolve();
+    }
+  }
+
+  private async prepareStart(
+    command: Extract<JobCommand, { type: "start" }>,
+    terminalLaunch?: (spec: LinuxJobSpec) => Promise<LinuxJobHandle>,
+  ): Promise<void> {
+    const { request, permit } = command;
+    const { requestDigest } = request;
+    const existing = this.jobs.get(request.jobId);
+    if (existing) {
+      if (request.terminal) throw new Error("terminal_admission_reused");
+      if (existing.request.requestDigest !== requestDigest) throw new Error("job_identity_changed");
+      this.emitEmpty(existing);
+      this.emit({ type: "result", result: existing.result }, existing);
+      return;
+    }
+    if ([...this.jobs.values()].filter((job) => !job.emptyObserved).length >= 64)
+      throw new Error("owner_active_job_limit");
+    const now = Date.now();
+    if (
+      this.draining ||
+      permit.ownerGeneration !== this.options.journal.generation ||
+      permit.expiresAt <= now ||
+      permit.issuedAt > now ||
+      permit.expiresAt - permit.issuedAt > 30_000 ||
+      this.permits.has(permit.permitId)
     )
       throw new Error("start_permit_refused");
     if (Boolean(request.terminal) !== Boolean(terminalLaunch))
@@ -1498,7 +1888,7 @@ export class MachineJobOwner {
             (runtime) => runtime.invocationId === request.parent!.invocationId,
           )
         : undefined;
-    if (operation.providesService && !job.serviceRuntime)
+    if (operation.providesService && !job.serviceRuntime && !request.service)
       throw new Error("service_runtime_parent_required");
     if (job.serviceRuntime) {
       const expected = job.serviceRuntime.policy.runtime!;
@@ -1517,6 +1907,57 @@ export class MachineJobOwner {
     }
     let spawnAttempted = false;
     try {
+      if (request.service) {
+        const policy = this.policy(request.service.serviceId);
+        // request.service.revision is the signed registry CAS identity, not the
+        // manifest's contract revision; the complete reviewed policy stays digest-bound.
+        const runtime = policy?.runtime;
+        if (
+          !policy ||
+          !runtime ||
+          runtime.scope !== "instance" ||
+          !operation.providesService ||
+          jobDigest(policy) !== request.service.policySha256 ||
+          runtime.pluginId !== request.pluginId ||
+          runtime.operationId !== request.operationId ||
+          runtime.installationRevision !== request.installationRevision ||
+          runtime.artifactSha256 !== request.artifactSha256 ||
+          runtime.resourceBindingDigest !== jobDigest(request.resourceBindings ?? null) ||
+          Object.values(runtime.input).some((source) => !("literal" in source)) ||
+          jobDigest(request.input) !==
+            jobDigest(
+              Object.fromEntries(
+                Object.entries(runtime.input).map(([name, source]) => [
+                  name,
+                  "literal" in source ? source.literal : undefined,
+                ]),
+              ),
+            ) ||
+          this.instanceRuntimeServices.has(policy.serviceId)
+        )
+          throw new Error("instance_service_binding_mismatch");
+        const instance: InstanceRuntimeService = {
+          policy,
+          job,
+          bearer: randomBytes(32).toString("base64url"),
+          port: null,
+          startupTimer: undefined,
+        };
+        this.instanceRuntimeServices.set(policy.serviceId, instance);
+        void job.empty.then(() => {
+          if (this.instanceRuntimeServices.get(policy.serviceId) === instance)
+            this.instanceRuntimeServices.delete(policy.serviceId);
+        });
+        void job.launched.then(() => {
+          if (job.result.state !== "started" || instance.port !== null || job.cancelRequested)
+            return;
+          instance.startupTimer = setTimeout(() => {
+            void this.cancel(request.jobId).catch(() => {
+              this.draining = true;
+            });
+          }, 30_000);
+        });
+      }
       preflightLinuxJobRuntime();
       if (request.outputs.length > 30) throw new Error("output_count_limit");
       if (!request.terminal) {
@@ -1537,16 +1978,27 @@ export class MachineJobOwner {
       for (const declaration of operation.locations) {
         const resource = installation.command.machine.locations[declaration.locationId]!;
         const anchor = this.options.anchors[resource.anchor];
-        if (!anchor || job.locations.has(declaration.locationId))
+        if ((!resource.managed && !anchor) || job.locations.has(declaration.locationId))
           throw new Error("location_anchor_unavailable_or_duplicate");
-        const resolved = resolveJobLocation(
-          anchor,
-          declaration.locationId,
-          resource,
-          declaration.access,
-          this.exclusions,
-          (parentFd) => this.options.outputs.assertCreateAllowed(parentFd, preparation),
-        );
+        const beforeCreate = (parentFd: number) =>
+          this.options.outputs.assertCreateAllowed(parentFd, preparation);
+        const resolved = resource.managed
+          ? resolveManagedJobLocation(
+              this.options.managedState,
+              request.pluginId,
+              declaration.locationId,
+              resource,
+              declaration.access,
+              beforeCreate,
+            )
+          : resolveJobLocation(
+              anchor!,
+              declaration.locationId,
+              resource,
+              declaration.access,
+              this.exclusions,
+              beforeCreate,
+            );
         job.locations.set(declaration.locationId, resolved);
         if (resolved.writable)
           job.releaseWriters.push(
@@ -1648,7 +2100,9 @@ export class MachineJobOwner {
         operation,
         request.input,
         job.serviceProxies,
-        job.serviceRuntime?.bearer,
+        request.service
+          ? this.instanceRuntimeServices.get(request.service.serviceId)?.bearer
+          : job.serviceRuntime?.bearer,
       );
       const spec: LinuxJobSpec = {
         bubblewrapFd: this.options.bubblewrapFd,
@@ -1670,7 +2124,10 @@ export class MachineJobOwner {
         })),
         delegatedCgroup: parent?.handle?.childDelegation ?? this.options.delegatedCgroup,
         limits: request.limits,
+        ...(request.service ? { persistentService: true as const } : {}),
+        ...(operation.environment ? { environment: operation.environment } : {}),
         network: operation.network,
+        providesService: operation.providesService === true,
         bidirectional: operation.stdin,
         nestedCgroup: true,
         contextFd: job.context.childFd,
@@ -1924,9 +2381,15 @@ export class MachineJobOwner {
       for (const release of job.releaseWriters) release();
       job.releaseWriters = [];
     } else if (!job.emptyObserved) throw new Error("workload_empty_unproven");
+    this.emitEmpty(job);
   }
 
   private validateInput(operation: MachineOperation, request: JobRequest): void {
+    if (
+      (request.limits.timeoutMs === 0) !== Boolean(request.service) ||
+      (request.service && (request.parent || request.terminal))
+    )
+      throw new Error("invalid_service_lifetime");
     for (const [name, value] of Object.entries(request.input)) {
       const field = operation.input[name];
       if (
@@ -1959,7 +2422,7 @@ export class MachineJobOwner {
     const empty = Promise.withResolvers<void>();
     const launched = Promise.withResolvers<void>();
     const finalized = Promise.withResolvers<void>();
-    return {
+    const job: OwnedJob = {
       request,
       result: {
         jobId: request.jobId,
@@ -1992,9 +2455,11 @@ export class MachineJobOwner {
       depth: 0,
       children: new Set(),
       empty: empty.promise,
-      resolveEmpty() {
-        this.emptyObserved = true;
+      resolveEmpty: () => {
+        if (job.emptyObserved) return;
+        job.emptyObserved = true;
         empty.resolve();
+        this.emitEmpty(job);
       },
       childBudgetMs: 0,
       outputGap: false,
@@ -2011,11 +2476,25 @@ export class MachineJobOwner {
       runtimeServices: new Map(),
       serviceRuntime: undefined,
     };
+    return job;
   }
   private requireJob(jobId: string): OwnedJob {
     const job = this.jobs.get(jobId);
     if (!job) throw new Error("unknown_job");
     return job;
+  }
+  private emitEmpty(job: OwnedJob): void {
+    if (!job.emptyObserved || this.jobs.get(job.request.jobId) !== job) return;
+    this.emit(
+      {
+        type: "workload_empty",
+        jobId: job.request.jobId,
+        requestDigest: job.request.requestDigest,
+        ownerId: job.result.ownerId,
+        ownerGeneration: job.result.ownerGeneration,
+      },
+      job,
+    );
   }
   private emit(event: JobEvent, job?: OwnedJob): void {
     const parent = job?.request.parent && this.jobs.get(job.request.parent.parentJobId);

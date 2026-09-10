@@ -39,6 +39,12 @@ import {
   type ServiceReadArgs,
   type ServiceInvokeArgs,
   type ServiceReply,
+  type ConfigureInstanceServiceArgs,
+  type InstanceServiceDescription,
+  type InstanceServicesDescription,
+  type TerminalExecution,
+  type InstanceServiceConfigurationRead,
+  type InstanceServiceReadArgs,
 } from "@manifold/protocol";
 import {
   JobFollowSnapshotSchema,
@@ -194,6 +200,12 @@ export interface GuestServices {
   configureConfiguration(args: ConfigureServiceConfigurationArgs): Promise<ServiceConfiguration>;
   read(args: ServiceReadArgs): Promise<ServiceReply>;
   invoke(args: ServiceInvokeArgs): Promise<ServiceReply>;
+  describeInstance(args: { serviceId: string }): Promise<InstanceServiceDescription>;
+  listInstances(args: Record<string, never>): Promise<InstanceServicesDescription>;
+  readInstanceConfiguration(args: { serviceId: string }): Promise<InstanceServiceConfigurationRead>;
+  configureInstance(args: ConfigureInstanceServiceArgs): Promise<InstanceServiceDescription>;
+  readInstance(args: InstanceServiceReadArgs): Promise<ServiceReply>;
+  invokeInstance(args: InstanceServiceReadArgs): Promise<ServiceReply>;
 }
 
 export interface GuestCtx {
@@ -212,7 +224,10 @@ export interface GuestCtx {
     open(kind: string, node: ManifoldRef): Promise<GuestStreamProducer>;
   };
   readonly emit: GuestEmit;
-  readonly machines: { isOnline(machineId: string): Promise<boolean> };
+  readonly machines: {
+    isOnline(machineId: string): Promise<boolean>;
+    getTerminalExecution(machineId: string): Promise<TerminalExecution | null>;
+  };
   readonly placement: { place(request: PlaceRequest): Promise<GuestPlaceOutcome> };
   readonly host: { roster(): Promise<PluginRoster>; enabled(id: string): Promise<boolean> };
 }
@@ -549,6 +564,19 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
           (await call("services.configureConfiguration", [args])) as ServiceConfiguration,
         read: async (args) => (await call("services.read", [args])) as ServiceReply,
         invoke: async (args) => (await call("services.invoke", [args])) as ServiceReply,
+        describeInstance: async (args) =>
+          (await call("services.describeInstance", [args])) as InstanceServiceDescription,
+        listInstances: async (args) =>
+          (await call("services.listInstances", [args])) as InstanceServicesDescription,
+        readInstanceConfiguration: async (args) =>
+          (await call("services.readInstanceConfiguration", [
+            args,
+          ])) as InstanceServiceConfigurationRead,
+        configureInstance: async (args) =>
+          (await call("services.configureInstance", [args])) as InstanceServiceDescription,
+        readInstance: async (args) => (await call("services.readInstance", [args])) as ServiceReply,
+        invokeInstance: async (args) =>
+          (await call("services.invokeInstance", [args])) as ServiceReply,
       },
       streams: {
         open: async (kind, node) => {
@@ -614,6 +642,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       },
       machines: {
         isOnline: async (machineId) => (await call("machines.isOnline", [machineId])) as boolean,
+        getTerminalExecution: async (machineId) =>
+          (await call("machines.getTerminalExecution", [machineId])) as TerminalExecution | null,
       },
       placement: {
         place: async (request) => (await call("placement.place", [request])) as GuestPlaceOutcome,

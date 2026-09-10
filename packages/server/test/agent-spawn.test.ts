@@ -314,9 +314,11 @@ describe("configurable local machine name", () => {
 });
 
 test("retained native owners refuse definition drift and incomplete bootstrap without replacing either lifetime", () => {
-  const value = fixture((pid) => pid === 9000
-    ? "bun\0packages/agent/src/main.ts\0--terminal-host\0"
-    : "bun\0packages/agent/src/main.ts\0");
+  const value = fixture((pid) =>
+    pid === 9000
+      ? "bun\0packages/agent/src/main.ts\0--terminal-host\0"
+      : "bun\0packages/agent/src/main.ts\0",
+  );
   const template: JobOwnerConfigTemplate = {
     delegatedCgroup: "/sys/fs/cgroup/manifold",
     bubblewrap: "/usr/bin/bwrap",
@@ -329,11 +331,13 @@ test("retained native owners refuse definition drift and incomplete bootstrap wi
   value.config.localJobOwnerTemplate = templatePath;
   const declaration = JSON.stringify(template);
   writeFileSync(templatePath, declaration, { mode: 0o600 });
-  const admissionPublicKey = generateKeyPairSync("ed25519").publicKey
-    .export({ type: "spki", format: "pem" }).toString();
-  const boot = () => spawnLocalAgent(
-    value.config, 7777, value.auth, value.store, value.logger, value.deps, { admissionPublicKey },
-  );
+  const admissionPublicKey = generateKeyPairSync("ed25519")
+    .publicKey.export({ type: "spki", format: "pem" })
+    .toString();
+  const boot = () =>
+    spawnLocalAgent(value.config, 7777, value.auth, value.store, value.logger, value.deps, {
+      admissionPublicKey,
+    });
   const first = boot()!;
   first.release();
   try {
@@ -344,9 +348,13 @@ test("retained native owners refuse definition drift and incomplete bootstrap wi
     const token = readFileSync(tokenPath, "utf8").trim();
     expect(value.auth.authenticateMachine(token).id).toBe(owner.machineId);
 
-    writeFileSync(templatePath, JSON.stringify({
-      ...template, artifactOrigins: ["https://different.example"],
-    }));
+    writeFileSync(
+      templatePath,
+      JSON.stringify({
+        ...template,
+        artifactOrigins: ["https://different.example"],
+      }),
+    );
     expect(boot).toThrow("local_job_owner_definition_conflict");
     expect(readFileSync(configPath, "utf8")).toBe(originalConfig);
     expect(value.auth.authenticateMachine(token).id).toBe(owner.machineId);
@@ -388,11 +396,13 @@ test("external supervision prepares one authenticated identity without spawning 
   const templatePath = join(value.config.dataDir, "owner-template.json");
   value.config.localJobOwnerTemplate = templatePath;
   writeFileSync(templatePath, JSON.stringify(template), { mode: 0o600 });
-  const admissionPublicKey = generateKeyPairSync("ed25519").publicKey
-    .export({ type: "spki", format: "pem" }).toString();
-  const boot = () => spawnLocalAgent(
-    value.config, 7777, value.auth, value.store, value.logger, value.deps, { admissionPublicKey },
-  );
+  const admissionPublicKey = generateKeyPairSync("ed25519")
+    .publicKey.export({ type: "spki", format: "pem" })
+    .toString();
+  const boot = () =>
+    spawnLocalAgent(value.config, 7777, value.auth, value.store, value.logger, value.deps, {
+      admissionPublicKey,
+    });
   try {
     expect(boot()).toBeNull();
     const configPath = join(value.config.dataDir, "job-owner", "config.json");
@@ -409,7 +419,10 @@ test("external supervision prepares one authenticated identity without spawning 
     delete value.config.localAgentSupervision;
     expect(boot).toThrow("local_agent_supervision_conflict");
     value.config.localAgentSupervision = "external";
-    writeFileSync(templatePath, JSON.stringify({ ...template, artifactOrigins: ["https://changed.example"] }));
+    writeFileSync(
+      templatePath,
+      JSON.stringify({ ...template, artifactOrigins: ["https://changed.example"] }),
+    );
     expect(boot).toThrow("local_job_owner_definition_conflict");
     expect(readFileSync(configPath, "utf8")).toBe(configured);
     expect(value.auth.authenticateMachine(token).id).toBe(owner.machineId);
@@ -425,20 +438,27 @@ test("native provisioning never rotates another enrolled machine selected only b
   value.config.localAgentSupervision = "external";
   const path = join(value.config.dataDir, "owner-template.json");
   value.config.localJobOwnerTemplate = path;
-  writeFileSync(path, JSON.stringify({
-    delegatedCgroup: "/sys/fs/cgroup/manifold",
-    bubblewrap: "/usr/bin/bwrap",
-    protectedDirectories: [],
-    anchors: {},
-    runtimeTools: {},
-    artifactOrigins: ["https://artifacts.example"],
-  }), { mode: 0o600 });
-  const admissionPublicKey = generateKeyPairSync("ed25519").publicKey
-    .export({ type: "spki", format: "pem" }).toString();
+  writeFileSync(
+    path,
+    JSON.stringify({
+      delegatedCgroup: "/sys/fs/cgroup/manifold",
+      bubblewrap: "/usr/bin/bwrap",
+      protectedDirectories: [],
+      anchors: {},
+      runtimeTools: {},
+      artifactOrigins: ["https://artifacts.example"],
+    }),
+    { mode: 0o600 },
+  );
+  const admissionPublicKey = generateKeyPairSync("ed25519")
+    .publicKey.export({ type: "spki", format: "pem" })
+    .toString();
   try {
-    expect(() => spawnLocalAgent(
-      value.config, 7777, value.auth, value.store, value.logger, value.deps, { admissionPublicKey },
-    )).toThrow("local_job_owner_enrollment_unavailable");
+    expect(() =>
+      spawnLocalAgent(value.config, 7777, value.auth, value.store, value.logger, value.deps, {
+        admissionPublicKey,
+      }),
+    ).toThrow("local_job_owner_enrollment_unavailable");
     expect(value.auth.authenticateMachine(incumbent.machineToken).id).toBe(incumbent.machine.id);
     expect(value.spawned).toEqual([]);
     expect(existsSync(join(value.config.dataDir, "agent.token"))).toBe(false);

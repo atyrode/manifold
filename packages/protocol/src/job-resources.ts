@@ -51,10 +51,10 @@ export function jobResourceRequirements(
     services: (operation.services ?? []).map((binding) => binding.serviceId),
     anchors: [
       ...new Set(
-        operation.locations.map(({ locationId }) => {
+        operation.locations.flatMap(({ locationId }) => {
           const location = machine.locations[locationId];
           if (!location) throw new Error("unknown_location");
-          return location.anchor;
+          return location.managed ? [] : [location.anchor];
         }),
       ),
     ],

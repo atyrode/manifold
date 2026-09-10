@@ -6,6 +6,7 @@ import { BindingOverridesSchema, PluginRosterSchema, PluginSettingValuesSchema }
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
 import { InstanceOriginSchema } from "./origin.ts";
+import { TerminalExecutionSchema } from "./machine.ts";
 
 /** REST door schemas. Auth: `Authorization: Bearer <token-or-owner-key>`. */
 
@@ -403,6 +404,8 @@ export const MachineSummarySchema = z.strictObject({
    * saw. Persisted, so a hub restart cannot reopen a drained machine by forgetting.
    */
   draining: z.boolean().optional(),
+  /** Absence is unknown, not permission to launch an unconfined shell. */
+  terminalExecution: TerminalExecutionSchema.optional(),
 });
 export type MachineSummary = z.infer<typeof MachineSummarySchema>;
 export const MachinesResponseSchema = z.strictObject({

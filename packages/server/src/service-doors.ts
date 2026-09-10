@@ -6,6 +6,14 @@ import {
   ServiceInvokeArgsSchema,
   ServiceReplySchema,
 } from "@manifold/protocol";
+import {
+  InstanceServiceTargetSchema,
+  InstanceServiceDescriptionSchema,
+  InstanceServicesDescriptionSchema,
+  InstanceServiceConfigurationReadSchema,
+  ConfigureInstanceServiceArgsSchema,
+  InstanceServiceReadArgsSchema,
+} from "@manifold/protocol";
 import { z } from "zod";
 import { ServiceError, type AuthContext } from "./auth.ts";
 import type { JobService } from "./job-service.ts";
@@ -22,6 +30,12 @@ export const serviceDoorSchemas = {
   }),
   read: ServiceReadArgsSchema,
   invoke: ServiceInvokeArgsSchema,
+  describeInstance: InstanceServiceTargetSchema,
+  listInstances: z.strictObject({}),
+  readInstanceConfiguration: InstanceServiceTargetSchema,
+  configureInstance: ConfigureInstanceServiceArgsSchema,
+  readInstance: InstanceServiceReadArgsSchema,
+  invokeInstance: InstanceServiceReadArgsSchema,
 };
 const description: z.ZodType<ServiceDescription> = z.strictObject({
   machineId: ServiceReadArgsSchema.shape.machineId,
@@ -74,6 +88,38 @@ export function serviceContext(
         String(traceId),
       );
     },
+    describeInstance: (args) =>
+      service().describeInstanceService(auth, InstanceServiceTargetSchema.parse(args)),
+    listInstances: (args) => {
+      serviceDoorSchemas.listInstances.parse(args);
+      return service().listInstanceServices(auth);
+    },
+    readInstanceConfiguration: (args) =>
+      service().readInstanceServiceConfiguration(auth, InstanceServiceTargetSchema.parse(args)),
+    configureInstance: (args) =>
+      service().configureInstanceService(
+        auth,
+        ConfigureInstanceServiceArgsSchema.parse(args),
+        pluginId,
+        String(traceId),
+      ),
+    readInstance: (args) =>
+      service().readInstanceService(
+        auth,
+        InstanceServiceReadArgsSchema.parse(args),
+        pluginId,
+        String(traceId),
+      ),
+    invokeInstance: (args) => {
+      if (mode !== "invoke")
+        return Promise.reject(new ServiceError("forbidden", "service_unauthorized"));
+      return service().invokeInstanceService(
+        auth,
+        InstanceServiceReadArgsSchema.parse(args),
+        pluginId,
+        String(traceId),
+      );
+    },
   };
 }
 
@@ -90,9 +136,8 @@ export const serviceDoors: ServerPluginDef = {
   manifest: {
     id: "engine.services",
     version: "1.0.0",
-    title: "Machine services",
-    description:
-      "Native service discovery, owner configuration and governed reads and invocations.",
+    title: "Services",
+    description: "Native instance ownership, machine service discovery and governed access.",
     capabilities: ["*"],
     contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
   },
@@ -100,7 +145,14 @@ export const serviceDoors: ServerPluginDef = {
     defineAction<unknown, unknown>({
       name,
       title: name,
-      caps: name === "readConfiguration" || name === "configureConfiguration" ? ["*"] : [],
+      caps: [
+        "readConfiguration",
+        "configureConfiguration",
+        "readInstanceConfiguration",
+        "configureInstance",
+      ].includes(name)
+        ? ["*"]
+        : [],
       // Even malformed policy/input bodies must never enter the trace ledger.
       trace: "opaque",
       input,
@@ -111,7 +163,13 @@ export const serviceDoors: ServerPluginDef = {
             ? ServiceConfigurationReadSchema
             : name === "configureConfiguration"
               ? ServiceConfigurationSchema
-              : ServiceReplySchema,
+              : name === "describeInstance" || name === "configureInstance"
+                ? InstanceServiceDescriptionSchema
+                : name === "listInstances"
+                  ? InstanceServicesDescriptionSchema
+                  : name === "readInstanceConfiguration"
+                    ? InstanceServiceConfigurationReadSchema
+                    : ServiceReplySchema,
     }),
   ),
   handlers: {
@@ -127,5 +185,19 @@ export const serviceDoors: ServerPluginDef = {
       call(() => ctx.services.read(args)),
     invoke: (ctx: ActionCtx, args: z.infer<typeof ServiceInvokeArgsSchema>) =>
       call(() => ctx.services.invoke(args)),
+    describeInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceTargetSchema>) =>
+      call(() => ctx.services.describeInstance(args)),
+    listInstances: (ctx: ActionCtx, args: Record<string, never>) =>
+      call(() => ctx.services.listInstances(args)),
+    readInstanceConfiguration: (
+      ctx: ActionCtx,
+      args: z.infer<typeof InstanceServiceTargetSchema>,
+    ) => call(() => ctx.services.readInstanceConfiguration(args)),
+    configureInstance: (ctx: ActionCtx, args: z.infer<typeof ConfigureInstanceServiceArgsSchema>) =>
+      call(() => ctx.services.configureInstance(args)),
+    readInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceReadArgsSchema>) =>
+      call(() => ctx.services.readInstance(args)),
+    invokeInstance: (ctx: ActionCtx, args: z.infer<typeof InstanceServiceReadArgsSchema>) =>
+      call(() => ctx.services.invokeInstance(args)),
   },
 };

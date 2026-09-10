@@ -193,8 +193,10 @@ export function loadConfig(
   const localAgentSupervision = env.MANIFOLD_LOCAL_AGENT_SUPERVISION;
   if (localAgentSupervision !== undefined && localAgentSupervision !== "external")
     throw new Error("MANIFOLD_LOCAL_AGENT_SUPERVISION must be external when set");
-  if (localAgentSupervision === "external" &&
-      (localJobOwnerTemplate === undefined || env.MANIFOLD_SPAWN_AGENT === "0"))
+  if (
+    localAgentSupervision === "external" &&
+    (localJobOwnerTemplate === undefined || env.MANIFOLD_SPAWN_AGENT === "0")
+  )
     throw new Error("external local supervision requires native local bootstrap");
   const serviceOwnerMachineId = env.MANIFOLD_SERVICE_OWNER_MACHINE_ID;
   if (

@@ -11,6 +11,7 @@ if (
   !process.env.MANIFOLD_TEST_STATIC_BUSYBOX ||
   !process.env.MANIFOLD_TEST_SYSCALL_PROBE ||
   !process.env.MANIFOLD_TEST_LISTENER_PROBE ||
+  !process.env.MANIFOLD_TEST_INSTANCE_SERVICE ||
   !process.env.MANIFOLD_TEST_OUTPUT_ROOT ||
   !process.env.MANIFOLD_TEST_MOUNT_TREE
 ) {
@@ -47,6 +48,7 @@ const child = Bun.spawn(
     "packages/agent/test/job-locations.test.ts",
     "packages/agent/test/job-outputs.test.ts",
     "packages/testkit/e2e/jobs.test.ts",
+    "packages/testkit/e2e/instance-services.test.ts",
     "--timeout",
     "120000",
   ],

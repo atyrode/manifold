@@ -86,7 +86,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const auth = new AuthService(store, config.ownerKey, runtime, {
     decide: (request) => jobs.decide(request),
   });
-  const jobs: JobService = new JobService(store, auth, runtime);
+  const jobs: JobService = new JobService(store, auth, runtime, config.serviceOwnerMachineId);
   /*
     THE ASSEMBLY'S PLACEMENT VOCABULARY, before anything that reads it. Element traits, the
     discipline roster and the tile-tree question all come off the same declarations (ADR 0013
@@ -138,6 +138,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     runtime,
   );
   machines.setJobs(jobs);
+  jobs.setMachinePresence((machineId) => machines.isOnline(machineId));
   /*
     THE INSTANCE CHANNEL, both ends. The host gateway sits beside the machine gateway for
     the same reason it looks like it (ADR 0014): a remote process dialing in with a token,
@@ -308,7 +309,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   }
 
   finalizePublicUrl(config, boundPort);
-  const localAgent = spawnLocalAgent(config, boundPort, auth, store, logger);
+  const localAgent = spawnLocalAgent(config, boundPort, auth, store, logger, undefined, {
+    admissionPublicKey: jobs.admissionPublicKey,
+  });
   /*
     Dials resume AFTER the socket is bound and the public URL is final, and both halves of
     that ordering are load-bearing: a dial declares this instance's origin in its hello, so

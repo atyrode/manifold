@@ -594,7 +594,14 @@ export function CompositionView({
         facet is also what makes the affordance honest — no facet means nobody owns terminals
         right now, and the open below would be refused anyway.
        */
-      const target = machine ?? terminals?.defaultMachine(containerId, machines) ?? null;
+      const target =
+        machine ??
+        terminals?.defaultMachine(
+          containerId,
+          machines,
+          runtime === undefined ? "unconfined" : "governed",
+        ) ??
+        null;
       if (target !== null) terminals?.rememberMachine(containerId, target.id);
       try {
         const terminal = await client.openTerminal({

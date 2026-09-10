@@ -13,6 +13,7 @@ import {
 import { itemNoun, lastSpotlight, type ViewportHandle } from "@manifold/plugin";
 import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
 import {
+  getViewportForBounds,
   NodeResizer,
   ReactFlow,
   ViewportPortal,
@@ -1253,7 +1254,14 @@ export function CanvasView({
         return null;
       }
       const facet = terminals !== null && terminals.enabled ? terminals.facet : null;
-      const target = machine ?? facet?.defaultMachine(containerId, machines) ?? null;
+      const target =
+        machine ??
+        facet?.defaultMachine(
+          containerId,
+          machines,
+          runtime === undefined ? "unconfined" : "governed",
+        ) ??
+        null;
       if (target !== null) facet?.rememberMachine(containerId, target.id);
       const elementId = crypto.randomUUID();
       try {
@@ -1268,9 +1276,30 @@ export function CanvasView({
         // element this canvas authors is a portal onto that home: on a canvas a
         // terminal IS a solo composition wearing its own chrome.
         client.transact((tx) => {
-          tx.create(
-            createPortalElement(elementId, terminal.containerId, canvasCenter(), tx.nextZIndex()),
+          const portal = createPortalElement(
+            elementId,
+            terminal.containerId,
+            canvasCenter(),
+            tx.nextZIndex(),
           );
+          portal.x -= portal.width / 2;
+          portal.y -= portal.height / 2;
+          tx.create(portal);
+          const flow = flowRef.current;
+          const canvas = canvasRef.current;
+          // Fit a narrow canvas without enlarging a terminal that already fits.
+          if (flow !== null && canvas !== null)
+            void flow.setViewport(
+              getViewportForBounds(
+                portal,
+                canvas.clientWidth,
+                canvas.clientHeight,
+                MIN_ZOOM,
+                flow.getZoom(),
+                0.1,
+              ),
+              { duration: 250 },
+            );
         });
         return terminal;
       } catch (reason: unknown) {

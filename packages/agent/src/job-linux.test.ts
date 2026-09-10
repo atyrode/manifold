@@ -679,7 +679,7 @@ interface ListeningJob {
 
 async function listeningJob(
   spec: LinuxJobSpec,
-  mode: "loopback" | "wildcard" | "nested" | "http",
+  mode: "loopback" | "wildcard" | "nested" | "http" | "deferred",
 ): Promise<ListeningJob> {
   const fd = openSync(listenerProbe!, constants.O_RDONLY | constants.O_NOFOLLOW);
   const ready = Promise.withResolvers<number>();
@@ -718,6 +718,59 @@ async function listeningJob(
     throw error;
   }
 }
+
+test.skipIf(!realLinux || !listenerProbe)(
+  "service providers reject deferred accept without changing ordinary jobs or sending unproved bytes",
+  async () => {
+    for (const providesService of [false, true]) {
+      await withLinux("exit 91", async (spec) => {
+        const { handle, port } = await listeningJob({ ...spec, providesService }, "deferred");
+        let socket: Awaited<ReturnType<typeof connectWorkloadLoopback>> | undefined;
+        try {
+          const connection = connectWorkloadLoopback(
+            port,
+            (connected) => handle.ownsLoopbackConnection(connected),
+            AbortSignal.timeout(3000),
+          );
+          if (!providesService) {
+            await expect(connection).rejects.toThrow("service_connection_unproven");
+            return;
+          }
+          socket = await connection;
+          const response = await new Promise<string>((resolve, reject) => {
+            let bytes = "";
+            const timeout = setTimeout(
+              () => reject(new Error("owned HTTP response timed out")),
+              2000,
+            );
+            socket!.on("data", (chunk: Buffer) => {
+              bytes += chunk.toString();
+            });
+            socket!.once("error", (error) => {
+              clearTimeout(timeout);
+              reject(error);
+            });
+            socket!.once("end", () => {
+              clearTimeout(timeout);
+              resolve(bytes);
+            });
+            socket!.write(
+              "POST /probe HTTP/1.1\r\nHost: 127.0.0.1\r\n" +
+                "Authorization: Bearer listener-fixture-bearer-000000000000\r\n" +
+                'Transfer-Encoding: chunked\r\n\r\ne\r\n{"probe":true}\r\n0\r\n\r\n',
+            );
+          });
+          expect(response).toMatch(/^HTTP\/1\.1 200 /);
+          expect(JSON.parse(response.split("\r\n\r\n", 2)[1]!)).toEqual({ received: true });
+        } finally {
+          socket?.destroy();
+          await handle.cancel();
+          handle.release();
+        }
+      });
+    }
+  },
+);
 
 test.skipIf(!realLinux || !listenerProbe).each(["loopback", "nested"] as const)(
   "kernel proof admits a live %s listener, not a foreign port or a closed/exited/released socket",
