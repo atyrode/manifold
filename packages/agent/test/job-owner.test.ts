@@ -405,7 +405,7 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
         for (const name of ["journal", "cache", "outputs"])
           mkdirSync(join(root, name), { mode: 0o700 });
         const executableParent = HeldDirectory.openAbsolute(dirname(bwrap!));
-        bwrapFd = executableParent.openFile(basename(bwrap!));
+        bwrapFd = executableParent.openRuntimeFile(basename(bwrap!));
         executableParent.close();
         const cache = HeldDirectory.openAbsolute(join(root, "cache"), { private: true });
         const outputDirectory = HeldDirectory.openAbsolute(join(root, "outputs"), {

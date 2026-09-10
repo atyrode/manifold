@@ -192,6 +192,13 @@ export class HeldDirectory {
     }
   }
   openFile(name: string, flags = constants.O_RDONLY, mode = 0o600): number {
+    return this.openRegularFile(name, flags, mode, true);
+  }
+  // Runtime resources may share storage, but their retained handles never grant writes.
+  openRuntimeFile(name: string): number {
+    return this.openRegularFile(name, constants.O_RDONLY, 0o600, false);
+  }
+  private openRegularFile(name: string, flags: number, mode: number, singleLink: boolean): number {
     safeComponent(name);
     // Never truncate before checking kind/link identity. Callers truncate the returned fd if needed.
     if (flags & constants.O_TRUNC) throw new Error("unsafe_open_truncation");
@@ -202,7 +209,7 @@ export class HeldDirectory {
     );
     try {
       const stat = fstatSync(fd);
-      if (!stat.isFile() || stat.nlink !== 1 || fdMountId(fd) !== this.mountId)
+      if (!stat.isFile() || (singleLink && stat.nlink !== 1) || fdMountId(fd) !== this.mountId)
         throw new Error("unsafe_file_identity");
       return fd;
     } catch (error) {

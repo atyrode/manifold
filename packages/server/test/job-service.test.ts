@@ -160,6 +160,59 @@ function execute(f: Fixture, jobId = "job", value = "safe") {
   });
 }
 
+test("polling a queued job cannot interrupt its later admitted start", () => {
+  const f = fixture();
+  try {
+    consent(f, "machines:run");
+    consent(f, "jobs:read");
+    execute(f);
+    f.service.online(f.channel, f.owner, "epoch");
+    const challenge = f.commands.at(-1);
+    if (challenge?.type !== "owner_challenge") throw new Error("owner challenge missing");
+    const body = {
+      nonce: challenge.nonce,
+      serverEpoch: challenge.serverEpoch,
+      machineId: f.machineId,
+      owner: f.owner,
+    };
+    f.service.event(f.channel, {
+      type: "owner_proof",
+      ...body,
+      signature: sign(null, Buffer.from(canonicalJobJson(body)), f.privateKey).toString("base64"),
+    });
+    const node = { kind: "job" as const, machineId: f.machineId, operationId, jobId: "job" };
+    expect(f.service.status(f.root, node).state).toBe("queued");
+    const beforeAdmission = f.commands.filter((command) => command.type === "status");
+    f.service.event(f.channel, {
+      type: "installed",
+      pluginId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+    });
+    const admitted = f.service.jobs.get("job")!;
+    if (!admitted.permit) throw new Error("fixture did not commit a native start");
+    // The owner did not know a queued job; its reply may arrive after installation completes.
+    for (const command of beforeAdmission) {
+      f.service.event(f.channel, {
+        type: "refusal",
+        jobId: command.jobId,
+        reason: "unknown_job",
+      });
+    }
+    f.service.event(f.channel, {
+      type: "state",
+      jobId: admitted.request.jobId,
+      requestDigest: admitted.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+      state: "started",
+    });
+    expect(f.service.status(f.root, node).state).toBe("started");
+  } finally {
+    f.store.close();
+  }
+});
+
 test("uncertain service completion holds its lifetime until a fenced empty-tree proof arrives", () => {
   const f = fixture();
   try {

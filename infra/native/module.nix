@@ -241,7 +241,7 @@ in
       runtimeToolClosures = mkOption {
         type = types.attrsOf (types.listOf types.package);
         default = {};
-        description = "Explicit packages whose exact immutable Nix closures supplement an existing runtimeTools alias at build time. Store paths are read-only directory bindings at their original paths; declare executable entrypoints separately in runtimeTools. No ambient PATH or broad store mount. Expanded bindings remain subject to the owner's configuration limits (128 bindings per alias and 65536 bytes), including identity fields added by local bootstrap.";
+        description = "Explicit packages whose exact immutable Nix closures supplement an existing runtimeTools alias at build time. Store paths are read-only file or directory bindings at their original paths; declare executable entrypoints separately in runtimeTools. No ambient PATH or broad store mount. Expanded bindings remain subject to the owner's configuration limits (128 bindings per alias and 65536 bytes), including identity fields added by local bootstrap.";
       };
       serviceCredentials = mkOption {
         type = types.attrsOf (types.submodule {

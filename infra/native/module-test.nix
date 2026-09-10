@@ -112,8 +112,8 @@ let
         assert job["state"] == "started", job
     elif mode == "result":
         job = action("engine.jobs.status", {"node": node})
-        assert job["state"] == "exited", job
-        assert job["result"]["exitCode"] == 23, job
+        assert job["state"] == "exited", (job["state"], (job.get("result") or {}).get("reason"))
+        assert job["result"]["exitCode"] == 23, job["result"]["exitCode"]
         stdout = next(output for output in job["result"]["outputs"] if output["name"] == "stdout")
         output = action("engine.jobs.output", {
             "node": {**node, "kind": "output", "outputId": stdout["outputId"]},
@@ -155,6 +155,10 @@ in
       lib.mkForce [ "https://changed.example.test" ];
     virtualisation.cores = 4;
     virtualisation.memorySize = 4096;
+    virtualisation.useNixStoreImage = true;
+    # System switches re-register store paths; the immutable image needs a VM-local overlay.
+    virtualisation.writableStore = true;
+    virtualisation.additionalPaths = [ inspect pkgs.python3 ];
     system.stateVersion = "26.05";
   };
   in {
@@ -242,10 +246,11 @@ in
     machine.succeed("${inspectCommand} result")
     original = machine.succeed("readlink -f /run/current-system").strip()
     retained = machine.succeed("sha256sum /var/lib/manifold/owner-template.json /var/lib/manifold/job-owner/config.json")
-    machine.fail("/run/current-system/specialisation/changed-native/bin/switch-to-configuration test")
+    machine.succeed("systemctl is-active register-nix-paths.service")
+    machine.fail("/run/current-system/specialisation/changed-native/bin/switch-to-configuration test", timeout=180)
     assert machine.succeed("systemctl show -p MainPID --value manifold-owner.service").strip() == owner
     assert machine.succeed("sha256sum /var/lib/manifold/owner-template.json /var/lib/manifold/job-owner/config.json") == retained
-    machine.succeed(f"{original}/bin/switch-to-configuration test")
+    machine.succeed(f"{original}/bin/switch-to-configuration test", timeout=180)
     machine.wait_until_succeeds("${inspectCommand}", timeout=180)
     machine.succeed("${inspectCommand} result")
     machine.succeed("${maintenanceCommand} --help")

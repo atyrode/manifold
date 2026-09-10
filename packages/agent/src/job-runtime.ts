@@ -68,7 +68,7 @@ export async function openConfiguredJobOwner(
   const outputs = JobOutputStore.open(state.openChild("outputs", { create: true }));
   const delegatedCgroup = HeldDirectory.openAbsolute(config.delegatedCgroup);
   const bwrapParent = HeldDirectory.openAbsolute(dirname(config.bubblewrap));
-  const bubblewrapFd = bwrapParent.openFile(basename(config.bubblewrap));
+  const bubblewrapFd = bwrapParent.openRuntimeFile(basename(config.bubblewrap));
   bwrapParent.close();
   const anchors: Record<string, HeldDirectory> = {};
   for (const [name, path] of Object.entries(config.anchors))
@@ -95,7 +95,7 @@ export async function openConfiguredJobOwner(
           const sourceParent = HeldDirectory.openAbsolute(dirname(definition.source));
           try {
             exclusions.assertSource(sourceParent.fd, false);
-            fd = sourceParent.openFile(basename(definition.source));
+            fd = sourceParent.openRuntimeFile(basename(definition.source));
           } finally {
             sourceParent.close();
           }
