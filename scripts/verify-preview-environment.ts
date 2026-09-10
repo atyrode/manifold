@@ -1275,6 +1275,12 @@ console.log(JSON.stringify({
         volume: `${project()}_wrong-data`,
       },
       {
+        name: "actual retained subpath differs within the expected named volume",
+        actual:
+          "services:\n  manifold:\n    volumes:\n      - type: volume\n        source: manifold-data\n        target: /data\n        volume:\n          subpath: fixture-other-root\n",
+        actualSubpath: true,
+      },
+      {
         name: "actual retained machine differs from desired dev-hub",
         actual:
           "services:\n  manifold:\n    environment:\n      MANIFOLD_MACHINE_NAME: other-hub\n",
@@ -1293,6 +1299,10 @@ console.log(JSON.stringify({
       {
         name: "desired retained network differs from actual selected network",
         desiredNetwork: true,
+      },
+      {
+        name: "desired retained subpath differs within the actual named volume",
+        desiredSubpath: true,
       },
       {
         name: "desired base data root overrides the image persisted root",
@@ -1334,6 +1344,10 @@ console.log(JSON.stringify({
             owned.add(created.out.trim());
           }
           if (scenario.actual) {
+            if (scenario.actualSubpath)
+              await execBun(
+                "import { mkdirSync } from 'node:fs'; mkdirSync('/data/fixture-other-root', { recursive: true });",
+              );
             writeFileSync(actualOverlay, scenario.actual);
             await compose(finalImage(), ["up", "-d", "--no-build", "--no-deps", "manifold"], {
               env: { COMPOSE_FILE: `${composeEnv(finalImage())["COMPOSE_FILE"]}:${actualOverlay}` },
@@ -1369,6 +1383,18 @@ console.log(JSON.stringify({
           await preserveLive(
             scenario.name,
             async () => {
+              if (scenario.desiredSubpath) {
+                await execBun(
+                  "import { mkdirSync } from 'node:fs'; mkdirSync('/data/fixture-desired-root', { recursive: true });",
+                );
+                writeFileSync(
+                  finalOverlay,
+                  finalConfig.replace(
+                    "    environment:",
+                    "    volumes:\n      - type: volume\n        source: manifold-data\n        target: /data\n        volume:\n          subpath: fixture-desired-root\n    environment:",
+                  ),
+                );
+              }
               if (scenario.desiredNetwork)
                 writeFileSync(
                   developmentOverlay,
@@ -1392,7 +1418,7 @@ console.log(JSON.stringify({
                 );
             },
             restoreDesired,
-            scenario.desiredDataRoot
+            scenario.desiredDataRoot || scenario.desiredSubpath
               ? "HOLD: retained replacement requires supported final topology and /data data root"
               : "HOLD: retained incumbent topology or /data data root does not match the replacement",
           );

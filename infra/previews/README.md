@@ -88,9 +88,10 @@ supported ordinary entrypoint without execution overrides or non-data mounts, an
 a credential-free `/proc` probe finds only the PID1 hub and the stock read-only
 healthcheck. Desired replacement settings never prove the old process tree safe.
 Its actual named volume, machine identity and selected networks must match the final
-Compose merge; both generations must use `/data` as the effective application data
-directory. An unused `/data` mount is not persistence proof. Absent or mismatched
-incumbents hold without creating a replacement identity.
+Compose merge; both generations must mount the volume's actual backing root and use
+`/data` as the effective application data directory. Volume subpaths are unsupported;
+an unused `/data` mount or a matching volume name alone is not persistence proof.
+Absent or mismatched incumbents hold without creating a replacement identity.
 An old default-spawning container, an in-container owner, custom wrappers (including
 Litestream), or unknown process/configuration shapes cause HOLD without stopping it.
 Resolve old execution ownership separately; preserved `/data` cannot preserve PTYs
@@ -111,8 +112,9 @@ to exercise server-only retained replacement through the actual `deploy-dev.sh` 
 canvas/identity, unchanged nonstandard data ownership and network selection, no local owner,
 and non-disruptive configuration refusals with the disposable pin/lifecycle helper absent.
 Actual-incumbent volume, machine, network and writable-layer data-root mismatches, plus
-desired base/final-overlay data-root and network overrides, must leave the original
-container generation, identity, data ownership and canvas state unchanged.
+desired base/final-overlay data-root, volume-subpath and network overrides, must leave
+the original container generation, identity, data ownership and canvas state unchanged.
+The same guarantee covers an actual incumbent mounted on a volume subpath.
 It also creates an incumbent local owner with live PTYs, requests server-only replacement,
 and requires refusal to preserve its process generation, identity and working terminals.
 No existing development stack is selected. Only fixed host-service calls to Caddy/systemd

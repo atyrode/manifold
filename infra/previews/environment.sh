@@ -88,6 +88,7 @@ retained_topology() {
         ($service.volumes | length) == 1 and
         $service.volumes[0].type == "volume" and
         $service.volumes[0].target == "/data" and
+        ($service.volumes[0].volume.subpath == null or $service.volumes[0].volume.subpath == "") and
         $config.volumes[$service.volumes[0].source].name == $volume and
         ($volume | test("^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")) and
         ($networks | length) >= 1 and ($networks | length) <= 16 and
@@ -103,7 +104,7 @@ retained_topology() {
 # Classify public topology and spawn settings without dumping Config.Env (or
 # /proc/*/environ). Missing/default spawn configuration is owning.
 require_retained_server_only() {
-  local project=$1 volume=$2 topology=$3 incumbent configuration proof topology_template
+  local project=$1 volume=$2 topology=$3 incumbent configuration proof topology_template mountpoint
   incumbent=$(docker ps --all --quiet --no-trunc \
     --filter "label=com.docker.compose.project=$project" \
     --filter 'label=com.docker.compose.service=manifold') ||
@@ -131,15 +132,18 @@ require_retained_server_only() {
     fail 'HOLD: retained incumbent is owning or has unsupported spawn configuration'
   # Only validated public names enter the template. Unexpected actual values
   # remain inside Docker and can produce only a fixed classification token.
-  topology_template=$(jq -er --arg volume "$volume" '
-    select(.volume == $volume) |
+  mountpoint=$(docker volume inspect --format '{{json .Mountpoint}}' "$volume" 2>/dev/null) ||
+    fail 'HOLD: cannot classify retained volume backing root'
+  topology_template=$(jq -er --arg volume "$volume" --argjson mountpoint "$mountpoint" '
+    select(.volume == $volume and ($mountpoint | type == "string" and startswith("/"))) |
     "{{- $machine := false -}}{{- $data := false -}}{{- $unsafe := false -}}" +
     "{{- range .Config.Env -}}{{- $key := index (split . \"=\") 0 -}}" +
     "{{- if eq $key \"MANIFOLD_MACHINE_NAME\" -}}" +
     "{{- if or $machine (ne . " + ("MANIFOLD_MACHINE_NAME=" + .machine | tojson) + ") -}}{{- $unsafe = true -}}{{- end -}}{{- $machine = true -}}" +
     "{{- else if eq $key \"MANIFOLD_DATA_DIR\" -}}" +
     "{{- if or $data (ne . \"MANIFOLD_DATA_DIR=/data\") -}}{{- $unsafe = true -}}{{- end -}}{{- $data = true -}}{{- end -}}{{- end -}}" +
-    "{{- range .Mounts -}}{{- if or (ne .Destination \"/data\") (ne .Type \"volume\") (ne .Name " + (.volume | tojson) + ") -}}{{- $unsafe = true -}}{{- end -}}{{- end -}}" +
+    "{{- range .Mounts -}}{{- if or (ne .Destination \"/data\") (ne .Type \"volume\") (ne .Name " + (.volume | tojson) + ") (ne .Source " + ($mountpoint | tojson) + ") -}}{{- $unsafe = true -}}{{- end -}}{{- end -}}" +
+    "{{- range .HostConfig.Mounts -}}{{- if .VolumeOptions -}}{{- if .VolumeOptions.Subpath -}}{{- $unsafe = true -}}{{- end -}}{{- end -}}{{- end -}}" +
     "{{- if and $machine $data (not $unsafe) (eq (len .Mounts) 1) (eq (len .NetworkSettings.Networks) " + (.networks | length | tostring) + ")" +
     ([.networks[] | " (index .NetworkSettings.Networks " + tojson + ")"] | join("")) +
     " -}}retained-topology-matched{{- end -}}"
