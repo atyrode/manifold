@@ -75,6 +75,11 @@ test("a declared 20fps stream runs for sixty seconds without journaling its fram
 
     await browser.launch();
     await browser.goto(`${server.httpUrl}/#key=${server.ownerKey}`);
+    await waitFor(
+      () => browser.evaluate<boolean>("document.querySelector('#identity-name') !== null"),
+      10_000,
+      50,
+    );
     await browser.typeInto("#identity-name", "stream-browser");
     await browser.clickTestId("identity-enter");
     await waitFor(

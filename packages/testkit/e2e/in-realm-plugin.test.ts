@@ -42,6 +42,15 @@ test("in-realm install appears in a second open browser; disable drops it and re
     await second.launch();
     await first.goto(`${server.httpUrl}/#key=${server.ownerKey}`);
     await second.goto(`${server.httpUrl}/#key=${server.ownerKey}`);
+    await Promise.all(
+      [first, second].map((browser) =>
+        waitFor(
+          () => browser.evaluate<boolean>("document.querySelector('#identity-name') !== null"),
+          10_000,
+          50,
+        ),
+      ),
+    );
     await first.typeInto("#identity-name", "loader-first");
     await first.clickTestId("identity-enter");
     await second.typeInto("#identity-name", "loader-second");
