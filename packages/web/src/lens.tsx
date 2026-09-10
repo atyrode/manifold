@@ -93,21 +93,18 @@ async function registerShellWorker(signal: AbortSignal, onWaiting: () => void): 
     */
     const replacing = (): boolean => navigator.serviceWorker.controller !== null;
     if (registration.waiting !== null && replacing()) onWaiting();
-    registration.addEventListener(
-      "updatefound",
-      () => {
-        const arriving = registration.installing;
-        if (arriving === null || !replacing()) return;
-        arriving.addEventListener(
-          "statechange",
-          () => {
-            if (arriving.state === "installed") onWaiting();
-          },
-          { signal },
-        );
-      },
-      { signal },
-    );
+    const observeInstalling = (): void => {
+      const arriving = registration.installing;
+      if (arriving === null || !replacing()) return;
+      const offerInstalled = (): void => {
+        if (arriving.state === "installed") onWaiting();
+      };
+      arriving.addEventListener("statechange", offerInstalled, { signal });
+      offerInstalled();
+    };
+    registration.addEventListener("updatefound", observeInstalling, { signal });
+    // Registration can reach the app after updatefound, but before installation finishes.
+    observeInstalling();
   } catch (reason: unknown) {
     // A refused registration costs the offline shell and nothing else, so it is reported rather
     // than surfaced: every door still works, and no affordance in the product claimed otherwise.

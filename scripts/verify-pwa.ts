@@ -372,12 +372,66 @@ try {
   */
   const workerPath = join(serveDir, "sw.js");
   const deployed = "deployed-cafe1234";
+  // Delay only the app's registration handoff, not the native worker lifecycle:
+  // its updatefound event has already fired when the app receives the registration.
+  const registrationObserver = await driver.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      const register = navigator.serviceWorker.register.bind(navigator.serviceWorker);
+      navigator.serviceWorker.register = async (...args) => {
+        const registration = await register(...args);
+        const updateFound = new Promise(resolve =>
+          registration.addEventListener("updatefound", resolve, { once: true }));
+        const control = new BroadcastChannel("manifold-pwa-install");
+        control.onmessage = event => {
+          if (event.data === "ready") window.__pwaInstallListenerReady = true;
+        };
+        window.__pwaReleaseInstall = () => { control.postMessage("release"); control.close(); };
+        window.__pwaRegistrationObserverReady = true;
+        await updateFound;
+        window.__pwaRegistrationState = registration.installing?.state ?? null;
+        return registration;
+      };
+    })()`,
+  });
+  await driver.goto(`${originA}/`);
+  await until(
+    () => driver.evaluate<boolean>("window.__pwaRegistrationObserverReady === true"),
+    20_000,
+    "the registration observer before deploying new worker bytes",
+  );
   await Bun.write(
     workerPath,
-    (await Bun.file(workerPath).text()).replace(/"build":"([^"]+)"/, `"build":"${deployed}"`),
+    (await Bun.file(workerPath).text()).replace(/"build":"([^"]+)"/, `"build":"${deployed}"`) +
+      `\nself.addEventListener("install", event => event.waitUntil(new Promise(resolve => {
+      const release = new BroadcastChannel("manifold-pwa-install");
+      release.onmessage = message => {
+        if (message.data === "release") { release.close(); resolve(); }
+      };
+      release.postMessage("ready");
+    })));\n`,
   );
-  await driver.goto(`${originA}/`);
+  await driver.evaluate(
+    "navigator.serviceWorker.getRegistration().then(registration => registration.update())",
+  );
+  await until(
+    () => driver.evaluate<boolean>("window.__pwaRegistrationState === 'installing'"),
+    20_000,
+    "the app to receive an already installing replacement",
+  );
+  assert(
+    "an installing replacement is not offered before it is ready",
+    !(await seenTestId(driver, "lens-update")),
+  );
+  await until(
+    () => driver.evaluate<boolean>("window.__pwaInstallListenerReady === true"),
+    20_000,
+    "the worker's installation release listener",
+  );
+  await driver.evaluate("window.__pwaReleaseInstall()");
   await until(async () => await seenTestId(driver, "lens-update"), 20_000, "the update offer");
+  await driver.send("Page.removeScriptToEvaluateOnNewDocument", {
+    identifier: registrationObserver.result?.["identifier"],
+  });
   assert("a deploy is offered to a live page rather than swapped under it", true);
   const bothGenerations = await generations();
   assert(
@@ -385,6 +439,13 @@ try {
     bothGenerations.length === 2 && bothGenerations.includes(`manifold-shell-${deployed}`),
     bothGenerations.join(", "),
   );
+  await driver.goto(`${originA}/`);
+  await until(
+    async () => await seenTestId(driver, "lens-update"),
+    20_000,
+    "the already waiting update offer after reload",
+  );
+  assert("a waiting update remains offered after reopening the app", true);
   await driver.evaluate(
     "(document.querySelector('[data-testid=lens-update] button').click(), null)",
   );
@@ -396,6 +457,40 @@ try {
     swept.length === 1 && swept[0] === `manifold-shell-${deployed}`,
     swept.join(", "),
   );
+
+  const laterDeploy = "deployed-feed1234";
+  await Bun.write(
+    workerPath,
+    (await Bun.file(join(distDir, "sw.js")).text()).replace(
+      /"build":"([^"]+)"/,
+      `"build":"${laterDeploy}"`,
+    ),
+  );
+  await driver.evaluate(
+    "navigator.serviceWorker.getRegistration().then(registration => registration.update())",
+  );
+  await until(
+    async () => await seenTestId(driver, "lens-update"),
+    20_000,
+    "a later live update offer",
+  );
+  assert("an update arriving after registration is still offered", true);
+  await driver.evaluate(
+    "(document.querySelector('[data-testid=lens-update] button').click(), null)",
+  );
+  await until(
+    async () => {
+      const current = await generations();
+      return (
+        !(await seenTestId(driver, "lens-update")) &&
+        current.length === 1 &&
+        current[0] === `manifold-shell-${laterDeploy}`
+      );
+    },
+    20_000,
+    "the accepted live update to replace the old generation",
+  );
+  assert("a later live update activates only after acceptance", true);
 
   // ───────────────────────────────────────────────────────────── 3. offline shell
   console.log("\n3. offline shell");
