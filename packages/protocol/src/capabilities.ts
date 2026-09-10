@@ -25,6 +25,9 @@ export const CAPS = [
   "locations:write",
   "locations:create",
   "operations:invoke",
+  "services:read",
+  "services:invoke",
+  "services:configure",
   "network:host",
   /** Enable and disable plugins for the whole workspace: assembly administration. */
   "plugins:manage",
@@ -43,6 +46,7 @@ export const GOVERNED_CAPS: readonly Cap[] = [
   "locations:write",
   "locations:create",
   "operations:invoke",
+  "services:invoke",
   "network:host",
 ];
 

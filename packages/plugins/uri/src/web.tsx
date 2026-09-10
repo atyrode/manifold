@@ -59,6 +59,7 @@ function resolveTarget(rest: string): Target {
       return { state: "open", uri: decoded, center: false };
     case "machine":
     case "operation":
+    case "service":
     case "location":
     case "job":
     case "output":

@@ -3,6 +3,7 @@ import {
   ContainerTerminalSummarySchema,
   TerminalEnvSchema,
   TerminalProgramSchema,
+  TerminalRuntimeSchema,
   TerminalSummarySchema,
   type PluginManifest,
 } from "@manifold/protocol";
@@ -141,10 +142,11 @@ export const terminalsActions = [
        * frame carries and the agent receives as `create.program`. Absent ≡ the login shell.
        */
       program: TerminalProgramSchema.optional(),
+      runtime: TerminalRuntimeSchema.optional(),
       /** The opener's env allowlist, merged UNDER the minted `MANIFOLD_*` keys; absent ≡ none. */
       env: TerminalEnvSchema.optional(),
     }),
-    result: z.strictObject({}),
+    result: z.strictObject({ traceId: z.number().int().positive().optional() }),
   }),
   defineAction({
     name: "rename",

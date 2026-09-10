@@ -231,6 +231,95 @@ describe("installArtifact", () => {
     expect(clear.reason).toBe("artifact_unreadable");
     expect(asked).toHaveLength(2);
   });
+
+  test("machine bundle admission pins the member and executable before publishing bytes", async () => {
+    const drop = box();
+    try {
+      const worker = "#!/bin/sh\nexit 0\n";
+      const hash = sha256Hex(Buffer.from(worker));
+      const artifact = {
+        bundleFile: "worker",
+        sha256: hash,
+        entrySha256: hash,
+        format: "raw" as const,
+        entry: ["worker"],
+        maxBytes: 4096,
+        maxExpandedBytes: 4096,
+        maxMembers: 1,
+      };
+      const manifest: PluginManifest = {
+        ...MANIFEST,
+        machine: {
+          artifacts: { "linux-x64": artifact },
+          locations: {},
+          operations: {
+            "vendor.sample.run": {
+              argv: [],
+              input: {},
+              runtimeTools: [],
+              locations: [],
+              outputs: [],
+              network: "none",
+              stdin: false,
+              limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 4096 },
+            },
+          },
+        },
+      };
+      const members = { "server.js": "export {};", "web.js": "export {};", worker };
+      for (const bytes of [
+        bundleBytes(manifest, { "server.js": "export {};", "web.js": "export {};" }),
+        bundleBytes(manifest, { ...members, worker: "substitution" }),
+        bundleBytes(
+          {
+            ...manifest,
+            machine: {
+              ...manifest.machine!,
+              artifacts: {
+                "linux-x64": { ...artifact, entrySha256: "0".repeat(64) },
+              },
+            },
+          },
+          members,
+        ),
+        bundleBytes(
+          {
+            ...manifest,
+            machine: {
+              ...manifest.machine!,
+              artifacts: {
+                "linux-x64": { ...artifact, maxBytes: 1 },
+              },
+            },
+          },
+          members,
+        ),
+      ]) {
+        const source = drop.upload("refused.manifold-plugin.json", bytes);
+        expect(
+          (
+            await refusal(() =>
+              installArtifact({
+                source,
+                sha256: sha256Hex(bytes),
+                dataDir: drop.dataDir,
+              }),
+            )
+          ).reason,
+        ).toBe("artifact_invalid");
+        expect(existsSync(join(drop.dataDir, "plugins"))).toBeFalse();
+      }
+      const bytes = bundleBytes(manifest, members);
+      const result = await installArtifact({
+        source: drop.upload("worker.manifold-plugin.json", bytes),
+        sha256: sha256Hex(bytes),
+        dataDir: drop.dataDir,
+      });
+      expect(readFileSync(join(result.dir, "worker")).toString()).toBe(worker);
+    } finally {
+      rmSync(drop.dataDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("verifyInstalledBundle", () => {

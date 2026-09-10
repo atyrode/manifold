@@ -2,7 +2,13 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalJobJson, JobRequestSchema, type JobRequest } from "@manifold/protocol";
+import {
+  canonicalJobJson,
+  JobRequestSchema,
+  MachineHalfSchema,
+  type JobRequest,
+  type JobResourceBindings,
+} from "@manifold/protocol";
 import { openDatabase } from "../src/db.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "../src/job-schedules.ts";
 import { JobStore } from "../src/job-store.ts";
@@ -74,6 +80,140 @@ function fixture() {
     },
   };
 }
+
+test("native input cursor and unknown attempts survive restart without permitting replay or rewind", () => {
+  const f = fixture();
+  const job = f.jobs.reserve(request("stdin"), 1);
+  f.jobs.inputCursor("stdin", 4, false);
+  expect(f.jobs.reserveInput(job, "attempt", 4, "input-actor", "input-trace")).toBe(true);
+  f.jobs.inputResult("stdin", "attempt", "unknown", "job_input_delivery_unknown");
+  f.reopen();
+  expect(
+    f.jobs.reserveInput(f.jobs.get("stdin")!, "attempt", 4, "input-actor", "input-trace"),
+  ).toBe(false);
+  expect(f.jobs.get("stdin")).toMatchObject({
+    nextInputSeq: 4,
+    stdinClosed: false,
+    state: "queued",
+  });
+  f.jobs.inputCursor("stdin", 5, true);
+  f.jobs.inputCursor("stdin", 4, false);
+  f.reopen();
+  expect(f.jobs.get("stdin")).toMatchObject({
+    nextInputSeq: 5,
+    stdinClosed: true,
+    state: "queued",
+  });
+  expect(f.store.db.query("SELECT * FROM machine_job_inputs").get()).toEqual({
+    job_id: "stdin",
+    request_id: "attempt",
+    seq: 4,
+    actor: "input-actor",
+    trace_id: "input-trace",
+    decision_id: null,
+    state: "unknown",
+    reason: "job_input_delivery_unknown",
+  });
+  f.jobs.inputResult("stdin", "attempt", "accepted", null);
+  f.jobs.inputResult("stdin", "attempt", "unknown", "job_input_delivery_unknown");
+  f.reopen();
+  expect(f.store.db.query("SELECT state,reason FROM machine_job_inputs").get()).toEqual({
+    state: "accepted",
+    reason: null,
+  });
+});
+
+test("installation bindings survive restart by exact revision while legacy rows remain unbound", () => {
+  const f = fixture();
+  const machine = MachineHalfSchema.parse({
+    artifacts: {},
+    operations: {
+      run: {
+        argv: [],
+        input: {},
+        runtimeTools: [],
+        locations: [],
+        outputs: [],
+        network: "none",
+        limits: request("fixture").limits,
+        stdin: false,
+      },
+    },
+    locations: {},
+  });
+  const previous: JobResourceBindings = {
+    tools: { git: "a".repeat(64) },
+    services: { catalog: "b".repeat(64) },
+    anchors: { data: "c".repeat(64) },
+  };
+  const current: JobResourceBindings = {
+    tools: { git: "d".repeat(64) },
+    services: { catalog: "e".repeat(64) },
+    anchors: { data: "f".repeat(64) },
+  };
+  const manifest = canonicalJobJson(machine);
+  f.store.db
+    .query(
+      "INSERT INTO machine_job_installs(machine_id,plugin_id,revision,artifact,manifest,enabled,ready,resource_bindings) VALUES (?,?,?,?,?,1,1,?)",
+    )
+    .run("machine", "sample.worker", "current", "artifact", manifest, canonicalJobJson(current));
+  const retain = f.store.db.query(
+    "INSERT INTO machine_job_installations(machine_id,plugin_id,revision,artifact,manifest,resource_bindings) VALUES (?,?,?,?,?,?)",
+  );
+  retain.run(
+    "machine",
+    "sample.worker",
+    "previous",
+    "artifact",
+    manifest,
+    canonicalJobJson(previous),
+  );
+  retain.run(
+    "machine",
+    "sample.worker",
+    "current",
+    "artifact",
+    manifest,
+    canonicalJobJson(current),
+  );
+  retain.run("machine", "sample.worker", "legacy", "artifact", manifest, null);
+  f.store.db
+    .query(
+      "INSERT INTO machine_job_installs(machine_id,plugin_id,revision,artifact,manifest,enabled) VALUES (?,?,?,?,?,1)",
+    )
+    .run("other-machine", "legacy.worker", "legacy", "artifact", manifest);
+  retain.run("other-machine", "legacy.worker", "legacy", "artifact", manifest, null);
+  f.reopen();
+
+  expect(f.jobs.installation("machine", "sample.worker")?.resourceBindings).toEqual(current);
+  expect(f.jobs.installation("machine", "sample.worker", "current")?.resourceBindings).toEqual(
+    current,
+  );
+  expect(f.jobs.installation("machine", "sample.worker", "previous")?.resourceBindings).toEqual(
+    previous,
+  );
+  expect(f.jobs.installation("machine", "sample.worker", "legacy")).not.toHaveProperty(
+    "resourceBindings",
+  );
+  expect(f.jobs.installation("other-machine", "legacy.worker")).not.toHaveProperty(
+    "resourceBindings",
+  );
+  expect(f.jobs.installations("machine").map((row) => row.resourceBindings)).toEqual([current]);
+  const all = f.jobs.installations();
+  expect(all.find((row) => row.machineId === "machine")?.resourceBindings).toEqual(current);
+  expect(all.find((row) => row.machineId === "other-machine")).not.toHaveProperty(
+    "resourceBindings",
+  );
+
+  f.store.db
+    .query(
+      "UPDATE machine_job_installations SET resource_bindings=? WHERE machine_id=? AND revision=?",
+    )
+    .run('{"tools":{},"services":{"catalog":"not-a-digest"},"anchors":{}}', "machine", "previous");
+  expect(() => f.jobs.installation("machine", "sample.worker", "previous")).toThrow();
+  // A corrupt retained revision must not contaminate the active installation.
+  expect(f.jobs.installation("machine", "sample.worker")?.resourceBindings).toEqual(current);
+});
 
 test("durable discovery de-duplicates scheduled jobs and continues strictly through tied timestamps", () => {
   const f = fixture();

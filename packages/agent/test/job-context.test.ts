@@ -25,6 +25,60 @@ describe.skipIf(process.platform !== "linux")("parent-bound private invocation c
     }
   });
 
+  test("an unrelated child input receives a correlated rejection without closing the parent's context", async () => {
+    const native = dlopen("libc.so.6", { dup: { args: [FFIType.i32], returns: FFIType.i32 } });
+    const rejected = Promise.withResolvers<unknown>();
+    const invoked = Promise.withResolvers<Extract<JobEvent, { type: "invocation" }>>();
+    const failures: string[] = [];
+    const context = new JobContext("real-parent", {
+      invoke: invoked.resolve,
+      command: async () => {
+        throw new Error("unrelated child must not reach owner");
+      },
+      failure: (reason) => failures.push(reason),
+    });
+    const child = adoptPrivateSocket(native.symbols.dup(context.childFd));
+    context.releaseChildFd();
+    let bytes = "";
+    child.on("data", (chunk) => {
+      bytes += chunk.toString();
+      const end = bytes.indexOf("\n");
+      if (end >= 0) rejected.resolve(JSON.parse(bytes.slice(0, end)));
+    });
+    child.on("error", () => {});
+    try {
+      child.write(
+        `${JSON.stringify({
+          type: "input",
+          jobId: "unrelated",
+          requestId: "input-one",
+          seq: 0,
+          data: "",
+          eof: false,
+        })}\n`,
+      );
+      expect(await rejected.promise).toEqual({
+        type: "input_result",
+        jobId: "unrelated",
+        requestId: "input-one",
+        seq: 0,
+        accepted: false,
+        reason: "context_child_mismatch",
+        nextInputSeq: null,
+        stdinClosed: true,
+      });
+      child.write(
+        `${JSON.stringify({ type: "invoke", operationId: "fixture.op", input: {}, outputs: [] })}\n`,
+      );
+      expect((await invoked.promise).parentJobId).toBe("real-parent");
+      expect(failures).toEqual([]);
+    } finally {
+      context.close();
+      child.destroy();
+      native.close();
+    }
+  });
+
   test("caller cannot supply a parent identity, or address an unrelated child", async () => {
     const native = dlopen("libc.so.6", { dup: { args: [FFIType.i32], returns: FFIType.i32 } });
     const refused = Promise.withResolvers<string>();

@@ -392,6 +392,7 @@ function addressLabel(uri: string): string {
     case "action":
       return `door ${ref.actionName}`;
     case "operation":
+    case "service":
     case "location":
     case "job":
     case "output":

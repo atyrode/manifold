@@ -14,6 +14,7 @@ import { packPlugin, type PackResult } from "../src/pack.ts";
 import * as React from "react";
 import * as Plugin from "@manifold/plugin";
 import * as UI from "@manifold/ui";
+import { createHash } from "node:crypto";
 
 /**
  * `pack` TURNS THE SAMPLE INTO THE ARTIFACT THE INSTALL DOOR READS — and the artifact runs.
@@ -72,6 +73,58 @@ describe("the artifact", () => {
     expect(bundle.manifest.id).toBe("example.counter");
     expect(bundle.manifest.entry).toEqual({ server: true, web: "web.js" });
     expect(Object.keys(bundle.files).sort()).toEqual([PLUGIN_BUNDLE_SERVER_FILE, "web.js"]);
+  });
+
+  test("packing carries managed tool members once and verifies their own pinned bytes", async () => {
+    const source = mkdtempSync(`${tmpdir()}/managed-tool-pack-`);
+    const bytes = Buffer.from("private managed executable");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const pinned = {
+      bundleFile: "engine",
+      sha256,
+      entrySha256: sha256,
+      format: "raw",
+      entry: ["engine"],
+      maxBytes: bytes.length,
+      maxExpandedBytes: bytes.length,
+      maxMembers: 1,
+    };
+    const manifest = {
+      ...bundle.manifest,
+      entry: { web: "web.js" },
+      machine: {
+        artifacts: { "linux-x64": { ...pinned, bundleFile: "worker" } },
+        tools: { engine: { "linux-x64": pinned }, other: { "linux-x64": pinned } },
+        locations: {},
+        operations: {
+          "example.counter.run": {
+            argv: [],
+            input: {},
+            runtimeTools: ["engine"],
+            executable: { runtimeTool: "engine" },
+            locations: [],
+            outputs: [],
+            network: "none",
+            stdin: false,
+            limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+          },
+        },
+      },
+    };
+    try {
+      await Bun.write(`${source}/manifest.json`, JSON.stringify(manifest));
+      await Bun.write(`${source}/web.ts`, "export const native = true;");
+      await Bun.write(`${source}/worker`, bytes);
+      await Bun.write(`${source}/engine`, bytes);
+      const result = await packPlugin(source, `${source}/bundle.json`, { shared: false });
+      const packed = PluginBundleSchema.parse(await Bun.file(result.file).json());
+      expect(Object.keys(packed.files).sort()).toEqual(["engine", "web.js", "worker"]);
+      expect(Buffer.from(packed.files.engine!, "base64")).toEqual(bytes);
+      await Bun.write(`${source}/engine`, Buffer.from("substituted tool bytes"));
+      await expect(packPlugin(source, `${source}/bad.json`, { shared: false })).rejects.toThrow();
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+    }
   });
 
   test("both halves are self-contained: the kit, the protocol and zod are inlined", () => {
@@ -152,14 +205,78 @@ describe("the artifact", () => {
       else Object.defineProperty(globalThis, key, previous);
     }
   });
+
+  test("pack carries declared binary workers and refuses missing, substituted, oversized, or colliding members", async () => {
+    const source = mkdtempSync(`${tmpdir()}/plugin-kit-machine-`);
+    try {
+      const bytes = Buffer.alloc(1024 * 1024 + 17, 0x80);
+      const hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+      const spec = {
+        bundleFile: "worker",
+        sha256: hash,
+        entrySha256: hash,
+        format: "raw",
+        entry: ["worker"],
+        maxBytes: bytes.length,
+        maxExpandedBytes: bytes.length,
+        maxMembers: 1,
+      };
+      const manifest = {
+        ...bundle.manifest,
+        entry: { web: "web.js" },
+        machine: {
+          artifacts: { "linux-x64": spec },
+          locations: {},
+          operations: {
+            "example.counter.run": {
+              argv: [],
+              input: {},
+              runtimeTools: [],
+              locations: [],
+              outputs: [],
+              network: "none",
+              stdin: false,
+              limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 4096 },
+            },
+          },
+        },
+      };
+      await Bun.write(`${source}/manifest.json`, JSON.stringify(manifest));
+      await Bun.write(`${source}/web.ts`, "export {};");
+      const out = `${source}/packed.json`;
+      await expect(packPlugin(source, out, { shared: false })).rejects.toThrow();
+      await Bun.write(`${source}/worker`, bytes);
+      await packPlugin(source, out, { shared: false });
+      const packed = PluginBundleSchema.parse(await Bun.file(out).json());
+      expect(Buffer.from(packed.files.worker!, "base64")).toEqual(bytes);
+      await Bun.write(`${source}/worker`, Buffer.from("substitution"));
+      await expect(packPlugin(source, out, { shared: false })).rejects.toThrow();
+      await Bun.write(`${source}/worker`, Buffer.alloc(bytes.length + 1));
+      await expect(packPlugin(source, out, { shared: false })).rejects.toThrow();
+      manifest.machine.artifacts["linux-x64"].bundleFile = "web.js";
+      await Bun.write(`${source}/manifest.json`, JSON.stringify(manifest));
+      await expect(packPlugin(source, out, { shared: false })).rejects.toThrow();
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("the packed server half, as a real isolate", () => {
-  test("answers load, dispatch and shutdown over Bun ipc", async () => {
+  test("default packing keeps server dispatch independent of browser shared modules", async () => {
+    const defaultBundlePath = `${dir}/default-linkage.json`;
+    const pack = Bun.spawn(["bun", `${KIT}/src/pack.ts`, SAMPLE, "--out", defaultBundlePath], {
+      cwd: KIT,
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const [code, stderr] = await Promise.all([pack.exited, new Response(pack.stderr).text()]);
+    if (code !== 0) throw new Error(stderr);
+    const defaultBundle = PluginBundleSchema.parse(await Bun.file(defaultBundlePath).json());
     const serverFile = `${dir}/${PLUGIN_BUNDLE_SERVER_FILE}`;
     await Bun.write(
       serverFile,
-      Buffer.from(bundle.files[PLUGIN_BUNDLE_SERVER_FILE] ?? "", "base64"),
+      Buffer.from(defaultBundle.files[PLUGIN_BUNDLE_SERVER_FILE] ?? "", "base64"),
     );
     const queue: IsolateChildFrame[] = [];
     const waiting: ((frame: IsolateChildFrame) => void)[] = [];
@@ -184,7 +301,7 @@ describe("the packed server half, as a real isolate", () => {
       return promise;
     };
     try {
-      send({ t: "load", pluginId: "example.counter", manifest: bundle.manifest, dir });
+      send({ t: "load", pluginId: "example.counter", manifest: defaultBundle.manifest, dir });
       const loaded = await next();
       expect(loaded).toMatchObject({
         t: "loaded",

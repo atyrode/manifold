@@ -15,6 +15,7 @@ import { z } from "zod";
 import type { ActionCtx, ActionHandler } from "../plugin-host.ts";
 import { IsolateDenial, IsolateLoadError, type IsolateLoadResult } from "./contract.ts";
 import { JobExecuteArgsSchema, jobDoorSchemas } from "../job-doors.ts";
+import { serviceDoorSchemas } from "../service-doors.ts";
 
 /**
  * THE TWO DIRECTIONS OF PROXYING, both pure over a transport. Outbound: the child's `loaded`
@@ -61,6 +62,7 @@ export function localActionDef(pluginId: string, summary: ActionSummary): AnyAct
     name: local.data,
     title: summary.title,
     caps: summary.caps,
+    ...(summary.delegates === undefined ? {} : { delegates: summary.delegates }),
     scope: summary.scope,
     ...(summary.requirements === undefined ? {} : { requirements: summary.requirements }),
     ...(summary.trace === undefined ? {} : { trace: summary.trace }),
@@ -173,16 +175,29 @@ export async function serveCtxCall(
       return served.ctx.storage.keys(
         args[0] === undefined ? undefined : stringArg(args, 0, method),
       );
+    case "jobs.describe":
     case "jobs.execute":
     case "jobs.status":
     case "jobs.listRuns":
     case "jobs.input":
     case "jobs.cancel":
     case "jobs.output":
+    case "services.describe":
+    case "services.readConfiguration":
+    case "services.configureConfiguration":
+    case "services.read":
+    case "services.invoke":
+    case "services.describeInstance":
+    case "services.listInstances":
+    case "services.readInstanceConfiguration":
+    case "services.configureInstance":
+    case "services.readInstance":
+    case "services.invokeInstance":
     case "auth.allows":
     case "outsideScope":
     case "newId":
     case "machines.isOnline":
+    case "machines.getTerminalExecution":
     case "placement.place":
     case "host.roster":
     case "host.enabled":
@@ -191,6 +206,8 @@ export async function serveCtxCall(
   if (served.kind !== "dispatch") throw new Error(`slice_unavailable: ${method}`);
   const ctx = served.ctx;
   switch (method) {
+    case "jobs.describe":
+      return ctx.jobs.describe(jobDoorSchemas.describe.parse(args[0]));
     case "jobs.execute":
       return ctx.jobs.execute(JobExecuteArgsSchema.parse(args[0]));
     case "jobs.status":
@@ -203,6 +220,32 @@ export async function serveCtxCall(
       return ctx.jobs.cancel(jobDoorSchemas.cancel.parse({ node: args[0] }).node);
     case "jobs.output":
       return ctx.jobs.output(jobDoorSchemas.output.parse(args[0]));
+    case "services.describe":
+      return ctx.services.describe(serviceDoorSchemas.describe.parse(args[0]));
+    case "services.readConfiguration":
+      return ctx.services.readConfiguration(serviceDoorSchemas.readConfiguration.parse(args[0]));
+    case "services.configureConfiguration":
+      return ctx.services.configureConfiguration(
+        serviceDoorSchemas.configureConfiguration.parse(args[0]),
+      );
+    case "services.read":
+      return ctx.services.read(serviceDoorSchemas.read.parse(args[0]));
+    case "services.invoke":
+      return ctx.services.invoke(serviceDoorSchemas.invoke.parse(args[0]));
+    case "services.describeInstance":
+      return ctx.services.describeInstance(serviceDoorSchemas.describeInstance.parse(args[0]));
+    case "services.listInstances":
+      return ctx.services.listInstances(serviceDoorSchemas.listInstances.parse(args[0]));
+    case "services.readInstanceConfiguration":
+      return ctx.services.readInstanceConfiguration(
+        serviceDoorSchemas.readInstanceConfiguration.parse(args[0]),
+      );
+    case "services.configureInstance":
+      return ctx.services.configureInstance(serviceDoorSchemas.configureInstance.parse(args[0]));
+    case "services.readInstance":
+      return ctx.services.readInstance(serviceDoorSchemas.readInstance.parse(args[0]));
+    case "services.invokeInstance":
+      return ctx.services.invokeInstance(serviceDoorSchemas.invokeInstance.parse(args[0]));
     case "auth.allows": {
       const cap = CapSchema.safeParse(args[0]);
       if (!cap.success || cap.data === "*") {
@@ -225,6 +268,8 @@ export async function serveCtxCall(
       return ctx.newId();
     case "machines.isOnline":
       return ctx.machines.isOnline(stringArg(args, 0, method));
+    case "machines.getTerminalExecution":
+      return ctx.machines.getTerminalExecution(stringArg(args, 0, method));
     case "placement.place": {
       const request = PlaceRequestSchema.safeParse(args[0]);
       if (!request.success) throw new Error(`${method}: argument 0 is not a placement request`);

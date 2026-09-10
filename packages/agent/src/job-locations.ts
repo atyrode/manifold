@@ -14,15 +14,7 @@ export interface JobLocation {
   close(): void;
 }
 
-/** Resolves only declared descendants of a held trusted anchor; files never imply parent access. */
-export function resolveJobLocation(
-  anchor: HeldDirectory,
-  locationId: string,
-  declaration: MachineLocation,
-  access: "read" | "write" | "create",
-  exclusions?: DirectoryExclusions,
-  beforeCreate?: (parentFd: number) => void,
-): JobLocation {
+function guestLocationPath(locationId: string, declaration: MachineLocation): string {
   const guestPath = declaration.guestPath ?? `/locations/${encodeURIComponent(locationId)}`;
   if (
     declaration.guestPath &&
@@ -33,6 +25,75 @@ export function resolveJobLocation(
         .some((component) => !component || component === "." || component === ".."))
   )
     throw new Error("invalid_guest_location");
+  return guestPath;
+}
+
+function directoryLocation(
+  directory: HeldDirectory,
+  guestPath: string,
+  access: JobLocation["access"],
+): JobLocation {
+  return {
+    fd: directory.fd,
+    directory,
+    guestPath,
+    access,
+    writable: access !== "read",
+    close() {
+      directory.close();
+    },
+  };
+}
+
+/** This namespace is native-owned, never an ambient anchor or an adoption path. A
+ * writable admission can provision its retained directory; create-only external
+ * locations keep their exclusive semantics. Concurrent opens share held identity. */
+export function resolveManagedJobLocation(
+  root: HeldDirectory,
+  pluginId: string,
+  locationId: string,
+  declaration: MachineLocation,
+  access: JobLocation["access"],
+  beforeCreate: (parentFd: number) => void,
+): JobLocation {
+  const stat = root.stat();
+  if (
+    !declaration.managed ||
+    declaration.kind !== "directory" ||
+    declaration.anchor !== "state" ||
+    !declaration.components.length ||
+    access === "create" ||
+    stat.uid !== process.getuid?.() ||
+    (stat.mode & 0o077) !== 0
+  )
+    throw new Error("invalid_managed_location");
+  const guestPath = guestLocationPath(locationId, declaration);
+  let current = root;
+  try {
+    for (const component of [pluginId, ...declaration.components]) {
+      if (access === "write") beforeCreate(current.fd);
+      const next = current.openChild(component, { create: access === "write" });
+      if (current !== root) current.close();
+      current = next;
+    }
+    return directoryLocation(current, guestPath, access);
+  } catch (error) {
+    if (current !== root) current.close();
+    throw error;
+  }
+}
+
+/** Resolves only declared descendants of a held trusted anchor; files never imply parent access. */
+export function resolveJobLocation(
+  anchor: HeldDirectory,
+  locationId: string,
+  declaration: MachineLocation,
+  access: "read" | "write" | "create",
+  exclusions?: DirectoryExclusions,
+  beforeCreate?: (parentFd: number) => void,
+): JobLocation {
+  const guestPath = guestLocationPath(locationId, declaration);
+  if (declaration.managed) throw new Error("managed_location_requires_native_store");
   let current = anchor;
   if (declaration.components.length === 0) throw new Error("empty_location_components");
   let fileFd: number | null = null;
@@ -78,17 +139,7 @@ export function resolveJobLocation(
         },
       };
     }
-    const directory = current;
-    return {
-      fd: directory.fd,
-      directory,
-      guestPath,
-      access,
-      writable: access !== "read",
-      close() {
-        directory.close();
-      },
-    };
+    return directoryLocation(current, guestPath, access);
   } catch (error) {
     if (fileFd !== null) closeSync(fileFd);
     if (current !== anchor) current.close();

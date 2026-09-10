@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CapSchema } from "./capabilities.ts";
+import { CapSchema, type Cap } from "./capabilities.ts";
 import { EventKindSchema } from "./events.ts";
 import { ContainerDisciplineSchema } from "./layout.ts";
 import { MAX_STREAM_DESCRIPTORS, StreamDescriptorSchema, streamVocabulary } from "./stream.ts";
@@ -656,6 +656,30 @@ export type ActionRequirement = z.infer<typeof ActionRequirementSchema>;
 export const ActionRequirementsSchema = z.array(ActionRequirementSchema).min(1).max(64);
 export const ActionTracePolicySchema = z.enum(["redacted", "opaque"]);
 
+/** Only native job/resource/service APIs can discharge these at concrete targets. */
+const NATIVE_DELEGATE_CAPS: readonly Cap[] = [
+  "machines:run",
+  "jobs:read",
+  "jobs:input",
+  "jobs:cancel",
+  "locations:read",
+  "locations:write",
+  "locations:create",
+  "operations:invoke",
+  "services:read",
+  "services:invoke",
+  "services:configure",
+  "network:host",
+];
+export const ActionDelegatesSchema = z
+  .array(CapSchema)
+  .max(NATIVE_DELEGATE_CAPS.length)
+  .refine(
+    (caps) => caps.every((cap) => NATIVE_DELEGATE_CAPS.includes(cap)),
+    "unsupported delegated capability",
+  )
+  .refine((caps) => new Set(caps).size === caps.length, "duplicate delegated capability");
+
 /**
  * One action, published. `input` and `result` are JSON Schemas rather than zod shapes,
  * because the audience is a stranger's agent reading `GET /api/protocol` — the door's own
@@ -667,6 +691,8 @@ export const ActionSummarySchema = z.strictObject({
   name: z.string(),
   title: z.string(),
   caps: CapSchema.array(),
+  /** Native API ceiling only; never caller permission, a grant, or target admission. */
+  delegates: ActionDelegatesSchema.optional(),
   /**
    * A cleanup action stays dispatchable while its plugin is disabled (D12: creation and
    * administration die on disable, removal survives — nobody is locked out of deleting).

@@ -7,10 +7,13 @@ import {
   type MachineSummary,
   type PlacementDestination,
   type PlacementItem,
+  type TerminalInfo,
+  type TerminalRuntime,
 } from "@manifold/protocol";
 import { itemNoun, lastSpotlight, type ViewportHandle } from "@manifold/plugin";
 import { SessionClient, type ConnectionStatus } from "@manifold/sdk";
 import {
+  getViewportForBounds,
   NodeResizer,
   ReactFlow,
   ViewportPortal,
@@ -1238,7 +1241,7 @@ export function CanvasView({
    */
   const terminals = projection.terminals;
   const createTerminal = useCallback(
-    async (machine?: MachineSummary): Promise<void> => {
+    async (machine?: MachineSummary, runtime?: TerminalRuntime): Promise<TerminalInfo | null> => {
       if (client.status !== "open") {
         notify(
           client.status === "closed"
@@ -1248,10 +1251,17 @@ export function CanvasView({
               : "Connecting to the canvas",
           { key: "new-terminal" },
         );
-        return;
+        return null;
       }
       const facet = terminals !== null && terminals.enabled ? terminals.facet : null;
-      const target = machine ?? facet?.defaultMachine(containerId, machines) ?? null;
+      const target =
+        machine ??
+        facet?.defaultMachine(
+          containerId,
+          machines,
+          runtime === undefined ? "unconfined" : "governed",
+        ) ??
+        null;
       if (target !== null) facet?.rememberMachine(containerId, target.id);
       const elementId = crypto.randomUUID();
       try {
@@ -1260,19 +1270,43 @@ export function CanvasView({
           cols: 80,
           rows: 24,
           ...(target === null ? {} : { machineId: target.id }),
+          ...(runtime === undefined ? {} : { runtime }),
         });
         // The server created the terminal's home composition with its PTY, so the
         // element this canvas authors is a portal onto that home: on a canvas a
         // terminal IS a solo composition wearing its own chrome.
         client.transact((tx) => {
-          tx.create(
-            createPortalElement(elementId, terminal.containerId, canvasCenter(), tx.nextZIndex()),
+          const portal = createPortalElement(
+            elementId,
+            terminal.containerId,
+            canvasCenter(),
+            tx.nextZIndex(),
           );
+          portal.x -= portal.width / 2;
+          portal.y -= portal.height / 2;
+          tx.create(portal);
+          const flow = flowRef.current;
+          const canvas = canvasRef.current;
+          // Fit a narrow canvas without enlarging a terminal that already fits.
+          if (flow !== null && canvas !== null)
+            void flow.setViewport(
+              getViewportForBounds(
+                portal,
+                canvas.clientWidth,
+                canvas.clientHeight,
+                MIN_ZOOM,
+                flow.getZoom(),
+                0.1,
+              ),
+              { duration: 250 },
+            );
         });
+        return terminal;
       } catch (reason: unknown) {
         notify(reason instanceof Error ? reason.message : "Could not open a terminal", {
           key: "new-terminal",
         });
+        return null;
       }
     },
     [canvasCenter, client, machines, notify, containerId, terminals],
@@ -1346,6 +1380,7 @@ export function CanvasView({
           }
           case "machine":
           case "operation":
+          case "service":
           case "location":
           case "job":
           case "output":

@@ -364,7 +364,7 @@ export class JobOutputStore {
         finished = true;
         this.streams.delete(outputId);
         this.directory.unlink(published ? `${outputId}.raw` : temporary);
-        fsyncSync(this.directory.fd);
+        this.directory.sync();
       },
     };
   }
@@ -594,11 +594,11 @@ export class JobOutputStore {
     if (!item || item.jobId !== jobId) throw new Error("unknown_job_output");
     // Remove durable visibility first; a crash can leave only an inaccessible orphan.
     this.directory.unlink(`${outputId}.json`);
-    fsyncSync(this.directory.fd);
+    this.directory.sync();
     closeSync(item.fd);
     this.sealed.delete(outputId);
     this.directory.unlink(`${outputId}.${item.encoding === "raw" ? "raw" : "tar"}`);
-    fsyncSync(this.directory.fd);
+    this.directory.sync();
   }
   close(): void {
     if (this.active.size || this.streams.size) throw new Error("output_leases_active");

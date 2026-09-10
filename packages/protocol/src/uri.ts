@@ -18,6 +18,8 @@ import { z } from "zod";
  *   manifold://machine/<machineId>
  *   manifold://machine/<machineId>/operation/<operationId>
  *   manifold://machine/<machineId>/location/<locationId>
+ *   manifold://machine/<machineId>/service/<serviceId>
+ *   manifold://machine/<machineId>/service/<serviceId>/operation/<operationId>
  *   manifold://machine/<machineId>/operation/<operationId>/job/<jobId>
  *   manifold://machine/<machineId>/operation/<operationId>/job/<jobId>/output/<outputId>
  *
@@ -67,6 +69,12 @@ export const ManifoldRefSchema = z.discriminatedUnion("kind", [
     jobId: RefIdSchema,
     outputId: RefIdSchema,
   }),
+  z.strictObject({
+    kind: z.literal("service"),
+    machineId: RefIdSchema,
+    serviceId: RefIdSchema,
+    operationId: RefIdSchema.optional(),
+  }),
 ]);
 export type ManifoldRef = z.infer<typeof ManifoldRefSchema>;
 
@@ -98,6 +106,12 @@ export function formatManifoldUri(ref: ManifoldRef): string {
       return `${formatManifoldUri({ kind: "machine", machineId: ref.machineId })}/operation/${encodeURIComponent(ref.operationId)}`;
     case "location":
       return `${formatManifoldUri({ kind: "machine", machineId: ref.machineId })}/location/${encodeURIComponent(ref.locationId)}`;
+    case "service": {
+      const service = `${formatManifoldUri({ kind: "machine", machineId: ref.machineId })}/service/${encodeURIComponent(ref.serviceId)}`;
+      return ref.operationId === undefined
+        ? service
+        : `${service}/operation/${encodeURIComponent(ref.operationId)}`;
+    }
     case "job":
       return `${formatManifoldUri({ kind: "operation", machineId: ref.machineId, operationId: ref.operationId })}/job/${encodeURIComponent(ref.jobId)}`;
     case "output":
@@ -174,6 +188,12 @@ export function parseManifoldUri(text: string): ManifoldRef | null {
   if (head === "machine" && second !== undefined) {
     if (segments.length === 4 && mid === "location")
       return { kind: "location", machineId: first, locationId: second };
+    if (mid === "service") {
+      if (segments.length === 4) return { kind: "service", machineId: first, serviceId: second };
+      const operationId = segments[5];
+      if (segments.length === 6 && segments[4] === "operation" && operationId !== undefined)
+        return { kind: "service", machineId: first, serviceId: second, operationId };
+    }
     if (mid === "operation") {
       if (segments.length === 4)
         return { kind: "operation", machineId: first, operationId: second };
@@ -238,6 +258,7 @@ export function containmentPath(node: string): readonly string[] | null {
   if (
     ref.kind === "operation" ||
     ref.kind === "location" ||
+    ref.kind === "service" ||
     ref.kind === "job" ||
     ref.kind === "output"
   ) {
@@ -245,6 +266,14 @@ export function containmentPath(node: string): readonly string[] | null {
       MANIFOLD_ROOT_URI,
       formatManifoldUri({ kind: "machine", machineId: ref.machineId }),
     ];
+    if (ref.kind === "service" && ref.operationId !== undefined)
+      path.push(
+        formatManifoldUri({
+          kind: "service",
+          machineId: ref.machineId,
+          serviceId: ref.serviceId,
+        }),
+      );
     if (ref.kind === "job" || ref.kind === "output")
       path.push(
         formatManifoldUri({

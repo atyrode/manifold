@@ -186,6 +186,7 @@ test("a reused machine token fences the old socket before routing later commands
       name: "fenced-machine-first",
       agentVersion: "testkit",
       protocolVersion: PROTOCOL_VERSION,
+      terminalExecution: "unconfined",
       terminals: [],
     });
     const firstWelcome = await waitFor(
@@ -205,6 +206,7 @@ test("a reused machine token fences the old socket before routing later commands
       name: "fenced-machine-second",
       agentVersion: "testkit",
       protocolVersion: PROTOCOL_VERSION,
+      terminalExecution: "unconfined",
       terminals: [],
     });
     const secondWelcome = await waitFor(

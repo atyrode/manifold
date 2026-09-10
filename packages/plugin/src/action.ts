@@ -27,6 +27,12 @@ export interface ActionDef<In = unknown, Out = unknown> {
   readonly name: string;
   readonly title: string;
   readonly caps: readonly Cap[];
+  /**
+   * Native job/service capability ceiling, not caller permission or target admission.
+   * Each native call resolves concrete targets and checks the original caller's authority
+   * and resource consent. Must be a subset of the manifest's capabilities.
+   */
+  readonly delegates?: readonly Cap[];
   readonly input: z.ZodType<In>;
   readonly result: z.ZodType<Out>;
   /**

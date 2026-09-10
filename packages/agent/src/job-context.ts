@@ -5,6 +5,13 @@ import { privateSocketPair } from "./job-files.ts";
 import {
   JobCommandSchema,
   JobRequestSchema,
+  ServiceCallSchema,
+  ServiceReplySchema,
+  ServiceReadySchema,
+  ServiceReadyResultSchema,
+  type ServiceCall,
+  type ServiceReply,
+  type ServiceReadyRefusal,
   type JobCommand,
   type JobEvent,
 } from "@manifold/protocol";
@@ -14,6 +21,7 @@ const MAX_CONTEXT_BYTES = 256 * 1024;
 export interface BoundInvocation {
   readonly parentJobId: string;
   readonly invocationId: string;
+  readonly origin: "worker" | "owner";
   childJobId: string | null;
   readonly operationId: string;
   readonly input: Record<string, string | number | boolean>;
@@ -30,6 +38,9 @@ export class JobContext {
   private childOpen = true;
   private closed = false;
   private chain = Promise.resolve();
+  private readonly serviceController = new AbortController();
+  private readonly serviceRequests = new Set<string>();
+  private serviceReadyRequested = false;
 
   private pendingBytes = 0;
   constructor(
@@ -37,6 +48,8 @@ export class JobContext {
     private readonly callbacks: {
       invoke(event: Extract<JobEvent, { type: "invocation" }>): void;
       command(command: JobCommand): Promise<void>;
+      service?(request: ServiceCall, signal: AbortSignal): Promise<ServiceReply>;
+      serviceReady?(port: number): Promise<void>;
       failure(reason: string): void;
     },
   ) {
@@ -76,6 +89,48 @@ export class JobContext {
   private async receive(raw: unknown): Promise<void> {
     if (this.closed || raw === null || typeof raw !== "object")
       throw new Error("invalid_context_message");
+    if (Reflect.get(raw, "type") === "service_ready") {
+      const request = ServiceReadySchema.parse(raw);
+      let refusal: ServiceReadyRefusal | null = null;
+      if (this.serviceReadyRequested) refusal = "service_ready_duplicate";
+      else {
+        this.serviceReadyRequested = true;
+        if (this.serviceController.signal.aborted) refusal = "service_closed";
+        else if (!this.callbacks.serviceReady) refusal = "service_unavailable";
+        else {
+          try {
+            await this.callbacks.serviceReady(request.port);
+          } catch {
+            refusal = "service_unavailable";
+          }
+          if (this.serviceController.signal.aborted) refusal = "service_closed";
+        }
+      }
+      this.send(
+        ServiceReadyResultSchema.parse(
+          refusal === null
+            ? { type: "service_ready_result", requestId: request.requestId, ok: true }
+            : { type: "service_ready_result", requestId: request.requestId, ok: false, refusal },
+        ),
+      );
+      return;
+    }
+    if (Reflect.get(raw, "type") === "service") {
+      const request = ServiceCallSchema.parse(raw);
+      if (this.serviceRequests.has(request.requestId) || this.serviceRequests.size >= 4096)
+        throw new Error("service_request_replayed_or_exhausted");
+      this.serviceRequests.add(request.requestId);
+      const reply = this.callbacks.service
+        ? await this.callbacks.service(request, this.serviceController.signal)
+        : {
+            type: "service_result" as const,
+            requestId: request.requestId,
+            ok: false as const,
+            refusal: "service_unavailable" as const,
+          };
+      this.send(ServiceReplySchema.parse(reply));
+      return;
+    }
     if (Reflect.get(raw, "type") === "invoke") {
       if (
         Object.keys(raw).some((key) => !["type", "operationId", "input", "outputs"].includes(key))
@@ -95,6 +150,7 @@ export class JobContext {
       this.invocations.set(invocationId, {
         parentJobId: this.parentJobId,
         invocationId,
+        origin: "worker",
         childJobId: null,
         operationId,
         input,
@@ -117,9 +173,36 @@ export class JobContext {
       throw new Error("context_command_forbidden");
     if (
       ![...this.invocations.values()].some((invocation) => invocation.childJobId === command.jobId)
-    )
-      throw new Error("context_child_mismatch");
-    await this.callbacks.command(command);
+    ) {
+      if (command.type !== "input") throw new Error("context_child_mismatch");
+      this.send({
+        type: "input_result",
+        jobId: command.jobId,
+        requestId: command.requestId,
+        seq: command.seq,
+        accepted: false,
+        reason: "context_child_mismatch",
+        nextInputSeq: null,
+        stdinClosed: true,
+      });
+      return;
+    }
+    if (command.type === "input") {
+      try {
+        await this.callbacks.command(command);
+      } catch {
+        this.send({
+          type: "input_result",
+          jobId: command.jobId,
+          requestId: command.requestId,
+          seq: command.seq,
+          accepted: false,
+          reason: "job_input_delivery_unknown",
+          nextInputSeq: null,
+          stdinClosed: true,
+        });
+      }
+    } else await this.callbacks.command(command);
   }
 
   bind(invocationId: string, childJobId: string): void {
@@ -127,12 +210,14 @@ export class JobContext {
     if (!invocation || invocation.childJobId !== null || invocation.refused)
       throw new Error("invocation_replayed");
     invocation.childJobId = childJobId;
-    this.send({ type: "child", invocationId, jobId: childJobId });
+    if (invocation.origin === "worker")
+      this.send({ type: "child", invocationId, jobId: childJobId });
   }
   reply(invocationId: string, jobId: string | null, reason: string | null): void {
     const invocation = this.invocations.get(invocationId);
     if (!invocation) throw new Error("unknown_invocation");
     if (reason !== null) invocation.refused = true;
+    if (invocation.origin === "owner") return;
     this.send({
       type: "invocation_reply",
       parentJobId: this.parentJobId,
@@ -159,9 +244,13 @@ export class JobContext {
       closeSync(this.childFd);
     }
   }
+  abortServices(): void {
+    this.serviceController.abort();
+  }
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.abortServices();
     this.releaseChildFd();
     this.socket.destroy();
   }

@@ -56,6 +56,7 @@ import {
   type TerminalEnv,
   type TerminalInfo,
   type TerminalProgram,
+  type TerminalRuntime,
   type TerminalSummary,
   type TileLayout,
   type TokenGrant,
@@ -1213,17 +1214,22 @@ export class SessionClient {
    * machine whose agent predates programs rejects with `unsupported`; a program the machine
    * cannot exec is a `conflict` from the agent's `create_error`.
    */
-  openTerminal(opts: {
-    elementId: string;
-    cols: number;
-    rows: number;
-    cwd?: string;
-    machineId?: string;
-    placement?: "tile";
-    program?: TerminalProgram;
-    env?: TerminalEnv;
-    timeoutMs?: number;
-  }): Promise<TerminalInfo> {
+  openTerminal(
+    opts: {
+      elementId: string;
+      cols: number;
+      rows: number;
+      runtime?: TerminalRuntime;
+      machineId?: string;
+      placement?: "tile";
+      program?: TerminalProgram;
+      env?: TerminalEnv;
+      cwd?: string;
+      timeoutMs?: number;
+    } & (
+      { runtime: TerminalRuntime; program?: never; env?: never; cwd?: never } | { runtime?: never }
+    ),
+  ): Promise<TerminalInfo> {
     const { promise, resolve, reject } = Promise.withResolvers<TerminalInfo>();
     const settle = (outcome: () => void): void => {
       clearTimeout(timer);
@@ -1263,6 +1269,7 @@ export class SessionClient {
       ...(opts.placement !== undefined ? { placement: opts.placement } : {}),
       ...(opts.program !== undefined ? { program: opts.program } : {}),
       ...(opts.env !== undefined ? { env: opts.env } : {}),
+      ...(opts.runtime !== undefined ? { runtime: opts.runtime } : {}),
     });
     return promise;
   }

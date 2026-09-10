@@ -1,6 +1,6 @@
 import { basename, dirname } from "node:path";
 import { closeSync, fstatSync, readFileSync } from "node:fs";
-import { z } from "zod";
+import { JobOwnerConfigSchema, type JobOwnerConfig } from "@manifold/protocol";
 import { HeldDirectory } from "./job-files.ts";
 import { JobJournal } from "./job-journal.ts";
 import { MachineJobOwner } from "./job-owner.ts";
@@ -8,60 +8,20 @@ import { JobOutputStore } from "./job-outputs.ts";
 import { type LinuxJobBind } from "./job-linux.ts";
 import { DirectoryExclusions } from "./job-locations.ts";
 
-const absolute = z
-  .string()
-  .startsWith("/")
-  .max(4096)
-  .refine((value) => !value.includes("\0"));
-const ConfigSchema = z.strictObject({
-  machineId: z.string().min(1).max(128),
-  admissionPublicKey: z.string().min(1).max(4096),
-  stateDirectory: absolute,
-  delegatedCgroup: absolute,
-  bubblewrap: absolute,
-  protectedDirectories: z.array(absolute).max(32),
-  anchors: z.partialRecord(
-    z.enum(["home", "data", "state", "cache", "config", "runtime"]),
-    absolute,
-  ),
-  runtimeTools: z
-    .record(
-      z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
-      z
-        .array(
-          z.strictObject({
-            source: absolute,
-            target: absolute,
-            kind: z.enum(["file", "directory"]),
-          }),
-        )
-        .min(1)
-        .max(128),
-    )
-    .refine((tools) => Object.keys(tools).length <= 128),
-  artifactOrigins: z
-    .array(
-      z
-        .url()
-        .refine((value) => new URL(value).protocol === "https:" && new URL(value).origin === value),
-    )
-    .min(1)
-    .max(128),
-});
-
 /** Opens reviewed local config through held descriptors. No job RPC can modify this authority. */
 export async function openConfiguredJobOwner(
   configPath: string,
   socketPath: string,
+  terminalSocketPath: string,
 ): Promise<MachineJobOwner> {
   const parent = HeldDirectory.openAbsolute(dirname(configPath), { private: true });
   const configFd = parent.openFile(basename(configPath));
-  let config: z.infer<typeof ConfigSchema>;
+  let config: JobOwnerConfig;
   try {
     const stat = fstatSync(configFd);
     if (stat.uid !== process.getuid?.() || (stat.mode & 0o022) !== 0 || stat.size > 65536)
       throw new Error("unsafe_job_owner_configuration");
-    config = ConfigSchema.parse(JSON.parse(readFileSync(configFd, "utf8")));
+    config = JobOwnerConfigSchema.parse(JSON.parse(readFileSync(configFd, "utf8")));
   } finally {
     closeSync(configFd);
   }
@@ -70,8 +30,38 @@ export async function openConfiguredJobOwner(
     state,
     parent,
     HeldDirectory.openAbsolute(dirname(socketPath), { private: true }),
+    HeldDirectory.openAbsolute(dirname(terminalSocketPath), { private: true }),
     ...config.protectedDirectories.map((path) => HeldDirectory.openAbsolute(path)),
   ];
+  const serviceCredentials = new Map<string, { fd: number; origins: readonly string[] }>();
+  for (const [ref, credential] of Object.entries(config.serviceCredentials ?? {})) {
+    const directory = HeldDirectory.openAbsolute(dirname(credential.source));
+    // Existing secret stores may be root-managed and traversable. Only trusted
+    // writers may control the source name; the credential itself must stay private.
+    const directoryStat = directory.stat();
+    if (
+      (directoryStat.uid !== 0 && directoryStat.uid !== process.getuid?.()) ||
+      (directoryStat.mode & 0o022) !== 0
+    ) {
+      directory.close();
+      throw new Error("unsafe_service_credential_reference");
+    }
+    protectedDirectories.push(directory);
+    const fd = directory.openFile(basename(credential.source));
+    const stat = fstatSync(fd);
+    if (
+      !stat.isFile() ||
+      stat.uid !== process.getuid?.() ||
+      (stat.mode & 0o077) !== 0 ||
+      stat.nlink !== 1 ||
+      stat.size < 1 ||
+      stat.size > 16384
+    ) {
+      closeSync(fd);
+      throw new Error("unsafe_service_credential_reference");
+    }
+    serviceCredentials.set(ref, { fd, origins: credential.origins });
+  }
   const exclusions = new DirectoryExclusions(protectedDirectories);
   const journal = new JobJournal(state.openChild("journal", { create: true }));
   const cache = state.openChild("artifacts", { create: true });
@@ -114,12 +104,14 @@ export async function openConfiguredJobOwner(
     admissionPublicKey: config.admissionPublicKey,
     journal,
     cache,
+    managedState: state.openChild("locations", { create: true }),
     outputs,
     delegatedCgroup,
     bubblewrapFd,
     anchors,
     protectedDirectories,
     runtimeTools,
+    serviceCredentials,
     artifactAuthority: { origins: config.artifactOrigins, maxRedirects: 5, timeoutMs: 60_000 },
   });
 }

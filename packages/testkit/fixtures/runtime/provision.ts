@@ -63,11 +63,10 @@ export async function provisionRuntime(
     ].join("\n"),
   );
   const sha256 = createHash("sha256").update(executable).digest("hex");
-  writeFileSync(join(state, "artifacts", `${sha256}-${sha256}`), executable, { mode: 0o500 });
   const machine = MachineHalfSchema.parse({
     artifacts: {
       [`linux-${process.arch}`]: {
-        url: "https://example.invalid/runtime-fixture",
+        bundleFile: "worker",
         sha256,
         format: "raw",
         entry: ["fixture"],
@@ -101,6 +100,7 @@ export async function provisionRuntime(
   });
   const pluginDir = join(root, "plugin");
   cpSync(import.meta.dir, pluginDir, { recursive: true });
+  writeFileSync(join(pluginDir, "worker"), executable, { mode: 0o500 });
   const modules = join(root, "node_modules");
   mkdirSync(join(modules, "@manifold"), { recursive: true });
   symlinkSync(join(REPO, "packages/plugin-kit"), join(modules, "@manifold/plugin-kit"), "dir");
@@ -172,6 +172,7 @@ export async function provisionRuntime(
     }),
     { mode: 0o600 },
   );
+  let nativeHost: Bun.Subprocess<"ignore", "ignore", "ignore"> | undefined;
   return {
     machineId,
     artifactSha256: sha256,
@@ -202,20 +203,25 @@ export async function provisionRuntime(
         node: formatManifoldUri(node),
       });
     },
-    startAgent: () =>
-      startAgent({
+    startAgent: () => {
+      return startAgent({
         serverUrl: server.url,
         machineToken: enrollment.machineToken,
         name: "jobs-browser-proof",
         env: { MANIFOLD_JOB_OWNER_SOCKET: socket },
-      }),
+        ...(nativeHost
+          ? { existingHost: { process: nativeHost, socketPath: `${socket}.terminal` } }
+          : {}),
+      });
+    },
     async startOwner() {
-      const owner = Bun.spawn([process.execPath, "packages/agent/src/main.ts", "--job-owner"], {
+      const owner = Bun.spawn([process.execPath, "packages/agent/src/main.ts", "--terminal-host"], {
         cwd: REPO,
         env: {
           ...process.env,
           MANIFOLD_JOB_OWNER_SOCKET: socket,
           MANIFOLD_JOB_OWNER_CONFIG: config,
+          MANIFOLD_TERMINAL_HOST_SOCKET: `${socket}.terminal`,
         },
         stdin: "ignore",
         stdout: "ignore",
@@ -226,7 +232,7 @@ export async function provisionRuntime(
           () => {
             if (owner.exitCode !== null)
               throw new Error(`UNVERIFIED: Linux job owner exited ${owner.exitCode}`);
-            return existsSync(socket);
+            return existsSync(socket) && existsSync(`${socket}.terminal`);
           },
           20_000,
           20,
@@ -236,6 +242,7 @@ export async function provisionRuntime(
         await owner.exited;
         throw error;
       }
+      nativeHost = owner;
       return owner;
     },
   };

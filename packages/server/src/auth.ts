@@ -600,6 +600,149 @@ export class AuthService {
     };
   }
 
+  /** Reconstruct delayed authority from its original credential, never its principal alone. */
+  restoreCredential(reference: CredentialReference): AuthContext | null {
+    const principal = this.store.getPrincipal(reference.principalId);
+    if (!principal) return null;
+    if (reference.expiresAt !== undefined && reference.expiresAt <= this.runtime.now()) return null;
+    let isRoot = reference.tokenId === null;
+    if (reference.tokenId !== null) {
+      const token = this.store.getToken(reference.tokenId);
+      if (
+        !token ||
+        token.revokedAt !== null ||
+        token.principalId !== reference.principalId ||
+        token.grantId !== reference.grantId ||
+        token.containerId !== reference.containerScope ||
+        (token.expiresAt !== null && token.expiresAt <= this.runtime.now()) ||
+        reference.caps.some((c) => !token.caps.includes(c) && !token.caps.includes("*"))
+      )
+        return null;
+      isRoot = token.caps.includes("*");
+    } else if (reference.principalId !== this.ownerPrincipal.id) return null;
+    return {
+      principal,
+      caps: [...reference.caps],
+      containerScope: reference.containerScope,
+      tokenId: reference.tokenId,
+      grantId: reference.grantId,
+      isRoot,
+      ...(reference.expiresAt === undefined ? {} : { expiresAt: reference.expiresAt }),
+    };
+  }
+
+  /**
+   * Trusted native registration only. Public token mints synthesize a subtree grant and
+   * cannot express several exact runtime nodes. Bind the runtime operation grant to the
+   * token and administer the remaining exact nodes through the ordinary waterfall.
+   */
+  mintNativeServiceCredential(
+    serviceId: string,
+    machineId: string,
+    actor: AuthContext,
+    requirements: readonly AuthorityRequirement[],
+  ): CredentialReference {
+    return this.store.transaction(() => {
+      const current = this.restoreCredential(this.credentialReference(actor));
+      if (
+        !current?.isRoot ||
+        (!current.caps.includes("*") && !current.caps.includes("services:configure")) ||
+        !this.allowsRef(current, "services:configure", { kind: "machine", machineId }) ||
+        requirements.length === 0 ||
+        !requirements.some(({ ref }) => ref.kind === "operation") ||
+        requirements.some(
+          ({ cap, ref }) =>
+            !CONCRETE_CAPS.includes(cap) ||
+            !ManifoldRefSchema.safeParse(ref).success ||
+            !["operation", "location", "service"].includes(ref.kind) ||
+            !("machineId" in ref) ||
+            ref.machineId !== machineId ||
+            !this.allowsRef(current, cap, ref),
+        )
+      )
+        throw new ServiceError("forbidden", "native_service_authority_required");
+      const principal = this.createPrincipal({ kind: "agent", name: serviceId.slice(0, 64) });
+      const grants = new Map<string, Grant>();
+      const createdAt = this.runtime.now();
+      for (const { cap, ref } of requirements) {
+        const node = formatManifoldUri(ref);
+        const existing = grants.get(node);
+        if (existing) {
+          if (!existing.caps.includes(cap)) existing.caps.push(cap);
+        } else {
+          grants.set(node, {
+            id: this.runtime.newId(),
+            principal: { kind: "principal", id: principal.id },
+            node,
+            caps: [cap],
+            effect: "allow",
+            reach: "node",
+            createdBy: current.principal.id,
+            createdAt,
+          });
+        }
+      }
+      for (const grant of grants.values()) this.store.createGrant(grant);
+      const operation = requirements.find(({ ref }) => ref.kind === "operation")!;
+      const grantId = grants.get(formatManifoldUri(operation.ref))!.id;
+      const tokenId = this.runtime.newId();
+      const caps = [...new Set(requirements.map(({ cap }) => cap))];
+      // Instance-service lifecycle, like a terminal's: explicit revocation, not browser expiry.
+      // Hash the one-time random bearer at creation; it never leaves this method.
+      this.store.createToken({
+        id: tokenId,
+        hash: sha256Hex(randomSecret()),
+        principalId: principal.id,
+        mintedBy: current.principal.id,
+        caps,
+        containerId: null,
+        createdAt,
+        revokedAt: null,
+        grantId,
+        expiresAt: null,
+      });
+      this.store.addEvent(null, createdAt, current.principal.id, "token_minted", {
+        tokenId,
+        subjectPrincipalId: principal.id,
+        caps,
+        containerId: null,
+        serviceId,
+        machineId,
+      });
+      this.store.afterCommit(() => this.authorityChanged());
+      return { principalId: principal.id, tokenId, grantId, caps, containerScope: null };
+    });
+  }
+
+  /** Trusted registry lifecycle mutation; shares its transaction and post-commit fence. */
+  revokeNativeServiceCredential(reference: CredentialReference, actorId: string): void {
+    if (reference.tokenId === null || reference.grantId === null)
+      throw new ServiceError("forbidden", "native_service_credential_required");
+    const tokenId = reference.tokenId;
+    this.store.transaction(() => {
+      const token = this.store.getToken(tokenId);
+      if (
+        !token ||
+        token.principalId !== reference.principalId ||
+        (token.revokedAt === null && token.grantId !== reference.grantId) ||
+        token.caps.includes("*")
+      )
+        throw new ServiceError("forbidden", "native_service_credential_required");
+      if (token.revokedAt !== null) return;
+      const at = this.runtime.now();
+      const revoked = this.store.revokeToken(tokenId, at);
+      this.store.addEvent(null, at, actorId, "token_revoked", {
+        subjectPrincipalId: reference.principalId,
+        count: revoked.tokens,
+      });
+      this.store.afterCommit(() => {
+        this.settleRevocation(revoked);
+        if (revoked.tokens > 0)
+          for (const listener of [...this.revokedListeners]) listener(reference.principalId, null);
+      });
+    });
+  }
+
   /** Captures row evidence without presenting cache invalidation as durable policy evidence. */
   explain(context: AuthContext, requirement: AuthorityRequirement): AuthorityEvidence {
     if (!ManifoldRefSchema.safeParse(requirement.ref).success)

@@ -13,10 +13,113 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HeldDirectory } from "../src/job-files.ts";
-import { DirectoryExclusions, resolveJobLocation, type JobLocation } from "../src/job-locations.ts";
+import {
+  DirectoryExclusions,
+  resolveJobLocation,
+  resolveManagedJobLocation,
+  type JobLocation,
+} from "../src/job-locations.ts";
 import { JobOutputStore } from "../src/job-outputs.ts";
 
 describe.skipIf(process.platform !== "linux")("named location descriptor boundaries", () => {
+  test("managed state persists across concurrent opens and recovery without adopting another plugin's files", () => {
+    const path = mkdtempSync(join(tmpdir(), "job-managed-state-"));
+    let root = HeldDirectory.openAbsolute(path, { private: true });
+    const declaration = {
+      anchor: "state" as const,
+      components: ["accounts"],
+      revision: "one",
+      kind: "directory" as const,
+      managed: true as const,
+    };
+    const outputDirectory = root.openChild("output-control", { create: true });
+    const outputs = JobOutputStore.open(outputDirectory);
+    const beforeCreate = (fd: number) => outputs.assertCreateAllowed(fd);
+    const opened: JobLocation[] = [];
+    let release: (() => void) | undefined;
+    try {
+      const first = resolveManagedJobLocation(
+        root,
+        "plugin-a",
+        "accounts",
+        declaration,
+        "write",
+        beforeCreate,
+      );
+      opened.push(first);
+      release = outputs.retainWriter(first.fd);
+      const signIn = resolveManagedJobLocation(
+        root,
+        "plugin-a",
+        "accounts",
+        declaration,
+        "write",
+        beforeCreate,
+      );
+      opened.push(signIn);
+      writeFileSync(`${signIn.directory!.procPath}/account`, "owned by the runtime", {
+        mode: 0o600,
+      });
+      expect(readFileSync(`${first.directory!.procPath}/account`, "utf8")).toBe(
+        "owned by the runtime",
+      );
+      expect(() =>
+        resolveManagedJobLocation(root, "plugin-b", "accounts", declaration, "read", beforeCreate),
+      ).toThrow();
+      const other = resolveManagedJobLocation(
+        root,
+        "plugin-b",
+        "accounts",
+        declaration,
+        "write",
+        beforeCreate,
+      );
+      opened.push(other);
+      expect(existsSync(`${other.directory!.procPath}/account`)).toBe(false);
+      release();
+      release = undefined;
+      for (const location of opened.splice(0)) location.close();
+      root.close();
+      root = HeldDirectory.openAbsolute(path, { private: true });
+      const recovered = resolveManagedJobLocation(
+        root,
+        "plugin-a",
+        "accounts",
+        declaration,
+        "read",
+        beforeCreate,
+      );
+      opened.push(recovered);
+      expect(readFileSync(`${recovered.directory!.procPath}/account`, "utf8")).toBe(
+        "owned by the runtime",
+      );
+      expect(() => resolveJobLocation(root, "accounts", declaration, "write")).toThrow(
+        "managed_location_requires_native_store",
+      );
+      const exclusions = new DirectoryExclusions([root]);
+      expect(() =>
+        resolveJobLocation(
+          root,
+          "accounts",
+          {
+            anchor: "state",
+            components: ["plugin-a", "accounts"],
+            revision: "one",
+          },
+          "write",
+          exclusions,
+        ),
+      ).toThrow("private_owner_source_overlap");
+    } finally {
+      release?.();
+      for (const location of opened) location.close();
+      outputs.close();
+      outputDirectory.close();
+      root.close();
+      rmSync(path, { recursive: true, force: true });
+    }
+  });
+
   test("private owner ancestors, descendants and files stay denied despite declared access", () => {
     const root = mkdtempSync(join(tmpdir(), "job-private-"));
     mkdirSync(join(root, "state"));

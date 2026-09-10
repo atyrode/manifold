@@ -142,7 +142,7 @@ export class JobJournal {
     } finally {
       closeSync(fd);
     }
-    fsyncSync(this.directory.fd);
+    this.directory.sync();
     this.sequence = record.sequence;
     this.previous = jobDigest(record);
     this.bytes += bytes.length;

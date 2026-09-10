@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 27;
+export const PROTOCOL_VERSION = 30;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -222,9 +222,8 @@ export const PROTOCOL_VERSION = 27;
  * Absence reproduces v21 EXACTLY: a `create` without `program` is the byte-identical frame,
  * and the agent that receives it resolves `$SHELL` → `bash` → `sh` as it always did. The
  * agent's strict `create` parser means a v16–v21 agent would read a `program` key as a
- * malformed frame — so the SERVER never sends one to such an agent: the broker compares the
- * hello's protocol against `TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION` and refuses the OPENER
- * (`unsupported`) instead. An enrolled pre-v22 spoke therefore observes a v22 hub exactly as
+ * malformed frame — so the v22 server refused program creation below v22 (`unsupported`).
+ * An enrolled pre-v22 spoke therefore observed a v22 hub exactly as
  * it observed a v21 one, which is the additive-optional rule's test verbatim — every pre-bump frame
  * still parses, and the default for the absent field is the pre-bump behaviour — so 22 is
  * ADDED, the set is `{16, 17, 18, 19, 20, 21, 22}`, and NO fleet restart is owed. What a
@@ -285,31 +284,33 @@ export const PROTOCOL_VERSION = 27;
  * Instance shares carry expanded closed resource/capability vocabularies, so the
  * separate instance acceptance set RESETS to `{27}`; federation peers require a
  * coordinated upgrade. This source change authorizes no production/fleet activation.
+ *
+ * v27 -> v28: PINNED RESOURCES AND SCOPED SERVICES. Governed jobs now require the
+ * correlated input-receipt and service-authorization contracts, resource inventory,
+ * and native service configuration/read messages. Protocol-27 transports remain
+ * compatible only when they do not advertise a job owner; governed owners must
+ * upgrade together with their transport before reconnecting. Existing workloads
+ * remain owned by their independent owner while disconnected. Terminal-only wire
+ * and federation resource vocabularies are unchanged, so their sets add 28.
+ * This source change authorizes no hub activation or fleet replacement.
+ *
+ * v28 -> v29: INSTANCE-OWNED SERVICES. Governed owners gain durable service origins,
+ * proved service readiness and bounded cross-owner service channels. Terminal-only
+ * transports and federation vocabularies are unchanged. Governed owners and their
+ * transports must upgrade together; occupied owners remain held until safely drained.
+ *
+ * v29 -> v30: EXPLICIT TERMINAL EXECUTION. Owners declare unconfined or governed
+ * terminal admission independently of native job connectivity. Omitted declarations
+ * never authorize an unconfined shell. This changes new-terminal semantics, so
+ * machine acceptance resets to 30 and requires a coordinated hub/transport upgrade.
+ * Retained IPC-v1 owners remain readable through new transports; their existing
+ * terminals and governed requests keep their owners, but new unconfined terminals
+ * require an IPC-v2 declaration. No owner is stopped to manufacture that declaration.
+ * Native owner RPC is independently versioned at 29; unchanged native RPC must not
+ * become incompatible merely because the hub or transport wire changes.
+ * Federation frames and resource vocabularies are unchanged.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
-]);
-
-/**
- * The first protocol at which `create` may carry `program` (issue #192). The broker compares
- * the target machine's HELLO version against this before sending one: an older agent parses
- * `create` strictly, so the key would be a malformed frame to it and it would drop the socket.
- * Refusing the opener by name (`unsupported`) instead is what lets the field be additive —
- * an old agent never sees a byte it cannot read, which is the whole reason 22 could be
- * ADDED to `MACHINE_PROTOCOL_COMPAT_VERSIONS` rather than resetting it.
- */
-export const TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION = 22;
-
-/** The first machine protocol that may advertise ownership or exchange governed-job frames. */
-export const GOVERNED_JOB_MIN_PROTOCOL_VERSION = 27;
-
-/** Feature support requires both an accepted wire and the governed-job extension. */
-export function supportsGovernedJobs(protocolVersion: number): boolean {
-  return (
-    MACHINE_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion) &&
-    protocolVersion >= GOVERNED_JOB_MIN_PROTOCOL_VERSION
-  );
-}
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([30]);
 
 /**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
@@ -343,9 +344,9 @@ export function supportsGovernedJobs(protocolVersion: number): boolean {
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27 alone.
+ * instance compatibility resets to protocol 27. v28 through v30 leave that wire unchanged.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([27]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([27, 28, 29, 30]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the

@@ -394,6 +394,7 @@ export async function testPluginHost(
     placement,
     options.machines ?? {
       isOnline: () => false,
+      getTerminalExecution: () => null,
       drain: () =>
         Promise.resolve({ ok: false, reason: "machine is offline: its terminals are unknown" }),
     },

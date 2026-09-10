@@ -178,9 +178,19 @@ The CLI also reads this file; file values override inherited environment values.
   production assertion signing key is always excluded so every preview generates its own.
 - `PREVIEW_PORT_RANGE`: default `7920-7999`; live servers use routed port + 1000.
 - `PREVIEW_ROUTER_PORT`: default `7900`; change the public proxy and ask URL to match.
+- `MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID`: optional opaque enrolled native service-owner ID,
+  forwarded to the existing dev hub; never a machine-name lookup or automatic fallback.
+- `MANIFOLD_DEV_SPAWN_AGENT`: optional `0` or `1`, overriding the dev checkout's setting.
+  Use `0` with the [native execution-only profile](../../docs/SELF-HOST.md#explicit-remote-execution)
+  so the existing container remains a hub, not an unconfined execution substitute.
 - `MANIFOLD_DEV_SPOKE_UNIT`: optional user unit; unset skips the dev spoke rebuild.
 - `MANIFOLD_DEV_SPOKE_BINARY`: default `$HOME/.local/share/manifold-dev-agent/manifold-agent`.
 - `MANIFOLD_DEV_SPOKE_ENV`: build stamp file; default `$HOME/.config/manifold/dev/agent.env`.
+
+The native profile's owner and transport are activated from their pinned declaration, not
+rebuilt from the preview checkout. Leave the legacy `MANIFOLD_DEV_SPOKE_*` settings unset after
+the explicitly drained, positively empty migration to that profile. Hub deployment retains
+the existing Compose project and `/data` volume and does not restart the native owner.
 
 Production browser identity is the normal preview admission path. Set
 `MANIFOLD_PREVIEW_DOMAIN=<domain>` on the production manifold instance whose public URL is

@@ -790,6 +790,12 @@ applied to vocabulary: one door onto "what do we call this kind".
       "allow": []
     },
     {
+      "term": "service",
+      "means": "a canonical machine-child capability for fixed upstream operations, addressed as manifold://machine/<machineId>/service/<serviceId> with method authority beneath /operation/<operationId>; native policy binds transport and credential references without disclosing their values",
+      "banned": [],
+      "allow": []
+    },
+    {
       "term": "job",
       "means": "a canonical authority node beneath an admitted machine operation; the reference algebra does not imply an executing or completed process",
       "banned": [],

@@ -1227,8 +1227,11 @@ The reporting callbacks belong to the **mounted renderer**: report sidebar state
 `onCreateTerminalChange`, clearing it with `null` on teardown. The composition renderer
 does the latter in
 [`composition-view.tsx`](../packages/plugins/compositions/src/composition-view.tsx).
-A panel asks `host.authoring?.createTerminal(machine)` for the mounted renderer's creation
-flow; `host.authoring` is null when none is published. It does not publish a competing
+A panel awaits `host.authoring?.createTerminal(machine, runtime)` for the mounted
+renderer's creation flow. The optional `runtime` carries exact native operation pins;
+the renderer creates the canvas portal or composition tile and returns the terminal
+record, or null after reporting a refusal. `host.authoring` is null when none is
+published. A product panel neither assumes a tiled container nor publishes a competing
 callback. Sources: [`host.ts`](../packages/plugin/src/host.ts), `AuthoringHandle`, and
 [`workspace.tsx`](../packages/web/src/workspace.tsx).
 
@@ -1319,14 +1322,12 @@ second current compatibility contract. It is numbered 0033 because merged main a
 0031 for terminal inline graphics; that decision and its protocol-26 graphics history remain
 unchanged.
 
-**Protocol support is not deployment authority.** The session protocol is exact-current 27.
-Governed jobs require a protocol-27 agent with a proved job owner. Plugin streams use
-the current session protocol independently and require no machine owner. Protocol-26
-agents remain compatible for terminal service, including terminal graphics, but cannot advertise
-`jobOwner` or exchange governed job traffic; a job request must not fall back to a PTY. The
-machine compatibility set retains 16 through 26 and adds 27, while instance peers independently
-require protocol 27 because their closed capability/reference vocabularies expanded. Publication,
-preview delivery, production promotion and fleet installation are distinct actions; this author
+**Protocol support is not deployment authority.** Session/browser joins require protocol 28. Governed owners require protocol 28 for pinned resources, scoped services and correlated
+input receipts. Machine transports at 16–27 remain accepted only for terminal service:
+they cannot advertise a governed owner or exchange job traffic. Upgrade an independent
+owner and its transport together; its existing workloads remain owned while disconnected.
+Instance peers accept 27 and 28 because this change preserves their wire. Publication,
+preview delivery, production promotion and fleet installation are distinct actions; this
 guide grants no live rollout authorization. See
 [Protocol and compatibility](CONTRACTS.md#protocol-and-compatibility).
 
@@ -1387,11 +1388,74 @@ is false; `retainedInstallations` lists up to 128 non-current revision/artifact 
 older pins remain addressable explicitly. Old consent never authorizes a different artifact.
 
 Root administration dispatches `engine.jobs.install` with
-`{ machineId, pluginId, installationRevision, artifactSha256, machine }`; `machine` must
-match the plugin's declared machine half. Consent dispatches `engine.jobs.consent` with
+`{ machineId, pluginId, installationRevision, artifactSha256, machine, resourceBindings? }`;
+`machine` must match the plugin's declared machine half. Consent dispatches `engine.jobs.consent` with
 `{ machineId, pluginId, installationRevision, artifactSha256, node, cap, enabled }`.
 Use the exact canonical resource URI and capability; a changed installation revision/hash
 needs matching consent. Neither door is part of the plugin's ordinary execution handle.
+
+**Bind concrete resources.** `jobResourceRequirements(machine)` names the managed tools,
+owner-held closures, anchors and scoped services an installation needs. Native Plugins
+reviews exact `resourceBindings`, then rechecks that review before installation. A binding
+names an inventory digest or exact service policy/operation revisions, not a filesystem
+path. The installation revision covers both the machine declaration and its bindings.
+Operations independently report readiness and their `resourceBindingDigest`; a partially
+configured installation does not make unrelated operations unavailable. An explicit
+`workingDirectory` selects one declared location. Managed companions retain their own
+artifact/member hashes; no source executable or host-PATH fallback is permitted.
+
+**Coordinate effects without acquiring authority.** An action may declare `delegates` for
+native job/resource/service capabilities it uses through `ctx.jobs` or `ctx.services`.
+These must fit the manifest and installed grant ceiling. Unlike `caps`, they do not grant
+caller admission or discharge a targetless governed requirement. The handles retain the
+original credential, scope, expiry and grants, attenuated to the action's declared rights;
+each effect still resolves and authorizes its concrete native targets and revision-bound
+consent. A read-only action cannot invoke a service even when its caller is root. Direct
+governed action effects still need their ordinary `caps` and target `requirements`.
+
+**Use scoped services, not source credentials.** `ctx.services.describe` reports the
+operations the caller may see. `read` and `invoke` accept exact
+`{ machineId, serviceId, revision, policySha256, operationId, input }` pins and remain
+separate authority: readable operations are projected GETs; mutation needs an explicitly
+invocable projected operation. Installer-fixed transport, bounded input mappings and
+response projection prevent callers from choosing an origin, forwarding arbitrary headers
+or exposing unprojected upstream bodies. Static policy fields may name an owner-held
+`credentialRef`; only the native resolver reads that source, for its permitted origin.
+Credential sources remain at their declared locations. Their held parent directories must
+be owned by root or the native owner and not writable by group or others; each source
+itself must still be a private, singly linked regular file owned by the native owner.
+This permits root-managed secret directories without copying credentials. Native owner
+configuration, state and socket directories retain their stricter private-directory rules.
+
+`ctx.services.readConfiguration` and `configureConfiguration` are owner-only, target-bound
+native setup APIs, not credential import or provisioning. Reads return the current
+configuration, connectivity, safe credential references and `runtimeCandidates`: exact
+installed operations declaring `providesService`, with current pins and readiness.
+Cross-plugin runtime discovery belongs here; an ordinary `ctx.jobs` handle remains scoped
+to its own plugin. Configuration uses `expectedRevision` compare-and-set.
+
+A service runtime names an exact independently installed provider operation plus bounded
+input mappings. It starts as an owned nested job, never as a private persistent daemon.
+Native Plugins inspects candidate invocation edges through `engine.jobs.inspectInvocations`;
+an owner explicitly reviews depth, concurrency, aggregate and output ceilings before
+`setInvocationEdge`. Source policy/runtime pins must still match at approval. Stale edges
+remain visible and revocable, but cannot authorize a replacement installation.
+
+Machine workers import `openWorkerContext` and `attachWorkerInput` from
+`@manifold/sdk/worker`. `ready` supplies owner-resolved locations; `callService` uses
+only declared scoped services; a provider calls `announceServiceReady` once after binding
+its listener. The native framed channel handles correlation, bounds, backpressure and
+disconnect cancellation. Do not reimplement that ABI or open a product-owned control socket.
+Readiness does not authenticate a port forever. Before sending a scoped HTTP request,
+the native owner opens a credential-free connection and proves that its established peer
+socket belongs to the admitted runtime workload. The proxy uses that exact connection,
+without reconnecting if it closes. Releasing a listening port while a runtime remains
+alive cannot transfer its later requests or bearer to a different workload.
+For Linux service providers, `setsockopt(IPPROTO_TCP, TCP_DEFER_ACCEPT)` returns
+`EOPNOTSUPP`: the owner must prove an accepted peer before releasing any request bytes.
+Servers may omit that optimization; neither queued connections nor inherited deferred
+listeners receive an ownership exception. A server that still waits for request bytes
+before accepting cannot satisfy this boundary.
 
 `ctx.jobs.execute({ jobId, machineId, operationId, input, outputs, limits? })` returns safe
 job metadata. `outputs` contains exact `{ name, locationId, components }` bindings.
@@ -1401,6 +1465,16 @@ An admission receipt does not grant later result inspection, and an interrupted/
 is not permission to run the effect again. `status`, `input`, `cancel` and `output` are governed operations;
 opaque node possession does not grant access. `output` reads a sealed output node in
 bounded chunks (at most 64 KiB), not an arbitrary path.
+
+`await ctx.jobs.input({ node, requestId, seq, data, eof })` returns `{ accepted: true }`
+only after the native owner confirms the stdin write. `requestId` is a fresh opaque ID;
+`data` is base64 and `seq` must equal the owner-confirmed `job.nextInputSeq`. That public
+cursor is `null` until owner reconciliation and while delivery is pending or disconnected.
+Refresh `status` after reconnecting; do not keep a product-local input sequence registry.
+The receipt wait is bounded to 12 seconds. A timeout, lost channel or write failure may
+have consumed bytes: never automatically retry input, even with a new request ID. Reusing
+an attempted request ID is refused. Owner-confirmed cursor metadata is not proof that a
+callback completed its application-level work. Rejected input does not cancel the job.
 
 Recover existing work with `ctx.jobs.listRuns({ machineId, operationId?, limit?, cursor? })`;
 the handle is scoped to its plugin. Browser sections dispatch `engine.jobs.listRuns` with
@@ -2512,6 +2586,13 @@ temporary directory, installs parents before parts, then watches the directory a
 change, debounced, installing only the bundles whose sha moved. One JSON line per cycle. The same
 loop without `--hardened` is the in-realm author's loop, walked through in §10.
 
+Repositories with generated worker artifacts can call the exported `devLoop` with a
+`build(packDir)` callback. It returns the complete family in parent-before-part order as
+`{ id, file, sha256, bytes }` entries produced by the kit's packer. The callback finishes
+every bundle before installation begins; a failed build leaves installed bundles alone.
+The native loop still owns watching, change coalescing, hash checks, delivery and temporary
+output cleanup. Keep source staging outside the watched root.
+
 ```sh
 # from a manifold checkout, pointing at your plugins directory
 bun run --cwd packages/plugin-kit dev <plugins-root> --hub http://127.0.0.1:7777 --owner-key-file <data>/owner.key --hardened
@@ -2697,6 +2778,10 @@ example.hello/
 `web.ts`, `styles: true` for `styles.css` — and is the ONLY thing that distinguishes this manifest
 from an in-tree one (§2 applies in full: id grammar, capability ceiling, `contributes`, the
 assembly refusals). It does not choose a runner; the installer does (§7, §9).
+
+A machine-only bundle uses `"entry": {}` and declares pinned `machine.artifacts` with
+non-empty `machine.operations`. Those declarations and any bundled executable members still
+validate normally; an empty web or server module is neither needed nor meaningful.
 
 The server half default-exports what a `packages/plugins/*` package's `server.ts` exports (§3, §4):
 actions from `defineAction`, handlers written against `ActionCtx`, optional lifecycle hooks. The

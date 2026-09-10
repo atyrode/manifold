@@ -2,7 +2,7 @@ import { createPrivateKey, createPublicKey, generateKeyPairSync } from "node:cry
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { resolveBuildIdentity, type BuildIdentity } from "../../../scripts/build-identity.ts";
-import { normalizeInstanceOrigin } from "@manifold/protocol";
+import { JobOwnerConfigSchema, normalizeInstanceOrigin } from "@manifold/protocol";
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
@@ -16,7 +16,13 @@ export interface ServerConfig {
   publicUrlExplicit: boolean;
   webDist: string;
   spawnAgent: boolean;
+  /** External supervision prepares authenticated local configuration without spawning children. */
+  localAgentSupervision?: "external";
   localMachineName: string;
+  /** Private declarative native-owner template; absent leaves local execution unconfigured. */
+  localJobOwnerTemplate?: string;
+  /** Explicit enrolled machine ID for instance services; never a display-name lookup. */
+  serviceOwnerMachineId?: string;
   /** Opt-in (`MANIFOLD_ANNOUNCE_KEY=1`): embed `#key=` in the boot announce. Off by default so the owner key never enters log streams. */
   announceKey: boolean;
   /**
@@ -171,6 +177,35 @@ export function loadConfig(
   const publicUrl = normalizePublicUrl(env.MANIFOLD_PUBLIC_URL ?? `http://localhost:${port}`);
   const localMachineName = (env.MANIFOLD_MACHINE_NAME ?? "local").trim();
   if (localMachineName.length === 0) throw new Error("MANIFOLD_MACHINE_NAME must not be empty");
+  const localJobOwnerTemplate = env.MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE;
+  if (
+    localJobOwnerTemplate !== undefined &&
+    (!localJobOwnerTemplate.startsWith("/") ||
+      localJobOwnerTemplate.includes("\0") ||
+      localJobOwnerTemplate.length > 4096 ||
+      resolve(localJobOwnerTemplate) !== localJobOwnerTemplate)
+  ) {
+    throw new Error("MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE must be a normalized absolute path");
+  }
+  if (localJobOwnerTemplate !== undefined && env.MANIFOLD_SPAWN_AGENT === "0") {
+    throw new Error("MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE requires local agent spawning");
+  }
+  const localAgentSupervision = env.MANIFOLD_LOCAL_AGENT_SUPERVISION;
+  if (localAgentSupervision !== undefined && localAgentSupervision !== "external")
+    throw new Error("MANIFOLD_LOCAL_AGENT_SUPERVISION must be external when set");
+  if (
+    localAgentSupervision === "external" &&
+    (localJobOwnerTemplate === undefined || env.MANIFOLD_SPAWN_AGENT === "0")
+  )
+    throw new Error("external local supervision requires native local bootstrap");
+  const serviceOwnerMachineId = env.MANIFOLD_SERVICE_OWNER_MACHINE_ID;
+  if (
+    serviceOwnerMachineId !== undefined &&
+    (!JobOwnerConfigSchema.shape.machineId.safeParse(serviceOwnerMachineId).success ||
+      /[\s\0]/u.test(serviceOwnerMachineId))
+  ) {
+    throw new Error("MANIFOLD_SERVICE_OWNER_MACHINE_ID must be an opaque enrolled machine ID");
+  }
   const configuredIdentityAuthority = env.MANIFOLD_IDENTITY_AUTHORITY?.trim();
   const previewIdentityAuthority =
     configuredIdentityAuthority === undefined || configuredIdentityAuthority === ""
@@ -188,6 +223,9 @@ export function loadConfig(
     webDist: resolve(cwd, env.MANIFOLD_WEB_DIST ?? "packages/web/dist"),
     spawnAgent: env.MANIFOLD_SPAWN_AGENT !== "0",
     localMachineName,
+    ...(localAgentSupervision === undefined ? {} : { localAgentSupervision }),
+    ...(localJobOwnerTemplate === undefined ? {} : { localJobOwnerTemplate }),
+    ...(serviceOwnerMachineId === undefined ? {} : { serviceOwnerMachineId }),
     announceKey: env.MANIFOLD_ANNOUNCE_KEY === "1",
     pluginDevPaths: env.MANIFOLD_PLUGIN_DEV_PATHS === "1",
     previewIdentityAuthority,

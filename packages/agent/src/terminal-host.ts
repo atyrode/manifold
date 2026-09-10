@@ -13,6 +13,8 @@ import {
 } from "@manifold/protocol";
 import type { AgentLogRecord, AgentLogSink } from "./log.ts";
 import { PtyTerminal, type PtyOutput } from "./terminal.ts";
+import type { MachineJobOwner } from "./job-owner.ts";
+import { startLinuxJob, LinuxJobRefusal } from "./job-linux.ts";
 
 /**
  * THE TERMINAL HOST (issue #278): the process that owns every PTY on a machine and nothing
@@ -74,6 +76,8 @@ export interface TerminalHostOptions {
   readonly build?: string;
   /** Called after a `shutdown_request` was accepted; main.ts exits the process. */
   readonly onMaintenanceShutdown?: () => void;
+  /** The independently supervised native job owner in this host process. */
+  readonly jobOwner?: MachineJobOwner;
 }
 
 export class TerminalHost {
@@ -91,6 +95,7 @@ export class TerminalHost {
   private readonly shutdownGraceMs: number;
   private readonly build: string;
   private readonly onMaintenanceShutdown: () => void;
+  private readonly jobOwner: MachineJobOwner | undefined;
 
   constructor(opts: TerminalHostOptions = {}) {
     this.runtime = opts.runtime ?? defaultRuntime;
@@ -100,6 +105,8 @@ export class TerminalHost {
     this.shutdownGraceMs = opts.shutdownGraceMs ?? SHUTDOWN_GRACE_MS;
     this.build = opts.build ?? "unknown";
     this.onMaintenanceShutdown = opts.onMaintenanceShutdown ?? (() => {});
+    this.jobOwner = opts.jobOwner;
+    this.jobOwner?.bindTerminalHost(this.terminalHostId);
   }
 
   /** Count of retained terminal records: live PTYs plus exits nobody has acknowledged. */
@@ -126,6 +133,7 @@ export class TerminalHost {
       build: this.build,
       pid: process.pid,
       draining: this.draining,
+      terminalExecution: this.jobOwner ? "governed" : "unconfined",
       transportAttached: this.transport !== null,
       terminals: this.inventory(),
     };
@@ -148,15 +156,24 @@ export class TerminalHost {
   async shutdown(): Promise<void> {
     this.stopping = true;
     const terminals = [...this.terminals.values()];
-    const kills = terminals.map((terminal) => terminal.kill());
+    const kills = terminals.map(async (terminal) => {
+      try {
+        await terminal.kill();
+      } catch (error) {
+        if (!terminal.workloadEmpty) throw error;
+      }
+    });
     let graceTimer: Timer | undefined;
-    await Promise.race([
-      Promise.all(kills),
-      new Promise<void>((resolve) => {
-        graceTimer = setTimeout(resolve, this.shutdownGraceMs);
-      }),
-    ]);
-    clearTimeout(graceTimer);
+    try {
+      await Promise.race([
+        Promise.all(kills),
+        new Promise<void>((resolve) => {
+          graceTimer = setTimeout(resolve, this.shutdownGraceMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(graceTimer);
+    }
     for (const terminal of terminals) {
       if (terminal.alive) terminal.forceKill();
     }
@@ -312,6 +329,10 @@ export class TerminalHost {
       });
       return;
     }
+    if (this.jobOwner && !this.jobOwner.maintenanceReady) {
+      connection.peer.write({ type: "shutdown_refused", reason: "jobs_retained", terminalIds: [] });
+      return;
+    }
     this.stopping = true;
     this.log("info", "terminal_host_shutdown_accepted", {});
     connection.peer.write({ type: "shutting_down", terminalHostId: this.terminalHostId });
@@ -328,7 +349,7 @@ export class TerminalHost {
   ): void {
     switch (command.type) {
       case "create":
-        this.onCreate(connection, command);
+        void this.onCreate(connection, command);
         return;
       case "input": {
         const terminal = this.terminals.get(command.terminalId);
@@ -348,8 +369,10 @@ export class TerminalHost {
         const terminal = this.terminals.get(command.terminalId);
         if (terminal === undefined) return;
         if (terminal.alive) {
-          void terminal.kill();
-        } else {
+          void terminal.kill().catch(() => {
+            this.log("warn", "terminal_empty_unproven", { terminalId: command.terminalId });
+          });
+        } else if (terminal.workloadEmpty) {
           this.terminals.delete(command.terminalId);
           terminal.dispose();
         }
@@ -359,6 +382,7 @@ export class TerminalHost {
         void this.onSnapshotRequest(connection, command.terminalId);
         return;
       case "drain":
+        this.jobOwner?.setDraining(command.draining);
         this.draining = command.draining;
         this.log("info", "drain", { draining: command.draining, requestId: command.requestId });
         connection.peer.write({
@@ -376,11 +400,27 @@ export class TerminalHost {
     }
   }
 
-  private onCreate(
+  private async onCreate(
     connection: Connection,
     msg: Extract<TerminalHostCommand, { type: "create" }>,
-  ): void {
+  ): Promise<void> {
+    if (this.jobOwner && !msg.runtime) {
+      connection.peer.write({
+        type: "create_error",
+        terminalId: msg.terminalId,
+        message: "terminal_runtime_required",
+      });
+      return;
+    }
     if (this.terminals.has(msg.terminalId)) {
+      if (msg.runtime) {
+        connection.peer.write({
+          type: "create_error",
+          terminalId: msg.terminalId,
+          message: "terminal_admission_reused",
+        });
+        return;
+      }
       // Idempotent re-create (e.g. a retried request): acknowledge the existing terminal.
       connection.peer.write({ type: "created", terminalId: msg.terminalId });
       return;
@@ -390,6 +430,60 @@ export class TerminalHost {
       const message = "terminal host draining";
       connection.peer.write({ type: "create_error", terminalId: msg.terminalId, message });
       this.log("warn", "create_error", { terminalId: msg.terminalId, message });
+      return;
+    }
+    if (msg.runtime) {
+      let terminal: PtyTerminal | undefined;
+      try {
+        if (!this.jobOwner || msg.program || msg.cwd !== undefined || Object.keys(msg.env).length)
+          throw new Error("terminal_runtime_host_or_overrides_refused");
+        await this.jobOwner.startTerminal(
+          msg.runtime,
+          msg.terminalId,
+          this.terminalHostId,
+          (spec) => {
+            try {
+              terminal = new PtyTerminal({
+                terminalId: msg.terminalId,
+                cols: msg.cols,
+                rows: msg.rows,
+                onOutput: (output) => this.onOutput(msg.terminalId, output),
+                runtime: (pty) => startLinuxJob({ ...spec, terminal: pty }),
+              });
+            } catch {
+              throw new LinuxJobRefusal(
+                "terminal-allocation-failed",
+                "terminal-allocation-failed",
+                true,
+              );
+            }
+            this.terminals.set(msg.terminalId, terminal);
+            return terminal.runtimeHandle!;
+          },
+        );
+        if (!terminal || this.stopping) {
+          await terminal?.kill();
+          throw new Error("terminal_runtime_start_interrupted");
+        }
+        connection.peer.write({ type: "created", terminalId: msg.terminalId });
+        void this.watchExit(msg.terminalId, terminal);
+      } catch {
+        if (terminal) {
+          await terminal.kill().catch(() => {});
+          if (terminal.workloadEmpty) {
+            terminal.dispose();
+            this.terminals.delete(msg.terminalId);
+          } else {
+            this.draining = true;
+            this.jobOwner?.setDraining(true);
+          }
+        }
+        connection.peer.write({
+          type: "create_error",
+          terminalId: msg.terminalId,
+          message: "terminal_runtime_refused",
+        });
+      }
       return;
     }
     // A program named by the opener execs in place of the shell — the pinned test shell
@@ -454,7 +548,15 @@ export class TerminalHost {
   }
 
   private async watchExit(terminalId: string, terminal: PtyTerminal): Promise<void> {
-    const { exitCode } = await terminal.exited;
+    let exitCode: number | null;
+    try {
+      ({ exitCode } = await terminal.exited);
+    } catch {
+      this.draining = true;
+      this.jobOwner?.setDraining(true);
+      this.log("warn", "terminal_empty_unproven", { terminalId });
+      return;
+    }
     if (this.terminals.get(terminalId) !== terminal) return; // already forgotten
     // The record is RETAINED (alive:false + exit code) until a transport acknowledges it with
     // `kill`: an attached transport does so once the hub has the `exited`; a transport that

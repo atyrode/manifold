@@ -14,7 +14,7 @@ import {
   type Delivery,
   type InstallOutcome,
 } from "./install.ts";
-import { packPlugin } from "./pack.ts";
+import { packPlugin, type PackResult } from "./pack.ts";
 
 /**
  * `dev` — the inner loop for an out-of-tree plugin author (issue #319): pack, install, watch,
@@ -78,6 +78,7 @@ interface DevOptions {
   readonly deliver?: Delivery;
   readonly hardened?: boolean;
   readonly packDir: string;
+  readonly build?: (packDir: string) => Promise<readonly (PackResult & { readonly id: string })[]>;
 }
 
 /**
@@ -91,22 +92,35 @@ async function cycle(
 ): Promise<CycleReport> {
   const started = performance.now();
   const plugins: CycleEntry[] = [];
-  for (const plugin of await discoverPlugins(options.root)) {
-    const file = join(options.packDir, `${plugin.id}.manifold-plugin.json`);
-    const packed = await packPlugin(plugin.dir, file, { shared: options.hardened !== true });
-    if (last.get(plugin.id) === packed.sha256) {
-      plugins.push({ id: plugin.id, sha256: packed.sha256, outcome: "unchanged" });
+  let bundles: readonly (PackResult & { readonly id: string })[];
+  if (options.build) {
+    bundles = await options.build(options.packDir);
+  } else {
+    const built: (PackResult & { readonly id: string })[] = [];
+    for (const plugin of await discoverPlugins(options.root)) {
+      const file = join(options.packDir, `${plugin.id}.manifold-plugin.json`);
+      built.push({
+        id: plugin.id,
+        ...(await packPlugin(plugin.dir, file, { shared: options.hardened !== true })),
+      });
+    }
+    bundles = built;
+  }
+  // A failed compiler must leave every installed part at its previous version.
+  for (const packed of bundles) {
+    if (last.get(packed.id) === packed.sha256) {
+      plugins.push({ id: packed.id, sha256: packed.sha256, outcome: "unchanged" });
       continue;
     }
     const report = await installBundle({
-      source: file,
+      source: packed.file,
       hub: options.hub,
       sha256: packed.sha256,
       hardened: options.hardened === true,
       ...(options.deliver === undefined ? {} : { deliver: options.deliver }),
     });
-    last.set(plugin.id, packed.sha256);
-    plugins.push({ id: plugin.id, sha256: packed.sha256, outcome: report.outcome });
+    last.set(packed.id, packed.sha256);
+    plugins.push({ id: packed.id, sha256: packed.sha256, outcome: report.outcome });
   }
   return { cycle: number, plugins, ms: Math.round(performance.now() - started) };
 }

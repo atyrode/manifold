@@ -8,7 +8,7 @@
  * container: every operation degrades to a no-op.
  */
 
-import type { MachineSummary } from "@manifold/protocol";
+import type { MachineSummary, TerminalExecution } from "@manifold/protocol";
 
 /** Minimal Storage ref so tests can inject fakes (including throwing ones). */
 export interface MachineStorage {
@@ -33,20 +33,30 @@ export function browserMachineStorage(): MachineStorage {
 }
 
 /**
- * Picks the machine for an implicit terminal restart:
- * the remembered machine when it is online, else the sole online machine,
- * else null so the server's selection rule remains authoritative.
+ * Picks the remembered eligible machine, otherwise the sole eligible online machine.
+ * Unconfined launches require an affirmative owner declaration. Governed requests may
+ * reach retained older owners, but still require native admission at the hub and owner.
  */
 export function chooseDefaultMachine(
   machines: readonly MachineSummary[],
   lastUsedId: string | null,
+  execution: TerminalExecution,
 ): MachineSummary | null {
-  const online = machines.filter((machine) => machine.online);
-  if (lastUsedId !== null) {
-    const remembered = online.find((machine) => machine.id === lastUsedId);
-    if (remembered !== undefined) return remembered;
+  let sole: MachineSummary | null = null;
+  let ambiguous = false;
+  for (const machine of machines) {
+    if (!machine.online) continue;
+    if (
+      execution === "unconfined"
+        ? machine.terminalExecution !== "unconfined"
+        : machine.terminalExecution === "unconfined"
+    )
+      continue;
+    if (machine.id === lastUsedId) return machine;
+    if (sole === null) sole = machine;
+    else ambiguous = true;
   }
-  return online.length === 1 ? (online[0] ?? null) : null;
+  return ambiguous ? null : sole;
 }
 
 /** Remembers the picked machine for a container; silently a no-op on storage faults. */

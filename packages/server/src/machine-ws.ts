@@ -4,12 +4,13 @@ import {
   DIAL_PING_INTERVAL_MS,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
   MAX_SESSION_FRAME_BYTES,
+  MAX_JOB_INSTALL_FRAME_BYTES,
   PROTOCOL_VERSION,
   ServerToAgentMessageSchema,
-  supportsGovernedJobs,
   type AgentMessage,
   type RuntimeDeps,
   type ServerToAgentMessage,
+  type TerminalExecution,
 } from "@manifold/protocol";
 import { ServiceError, type AuthService } from "./auth.ts";
 import type { Logger } from "./log.ts";
@@ -39,20 +40,25 @@ interface PendingMachineConnection {
 }
 
 export class LiveMachineChannel implements MachineChannel {
+  private outboundQueueLimit = MAX_SESSION_FRAME_BYTES;
   constructor(
     readonly machineId: string,
     readonly tokenPrincipalId: string,
     readonly socket: RawSocket,
-    readonly protocolVersion: number,
     readonly terminalHostId: string | null,
+    readonly terminalExecution: TerminalExecution | null,
   ) {}
 
   send(message: ServerToAgentMessage): boolean {
-    if (message.type === "job_command" && !supportsGovernedJobs(this.protocolVersion)) {
-      return false;
-    }
     const payload = JSON.stringify(ServerToAgentMessageSchema.parse(message));
-    if (this.socket.bufferedAmount + Buffer.byteLength(payload) > MAX_SESSION_FRAME_BYTES) {
+    const install = message.type === "job_command" && message.command.type === "install";
+    if (this.socket.bufferedAmount === 0) this.outboundQueueLimit = MAX_SESSION_FRAME_BYTES;
+    if (install) this.outboundQueueLimit = 2 * MAX_JOB_INSTALL_FRAME_BYTES;
+    const frameLimit = install ? MAX_JOB_INSTALL_FRAME_BYTES : MAX_SESSION_FRAME_BYTES;
+    if (
+      Buffer.byteLength(payload) > frameLimit ||
+      this.socket.bufferedAmount + Buffer.byteLength(payload) > this.outboundQueueLimit
+    ) {
       this.socket.close(1013, "machine outbound queue overflow");
       return false;
     }
@@ -265,9 +271,8 @@ export class MachineGateway {
       return;
     }
     if (!MACHINE_PROTOCOL_COMPAT_VERSIONS.has(message.protocolVersion)) {
-      // The compatibility set preserves long-lived terminal agents across additive changes
-      // and refuses both pre-reset and unknown-newer wires. Feature gates below keep those
-      // accepted older agents from seeing frames they cannot parse.
+      // Refuse incompatible transports before reconciliation. Their independent owners
+      // keep the workloads until a compatible transport reconnects.
       this.logger.warn("machine_version_rejected", {
         agentProtocolVersion: message.protocolVersion,
         serverProtocolVersion: PROTOCOL_VERSION,
@@ -275,14 +280,6 @@ export class MachineGateway {
         machineName: message.name,
       });
       connection.socket.close(4409, "protocol version mismatch");
-      return;
-    }
-    if (message.jobOwner !== undefined && !supportsGovernedJobs(message.protocolVersion)) {
-      this.logger.warn("machine_job_protocol_rejected", {
-        agentProtocolVersion: message.protocolVersion,
-        serverProtocolVersion: PROTOCOL_VERSION,
-      });
-      connection.socket.close(4002, "job protocol unsupported");
       return;
     }
 
@@ -315,8 +312,8 @@ export class MachineGateway {
       authenticated.id,
       authenticated.tokenPrincipalId,
       connection.socket,
-      message.protocolVersion,
       terminalHostId,
+      message.terminalExecution ?? null,
     );
     const older = this.activeByMachine.get(authenticated.id) ?? null;
     const advertised = new Set<string>();
@@ -376,11 +373,7 @@ export class MachineGateway {
     }
     this.activeByMachine.set(authenticated.id, channel);
     this.broker.setMachineOnline(channel);
-    this.jobs?.online(
-      channel,
-      supportsGovernedJobs(channel.protocolVersion) ? message.jobOwner : undefined,
-      this.serverEpoch,
-    );
+    this.jobs?.online(channel, message.jobOwner, this.serverEpoch);
     if (older !== null) {
       this.lastSupersededAtByToken.set(authenticated.tokenPrincipalId, now);
       this.logger.info("machine_superseded", { machineId: authenticated.id });
@@ -413,10 +406,6 @@ export class MachineGateway {
   private dispatch(channel: LiveMachineChannel, message: AgentMessage): void {
     switch (message.type) {
       case "job_event":
-        if (!supportsGovernedJobs(channel.protocolVersion)) {
-          channel.close(4002, "job protocol unsupported");
-          return;
-        }
         try {
           this.jobs?.event(channel, message.event);
         } catch {
@@ -486,15 +475,19 @@ export class MachineGateway {
     return this.activeByMachine.has(machineId);
   }
 
+  getTerminalExecution(machineId: string): TerminalExecution | null {
+    return this.activeByMachine.get(machineId)?.terminalExecution ?? null;
+  }
+
   /**
    * `core.machines.drain`'s mechanism, through the same door the roster asks liveness of:
-   * the plugin declares `{ isOnline, drain }` and nothing about sockets. The broker owns the
-   * latch and the owner round trip; this is the door, not a second implementation.
+   * the plugin asks only about admission, never sockets. The broker owns the latch
+   * and owner round trip; this is the door, not a second implementation.
    */
   drain(machineId: string, draining: boolean): Promise<DrainOutcome> {
     this.store.setMachineDraining(machineId, draining);
     const channel = this.activeByMachine.get(machineId);
-    if (channel !== undefined && supportsGovernedJobs(channel.protocolVersion)) {
+    if (channel !== undefined) {
       channel.send({ type: "job_command", command: { type: "drain", draining } });
     }
     return this.broker.drain(machineId, draining);

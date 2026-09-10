@@ -149,7 +149,7 @@ function shellWorker(): Plugin {
     configResolved(config) {
       outDir = resolve(config.root, config.build.outDir);
     },
-    closeBundle() {
+    writeBundle() {
       const shipped = readdirSync(outDir, { recursive: true, withFileTypes: true })
         .filter((entry) => entry.isFile())
         .map(

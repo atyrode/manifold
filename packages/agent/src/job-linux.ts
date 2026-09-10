@@ -11,13 +11,20 @@ import {
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
+import type { Socket } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
+import { MachineLocationSchema, MachineOperationSchema } from "@manifold/protocol";
+import {
+  ownsWorkloadLoopbackConnection,
+  ownsWorkloadLoopbackListener,
+} from "./job-listener-proof.ts";
 import type { HeldDirectory } from "./job-files.ts";
 import {
   fdMountId,
   safeComponent,
   privateSocketPair,
   privateByteFile,
+  isSealedByteFile,
   type PrivateSocketPair,
 } from "./job-files.ts";
 
@@ -38,23 +45,42 @@ export interface LinuxJobOutput {
   channel: "stdout" | "stderr";
   bytes: Uint8Array;
 }
+/** Private PTY handoff. The runtime installs its meter before any process can emit bytes. */
+export interface LinuxJobTerminal {
+  pty: Bun.Terminal;
+  onOutput(bytes: Uint8Array): void;
+  setOutputHandler(handler: (bytes: Uint8Array) => void): void;
+}
 export interface LinuxJobSpec {
   /** Pinned, trusted bubblewrap supporting --bind-fd and --ro-bind-fd. */
   bubblewrapFd: number;
   artifactFd: number;
+  /** Reviewed manifest runtime alias, never a caller path. */
+  executableRuntimeTool?: string;
+  /** Sealed anonymous readonly files, separate from runtime closures and output writers. */
+  inputFiles?: readonly LinuxJobBind[];
   argv: readonly string[];
   runtime: readonly LinuxJobBind[];
   locations: readonly LinuxJobBind[];
+  /** Exact directory mount selected by the reviewed operation, not a caller path. */
+  workingDirectory?: string;
+  environment?: Readonly<Record<string, string>>;
   outputs: readonly LinuxJobBind[];
   /** Dedicated, empty cgroup-v2 delegation with memory and pids enabled. */
   delegatedCgroup: HeldDirectory;
   limits: LinuxJobLimits;
+  /** Only native instance-service admission may remove the elapsed-time deadline. */
+  persistentService?: true;
+  /** Service peers must be accepted before the owner releases any application bytes. */
+  providesService?: boolean;
   network: "none" | "host";
   bidirectional: boolean;
   /** Exposes only /sys/fs/cgroup/workloads; the enforcing ancestor is never mounted. */
   nestedCgroup?: boolean;
   /** A private, already-authorized connected socket; inherited as fd 3, no other authority. */
   contextFd?: number;
+  /** Owned by the native terminal host; never supplied by a workload or wire caller. */
+  terminal?: LinuxJobTerminal;
   /** Must consume synchronously. Throwing terminates the workload, rather than losing bytes. */
   onOutput?: (output: LinuxJobOutput) => void;
 }
@@ -80,6 +106,10 @@ export interface LinuxJobHandle {
   result: Promise<LinuxJobResult>;
   /** Borrowed owner-only delegation for separately admitted child jobs. Never mounted. */
   childDelegation: HeldDirectory;
+  /** Kernel-backed live workload ownership, never a connectivity probe. */
+  ownsLoopbackListener(port: number): boolean;
+  /** Exact retained TCP peer, including accepted socket ownership in this workload. */
+  ownsLoopbackConnection(socket: Socket): boolean;
   /** Close retained group handles after result and child/output sealing; idempotent. */
   release(): void;
   input(bytes: Uint8Array): Promise<void>;
@@ -90,6 +120,10 @@ export class LinuxJobRefusal extends Error {
   constructor(
     readonly code: string,
     message = code,
+    /** Positive startup cleanup observation, never inferred merely from a rejected promise. */
+    readonly workloadEmpty = false,
+    /** Retains startup containment when emptiness is unknown; resolves only after empty proof. */
+    readonly cleanup?: () => Promise<void>,
   ) {
     super(message);
     this.name = "LinuxJobRefusal";
@@ -97,6 +131,11 @@ export class LinuxJobRefusal extends Error {
 }
 function refuse(code: string): never {
   throw new LinuxJobRefusal(code);
+}
+/** Called only before spawn or after positively observing an empty execution cgroup. */
+function observedStartRefusal(error: unknown): LinuxJobRefusal {
+  const code = error instanceof LinuxJobRefusal ? error.code : "sandbox-start-failed";
+  return new LinuxJobRefusal(code, code, true);
 }
 const CGROUP2_SUPER_MAGIC = 0x63677270;
 const FRAME_BYTES = 64 * 1024;
@@ -182,7 +221,7 @@ function inspectMountDirectory(
 /** Exporting FDs invalidates output-writer closure, even across disjoint declared mounts.
  * The byte-only job context uses read/write, not ancillary SCM_RIGHTS messages.
  * sendmsg/sendmmsg and io_uring are deliberately unavailable, including for host networking. */
-function jobSeccompFilter(): Buffer {
+function jobSeccompFilter(providesService: boolean): Buffer {
   const arch = process.arch === "x64" ? 0xc000003e : process.arch === "arm64" ? 0xc00000b7 : null;
   if (arch === null) refuse("unsupported-seccomp-architecture");
   const denied = process.arch === "x64" ? [46, 307, 425, 426, 427] : [211, 269, 425, 426, 427];
@@ -194,6 +233,19 @@ function jobSeccompFilter(): Buffer {
   ];
   if (process.arch === "x64") instructions.push([0x35, 0, 1, 0x40000000], [0x06, 0, 0, 0x00050001]); // reject x32
   for (const syscall of denied) instructions.push([0x15, 0, 1, syscall], [0x06, 0, 0, 0x00050001]); // ERRNO(EPERM)
+  if (providesService) {
+    // Deferred accept needs request bytes before the owner can prove the accepted peer.
+    // Make the optimization unsupported rather than weakening that ownership boundary.
+    // Both supported kernel ABIs truncate these integer arguments to their low 32 bits.
+    instructions.push(
+      [0x15, 0, 5, process.arch === "x64" ? 54 : 208],
+      [0x20, 0, 0, 24],
+      [0x15, 0, 3, 6], // IPPROTO_TCP
+      [0x20, 0, 0, 32],
+      [0x15, 0, 1, 9], // TCP_DEFER_ACCEPT
+      [0x06, 0, 0, 0x0005005f], // ERRNO(EOPNOTSUPP)
+    );
+  }
   instructions.push([0x06, 0, 0, 0x7fff0000]); // ALLOW
   const bytes = Buffer.alloc(instructions.length * 8);
   for (const [index, instruction] of instructions.entries()) {
@@ -224,16 +276,18 @@ export function preflightLinuxJobRuntime(): void {
 export function preflightLinuxJob(spec: LinuxJobSpec): number {
   preflightLinuxJobRuntime();
   if (
-    ![
-      spec.limits.memoryBytes,
-      spec.limits.processes,
-      spec.limits.outputBytes,
-      spec.limits.timeoutMs,
-    ].every((value) => Number.isSafeInteger(value) && value > 0) ||
+    ![spec.limits.memoryBytes, spec.limits.processes, spec.limits.outputBytes].every(
+      (value) => Number.isSafeInteger(value) && value > 0,
+    ) ||
+    !Number.isSafeInteger(spec.limits.timeoutMs) ||
+    spec.limits.timeoutMs < 0 ||
+    (spec.limits.timeoutMs === 0) !== (spec.persistentService === true) ||
     spec.limits.processes >= Number.MAX_SAFE_INTEGER ||
     spec.limits.timeoutMs > 2_147_483_647
   )
     refuse("invalid-limits");
+  if (!MachineOperationSchema.shape.environment.safeParse(spec.environment).success)
+    refuse("invalid-fixed-environment");
   if (spec.network !== "none" && spec.network !== "host") refuse("unsupported-network");
   if (
     spec.argv.length > 1024 ||
@@ -242,9 +296,17 @@ export function preflightLinuxJob(spec: LinuxJobSpec): number {
     )
   )
     refuse("invalid-fixed-argv");
-  const binds = [...spec.runtime, ...spec.locations, ...spec.outputs];
+  const inputFiles = spec.inputFiles ?? [];
+  const binds = [...spec.runtime, ...spec.locations, ...spec.outputs, ...inputFiles];
   if (binds.length > 256) refuse("too-many-mounts");
   for (const bind of binds) destination(bind.target);
+  if (
+    spec.workingDirectory !== undefined &&
+    !spec.locations.some(
+      (bind) => bind.target === spec.workingDirectory && fstatSync(bind.fd).isDirectory(),
+    )
+  )
+    refuse("invalid-working-directory");
   for (let i = 0; i < binds.length; i++) {
     const a = binds[i]!;
     if (
@@ -260,6 +322,35 @@ export function preflightLinuxJob(spec: LinuxJobSpec): number {
       refuse("overlapping-mounts");
   }
   if (spec.runtime.some((bind) => bind.writable)) refuse("writable-runtime");
+  if (
+    [...spec.runtime, ...spec.locations, ...spec.outputs].some(
+      (bind) => bind.target === "/inputs" || bind.target.startsWith("/inputs/"),
+    )
+  )
+    refuse("reserved-input-target");
+  let inputBytes = 0;
+  for (const bind of inputFiles) {
+    const namedInput = /^\/inputs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(bind.target);
+    const privateHomeInput = MachineLocationSchema.shape.guestPath.safeParse(bind.target).success;
+    if (
+      bind.writable ||
+      (!namedInput && !privateHomeInput) ||
+      !fstatSync(bind.fd).isFile() ||
+      !isSealedByteFile(bind.fd)
+    )
+      refuse("unsafe-input-file");
+    inputBytes += fstatSync(bind.fd).size;
+  }
+  if (inputBytes > 65536) refuse("input-file-byte-limit");
+  if (spec.executableRuntimeTool !== undefined) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(spec.executableRuntimeTool))
+      refuse("invalid-runtime-executable");
+    const matches = spec.runtime.filter(
+      (bind) => bind.target === `/runtime/bin/${spec.executableRuntimeTool}`,
+    );
+    if (matches.length !== 1 || matches[0]!.writable) refuse("runtime-executable-unavailable");
+    executable(matches[0]!.fd);
+  }
   executable(spec.bubblewrapFd);
   executable(spec.artifactFd);
   const mountBudget = { entries: 0 };
@@ -447,14 +538,20 @@ export async function recoverLinuxJobs(delegatedRoot: HeldDirectory): Promise<vo
 
 /** No shell, no PATH executable lookup, no inherited environment, no unconstrained fallback. */
 export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle> {
-  const namedOutputCapacity = preflightLinuxJob(spec);
-  const seccompFd = privateByteFile(jobSeccompFilter());
+  let namedOutputCapacity: number;
+  let seccompFd: number;
+  try {
+    namedOutputCapacity = preflightLinuxJob(spec);
+    seccompFd = privateByteFile(jobSeccompFilter(spec.providesService === true));
+  } catch (error) {
+    throw observedStartRefusal(error);
+  }
   let groups: Groups;
   try {
     groups = createGroups(spec.delegatedCgroup, spec.limits);
   } catch (error) {
     closeSync(seccompFd);
-    throw error;
+    throw observedStartRefusal(error);
   }
   let control: PrivateSocketPair;
   let report: PrivateSocketPair;
@@ -470,7 +567,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   } catch (error) {
     closeSync(seccompFd);
     closeGroups(groups);
-    throw error;
+    throw observedStartRefusal(error);
   }
   const gate = control.socket;
   const metadata = report.socket;
@@ -497,12 +594,10 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     "--unshare-uts",
     "--as-pid-1",
     "--die-with-parent",
-    "--new-session",
+    ...(spec.terminal ? [] : ["--new-session"]),
     "--cap-drop",
     "ALL",
     "--clearenv",
-    "--chdir",
-    "/",
     "--block-fd",
     "4",
     "--info-fd",
@@ -515,7 +610,11 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     "/dev",
     "--dir",
     "/job",
-    "--dir",
+    "--size",
+    String(spec.limits.memoryBytes),
+    "--perms",
+    "0700",
+    "--tmpfs",
     "/home/job",
     "--setenv",
     "HOME",
@@ -542,7 +641,11 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   ]) {
     args.push("--perms", "0700", "--dir", path!, "--setenv", name!, path!);
   }
+  for (const [name, value] of Object.entries(spec.environment ?? {}))
+    args.push("--setenv", name, value);
   if (spec.network === "none") args.push("--unshare-net");
+  if (spec.terminal)
+    args.push("--setenv", "TERM", "xterm-256color", "--setenv", "COLORTERM", "truecolor");
   if (spec.contextFd !== undefined) args.push("--setenv", "MANIFOLD_JOB_CONTEXT_FD", "3");
   function bind(fd: number, target: string, writable: boolean): void {
     const slot = stdio.length;
@@ -554,31 +657,11 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   bind(spec.artifactFd, "/job/artifact", false);
   for (const mount of [...spec.runtime, ...spec.locations, ...spec.outputs])
     bind(mount.fd, mount.target, mount.writable);
-  if (spec.nestedCgroup) {
-    bind(groups.workloads.fd, "/sys/fs/cgroup/workloads", true);
-    args.push("--setenv", "MANIFOLD_JOB_CGROUP_ROOT", "/sys/fs/cgroup/workloads");
-  }
-  args.push("--remount-ro", "/", "--", "/job/artifact", ...spec.argv);
-  let child: ChildProcess;
-  try {
-    child = spawn(`/proc/${process.pid}/fd/${spec.bubblewrapFd}`, args, {
-      stdio,
-      env: {},
-      cwd: "/",
-    });
-  } catch (error) {
-    gate.destroy();
-    metadata.destroy();
-    closeGroups(groups);
-    throw error;
-  } finally {
-    closeSync(control.childFd);
-    closeSync(report.childFd);
-    closeSync(seccompFd);
-  }
-  const exited = childExit(child);
-  // Avoid an unhandled rejection while the launch gate is being attached.
-  void exited.catch(() => {});
+  let child: { readonly pid?: number | undefined; kill(signal: "SIGKILL"): unknown };
+  let exited: Promise<{ code: number | null; signal: string | null }>;
+  let stdin: ChildProcess["stdin"] = null;
+  let stdout: ChildProcess["stdout"] = null;
+  let stderr: ChildProcess["stderr"] = null;
   let outputBytes = 0;
   let sequence = 0;
   let reason: LinuxJobResult["reason"] = "exited";
@@ -587,12 +670,97 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   let terminating = false;
   const terminalFailure = Promise.withResolvers<never>();
   void terminalFailure.promise.catch(() => {});
-  const stdin = child.stdin!;
+  function admitOutput(bytes: Uint8Array): boolean {
+    outputBytes += bytes.byteLength;
+    if (reason === "output-limit" || reason === "output-consumer") return false;
+    if (outputBytes > spec.limits.outputBytes - namedOutputCapacity) {
+      terminate("output-limit");
+      return false;
+    }
+    return true;
+  }
+  spec.terminal?.setOutputHandler((bytes) => {
+    if (!admitOutput(bytes)) return;
+    try {
+      spec.terminal!.onOutput(bytes);
+    } catch {
+      terminate("output-consumer");
+    }
+  });
+  const inputFds: number[] = [];
+  try {
+    for (const file of spec.inputFiles ?? []) {
+      // --ro-bind-fd resolves a host pathname and cannot mount an anonymous memfd.
+      // Give --ro-bind-data its own offset-zero descriptor so repeated launches never
+      // consume the caller's cursor; bubblewrap closes it after making a readonly bind.
+      const fd = openSync(`/proc/self/fd/${file.fd}`, constants.O_RDONLY);
+      inputFds.push(fd);
+      const slot = stdio.length;
+      stdio.push(fd);
+      args.push("--perms", "0400", "--ro-bind-data", String(slot), file.target);
+    }
+    if (spec.nestedCgroup) {
+      bind(groups.workloads.fd, "/sys/fs/cgroup/workloads", true);
+      args.push("--setenv", "MANIFOLD_JOB_CGROUP_ROOT", "/sys/fs/cgroup/workloads");
+    }
+    args.push(
+      "--chdir",
+      spec.workingDirectory ?? "/home/job",
+      "--remount-ro",
+      "/",
+      "--",
+      spec.executableRuntimeTool === undefined
+        ? "/job/artifact"
+        : `/runtime/bin/${spec.executableRuntimeTool}`,
+      ...spec.argv,
+    );
+    if (spec.terminal) {
+      const proc = Bun.spawn([`/proc/${process.pid}/fd/${spec.bubblewrapFd}`, ...args], {
+        stdio: [
+          "inherit",
+          "inherit",
+          "inherit",
+          ...stdio.slice(3).map((fd) => (typeof fd === "number" ? fd : "ignore")),
+        ],
+        terminal: spec.terminal.pty,
+        env: {},
+        cwd: "/",
+      });
+      child = proc;
+      exited = proc.exited.then((code) => ({
+        code: proc.signalCode ? null : code,
+        signal: proc.signalCode ?? null,
+      }));
+    } else {
+      const proc = spawn(`/proc/${process.pid}/fd/${spec.bubblewrapFd}`, args, {
+        stdio,
+        env: {},
+        cwd: "/",
+      });
+      child = proc;
+      exited = childExit(proc);
+      stdin = proc.stdin;
+      stdout = proc.stdout;
+      stderr = proc.stderr;
+    }
+  } catch (error) {
+    gate.destroy();
+    metadata.destroy();
+    closeGroups(groups);
+    throw observedStartRefusal(error);
+  } finally {
+    closeSync(control.childFd);
+    closeSync(report.childFd);
+    closeSync(seccompFd);
+    for (const fd of inputFds) closeSync(fd);
+  }
+  // Avoid an unhandled rejection while the launch gate is being attached.
+  void exited.catch(() => {});
   function terminate(next: LinuxJobResult["reason"]): void {
     if (settled || terminating) return;
     terminating = true;
     if (reason === "exited") reason = next;
-    stdin.destroy();
+    stdin?.destroy();
     try {
       writeControl(groups.root, "cgroup.kill", "1");
       void awaitEmpty(groups.root).catch(terminalFailure.reject);
@@ -602,16 +770,11 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
       terminalFailure.reject(error);
     }
   }
-  stdin.on("error", () => terminate("input-error"));
+  stdin?.on("error", () => terminate("input-error"));
   function consume(channel: "stdout" | "stderr", stream: Readable): Promise<void> {
     const { promise, resolve } = Promise.withResolvers<void>();
     stream.on("data", (bytes: Buffer) => {
-      if (reason === "output-limit" || reason === "output-consumer") return;
-      if (outputBytes + bytes.length > spec.limits.outputBytes - namedOutputCapacity) {
-        terminate("output-limit");
-        return;
-      }
-      outputBytes += bytes.length;
+      if (!admitOutput(bytes)) return;
       for (let offset = 0; offset < bytes.length; offset += FRAME_BYTES) {
         try {
           spec.onOutput?.({
@@ -632,7 +795,9 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     stream.once("close", resolve);
     return promise;
   }
-  const drained = Promise.all([consume("stdout", child.stdout!), consume("stderr", child.stderr!)]);
+  const drained = spec.terminal
+    ? Promise.resolve([])
+    : Promise.all([consume("stdout", stdout!), consume("stderr", stderr!)]);
   try {
     if (!child.pid) refuse("supervisor-spawn-failed");
     writeControl(groups.supervisor, "cgroup.procs", String(child.pid));
@@ -651,17 +816,30 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
       /* Still kill the namespace owner below. */
     }
     child.kill("SIGKILL");
-    try {
+    let cleaned = false;
+    const cleanup = async (): Promise<void> => {
+      if (cleaned) return;
+      writeControl(groups.root, "cgroup.kill", "1");
+      child.kill("SIGKILL");
       await awaitEmpty(groups.root);
+      if (cleaned) return;
+      cleaned = true;
       gate.destroy();
-    } finally {
-      closeGroups(groups);
       metadata.destroy();
+      closeGroups(groups);
+    };
+    try {
+      await cleanup();
+    } catch (failure) {
+      const code = failure instanceof LinuxJobRefusal ? failure.code : "startup-empty-unproven";
+      throw new LinuxJobRefusal(code, code, false, cleanup);
     }
-    throw error;
+    throw observedStartRefusal(error);
   }
   const startedAt = Date.now();
-  const timer = setTimeout(() => terminate("timeout"), spec.limits.timeoutMs);
+  const timer = spec.persistentService
+    ? undefined
+    : setTimeout(() => terminate("timeout"), spec.limits.timeoutMs);
   const result = (async (): Promise<LinuxJobResult> => {
     try {
       const exit = await Promise.race([exited, terminalFailure.promise]);
@@ -692,17 +870,35 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     } finally {
       settled = true;
       clearTimeout(timer);
-      stdin.destroy();
+      stdin?.destroy();
       gate.destroy();
       metadata.destroy();
     }
   })();
   let inputPending = false;
   let released = false;
-  if (!spec.bidirectional) stdin.end();
+  if (!spec.bidirectional) stdin?.end();
   return {
     result,
     childDelegation: groups.children,
+    ownsLoopbackListener(port) {
+      return (
+        !released &&
+        !settled &&
+        !terminating &&
+        spec.network === "host" &&
+        ownsWorkloadLoopbackListener(groups, port)
+      );
+    },
+    ownsLoopbackConnection(socket) {
+      return (
+        !released &&
+        !settled &&
+        !terminating &&
+        spec.network === "host" &&
+        ownsWorkloadLoopbackConnection(groups, socket)
+      );
+    },
     release() {
       if (released) return;
       if (!settled || counter(readControl(groups.root, "cgroup.events"), "populated") !== 0)
@@ -711,7 +907,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
       closeGroups(groups);
     },
     input(bytes) {
-      if (!spec.bidirectional || settled || stdin.destroyed || stdin.writableEnded)
+      if (!stdin || !spec.bidirectional || settled || stdin.destroyed || stdin.writableEnded)
         return Promise.reject(new LinuxJobRefusal("input-closed"));
       if (inputPending || bytes.byteLength > FRAME_BYTES)
         return Promise.reject(new LinuxJobRefusal("input-backpressure"));
@@ -725,7 +921,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
       return promise;
     },
     endInput() {
-      stdin.end();
+      stdin?.end();
     },
     cancel() {
       if (!settled) terminate("cancelled");

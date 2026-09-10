@@ -3,6 +3,7 @@ import {
   PROTOCOL_VERSION,
   SERVER_TO_AGENT_MESSAGE_TYPES,
   ServerToAgentMessageSchema,
+  MAX_JOB_INSTALL_FRAME_BYTES,
   defaultRuntime,
   reconnectDelayMs,
   type AgentMessage,
@@ -85,6 +86,8 @@ const KNOWN_SERVER_TYPES: Record<string, true> = Object.fromEntries(
  */
 function classifyServerFrame(data: unknown): ClassifiedFrame {
   if (typeof data !== "string") return { kind: "malformed", detail: "non-text frame" };
+  if (Buffer.byteLength(data) > MAX_JOB_INSTALL_FRAME_BYTES)
+    return { kind: "malformed", detail: "machine frame exceeds byte limit" };
   let raw: unknown;
   try {
     raw = JSON.parse(data);
@@ -451,6 +454,9 @@ export class Agent {
       protocolVersion: PROTOCOL_VERSION,
       terminals: status.terminals,
       terminalHostId: seat.terminalHostId,
+      ...(status.terminalExecution === undefined
+        ? {}
+        : { terminalExecution: status.terminalExecution }),
       ...(this.jobOwnerLink ? { jobOwner: this.jobOwnerLink.identity } : {}),
     });
     this.helloSent = socket;

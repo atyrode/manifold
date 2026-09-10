@@ -1,8 +1,13 @@
 import type { JobScheduleTiming } from "@manifold/plugin";
 import { createHash } from "node:crypto";
-import { canonicalJobJson, JobRequestSchema, type JobRequest } from "@manifold/protocol";
+import {
+  canonicalJobJson,
+  JobRequestSchema,
+  type JobRequest,
+  type JobInvocationEdge,
+} from "@manifold/protocol";
 import type { ServerStore } from "./stores.ts";
-import { JobOutputRuleSchema, type JobOutputRule } from "../../protocol/src/jobs.ts";
+import { JobOutputRuleSchema } from "../../protocol/src/jobs.ts";
 
 export const JOB_SCHEDULE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS job_schedules (
@@ -54,24 +59,6 @@ export interface JobOccurrence {
   state: string;
   reason: string | null;
 }
-type Target = Pick<
-  JobRequest,
-  "machineId" | "pluginId" | "operationId" | "installationRevision" | "artifactSha256"
->;
-export interface InvocationResource {
-  locationId: string;
-  revision: string;
-  access: "read" | "write" | "create";
-}
-export interface JobInvocationEdge {
-  caller: Target;
-  callee: Target;
-  resources: InvocationResource[];
-  outputs: JobOutputRule[];
-  maxDepth: number;
-  maxConcurrency: number;
-  aggregate: JobRequest["limits"];
-}
 export interface JobInvocationSpec {
   /** Loaded by the hub from its durable job row, never supplied by the child. */
   parent: { request: JobRequest; state: string; ownerId: string; ownerGeneration: number };
@@ -80,7 +67,7 @@ export interface JobInvocationSpec {
   child: JobRequest;
   /** Exact explicit edge from current policy, not an edge claimed by the invoking workload. */
   edge: JobInvocationEdge;
-  resources: InvocationResource[];
+  resources: JobInvocationEdge["resources"];
   now: number;
 }
 interface InvocationRow {
@@ -91,7 +78,7 @@ interface InvocationRow {
   active: number;
 }
 const limitKeys = ["timeoutMs", "memoryBytes", "processes", "outputBytes"] as const;
-function target(request: JobRequest): Target {
+function target(request: JobRequest): JobInvocationEdge["caller"] {
   const { machineId, pluginId, operationId, installationRevision, artifactSha256 } = request;
   return { machineId, pluginId, operationId, installationRevision, artifactSha256 };
 }

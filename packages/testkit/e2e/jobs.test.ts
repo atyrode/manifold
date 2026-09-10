@@ -107,11 +107,10 @@ test.skipIf(!realBackend)(
         ].join("\n"),
       );
       const sha256 = createHash("sha256").update(executable).digest("hex");
-      writeFileSync(join(state, "artifacts", `${sha256}-${sha256}`), executable, { mode: 0o500 });
       const machine = MachineHalfSchema.parse({
         artifacts: {
           [`linux-${process.arch}`]: {
-            url: "https://example.invalid/fixture",
+            bundleFile: "worker",
             sha256,
             format: "raw",
             entry: ["fixture"],
@@ -160,6 +159,7 @@ test.skipIf(!realBackend)(
               machine,
             },
             files: {
+              worker: executable.toString("base64"),
               "web.js": Buffer.from(
                 `export default { id: ${JSON.stringify(PLUGIN)}, panels: {} };`,
               ).toString("base64"),
@@ -244,12 +244,13 @@ test.skipIf(!realBackend)(
         }),
         { mode: 0o600 },
       );
-      owner = Bun.spawn([process.execPath, "packages/agent/src/main.ts", "--job-owner"], {
+      owner = Bun.spawn([process.execPath, "packages/agent/src/main.ts", "--terminal-host"], {
         cwd: REPO,
         env: {
           ...process.env,
           MANIFOLD_JOB_OWNER_SOCKET: socket,
           MANIFOLD_JOB_OWNER_CONFIG: config,
+          MANIFOLD_TERMINAL_HOST_SOCKET: `${socket}.terminal`,
         },
         stdin: "ignore",
         stdout: "ignore",
@@ -260,7 +261,7 @@ test.skipIf(!realBackend)(
         () => {
           if (child.exitCode !== null)
             throw new Error(`real job owner exited before readiness: ${child.exitCode}`);
-          return existsSync(socket);
+          return existsSync(socket) && existsSync(`${socket}.terminal`);
         },
         20_000,
         20,
@@ -270,6 +271,7 @@ test.skipIf(!realBackend)(
         machineToken: enrollment.machineToken,
         name: "jobs-acceptance",
         env: { MANIFOLD_JOB_OWNER_SOCKET: socket },
+        existingHost: { process: owner, socketPath: `${socket}.terminal` },
       });
       expect(agent.machineId).toBe(machineId);
       await waitFor(

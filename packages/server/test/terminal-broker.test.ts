@@ -1,9 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  PROTOCOL_VERSION,
   ROOT_TILE_ID,
   ServerToAgentMessageSchema,
-  TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION,
   type Container,
   type ServerToAgentMessage,
 } from "@manifold/protocol";
@@ -20,8 +18,8 @@ class FakeMachine implements MachineChannel {
 
   constructor(
     readonly machineId: string,
-    readonly protocolVersion: number = PROTOCOL_VERSION,
     readonly terminalHostId: string | null = null,
+    readonly terminalExecution: MachineChannel["terminalExecution"] = "unconfined",
   ) {}
 
   send(message: ServerToAgentMessage): boolean {
@@ -36,13 +34,13 @@ class FakeMachine implements MachineChannel {
 
 /**
  * Everything a broker needs to be asked for a terminal, up to and including the opener's
- * channel, with the one machine online at `agentProtocolVersion`. The composition it builds
+ * channel, with one machine online under its declared execution policy. The composition it builds
  * is where a terminal lives: the container IS the home, so the opener's own container is the
  * one the terminal is homed in and every terminal-scoped message it sends is addressed to
  * the right room. A canvas opener would be homed in a solo composition it is not joined to,
  * which is the lifecycle rule under test elsewhere, not the plumbing under test here.
  */
-function brokerSetup(agentProtocolVersion: number = PROTOCOL_VERSION) {
+function brokerSetup(terminalExecution: MachineChannel["terminalExecution"] = "unconfined") {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -81,7 +79,7 @@ function brokerSetup(agentProtocolVersion: number = PROTOCOL_VERSION) {
     ),
   );
   const enrollment = auth.enrollMachine("fake", root);
-  const machine = new FakeMachine(enrollment.machine.id, agentProtocolVersion);
+  const machine = new FakeMachine(enrollment.machine.id, null, terminalExecution);
   broker.setMachineOnline(machine);
   const socket = new FakeSocket();
   const opener = new SessionChannel(runtime.newId(), socket, root, container.id, "c1");
@@ -889,72 +887,33 @@ describe("TerminalBroker pending-open room residency", () => {
   });
 });
 
-describe("TerminalBroker program and env (issue #192)", () => {
-  test("the opener's env rides under the fixed keys, and the program rides verbatim", () => {
-    const setup = brokerSetup();
-    setup.broker.open(setup.opener, {
-      type: "terminal_open",
-      elementId: "terminal-program",
-      cols: 80,
-      rows: 24,
-      placement: "tile",
-      program: { argv: ["/bin/sh", "-c", "printf CMD_OK"] },
-      env: { CODE_TEST: "x" },
-    });
-    const create = setup.machine.sent.find((message) => message.type === "create");
-    if (create === undefined || create.type !== "create") throw new Error("missing create");
-    expect(create.program).toEqual({ argv: ["/bin/sh", "-c", "printf CMD_OK"] });
-    // The four minted keys are the LAST written: they read after the opener's own, so an
-    // opener's key can never shadow them even before the schema refuses the prefix.
-    expect(Object.keys(create.env)).toEqual([
-      "CODE_TEST",
-      "MANIFOLD_URL",
-      "MANIFOLD_CONTAINER",
-      "MANIFOLD_TOKEN",
-    ]);
-    expect(create.env.CODE_TEST).toBe("x");
-    expect(create.env.MANIFOLD_CONTAINER).toBe(setup.container.id);
-    setup.store.close();
-  });
-
-  test("a program aimed at a pre-v22 agent is refused unsupported, and nothing is minted", () => {
-    /*
-      The agent parses `create` strictly, so a `program` key would be a malformed frame to
-      an agent that predates it — it would drop its socket and the opener would learn
-      nothing. The broker refuses BEFORE the token is minted or the deadline armed, so the
-      refusal leaves no pending open, no principal and no frame on the machine channel.
-    */
-    const setup = brokerSetup(TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION - 1);
-    setup.broker.open(setup.opener, {
-      type: "terminal_open",
-      elementId: "terminal-too-new",
-      cols: 80,
-      rows: 24,
-      placement: "tile",
-      program: { argv: ["/bin/sh"] },
-    });
-    expect(setup.machine.sent).toEqual([]);
-    expect(setup.broker.hasPendingOpenForContainer(setup.container.id)).toBe(false);
-    const errors = setup.socket.messages().filter((message) => message.type === "error");
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatchObject({ code: "unsupported", ref: "terminal-too-new" });
-
-    // The same agent still births a plain shell: absence of the field IS the old gesture.
-    setup.socket.clear();
-    setup.broker.open(setup.opener, {
-      type: "terminal_open",
-      elementId: "terminal-plain",
-      cols: 80,
-      rows: 24,
-      placement: "tile",
-      env: { CODE_TEST: "x" },
-    });
-    const create = setup.machine.sent.find((message) => message.type === "create");
-    if (create === undefined || create.type !== "create") throw new Error("missing create");
-    expect("program" in create).toBe(false);
-    expect(create.env.CODE_TEST).toBe("x");
-    setup.store.close();
-  });
+describe("TerminalBroker execution policy", () => {
+  test.each(["governed", null] as const)(
+    "runtime-free shells and programs are refused when execution is %s",
+    (execution) => {
+      const setup = brokerSetup(execution);
+      for (const program of [undefined, { argv: ["/bin/sh"] as [string] }]) {
+        setup.socket.clear();
+        setup.broker.open(setup.opener, {
+          type: "terminal_open",
+          elementId: "unbound",
+          cols: 80,
+          rows: 24,
+          placement: "tile",
+          ...(program === undefined ? {} : { program }),
+        });
+        expect(setup.machine.sent).toEqual([]);
+        expect(setup.socket.messages()).toMatchObject([
+          {
+            type: "error",
+            code: execution === "governed" ? "forbidden" : "unsupported",
+            ref: "unbound",
+          },
+        ]);
+      }
+      setup.store.close();
+    },
+  );
 });
 
 /**
@@ -966,7 +925,7 @@ describe("TerminalBroker drain (issue #278)", () => {
   /** A machine whose agent names an owner and answers drains under the test's control. */
   function drainSetup() {
     const setup = brokerSetup();
-    const machine = new FakeMachine(setup.machine.machineId, PROTOCOL_VERSION, "host-A");
+    const machine = new FakeMachine(setup.machine.machineId, "host-A");
     setup.broker.setMachineOnline(machine);
     machine.clear();
     const answer = (

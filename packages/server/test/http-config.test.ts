@@ -32,6 +32,36 @@ describe("bounded HTTP request bodies", () => {
   });
 });
 
+test("external supervision cannot silently bypass native bootstrap", () => {
+  const cwd = temporaryDirectory();
+  const common = {
+    MANIFOLD_OWNER_KEY: "f".repeat(64),
+    MANIFOLD_LOCAL_AGENT_SUPERVISION: "external",
+  };
+  expect(() => loadConfig(common, cwd)).toThrow(
+    "external local supervision requires native local bootstrap",
+  );
+  expect(() =>
+    loadConfig(
+      {
+        ...common,
+        MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE: join(cwd, "owner.json"),
+        MANIFOLD_SPAWN_AGENT: "0",
+      },
+      cwd,
+    ),
+  ).toThrow("requires local agent spawning");
+  expect(() =>
+    loadConfig(
+      {
+        ...common,
+        MANIFOLD_LOCAL_AGENT_SUPERVISION: "external-typo",
+      },
+      cwd,
+    ),
+  ).toThrow("must be external");
+});
+
 describe("server bind policy", () => {
   test("defaults to loopback and honors an explicit MANIFOLD_BIND", () => {
     const cwd = temporaryDirectory();

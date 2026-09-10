@@ -2,18 +2,23 @@
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BunPlugin } from "bun";
+import { open } from "node:fs/promises";
+import { constants } from "node:fs";
+import { verifyBundledArtifacts } from "./artifacts.ts";
 import {
+  ISOLATE_MAX_ARTIFACT_BYTES,
   PLUGIN_BUNDLE_FORMAT,
   PLUGIN_BUNDLE_SERVER_FILE,
   PLUGIN_BUNDLE_STYLES_FILE,
   PluginBundleSchema,
   PluginManifestSchema,
+  machineArtifacts,
   type PluginBundle,
 } from "@manifold/protocol";
 
 /** Packing changes linkage, not trust: only the installer chooses `install.hardened`. */
 export interface PackOptions {
-  /** Resolve floor imports through the host registry; false preserves self-contained kit guests. */
+  /** Resolve browser floor imports through the host registry; server processes stay self-contained. */
   readonly shared?: boolean;
 }
 
@@ -168,10 +173,47 @@ export async function packPlugin(
       `${manifestFile}: ${PLUGIN_BUNDLE_STYLES_FILE} is beside the manifest but entry.styles is not true`,
     );
   }
+  for (const artifact of machineArtifacts(manifest.machine)) {
+    const name = artifact.bundleFile;
+    if (name === undefined) continue;
+    if (
+      name === PLUGIN_BUNDLE_SERVER_FILE ||
+      name === manifest.entry.web ||
+      name === PLUGIN_BUNDLE_STYLES_FILE
+    )
+      throw new Error(`machine member collides with a plugin entry: ${name}`);
+    if (Object.hasOwn(files, name)) continue;
+    const file = await open(join(pluginDir, name), constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = await file.stat();
+      if (
+        !stat.isFile() ||
+        stat.size <= 0 ||
+        stat.size > artifact.maxBytes ||
+        4 * Math.ceil(stat.size / 3) > ISOLATE_MAX_ARTIFACT_BYTES
+      )
+        throw new Error(`machine member exceeds its byte budget or is not a regular file: ${name}`);
+      const bytes = Buffer.alloc(stat.size + 1);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const result = await file.read(bytes, offset, bytes.length - offset, null);
+        if (!result.bytesRead) break;
+        offset += result.bytesRead;
+      }
+      if (offset !== stat.size) throw new Error(`machine member changed while packing: ${name}`);
+      files[name] = bytes.subarray(0, offset).toString("base64");
+    } finally {
+      await file.close();
+    }
+  }
   const builtAgainst: Record<string, string> = {};
-  const plugins = options.shared === false ? [] : [await sharedModules(pluginDir, builtAgainst)];
+  const plugins =
+    manifest.entry.web === undefined || options.shared === false
+      ? []
+      : [await sharedModules(pluginDir, builtAgainst)];
   if (manifest.entry.server === true) {
-    const source = await build(`${pluginDir}/server.ts`, "bun", plugins);
+    // A hardened server has no browser realm or shared-module registry.
+    const source = await build(`${pluginDir}/server.ts`, "bun", []);
     files[PLUGIN_BUNDLE_SERVER_FILE] = Buffer.from(source, "utf8").toString("base64");
   }
   if (manifest.entry.web !== undefined) {
@@ -184,7 +226,10 @@ export async function packPlugin(
     files,
     ...(options.shared === false ? {} : { builtAgainst }),
   });
+  await verifyBundledArtifacts(bundle);
   const bytes = new TextEncoder().encode(JSON.stringify(bundle));
+  if (bytes.byteLength > ISOLATE_MAX_ARTIFACT_BYTES)
+    throw new Error("plugin bundle exceeds the artifact byte budget");
   await Bun.write(outFile, bytes);
   const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
   return { file: outFile, sha256, bytes: bytes.byteLength };

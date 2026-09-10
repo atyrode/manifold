@@ -1,5 +1,10 @@
 import type { EmitEvent } from "@manifold/plugin";
-import { identityColorFor, type MachineDrainStatus, type ManifoldRef } from "@manifold/protocol";
+import {
+  identityColorFor,
+  type MachineDrainStatus,
+  type ManifoldRef,
+  type TerminalExecution,
+} from "@manifold/protocol";
 import { machinesManifest } from "./index.ts";
 
 /**
@@ -45,6 +50,7 @@ interface MachinesCtx {
   };
   readonly machines: {
     isOnline(machineId: string): boolean;
+    getTerminalExecution(machineId: string): TerminalExecution | null;
     /**
      * Closes or reopens a machine's terminal admission and asks its PTY owner what it holds
      * (#278). The latch is the floor's and persisted; this plugin only turns the answer into
@@ -85,6 +91,7 @@ interface MachineSummary extends MachineDot {
   readonly revoked?: boolean;
   /** OMITTED when admission is open, for the same reason: a v23 reader's row is unchanged. */
   readonly draining?: boolean;
+  readonly terminalExecution?: TerminalExecution;
 }
 
 /** Either a published result, or a refusal the door turns into a `refused` denial. */
@@ -135,16 +142,16 @@ export const machinesHandlers = {
     */
     const withdrawn = ctx.store.revokedMachineIds();
     return {
-      machines: ctx.store.listMachines().map((machine) => ({
-        ...dot(machine),
-        online: ctx.machines.isOnline(machine.id),
-        /*
-          OMITTED when live rather than `false`, because the wire says absent ≡ not revoked
-          and one representation of "normal" is what keeps a v19 reader's parse exact.
-        */
-        ...(withdrawn.has(machine.id) ? { revoked: true } : {}),
-        ...(machine.draining ? { draining: true } : {}),
-      })),
+      machines: ctx.store.listMachines().map((machine) => {
+        const terminalExecution = ctx.machines.getTerminalExecution(machine.id);
+        return {
+          ...dot(machine),
+          online: ctx.machines.isOnline(machine.id),
+          ...(terminalExecution === null ? {} : { terminalExecution }),
+          ...(withdrawn.has(machine.id) ? { revoked: true } : {}),
+          ...(machine.draining ? { draining: true } : {}),
+        };
+      }),
     };
   },
 

@@ -1,5 +1,18 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
+import {
+  ServiceAuthoritySubjectSchema,
+  ServiceBindingSchema,
+  ServiceConfigurationSchema,
+  ServiceReadArgsSchema,
+  ServiceInvokeArgsSchema,
+  ServiceReplySchema,
+} from "./services.ts";
+import { ServiceTunnelFrameSchema } from "./services.ts";
+import { JobResourceBindingsSchema, JobResourceInventorySchema } from "./job-resources.ts";
+
+/** Native owner RPC changes independently of hub, session, and transport releases. */
+export const JOB_OWNER_PROTOCOL_VERSION = 29;
 
 const id = z.string().min(1).max(128);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -7,7 +20,7 @@ const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const component = z
   .string()
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
-  .refine((v) => v !== "." && v !== "..");
+  .refine((v) => ![".", "..", "__proto__", "constructor", "prototype"].includes(v));
 const locationComponent = z
   .string()
   .regex(/^[A-Za-z0-9.][A-Za-z0-9._-]{0,127}$/)
@@ -18,6 +31,10 @@ export const JobLimitsSchema = z.strictObject({
   processes: z.number().int().positive().max(4096),
   outputBytes: z.number().int().positive().max(1073741824),
 });
+/** Zero is reserved for native instance-service admission, never ordinary execution. */
+const executionLimits = JobLimitsSchema.extend({
+  timeoutMs: JobLimitsSchema.shape.timeoutMs.or(z.literal(0)),
+});
 export const MachineArtifactSchema = z
   .strictObject({
     url: z
@@ -26,7 +43,9 @@ export const MachineArtifactSchema = z
       .refine((v) => {
         const url = new URL(v);
         return url.protocol === "https:" && url.username === "" && url.password === "";
-      }),
+      })
+      .optional(),
+    bundleFile: component.optional(),
     sha256: hash,
     format: z.enum(["raw", "zip", "tar.gz"]),
     entry: z.array(component).min(1).max(16),
@@ -35,26 +54,46 @@ export const MachineArtifactSchema = z
     maxExpandedBytes: z.number().int().positive().max(1073741824),
     maxMembers: z.number().int().positive().max(10000),
     files: z
-      .record(component, z.strictObject({ entry: z.array(component).min(1).max(16), sha256: hash }))
+      .record(
+        component,
+        z.strictObject({
+          entry: z.array(component).min(1).max(16),
+          sha256: hash,
+          relativeTarget: z.array(locationComponent).min(1).max(16).optional(),
+        }),
+      )
       .refine((files) => Object.keys(files).length <= 8)
       .optional(),
+  })
+  .refine((artifact) => (artifact.url === undefined) !== (artifact.bundleFile === undefined), {
+    message: "An artifact must name exactly one HTTPS url or bundleFile",
   })
   .refine(
     (artifact) => artifact.format !== "raw" || Object.keys(artifact.files ?? {}).length === 0,
   );
-export const MachineLocationSchema = z.strictObject({
-  anchor: z.enum(["home", "data", "state", "cache", "config", "runtime"]),
-  components: z.array(locationComponent).min(1).max(16),
-  revision: id,
-  kind: z.enum(["file", "directory"]).optional(),
-  guestPath: z
-    .string()
-    .max(4096)
-    .regex(
-      /^\/home\/job\/(?!\.{1,2}(?:\/|$))[A-Za-z0-9._-]{1,128}(?:\/(?!\.{1,2}(?:\/|$))[A-Za-z0-9._-]{1,128}){0,15}$/,
-    )
-    .optional(),
-});
+export const MachineLocationSchema = z
+  .strictObject({
+    anchor: z.enum(["home", "data", "state", "cache", "config", "runtime"]),
+    components: z.array(locationComponent).min(1).max(16),
+    revision: id,
+    kind: z.enum(["file", "directory"]).optional(),
+    /** Native retained storage is namespaced by plugin beneath the private owner store. */
+    managed: z.literal(true).optional(),
+    guestPath: z
+      .string()
+      .max(4096)
+      .regex(
+        /^\/home\/job\/(?!\.{1,2}(?:\/|$))[A-Za-z0-9._-]{1,128}(?:\/(?!\.{1,2}(?:\/|$))[A-Za-z0-9._-]{1,128}){0,15}$/,
+      )
+      .optional(),
+  })
+  .refine(
+    (location) =>
+      !location.managed || (location.anchor === "state" && location.kind === "directory"),
+    {
+      message: "Managed storage requires a state directory",
+    },
+  );
 export const MachineInputFieldSchema = z.strictObject({
   type: z.enum(["string", "number", "boolean"]),
   required: z.boolean(),
@@ -66,39 +105,176 @@ export const MachineInputFieldSchema = z.strictObject({
     .optional(),
 });
 const boundOutputName = component.refine((name) => name !== "stdout" && name !== "stderr");
-export const MachineOperationSchema = z.strictObject({
-  argv: z
-    .array(
-      z.union([
-        z.strictObject({ literal: z.string().max(4096) }),
-        z.strictObject({ input: component }),
-      ]),
-    )
-    .max(64),
-  input: z.record(component, MachineInputFieldSchema).refine((v) => Object.keys(v).length <= 64),
-  runtimeTools: z.array(component).max(8),
-  locations: z
-    .array(z.strictObject({ locationId: id, access: z.enum(["read", "write", "create"]) }))
-    .max(32),
-  outputs: z.array(boundOutputName).max(32),
-  network: z.enum(["none", "host"]),
-  limits: JobLimitsSchema,
-  stdin: z.boolean(),
+const argumentCondition = z.strictObject({
+  input: component,
+  equals: z.union([z.string().max(65536), z.number().finite(), z.boolean()]),
 });
-export const MachineHalfSchema = z.strictObject({
-  artifacts: z.partialRecord(
-    z.enum(["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]),
-    MachineArtifactSchema,
-  ),
-  operations: z
-    .record(id, MachineOperationSchema)
-    .refine((v) => Object.keys(v).length > 0 && Object.keys(v).length <= 64),
-  locations: z.record(id, MachineLocationSchema).refine((v) => Object.keys(v).length <= 64),
-});
+const inputFile = z
+  .strictObject({
+    input: component.optional(),
+    literal: z.string().max(65536).optional(),
+    generated: z.literal("service-bearer").optional(),
+    homePath: z.array(locationComponent).min(1).max(16).optional(),
+    jsonValues: z
+      .array(
+        z.strictObject({
+          path: z
+            .array(z.union([component, z.literal("*")]))
+            .min(1)
+            .max(16),
+          serviceId: component,
+          value: z.enum(["url", "bearer"]),
+        }),
+      )
+      .max(64)
+      .optional(),
+  })
+  .refine(
+    (file) =>
+      [file.input, file.literal, file.generated].filter((value) => value !== undefined).length ===
+      1,
+    {
+      message: "An input file needs exactly one declared source",
+    },
+  );
+export const MachineOperationSchema = z
+  .strictObject({
+    argv: z
+      .array(
+        z.union([
+          z.strictObject({ literal: z.string().max(4096), when: argumentCondition.optional() }),
+          z.strictObject({ input: component, when: argumentCondition.optional() }),
+        ]),
+      )
+      .max(64),
+    input: z.record(component, MachineInputFieldSchema).refine((v) => Object.keys(v).length <= 64),
+    runtimeTools: z.array(component).max(8),
+    executable: z.strictObject({ runtimeTool: component }).optional(),
+    /** Fixed reviewed values cannot replace native transport or private-home bindings. */
+    environment: z
+      .record(
+        z
+          .string()
+          .regex(/^[A-Z_][A-Z0-9_]{0,63}$/)
+          .refine(
+            (name) =>
+              !["HOME", "PATH", "TMPDIR"].includes(name) &&
+              !name.startsWith("MANIFOLD_") &&
+              !name.startsWith("XDG_"),
+          ),
+        z
+          .string()
+          .max(4096)
+          .refine((value) => !value.includes("\0")),
+      )
+      .refine(
+        (values) =>
+          Object.keys(values).length <= 64 &&
+          new TextEncoder().encode(JSON.stringify(values)).length <= 65536,
+      )
+      .optional(),
+    inputFiles: z
+      .record(component, inputFile)
+      .refine((files) => Object.keys(files).length <= 64)
+      .optional(),
+    services: z.array(ServiceBindingSchema).max(16).optional(),
+    providesService: z.boolean().optional(),
+    workingDirectory: z.strictObject({ locationId: id }).optional(),
+    locations: z
+      .array(z.strictObject({ locationId: id, access: z.enum(["read", "write", "create"]) }))
+      .max(32),
+    outputs: z.array(boundOutputName).max(32),
+    network: z.enum(["none", "host"]),
+    limits: JobLimitsSchema,
+    stdin: z.boolean(),
+  })
+  .refine(
+    (operation) =>
+      !operation.executable || operation.runtimeTools.includes(operation.executable.runtimeTool),
+    {
+      message: "The executable must name a required runtimeTool",
+    },
+  )
+  .refine(
+    (operation) =>
+      Object.values(operation.inputFiles ?? {}).every(
+        (file) =>
+          (file.input === undefined ||
+            (operation.input[file.input]?.type === "string" &&
+              operation.input[file.input]?.required === true)) &&
+          (file.generated === undefined ||
+            (operation.providesService === true && file.jsonValues === undefined)) &&
+          (file.jsonValues ?? []).every((value) =>
+            operation.services?.some((binding) => binding.serviceId === value.serviceId),
+          ),
+      ),
+    {
+      message: "Input file sources and service values must be declared by the operation",
+    },
+  )
+  .refine(
+    (operation) =>
+      operation.argv.every(
+        (slot) => !slot.when || operation.input[slot.when.input]?.type === typeof slot.when.equals,
+      ),
+    {
+      message: "Conditional arguments must compare a declared input of the same type",
+    },
+  )
+  .refine((operation) => new Set(operation.runtimeTools).size === operation.runtimeTools.length, {
+    message: "Runtime tools must be unique",
+  })
+  .refine(
+    (operation) =>
+      !operation.workingDirectory ||
+      operation.locations.some(
+        (location) => location.locationId === operation.workingDirectory!.locationId,
+      ),
+    {
+      message: "The working directory must name a declared location",
+    },
+  );
+const platformArtifacts = z.partialRecord(
+  z.enum(["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]),
+  MachineArtifactSchema,
+);
+export const MachineHalfSchema = z
+  .strictObject({
+    artifacts: platformArtifacts,
+    tools: z
+      .record(component, platformArtifacts)
+      .refine((tools) => Object.keys(tools).length <= 8)
+      .optional(),
+    operations: z
+      .record(id, MachineOperationSchema)
+      .refine((v) => Object.keys(v).length > 0 && Object.keys(v).length <= 64),
+    locations: z.record(id, MachineLocationSchema).refine((v) => Object.keys(v).length <= 64),
+    requiresResourceBindings: z.boolean().optional(),
+  })
+  .refine(
+    (machine) =>
+      Object.values(machine.operations).every((operation) =>
+        operation.locations.every(
+          (location) =>
+            !machine.locations[location.locationId]?.managed || location.access !== "create",
+        ),
+      ),
+    {
+      message:
+        "Managed storage is provisioned by native ownership; operations request read or write",
+    },
+  );
 export type MachineHalf = z.infer<typeof MachineHalfSchema>;
 export type MachineArtifact = z.infer<typeof MachineArtifactSchema>;
 export type MachineOperation = z.infer<typeof MachineOperationSchema>;
 export type MachineLocation = z.infer<typeof MachineLocationSchema>;
+/** All declared layouts, including managed tools; callers still select the owner platform. */
+export function machineArtifacts(machine: MachineHalf | undefined): MachineArtifact[] {
+  return [
+    ...Object.values(machine?.artifacts ?? {}),
+    ...Object.values(machine?.tools ?? {}).flatMap((platforms) => Object.values(platforms)),
+  ];
+}
 export const JobCredentialSchema = z.strictObject({
   principalId: id,
   tokenId: id.nullable(),
@@ -123,17 +299,94 @@ export const JobRequestSchema = z.strictObject({
   pluginId: id,
   installationRevision: id,
   artifactSha256: hash,
+  resourceBindings: JobResourceBindingsSchema.optional(),
   input: z
     .record(component, z.union([z.string().max(65536), z.number().finite(), z.boolean()]))
-    .refine((v) => Object.keys(v).length <= 64 && JSON.stringify(v).length <= 65536),
-  limits: JobLimitsSchema,
+    .refine(
+      (v) =>
+        Object.keys(v).length <= 64 &&
+        new TextEncoder().encode(JSON.stringify(v)).byteLength <= 65536,
+    ),
+  limits: executionLimits,
   outputs: z.array(JobOutputBindingSchema).max(30),
   parent: z.strictObject({ parentJobId: id, invocationId: id }).nullable(),
   credential: JobCredentialSchema,
   traceId: id,
   requestDigest: hash,
+  /** Native terminal admission only; never accepted by ordinary job execute input. */
+  terminal: z.strictObject({ terminalId: id, terminalHostId: id, containerId: id }).optional(),
+  /** Native durable-service admission only; no browser or worker can choose this origin. */
+  service: z
+    .strictObject({ serviceId: component, revision: component, policySha256: hash })
+    .optional(),
 });
 export type JobRequest = z.infer<typeof JobRequestSchema>;
+
+export const JobInvocationTargetSchema = JobRequestSchema.pick({
+  machineId: true,
+  pluginId: true,
+  operationId: true,
+  installationRevision: true,
+  artifactSha256: true,
+});
+export const JobInvocationEdgeSchema = z.strictObject({
+  caller: JobInvocationTargetSchema,
+  callee: JobInvocationTargetSchema,
+  resources: z
+    .array(
+      z.strictObject({
+        locationId: z.string().min(1).max(256),
+        revision: z.string().min(1).max(256),
+        access: z.enum(["read", "write", "create"]),
+      }),
+    )
+    .max(32),
+  outputs: z.array(JobOutputRuleSchema).max(30),
+  maxDepth: z.number().int().positive().max(64),
+  maxConcurrency: z.number().int().positive().max(4096),
+  aggregate: JobLimitsSchema,
+});
+export type JobInvocationEdge = z.infer<typeof JobInvocationEdgeSchema>;
+export const InspectJobInvocationsArgsSchema = z.strictObject({ machineId: id, pluginId: id });
+export const JobInvocationCandidateSchema = z.strictObject({
+  serviceId: id,
+  revision: id,
+  operationIds: z.array(id),
+  policySha256: hash,
+  caller: JobInvocationTargetSchema,
+  callee: JobInvocationTargetSchema,
+  resources: JobInvocationEdgeSchema.shape.resources,
+  callerLimits: JobLimitsSchema,
+  calleeLimits: JobLimitsSchema,
+  locations: z.record(id, MachineLocationSchema),
+  outputNames: MachineOperationSchema.shape.outputs,
+  outputLocations: z.record(id, MachineLocationSchema),
+});
+export type JobInvocationCandidate = z.infer<typeof JobInvocationCandidateSchema>;
+export const InspectJobInvocationsResultSchema = z.strictObject({
+  machineId: id,
+  pluginId: id,
+  candidates: z.array(JobInvocationCandidateSchema),
+  unavailable: z.array(
+    z.strictObject({
+      caller: JobInvocationTargetSchema,
+      serviceId: id,
+      revision: id,
+      reason: z.string(),
+    }),
+  ),
+  edges: z.array(z.strictObject({ edge: JobInvocationEdgeSchema, enabled: z.boolean() })),
+});
+export type InspectJobInvocationsResult = z.infer<typeof InspectJobInvocationsResultSchema>;
+/** Pinned installation input, not executable, working-directory or environment authority. */
+export const TerminalRuntimeSchema = JobRequestSchema.pick({
+  pluginId: true,
+  operationId: true,
+  installationRevision: true,
+  artifactSha256: true,
+  input: true,
+}).extend({ resourceBindingDigest: hash });
+export type TerminalRuntime = z.infer<typeof TerminalRuntimeSchema>;
 export const JobPermitSchema = z.strictObject({
   permitId: id,
   jobId: id,
@@ -170,7 +423,7 @@ export const JobResultSchema = z.strictObject({
   usage: z
     .strictObject({ elapsedMs: count, memoryBytes: count, processes: count, outputBytes: count })
     .nullable(),
-  limits: JobLimitsSchema,
+  limits: executionLimits,
   outputs: z
     .array(
       z.strictObject({ outputId: id, name: component, sha256: hash, bytes: count, files: count }),
@@ -184,6 +437,17 @@ export const JobDescriptionSchema = z.strictObject({
   admissionPublicKey: z.string().startsWith("-----BEGIN PUBLIC KEY-----").max(4096),
   connected: z.boolean(),
   platforms: z.array(z.string()),
+  resources: JobResourceInventorySchema.optional(),
+  operations: z
+    .record(
+      id,
+      z.strictObject({
+        ready: z.boolean(),
+        reason: id.nullable(),
+        resourceBindingDigest: hash,
+      }),
+    )
+    .optional(),
   installation: z
     .strictObject({
       revision: id,
@@ -191,6 +455,7 @@ export const JobDescriptionSchema = z.strictObject({
       enabled: z.boolean(),
       ready: z.boolean(),
       purgeRequested: z.boolean(),
+      resourceBindings: JobResourceBindingsSchema.optional(),
     })
     .nullable(),
   retainedInstallations: z.array(z.strictObject({ revision: id, artifactSha256: hash })).max(128),
@@ -206,10 +471,18 @@ export const JobDescriptionSchema = z.strictObject({
 export type JobDescription = z.infer<typeof JobDescriptionSchema>;
 export const JobAuthoritySchema = z.strictObject({
   origin: z.discriminatedUnion("kind", [
-    z.strictObject({ kind: z.literal("action"), traceId: id }),
+    z.strictObject({ kind: z.literal("action"), traceId: id, door: id.nullable() }),
+    z.strictObject({
+      kind: z.literal("service"),
+      traceId: id,
+      door: id.nullable(),
+      serviceId: component,
+      revision: component,
+    }),
     z.strictObject({
       kind: z.literal("schedule"),
       traceId: id,
+      door: id.nullable(),
       scheduleId: id,
       revision: id,
       nominalAt: count,
@@ -217,6 +490,7 @@ export const JobAuthoritySchema = z.strictObject({
     z.strictObject({
       kind: z.literal("invocation"),
       traceId: id,
+      door: id.nullable(),
       parentJobId: id,
       invocationId: id,
     }),
@@ -251,9 +525,15 @@ export const PublicJobSchema = z.strictObject({
   pluginId: id,
   installationRevision: id,
   artifactSha256: hash,
+  inputDigest: hash,
+  resourceBindingDigest: hash,
   state: JobStateSchema,
+  /** Owner-confirmed cursor; null while disconnected, awaiting receipt or reconciliation. */
+  nextInputSeq: count.nullable(),
   result: JobResultSchema.nullable(),
   authority: JobAuthoritySchema,
+  terminal: JobRequestSchema.shape.terminal,
+  service: JobRequestSchema.shape.service,
 });
 export type PublicJob = z.infer<typeof PublicJobSchema>;
 
@@ -305,14 +585,33 @@ export const ListJobRunsResultSchema = z.strictObject({
 });
 export type ListJobRunsResult = z.infer<typeof ListJobRunsResultSchema>;
 export const JobOwnerSchema = z.strictObject({
+  protocolVersion: z.literal(JOB_OWNER_PROTOCOL_VERSION),
   ownerId: id,
   publicKey: z.string().min(1).max(4096),
   generation: count,
   platforms: z.array(z.enum(["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"])).max(4),
   inventoryDigest: hash,
+  resources: JobResourceInventorySchema.optional(),
+  /** Present only when this owner shares the native terminal host's supervision boundary. */
+  terminalHostId: id.optional(),
 });
 export type JobOwner = z.infer<typeof JobOwnerSchema>;
+/** The existing 16 MiB plugin JSON budget also bounds a single base64 machine member. */
+export const MAX_JOB_ARTIFACT_BASE64_BYTES = 16 * 1024 * 1024;
+export const MAX_JOB_INSTALL_METADATA_BYTES = 1024 * 1024;
+export const MAX_JOB_INSTALL_FRAME_BYTES =
+  MAX_JOB_ARTIFACT_BASE64_BYTES + MAX_JOB_INSTALL_METADATA_BYTES;
+export const JobArtifactDeliverySchema = z.strictObject({
+  bundleFile: component,
+  data: z.base64().max(MAX_JOB_ARTIFACT_BASE64_BYTES),
+});
+export type JobArtifactDelivery = z.infer<typeof JobArtifactDeliverySchema>;
 const chunk = { seq: count, data: z.base64().max(87384) };
+export const JobStartCommandSchema = z.strictObject({
+  type: z.literal("start"),
+  request: JobRequestSchema,
+  permit: JobPermitSchema,
+});
 export const JobCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("owner_challenge"),
@@ -321,18 +620,61 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
     machineId: id,
     admissionPublicKey: z.string().max(4096),
   }),
+  z
+    .strictObject({
+      type: z.literal("install"),
+      pluginId: id,
+      installationRevision: id,
+      machine: MachineHalfSchema,
+      artifactSha256: hash,
+      resourceBindings: JobResourceBindingsSchema.optional(),
+      action: z.enum(["disable", "purge"]).optional(),
+      artifact: JobArtifactDeliverySchema.optional(),
+      /** Additional exact bundle members, keyed by bundleFile; the primary member is not repeated. */
+      toolArtifacts: z
+        .record(component, z.base64().max(MAX_JOB_ARTIFACT_BASE64_BYTES))
+        .refine((files) => Object.keys(files).length <= 8)
+        .optional(),
+    })
+    .refine(
+      ({ artifact, toolArtifacts, ...metadata }) =>
+        new TextEncoder().encode(JSON.stringify(metadata)).byteLength +
+          (artifact === undefined ? 0 : artifact.bundleFile.length) +
+          Object.keys(toolArtifacts ?? {}).reduce((bytes, name) => bytes + name.length + 8, 0) +
+          256 <=
+        MAX_JOB_INSTALL_METADATA_BYTES,
+      { message: "install metadata exceeds the frame budget" },
+    )
+    .refine(
+      ({ artifact, toolArtifacts }) =>
+        (artifact?.data.length ?? 0) +
+          Object.values(toolArtifacts ?? {}).reduce((bytes, data) => bytes + data.length, 0) <=
+          MAX_JOB_ARTIFACT_BASE64_BYTES &&
+        (!artifact || !Object.hasOwn(toolArtifacts ?? {}, artifact.bundleFile)),
+      {
+        message: "install bundle members exceed the aggregate budget or repeat the primary",
+      },
+    ),
+  JobStartCommandSchema,
   z.strictObject({
-    type: z.literal("install"),
-    pluginId: id,
-    installationRevision: id,
-    machine: MachineHalfSchema,
-    artifactSha256: hash,
-    action: z.enum(["disable", "purge"]).optional(),
+    type: z.literal("input"),
+    jobId: id,
+    requestId: id,
+    ...chunk,
+    eof: z.boolean(),
   }),
-  z.strictObject({ type: z.literal("start"), request: JobRequestSchema, permit: JobPermitSchema }),
-  z.strictObject({ type: z.literal("input"), jobId: id, ...chunk, eof: z.boolean() }),
-  z.strictObject({ type: z.literal("cancel"), jobId: id, reason: id }),
-  z.strictObject({ type: z.literal("status"), jobId: id }),
+  // Supplying admission abandons an unknown start durably; it never retries execution.
+  z.strictObject({
+    type: z.literal("cancel"),
+    jobId: id,
+    reason: id,
+    admission: JobStartCommandSchema.omit({ type: true }).optional(),
+  }),
+  z.strictObject({
+    type: z.literal("status"),
+    jobId: id,
+    admission: JobStartCommandSchema.omit({ type: true }).optional(),
+  }),
   z.strictObject({ type: z.literal("drain"), draining: z.boolean() }),
   z.strictObject({
     type: z.literal("output_read"),
@@ -350,8 +692,85 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
     jobId: id.nullable(),
     reason: id.nullable(),
   }),
+  z.strictObject({
+    type: z.literal("service_authorized"),
+    subject: ServiceAuthoritySubjectSchema,
+    authorizationId: id,
+    allowed: z.boolean(),
+  }),
+  z.strictObject({
+    type: z.literal("input_authorized"),
+    jobId: id,
+    requestId: id,
+    allowed: z.boolean(),
+  }),
+  z.strictObject({
+    type: z.literal("configure_services"),
+    configuration: ServiceConfigurationSchema,
+  }),
+  z.strictObject({
+    type: z.literal("service_read"),
+    requestId: id,
+    ...ServiceReadArgsSchema.shape,
+  }),
+  z.strictObject({ type: z.literal("service_read_cancel"), requestId: id }),
+  z.strictObject({
+    type: z.literal("service_invoke"),
+    requestId: id,
+    ...ServiceInvokeArgsSchema.shape,
+  }),
+  z.strictObject({ type: z.literal("service_invoke_cancel"), requestId: id }),
+  z.strictObject({
+    type: z.literal("service_tunnel_open"),
+    channelId: id,
+    serviceId: component,
+    revision: component,
+    policySha256: hash,
+    operationIds: z.array(component).min(1).max(64),
+  }),
+  z.strictObject({
+    type: z.literal("service_tunnel_ready"),
+    channelId: id,
+    endpoint: z
+      .strictObject({
+        url: z.string().max(256),
+        bearer: z.string().regex(/^[A-Za-z0-9_-]{32,128}$/),
+      })
+      .nullable(),
+  }),
+  z.strictObject({ type: z.literal("service_tunnel_frame"), frame: ServiceTunnelFrameSchema }),
 ]);
 export type JobCommand = z.infer<typeof JobCommandSchema>;
+export const JobInstallationResourcesSchema = z.strictObject({
+  artifactAvailable: z.boolean(),
+  tools: z
+    .array(
+      z.strictObject({
+        alias: component,
+        managed: z.boolean(),
+        available: z.boolean(),
+        artifactSha256: hash.optional(),
+        entrySha256: hash.optional(),
+        reason: id.optional(),
+      }),
+    )
+    .max(520)
+    .refine((tools) => new Set(tools.map((tool) => tool.alias)).size === tools.length),
+  operations: z
+    .array(
+      z.strictObject({
+        operationId: id,
+        available: z.boolean(),
+        reason: id.optional(),
+      }),
+    )
+    .max(64)
+    .refine(
+      (operations) =>
+        new Set(operations.map((operation) => operation.operationId)).size === operations.length,
+    ),
+});
+export type JobInstallationResources = z.infer<typeof JobInstallationResourcesSchema>;
 export const JobEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("owner_proof"),
@@ -366,6 +785,7 @@ export const JobEventSchema = z.discriminatedUnion("type", [
     pluginId: id,
     installationRevision: id,
     artifactSha256: hash,
+    resources: JobInstallationResourcesSchema.optional(),
   }),
   z.strictObject({
     type: z.literal("state"),
@@ -393,6 +813,86 @@ export const JobEventSchema = z.discriminatedUnion("type", [
     input: JobRequestSchema.shape.input,
     outputs: JobRequestSchema.shape.outputs,
   }),
+  z.strictObject({
+    type: z.literal("service_authorize"),
+    subject: ServiceAuthoritySubjectSchema,
+    authorizationId: id,
+    serviceId: component,
+    revision: component,
+    policySha256: hash,
+    operationId: component,
+  }),
+  z.strictObject({
+    type: z.literal("service_read_result"),
+    requestId: id,
+    reply: ServiceReplySchema,
+  }),
+  z.strictObject({
+    type: z.literal("service_invoke_result"),
+    requestId: id,
+    reply: ServiceReplySchema,
+  }),
+  z.strictObject({
+    type: z.literal("resources"),
+    resources: JobResourceInventorySchema,
+  }),
+  z.strictObject({
+    type: z.literal("input_result"),
+    jobId: id,
+    requestId: id,
+    seq: count,
+    accepted: z.boolean(),
+    reason: id.nullable(),
+    nextInputSeq: count.nullable(),
+    stdinClosed: z.boolean(),
+  }),
+  z.strictObject({
+    type: z.literal("input_state"),
+    jobId: id,
+    requestDigest: hash,
+    ownerId: id,
+    ownerGeneration: count,
+    nextInputSeq: count,
+    stdinClosed: z.boolean(),
+  }),
+  z.strictObject({
+    type: z.literal("input_authorize"),
+    jobId: id,
+    requestId: id,
+    seq: count,
+    parentJobId: id.nullable(),
+  }),
+  z.strictObject({
+    type: z.literal("service_ready"),
+    jobId: id,
+    service: JobRequestSchema.shape.service.unwrap(),
+  }),
+  z.strictObject({
+    type: z.literal("workload_empty"),
+    jobId: id,
+    requestDigest: hash,
+    ownerId: id,
+    ownerGeneration: count,
+  }),
+  z.strictObject({
+    type: z.literal("service_tunnel_open"),
+    channelId: id,
+    jobId: id,
+    serviceId: component,
+    revision: component,
+    policySha256: hash,
+  }),
+  z.strictObject({
+    type: z.literal("service_tunnel_ready"),
+    channelId: id,
+    endpoint: z
+      .strictObject({
+        url: z.string().max(256),
+        bearer: z.string().regex(/^[A-Za-z0-9_-]{32,128}$/),
+      })
+      .nullable(),
+  }),
+  z.strictObject({ type: z.literal("service_tunnel_frame"), frame: ServiceTunnelFrameSchema }),
 ]);
 export type JobEvent = z.infer<typeof JobEventSchema>;
 export const JobFollowEventSchema = z.union([

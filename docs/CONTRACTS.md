@@ -207,6 +207,29 @@ throwaway server with `MANIFOLD_SPAWN_AGENT=1` owns BOTH processes, and the gate
 (`scripts/gate-lib.ts`, `teardownServer`) reaps both verified pidfile claims before removing
 the data directory. This destructive teardown is for owned test processes, never production.
 
+**Externally supervised native local bootstrap.** A Linux hub with
+`MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE=<normalized absolute private path>` receives the current
+job-admission public key from its composed jobs authority; the template cannot choose the
+machine ID, issuer key or owner state directory. Bootstrap authenticates the retained
+`agent.token` before deriving identity. With native configuration, an existing machine name
+without that credential refuses rather than implicitly rotating another owner's token.
+`MANIFOLD_LOCAL_AGENT_SUPERVISION=external` additionally prepares configuration only:
+`MANIFOLD_SPAWN_AGENT=1` still enables bootstrap, but no child process is started, no source
+entrypoint is executed, and the boot lock is released only after private configuration and
+supervision publication. `native_local_machine_id` records authenticated placement identity
+after successful configuration, not owner capability/readiness. The immutable reviewed
+definition and supervision marker survive restart; configuration drift, missing retained
+enrollment or a detached/external supervisor change refuses without replacing an incumbent.
+
+Detachment is not cgroup independence: a child in a hub service/container cgroup dies when
+that group is torn down. The provider-neutral `nixosModules.native` deployment therefore
+uses separate hub, retained terminal/native-owner and transport units. The owner has its
+own delegated cgroup, durable control/workload storage and no restart/stop dependency on
+the hub or transport. The packaged hub defaults to hub-only outside this declared profile;
+installed hardened plugin children use the package's real pinned Bun interpreter, not a
+re-executed compiled server. Exact setup, output-backing constraints and drain/atomic-shutdown
+maintenance are in [SELF-HOST.md](SELF-HOST.md#full-native-linux-nixos).
+
 **Cross-instance sharing adds NO variable, and that is a ruling rather than an omission.** An
 instance's ORIGIN — the identity a share is minted for, the string a `hello` declares and a
 host compares, the value a remote principal carries — is `MANIFOLD_PUBLIC_URL`'s origin and
@@ -2442,7 +2465,7 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
 
 ### Terminals over the session channel
 
-- `terminal_open { elementId, cols, rows, cwd?, machineId?, placement?, program?, env? }` →
+- `terminal_open { elementId, cols, rows, cwd?, machineId?, placement?, program?, runtime?, env? }` →
   server targets `machineId` when given (error `no_machine` if it is unknown or offline); without
   it the server falls back to the sole online machine (error `no_machine` when zero or several are
   online — clients with a picker, like the web menu, pass `machineId` explicitly).
@@ -2450,7 +2473,15 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
   rather than spawning a PTY no renderer would ever show: on a CANVAS the opener authors the
   element (`placement` absent ≡ `"element"`), and in a COMPOSITION the container places the
   leaf itself (`placement: "tile"`).
-- **A terminal may be born running a program** (issue #192, protocol v22). `program { argv }`
+- **Unconfined execution requires a positive owner declaration.** A machine reports
+  `terminalExecution: "unconfined" | "governed"` independently of job connectivity.
+  A runtime-free shell or program is refused `forbidden` on a governed owner and
+  `unsupported` when the declaration is absent. Neither an offline job channel nor an
+  older retained owner grants ambient execution. A governed terminal requires an admitted
+  plugin `runtime` binding; the native owner also rejects a runtime-free `create` before
+  idempotent lookup or spawning. Ordinary terminal pickers select only explicitly
+  unconfined machines, while runtime authoring uses governed-capable placement.
+- **An unconfined terminal may be born running a program** (issue #192, protocol v22). `program { argv }`
   names what the PTY execs in place of the machine's shell: `argv[0]` with `argv.slice(1)`,
   under the same PTY, the same lifecycle (snapshot, resize, `terminal_exited`, controller lease)
   and the same injected environment, so the first bytes a viewer sees are the program's own —
@@ -2465,12 +2496,8 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
   (`error { code:"forbidden" }`, the door's own message, on the opener's `ref`) refuses the
   program before any machine hears of it, and what the ledger records as authorized is what the
   terminal host is then asked to exec through the agent — neither socket has a second place
-  to present a different program. `cwd` is the shell's starting directory, never what runs. Two further
-  refusals are the opener's to handle: `error { code:"unsupported" }` when the target machine's
-  agent spoke a protocol older than v22 (`TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION`) — the server
-  never sends `create.program` to such an agent, whose strict parser would read it as a
-  malformed frame and drop its socket; the remedy is another machine or an upgraded agent — and
-  `error { code:"conflict" }` "terminal creation failed" when the terminal host could not exec `argv[0]`,
+  to present a different program. `cwd` is the shell's starting directory, never what runs.
+  The opener receives `error { code:"conflict" }` "terminal creation failed" when the terminal host could not exec `argv[0]`,
   whose named reason (`program not found: <argv0>`, `program not executable: <argv0>`) travels
   the machine channel as `create_error.message` and is logged on the machine, never on the
   session channel (machine diagnostics stay off the client wire, as for every create failure).
@@ -2574,7 +2601,7 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
 ## WS /ws/machine — machine channel (JSON; `data` fields base64)
 
 Handshake: agent sends `hello { token, name, agentVersion, protocolVersion, terminals,
-terminalHostId?, jobOwner? }`, where `terminals` advertises retained PTYs
+terminalHostId?, terminalExecution?, jobOwner? }`, where `terminals` advertises retained PTYs
 `{ terminalId, cols, rows, alive, seq, exitCode? }` (server-restart adoption).
 `terminalHostId` identifies the terminal host PROCESS, stable across transport replacements
 and fresh on host restart; it is not the machine token or a durable terminal checkpoint. An
@@ -2583,59 +2610,39 @@ disconnected; absence is equivalent to `null`. Such exited terminals are retaine
 the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` arrives).
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
 4403 revoked, 4409 version, or 4003 admission refused (incumbent continuity mismatch or
-supersession damp). Version acceptance is the
-`MACHINE_PROTOCOL_COMPAT_VERSIONS` set `{16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27}` (protocol/version.ts), NOT
-strict equality: agents are long-lived and survive server deploys, so every compatible agent
-version stays accepted (session/browser joins remain strictly current at protocol 27). An unchanged agent wire
-adds the new version to the set; a strictly additive-optional change also adds it when every old
-frame still parses and the absent-field default reproduces pre-bump semantics. Any other
-agent-wire change resets the set to the new version and requires a coordinated fleet
-restart — which v16 did: `terminal_event`, `TerminalInfo` and `MANIFOLD_CONTAINER` renamed
-the agent wire, so the set was reset to v16 alone and the fleet restarted together. v17 through
-v21 are the first ADDING case: the event plane is session-only, cross-instance
-sharing is a channel of its own (`/ws/instance`, its own `INSTANCE_PROTOCOL_COMPAT_VERSIONS`
-set), v19 reoriented a SESSION frame pair, v20 bounded credentials an agent is exempt from and
-v21 opened the discipline roster — so `AgentMessage` and `ServerToAgentMessage` are byte-identical
-across all five bumps (an agent never sees a `Principal`, and therefore never sees `origin`, nor
-any session frame). v22 is the SECOND adding case, the additive-optional one, applied for the
-first time: `create` gained an optional `program` (issue #192), whose absence is the
-byte-identical v21 frame and the same shell spawn, and the broker never sends the key to an agent
-whose `hello` named a protocol below `TERMINAL_PROGRAM_MIN_PROTOCOL_VERSION` (22) — the agent's
-`create` parser is strict, so the key would be a malformed frame to it — refusing the OPENER
-`unsupported` instead. A v16 agent therefore observes a v22 hub exactly as it observed a v21 one
-and keeps its terminals across any of those deploys; what it cannot do is run a program, and that
-is a named refusal rather than a lockout. Every
-rejection path emits a structured server log (`machine_version_rejected`,
-`machine_rejected`, `terminal_program_unsupported`, …) — silent closes are how a whole fleet goes
-dark undiagnosed.
+supersession damp). Version acceptance uses `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
+`{30}`; session/browser joins remain strictly current at protocol 30. An unchanged machine
+wire may add a version to the set. A strictly additive-optional change may also add it only
+when old frames still parse and absent fields preserve the old semantics. Other changes
+reset the set and require a coordinated hub/transport upgrade.
 
-v23 changes only session references. v24 adds optional `hello.terminalHostId` and
-capability-gated `drain`/`drain_status`: the hub sends drain frames ONLY to an agent that
-named a terminal host. Legacy agents remain wire-compatible; compatibility does not move
-their PTYs into a separate host or make a legacy process restart safe.
+**Protocol 30: explicit terminal execution.** New-terminal admission no longer interprets
+missing native job connectivity as shell authority. The owner reports `terminalExecution`,
+and absence means unknown, never unconfined. Because this changes absent-field semantics,
+pre-30 transports are refused before terminal reconciliation or job authority; retained
+workloads are neither adopted nor reaped by a refused connection. Upgrade the hub before
+transports, not the owner merely to repair a transport mismatch.
 
-**Protocol 26: terminal inline graphics, machine-compatible.** The bounded graphics envelope is
-opaque VT data on the session channel, so old browser parsers cannot safely consume its cursor
-effects and session negotiation refuses them through the existing protocol-skew UI. Machine and
-instance frames are unchanged, so protocol 26 is added without disconnecting older spokes.
-An updated terminal host is required; replacing only the transport or web bundle does not upgrade
-a retained host. Protocol-26 agents remain terminal-only for governed jobs: they cannot advertise
-`jobOwner` or exchange governed job traffic. This preserves the full terminal graphics contract in
-[ADR 0031: Bounded terminal inline graphics](decisions/0031-terminal-inline-graphics.md).
+Terminal-host IPC 2 carries the declaration in its status report. A new transport can still
+read a retained IPC-1 owner and resume its existing terminals. Without an explicit unconfined
+declaration it cannot create new ambient shells. Governed requests still require their
+separate native owner proof and admitted resource/runtime bindings.
 
-**Protocol 27: governed machine jobs and plugin-owned streams.** Governed jobs add optional
-`hello.jobOwner` and new `job_command`/`job_event` variants. Only protocol-27 agents may
-advertise a job owner or exchange governed job traffic; the hub never sends job commands to
-older agents. The machine set adds 27 while retaining 16 through 26 for terminal service, and
-`GOVERNED_JOB_MIN_PROTOCOL_VERSION` is 27. The instance compatibility set independently resets
-to `{27}` because the governed closed capability/reference vocabularies expand. No fleet restart
-is owed by this additive machine extension, and no PTY, polling or alternative execution control
-path substitutes for governed jobs. This is not a claim of release, fleet installation or live
-deployment; the current [Protocol and compatibility](#protocol-and-compatibility) contract
-governs the transition.
-The pre-v22 terminal-program guard remains; neither terminal connectivity nor version
-acceptance alone proves job readiness. Plugin streams use the exact-current session
-protocol independently of machine job ownership.
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 29. That version covers
+durable instance-owned services, proved readiness and bounded cross-owner service channels.
+It is not the hub/session `PROTOCOL_VERSION`: an unchanged native RPC remains compatible
+through a transport or browser upgrade. A native RPC change requires its own coordinated,
+drained owner upgrade. Compatibility alone never proves current execution consent or
+resource readiness, and no PTY, polling or alternate execution path substitutes for it.
+
+The independent federation set is `{27, 28, 29, 30}`; these machine/native changes leave its
+frames and resource vocabularies unchanged. The earlier per-program and per-job transport
+version gates are retired: every accepted transport understands those frames, while
+authority comes from explicit declarations and live owner proof.
+
+Negotiation refusals emit structured server logs (`machine_version_rejected`,
+`machine_rejected`, …). Publication of this source or a release authorizes no hub promotion,
+fleet installation or occupied-owner replacement.
 
 The unknown-NEWER direction is the one with no recovery, and it is the operator-facing failure
 mode. A hub cannot accept a protocol version that did not exist when it was built, so an agent
@@ -2737,6 +2744,18 @@ provider handling and postconditions belong to plugins, never the common floor.
   `engine.jobs` plugin topic is coarse access invalidation with no resource or actor identity,
   including for readers who can no longer see a previously authorized job. Shared resource
   feeds re-read through the same governed doors; notifications never transport private bytes.
+- **Owner-confirmed stdin.** Public and private child input commands require a correlated
+  `requestId` and exact `seq`. `input_authorize` / `input_authorized` recheck original run
+  authority and the current public caller (or the native-bound parent invocation) before
+  writing. `input_result` alone acknowledges acceptance; it never becomes a lifecycle refusal.
+  `input_state` reconciles the native cursor after start/status. `PublicJob.nextInputSeq`
+  is nullable while disconnected, pending or not yet reconciled; older snapshots cannot
+  rewind it. Owner authorization and write waits each expire after five seconds; the hub
+  receipt wait expires after twelve. The owner journals the consumed sequence before a
+  write, never its bytes or digest, and closes input after uncertain writes without
+  cancelling an otherwise valid job. The hub persists request/sequence, actor, trace and
+  decision attribution before dispatch, retaining uncertain outcomes rather than rolling
+  them back or replaying them. Current authority is checked again before returning success.
 - **Common authority.** Admission uses the A5 waterfall and current credential/delegation
   lineage intersected with its immutable original scope, capability and expiry ceiling.
   `machines:run`, `jobs:read`, `jobs:input`, `jobs:cancel`, `locations:read`,
@@ -2768,6 +2787,11 @@ provider handling and postconditions belong to plugins, never the common floor.
   These restrictions apply even to `network: "host"`: libraries requiring those calls
   are incompatible, not silently exempted. Host networking remains broad host-network
   access, separately declared and consented through `network:host`, not restricted egress.
+  Service-provider processes additionally receive `EOPNOTSUPP` for
+  `setsockopt(IPPROTO_TCP, TCP_DEFER_ACCEPT)`. The filter is installed before execution:
+  a scoped HTTP request must prove the accepted peer's live workload FD before releasing
+  application bytes. Queued inode-zero sockets do not establish that ownership, and
+  deferring servers receive no proof exception.
   Missing tools, resources, enforcement or unsupported platforms refuse execution;
   there is no unrestricted platform fallback.
 - **Named output backing and budgets.** Named output directories must already reside on
@@ -2801,7 +2825,17 @@ provider handling and postconditions belong to plugins, never the common floor.
   results precede acknowledgement. Transport/hub recovery reconciles existing jobs rather
   than executing them again; owner recovery clears old descendants before a new generation
   admits work. An unobserved reserved execution is `interrupted`/unknown, not safe to retry.
+  Temporary transport unavailability does not itself revoke a retained run's grants.
+  Current authority, consent and exact installation/resource/policy pins still apply;
+  live readiness remains mandatory for new admission and each service effect.
   Retained identity records prevent expired output/result retention from permitting replay.
+  A verified start rejected before reservation is durably tombstoned before any
+  `workload_empty` proof. Status/cancel may carry the original signed admission to
+  abandon a start lost in transit; unknown or invalid authority cannot prove absence,
+  and an admitted/in-flight start follows its existing workload lifecycle instead.
+  Proofs retain the exact request digest, owner and permit generation across recovery.
+  Reconnect may advance `start-committed` from a matching current-generation `started`
+  result snapshot, but never revives terminal or owner-closed work.
   Empty PTY inventories say nothing about jobs. Drain closes both admission paths without
   merging their lifecycles; cancellation closes input and terminates the execution tree.
 - **Output and privacy.** `child_exit` is execution observation with `outputsSealed: false`,
@@ -2946,7 +2980,7 @@ gets `attach_refused`, cannot mutate terminals, and retries without disturbing t
 Transport shutdown releases the seat and network connection, killing nothing. Host loss
 closes the machine socket with **4010** and holds hub dialing until a seat is acquired again.
 
-The local protocol (`packages/protocol/src/terminal-host.ts`, version 1) is NDJSON on a
+The local protocol (`packages/protocol/src/terminal-host.ts`, version 2) is NDJSON on a
 0600 Unix socket in an owned 0700 directory. An existing non-private directory or live
 sibling listener is refused; only a stale socket with no accepting listener is reclaimed.
 Known malformed frames close the connection; unknown types are ignored for build skew.
@@ -2955,11 +2989,14 @@ growing memory without bound.
 
 An observer can send `status_request` and receives
 `status { terminalHostId, terminalHostProtocolVersion, build, pid, draining,
-transportAttached, terminals }`, including exited-but-retained terminals. Only the seated
-transport may send terminal mutations. An observer may request maintenance via
-`shutdown_request`; the host atomically accepts with `shutting_down` only if draining
-AND its retained inventory is empty. Otherwise it sends
-`shutdown_refused { reason: "not_draining" | "terminals_retained", terminalIds }`.
+terminalExecution?, transportAttached, terminals }`, including exited-but-retained terminals.
+Current owners declare `governed` when they supervise native jobs and `unconfined` otherwise;
+an older status without the field remains readable but grants no unconfined spawn authority.
+Only the seated transport may send terminal mutations. An observer may request maintenance
+via `shutdown_request`; the host atomically accepts with `shutting_down` only if draining
+AND no terminal or native work remains, including pending service mutations. Otherwise it
+sends `shutdown_refused { reason: "not_draining" | "terminals_retained" | "jobs_retained",
+terminalIds }`.
 There is no force option. A refused stop is a hold, never permission to escalate to a signal.
 
 Host SIGTERM is DESTRUCTIVE: it terminates shells, escalating after the grace period.
@@ -2996,7 +3033,7 @@ IS the cross-instance reference. `tickets` answers with the subset of the advert
 still live, and the guest drops the rest. Or the host closes: 4401 unauthorized / origin
 mismatch, 4403 revoked, 4409 version, 4002 malformed or first-frame-not-hello or duplicate
 hello, 4008 liveness timeout, 4001 superseded. Version acceptance is
-`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{27}` — its own wire, its own set, the
+`INSTANCE_PROTOCOL_COMPAT_VERSIONS` `{27, 28, 29, 30}` — its own wire, its own set, the
 same [Protocol and compatibility](#protocol-and-compatibility) discipline the machine channel follows.
 Governed jobs and streams expand the closed capability and reference vocabularies, so protocol 27
 independently resets instance acceptance; older instances cannot decode that governed wire.

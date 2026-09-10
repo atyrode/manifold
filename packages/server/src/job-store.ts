@@ -1,4 +1,8 @@
-import { formatManifoldUri } from "@manifold/protocol";
+import {
+  formatManifoldUri,
+  JobResourceBindingsSchema,
+  type JobResourceBindings,
+} from "@manifold/protocol";
 import type { AuthorityEvidence } from "./auth.ts";
 import {
   canonicalJobJson,
@@ -25,6 +29,9 @@ export interface JobRecord {
   result: JobResult | null;
   auditOrigin: JobAuditOrigin | null;
   decisionId: string | null;
+  nextInputSeq: number | null;
+  stdinClosed: boolean;
+  ownerClosed: boolean;
 }
 export interface JobInstallation {
   machineId: string;
@@ -32,6 +39,7 @@ export interface JobInstallation {
   revision: string;
   artifact: string;
   machine: MachineHalf;
+  resourceBindings?: JobResourceBindings;
   enabled: boolean;
   ready: boolean;
   purgeRequested: boolean;
@@ -62,10 +70,13 @@ export class JobStore {
           result: string | null;
           audit_origin: string | null;
           decision_id: string | null;
+          next_input_seq: number | null;
+          stdin_closed: number;
+          owner_closed: number;
         },
         [string]
       >(
-        "SELECT request,state,permit,result,audit_origin,decision_id FROM machine_jobs WHERE job_id=?",
+        "SELECT request,state,permit,result,audit_origin,decision_id,next_input_seq,stdin_closed,owner_closed FROM machine_jobs WHERE job_id=?",
       )
       .get(jobId);
     return r
@@ -76,8 +87,47 @@ export class JobStore {
           result: r.result === null ? null : JobResultSchema.parse(JSON.parse(r.result)),
           auditOrigin: r.audit_origin === null ? null : JSON.parse(r.audit_origin),
           decisionId: r.decision_id,
+          nextInputSeq: r.next_input_seq,
+          stdinClosed: r.stdin_closed === 1,
+          ownerClosed: r.owner_closed === 1,
         }
       : null;
+  }
+  inputCursor(jobId: string, seq: number, closed: boolean): void {
+    this.store.db
+      .query(
+        `UPDATE machine_jobs SET next_input_seq=?,stdin_closed=MAX(stdin_closed,?)
+       WHERE job_id=? AND (next_input_seq IS NULL OR next_input_seq<=?)`,
+      )
+      .run(seq, closed ? 1 : 0, jobId, seq);
+  }
+  reserveInput(
+    job: JobRecord,
+    requestId: string,
+    seq: number,
+    actor: string,
+    traceId: string,
+  ): boolean {
+    return (
+      this.store.db
+        .query(
+          `INSERT INTO machine_job_inputs(job_id,request_id,seq,actor,trace_id,decision_id,state)
+       VALUES(?,?,?,?,?,?,'pending') ON CONFLICT(job_id,request_id) DO NOTHING`,
+        )
+        .run(job.request.jobId, requestId, seq, actor, traceId, job.decisionId).changes === 1
+    );
+  }
+  inputResult(
+    jobId: string,
+    requestId: string,
+    state: "accepted" | "rejected" | "unknown",
+    reason: string | null,
+  ): void {
+    this.store.db
+      .query(
+        "UPDATE machine_job_inputs SET state=?,reason=? WHERE job_id=? AND request_id=? AND state!='accepted'",
+      )
+      .run(state, reason, jobId, requestId);
   }
   reserve(request: JobRequest, now: number): JobRecord {
     const previous = this.get(request.jobId);
@@ -115,6 +165,42 @@ export class JobStore {
             )
             .all(machineId);
     return rows.map((r) => this.get(r.job_id)!);
+  }
+  /** A sent permit without a confirmed outcome still owns its service lifetime. */
+  instanceServiceJobs(serviceId: string): JobRecord[] {
+    const rows = this.store.db
+      .query<{ job_id: string }, [string]>(
+        `SELECT job_id FROM machine_jobs WHERE json_extract(request,'$.service.serviceId')=?
+       AND (state IN ('queued','admitted','start-committed','started') OR
+         (permit IS NOT NULL AND owner_closed=0))
+       LIMIT 65`,
+      )
+      .all(serviceId);
+    if (rows.length > 64) throw new Error("instance_service_jobs_capacity");
+    return rows.map((row) => this.get(row.job_id)!);
+  }
+  reconcilable(machineId?: string): JobRecord[] {
+    const rows = this.store.db
+      .query<{ job_id: string }, [string | null, string | null]>(
+        `SELECT job_id FROM machine_jobs WHERE (? IS NULL OR machine_id=?) AND
+       (state IN ('queued','admitted','start-committed','started') OR
+        (json_extract(request,'$.service.serviceId') IS NOT NULL AND
+         permit IS NOT NULL AND owner_closed=0))`,
+      )
+      .all(machineId ?? null, machineId ?? null);
+    return rows.map((row) => this.get(row.job_id)!);
+  }
+  confirmEmpty(jobId: string): boolean {
+    return this.store.transaction(() => {
+      const changed =
+        this.store.db
+          .query(
+            "UPDATE machine_jobs SET owner_closed=1 WHERE job_id=? AND owner_closed=0 AND permit IS NOT NULL",
+          )
+          .run(jobId).changes > 0;
+      if (changed) this.lifecycle(this.get(jobId)!, "workload_empty");
+      return changed;
+    });
   }
   /** Durable discovery is bounded before any records or authority evidence are materialized. */
   runCandidates(
@@ -226,6 +312,22 @@ export class JobStore {
   }
   private origin(request: JobRequest): JobAuditOrigin | null {
     if (request.parent) return this.get(request.parent.parentJobId)?.auditOrigin ?? null;
+    if (request.service) {
+      const service = this.store.db
+        .query<{ configured_by: string }, [string, string]>(
+          "SELECT configured_by FROM native_instance_services WHERE service_id=? AND revision=?",
+        )
+        .get(request.service.serviceId, request.service.revision);
+      return service
+        ? {
+            actor: service.configured_by,
+            authority: "services:configure",
+            door: "engine.services.configureInstance",
+            containerId: null,
+            session: null,
+          }
+        : null;
+    }
     const schedule = this.store.db
       .query<{ audit_origin: string | null }, [string]>(
         "SELECT s.audit_origin FROM job_schedules s JOIN job_schedule_occurrences o ON o.schedule_id=s.schedule_id AND o.revision=s.revision WHERE o.job_id=?",
@@ -271,16 +373,30 @@ export class JobStore {
       : null;
     return {
       origin: request.parent
-        ? { kind: "invocation", traceId: request.traceId, ...request.parent }
+        ? {
+            kind: "invocation",
+            traceId: request.traceId,
+            door: job.auditOrigin?.door ?? null,
+            ...request.parent,
+          }
         : occurrence
           ? {
               kind: "schedule",
+              door: job.auditOrigin?.door ?? null,
               traceId: request.traceId,
               scheduleId: occurrence.schedule_id,
               revision: occurrence.revision,
               nominalAt: occurrence.nominal,
             }
-          : { kind: "action", traceId: request.traceId },
+          : request.service
+            ? {
+                kind: "service",
+                traceId: request.traceId,
+                door: job.auditOrigin?.door ?? null,
+                serviceId: request.service.serviceId,
+                revision: request.service.revision,
+              }
+            : { kind: "action", traceId: request.traceId, door: job.auditOrigin?.door ?? null },
       requester: request.credential.principalId,
       executor: job.permit
         ? {
@@ -357,13 +473,14 @@ export class JobStore {
           revision: string;
           artifact: string;
           manifest: string;
+          resource_bindings: string | null;
           enabled: number;
           ready: number;
           purge_requested: number;
         },
         [string, string, string | null]
       >(
-        `SELECT h.revision,h.artifact,h.manifest,c.enabled,c.purge_requested,
+        `SELECT h.revision,h.artifact,h.manifest,h.resource_bindings,c.enabled,c.purge_requested,
           CASE WHEN h.revision=c.revision THEN c.ready ELSE 0 END AS ready
          FROM machine_job_installations h
          JOIN machine_job_installs c ON c.machine_id=h.machine_id AND c.plugin_id=h.plugin_id
@@ -377,6 +494,11 @@ export class JobStore {
           revision: r.revision,
           artifact: r.artifact,
           machine: MachineHalfSchema.parse(JSON.parse(r.manifest)),
+          ...(r.resource_bindings === null
+            ? {}
+            : {
+                resourceBindings: JobResourceBindingsSchema.parse(JSON.parse(r.resource_bindings)),
+              }),
           enabled: r.enabled === 1,
           ready: r.ready === 1,
           purgeRequested: r.purge_requested === 1,

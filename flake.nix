@@ -10,14 +10,13 @@
   # MANIFOLD_TERMINAL_HOST_SOCKET. Plain agent is the replaceable transport and
   # also takes MANIFOLD_SERVER_URL + MANIFOLD_MACHINE_TOKEN(_FILE) +
   # MANIFOLD_MACHINE_NAME; --terminal-host owns PTYs independently.
-  # The server takes its MANIFOLD_* set. The packaged server defaults
-  # MANIFOLD_SPAWN_AGENT=0 because source-tree host/transport respawn
-  # (agent-spawn.ts) execs `bun` against a repo checkout absent on packaged nodes;
-  # a packaged hub's machine enrolls like any other node. Packaging does not
-  # authorize stopping a terminal host during transport replacement.
+  # The standalone packaged server defaults to hub-only. The native NixOS module
+  # enables authenticated preparation, then independently supervises the packaged
+  # owner and transport. No packaged process tries to execute a source checkout.
   description = "manifold - agent-native shared spatial workspace";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  # The stable branch still supports every advertised target, including Intel macOS.
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
   outputs =
     { self, nixpkgs }:
@@ -33,13 +32,13 @@
       eachSystem = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
       # Fixed-output hash of the vendored node_modules tree, per system (the
       # native optionalDependencies bun materializes differ per platform).
-      # Filled in the first time a system builds: leave the entry as
-      # lib.fakeHash, run `nix build .#bun-deps`, copy the "got:" hash here.
+      # Measured with the pinned Bun's explicit optional-dependency target selectors.
+      # Regenerate and independently rebuild these trees when their inputs change.
       depsHashes = {
-        x86_64-linux = "sha256-cbjDbZqe+wkPN7HbitqeYimniuBfkdjpgiUC+jTxVuE=";
-        aarch64-linux = nixpkgs.lib.fakeHash;
-        x86_64-darwin = nixpkgs.lib.fakeHash;
-        aarch64-darwin = nixpkgs.lib.fakeHash;
+        x86_64-linux = "sha256-0paLt9t5ds7yb1qNvL55jI7iqq3jVLVa0CX2HQO2DBs=";
+        aarch64-linux = "sha256-hOVg3G0Urms8rulRfQMhyX4dS23GOmFIAm3PW6V/BAc=";
+        x86_64-darwin = "sha256-gT5aDGDbf2yybZaGUbbETgyibZwCxRH8wW5MvXwlWSM=";
+        aarch64-darwin = "sha256-PL/Ez5Y4VYgmzziKupeE+ySsRuDt1WCt7cXW7S5dl5E=";
       };
 
       # Input of the vendored-dependency FOD. Deliberately not `self`: keying it
@@ -65,16 +64,48 @@
       };
     in
     {
+      nixosModules.native = import ./infra/native/module.nix { inherit self; };
+      checks = eachSystem (
+        pkgs: nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          native-profile = (import (nixpkgs + "/nixos/lib") { inherit (pkgs) lib; }).runTest (
+            import ./infra/native/module-test.nix { inherit self pkgs; }
+          );
+        }
+      );
       packages = eachSystem (
         pkgs:
         let
           inherit (pkgs.stdenv.hostPlatform) system;
-          # A compiled agent embeds this runtime. Never silently package the
-          # borrowed-descriptor ownership bug from an older nixpkgs input (ADR 0032).
-          bun =
-            assert pkgs.lib.assertMsg (pkgs.lib.versionAtLeast pkgs.bun.version "1.4.2")
-              "Manifold requires Bun >= 1.4.2 for borrowed descriptor ownership; update the nixpkgs input before building.";
-            pkgs.bun;
+          # Pin the required runtime independently of the package collection;
+          # an assertion cannot upgrade its older Bun.
+          # Digests: official bun-v1.4.2 release asset metadata (2026-09-09),
+          # https://api.github.com/repos/oven-sh/bun/releases/tags/bun-v1.4.2
+          bunSources = {
+            x86_64-linux = {
+              archive = "bun-linux-x64-baseline.zip";
+              sha256 = "c678040f14fe0440eb839d37cbd0ce4c051a32da72806ac97de6a6aab6bf728f";
+            };
+            aarch64-linux = {
+              archive = "bun-linux-aarch64.zip";
+              sha256 = "54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7";
+            };
+            x86_64-darwin = {
+              archive = "bun-darwin-x64-baseline.zip";
+              sha256 = "bad5bbd6cf14d0980d115f5954c9ff904df619d5e994d2da1ffccd3f316300b0";
+            };
+            aarch64-darwin = {
+              archive = "bun-darwin-aarch64.zip";
+              sha256 = "90987a3a16d7db556d886ac3d551e7b6d3edf0a1cf43acaed622e8676be1d12f";
+            };
+          };
+          bun = pkgs.bun.overrideAttrs (_final: previous: {
+            version = "1.4.2";
+            src = pkgs.fetchurl {
+              url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/${bunSources.${system}.archive}";
+              inherit (bunSources.${system}) sha256;
+            };
+            meta = previous.meta // { platforms = systems; };
+          });
 
           # Vendored node_modules keyed on bun.lock: the only network-touching
           # derivation. It must produce the installed tree, not bun's download
@@ -118,7 +149,9 @@
               export HOME="$TMPDIR"
               export BUN_INSTALL_CACHE_DIR="$TMPDIR/bun-install-cache"
               bun install --frozen-lockfile --ignore-scripts --no-progress \
-                --backend=copyfile --linker=hoisted
+                --backend=copyfile --linker=hoisted \
+                --os=${if pkgs.stdenv.hostPlatform.isLinux then "linux" else "darwin"} \
+                --cpu=${if pkgs.stdenv.hostPlatform.isAarch64 then "arm64" else "x64"}
             '';
             installPhase = ''
               mkdir -p "$out"
@@ -197,23 +230,27 @@
           #   nix build .#bun-deps
           #   nix build .#bun-deps --rebuild   # must not report a hash mismatch
           bun-deps = bunDeps;
+          bun-runtime = bun;
 
           manifold-agent = compiled {
             pname = "manifold-agent";
             entry = "packages/agent/src/main.ts";
+            wrapperArgs = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux
+              ''--prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath [ pkgs.glibc ]}"'';
           };
 
           manifold-server = compiled {
             pname = "manifold-server";
             entry = "packages/server/src/main.ts";
             extraBuild = ''
+              bun run changelog:generate
               (cd packages/web && bun run build)
             '';
             extraInstall = ''
               mkdir -p "$out/share/manifold"
               cp -r packages/web/dist "$out/share/manifold/web"
             '';
-            wrapperArgs = ''--set-default MANIFOLD_WEB_DIST "$out/share/manifold/web" --set-default MANIFOLD_SPAWN_AGENT 0'';
+            wrapperArgs = ''--set-default MANIFOLD_WEB_DIST "$out/share/manifold/web" --set-default MANIFOLD_SPAWN_AGENT 0 --prefix PATH : "${bun}/bin"'';
           };
         }
       );

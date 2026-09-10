@@ -9,6 +9,7 @@ import {
 } from "react";
 import type {
   MachineSummary,
+  TerminalExecution,
   Container,
   ContainerDiscipline,
   Attendance,
@@ -172,6 +173,7 @@ export interface TerminalFacet {
   defaultMachine(
     containerId: string,
     machines: readonly MachineSummary[] | null,
+    execution: TerminalExecution,
   ): MachineSummary | null;
   /** Records where a terminal actually landed, so the next one in this container matches. */
   rememberMachine(containerId: string, machineId: string): void;

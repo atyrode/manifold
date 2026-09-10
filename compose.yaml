@@ -1,5 +1,5 @@
-# Self-hosted manifold hub: `docker compose up -d --build` on any box with a DNS
-# record makes it the master node AND a terminal-serving machine (docs/SELF-HOST.md).
+# Container hub and optional disposable in-container terminals, not a full-native
+# execution profile. Use MANIFOLD_SPAWN_AGENT=0 for hub-only; see docs/SELF-HOST.md.
 services:
   manifold:
     # A published image (`MANIFOLD_IMAGE=ghcr.io/<owner>/manifold:<tag> docker compose
@@ -22,6 +22,7 @@ services:
     environment:
       - MANIFOLD_PUBLIC_URL=https://${MANIFOLD_DOMAIN:?set MANIFOLD_DOMAIN in .env}
       - MANIFOLD_MACHINE_NAME=${MANIFOLD_MACHINE_NAME:-hub}
+      - MANIFOLD_SERVICE_OWNER_MACHINE_ID
       # Passthrough only when set in .env: pins the owner key instead of
       # generating one at /data/owner.key on first boot.
       - MANIFOLD_OWNER_KEY

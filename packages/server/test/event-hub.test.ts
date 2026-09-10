@@ -890,13 +890,13 @@ describe("floor doors emit at their commit points", () => {
 
     const first = {
       machineId: enrollment.machine.id,
-      protocolVersion: PROTOCOL_VERSION,
+      terminalExecution: "unconfined" as const,
       terminalHostId: null,
       send: () => true,
     };
     const second = {
       machineId: enrollment.machine.id,
-      protocolVersion: PROTOCOL_VERSION,
+      terminalExecution: "unconfined" as const,
       terminalHostId: null,
       send: () => true,
     };

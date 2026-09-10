@@ -1,3 +1,9 @@
+import type {
+  ConfigureServiceConfigurationArgs,
+  JobExecution,
+  ServiceConfigurationRead,
+  ServiceDescription,
+} from "@manifold/plugin";
 import {
   EventKindSchema,
   EventPayloadSchema,
@@ -10,6 +16,7 @@ import {
   ListJobRunsResultSchema,
   type ListJobRunsArgs,
   type ListJobRunsResult,
+  type JobDescription,
   type ActionScope,
   type ActionRequirement,
   type ActionSummary,
@@ -28,12 +35,21 @@ import {
   type PluginManifest,
   type PluginRoster,
   type Principal,
+  type ServiceConfiguration,
+  type ServiceReadArgs,
+  type ServiceInvokeArgs,
+  type ServiceReply,
+  type ConfigureInstanceServiceArgs,
+  type InstanceServiceDescription,
+  type InstanceServicesDescription,
+  type TerminalExecution,
+  type InstanceServiceConfigurationRead,
+  type InstanceServiceReadArgs,
 } from "@manifold/protocol";
 import {
   JobFollowSnapshotSchema,
   type JobFollowSnapshot,
   type JobFollowUpdate,
-  type JobRequest,
   type JobResult,
   type JobEvent,
 } from "../../protocol/src/jobs.ts";
@@ -69,6 +85,8 @@ export interface ServerActionDef<In = unknown, Out = unknown> {
   readonly title: string;
   /** What invoking this action requires of the CALLER; a subset of the manifest's ceiling. */
   readonly caps: readonly Cap[];
+  /** Native job/service ceiling, not caller permission; native calls still authorize targets and consent. */
+  readonly delegates?: readonly Cap[];
   /** Absent ≡ `"workspace"`; `"container"` confines the door to `ctx.containerScope`. */
   readonly scope?: ActionScope | undefined;
   readonly requirements?: readonly ActionRequirement[];
@@ -136,16 +154,14 @@ export interface GuestStreamProducer {
 
 export type GuestJobNode = Extract<ManifoldRef, { kind: "job" }>;
 export type GuestOutputNode = Extract<ManifoldRef, { kind: "output" }>;
-export type GuestJobRequest = Pick<
-  JobRequest,
-  "jobId" | "machineId" | "operationId" | "input" | "outputs"
-> & { limits?: JobRequest["limits"] };
+export type GuestJobRequest = JobExecution;
 export interface GuestJobStatus {
   jobId: string;
   machineId: string;
   operationId: string;
   pluginId: string;
   state: JobResult["state"];
+  nextInputSeq: number | null;
   result: JobResult | null;
 }
 export interface GuestJobFollow {
@@ -153,10 +169,21 @@ export interface GuestJobFollow {
   close(): Promise<void>;
 }
 export interface GuestJobs {
+  describe(args: {
+    machineId: string;
+    pluginId: string;
+    installationRevision?: string;
+  }): Promise<JobDescription>;
   execute(args: GuestJobRequest): Promise<GuestJobStatus>;
   status(node: GuestJobNode): Promise<GuestJobStatus>;
   listRuns(args: ListJobRunsArgs): Promise<ListJobRunsResult>;
-  input(args: { node: GuestJobNode; seq: number; data: string; eof: boolean }): Promise<void>;
+  input(args: {
+    node: GuestJobNode;
+    requestId: string;
+    seq: number;
+    data: string;
+    eof: boolean;
+  }): Promise<{ accepted: true }>;
   cancel(node: GuestJobNode): Promise<void>;
   output(args: {
     node: GuestOutputNode;
@@ -164,6 +191,21 @@ export interface GuestJobs {
     maxBytes: number;
   }): Promise<Extract<JobEvent, { type: "output" }>>;
   follow(node: GuestJobNode, receive: (update: JobFollowUpdate) => void): Promise<GuestJobFollow>;
+}
+
+/** The native service contract with asynchronous host calls across the isolate boundary. */
+export interface GuestServices {
+  describe(args: { machineId: string }): Promise<ServiceDescription>;
+  readConfiguration(args: { machineId: string }): Promise<ServiceConfigurationRead>;
+  configureConfiguration(args: ConfigureServiceConfigurationArgs): Promise<ServiceConfiguration>;
+  read(args: ServiceReadArgs): Promise<ServiceReply>;
+  invoke(args: ServiceInvokeArgs): Promise<ServiceReply>;
+  describeInstance(args: { serviceId: string }): Promise<InstanceServiceDescription>;
+  listInstances(args: Record<string, never>): Promise<InstanceServicesDescription>;
+  readInstanceConfiguration(args: { serviceId: string }): Promise<InstanceServiceConfigurationRead>;
+  configureInstance(args: ConfigureInstanceServiceArgs): Promise<InstanceServiceDescription>;
+  readInstance(args: InstanceServiceReadArgs): Promise<ServiceReply>;
+  invokeInstance(args: InstanceServiceReadArgs): Promise<ServiceReply>;
 }
 
 export interface GuestCtx {
@@ -177,11 +219,15 @@ export interface GuestCtx {
   newId(): Promise<string>;
   readonly storage: GuestStorage;
   readonly jobs: GuestJobs;
+  readonly services: GuestServices;
   readonly streams: {
     open(kind: string, node: ManifoldRef): Promise<GuestStreamProducer>;
   };
   readonly emit: GuestEmit;
-  readonly machines: { isOnline(machineId: string): Promise<boolean> };
+  readonly machines: {
+    isOnline(machineId: string): Promise<boolean>;
+    getTerminalExecution(machineId: string): Promise<TerminalExecution | null>;
+  };
   readonly placement: { place(request: PlaceRequest): Promise<GuestPlaceOutcome> };
   readonly host: { roster(): Promise<PluginRoster>; enabled(id: string): Promise<boolean> };
 }
@@ -459,15 +505,14 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       newId: async () => (await call("newId", [])) as string,
       storage: storageFor(call),
       jobs: {
+        describe: async (args) => (await call("jobs.describe", [args])) as JobDescription,
         execute: async (args) => (await call("jobs.execute", [args])) as GuestJobStatus,
         status: async (node) => (await call("jobs.status", [node])) as GuestJobStatus,
         listRuns: async (args) =>
           ListJobRunsResultSchema.parse(
             await call("jobs.listRuns", [ListJobRunsArgsSchema.parse(args)]),
           ),
-        input: async (args) => {
-          await call("jobs.input", [args]);
-        },
+        input: async (args) => (await call("jobs.input", [args])) as { accepted: true },
         cancel: async (node) => {
           await call("jobs.cancel", [node]);
         },
@@ -510,6 +555,28 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
             throw error;
           }
         },
+      },
+      services: {
+        describe: async (args) => (await call("services.describe", [args])) as ServiceDescription,
+        readConfiguration: async (args) =>
+          (await call("services.readConfiguration", [args])) as ServiceConfigurationRead,
+        configureConfiguration: async (args) =>
+          (await call("services.configureConfiguration", [args])) as ServiceConfiguration,
+        read: async (args) => (await call("services.read", [args])) as ServiceReply,
+        invoke: async (args) => (await call("services.invoke", [args])) as ServiceReply,
+        describeInstance: async (args) =>
+          (await call("services.describeInstance", [args])) as InstanceServiceDescription,
+        listInstances: async (args) =>
+          (await call("services.listInstances", [args])) as InstanceServicesDescription,
+        readInstanceConfiguration: async (args) =>
+          (await call("services.readInstanceConfiguration", [
+            args,
+          ])) as InstanceServiceConfigurationRead,
+        configureInstance: async (args) =>
+          (await call("services.configureInstance", [args])) as InstanceServiceDescription,
+        readInstance: async (args) => (await call("services.readInstance", [args])) as ServiceReply,
+        invokeInstance: async (args) =>
+          (await call("services.invokeInstance", [args])) as ServiceReply,
       },
       streams: {
         open: async (kind, node) => {
@@ -575,6 +642,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       },
       machines: {
         isOnline: async (machineId) => (await call("machines.isOnline", [machineId])) as boolean,
+        getTerminalExecution: async (machineId) =>
+          (await call("machines.getTerminalExecution", [machineId])) as TerminalExecution | null,
       },
       placement: {
         place: async (request) => (await call("placement.place", [request])) as GuestPlaceOutcome,
@@ -628,6 +697,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         name: `${pluginId}.${action.name}`,
         title: action.title,
         caps: [...action.caps],
+        ...(action.delegates === undefined ? {} : { delegates: [...action.delegates] }),
         ...(action.cleanup === undefined ? {} : { cleanup: action.cleanup }),
         scope: action.scope ?? "workspace",
         ...(action.requirements === undefined ? {} : { requirements: [...action.requirements] }),

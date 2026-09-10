@@ -3,6 +3,7 @@ import {
   openSync,
   closeSync,
   fstatSync,
+  fchmodSync,
   readFileSync,
   mkdirSync,
   readdirSync,
@@ -13,11 +14,13 @@ import {
   type Stats,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dlopen, FFIType, ptr, type Library } from "bun:ffi";
+import { dlopen, FFIType, ptr, read as readNative, type Library } from "bun:ffi";
 import { connect, type Socket } from "node:net";
+import { getSystemErrorName } from "node:util";
 
-// Linux O_CLOEXEC is not exposed by every Node-compatible constants table.
+// Linux O_CLOEXEC and O_PATH are not exposed by every Node-compatible constants table.
 export const CLOSE_ON_EXEC = 0x80000;
+const DIRECTORY_FLAGS = 0x200000 | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC;
 
 export function safeComponent(name: string): void {
   if (
@@ -38,6 +41,12 @@ const FILE_SYMBOLS = {
   flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
   socketpair: { args: [FFIType.i32, FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 },
   memfd_create: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
+  fcntl: { args: [FFIType.i32, FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+  renameat2: {
+    args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.u32],
+    returns: FFIType.i32,
+  },
+  __errno_location: { args: [], returns: FFIType.ptr },
 } as const;
 let libc: Library<typeof FILE_SYMBOLS> | undefined;
 /** Lock remains owned by the open description until the caller closes it. */
@@ -74,11 +83,11 @@ export function privateSocketPair(): PrivateSocketPair {
   }
 }
 
-/** Anonymous owner-created bytes, returned read-only at offset zero for a trusted child. */
+/** Anonymous sealed bytes, returned read-only at offset zero; caller owns the descriptor. */
 export function privateByteFile(bytes: Uint8Array): number {
   libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
   const name = Buffer.from("manifold-job-policy\0");
-  const fd = libc.symbols.memfd_create(ptr(name), 1);
+  const fd = libc.symbols.memfd_create(ptr(name), 1 | 2);
   if (fd < 0) throw new Error("private_policy_file_unavailable");
   try {
     let offset = 0;
@@ -87,27 +96,30 @@ export function privateByteFile(bytes: Uint8Array): number {
       if (written === 0) throw new Error("short_policy_write");
       offset += written;
     }
+    fchmodSync(fd, 0o400);
+    // F_SEAL_SEAL | SHRINK | GROW | WRITE: even reopening via proc cannot mutate the bytes.
+    if (libc.symbols.fcntl(fd, 1033, 15) !== 0) throw new Error("private_file_sealing_failed");
     return openSync(`/proc/self/fd/${fd}`, constants.O_RDONLY | CLOSE_ON_EXEC);
   } finally {
     closeSync(fd);
   }
 }
 
+export function isSealedByteFile(fd: number): boolean {
+  libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
+  const seals = libc.symbols.fcntl(fd, 1034, 0);
+  return seals >= 0 && (seals & 15) === 15;
+}
+
 /** Identity ancestry of a held directory, never a checked-and-reopened pathname. */
 export function directoryAncestry(directoryFd: number): string[] {
   const identities: string[] = [];
-  let current = openSync(
-    `/proc/self/fd/${directoryFd}/.`,
-    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
-  );
+  let current = openSync(`/proc/self/fd/${directoryFd}/.`, DIRECTORY_FLAGS);
   try {
     for (let depth = 0; depth < 256; depth++) {
       const stat = fstatSync(current, { bigint: true });
       identities.push(`${stat.dev}:${stat.ino}`);
-      const parent = openSync(
-        `/proc/self/fd/${current}/..`,
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
-      );
+      const parent = openSync(`/proc/self/fd/${current}/..`, DIRECTORY_FLAGS);
       const parentStat = fstatSync(parent, { bigint: true });
       if (parentStat.dev === stat.dev && parentStat.ino === stat.ino) {
         closeSync(parent);
@@ -137,17 +149,11 @@ export class HeldDirectory {
     if (process.platform !== "linux" || !path.startsWith("/") || path.includes("\0"))
       throw new Error("unsupported_directory_anchor");
     const parts = path.split("/").filter(Boolean);
-    let fd = openSync(
-      "/",
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
-    );
+    let fd = openSync("/", DIRECTORY_FLAGS);
     try {
       for (const part of parts) {
         safeComponent(part);
-        const next = openSync(
-          `/proc/self/fd/${fd}/${part}`,
-          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
-        );
+        const next = openSync(`/proc/self/fd/${fd}/${part}`, DIRECTORY_FLAGS);
         closeSync(fd);
         fd = next;
       }
@@ -175,10 +181,7 @@ export class HeldDirectory {
         if (options.exclusive || (error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
     }
-    const fd = openSync(
-      `${this.procPath}/${name}`,
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
-    );
+    const fd = openSync(`${this.procPath}/${name}`, DIRECTORY_FLAGS);
     try {
       const child = new HeldDirectory(fd);
       if (child.mountId !== this.mountId) throw new Error("mount_escape");
@@ -220,17 +223,50 @@ export class HeldDirectory {
     safeComponent(name);
     unlinkSync(`${this.procPath}/${name}`);
   }
+  sync(): void {
+    const fd = openSync(
+      `${this.procPath}/.`,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
+    );
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  }
   /** Only private, trusted-writer directories may publish or replace names. */
-  publish(temporary: string, destination: string): void {
+  publish(temporary: string, destination: string, exclusive = false): void {
     safeComponent(temporary);
     safeComponent(destination);
     const stat = this.stat();
     if (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0)
       throw new Error("directory_not_private");
-    renameSync(`${this.procPath}/${temporary}`, `${this.procPath}/${destination}`);
-    fsyncSync(this.fd);
+    // Searchable handles retain identity without directory-listing authority.
+    // Publication additionally needs a readable descriptor for the durability fence.
+    const syncFd = openSync(
+      `${this.procPath}/.`,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | CLOSE_ON_EXEC,
+    );
+    try {
+      if (exclusive) {
+        libc ??= dlopen("libc.so.6", FILE_SYMBOLS);
+        const source = Buffer.from(`${temporary}\0`);
+        const target = Buffer.from(`${destination}\0`);
+        // A link/unlink substitute exposes nlink=2 and can leave that identity after a crash.
+        if (libc.symbols.renameat2(this.fd, ptr(source), this.fd, ptr(target), 1) !== 0) {
+          const address = libc.symbols.__errno_location();
+          const code = address === null ? "UNKNOWN" : getSystemErrorName(-readNative.i32(address));
+          throw Object.assign(new Error("exclusive_file_publication_failed"), { code });
+        }
+      } else {
+        renameSync(`${this.procPath}/${temporary}`, `${this.procPath}/${destination}`);
+      }
+      fsyncSync(syncFd);
+    } finally {
+      closeSync(syncFd);
+    }
   }
-  atomicWrite(name: string, data: Uint8Array | string, mode = 0o600): void {
+  atomicWrite(name: string, data: Uint8Array | string, mode = 0o600, exclusive = false): void {
     safeComponent(name);
     const temporary = `.stage-${randomUUID()}`;
     const fd = this.createFile(temporary, mode);
@@ -243,7 +279,7 @@ export class HeldDirectory {
         offset += written;
       }
       fsyncSync(fd);
-      this.publish(temporary, name);
+      this.publish(temporary, name, exclusive);
     } catch (error) {
       try {
         this.unlink(temporary);

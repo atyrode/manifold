@@ -13,7 +13,16 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HeldDirectory, privateSocketPair } from "./job-files.ts";
+import { createServer } from "node:net";
+import { request as httpRequest } from "node:http";
+import { connectWorkloadLoopback } from "./job-listener-proof.ts";
+import { createJobServiceProxy, type JobServiceProxy } from "./job-service-proxy.ts";
+import {
+  HeldDirectory,
+  privateSocketPair,
+  privateByteFile,
+  isSealedByteFile,
+} from "./job-files.ts";
 import { JobOutputStore } from "./job-outputs.ts";
 import {
   preflightLinuxJob,
@@ -21,6 +30,7 @@ import {
   type LinuxJobHandle,
   type LinuxJobSpec,
 } from "./job-linux.ts";
+import { PtyTerminal } from "./terminal.ts";
 
 function fixture(): { spec: LinuxJobSpec; close(): void } {
   const path = mkdtempSync(join(tmpdir(), "job-linux-"));
@@ -161,6 +171,97 @@ test("invalid bounds and mount shadowing refuse before touching executable descr
   }
 });
 
+test("runtime executable selection cannot execute a directory closure or an undeclared alias", () => {
+  const f = fixture();
+  try {
+    expect(() => preflightLinuxJob({ ...f.spec, executableRuntimeTool: "engine" })).toThrow(
+      "runtime-executable-unavailable",
+    );
+    expect(() =>
+      preflightLinuxJob({
+        ...f.spec,
+        executableRuntimeTool: "engine",
+        runtime: [
+          { fd: f.spec.delegatedCgroup.fd, target: "/runtime/bin/engine", writable: false },
+        ],
+      }),
+    ).toThrow("untrusted-executable");
+  } finally {
+    f.close();
+  }
+});
+
+test("input files must be immutable anonymous descriptors, not readonly views of mutable host files", () => {
+  const f = fixture();
+  const fd = privateByteFile(Buffer.from("exact config\n"));
+  try {
+    expect(isSealedByteFile(fd)).toBe(true);
+    expect(() => {
+      const writable = openSync(`/proc/self/fd/${fd}`, constants.O_RDWR);
+      try {
+        writeFileSync(writable, "substitution");
+      } finally {
+        closeSync(writable);
+      }
+    }).toThrow();
+    expect(() =>
+      preflightLinuxJob({
+        ...f.spec,
+        inputFiles: [{ fd: f.spec.artifactFd, target: "/inputs/config", writable: false }],
+      }),
+    ).toThrow("unsafe-input-file");
+    expect(() =>
+      preflightLinuxJob({
+        ...f.spec,
+        inputFiles: [{ fd, target: "/inputs/config", writable: false }],
+        locations: [{ fd: f.spec.artifactFd, target: "/inputs/other", writable: false }],
+      }),
+    ).toThrow("reserved-input-target");
+  } finally {
+    closeSync(fd);
+    f.close();
+  }
+});
+
+test("sealed home inputs refuse unsafe components and every host-backed ancestor", () => {
+  const f = fixture();
+  const fd = privateByteFile(Buffer.from("private"));
+  try {
+    for (const target of [
+      "/home/job",
+      "/home/job/../escape",
+      "/home/job/.config//key",
+      "/home/job/bad\\key",
+      `/home/job/${"a".repeat(129)}`,
+      `/home/job/${Array(17).fill("a").join("/")}`,
+    ]) {
+      expect(() =>
+        preflightLinuxJob({ ...f.spec, inputFiles: [{ fd, target, writable: false }] }),
+      ).toThrow();
+    }
+    for (const kind of ["locations", "runtime", "outputs"] as const) {
+      for (const target of ["/home", "/home/job", "/home/job/.config", "/home/job/.config/omp"]) {
+        expect(() =>
+          preflightLinuxJob({
+            ...f.spec,
+            [kind]: [{ fd: f.spec.delegatedCgroup.fd, target, writable: kind !== "runtime" }],
+            inputFiles: [{ fd, target: "/home/job/.config/omp/auth.json", writable: false }],
+          }),
+        ).toThrow("overlapping-mounts");
+      }
+    }
+    expect(() =>
+      preflightLinuxJob({
+        ...f.spec,
+        inputFiles: [{ fd, target: "/home/job/.config/omp/auth.json", writable: true }],
+      }),
+    ).toThrow("unsafe-input-file");
+  } finally {
+    closeSync(fd);
+    f.close();
+  }
+});
+
 test("ordinary directories cannot stand in for enforced cgroups", async () => {
   const f = fixture();
   try {
@@ -258,6 +359,8 @@ const realLinux = process.platform === "linux" && !!bwrapPath && !!busyboxPath &
 const outputRoot = process.env.MANIFOLD_TEST_OUTPUT_ROOT;
 // Compile test/fixtures/job-syscall-probe.c statically for this machine; not a runtime tool.
 const syscallProbe = process.env.MANIFOLD_TEST_SYSCALL_PROBE;
+// Compile test/fixtures/job-listener-probe.c statically in the disposable harness.
+const listenerProbe = process.env.MANIFOLD_TEST_LISTENER_PROBE;
 
 async function withLinux(
   script: string,
@@ -296,7 +399,7 @@ test.skipIf(!realLinux)(
   "real sandbox has no ambient home, runtime fd or enrollment environment and roundtrips private input",
   async () => {
     await withLinux(
-      'test "$HOME" = /home/job && test "$XDG_DATA_HOME" = /home/job/.local/share && test "$XDG_RUNTIME_DIR" = /home/job/.run && test -z "$MANIFOLD_MACHINE_TOKEN" && test ! -e /etc/passwd && test ! -e /proc/self/fd/6 && test ! -e "$HOME/.ssh" && printf scratch > /tmp/private && read line && printf "%s" "$line"',
+      'test "$HOME" = /home/job && test "$XDG_DATA_HOME" = /home/job/.local/share && test "$XDG_RUNTIME_DIR" = /home/job/.run && test -z "$MANIFOLD_MACHINE_TOKEN" && test ! -e /etc/passwd && test ! -e /proc/self/fd/6 && test ! -e "$HOME/.ssh" && test ! -e "$HOME/private" || exit 70; for directory in "$HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_RUNTIME_DIR"; do printf private > "$directory/private" || exit 71; test "$(/bin/busybox stat -f -c %T "$directory")" = tmpfs || exit 72; done; test "$(/bin/busybox stat -c %a "$XDG_RUNTIME_DIR")" = 700 || exit 73; if ( printf forbidden > /job/ambient ) 2>/dev/null; then exit 74; fi; printf scratch > /tmp/private && read line && printf "%s" "$line"',
       async (spec) => {
         const frames: { sequence: number; text: string }[] = [];
         const handle = await startLinuxJob({
@@ -312,11 +415,582 @@ test.skipIf(!realLinux)(
         expect(result.empty).toBe(true);
         expect(frames.map((frame) => frame.text).join("")).toBe("private-roundtrip");
         expect(frames.map((frame) => frame.sequence)).toEqual(frames.map((_, index) => index + 1));
+        const second = await startLinuxJob(spec);
+        await second.input(Buffer.from("isolated-home\n"));
+        second.endInput();
+        const secondResult = await second.result;
+        second.release();
+        expect(secondResult.exitCode).toBe(0);
       },
     );
   },
 );
 
+test.skipIf(!realLinux)(
+  "native PTY keeps input, resize and snapshots outside job output storage",
+  async () => {
+    await withLinux(
+      'test -t 0 && test -t 1 && test -t 2 || exit 71; test "$TERM" = xterm-256color || exit 72; test -z "$MANIFOLD_JOB_OWNER_SOCKET$MANIFOLD_MACHINE_TOKEN" || exit 73; printf ready; read line; /bin/busybox stty size; printf "received:%s" "$line"; while :; do /bin/busybox sleep 1; done',
+      async (spec) => {
+        let text = "";
+        let journalFrames = 0;
+        const ready = Promise.withResolvers<void>();
+        const received = Promise.withResolvers<void>();
+        const terminal = new PtyTerminal({
+          terminalId: "native-pty",
+          cols: 80,
+          rows: 24,
+          onOutput(output) {
+            text += Buffer.from(output.bytes).toString();
+            if (text.includes("ready")) ready.resolve();
+            if (text.includes("received:roundtrip")) received.resolve();
+          },
+          runtime: (pty) =>
+            startLinuxJob({
+              ...spec,
+              terminal: pty,
+              onOutput: () => {
+                journalFrames++;
+              },
+            }),
+        });
+        const handle = await terminal.runtimeHandle!;
+        try {
+          await Promise.race([
+            ready.promise,
+            handle.result.then(() => {
+              throw new Error("PTY exited before ready");
+            }),
+          ]);
+          terminal.resize(100, 40);
+          terminal.write("roundtrip\n");
+          await Promise.race([
+            received.promise,
+            handle.result.then(() => {
+              throw new Error("PTY exited before input");
+            }),
+          ]);
+          expect(text).toContain("40 100");
+          const snapshot = await terminal.snapshot();
+          expect(Buffer.from(snapshot.data).toString()).toContain("received:roundtrip");
+          expect(journalFrames).toBe(0);
+          await terminal.kill();
+          const result = await handle.result;
+          expect(result.reason).toBe("cancelled");
+          expect(result.empty).toBe(true);
+          expect(result.usage.outputBytes).toBe(Buffer.byteLength(text));
+          expect(terminal.alive).toBe(false);
+        } finally {
+          await handle.cancel();
+          handle.release();
+          terminal.dispose();
+        }
+      },
+    );
+  },
+);
+
+test.skipIf(!realLinux)(
+  "native PTY meters cumulative bytes before delivery without persisting terminal output",
+  async () => {
+    await withLinux(
+      'printf ready; read line; while :; do printf "0123456789abcdef"; done',
+      async (spec) => {
+        let delivered = 0;
+        let journalFrames = 0;
+        const ready = Promise.withResolvers<void>();
+        const terminal = new PtyTerminal({
+          terminalId: "native-pty-overflow",
+          cols: 80,
+          rows: 24,
+          onOutput(output) {
+            delivered += output.bytes.byteLength;
+            ready.resolve();
+          },
+          runtime: (pty) =>
+            startLinuxJob({
+              ...spec,
+              terminal: pty,
+              limits: { ...spec.limits, outputBytes: 128 },
+              onOutput: () => {
+                journalFrames++;
+              },
+            }),
+        });
+        const handle = await terminal.runtimeHandle!;
+        try {
+          await Promise.race([
+            ready.promise,
+            handle.result.then(() => {
+              throw new Error("PTY exited before overflow");
+            }),
+          ]);
+          terminal.write("go\n");
+          const result = await handle.result;
+          await terminal.exited;
+          expect(result.reason).toBe("output-limit");
+          expect(result.empty).toBe(true);
+          expect(result.usage.outputBytes).toBeGreaterThan(128);
+          expect(delivered).toBeLessThanOrEqual(128);
+          expect(terminal.ringBytes).toBe(delivered);
+          expect(journalFrames).toBe(0);
+        } finally {
+          await handle.cancel();
+          handle.release();
+          terminal.dispose();
+        }
+      },
+    );
+  },
+);
+
+test.skipIf(!realLinux)(
+  "native PTY delivery failure cancels its workload instead of escaping the owner",
+  async () => {
+    await withLinux(
+      "printf ready; read line; printf rejected; while :; do /bin/busybox sleep 1; done",
+      async (spec) => {
+        const ready = Promise.withResolvers<void>();
+        let rejectOutput = false;
+        const terminal = new PtyTerminal({
+          terminalId: "native-pty-consumer",
+          cols: 80,
+          rows: 24,
+          onOutput() {
+            if (rejectOutput) throw new Error("transport unavailable");
+            ready.resolve();
+          },
+          runtime: (pty) => startLinuxJob({ ...spec, terminal: pty }),
+        });
+        const handle = await terminal.runtimeHandle!;
+        try {
+          await Promise.race([
+            ready.promise,
+            handle.result.then(() => {
+              throw new Error("PTY exited before delivery");
+            }),
+          ]);
+          rejectOutput = true;
+          terminal.write("go\n");
+          const result = await handle.result;
+          await terminal.exited;
+          expect(result.reason).toBe("output-consumer");
+          expect(result.empty).toBe(true);
+        } finally {
+          await handle.cancel();
+          handle.release();
+          terminal.dispose();
+        }
+      },
+    );
+  },
+);
+
+test.skipIf(!realLinux)(
+  "selected runtime executable reads exact readonly native config instead of running the primary worker",
+  async () => {
+    await withLinux("exit 91", async (spec) => {
+      const fd = privateByteFile(Buffer.from("private-native-config\n"));
+      const frames: string[] = [];
+      try {
+        const handle = await startLinuxJob({
+          ...spec,
+          runtime: [
+            ...spec.runtime,
+            { fd: spec.runtime[0]!.fd, target: "/runtime/bin/busybox", writable: false },
+          ],
+          executableRuntimeTool: "busybox",
+          argv: [
+            "sh",
+            "-c",
+            "if ( printf changed > /inputs/config ) 2>/dev/null; then exit 92; fi; /runtime/bin/busybox cat /inputs/config",
+          ],
+          inputFiles: [{ fd, target: "/inputs/config", writable: false }],
+          onOutput: (frame) => {
+            if (frame.channel === "stdout") frames.push(Buffer.from(frame.bytes).toString());
+          },
+        });
+        handle.endInput();
+        const result = await handle.result;
+        handle.release();
+        expect(result.exitCode).toBe(0);
+        expect(result.empty).toBe(true);
+        expect(frames.join("")).toBe("private-native-config\n");
+      } finally {
+        closeSync(fd);
+      }
+    });
+  },
+);
+
+test.skipIf(!realLinux)(
+  "sealed private-home config is readonly while adjacent home files remain writable",
+  async () => {
+    await withLinux(
+      [
+        'test "$HOME" = /home/job && test "$PWD" = "$HOME" && test "$(pwd)" = "$HOME" || exit 80',
+        "test ! -e .config/omp/session && test ! -e private || exit 85",
+        'test "$(/bin/busybox cat /home/job/.config/omp/auth.json)" = sealed || exit 81',
+        "if ( printf substituted > /home/job/.config/omp/auth.json ) 2>/dev/null; then exit 82; fi",
+        "if /bin/busybox chmod 600 .config/omp/auth.json 2>/dev/null; then exit 86; fi",
+        "printf writable > .config/omp/session || exit 83",
+        "printf home > private || exit 84",
+        "/bin/busybox cat .config/omp/auth.json .config/omp/session private",
+      ].join("\n"),
+      async (spec) => {
+        const fd = privateByteFile(Buffer.from("sealed"));
+        const frames: string[] = [];
+        try {
+          // Reuse the same sealed descriptor: launch must neither consume its offset nor
+          // carry adjacent private-home files into the next sandbox.
+          for (let launch = 0; launch < 2; launch++) {
+            frames.length = 0;
+            const handle = await startLinuxJob({
+              ...spec,
+              inputFiles: [{ fd, target: "/home/job/.config/omp/auth.json", writable: false }],
+              onOutput: (frame) => {
+                if (frame.channel === "stdout") frames.push(Buffer.from(frame.bytes).toString());
+              },
+            });
+            try {
+              handle.endInput();
+              const result = await handle.result;
+              expect(result.exitCode).toBe(0);
+              expect(result.empty).toBe(true);
+              expect(frames.join("")).toBe("sealedwritablehome");
+            } finally {
+              await handle.cancel();
+              handle.release();
+            }
+          }
+        } finally {
+          closeSync(fd);
+        }
+      },
+    );
+  },
+);
+
+interface ListeningJob {
+  handle: LinuxJobHandle;
+  port: number;
+  closed: Promise<void>;
+}
+
+async function listeningJob(
+  spec: LinuxJobSpec,
+  mode: "loopback" | "wildcard" | "nested" | "http" | "deferred",
+): Promise<ListeningJob> {
+  const fd = openSync(listenerProbe!, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const ready = Promise.withResolvers<number>();
+  const closed = Promise.withResolvers<void>();
+  let output = "";
+  let handle: LinuxJobHandle;
+  try {
+    handle = await startLinuxJob({
+      ...spec,
+      network: "host",
+      runtime: [...spec.runtime, { fd, target: "/runtime/bin/listener-probe", writable: false }],
+      executableRuntimeTool: "listener-probe",
+      argv: [mode],
+      onOutput: (frame) => {
+        if (frame.channel !== "stdout") return;
+        output += Buffer.from(frame.bytes).toString();
+        const match = /^port:(\d+)\n/.exec(output);
+        if (match) ready.resolve(Number(match[1]));
+        if (output.includes("\nclosed\n")) closed.resolve();
+      },
+    });
+  } finally {
+    closeSync(fd);
+  }
+  try {
+    const port = await Promise.race([
+      ready.promise,
+      handle.result.then((result) => {
+        throw new Error(`listener exited before readiness: ${JSON.stringify(result)}`);
+      }),
+    ]);
+    return { handle, port, closed: closed.promise };
+  } catch (error) {
+    await handle.cancel();
+    handle.release();
+    throw error;
+  }
+}
+
+test.skipIf(!realLinux || !listenerProbe)(
+  "service providers reject deferred accept without changing ordinary jobs or sending unproved bytes",
+  async () => {
+    for (const providesService of [false, true]) {
+      await withLinux("exit 91", async (spec) => {
+        const { handle, port } = await listeningJob({ ...spec, providesService }, "deferred");
+        let socket: Awaited<ReturnType<typeof connectWorkloadLoopback>> | undefined;
+        try {
+          const connection = connectWorkloadLoopback(
+            port,
+            (connected) => handle.ownsLoopbackConnection(connected),
+            AbortSignal.timeout(3000),
+          );
+          if (!providesService) {
+            await expect(connection).rejects.toThrow("service_connection_unproven");
+            return;
+          }
+          socket = await connection;
+          const response = await new Promise<string>((resolve, reject) => {
+            let bytes = "";
+            const timeout = setTimeout(
+              () => reject(new Error("owned HTTP response timed out")),
+              2000,
+            );
+            socket!.on("data", (chunk: Buffer) => {
+              bytes += chunk.toString();
+            });
+            socket!.once("error", (error) => {
+              clearTimeout(timeout);
+              reject(error);
+            });
+            socket!.once("end", () => {
+              clearTimeout(timeout);
+              resolve(bytes);
+            });
+            socket!.write(
+              "POST /probe HTTP/1.1\r\nHost: 127.0.0.1\r\n" +
+                "Authorization: Bearer listener-fixture-bearer-000000000000\r\n" +
+                'Transfer-Encoding: chunked\r\n\r\ne\r\n{"probe":true}\r\n0\r\n\r\n',
+            );
+          });
+          expect(response).toMatch(/^HTTP\/1\.1 200 /);
+          expect(JSON.parse(response.split("\r\n\r\n", 2)[1]!)).toEqual({ received: true });
+        } finally {
+          socket?.destroy();
+          await handle.cancel();
+          handle.release();
+        }
+      });
+    }
+  },
+);
+
+test.skipIf(!realLinux || !listenerProbe).each(["loopback", "nested"] as const)(
+  "kernel proof admits a live %s listener, not a foreign port or a closed/exited/released socket",
+  async (mode) => {
+    const foreign = createServer();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        foreign.once("error", reject);
+        foreign.listen(0, "127.0.0.1", resolve);
+      });
+      const address = foreign.address();
+      if (!address || typeof address === "string") throw new Error("missing foreign port");
+      await withLinux("exit 91", async (spec) => {
+        const { handle, port, closed } = await listeningJob(spec, mode);
+        try {
+          expect(handle.ownsLoopbackListener(address.port)).toBe(false);
+          expect(handle.ownsLoopbackListener(port)).toBe(true);
+          expect(handle.ownsLoopbackListener(NaN)).toBe(false);
+          await handle.input(Buffer.from("c"));
+          await Promise.race([
+            closed,
+            handle.result.then(() => {
+              throw new Error("listener exited before close");
+            }),
+          ]);
+          expect(handle.ownsLoopbackListener(port)).toBe(false);
+          handle.endInput();
+          expect((await handle.result).exitCode).toBe(0);
+          expect(handle.ownsLoopbackListener(port)).toBe(false);
+          handle.release();
+          expect(handle.ownsLoopbackListener(port)).toBe(false);
+        } finally {
+          await handle.cancel();
+          handle.release();
+        }
+      });
+    } finally {
+      await new Promise<void>((resolve) => foreign.close(() => resolve()));
+    }
+  },
+);
+
+test.skipIf(!realLinux || !listenerProbe)(
+  "scoped runtime HTTP uses the proved connection and refuses a live runtime's rebound port",
+  async () => {
+    await withLinux("exit 91", async (spec) => {
+      const { handle, port, closed } = await listeningJob(spec, "http");
+      let exited = false;
+      void handle.result.then(() => {
+        exited = true;
+      });
+      let connections = 0;
+      let foreignBytes = 0;
+      const foreignClosed = Promise.withResolvers<void>();
+      const foreign = createServer((socket) => {
+        connections++;
+        socket.on("data", (bytes: Buffer) => {
+          foreignBytes += bytes.length;
+        });
+        socket.on("error", () => socket.destroy());
+        socket.once("close", foreignClosed.resolve);
+      });
+      let proxy: JobServiceProxy | undefined;
+      let accepting: Promise<void> | undefined;
+      let dropProvedConnection = false;
+      const lifetime = new AbortController();
+      try {
+        expect(handle.ownsLoopbackListener(port)).toBe(true);
+        proxy = await createJobServiceProxy({
+          policies: [
+            {
+              serviceId: "listener",
+              revision: "r1",
+              maxConcurrent: 1,
+              runtime: {
+                pluginId: "fixture",
+                operationId: "serve",
+                installationRevision: "r1",
+                artifactSha256: "a".repeat(64),
+                resourceBindingDigest: "b".repeat(64),
+                input: {},
+              },
+              operations: {
+                probe: {
+                  kind: "http-proxy",
+                  method: "POST",
+                  path: "/probe",
+                  request: { kind: "json", disclosure: "full" },
+                  response: {
+                    kind: "stream",
+                    disclosure: "full",
+                    contentTypes: ["application/json"],
+                    headers: [],
+                  },
+                  timeoutMs: 2000,
+                  maxRequestBytes: 4096,
+                  maxResponseBytes: 4096,
+                },
+              },
+            },
+          ],
+          bindings: [{ serviceId: "listener", revision: "r1", operationIds: ["probe"] }],
+          authorize: async () => true,
+          resolveRuntime: async (_policy, signal) => {
+            const socket = await connectWorkloadLoopback(
+              port,
+              (connected) => {
+                const owned = handle.ownsLoopbackConnection(connected);
+                if (!accepting) {
+                  // The fixture intentionally delays accept until after the first proof
+                  // observation. Connectivity alone cannot authorize application bytes.
+                  expect(owned).toBe(false);
+                  accepting = handle.input(Buffer.from("a"));
+                }
+                return owned;
+              },
+              signal,
+            );
+            if (dropProvedConnection) {
+              dropProvedConnection = false;
+              const disconnected = new Promise<void>((resolve) => socket.once("close", resolve));
+              await handle.input(Buffer.from("c"));
+              await closed;
+              socket.destroy();
+              await disconnected;
+              await new Promise<void>((resolve, reject) => {
+                foreign.once("error", reject);
+                foreign.listen(port, "127.0.0.1", resolve);
+              });
+            }
+            return {
+              url: `http://127.0.0.1:${port}`,
+              bearer: "listener-fixture-bearer-000000000000",
+              signal: lifetime.signal,
+              socket,
+            };
+          },
+        });
+        const send = () =>
+          new Promise<{ status: number; body: string }>((resolve, reject) => {
+            const outgoing = httpRequest(
+              `${proxy!.url}/probe`,
+              {
+                method: "POST",
+                agent: false,
+                headers: {
+                  authorization: `Bearer ${proxy!.bearer}`,
+                  "content-type": "application/json",
+                },
+              },
+              (incoming) => {
+                let body = "";
+                incoming.on("data", (bytes: Buffer) => {
+                  body += bytes.toString();
+                });
+                incoming.once("error", reject);
+                incoming.once("end", () => resolve({ status: incoming.statusCode!, body }));
+              },
+            );
+            outgoing.once("error", reject);
+            outgoing.end('{"probe":true}');
+          });
+        // The fixture only responds after receiving the exact synthetic bearer/body.
+        expect(await send()).toEqual({ status: 200, body: '{"received":true}' });
+        await accepting;
+        dropProvedConnection = true;
+        expect((await send()).status).toBe(503);
+        expect(connections).toBe(0); // A lost proved socket must never trigger a new dial.
+        expect(exited).toBe(false);
+        expect((await send()).status).toBeGreaterThanOrEqual(400);
+        await foreignClosed.promise;
+        expect(connections).toBe(1); // Exactly one credential-free TCP proof attempt.
+        expect(foreignBytes).toBe(0);
+        expect(exited).toBe(false); // Cached readiness still refers to a live job.
+        handle.endInput();
+        expect((await handle.result).exitCode).toBe(0);
+      } finally {
+        lifetime.abort();
+        await proxy?.close();
+        await new Promise<void>((resolve) => foreign.close(() => resolve()));
+        await handle.cancel();
+        handle.release();
+      }
+    });
+  },
+);
+
+test.skipIf(!realLinux || !listenerProbe)(
+  "wildcard and separately admitted child listeners cannot prove parent ownership",
+  async () => {
+    await withLinux("exit 91", async (spec) => {
+      const parent = await listeningJob(spec, "loopback");
+      let child: ListeningJob | undefined;
+      let wildcard: ListeningJob | undefined;
+      try {
+        child = await listeningJob(
+          { ...spec, delegatedCgroup: parent.handle.childDelegation },
+          "loopback",
+        );
+        expect(child.handle.ownsLoopbackListener(child.port)).toBe(true);
+        expect(parent.handle.ownsLoopbackListener(child.port)).toBe(false);
+        expect(child.handle.ownsLoopbackListener(parent.port)).toBe(false);
+        wildcard = await listeningJob(spec, "wildcard");
+        expect(wildcard.handle.ownsLoopbackListener(wildcard.port)).toBe(false);
+        expect(parent.handle.ownsLoopbackListener(parent.port)).toBe(true);
+      } finally {
+        if (wildcard) {
+          await wildcard.handle.cancel();
+          wildcard.handle.release();
+        }
+        if (child) {
+          await child.handle.cancel();
+          child.handle.release();
+        }
+        await parent.handle.cancel();
+        parent.handle.release();
+      }
+    });
+  },
+);
 test.skipIf(!realLinux)(
   "whole-tree cancellation drains a descendant moved into a nested cgroup",
   async () => {
@@ -381,6 +1055,7 @@ test.skipIf(!realLinux)(
       expect(result.reason).toBe("output-limit");
       expect(result.empty).toBe(true);
       expect(delivered).toBeLessThanOrEqual(128);
+      expect(result.usage.outputBytes).toBeGreaterThan(128);
     });
   },
 );

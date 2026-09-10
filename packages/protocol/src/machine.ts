@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { MAX_SESSION_BASE64_CHARS } from "./elements.ts";
-import { JobCommandSchema, JobEventSchema, JobOwnerSchema } from "./jobs.ts";
+import { JobCommandSchema, JobStartCommandSchema, JobEventSchema, JobOwnerSchema } from "./jobs.ts";
 
 /**
  * Machine channel (`/ws/machine`): the manifold-agent daemon dials OUT to the server and
@@ -40,6 +40,10 @@ export const TerminalProgramSchema = z.strictObject({
 });
 export type TerminalProgram = z.infer<typeof TerminalProgramSchema>;
 
+/** An owner declaration, never inferred from whether its native job socket is reachable. */
+export const TerminalExecutionSchema = z.enum(["unconfined", "governed"]);
+export type TerminalExecution = z.infer<typeof TerminalExecutionSchema>;
+
 export const AdvertisedTerminalSchema = z.strictObject({
   terminalId,
   ...geometry,
@@ -75,6 +79,7 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
      * with it.
      */
     terminalHostId: z.string().min(1).optional(),
+    terminalExecution: TerminalExecutionSchema.optional(),
     jobOwner: JobOwnerSchema.optional(),
   }),
   z.strictObject({ type: z.literal("created"), terminalId }),
@@ -140,6 +145,8 @@ export const ServerToAgentMessageSchema = z.discriminatedUnion("type", [
      * agent's wire is byte-identical and the version was ADDED to the compat set.
      */
     program: TerminalProgramSchema.optional(),
+    /** Signed native admission; terminal identity is part of the request digest. */
+    runtime: JobStartCommandSchema.optional(),
   }),
   z.strictObject({ type: z.literal("input"), terminalId, data: base64 }),
   z.strictObject({ type: z.literal("resize"), terminalId, ...geometry }),

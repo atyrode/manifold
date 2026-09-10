@@ -14,6 +14,7 @@ import {
   type PtyOutput,
   type PtyTerminalOptions,
 } from "../src/terminal.ts";
+import { LinuxJobRefusal } from "../src/job-linux.ts";
 
 /**
  * Real-PTY unit tests. docs/CONTRACTS.md §Testability (agent-facing) permits the agent's PTY tests to spawn real
@@ -103,6 +104,36 @@ function injectPtyOutput(terminal: PtyTerminal, data: string): void {
   }
   target.ingest.call(target, new TextEncoder().encode(data));
 }
+
+test("unknown native startup rejects exit and retains disposal authority until positive empty proof", async () => {
+  let proofAvailable = false;
+  const failure = new LinuxJobRefusal("cgroup-empty-unproven", undefined, false, async () => {
+    if (!proofAvailable) throw new Error("still unproven");
+  });
+  const terminal = new PtyTerminal({
+    terminalId: "unknown-native",
+    cols: 80,
+    rows: 24,
+    onOutput() {},
+    runtime: async () => {
+      throw failure;
+    },
+  });
+  try {
+    await expect(terminal.exited).rejects.toBe(failure);
+    expect(terminal.toAdvertised()).toMatchObject({ alive: true });
+    expect(terminal.toAdvertised()).not.toHaveProperty("exitCode");
+    expect(terminal.workloadEmpty).toBe(false);
+    expect(() => terminal.dispose()).toThrow("empty proof");
+    await expect(terminal.kill()).rejects.toThrow("still unproven");
+    expect(terminal.workloadEmpty).toBe(false);
+  } finally {
+    proofAvailable = true;
+    await expect(terminal.kill()).rejects.toBe(failure);
+    expect(terminal.workloadEmpty).toBe(true);
+    terminal.dispose();
+  }
+});
 
 afterEach(async () => {
   for (const terminal of live) {

@@ -4,17 +4,34 @@ import type {
   JobFollowSnapshot,
   JobFollowUpdate,
   JobRequest,
+  JobResourceBindings,
   ListJobRunsArgs,
   ListJobRunsResult,
   ManifoldRef,
   PublicJob,
+  ServiceConfiguration,
+  ServiceConfigurationRead,
+  ServicePolicy,
+  ServiceReadArgs,
+  ServiceInvokeArgs,
+  ServiceReply,
+  ConfigureInstanceServiceArgs,
+  InstanceServiceDescription,
+  InstanceServicesDescription,
+  InstanceServiceConfigurationRead,
+  InstanceServiceReadArgs,
 } from "@manifold/protocol";
+export type { ServiceConfigurationRead } from "@manifold/protocol";
 
 export type JobExecution = Pick<
   JobRequest,
   "jobId" | "machineId" | "operationId" | "input" | "outputs"
 > & {
   limits?: JobRequest["limits"] | undefined;
+  installationRevision?: string | undefined;
+  artifactSha256?: string | undefined;
+  resourceBindingDigest?: string | undefined;
+  resourceBindings?: JobResourceBindings | undefined;
 };
 export interface JobScheduleTiming {
   scheduleId: string;
@@ -49,7 +66,13 @@ export interface PluginJobContext {
   status(node: JobNode): PublicJob;
   listRuns(args: ListJobRunsArgs): ListJobRunsResult;
   follow(node: JobNode, receive: (update: JobFollowUpdate) => void): JobFollow;
-  input(args: { node: JobNode; seq: number; data: string; eof: boolean }): { accepted: true };
+  input(args: {
+    node: JobNode;
+    requestId: string;
+    seq: number;
+    data: string;
+    eof: boolean;
+  }): Promise<{ accepted: true }>;
   cancel(node: JobNode): { accepted: true };
   output(args: {
     node: OutputNode;
@@ -59,6 +82,42 @@ export interface PluginJobContext {
   schedule(args: JobExecution & JobScheduleTiming): Record<string, never>;
   schedules(): PublicJobSchedule[];
   disableSchedule(args: { scheduleId: string; revision: string }): Record<string, never>;
+}
+
+export interface ServiceDescription {
+  machineId: string;
+  connected: boolean;
+  services: {
+    serviceId: string;
+    revision: string;
+    policySha256: string;
+    operations: {
+      operationId: string;
+      readable: boolean;
+      invocable: boolean;
+      ready: boolean;
+      reason: string | null;
+    }[];
+  }[];
+}
+export interface ConfigureServiceConfigurationArgs {
+  machineId: string;
+  expectedRevision: string | null;
+  policies: ServicePolicy[];
+}
+/** Native policy and credential authority remain host-owned and bound to the caller. */
+export interface PluginServiceContext {
+  describe(args: { machineId: string }): ServiceDescription;
+  readConfiguration(args: { machineId: string }): ServiceConfigurationRead;
+  configureConfiguration(args: ConfigureServiceConfigurationArgs): ServiceConfiguration;
+  read(args: ServiceReadArgs): Promise<ServiceReply>;
+  invoke(args: ServiceInvokeArgs): Promise<ServiceReply>;
+  describeInstance(args: { serviceId: string }): InstanceServiceDescription;
+  listInstances(args: Record<string, never>): InstanceServicesDescription;
+  readInstanceConfiguration(args: { serviceId: string }): InstanceServiceConfigurationRead;
+  configureInstance(args: ConfigureInstanceServiceArgs): Promise<InstanceServiceDescription>;
+  readInstance(args: InstanceServiceReadArgs): Promise<ServiceReply>;
+  invokeInstance(args: InstanceServiceReadArgs): Promise<ServiceReply>;
 }
 
 /** The producer validates each bounded body against its manifest's declared stream schema. */

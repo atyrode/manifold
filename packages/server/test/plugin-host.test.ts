@@ -38,6 +38,7 @@ import {
   type IsolateRunner,
   type IsolateState,
 } from "../src/isolate/contract.ts";
+import { serveCtxCall } from "../src/isolate/proxy-def.ts";
 import { silentLogger } from "../src/log.ts";
 import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
 import { PLUGIN_UPLOADS_DIR } from "../src/plugin-installs.ts";
@@ -76,6 +77,7 @@ const OWNER_KEY = "a".repeat(64);
 /** No machine is connected in a bare fixture, which is the honest state of a fresh store. */
 const OFFLINE_MACHINES: MachineAdmission = {
   isOnline: () => false,
+  getTerminalExecution: () => null,
   drain: () =>
     Promise.resolve({ ok: false, reason: "machine is offline: its terminals are unknown" }),
 };
@@ -1831,6 +1833,48 @@ describe("PluginHost install doors", () => {
     fixture.store.close();
   });
 
+  test("native delegates remain bounded by the installer's grant even for root callers", async () => {
+    const fixture = await installFixture((ref) => ({
+      def: {
+        manifest: ref.manifest,
+        actions: [
+          defineAction({
+            name: "read",
+            title: "Read",
+            caps: [],
+            delegates: ["services:read"],
+            input: z.strictObject({}),
+            result: z.strictObject({}),
+          }),
+        ],
+        handlers: { read: async () => ({}) },
+      },
+      lifecycle: {},
+    }));
+    try {
+      const host = await customHost(fixture, [], { isolates: fixture.isolates });
+      const bundle = fixture.drop({ ...SAMPLE_MANIFEST, capabilities: ["*"] });
+      expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, bundle)).ok).toBe(true);
+      expect(denial(await host.dispatch(fixture.owner, `${SAMPLE_ID}.read`, {})).rule).toBe(
+        "forbidden",
+      );
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...fixture.drop({ ...SAMPLE_MANIFEST, id: "vendor.granted", capabilities: ["*"] }),
+            grant: ["services:read"],
+          })
+        ).ok,
+      ).toBe(true);
+      expect(await host.dispatch(fixture.owner, "vendor.granted.read", {})).toEqual({
+        ok: true,
+        result: {},
+      });
+    } finally {
+      fixture.store.close();
+    }
+  });
+
   test("a door needing a cap the installer withheld is forbidden naming the plugin, before the caller", async () => {
     const fixture = await installFixture();
     const host = await customHost(fixture, [], { isolates: fixture.isolates });
@@ -2619,6 +2663,88 @@ describe("PluginHost unpacked plugins", () => {
   });
 });
 
+describe("registered native service doors", () => {
+  test("invalid reads and configurations never disclose service input or policy bodies in traces", async () => {
+    const fixture = await hostFixture();
+    try {
+      for (const [door, args] of [
+        [
+          "engine.services.read",
+          {
+            machineId: "machine",
+            serviceId: "private-service",
+            revision: "revision",
+            policySha256: "a".repeat(64),
+            operationId: "read",
+            input: { query: "never-persist-input" },
+            credential: "never-persist-credential",
+          },
+        ],
+        [
+          "engine.services.invoke",
+          {
+            machineId: "machine",
+            serviceId: "private-service",
+            revision: "revision",
+            policySha256: "a".repeat(64),
+            operationId: "write",
+            input: { query: "never-persist-input" },
+            credential: "never-persist-credential",
+          },
+        ],
+        [
+          "engine.services.configureConfiguration",
+          {
+            machineId: "machine",
+            expectedRevision: null,
+            policies: [
+              { serviceId: "private-service", credential: { ref: "never-persist-reference" } },
+            ],
+          },
+        ],
+      ] as const) {
+        const outcome = await fixture.host.dispatch(fixture.owner, door, args);
+        expect(denial(outcome).rule).toBe("invalid_args");
+        const trace = fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0];
+        expect(trace?.door).toBe(door);
+        expect(trace?.outcome).toBe("invalid_args");
+        expect(JSON.stringify(trace)).not.toContain("never-persist");
+        expect(JSON.stringify(trace)).not.toContain("private-service");
+      }
+    } finally {
+      fixture.store.close();
+    }
+  });
+
+  test("native configuration cannot be reached by a non-owner and its denial remains opaque", async () => {
+    const fixture = await hostFixture();
+    try {
+      const reader = context(fixture, ["services:read"]);
+      const outcome = await fixture.host.dispatch(
+        reader,
+        "engine.services.configureConfiguration",
+        {
+          machineId: "machine",
+          expectedRevision: null,
+          policies: [{ credential: "never-persist-policy" }],
+        },
+      );
+      expect(denial(outcome).rule).toBe("forbidden");
+      const trace = fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0];
+      expect(JSON.stringify(trace)).not.toContain("never-persist");
+      expect(
+        fixture.host.canReadGoverned(fixture.owner, {
+          kind: "service",
+          machineId: "machine",
+          serviceId: "service",
+        }),
+      ).toBe(false);
+    } finally {
+      fixture.store.close();
+    }
+  });
+});
+
 describe("registered governed job doors", () => {
   test("malformed private input is refused with an opaque trace before service availability", async () => {
     const fixture = await hostFixture();
@@ -2742,6 +2868,68 @@ test("stream close attribution retains the original URI after handler-owned node
     ).toEqual([["manifold://plugin/sample.streams"], ["manifold://plugin/sample.streams"]]);
   } finally {
     producer?.close();
+    fixture.store.close();
+  }
+});
+
+test("a declared read action cannot acquire invocation authority from a root caller through either context bridge", async () => {
+  const fixture = await hostFixture();
+  const def: ServerPluginDef = {
+    manifest: {
+      id: "sample.reader",
+      version: "1.0.0",
+      title: "Reader",
+      description: "",
+      capabilities: ["services:read"],
+      contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+    },
+    actions: [
+      defineAction({
+        name: "read",
+        title: "Read",
+        caps: ["services:read"],
+        input: z.strictObject({}),
+        result: z.strictObject({}),
+      }),
+    ],
+    handlers: {
+      read: async (ctx) => {
+        const args = {
+          machineId: "machine",
+          serviceId: "service",
+          revision: "r1",
+          policySha256: "a".repeat(64),
+          operationId: "write",
+          input: {},
+        };
+        await expect(ctx.services.invoke(args)).rejects.toThrow("service_unauthorized");
+        await expect(
+          serveCtxCall("services.invoke", [args], { kind: "dispatch", ctx }),
+        ).rejects.toThrow("service_unauthorized");
+        await expect(
+          serveCtxCall("services.invoke", [{ ...args, url: "https://injected.invalid" }], {
+            kind: "dispatch",
+            ctx,
+          }),
+        ).rejects.toThrow();
+        return {};
+      },
+    },
+  };
+  try {
+    const host = await testPluginHost(
+      fixture.store,
+      fixture.auth,
+      fixture.rooms,
+      fixture.broker,
+      fixture.runtime,
+      { settingsPlugins: [def] },
+    );
+    expect(await host.dispatch(fixture.owner, "sample.reader.read", {})).toEqual({
+      ok: true,
+      result: {},
+    });
+  } finally {
     fixture.store.close();
   }
 });

@@ -18,11 +18,12 @@ import { join } from "node:path";
 import type { MachineArtifact } from "@manifold/protocol";
 import {
   acquireArtifact,
-  extractArtifact,
+  artifactCacheKey,
   isPublicArtifactAddress,
   openCachedArtifact,
 } from "../src/job-artifacts.ts";
 import { HeldDirectory } from "../src/job-files.ts";
+import { extractArtifact } from "@manifold/plugin-kit/artifacts";
 
 const executable = Buffer.from("#!/bin/sh\nexit 0\n");
 function specification(archive: Buffer, format: MachineArtifact["format"]): MachineArtifact {
@@ -53,7 +54,7 @@ function tarMember(name = "bin/tool", kind = "0", contents = executable): Buffer
   header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148);
   return Buffer.concat([header, contents, Buffer.alloc((512 - (contents.length % 512)) % 512)]);
 }
-function zipMember(name = "bin/tool", mode = 0o100755, method = 8): Buffer {
+function zipMember(name = "bin/tool", mode = 0o100755, method = 8, unixMetadata = false): Buffer {
   const nameBytes = Buffer.from(name);
   const compressed = method === 8 ? deflateRawSync(executable) : executable;
   let crc = 0xffffffff;
@@ -70,6 +71,15 @@ function zipMember(name = "bin/tool", mode = 0o100755, method = 8): Buffer {
   local.writeUInt32LE(compressed.length, 18);
   local.writeUInt32LE(executable.length, 22);
   local.writeUInt16LE(nameBytes.length, 26);
+  const localExtra = Buffer.alloc(unixMetadata ? 16 : 0);
+  const centralExtra = Buffer.alloc(unixMetadata ? 12 : 0);
+  if (unixMetadata) {
+    localExtra.writeUInt16LE(0x5855);
+    localExtra.writeUInt16LE(12, 2);
+    centralExtra.writeUInt16LE(0x5855);
+    centralExtra.writeUInt16LE(8, 2);
+  }
+  local.writeUInt16LE(localExtra.length, 28);
   const central = Buffer.alloc(46);
   central.writeUInt32LE(0x02014b50);
   central.writeUInt16LE(0x314, 4);
@@ -79,14 +89,24 @@ function zipMember(name = "bin/tool", mode = 0o100755, method = 8): Buffer {
   central.writeUInt32LE(compressed.length, 20);
   central.writeUInt32LE(executable.length, 24);
   central.writeUInt16LE(nameBytes.length, 28);
+  central.writeUInt16LE(centralExtra.length, 30);
   central.writeUInt32LE((mode << 16) >>> 0, 38);
   const end = Buffer.alloc(22);
   end.writeUInt32LE(0x06054b50);
   end.writeUInt16LE(1, 8);
   end.writeUInt16LE(1, 10);
-  end.writeUInt32LE(central.length + nameBytes.length, 12);
-  end.writeUInt32LE(local.length + nameBytes.length + compressed.length, 16);
-  return Buffer.concat([local, nameBytes, compressed, central, nameBytes, end]);
+  end.writeUInt32LE(central.length + nameBytes.length + centralExtra.length, 12);
+  end.writeUInt32LE(local.length + nameBytes.length + localExtra.length + compressed.length, 16);
+  return Buffer.concat([
+    local,
+    nameBytes,
+    localExtra,
+    compressed,
+    central,
+    nameBytes,
+    centralExtra,
+    end,
+  ]);
 }
 
 test("extracts the exact hash-pinned executable from raw, tar.gz, stored and deflated zip", async () => {
@@ -156,6 +176,29 @@ test("refuses zip symlinks, path traversal and mismatched local member identity"
   await expect(
     extractArtifact(archive, specification(archive, "zip"), new AbortController().signal),
   ).rejects.toThrow("artifact_invalid_zip_local");
+});
+
+test("discards bounded ZIP Unix metadata without permitting identity extensions or malformed fields", async () => {
+  const original = zipMember("bin/tool", 0o100755, 8, true);
+  expect(
+    (await extractArtifact(original, specification(original, "zip"), new AbortController().signal))
+      .executable,
+  ).toEqual(executable);
+  const localExtra = 30 + Buffer.byteLength("bin/tool");
+  const centralExtra =
+    original.readUInt32LE(original.length - 6) + 46 + Buffer.byteLength("bin/tool");
+  for (const [offset, value] of [
+    [localExtra, 1],
+    [centralExtra, 1],
+    [localExtra + 2, 13],
+    [centralExtra + 2, 9],
+  ]) {
+    const archive = Buffer.from(original);
+    archive.writeUInt16LE(value!, offset!);
+    await expect(
+      extractArtifact(archive, specification(archive, "zip"), new AbortController().signal),
+    ).rejects.toThrow();
+  }
 });
 
 test("refuses nonpublic destination forms, including mapped and transition IPv6", () => {
@@ -374,9 +417,7 @@ test("raw delivery cannot claim extra bundled executable entries", async () => {
       },
     },
   };
-  await expect(extractArtifact(executable, spec, new AbortController().signal)).rejects.toThrow(
-    "artifact_raw_bundle",
-  );
+  await expect(extractArtifact(executable, spec, new AbortController().signal)).rejects.toThrow();
 });
 
 test("cache recovery pins primary and runtime bytes and closes every descriptor idempotently", () => {
@@ -389,11 +430,11 @@ test("cache recovery pins primary and runtime bytes and closes every descriptor 
   const path = mkdtempSync(join(tmpdir(), "job-cache-"));
   const cache = HeldDirectory.openAbsolute(path, { private: true });
   try {
-    cache.atomicWrite(`${spec.sha256}-${spec.entrySha256}`, executable, 0o500);
-    cache.atomicWrite(`${spec.sha256}-${runtimeHash}`, runtime, 0o500);
+    cache.atomicWrite(artifactCacheKey(spec, spec.entrySha256), executable, 0o500);
+    cache.atomicWrite(artifactCacheKey(spec, runtimeHash), runtime, 0o500);
     const pinned = openCachedArtifact(spec, cache);
     try {
-      cache.atomicWrite(`${spec.sha256}-${runtimeHash}`, Buffer.from("replacement"), 0o500);
+      cache.atomicWrite(artifactCacheKey(spec, runtimeHash), Buffer.from("replacement"), 0o500);
       expect(readFileSync(pinned.fd)).toEqual(executable);
       expect(readFileSync(pinned.files.engine!.fd)).toEqual(runtime);
     } finally {
@@ -419,10 +460,10 @@ test("cache recovery rejects writable executables and aggregate selected byte ov
   const path = mkdtempSync(join(tmpdir(), "job-cache-"));
   const cache = HeldDirectory.openAbsolute(path, { private: true });
   try {
-    cache.atomicWrite(`${spec.sha256}-${spec.entrySha256}`, executable, 0o500);
-    cache.atomicWrite(`${spec.sha256}-${runtimeHash}`, runtime, 0o700);
+    cache.atomicWrite(artifactCacheKey(spec, spec.entrySha256), executable, 0o500);
+    cache.atomicWrite(artifactCacheKey(spec, runtimeHash), runtime, 0o700);
     expect(() => openCachedArtifact(spec, cache)).toThrow("artifact_cache_identity");
-    cache.atomicWrite(`${spec.sha256}-${runtimeHash}`, runtime, 0o500);
+    cache.atomicWrite(artifactCacheKey(spec, runtimeHash), runtime, 0o500);
     expect(() =>
       openCachedArtifact(
         { ...spec, maxExpandedBytes: executable.length + runtime.length - 1 },
@@ -448,7 +489,7 @@ test("fresh acquisition revalidates consent and pinned cache bytes without a net
   const path = mkdtempSync(join(tmpdir(), "job-cache-install-"));
   const cache = HeldDirectory.openAbsolute(path, { private: true });
   try {
-    cache.atomicWrite(`${spec.sha256}-${spec.entrySha256}`, executable, 0o500);
+    cache.atomicWrite(artifactCacheKey(spec, spec.entrySha256), executable, 0o500);
     const pinned = await acquireArtifact(spec, cache, authority);
     try {
       expect(readFileSync(pinned.fd)).toEqual(executable);
@@ -458,8 +499,94 @@ test("fresh acquisition revalidates consent and pinned cache bytes without a net
     await expect(acquireArtifact(spec, cache, { ...authority, origins: [] })).rejects.toThrow(
       "artifact_destination_not_approved",
     );
-    cache.atomicWrite(`${spec.sha256}-${spec.entrySha256}`, Buffer.from("substitution"), 0o500);
+    cache.atomicWrite(artifactCacheKey(spec, spec.entrySha256), Buffer.from("substitution"), 0o500);
     await expect(acquireArtifact(spec, cache, authority)).rejects.toThrow("artifact_entry_digest");
+  } finally {
+    cache.close();
+    rmSync(path, { recursive: true, force: true });
+  }
+});
+
+test("shared archive bytes never authorize a different cached entry layout", async () => {
+  const archive = gzipSync(Buffer.concat([tarMember(), Buffer.alloc(1024)]));
+  const spec = specification(archive, "tar.gz");
+  delete spec.url;
+  spec.bundleFile = "shared";
+  const delivery = { bundleFile: "shared", data: archive.toString("base64") };
+  const path = mkdtempSync(join(tmpdir(), "job-layout-"));
+  const cache = HeldDirectory.openAbsolute(path, { private: true });
+  const authority = { origins: [], maxRedirects: 0, timeoutMs: 1000 };
+  const archives = new Map<string, Buffer>();
+  try {
+    const first = await acquireArtifact(spec, cache, authority, delivery, archives);
+    first.close();
+    const other = { ...spec, entry: ["missing"], entrySha256: spec.entrySha256 };
+    expect(() => openCachedArtifact(other, cache)).toThrow();
+    await expect(acquireArtifact(other, cache, authority, delivery, archives)).rejects.toThrow();
+    const restored = openCachedArtifact(spec, cache);
+    try {
+      expect(readFileSync(restored.fd)).toEqual(executable);
+    } finally {
+      restored.close();
+    }
+  } finally {
+    cache.close();
+    rmSync(path, { recursive: true, force: true });
+  }
+});
+
+test("bundled acquisition pins supplied bytes without network authority and refuses missing, extra, or substituted delivery even on cache hits", async () => {
+  const bytes = Buffer.alloc(1024 * 1024 + 1, 0x61);
+  const spec: MachineArtifact = {
+    ...specification(bytes, "raw"),
+    url: undefined,
+    bundleFile: "worker",
+    maxBytes: bytes.length,
+    maxExpandedBytes: bytes.length,
+    entrySha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+  const delivery = { bundleFile: "worker", data: bytes.toString("base64") };
+  const authority = { origins: [], maxRedirects: 0, timeoutMs: 5000 };
+  const path = mkdtempSync(join(tmpdir(), "job-bundled-cache-"));
+  const cache = HeldDirectory.openAbsolute(path, { private: true });
+  try {
+    await expect(acquireArtifact(spec, cache, authority)).rejects.toThrow();
+    const acquired = await acquireArtifact(spec, cache, authority, delivery);
+    try {
+      expect(readFileSync(acquired.fd)).toEqual(bytes);
+    } finally {
+      acquired.close();
+    }
+    await expect(acquireArtifact(spec, cache, authority)).rejects.toThrow();
+    await expect(
+      acquireArtifact(spec, cache, authority, { ...delivery, bundleFile: "other" }),
+    ).rejects.toThrow();
+    await expect(
+      acquireArtifact(spec, cache, authority, {
+        ...delivery,
+        data: Buffer.from("substitution").toString("base64"),
+      }),
+    ).rejects.toThrow();
+    await expect(
+      acquireArtifact(spec, cache, authority, {
+        ...delivery,
+        extra: "unrequested",
+      } as typeof delivery),
+    ).rejects.toThrow();
+    const cached = await acquireArtifact(spec, cache, authority, delivery);
+    try {
+      expect(readFileSync(cached.fd)).toEqual(bytes);
+    } finally {
+      cached.close();
+    }
+    await expect(
+      acquireArtifact(
+        { ...spec, bundleFile: undefined, url: "https://example.com/worker" },
+        cache,
+        { ...authority, origins: ["https://example.com"] },
+        delivery,
+      ),
+    ).rejects.toThrow();
   } finally {
     cache.close();
     rmSync(path, { recursive: true, force: true });

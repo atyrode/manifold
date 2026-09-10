@@ -3,9 +3,11 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./job-configuration": "./src/job-configuration.ts"
   },
   "dependencies": {
+    "@manifold/plugin-kit": "workspace:*",
     "@manifold/protocol": "workspace:*",
     "@xterm/addon-image": "0.9.0",
     "@xterm/addon-serialize": "0.14.0",

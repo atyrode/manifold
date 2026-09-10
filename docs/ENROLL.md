@@ -1,8 +1,11 @@
 # Enrolling a machine (spoke)
 
-Every machine you want terminals on runs one `manifold-agent` process that dials
-OUT to the hub over WebSocket (`/ws/machine`). No inbound ports, no VPN: if the
-box can reach `https://manifold.tyrode.dev`, it can serve shells.
+Every terminal-serving machine runs a retained `manifold-agent --terminal-host` and a
+separately supervised `manifold-agent` transport that dials OUT to the hub over WebSocket
+(`/ws/machine`). No inbound owner port is needed. For full governed Linux execution,
+use [SELF-HOST.md §Full native Linux](SELF-HOST.md#full-native-linux-nixos): its NixOS
+module provisions native enforcement and supports local or explicitly enrolled remote owners.
+The manual units below are **terminal-only**, not a substitute for that native profile.
 
 **Production runs the packaged binary, never repository source.** A mutable
 checkout under a long-running agent is how the 2026-08-27 outage happened: the
@@ -67,10 +70,16 @@ with close code 4403) and returns the replacement exactly once.
 
 ## 2. Run the agent
 
-Three envs; the token comes from the 0600 file so it never appears in a unit
-file or a process environment listing:
+Start the retained host first, then its replaceable transport. Both require the same private
+socket (0600, parent directory 0700). Only the transport receives the machine token:
 
 ```sh
+# In the independently supervised terminal-host lifetime:
+MANIFOLD_TERMINAL_HOST_SOCKET=$HOME/.local/state/manifold/terminal-host/host.sock \
+/path/to/manifold-agent --terminal-host
+
+# In the separate transport lifetime:
+MANIFOLD_TERMINAL_HOST_SOCKET=$HOME/.local/state/manifold/terminal-host/host.sock \
 MANIFOLD_SERVER_URL=https://manifold.tyrode.dev \
 MANIFOLD_MACHINE_TOKEN_FILE=$HOME/.config/manifold/machine.token \
 MANIFOLD_MACHINE_NAME=<machine-name> \
@@ -86,9 +95,14 @@ endpoint itself.
 
 ```sh
 MANIFOLD_SERVER_URL=http://localhost:7777 \
+MANIFOLD_TERMINAL_HOST_SOCKET=$HOME/.local/state/manifold/terminal-host/host.sock \
 MANIFOLD_MACHINE_TOKEN_FILE=$HOME/.config/manifold/machine.token \
 bun packages/agent/src/main.ts
 ```
+
+This development command is the transport only: independently run the same source entry
+with `--terminal-host` and the identical socket path first. Never make a host a child of
+the transport's service cgroup.
 
 Never point a checkout-run agent at a production hub: any branch switch, pull,
 or protocol commit mutates the executable underneath the process.
@@ -98,16 +112,38 @@ or protocol commit mutates the executable underneath the process.
 `ExecStart` points at the immutable store path (or a profile symlink you update
 deliberately). No `WorkingDirectory` into a repository.
 
-### systemd (Linux) — `~/.config/systemd/user/manifold-agent.service`
+### systemd (Linux, terminal-only)
+
+Create `~/.config/systemd/user/manifold-terminal-host.service`:
+
+```ini
+[Unit]
+Description=manifold retained terminal host
+RefuseManualStop=yes
+
+[Service]
+Environment=MANIFOLD_TERMINAL_HOST_SOCKET=%h/.local/state/manifold/terminal-host/host.sock
+ExecStart=/nix/store/<...>-manifold-agent/bin/manifold-agent --terminal-host
+Restart=on-failure
+RestartSec=3
+UMask=0077
+
+[Install]
+WantedBy=default.target
+```
+
+Create the separate `~/.config/systemd/user/manifold-agent.service`:
 
 ```ini
 [Unit]
 Description=manifold machine agent
 After=network-online.target
 Wants=network-online.target
+After=manifold-terminal-host.service
 
 [Service]
 Environment=MANIFOLD_SERVER_URL=https://manifold.tyrode.dev
+Environment=MANIFOLD_TERMINAL_HOST_SOCKET=%h/.local/state/manifold/terminal-host/host.sock
 Environment=MANIFOLD_MACHINE_NAME=%H
 Environment=MANIFOLD_MACHINE_TOKEN_FILE=%h/.config/manifold/machine.token
 ExecStart=/nix/store/<...>-manifold-agent/bin/manifold-agent
@@ -119,9 +155,16 @@ WantedBy=default.target
 ```
 
 ```sh
-systemctl --user daemon-reload && systemctl --user enable --now manifold-agent
-loginctl enable-linger $USER   # keep it running without an open session
+systemctl --user daemon-reload
+systemctl --user enable --now manifold-terminal-host manifold-agent
+loginctl enable-linger "$USER"   # keep both running without an open session
 ```
+
+Keep these unit lifetimes independent: no `PartOf`, `BindsTo` or `Requires` tying the host
+to transport or hub. Replacing the transport preserves the retained host; a stop/restart
+of the host is held behind drain and its private atomic `shutdown_request`, not a signal.
+For native jobs, delegated cgroups, reviewed configuration and output backing are additionally
+required; use the full-native profile rather than adding privileges to these terminal units.
 
 ### launchd (macOS) — `~/Library/LaunchAgents/dev.tyrode.manifold-agent.plist`
 
@@ -141,6 +184,8 @@ loginctl enable-linger $USER   # keep it running without an open session
     <key>MANIFOLD_SERVER_URL</key><string>https://manifold.tyrode.dev</string>
     <key>MANIFOLD_MACHINE_TOKEN_FILE</key>
     <string>/Users/YOU/.config/manifold/machine.token</string>
+    <key>MANIFOLD_TERMINAL_HOST_SOCKET</key>
+    <string>/Users/YOU/.local/state/manifold/terminal-host/host.sock</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -152,11 +197,18 @@ loginctl enable-linger $USER   # keep it running without an open session
 launchctl load -w ~/Library/LaunchAgents/dev.tyrode.manifold-agent.plist
 ```
 
+This plist is the transport only. Create a second independently loaded plist for the host:
+label `dev.tyrode.manifold-terminal-host`, the same immutable binary with argument
+`--terminal-host`, and only `MANIFOLD_TERMINAL_HOST_SOCKET` in its environment.
+Use `KeepAlive` with `SuccessfulExit=false` for the host so accepted maintenance shutdown
+stays stopped. Load the host before the transport. macOS serves terminals, not Linux governed
+jobs; never use transport replacement to unload or replace the host.
+
 ## 4. Upgrades and rollout discipline
 
-- **An agent restart kills every PTY it owns** (CONTRACTS.md §machine channel).
-  Upgrades are operator-timed or idle-gated — never automatic on deploy, and
-  never triggered from inside a manifold terminal on that same machine.
+- **Transport replacement preserves the retained host; host restart destroys its work.**
+  Close admission, drain jobs/terminals and use the atomic maintenance shutdown before
+  replacing an owner. Never perform owner maintenance from a terminal on that owner.
 - **Hub first, spokes at leisure.** Version acceptance is the
   `MACHINE_PROTOCOL_COMPAT_VERSIONS` set, so a newer hub keeps accepting older
   agents. The reverse is rejected loudly (close 4409, `machine_version_rejected`
@@ -168,9 +220,10 @@ launchctl load -w ~/Library/LaunchAgents/dev.tyrode.manifold-agent.plist
   as a pre-release from a `dev` commit and never deployed. Pin refreshers (the dotfiles
   cron) resolve "latest" through GitHub, which excludes pre-releases, and hold any
   candidate whose protocol is newer than the deployed hub (`atyrode/dotfiles#454`).
-- **Verify before removing the old agent.** Start the new binary and confirm
-  `welcome` in its log (and `online: true` from `core.machines.list`) before
-  decommissioning whatever ran previously with the same token.
+- **An incumbent transport seat wins.** Stop only the old transport, start its replacement,
+  then confirm `welcome` and `online: true` without changing the retained host. Do not start
+  competing owners or rotate tokens to displace an occupied seat. Full-native readiness also
+  requires the owner proof and installation acknowledgement, not merely machine `online`.
 
 ## 5. Acceptance checklist (per machine)
 
@@ -181,9 +234,8 @@ launchctl load -w ~/Library/LaunchAgents/dev.tyrode.manifold-agent.plist
   enrolled machine; selecting it opens a shell, typing round-trips, and a second
   browser attaches to the same session.
 - Other machines' terminals are unaffected.
-- Flap test: kill the agent ~30s, sessions on it fail with `no_machine`;
-  restart → machine back online, surviving PTYs re-adopted (`re-adoption` in
-  hub logs).
+- Flap test on a disposable node: interrupt the transport, not the host; the machine becomes
+  unavailable. Restart transport → retained PTYs re-adopt, with owner identity unchanged.
 
 ## Notes
 

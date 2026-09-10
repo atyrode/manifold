@@ -54,10 +54,14 @@ export {
  */
 const terminalFacet: TerminalFacet = {
   View: TerminalView,
-  defaultMachine: (containerId, machines): MachineSummary | null =>
+  defaultMachine: (containerId, machines, execution): MachineSummary | null =>
     machines === null
       ? null
-      : chooseDefaultMachine(machines, recallMachine(browserMachineStorage(), containerId)),
+      : chooseDefaultMachine(
+          machines,
+          recallMachine(browserMachineStorage(), containerId),
+          execution,
+        ),
   rememberMachine: (containerId, machineId) =>
     rememberMachine(browserMachineStorage(), containerId, machineId),
 };

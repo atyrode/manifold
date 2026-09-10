@@ -217,7 +217,9 @@ describe("the instance channel handshake", () => {
     // Protocol and compatibility (docs/CONTRACTS.md) applies independently per wire:
     // expanded closed share vocabularies reset instances, not terminal agents.
     for (let version = 0; version <= PROTOCOL_VERSION + 1; version++) {
-      expect(INSTANCE_PROTOCOL_COMPAT_VERSIONS.has(version)).toBe(version === 27);
+      expect(INSTANCE_PROTOCOL_COMPAT_VERSIONS.has(version)).toBe(
+        version >= 27 && version <= PROTOCOL_VERSION,
+      );
     }
   });
 });

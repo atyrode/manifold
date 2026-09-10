@@ -115,6 +115,7 @@ function ctxWith(
     },
     machines: {
       isOnline: (machineId) => machineId === "m-online",
+      getTerminalExecution: () => null,
       drain: () => Promise.resolve({ ok: false, reason: "fixture has no terminal owner" }),
     },
   };
@@ -372,5 +373,17 @@ describe("serveCtxCall", () => {
     await expect(serveCtxCall("host.roster", [], served)).rejects.toThrow(
       "slice_unavailable: host.roster",
     );
+    for (const method of [
+      "jobs.describe",
+      "services.describe",
+      "services.readConfiguration",
+      "services.configureConfiguration",
+      "services.read",
+      "services.invoke",
+    ] as const) {
+      await expect(serveCtxCall(method, [{ machineId: "machine" }], served)).rejects.toThrow(
+        "slice_unavailable",
+      );
+    }
   });
 });

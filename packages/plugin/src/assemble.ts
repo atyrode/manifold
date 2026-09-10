@@ -1,4 +1,5 @@
 import {
+  ActionDelegatesSchema,
   ActionRequirementsSchema,
   CORE_NAMESPACE_PREFIX,
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
@@ -595,7 +596,7 @@ export function assembleRoster(
       }
       const name = `${manifest.id}.${local.data}`;
       claim(actionNames, name, manifest.id);
-      for (const cap of action.caps) {
+      for (const cap of [...action.caps, ...(action.delegates ?? [])]) {
         const covered =
           manifest.capabilities.includes(cap) ||
           (cap !== "*" && manifest.capabilities.includes("*"));
@@ -603,6 +604,12 @@ export function assembleRoster(
         problems.push(
           `action "${name}" requires cap "${cap}" outside its manifest capabilities [${manifest.capabilities.join(", ")}]`,
         );
+      }
+      if (
+        action.delegates !== undefined &&
+        !ActionDelegatesSchema.safeParse(action.delegates).success
+      ) {
+        problems.push(`action "${name}" has invalid delegated capabilities`);
       }
       if (action.requirements !== undefined) {
         const requirements = ActionRequirementsSchema.safeParse(action.requirements);
@@ -620,6 +627,7 @@ export function assembleRoster(
         name,
         title: action.title,
         caps: [...action.caps],
+        ...(action.delegates === undefined ? {} : { delegates: [...action.delegates] }),
         ...(action.cleanup === true ? { cleanup: true } : {}),
         // Always published, never inferred by the reader: the default is applied HERE so a
         // client answering "may my container-scoped token call this?" reads a value rather than an

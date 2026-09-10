@@ -10,8 +10,13 @@
 #include <unistd.h>
 
 /* Disposable test artifact, not an agent runtime dependency. Build statically for
- * the target architecture and supply MANIFOLD_TEST_SYSCALL_PROBE to job-linux.test.ts. */
-int main(void) {
+ * the target architecture and supply MANIFOLD_TEST_SYSCALL_PROBE to the Linux and owner tests. */
+int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "worker") == 0) {
+    fputs("private-once", stdout);
+    fputs("diagnostic", stderr);
+    return 0;
+  }
   int sockets[2];
   if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) return 10;
   int fd = open("/tmp/descriptor", O_CREAT | O_RDWR, 0600);

@@ -5,6 +5,7 @@ import {
   panelSections,
   sameIndexEntries,
   withPanelSections,
+  type AuthoringHandle,
 } from "@manifold/plugin";
 import {
   ContainerRouteProvider,
@@ -26,7 +27,6 @@ import {
 } from "@manifold/plugin/hooks";
 import { ContainerResponseSchema } from "@manifold/protocol";
 import type {
-  MachineSummary,
   Container,
   Attendance,
   IndexEntry,
@@ -418,7 +418,7 @@ export function WorkspaceHost({
    * would call it instead of storing it.
    */
   const [compositionCreate, setCompositionCreate] = useState<{
-    readonly create: (machine?: MachineSummary) => void;
+    readonly create: AuthoringHandle["createTerminal"];
   } | null>(null);
   const [fetchedContainer, setFetchedContainer] = useState<Container | null>(null);
   const [unresolvedContainerId, setUnresolvedContainerId] = useState<string | null>(null);
@@ -697,7 +697,7 @@ export function WorkspaceHost({
 
   /** Stable identity: the publishing effect inside the composition must not re-run per render. */
   const onCreateTerminalChange = useCallback(
-    (create: ((machine?: MachineSummary) => void) | null): void => {
+    (create: AuthoringHandle["createTerminal"] | null): void => {
       setCompositionCreate(create === null ? null : { create });
     },
     [],

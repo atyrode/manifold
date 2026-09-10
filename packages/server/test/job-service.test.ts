@@ -1,10 +1,15 @@
 import "../src/shared-modules.ts";
 import { describe, expect, test } from "bun:test";
-import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
+import { createHash, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { formatManifoldUri, type Cap } from "@manifold/protocol";
+import {
+  formatManifoldUri,
+  PluginBundleSchema,
+  JOB_OWNER_PROTOCOL_VERSION,
+  type Cap,
+} from "@manifold/protocol";
 import {
   canonicalJobJson,
   type JobCommand,
@@ -85,6 +90,7 @@ function fixture(path = ":memory:"): Fixture {
   };
   const pair = generateKeyPairSync("ed25519");
   const owner: JobOwner = {
+    protocolVersion: JOB_OWNER_PROTOCOL_VERSION,
     ownerId: "test-owner",
     publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(),
     generation: 1,
@@ -154,6 +160,557 @@ function execute(f: Fixture, jobId = "job", value = "safe") {
   });
 }
 
+test("uncertain service completion holds its lifetime until a fenced empty-tree proof arrives", () => {
+  const f = fixture();
+  try {
+    consent(f, "machines:run");
+    prove(f);
+    const admitted = execute(f);
+    if (!admitted.permit) throw new Error("fixture did not commit a native start");
+    const serviceId = `${pluginId}.broker`;
+    const unsigned: Omit<typeof admitted.request, "requestDigest"> & { requestDigest?: string } = {
+      ...admitted.request,
+      jobId: "service-producer",
+      service: { serviceId, revision: "service-r1", policySha256: hash },
+    };
+    delete unsigned.requestDigest;
+    const request = {
+      ...unsigned,
+      requestDigest: createHash("sha256").update(canonicalJobJson(unsigned)).digest("hex"),
+    };
+    f.service.jobs.reserve(request, f.runtime.now());
+    f.service.jobs.state(request.jobId, "start-committed", {
+      ...admitted.permit,
+      jobId: request.jobId,
+      requestDigest: request.requestDigest,
+    });
+    f.service.event(f.channel, {
+      type: "refusal",
+      jobId: request.jobId,
+      reason: "resource_owner_unavailable",
+    });
+    expect(f.service.jobs.get(request.jobId)?.state).toBe("interrupted");
+    const outstanding = () =>
+      f.service.jobs.instanceServiceJobs(serviceId).map((job) => job.request.jobId);
+    expect(outstanding()).toEqual([request.jobId]);
+    const proof = {
+      type: "workload_empty" as const,
+      jobId: request.jobId,
+      requestDigest: request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+    };
+    f.service.event(f.channel, { ...proof, ownerGeneration: f.owner.generation + 1 });
+    expect(outstanding()).toEqual([request.jobId]);
+    f.service.event(f.channel, proof);
+    expect(outstanding()).toEqual([]);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("same-generation reconnect recovers a lost started notification without reviving closed work", () => {
+  const f = fixture();
+  try {
+    consent(f, "machines:run");
+    prove(f);
+    const job = execute(f);
+    const result = {
+      jobId: job.request.jobId,
+      requestDigest: job.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+      state: "started" as const,
+      exitCode: null,
+      reason: null,
+      startedAt: f.runtime.now(),
+      finishedAt: null,
+      usage: null,
+      limits: job.request.limits,
+      outputs: [],
+    };
+    f.service.offline(f.channel);
+    prove(f);
+    f.service.event(f.channel, {
+      type: "result",
+      result: { ...result, requestDigest: "f".repeat(64) },
+    });
+    f.service.event(f.channel, { type: "result", result: { ...result, ownerGeneration: 0 } });
+    expect(f.service.jobs.get(job.request.jobId)?.state).toBe("start-committed");
+    f.service.event(f.channel, { type: "result", result });
+    expect(f.service.jobs.get(job.request.jobId)?.state).toBe("started");
+    f.service.event(f.channel, { type: "result", result: { ...result, state: "start-committed" } });
+    expect(f.service.jobs.get(job.request.jobId)?.state).toBe("started");
+    f.service.event(f.channel, {
+      type: "result",
+      result: { ...result, state: "exited", exitCode: 0, finishedAt: f.runtime.now() },
+    });
+    f.service.event(f.channel, { type: "result", result });
+    expect(f.service.jobs.get(job.request.jobId)?.state).toBe("exited");
+
+    const closed = execute(f, "closed-before-started");
+    f.service.event(f.channel, {
+      type: "workload_empty",
+      jobId: closed.request.jobId,
+      requestDigest: closed.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: 1,
+    });
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        ...result,
+        jobId: closed.request.jobId,
+        requestDigest: closed.request.requestDigest,
+      },
+    });
+    expect(f.service.jobs.get(closed.request.jobId)?.state).toBe("start-committed");
+    expect(f.service.jobs.get(closed.request.jobId)?.ownerClosed).toBe(true);
+
+    const priorGeneration = execute(f, "old-generation");
+    f.service.offline(f.channel);
+    f.owner.generation++;
+    prove(f);
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        ...result,
+        jobId: priorGeneration.request.jobId,
+        requestDigest: priorGeneration.request.requestDigest,
+      },
+    });
+    expect(f.service.jobs.get(priorGeneration.request.jobId)?.state).toBe("start-committed");
+  } finally {
+    f.store.close();
+  }
+});
+
+function inputFixture() {
+  const f = fixture();
+  consent(f, "machines:run");
+  consent(f, "jobs:input");
+  consent(f, "jobs:read");
+  prove(f);
+  const job = execute(f);
+  const node = {
+    kind: "job" as const,
+    machineId: f.machineId,
+    operationId,
+    jobId: job.request.jobId,
+  };
+  const identity = {
+    jobId: job.request.jobId,
+    requestDigest: job.request.requestDigest,
+    ownerId: f.owner.ownerId,
+    ownerGeneration: f.owner.generation,
+  };
+  f.service.event(f.channel, { type: "state", ...identity, state: "started" });
+  const cursor = (seq: number, closed = false) =>
+    f.service.event(f.channel, {
+      type: "input_state",
+      ...identity,
+      nextInputSeq: seq,
+      stdinClosed: closed,
+    });
+  cursor(0);
+  const input = (requestId: string, seq = 0) =>
+    jobContext(() => f.service, f.root, pluginId, 42).input({
+      node,
+      requestId,
+      seq,
+      data: Buffer.from("private-callback").toString("base64"),
+      eof: false,
+    });
+  const authorize = (requestId: string, seq = 0) =>
+    f.service.event(f.channel, {
+      type: "input_authorize",
+      jobId: node.jobId,
+      requestId,
+      seq,
+      parentJobId: null,
+    });
+  const receipt = (requestId: string, accepted: boolean, seq = 0) =>
+    f.service.event(f.channel, {
+      type: "input_result",
+      jobId: node.jobId,
+      requestId,
+      seq,
+      accepted,
+      reason: accepted ? null : "job_input_conflict_or_closed",
+      nextInputSeq: accepted ? seq + 1 : seq,
+      stdinClosed: false,
+    });
+  return { ...f, node, input, authorize, receipt, cursor };
+}
+
+test("stdin accepts only an owner receipt; stale concurrent input cannot poison a running job", async () => {
+  const f = inputFixture();
+  try {
+    let accepted = false;
+    const first = f.input("first").then((result) => {
+      accepted = true;
+      return result;
+    });
+    await Promise.resolve();
+    expect(accepted).toBe(false);
+    expect(f.service.publicJob(f.service.status(f.root, f.node)).nextInputSeq).toBeNull();
+    await expect(f.input("stale")).rejects.toThrow("job_input_pending");
+    f.receipt("unrelated", false);
+    expect(f.service.status(f.root, f.node).state).toBe("started");
+    f.authorize("first");
+    expect(f.commands.at(-1)).toMatchObject({ type: "input_authorized", allowed: true });
+    f.receipt("first", true);
+    f.cursor(1);
+    expect(await first).toEqual({ accepted: true });
+    await expect(f.input("stale-again")).rejects.toThrow("job_input_sequence_conflict");
+    expect(f.service.publicJob(f.service.status(f.root, f.node)).nextInputSeq).toBe(1);
+    expect(f.commands.some((command) => command.type === "cancel")).toBe(false);
+    const attempt = f.store.db.query("SELECT * FROM machine_job_inputs").get();
+    expect(attempt).toMatchObject({
+      request_id: "first",
+      actor: f.root.principal.id,
+      trace_id: "42",
+      state: "accepted",
+    });
+    expect(JSON.stringify(attempt)).not.toContain("private-callback");
+    expect(JSON.stringify(attempt)).not.toContain(
+      Buffer.from("private-callback").toString("base64"),
+    );
+  } finally {
+    f.store.close();
+  }
+});
+
+test.each(["disconnect", "false-send", "throw-send"] as const)(
+  "stdin %s leaves an unknown receipt and never replays after reconciliation",
+  async (failure) => {
+    const f = inputFixture();
+    try {
+      if (failure !== "disconnect")
+        f.channel.send = () => {
+          if (failure === "throw-send") throw new Error("private transport detail");
+          return false;
+        };
+      const pending = f.input("uncertain");
+      if (failure === "disconnect") f.service.offline(f.channel);
+      await expect(pending).rejects.toThrow("job_input_delivery_unknown");
+      expect(f.store.db.query("SELECT state FROM machine_job_inputs").get()).toEqual({
+        state: "unknown",
+      });
+      f.channel.send = ({ command }) => {
+        f.commands.push(command);
+        return true;
+      };
+      prove(f);
+      expect(f.service.publicJob(f.service.status(f.root, f.node)).nextInputSeq).toBeNull();
+      f.cursor(0); // The owner, not a transport failure, can establish this cursor.
+      await expect(f.input("uncertain")).rejects.toThrow("job_input_request_replayed");
+      expect(f.commands.filter((command) => command.type === "input")).toHaveLength(
+        failure === "disconnect" ? 1 : 0,
+      );
+      const fresh = f.input("fresh");
+      f.authorize("fresh");
+      f.receipt("fresh", true);
+      f.cursor(1);
+      await fresh;
+      f.cursor(0); // A late older snapshot cannot rewind consumed native input.
+      expect(f.service.publicJob(f.service.status(f.root, f.node)).nextInputSeq).toBe(1);
+    } finally {
+      f.store.close();
+    }
+  },
+);
+
+test("a lost stdin acknowledgment times out without acceptance or automatic replay", async () => {
+  const f = inputFixture();
+  try {
+    const pending = f.input("lost-ack");
+    f.authorize("lost-ack");
+    await expect(pending).rejects.toThrow("job_input_delivery_unknown");
+    expect(f.service.publicJob(f.service.status(f.root, f.node)).nextInputSeq).toBeNull();
+    f.cursor(1);
+    expect(f.service.publicJob(f.service.status(f.root, f.node)).nextInputSeq).toBe(1);
+    expect(f.commands.filter((command) => command.type === "input")).toHaveLength(1);
+    expect(f.store.db.query("SELECT state FROM machine_job_inputs").get()).toEqual({
+      state: "unknown",
+    });
+    expect(f.service.jobs.get(f.node.jobId)?.state).toBe("started");
+  } finally {
+    f.store.close();
+  }
+}, 15000);
+
+test("stdin rechecks current caller and original run authority before writing and acknowledging", async () => {
+  for (const phase of ["before-write", "after-write", "original"] as const) {
+    const f = inputFixture();
+    try {
+      const pending = f.input(phase);
+      if (phase === "after-write") f.authorize(phase);
+      consent(f, phase === "original" ? "machines:run" : "jobs:input", false);
+      if (phase !== "after-write") {
+        f.authorize(phase);
+        expect(f.commands.at(-1)).toMatchObject({ type: "input_authorized", allowed: false });
+      }
+      f.receipt(phase, phase === "after-write");
+      await expect(pending).rejects.toThrow();
+      expect(f.service.jobs.get(f.node.jobId)?.state).toBe("started");
+    } finally {
+      f.store.close();
+    }
+  }
+});
+
+test("stdin rejects disconnected, unproved, not-started and closed streams without dispatch", async () => {
+  for (const state of ["offline", "unproved", "starting", "closed"] as const) {
+    const f = inputFixture();
+    try {
+      if (state === "offline") f.service.offline(f.channel);
+      if (state === "unproved") f.service.online(f.channel, f.owner, "new-epoch");
+      if (state === "starting") f.service.jobs.state(f.node.jobId, "start-committed");
+      if (state === "closed") f.cursor(0, true);
+      await expect(f.input(state)).rejects.toThrow();
+      expect(f.commands.some((command) => command.type === "input")).toBe(false);
+    } finally {
+      f.store.close();
+    }
+  }
+});
+
+test("authenticated owner receives only selected deduplicated machine members; substituted sources cannot replace the revision", () => {
+  const f = fixture();
+  try {
+    const bytes = Buffer.from("private worker bytes");
+    const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+    const bundled: MachineHalf = {
+      ...machine,
+      artifacts: {
+        "linux-x64": {
+          ...machine.artifacts["linux-x64"]!,
+          url: undefined,
+          bundleFile: "worker",
+          sha256,
+          entrySha256: sha256,
+        },
+      },
+    };
+    const tool = { ...bundled.artifacts["linux-x64"]!, bundleFile: "engine" };
+    bundled.tools = {
+      engine: { "linux-x64": tool, "linux-arm64": { ...tool, bundleFile: "other-platform" } },
+      duplicate: { "linux-x64": tool },
+      primaryAlias: { "linux-x64": bundled.artifacts["linux-x64"]! },
+    };
+    const bundle = PluginBundleSchema.parse({
+      format: 1,
+      manifest: {
+        id: pluginId,
+        version: "1.0.0",
+        title: "Worker",
+        description: "Private worker",
+        capabilities: [],
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+        entry: { web: "web.js" },
+        machine: bundled,
+      },
+      files: {
+        "web.js": Buffer.from("export {};").toString("base64"),
+        worker: bytes.toString("base64"),
+        engine: bytes.toString("base64"),
+        "other-platform": bytes.toString("base64"),
+      },
+    });
+    f.service.setManifestResolver(() => bundled);
+    f.service.setBundleResolver(() => bundle);
+    f.service.install(f.root, {
+      machineId: f.machineId,
+      pluginId,
+      installationRevision: "bundled",
+      artifactSha256: sha256,
+      machine: bundled,
+    });
+    expect(f.commands).toEqual([]);
+    prove(f);
+    const command = f.commands.find((command) => command.type === "install");
+    if (command?.type !== "install") throw new Error("owner did not receive installation");
+    expect(command.installationRevision).toBe("bundled");
+    expect(command.artifactSha256).toBe(sha256);
+    expect(command.artifact?.bundleFile).toBe("worker");
+    expect(Buffer.from(command.artifact!.data, "base64")).toEqual(bytes);
+    expect(command.toolArtifacts).toEqual({ engine: bytes.toString("base64") });
+    const priorCommands = f.commands.length;
+    for (const source of [
+      null,
+      {
+        ...bundle,
+        files: { ...bundle.files, worker: Buffer.from("substitution").toString("base64") },
+      },
+      {
+        ...bundle,
+        files: { ...bundle.files, engine: Buffer.from("substitution").toString("base64") },
+      },
+    ]) {
+      f.service.setBundleResolver(() => source);
+      expect(() =>
+        f.service.install(f.root, {
+          machineId: f.machineId,
+          pluginId,
+          installationRevision: "substituted",
+          artifactSha256: sha256,
+          machine: bundled,
+        }),
+      ).toThrow();
+      expect(f.service.jobs.installation(f.machineId, pluginId)?.revision).toBe("bundled");
+      expect(f.commands.length).toBe(priorCommands);
+    }
+    f.service.setBundleResolver(() => null);
+    f.service.offline(f.channel);
+    f.commands.length = 0;
+    prove(f);
+    const unavailable = f.commands.find((command) => command.type === "install");
+    if (unavailable?.type !== "install") throw new Error("missing pinned acquisition attempt");
+    expect(unavailable.installationRevision).toBe("bundled");
+    expect(unavailable.artifactSha256).toBe(sha256);
+    expect(unavailable.artifact).toBeUndefined();
+    expect(f.commands.some((command) => command.type === "drain")).toBe(true);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("bound terminal admission requires current spawn authority, exact pins and the proved native host", () => {
+  const f = fixture();
+  try {
+    const containerId = "terminal-home";
+    f.store.createContainer({
+      id: containerId,
+      name: "terminal",
+      discipline: "composition",
+      createdAt: f.runtime.now(),
+    });
+    const spawnTrace = (actor: AuthContext) =>
+      f.store.appendTrace({
+        actor: actor.principal.id,
+        authority: "terminals:spawn",
+        door: "core.terminals.open",
+        containerId,
+        session: null,
+        ts: f.runtime.now(),
+        outcome: "ok",
+        targets: [],
+        payload: {},
+      });
+    let traceId = spawnTrace(f.root);
+    const runtime = {
+      pluginId,
+      operationId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+      resourceBindingDigest: createHash("sha256").update("null").digest("hex"),
+      input: { value: "safe" },
+    };
+    const binding = {
+      terminalId: "native-terminal",
+      terminalHostId: "native-host",
+      containerId: "new-solo-home",
+    };
+    const forged = {
+      jobId: "forged",
+      machineId: f.machineId,
+      operationId,
+      input: runtime.input,
+      outputs: [],
+      terminal: binding,
+    };
+    expect(() => f.service.execute(f.root, pluginId, "trace", forged)).toThrow(
+      "native_terminal_admission_required",
+    );
+    consent(f, "machines:run");
+    prove(f);
+    expect(() => f.service.admitTerminal(f.root, runtime, f.machineId, binding, traceId)).toThrow();
+    f.owner.terminalHostId = "native-host";
+    prove(f);
+    expect(() =>
+      f.service.admitTerminal(
+        f.root,
+        { ...runtime, installationRevision: "stale" },
+        f.machineId,
+        binding,
+        traceId,
+      ),
+    ).toThrow();
+    expect(() =>
+      f.service.admitTerminal(
+        f.root,
+        runtime,
+        f.machineId,
+        { ...binding, terminalHostId: "other-host" },
+        traceId,
+      ),
+    ).toThrow();
+    const token = f.auth.mintToken(
+      {
+        principal: { name: "terminal-opener", kind: "agent" },
+        caps: ["machines:run", "terminals:spawn"],
+      },
+      f.root,
+    );
+    const original = f.auth.authenticate(token.token);
+    traceId = spawnTrace(original);
+    const first = f.service.admitTerminal(original, runtime, f.machineId, binding, traceId);
+    // Admission returns a one-use command to the terminal broker, never a second job-channel start.
+    expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+    f.service.tick();
+    expect(f.commands.filter((command) => command.type === "cancel")).toEqual([]);
+    f.service.cancelTerminal(binding.terminalId);
+    expect(f.commands.at(-1)).toMatchObject({ type: "cancel", jobId: first.request.jobId });
+    const revoked = f.service.admitTerminal(
+      original,
+      runtime,
+      f.machineId,
+      { ...binding, terminalId: "revoked-terminal" },
+      traceId,
+    );
+    f.auth.grant(
+      {
+        principal: { kind: "principal", id: original.principal.id },
+        node: formatManifoldUri({ kind: "container", containerId }),
+        caps: ["terminals:spawn"],
+        effect: "deny",
+        reach: "node",
+      },
+      f.root,
+    );
+    f.service.tick();
+    expect(
+      f.commands.some(
+        (command) => command.type === "cancel" && command.jobId === revoked.request.jobId,
+      ),
+    ).toBe(true);
+    // Reusing the original authenticated context cannot outrun current grant revocation.
+    expect(() =>
+      f.service.admitTerminal(
+        original,
+        runtime,
+        f.machineId,
+        { ...binding, terminalId: "denied" },
+        traceId,
+      ),
+    ).toThrow();
+    consent(f, "machines:run", false);
+    traceId = spawnTrace(f.root);
+    expect(() =>
+      f.service.admitTerminal(
+        f.root,
+        runtime,
+        f.machineId,
+        { ...binding, terminalId: "no-consent" },
+        traceId,
+      ),
+    ).toThrow();
+    expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+  } finally {
+    f.store.close();
+  }
+});
 describe("retained job discovery", () => {
   test("bounded pages omit unreadable runs and recheck current authority", () => {
     const f = fixture();
@@ -440,6 +997,7 @@ describe("job lifecycle audit and inspection", () => {
       const scheduled = f.service.jobs.active()[0]!;
       expect(lifecycle(f, scheduled.request.jobId)[0]!.payload.origin).toEqual({
         kind: "schedule",
+        door: "sample.worker.schedule",
         traceId,
         scheduleId: "periodic",
         revision: "r1",
@@ -484,11 +1042,288 @@ describe("job lifecycle audit and inspection", () => {
       const child = f.service.jobs.active().find((job) => job.request.parent !== null)!;
       expect(lifecycle(f, child.request.jobId)[0]!.payload.origin).toEqual({
         kind: "invocation",
+        door: "sample.worker.schedule",
         traceId,
         parentJobId: scheduled.request.jobId,
         invocationId: "child",
       });
       expect(lifecycle(f, child.request.jobId)[0]!.row.door).toBe("sample.worker.schedule");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("runtime candidates follow exact installed service policies without approving an edge", () => {
+    const f = fixture();
+    try {
+      const calleePlugin = "sample.runtime";
+      const calleeOperation = `${calleePlugin}.serve`;
+      const locationId = `${calleePlugin}.data`;
+      const runtimeMachine: MachineHalf = {
+        ...machine,
+        locations: {
+          [locationId]: { anchor: "data", components: ["runtime"], revision: "location-r1" },
+        },
+        operations: {
+          [calleeOperation]: {
+            ...machine.operations[operationId]!,
+            providesService: true,
+            locations: [{ locationId, access: "read" }],
+          },
+        },
+      };
+      const policy = {
+        serviceId: "sample.service",
+        revision: "service-r1",
+        maxConcurrent: 1,
+        runtime: {
+          pluginId: calleePlugin,
+          operationId: calleeOperation,
+          installationRevision: "callee-r1",
+          artifactSha256: hash,
+          resourceBindingDigest: createHash("sha256").update(canonicalJobJson(null)).digest("hex"),
+          input: { value: { literal: "serve" } },
+        },
+        operations: {
+          inspect: {
+            kind: "http-proxy" as const,
+            method: "GET" as const,
+            path: "/",
+            request: { kind: "none" as const },
+            response: {
+              kind: "stream" as const,
+              disclosure: "full" as const,
+              contentTypes: ["application/json" as const],
+              headers: [],
+            },
+            timeoutMs: 1000,
+            maxRequestBytes: 1024,
+            maxResponseBytes: 4096,
+          },
+        },
+      };
+      const policySha256 = createHash("sha256").update(canonicalJobJson(policy)).digest("hex");
+      const callerMachine: MachineHalf = {
+        ...machine,
+        operations: {
+          [operationId]: {
+            ...machine.operations[operationId]!,
+            services: [
+              { serviceId: policy.serviceId, revision: policy.revision, operationIds: ["inspect"] },
+            ],
+          },
+        },
+      };
+      f.service.setManifestResolver((id) =>
+        id === pluginId ? callerMachine : id === calleePlugin ? runtimeMachine : null,
+      );
+      f.service.install(f.root, {
+        machineId: f.machineId,
+        pluginId: calleePlugin,
+        installationRevision: "callee-r1",
+        artifactSha256: hash,
+        machine: runtimeMachine,
+      });
+      expect(
+        f.service
+          .readServiceConfiguration(f.root, { machineId: f.machineId })
+          .runtimeCandidates.map((candidate) => candidate.runtime),
+      ).toEqual([
+        {
+          pluginId: calleePlugin,
+          operationId: calleeOperation,
+          installationRevision: "callee-r1",
+          artifactSha256: hash,
+          resourceBindingDigest: policy.runtime.resourceBindingDigest,
+        },
+      ]);
+      expect(() =>
+        jobContext(() => f.service, f.root, pluginId, 1).describe({
+          machineId: f.machineId,
+          pluginId: calleePlugin,
+        }),
+      ).toThrow();
+      f.service.configureServiceConfiguration(f.root, {
+        machineId: f.machineId,
+        expectedRevision: null,
+        policies: [policy],
+      });
+      f.owner.resources = {
+        tools: {},
+        anchors: {},
+        services: { [policy.serviceId]: policySha256 },
+        serviceDefinitions: {
+          [policy.serviceId]: { revision: policy.revision, operationIds: ["inspect"] },
+        },
+      };
+      prove(f);
+      f.service.install(f.root, {
+        machineId: f.machineId,
+        pluginId,
+        installationRevision: "caller-r2",
+        artifactSha256: hash,
+        machine: callerMachine,
+        resourceBindings: {
+          tools: {},
+          anchors: {},
+          services: { [policy.serviceId]: policySha256 },
+        },
+      });
+      const args = { machineId: f.machineId, pluginId };
+      const inspected = f.service.inspectInvocations(f.root, args);
+      expect(inspected.edges).toEqual([]);
+      expect(inspected.unavailable).toEqual([]);
+      expect(inspected.candidates).toEqual([
+        {
+          serviceId: policy.serviceId,
+          revision: policy.revision,
+          operationIds: ["inspect"],
+          policySha256,
+          caller: {
+            machineId: f.machineId,
+            pluginId,
+            operationId,
+            installationRevision: "caller-r2",
+            artifactSha256: hash,
+          },
+          callee: {
+            machineId: f.machineId,
+            pluginId: calleePlugin,
+            operationId: calleeOperation,
+            installationRevision: "callee-r1",
+            artifactSha256: hash,
+          },
+          resources: [{ locationId, access: "read", revision: "location-r1" }],
+          locations: runtimeMachine.locations,
+          callerLimits: limits,
+          calleeLimits: limits,
+          outputNames: [],
+          outputLocations: {},
+        },
+      ]);
+      const candidate = inspected.candidates[0]!;
+      f.service.setInvocationEdge(f.root, {
+        enabled: true,
+        edge: {
+          caller: candidate.caller,
+          callee: candidate.callee,
+          resources: candidate.resources,
+          outputs: [],
+          maxDepth: 1,
+          maxConcurrency: 1,
+          aggregate: limits,
+        },
+      });
+      f.service.install(f.root, {
+        machineId: f.machineId,
+        pluginId: calleePlugin,
+        installationRevision: "callee-r2",
+        artifactSha256: hash,
+        machine: runtimeMachine,
+      });
+      expect(
+        f.service.readServiceConfiguration(f.root, { machineId: f.machineId }).runtimeCandidates[0]
+          ?.runtime.installationRevision,
+      ).toBe("callee-r2");
+      const changed = f.service.inspectInvocations(f.root, args);
+      expect(changed.candidates).toEqual([]);
+      expect(changed.unavailable).toEqual([
+        {
+          caller: candidate.caller,
+          serviceId: policy.serviceId,
+          revision: policy.revision,
+          reason: "service_runtime_changed",
+        },
+      ]);
+      expect(changed.edges[0]?.edge.callee.installationRevision).toBe("callee-r1");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("root inspection preserves stale exact edges for revocation, never renewed approval", () => {
+    const f = fixture();
+    try {
+      const target = {
+        machineId: f.machineId,
+        pluginId,
+        operationId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+      };
+      const edge = {
+        caller: target,
+        callee: target,
+        resources: [],
+        outputs: [],
+        maxDepth: 2,
+        maxConcurrency: 2,
+        aggregate: limits,
+      };
+      const args = { machineId: f.machineId, pluginId };
+      f.service.setInvocationEdge(f.root, { edge, enabled: true });
+      const token = f.auth.mintToken(
+        { principal: { name: "scoped", kind: "agent" }, caps: ["jobs:read"] },
+        f.root,
+      );
+      const scoped = f.auth.authenticate(token.token);
+      expect(() =>
+        jobContext(() => f.service, scoped, "engine.jobs", 1).inspectInvocations(args),
+      ).toThrow();
+      expect(() =>
+        jobContext(() => f.service, f.root, pluginId, 1).inspectInvocations(args),
+      ).toThrow("job_admin_required");
+      f.service.install(f.root, {
+        machineId: f.machineId,
+        pluginId,
+        installationRevision: "r2",
+        artifactSha256: hash,
+        machine,
+      });
+      const inspection = jobContext(() => f.service, f.root, "engine.jobs", 1).inspectInvocations(
+        args,
+      );
+      expect(inspection.edges).toEqual([{ edge, enabled: true }]);
+      expect(inspection.candidates).toEqual([]);
+      expect(() => f.service.setInvocationEdge(f.root, { edge, enabled: true })).toThrow(
+        "invocation_target_changed",
+      );
+      expect(() => f.service.setInvocationEdge(scoped, { edge, enabled: false })).toThrow();
+      f.service.setInvocationEdge(f.root, { edge, enabled: false });
+      expect(f.service.inspectInvocations(f.root, args).edges).toEqual([{ edge, enabled: false }]);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("revoking an earlier inspected edge cannot replace a newer bounded approval", () => {
+    const f = fixture();
+    try {
+      const target = {
+        machineId: f.machineId,
+        pluginId,
+        operationId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+      };
+      const edge = {
+        caller: target,
+        callee: target,
+        resources: [],
+        outputs: [],
+        maxDepth: 2,
+        maxConcurrency: 2,
+        aggregate: limits,
+      };
+      f.service.setInvocationEdge(f.root, { edge, enabled: true });
+      const replacement = { ...edge, maxConcurrency: 1 };
+      f.service.setInvocationEdge(f.root, { edge: replacement, enabled: true });
+      expect(() => f.service.setInvocationEdge(f.root, { edge, enabled: false })).toThrow(
+        "invocation_edge_changed",
+      );
+      expect(
+        f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId }).edges,
+      ).toEqual([{ edge: replacement, enabled: true }]);
     } finally {
       f.store.close();
     }
@@ -652,7 +1487,9 @@ describe("durable job authority", () => {
       const before = f.commands.length;
       expect(() => unrelated.status(node)).toThrow();
       expect(() => unrelated.follow(node, () => {})).toThrow();
-      expect(() => unrelated.input({ node, seq: 1, data: "eA==", eof: false })).toThrow();
+      expect(() =>
+        unrelated.input({ node, requestId: "denied-input", seq: 1, data: "eA==", eof: false }),
+      ).toThrow();
       expect(() => unrelated.cancel(node)).toThrow();
       expect(() =>
         unrelated.output({
@@ -664,10 +1501,6 @@ describe("durable job authority", () => {
       expect(f.commands.length).toBe(before);
       expect(own.status(node).jobId).toBe("job");
       expect(admin.status(node).jobId).toBe("job");
-      own.input({ node, seq: 1, data: "eA==", eof: false });
-      expect(f.commands.at(-1)?.type).toBe("input");
-      own.cancel(node);
-      expect(f.commands.at(-1)?.type).toBe("cancel");
     } finally {
       f.store.close();
     }

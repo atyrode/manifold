@@ -280,6 +280,7 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
       name: "revoke-attach-machine",
       agentVersion: "testkit",
       protocolVersion: PROTOCOL_VERSION,
+      terminalExecution: "unconfined",
       terminals: [],
     });
     const welcome = await waitFor(
@@ -469,6 +470,7 @@ test("machine re-enroll is idempotent and rotation fences the live agent", async
       name: "idempotent-machine",
       agentVersion: "testkit",
       protocolVersion: PROTOCOL_VERSION,
+      terminalExecution: "unconfined",
       terminals: [],
     });
     const welcome = await waitFor(
@@ -518,6 +520,7 @@ test("machine re-enroll is idempotent and rotation fences the live agent", async
       name: "idempotent-machine",
       agentVersion: "testkit",
       protocolVersion: PROTOCOL_VERSION,
+      terminalExecution: "unconfined",
       terminals: [],
     });
     const staleClose = await waitFor(() => stale.closeInfo, 5_000, 20);
@@ -533,6 +536,7 @@ test("machine re-enroll is idempotent and rotation fences the live agent", async
       name: "idempotent-machine",
       agentVersion: "testkit",
       protocolVersion: PROTOCOL_VERSION,
+      terminalExecution: "unconfined",
       terminals: [],
     });
     const freshWelcome = await waitFor(

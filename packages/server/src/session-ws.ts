@@ -828,22 +828,22 @@ export class SessionGateway {
     action: string,
     ref: string,
     args: Record<string, unknown>,
-  ): Promise<boolean> {
+  ): Promise<Extract<ActionOutcome, { ok: true }> | null> {
     let outcome: ActionOutcome;
     try {
       outcome = await this.plugins.dispatch(peer.auth, action, args, connection.id);
     } catch {
       peer.send({ type: "error", code: "conflict", message: `${action} failed`, ref });
-      return false;
+      return null;
     }
-    if (outcome.ok) return true;
+    if (outcome.ok) return outcome;
     peer.send({
       type: "error",
       code: DENIAL_ERROR_CODES[outcome.denial.rule],
       message: outcome.denial.message,
       ref,
     });
-    return false;
+    return null;
   }
 
   /**
@@ -936,8 +936,16 @@ export class SessionGateway {
           ...(message.placement === undefined ? {} : { placement: message.placement }),
           ...(message.program === undefined ? {} : { program: message.program }),
           ...(message.env === undefined ? {} : { env: message.env }),
+          ...(message.runtime === undefined ? {} : { runtime: message.runtime }),
         }).then((allowed) => {
-          if (allowed) this.broker.open(peer, message);
+          if (allowed) {
+            const result = allowed.result;
+            const traceId =
+              result !== null && typeof result === "object"
+                ? Reflect.get(result, "traceId")
+                : undefined;
+            this.broker.open(peer, message, typeof traceId === "number" ? traceId : undefined);
+          }
         });
         return;
       case "terminal_attach":

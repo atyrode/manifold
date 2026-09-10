@@ -18,6 +18,7 @@ import {
   type TerminalEnv,
   type TerminalInfo,
   type TerminalProgram,
+  type TerminalRuntime,
   type UiNode,
   type WebHostMethod,
   type WebIsolateHostFrame,
@@ -48,16 +49,27 @@ export type GuestWebPlaceOutcome =
   | { readonly ok: false; readonly denial: PlacementDenial };
 
 /** The `terminal_open` request, as `SessionClient.openTerminal` takes it. */
-export interface OpenTerminalOptions {
+export type OpenTerminalOptions = {
   readonly elementId: string;
   readonly cols: number;
   readonly rows: number;
-  readonly cwd?: string | undefined;
+  readonly runtime?: TerminalRuntime | undefined;
   readonly machineId?: string | undefined;
   readonly placement?: "tile" | undefined;
-  readonly program?: TerminalProgram | undefined;
-  readonly env?: TerminalEnv | undefined;
-}
+} & (
+  | {
+      readonly runtime: TerminalRuntime;
+      readonly program?: never;
+      readonly env?: never;
+      readonly cwd?: never;
+    }
+  | {
+      readonly runtime?: never;
+      readonly program?: TerminalProgram | undefined;
+      readonly env?: TerminalEnv | undefined;
+      readonly cwd?: string | undefined;
+    }
+);
 
 export interface OpenStreamOptions {
   readonly kind: string;
