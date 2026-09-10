@@ -306,6 +306,38 @@ for (const [overrides, reason] of [
   });
 }
 
+test("a mismatched expected supervisor PID holds without requesting shutdown", async () => {
+  const owner = await ownerFixture((type, socket) => {
+    if (type === "status_request") send(socket, status());
+    if (type === "shutdown_request")
+      send(socket, { type: "shutting_down", terminalHostId: HOST_ID });
+  });
+  hold(
+    await cli([...owner.args, "--expected-pid", String(process.pid + 1)]),
+    "shutdown",
+    "owner_identity_mismatch",
+  );
+  expect(owner.commands).toEqual([{ type: "status_request" }]);
+  expect(owner.connections()).toBe(1);
+});
+
+for (const expectedPid of ["", "0", "-1", "1.5", "1e3", "NaN", "9007199254740992"]) {
+  test(`invalid expected PID ${JSON.stringify(expectedPid)} refuses before connecting`, async () => {
+    const owner = await ownerFixture((type, socket) => {
+      if (type === "status_request") send(socket, status());
+      if (type === "shutdown_request")
+        send(socket, { type: "shutting_down", terminalHostId: HOST_ID });
+    });
+    hold(
+      await cli([...owner.args, "--expected-pid", expectedPid]),
+      "shutdown",
+      "invalid_arguments",
+    );
+    expect(owner.commands).toEqual([]);
+    expect(owner.connections()).toBe(0);
+  });
+}
+
 for (const reason of ["not_draining", "terminals_retained", "jobs_retained"] as const) {
   test(`${reason} is an atomic HOLD even when the preceding status looked empty`, async () => {
     const owner = await ownerFixture((type, socket) => {
@@ -333,7 +365,7 @@ test("disconnect after shutdown request is not a positive acknowledgement and ne
   expect(owner.connections()).toBe(1);
 });
 
-test("only a matching positive shutdown acknowledgement succeeds on the status connection", async () => {
+test("a matching expected PID and positive shutdown acknowledgement succeed on the status connection", async () => {
   const owner = await ownerFixture((type, socket) => {
     if (type === "status_request") {
       // A real socket may split a frame anywhere, including immediately before the newline.
@@ -345,7 +377,7 @@ test("only a matching positive shutdown acknowledgement succeeds on the status c
     if (type === "shutdown_request")
       socket.end(`${JSON.stringify({ type: "shutting_down", terminalHostId: HOST_ID })}\n`);
   });
-  const result = await cli(owner.args);
+  const result = await cli([...owner.args, "--expected-pid", String(process.pid)]);
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
   expect(result.stdout.endsWith("\n")).toBe(true);

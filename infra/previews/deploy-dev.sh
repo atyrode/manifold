@@ -17,6 +17,8 @@ public_url=${PREVIEW_DEV_URL:-https://preview.$PREVIEW_DOMAIN}
 [[ -n ${MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID:-} ]] || fail 'set MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID to the explicit enrolled native owner'
 [[ ${MANIFOLD_DEV_SPAWN_AGENT:-} == 0 ]] || fail 'MANIFOLD_DEV_SPAWN_AGENT must be explicitly 0; shared development is hub-only'
 export MANIFOLD_SERVICE_OWNER_MACHINE_ID="$MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID"
+# This configures only the replacement. The retained lifecycle separately proves
+# the actual incumbent is server-only before it may stop or replace that container.
 export MANIFOLD_SPAWN_AGENT=0
 echo "deploy-dev: converging on $1"
 # Fetch everything and resolve locally: a remote serves want-lists by full object id only,

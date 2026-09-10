@@ -58,11 +58,53 @@ build_environment() {
   [[ $probe == manifold-preview-environment-ok ]] ||
     fail 'development image did not execute the supplied command probe'
 }
+# Desired Compose environment is not evidence about the container being replaced.
+# Inspect only a public spawn classification and supported startup shape, never dump
+# Config.Env (or /proc/*/environ). Missing/default spawn configuration is owning.
+require_retained_server_only() {
+  local project=$1 incumbent configuration proof
+  incumbent=$(docker ps --all --quiet --no-trunc \
+    --filter "label=com.docker.compose.project=$project" \
+    --filter 'label=com.docker.compose.service=manifold') ||
+    fail 'HOLD: cannot identify the retained incumbent'
+  [[ -n $incumbent ]] || return 0
+  [[ $incumbent =~ ^[0-9a-f]{64}$ ]] ||
+    fail 'HOLD: retained replacement requires one supported server-only incumbent'
+  # Classify matching public settings inside Docker's template; even unexpected
+  # values must not be printed. Reject command overrides and shared PID namespaces.
+  configuration=$(docker inspect --format '
+    {{- $spawn := false -}}{{- $unsafe := false -}}
+    {{- range .Config.Env -}}
+      {{- $key := index (split . "=") 0 -}}
+      {{- if eq $key "MANIFOLD_SPAWN_AGENT" -}}
+        {{- if or $spawn (ne . "MANIFOLD_SPAWN_AGENT=0") -}}{{- $unsafe = true -}}{{- end -}}{{- $spawn = true -}}
+      {{- else if or (eq $key "BUN_OPTIONS") (eq $key "NODE_OPTIONS") (eq $key "MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE") (eq $key "MANIFOLD_LOCAL_AGENT_SUPERVISION") -}}
+        {{- $unsafe = true -}}
+      {{- end -}}
+    {{- end -}}
+    {{- range .Mounts -}}{{- if ne .Destination "/data" -}}{{- $unsafe = true -}}{{- end -}}{{- end -}}
+    {{- if and $spawn (not $unsafe) .State.Running (not .State.Paused) (not .State.Restarting) (eq .HostConfig.PidMode "") (eq .Config.WorkingDir "/app") (eq (json .Config.Cmd) "[\"/app/infra/entrypoint.sh\"]") (eq (json .Config.Entrypoint) "[\"/usr/local/bin/docker-entrypoint.sh\"]") -}}
+      retained-config-server-only
+    {{- end -}}' "$incumbent" 2>/dev/null) ||
+    fail 'HOLD: cannot classify retained incumbent configuration'
+  [[ $configuration == retained-config-server-only ]] ||
+    fail 'HOLD: retained incumbent is owning or has unsupported spawn configuration'
+  # Stream public code, not files from /data. A fixed token is the entire evidence
+  # surface; raw process arguments and probe errors never leave the container.
+  proof=$(docker exec -i "$incumbent" bun --no-env-file - <"$here/retained-server-only.ts" 2>/dev/null) ||
+    fail 'HOLD: retained incumbent has owning or unknown processes'
+  [[ $proof == retained-processes-server-only ]] ||
+    fail 'HOLD: retained incumbent process proof is unavailable'
+}
+
 replace_environment() {
   local lifecycle=$1 volume=$2 final_image=$3 project=$4 health_url=$5
   shift 5
   case "$lifecycle" in
-    retained) log "replacing only $project hub; retained owners and data are untouched" ;;
+    retained)
+      require_retained_server_only "$project"
+      log "replacing only $project hub; retained owners and data are untouched"
+      ;;
     disposable)
       log "redeploying $project retires existing PTYs and terminal entries and replaces the disposable development home"
       if [[ -n $("$@" "$final_image" ps --status running --quiet manifold) ]]; then

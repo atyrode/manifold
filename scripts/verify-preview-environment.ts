@@ -205,7 +205,10 @@ async function inspectContainer(): Promise<{
   Image: string;
   SizeRw?: number;
 }> {
-  return JSON.parse((await docker(["inspect", "--size", await containerId()])).out)[0];
+  return JSON.parse((await docker([
+    "inspect", "--size", await containerId(), "--format",
+    '{"Id":{{json .Id}},"State":{"Status":{{json .State.Status}},"StartedAt":{{json .State.StartedAt}},"Health":{"Status":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}}},"Image":{{json .Image}},"SizeRw":{{json .SizeRw}}}',
+  ])).out);
 }
 async function health(): Promise<{ build: string; ok: boolean }> {
   const response = await fetch(`${origin}/healthz`, { signal: AbortSignal.timeout(3_000) });
@@ -638,6 +641,7 @@ async function setup(): Promise<void> {
     "common.sh",
     "environment.sh",
     "deploy-dev.sh",
+    "retained-server-only.ts",
     "compose.development.yaml",
     "caddy.sh",
     "compose.preview.yaml",
@@ -1033,7 +1037,7 @@ async function preserveLive(
   restore: () => Promise<void>,
   expectedError?: string,
 ): Promise<void> {
-  const terminal = integrated ? null : await newTerminalProbe(`before-${name}`);
+  const terminal = !integrated || machineId !== "" ? await newTerminalProbe(`before-${name}`) : null;
   const before = await inspectContainer();
   try {
     await mutate();
@@ -1203,6 +1207,49 @@ console.log(JSON.stringify({
       }, async () => {
         env["MANIFOLD_DEV_SPAWN_AGENT"] = "0";
       });
+    });
+    await step("retained replacement holds a real incumbent execution owner and live work", async () => {
+      // Reproduce the old default-spawning deployment, independently of the desired
+      // server-only overlay that deploy-dev resolves. Null removes the inherited
+      // replacement setting; the old image defaults to a local execution owner.
+      const oldOverlay = join(tooling, "fixture-old-owner.yaml");
+      writeFileSync(oldOverlay, `services:
+  manifold:
+    environment:
+      MANIFOLD_SPAWN_AGENT: null
+      MANIFOLD_SERVICE_OWNER_MACHINE_ID: null
+`);
+      await compose(finalImage(), ["up", "-d", "--no-build", "--no-deps", "manifold"], {
+        env: { COMPOSE_FILE: `${composeEnv(finalImage())["COMPOSE_FILE"]}:${oldOverlay}` },
+      });
+      await ready();
+      await acquireIdentity();
+      machineId = await onlineMachine();
+      await processOwners(0);
+      canvasId = ContainerResponseSchema.parse(
+        await act("core.index.createContainer", { name: `retained-live-${number}` }),
+      ).container.id;
+      const work = await newTerminalProbe("retained-owner-before");
+      const ownerProcesses = `import { readdirSync, readFileSync } from 'node:fs';
+const rows = readdirSync('/proc').filter(pid => /^\\d+$/.test(pid)).flatMap(pid => {
+  const args = readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\\0');
+  if (!args.includes('packages/agent/src/main.ts')) return [];
+  const stat = readFileSync('/proc/' + pid + '/stat', 'utf8');
+  return [{ pid, start: stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] }];
+});
+console.log(JSON.stringify(rows.sort((a, b) => Number(a.pid) - Number(b.pid))));`;
+      const beforeOwners = await execBun(ownerProcesses);
+      // Only the one-off Compose call used oldOverlay. up() still requests the
+      // ordinary retained server-only replacement (MANIFOLD_DEV_SPAWN_AGENT=0).
+      await preserveLive("actual-incumbent-owner", async () => {}, async () => {},
+        "HOLD: retained incumbent is owning or has unsupported spawn configuration");
+      requireThat(await execBun(ownerProcesses) === beforeOwners,
+        "retained refusal restarted the real local execution owner");
+      requireThat(await onlineMachine() === machineId, "retained refusal changed the execution owner identity");
+      await processOwners(0);
+      requireThat((await terminals()).some(terminal => terminal.id === work.id),
+        "retained refusal removed live work");
+      await terminalProbe(work.id, work.homeId, "retained-owner-after");
     });
   } else {
   await step("fresh development volume and unchanged PR artifact", async () => {

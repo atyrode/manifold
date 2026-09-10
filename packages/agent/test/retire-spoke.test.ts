@@ -10,7 +10,10 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-type Scenario = "busy" | "unknown" | "jobs" | "wrong-identity" | "accepted" | "still-enabled";
+type Scenario = "busy" | "unknown" | "jobs" | "wrong-identity" | "accepted" | "still-enabled"
+  | "mismatched-owner" | "owner-propagation" | "transport-propagation"
+  | "restart-always" | "restart-override-ignored" | "replacement-generation"
+  | "transport-stop-command";
 interface State {
   draining: boolean;
   ownerAlive: boolean;
@@ -21,6 +24,12 @@ interface State {
   shutdownRequests: number;
   ownerEnabled: boolean;
   transportEnabled: boolean;
+  ownerPid: number;
+  restart: string;
+  restartOverride: string;
+  transportRestartOverride: string;
+  replacementKilled: boolean;
+  dependentAlive: boolean;
 }
 
 async function retirement(scenario: Scenario) {
@@ -33,6 +42,9 @@ async function retirement(scenario: Scenario) {
     draining: false, ownerAlive: true, ownerKilled: false, acknowledged: false,
     transportRunning: true, transportStarts: 0, shutdownRequests: 0,
     ownerEnabled: true, transportEnabled: true,
+    ownerPid: scenario === "mismatched-owner" ? process.pid + 1 : process.pid,
+    restart: "always", restartOverride: "", replacementKilled: false, dependentAlive: true,
+    transportRestartOverride: "",
   });
   const ownerKey = "cdef".repeat(16);
   const ownerKeyPath = join(directory, "owner.key");
@@ -89,6 +101,10 @@ async function retirement(scenario: Scenario) {
             if (acknowledgedId === hostId) {
               state.acknowledged = true;
               state.ownerAlive = false;
+              if (state.restart !== "no" || scenario === "replacement-generation") {
+                state.ownerAlive = true;
+                state.ownerPid++;
+              }
             }
           }
         } else {
@@ -112,7 +128,7 @@ async function retirement(scenario: Scenario) {
   // Stateful supervisor boundary: stop destroys a still-live owner; disable must
   // actually change the observed state. No host systemd manager is contacted.
   writeFileSync(join(directory, "systemctl"), `#!${process.execPath}
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
 const state = JSON.parse(readFileSync(process.env.FIXTURE_STATE, "utf8"));
 const [, op, ...args] = process.argv.slice(2);
 if (op === "show") {
@@ -121,19 +137,43 @@ if (op === "show") {
   const property = args[1].slice("--property=".length);
   const properties = {
     LoadState: "loaded", ActiveState: running ? "active" : "inactive",
-    SubState: running ? "running" : "dead", MainPID: running ? (owner ? "101" : "102") : "0",
+    SubState: running ? "running" : "dead", MainPID: running ? (owner ? String(state.ownerPid) : "102") : "0",
     UnitFileState: (owner ? state.ownerEnabled : state.transportEnabled) ? "enabled" : "disabled",
     ControlGroup: owner ? "/fixture/owner" : "/fixture/transport",
-    ConsistsOf: "", BoundBy: "", RequiredBy: "", PropagatesStopTo: "",
+    InvocationID: owner && state.ownerPid !== Number(process.env.FIXTURE_OWNER_PID) && process.env.FIXTURE_SCENARIO === "replacement-generation" ? "b".repeat(32) : "a".repeat(32),
+    Restart: owner ? state.restart : (state.transportRestartOverride ? "no" : "always"), RestartForceExitStatus: "",
+    DropInPaths: owner ? state.restartOverride : state.transportRestartOverride,
+    ConsistsOf: "", BoundBy: (owner && process.env.FIXTURE_SCENARIO === "owner-propagation") || (!owner && process.env.FIXTURE_SCENARIO === "transport-propagation") ? "busy-dependent.service" : "",
+    RequiredBy: "", PropagatesStopTo: "", OnSuccess: "", OnFailure: "", TriggeredBy: "",
+    SuccessAction: "none", FailureAction: "none", StartLimitAction: "none",
+    ExecStop: "", ExecStopPost: !owner && process.env.FIXTURE_SCENARIO === "transport-stop-command" ? "kill-busy-owner" : "",
   };
   if (!(property in properties)) process.exit(1);
   console.log(properties[property]);
+} else if (op === "daemon-reload") {
+  for (const unit of ["old-owner", "old-transport"]) {
+    const directory = process.env.HOME + "/systemd/user/" + unit + ".service.d";
+    const overrides = existsSync(directory) ? readdirSync(directory).filter(name => name.endsWith(".conf")) : [];
+    const path = overrides.length ? directory + "/" + overrides[0] : "";
+    if (unit === "old-owner") {
+      state.restartOverride = path;
+      state.restart = path && process.env.FIXTURE_SCENARIO !== "restart-override-ignored" ? "no" : "always";
+    } else state.transportRestartOverride = path;
+  }
+  writeFileSync(process.env.FIXTURE_STATE, JSON.stringify(state));
 } else {
   for (const unit of args) {
     const owner = unit === "old-owner.service";
     if (op === "stop") {
-      if (owner) { state.ownerKilled ||= state.ownerAlive; state.ownerAlive = false; }
-      else state.transportRunning = false;
+      if (owner) {
+        state.ownerKilled ||= state.ownerAlive;
+        state.replacementKilled ||= state.ownerAlive && state.ownerPid !== Number(process.env.FIXTURE_OWNER_PID);
+        state.ownerAlive = false;
+        if (process.env.FIXTURE_SCENARIO === "owner-propagation") state.dependentAlive = false;
+      } else {
+        state.transportRunning = false;
+        if (process.env.FIXTURE_SCENARIO === "transport-propagation") state.dependentAlive = false;
+      }
     } else if (op === "start" && !owner) {
       state.transportRunning = true; state.transportStarts++;
     } else if (op === "disable") {
@@ -157,15 +197,23 @@ const child = Bun.spawn([process.execPath, "-", ...cli], { stdin: "inherit", std
 process.exitCode = await child.exited;
 `, { mode: 0o700 });
   const child = Bun.spawn([
-    "bash", join(import.meta.dir, "../../../infra/previews/retire-spoke.sh"),
+    "bash", "-c", `
+source "$1"; shift
+# This fixture covers the supervisor/maintenance flow, not kernel identity.
+# retire-spoke-systemd.test.ts exercises the unmodified real transport proof.
+prove_transport() { :; }
+retirement_main "$@"
+`, "retirement-fixture", join(import.meta.dir, "../../../infra/previews/retire-spoke.sh"),
     "--container", "fixture-hub", "--machine-id", machineId, "--terminal-host-id", hostId,
     "--terminal-host-unit", "old-owner.service", "--transport-unit", "old-transport.service",
+    "--transport-package", `/nix/store/${"a".repeat(32)}-manifold-agent-fixture`,
     "--socket", socketPath, "--runtime-dir", directory,
   ], {
     env: {
       PATH: `${directory}:${process.env.PATH ?? ""}`, HOME: directory,
       FIXTURE_STATE: statePath, FIXTURE_HUB: hub.url.origin,
       FIXTURE_KEY_PATH: ownerKeyPath, FIXTURE_SCENARIO: scenario,
+      FIXTURE_OWNER_PID: String(process.pid),
     },
     stdin: "ignore", stdout: "pipe", stderr: "pipe",
   });
@@ -207,4 +255,27 @@ test("successful disable command is insufficient when observed supervisors remai
   expect(code).toBe(1);
   expect(state).toMatchObject({ acknowledged: true, ownerKilled: false, ownerEnabled: true,
     transportEnabled: true, transportRunning: false });
+}, 30_000);
+
+for (const scenario of ["mismatched-owner", "owner-propagation", "transport-propagation", "restart-override-ignored",
+  "transport-stop-command"] as const) {
+  test(`retirement refuses ${scenario} without stopping an unproved owner or its dependents`, async () => {
+    const { code, state } = await retirement(scenario);
+    expect(code).toBe(1);
+    expect(state).toMatchObject({ ownerAlive: true, ownerKilled: false, dependentAlive: true,
+      replacementKilled: false, shutdownRequests: 0, ownerEnabled: true, restart: "always",
+      restartOverride: "", transportRestartOverride: "", transportRunning: true });
+  }, 30_000);
+}
+test("Restart=always cannot replace the acknowledged generation during retirement", async () => {
+  const { code, state } = await retirement("restart-always");
+  expect(code).toBe(0);
+  expect(state).toMatchObject({ acknowledged: true, ownerAlive: false, ownerPid: process.pid,
+    replacementKilled: false, restart: "always", restartOverride: "", ownerEnabled: false });
+}, 30_000);
+test("an unexpected replacement after acknowledgement is held and never stopped", async () => {
+  const { code, state } = await retirement("replacement-generation");
+  expect(code).toBe(1);
+  expect(state).toMatchObject({ acknowledged: true, ownerAlive: true, ownerPid: process.pid + 1,
+    ownerKilled: false, replacementKilled: false, ownerEnabled: true, restart: "always", restartOverride: "" });
 }, 30_000);

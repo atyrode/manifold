@@ -315,6 +315,10 @@ replacement. Shutdown checks that identity and a supported maintenance protocol 
 on the same observer connection before making the atomic shutdown request. IPC 1 and IPC 2
 share these maintenance frames; accepting an older owner's empty-shutdown acknowledgment
 does not enable unconfined execution. Unknown protocols hold.
+Supervisor-managed callers must also pass `--expected-pid "$MAIN_PID"` from the explicitly
+selected owner unit. The optional constraint is checked against status on that same
+connection before any shutdown request; a mismatch holds. Independent manual maintenance
+may omit it, but an unbound acknowledgement cannot authorize stopping an arbitrary unit.
 
 For the source-shipping Docker image, use the identical CLI **inside the owning container**;
 the credential read stays inside Manifold:
@@ -329,14 +333,18 @@ docker exec "$CONTAINER_ID" bun packages/agent/src/main.ts --maintenance shutdow
 For retiring an old external spoke of a retained preview hub, use the source-managed
 [`infra/previews/retire-spoke.sh` operation](../infra/previews/README.md#retire-an-old-development-spoke-before-native-activation).
 Its documented invocation requires the public container, machine, terminal-host identity,
-terminal-host unit, transport unit, socket and private runtime-directory references.
+terminal-host unit, transport unit, separately reviewed immutable transport package, socket
+and private runtime-directory references.
 It bundles only the reviewed maintenance CLI and streams the public code into the owning
 container, including when that container predates the command. The key read remains at
 `/data/owner.key` inside that container; no deployed executable or credential is replaced.
 It closes admission, refuses busy/unknown work, stops only the independent non-owning
-transport before the identity-bound atomic shutdown, and restores that transport on refused
-proof without reopening admission. Only positive acknowledgement permits stopping/disabling
-the old supervisors, and their actual inactive/dead, PID-zero, disabled state must be proved.
+transport before the PID-bound atomic shutdown, and restores that transport on refused
+proof without reopening admission. Both supervisors' propagation and stop hooks are checked;
+owned, metadata-verified runtime drop-ins non-disruptively inhibit restarts across acknowledgement
+and are restored afterward. Only positive acknowledgement permits disabling the old
+supervisors. The helper never stops the owner by unit name: it awaits its own exit and refuses
+an unexpected generation. Actual inactive/dead, PID-zero, disabled state must be proved.
 It never invokes Nix or activates/deploys anything. A native startup guard must independently
 refuse active, enabled/restartable or unobservable old user supervisors; activation must not
 automatically stop or mask them.

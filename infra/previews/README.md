@@ -82,6 +82,15 @@ and `MANIFOLD_DEV_SPAWN_AGENT=0`. Build and final Compose validation precede rep
 Its **retained** lifecycle stops and updates only `manifold`, with `--no-deps`: no terminal
 retire/resume, recursive ownership rewrite, spoke compilation, build-stamp writes or
 supervisor restart. The existing named volume must already exist; missing data fails closed.
+Before any retained stop, the **actual incumbent** must also prove server-only:
+its existing container configuration explicitly disables local spawning, uses the
+supported ordinary entrypoint without execution overrides or non-data mounts, and
+a credential-free `/proc` probe finds only the PID1 hub and the stock read-only
+healthcheck. Desired replacement settings never prove the old process tree safe.
+An old default-spawning container, an in-container owner, custom wrappers (including
+Litestream), or unknown process/configuration shapes cause HOLD without stopping it.
+Resolve old execution ownership separately; preserved `/data` cannot preserve PTYs
+inside a stopped container.
 The resolved Compose configuration stays in a private `/dev/shm` directory and is removed
 on exit, not persisted or printed. The environment digest is irrelevant to this hub path.
 
@@ -97,6 +106,8 @@ to exercise server-only retained replacement through the actual `deploy-dev.sh` 
 `manifold-dev-N` project, private checkout, loopback port and volume. It checks persisted
 canvas/identity, unchanged nonstandard data ownership and network selection, no local owner,
 and non-disruptive configuration refusals with the disposable pin/lifecycle helper absent.
+It also creates an incumbent local owner with live PTYs, requests server-only replacement,
+and requires refusal to preserve its process generation, identity and working terminals.
 No existing development stack is selected. Only fixed host-service calls to Caddy/systemd
 are shimmed. Run both modes before shipping composition changes:
 
@@ -294,6 +305,7 @@ bash infra/previews/retire-spoke.sh \
   --terminal-host-id "$OLD_TERMINAL_HOST_ID" \
   --terminal-host-unit "$OLD_TERMINAL_HOST_UNIT" \
   --transport-unit "$OLD_TRANSPORT_UNIT" \
+  --transport-package "$REVIEWED_OLD_TRANSPORT_PACKAGE" \
   --socket "$OLD_TERMINAL_HOST_SOCKET" \
   --runtime-dir "$XDG_RUNTIME_DIR"
 ```
@@ -302,9 +314,20 @@ All arguments are explicit **public references**, not credentials or discovered 
 Review the machine and live terminal-host identities, the exact `.service` units and the
 absolute socket before invoking it. The container must be the existing owning dev hub;
 its admission endpoint is `http://127.0.0.1:7777` and key reference `/data/owner.key`.
-The transport must be genuinely non-owning and independently supervised: distinct PID/cgroup,
-no owner beneath its cgroup, and no stop-propagating dependencies. Both old services must
-initially be proved running; uncertain or already-partially-retired state is a manual hold.
+The transport package is a **separately approved provenance reference**, never a value
+automatically trusted from the live process or its reported build. Review the exact
+Nix output's source and compiled entrypoint: the supported flake installs compiled
+`packages/agent/src/main.ts` at `/nix/store/HASH-manifold-agent-VERSION/libexec/manifold-agent`
+with its launcher in `bin/manifold-agent`. That reviewed source must implement the
+split non-owning default mode. The helper compares the kernel executable inode with
+that immutable root-owned artifact, permits only the single package-local executable
+argument, and requires the transport cgroup to contain exactly that PID and no child
+cgroups. A bare Bun executable plus mutable repository entrypoint, missing provenance,
+or any owner-mode argument is **unknown and refused**. Legacy owner IPC alone cannot
+establish a transport's role; do not infer it from a different PID, cgroup or owner revision.
+Both units must have no destructive propagation, activation edges, exit actions or stop
+hooks. Distinct PID/cgroup alone is insufficient.
+Both old services must initially be proved running; uncertain or already-partially-retired state is a manual hold.
 Do not concurrently change/activate unit definitions, start replacement owners or reopen admission.
 
 The helper bundles **only public maintenance CLI source** in the private runtime directory
@@ -321,12 +344,22 @@ the named owner's atomic drained-and-empty shutdown. Jobs/services and retained 
 entries must finish or be resolved through their governed controls; this command never
 kills, cancels, force-retires, retries or escalates them.
 
-Only the exact successful `shutting_down` identity acknowledgement permits stopping and
-disabling the two old supervisors. Actual loaded/inactive/dead, PID-zero, disabled state is
-checked afterward: a successful `systemctl disable` exit alone is insufficient, including
-with `Restart=always`. A shutdown refusal, mismatch, disconnect or timeout attempts to restore
-the previously running transport, but **leaves admission closed**. Failed recovery or final
-supervisor proof is a visible hold, never permission to activate native execution.
+Maintenance shutdown passes the expected systemd MainPID and checks it against status
+on the **same observer connection** before requesting shutdown. Before transport stop,
+the helper temporarily inhibits automatic restarts for both exact supervisors through
+uniquely owned runtime drop-ins, then checks actual `DropInPaths`, `Restart=no`, empty
+`RestartForceExitStatus` and unchanged process/invocation identities. This does not stop,
+restart, mask or replace an owner. Overrides are removed only when their inode/content
+still belongs to this operation; original effective restart policies are checked on restoration.
+
+Only the exact successful `shutting_down` identity acknowledgement permits disabling
+the old supervisors. The helper **never sends a unit-name stop to the owner**, even
+after acknowledgement: it waits for that proved process to exit itself and refuses
+a new/unproved generation. Actual loaded/inactive/dead, PID-zero, disabled state is
+checked afterward; successful disable alone is insufficient. Restart policies are
+restored on success and refusal. A refusal attempts to restore the previously running
+transport but **leaves admission closed**. Failed restoration, recovery or final proof
+is a visible hold, never permission to activate native execution.
 
 The helper never invokes Nix, activates a native profile, deploys a hub/production, changes
 credentials, or reopens admission. Only a proved empty shutdown and stopped/disabled old
@@ -340,6 +373,26 @@ a stateful supervisor boundary; no real user manager) are:
 ```sh
 bun test packages/agent/test/retire-spoke.test.ts packages/agent/src/maintenance.test.ts
 ```
+
+These default fixtures substitute supervisor metadata and explicitly bypass kernel
+transport-role proof; they cannot establish real systemd drop-in reload semantics.
+The opt-in kernel fixture builds inert public C code into a root-owned immutable Nix
+output and runs UUID-named, time-limited user services. It exercises the unmodified
+production `/proc`/cgroup proof against a valid transport, an owner-mode argument,
+a different executable inode, and a hidden child process. It needs Linux cgroup v2,
+a functioning user systemd manager and Nix access to this flake's pinned dependencies:
+
+```sh
+MANIFOLD_RETIREMENT_SYSTEMD_FIXTURE=1 bun test packages/agent/test/retire-spoke-systemd.test.ts
+```
+
+Before activation, a disposable real user-manager handoff fixture must additionally
+exercise `Restart=always` with zero restart delay, `RestartForceExitStatus`, owner and
+transport stop propagation/hooks, a mismatched owner PID, ignored/overridden drop-ins,
+policy restoration on refusal, and an unexpected replacement generation. The kernel
+fixture does not exercise that maintenance/restart handshake. No fixture result may
+be inferred from source review, and its inert test artifact is not provenance for an
+incumbent Manifold transport.
 
 ## Disk / gc
 
