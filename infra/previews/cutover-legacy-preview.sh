@@ -44,7 +44,8 @@ volume=manifold-dev_manifold-data
 public_url=${PREVIEW_DEV_URL:-https://preview.$PREVIEW_DOMAIN}
 # Resolve local overrides exactly once, using the ordinary deployment's private
 # tmpfs pattern. Configuration/credentials never enter logs or the controller.
-[[ -d /dev/shm ]] || fail 'memory-backed replacement configuration storage required'
+[[ -d /dev/shm && $(stat -f -c %T /dev/shm) == tmpfs ]] ||
+  fail 'memory-backed replacement configuration storage required'
 configuration_dir=$(mktemp -d /dev/shm/manifold-legacy-compose.XXXXXX)
 configuration="$configuration_dir/compose.json"
 final_configuration="$configuration_dir/final-compose.json"
@@ -92,7 +93,7 @@ phase=legacy-removed-replacement-pending
 [[ $(retained_topology "$volume" "$final_image" dev_compose) == "$topology" ]] || fail 'replacement topology changed'
 dev_compose "$final_image" up -d --no-build --no-deps manifold
 phase=replacement-started
-# The ordinary retained guard is unchanged and now applies without a legacy exception.
+# The ordinary retained guard applies without a legacy exception.
 require_retained_server_only "$project" "$volume" "$topology"
 wait_health "$public_url" "$MANIFOLD_BUILD" || fail 'replacement health is unproved; do not restore the legacy owner'
 phase=complete

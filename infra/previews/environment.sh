@@ -63,7 +63,7 @@ build_environment() {
 retained_image_contract() {
   docker image inspect "$1" 2>/dev/null | jq -cer '
     def unsafe: test("^(MANIFOLD_OWNER_KEY|MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE|MANIFOLD_LOCAL_AGENT_SUPERVISION|BASH_ENV|BASH_FUNC_.*|ENV|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|XDG_CONFIG_HOME|LD_.*|NODE_OPTIONS|NODE_PATH)$") or
-      (startswith("BUN_") and . != "BUN_VERSION" and . != "BUN_INSTALL" and . != "BUN_RUNTIME_TRANSPILER_CACHE_PATH");
+      (startswith("BUN_") and . != "BUN_VERSION" and . != "BUN_INSTALL" and . != "BUN_INSTALL_BIN" and . != "BUN_RUNTIME_TRANSPILER_CACHE_PATH");
     .[0].Config |
     select(.Cmd == ["/app/infra/entrypoint.sh"] and
       .Entrypoint == ["/usr/local/bin/docker-entrypoint.sh"] and .WorkingDir == "/app" and
@@ -75,6 +75,7 @@ retained_image_contract() {
       all(.Env[]?;
         if startswith("HOME=") then . == "HOME=/root" or . == "HOME=/home/bun"
         elif startswith("BUN_INSTALL=") then . == "BUN_INSTALL=/usr/local/bun" or . == "BUN_INSTALL=/usr/local"
+        elif startswith("BUN_INSTALL_BIN=") then . == "BUN_INSTALL_BIN=/usr/local/bin"
         elif startswith("BUN_RUNTIME_TRANSPILER_CACHE_PATH=") then . == "BUN_RUNTIME_TRANSPILER_CACHE_PATH=0"
         else true end) and
       all(.Env[]?; if startswith("MANIFOLD_REPLICA_BUCKET=") then . == "MANIFOLD_REPLICA_BUCKET=" else true end) and

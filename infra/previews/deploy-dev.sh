@@ -31,7 +31,8 @@ export MANIFOLD_CHANNEL=development
 echo "deploy-dev: version=$MANIFOLD_VERSION build=$MANIFOLD_BUILD channel=$MANIFOLD_CHANNEL"
 # Compose's resolved configuration can contain credentials. Keep it only in a private
 # memory-backed directory, never in the persistent preview checkout or deployment state.
-[[ -d /dev/shm ]] || fail 'integrated deployment requires memory-backed temporary storage'
+[[ -d /dev/shm && $(stat -f -c %T /dev/shm) == tmpfs ]] ||
+  fail 'integrated deployment requires memory-backed temporary storage'
 configuration_dir=$(mktemp -d /dev/shm/manifold-dev-compose.XXXXXX)
 configuration="$configuration_dir/compose.json"
 trap 'rm -rf -- "$configuration_dir"' EXIT
