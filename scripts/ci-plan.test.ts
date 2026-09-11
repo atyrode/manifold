@@ -371,6 +371,7 @@ describe("planJobs", () => {
 
   test("no consumer of the shared web bundle is ever planned without the build", () => {
     const consumers: readonly JobName[] = [
+      "e2e",
       "runtime_browser",
       "axioms_browser",
       "terminal_selection",
@@ -379,7 +380,10 @@ describe("planJobs", () => {
       "pwa",
       "budgets",
     ];
-    expect(consumers).toHaveLength(7);
+    expect(consumers).toHaveLength(8);
+    // `unit` drives no browser and is deliberately NOT a consumer; all four unit shards
+    // passed twice with no dist supplied, while the testkit e2e cases went blank without one.
+    expect(JOBS.unit.needs).toEqual([]);
     // Both directions, so a consumer added to the table without being added here fails too.
     expect(JOB_NAMES.filter((name) => JOBS[name].needs.includes("build"))).toEqual([...consumers]);
     // `preview` builds its own environment image and is passed no bundle; it stays edge-free.

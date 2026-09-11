@@ -194,13 +194,25 @@ export const JOBS: Readonly<Record<JobName, JobSpec>> = {
     scripts: [],
   },
   unit: {
+    // No bundle: nothing under `bun test packages/*` drives a browser. Measured, not assumed
+    // — all four unit shards passed twice with no dist supplied.
     inputs: [RUNTIME],
     needs: [],
     scripts: [],
   },
   e2e: {
     inputs: [RUNTIME],
-    needs: [],
+    /*
+      The testkit e2e cases DO drive a browser, and the way they fail without a bundle is a
+      trap rather than an obvious missing dependency. `gate.ts`'s `run()` sets
+      MANIFOLD_GATE_DIST for every task, and `gate-dist.ts:18-21` treats a non-empty env var
+      as "a bundle already exists here" and returns it WITHOUT building. So the danger is an
+      empty-but-SET dist path, not an unset one: the tests serve an empty directory, the page
+      is blank, and the failure surfaces as `condition not met within 10000ms` rather than as
+      anything that mentions the bundle. A full local `bun run gate` hides it, because the
+      concurrent build fills that same directory in time.
+     */
+    needs: ["build"],
     scripts: [],
   },
   trace: {

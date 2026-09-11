@@ -181,9 +181,13 @@ jobs:
           parallel: "true"
           changelog: "true"
 
+  # The testkit's browser cases need the bundle. Not optional, and the failure mode is
+  # unkind: gate.ts sets MANIFOLD_GATE_DIST for every task, so with no artifact it points at
+  # an EMPTY temp dir, and gate-dist.ts reads a set variable as "already built" and serves
+  # nothing. A full local gate hides it because the concurrent build fills that same dir.
   e2e:
     name: e2e (${{ matrix.shard }}/3)
-    needs: plan
+    needs: [plan, build]
     if: needs.plan.outputs.e2e != 'false'
     runs-on: ubuntu-latest
     strategy:
@@ -200,6 +204,7 @@ jobs:
           task: e2e
           shard: ${{ matrix.shard }}/3
           changelog: "true"
+          dist: consume
 
   # verify:convergence's 13 rounds are ONE chain of shared scene state — a later round drags
   # what an earlier one created — so it cannot be sharded by count. These four groups are its

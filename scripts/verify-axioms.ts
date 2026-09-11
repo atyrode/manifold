@@ -2491,29 +2491,6 @@ async function consumeServerLog(): Promise<void> {
   }
 }
 
-/**
- * Waits for a measurement to STOP MOVING, or for as long as the fixed pause it replaces used
- * to cost. The pauses through the arrange rungs were slack for a reflow nobody could observe
- * from here: a rail split that has just taken a member re-lays its rows, and the boxes the
- * next gesture aims at are only worth reading once two consecutive reads agree. Quiescence is
- * what those pauses MEANT, so the gate waits for that instead and keeps the old duration as
- * the ceiling — a layout that never settles costs exactly what it always did, and one that
- * settles in a frame costs a frame.
- *
- * Never an assertion: a measurement still moving at the ceiling is read anyway, and the rung
- * that owns the claim says what it makes of what it read.
- */
-async function quiet(read: () => Promise<unknown>, ms: number): Promise<void> {
-  const deadline = Date.now() + ms;
-  let last = JSON.stringify(await read());
-  while (Date.now() < deadline) {
-    await sleep(80);
-    const now = JSON.stringify(await read());
-    if (now === last) return;
-    last = now;
-  }
-}
-
 let browser: Browser | null = null;
 let canvasClient: SessionClient | null = null;
 let terminalClient: SessionClient | null = null;
@@ -3504,8 +3481,7 @@ try {
          })()`,
       );
     const seatedSplit = await settles(async () => (await vacantBox()).count > 0, 8_000);
-    // Both drops have landed; what is left is the reflow the two reads below measure.
-    await quiet(vacantBox, 1_500);
+    await sleep(1_500);
     const vacantArmed = await vacantBox();
     await pressF8();
     const vacantDisarmed = await vacantBox();
@@ -3846,7 +3822,7 @@ try {
         button: "left",
         clickCount: 1,
       });
-      await quiet(railOrder, 400);
+      await sleep(400);
       return seen;
     };
 
@@ -3857,7 +3833,7 @@ try {
     await browser.evaluate(
       `document.querySelector('.arrange-scope[data-panel-id="${sidebarPanel}"]')?.click()`,
     );
-    await settles(async () => (await arrangeChrome()).toolsDisabled > 0, 400);
+    await sleep(400);
 
     /*
       ZOOMED IN, the workspace's own OPERATIONS go quiet. Every one of them acts on the ROOT
@@ -3891,10 +3867,7 @@ try {
               ? `${String(scoped.toolsDisabled)} root tools disabled with all ${String(scoped.palette)} palette sources still live, and all ${String(scoped.wireframes)} workspace containers dimmed out of scope`
               : `${String(scoped.dimmed)} of ${String(scoped.wireframes)} wireframe boxes dimmed: the scope crumb says one thing and the paint another`,
     );
-    /* The scoped rail's grips are the next rung's subject: polled for, not waited out. */
-    const gripsPainted = (): Promise<boolean> =>
-      browser!.evaluate<boolean>(`document.querySelectorAll('.sidebar-section-grip').length >= 3`);
-    await settles(gripsPainted, 400);
+    await sleep(400);
 
     /*
       GLYPHLESS, and asserted on the live DOM rather than on the source: the row's TINT is the
@@ -4010,7 +3983,7 @@ try {
         nativeVirtualKeyCode: 40,
       });
     }
-    await settles(async () => (await railOrder()).join(" ") !== beforeNudge.join(" "), 600);
+    await sleep(600);
     const afterNudge = await railOrder();
     const nudged =
       focused !== null &&
@@ -4146,7 +4119,7 @@ try {
         })),
         25,
       );
-      await quiet(railPaint, 600);
+      await sleep(600);
     };
     /** The grab surface of one row, wherever in the rail it currently sits. */
     const railGrip = (id: string): Promise<{ x: number; y: number } | null> =>
@@ -4183,7 +4156,7 @@ try {
       await browser.dragAndDrop(railPalette, railGap);
     }
     const nested = await settles(async () => (await railSplits()).length > 0, 8_000);
-    await quiet(railSplits, 1_500);
+    await sleep(1_500);
     const landed = (await railSplits())[0] ?? null;
     const wedged =
       nested &&
@@ -4222,12 +4195,12 @@ try {
     const seatAim = landed?.seatBox ?? null;
     if (seatAim !== null) await carryTopRow(seatAim);
     const tookOne = await settles(async () => ((await railSplits())[0]?.members ?? 0) === 1, 8_000);
-    await quiet(railSplits, 1_000);
+    await sleep(1_000);
     const withOne = (await railSplits())[0] ?? null;
     const lone = withOne?.memberBoxes[0] ?? null;
     if (lone !== null) await carryTopRow({ x: lone.right - 6, y: lone.y });
     const tookTwo = await settles(async () => ((await railSplits())[0]?.members ?? 0) === 2, 8_000);
-    await quiet(railSplits, 1_000);
+    await sleep(1_000);
     const paired = (await railSplits())[0] ?? null;
     const pairOrder = (paired?.memberBoxes ?? []).map((member) => member.id).join(" ");
     const trailing = paired?.memberBoxes[1] ?? null;
@@ -4240,7 +4213,7 @@ try {
       const now = (await railSplits())[0]?.memberBoxes ?? [];
       return now.length === 2 && now.map((member) => member.id).join(" ") !== pairOrder;
     }, 8_000);
-    await quiet(railSplits, 1_000);
+    await sleep(1_000);
     const reordered = (await railSplits())[0] ?? null;
     const last = reordered?.memberBoxes.at(-1) ?? null;
     if (last !== null) await carryTopRow({ x: last.right - 6, y: last.y });
@@ -4248,7 +4221,7 @@ try {
       async () => ((await railSplits())[0]?.members ?? 0) === 3,
       8_000,
     );
-    await quiet(railSplits, 1_000);
+    await sleep(1_000);
     const trio = (await railSplits())[0] ?? null;
     const abreast =
       trio !== null &&
@@ -4308,7 +4281,7 @@ try {
       async () => (await railSplits()).filter((split) => split.vacant).length > vacantBefore,
       8_000,
     );
-    await quiet(railSplits, 1_200);
+    await sleep(1_200);
     const centreSplit = (await railSplits()).find((split) => split.vacant) ?? null;
     const besideIt =
       tookCentre &&
@@ -4410,17 +4383,17 @@ try {
       (await railSplits()).find((split) => split.dir === "column") ?? null;
     const columnLanded = await settles(async () => (await columnOf()) !== null, 8_000);
     const columnCommits = commitCount() - columnCommitsBefore;
-    await quiet(railSplits, 1_200);
+    await sleep(1_200);
     const columnSeat = (await columnOf())?.seatBox ?? null;
     if (columnSeat !== null) await carryTopRow(columnSeat);
     const columnOne = await settles(async () => ((await columnOf())?.members ?? 0) === 1, 8_000);
-    await quiet(railSplits, 1_000);
+    await sleep(1_000);
     const columnMember = (await columnOf())?.memberBoxes[0] ?? null;
     if (columnMember !== null) {
       await carryTopRow({ x: columnMember.x, y: columnMember.bottom - 4 });
     }
     const columnTwo = await settles(async () => ((await columnOf())?.members ?? 0) === 2, 8_000);
-    await quiet(railSplits, 1_000);
+    await sleep(1_000);
     const columnSplit = await columnOf();
     const oneUnderTheOther =
       columnSplit !== null &&
@@ -4540,13 +4513,10 @@ try {
       deviceScaleFactor: 1,
       mobile: false,
     });
-    /* The override is a round trip to the page, so the window the rail has to fit into is
-       waited FOR rather than assumed, and only then its reflow. */
-    await settles(() => browser!.evaluate<boolean>(`window.innerHeight <= 460`), 1_000);
-    await quiet(stackRoom, 1_000);
+    await sleep(1_000);
     const squeezed = await stackRoom();
     await browser.send("Emulation.clearDeviceMetricsOverride", {});
-    await settles(() => browser!.evaluate<boolean>(`window.innerHeight > 460`), 600);
+    await sleep(600);
     /* One pixel of slack for subpixel layout; the defect measured tens. */
     const crushed = squeezed.filter((stack) => stack.spill > 1 || stack.overlap > 1);
     const occupancies = [...new Set(squeezed.map((stack) => stack.members))].sort();

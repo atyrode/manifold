@@ -37,6 +37,16 @@ const sharedDist = join(distParent, "dist");
  */
 const externalDist = process.env["MANIFOLD_GATE_DIST"] ?? "";
 const distDir = externalDist === "" ? sharedDist : externalDist;
+/**
+ * Whether anything in THIS invocation will put a bundle at {@link distDir}.
+ *
+ * Only then may the path be advertised to a task. gate-dist.ts reads a set
+ * MANIFOLD_GATE_DIST as "a bundle already exists here" and serves it without building, so
+ * pointing a task at an empty directory does not fall back — it silently serves nothing,
+ * and a browser gate reads a blank page instead of the app. A full run always builds, which
+ * is why this only ever bit a selected slice.
+ */
+let distPromised = externalDist !== "";
 
 interface TaskResult {
   readonly name: string;
@@ -72,7 +82,11 @@ async function run(name: string, cmd: readonly string[], cwd = repoRoot): Promis
   const started = performance.now();
   const child = Bun.spawn([...cmd], {
     cwd,
-    env: { ...process.env, MANIFOLD_GATE_DIST: distDir },
+    env:
+      distPromised || name === buildTask.name
+        ? { ...process.env, MANIFOLD_GATE_DIST: distDir }
+        : // Standalone: let the task build its own throwaway bundle, as gate-dist documents.
+          { ...process.env, MANIFOLD_GATE_DIST: "" },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -331,6 +345,7 @@ try {
     // Build when asked to, and also when a selected gate needs a bundle nobody handed over.
     const buildSelected = selected.some((task) => task.group === "build");
     const needsBuild = selected.some((task) => task.needsDist === true) && externalDist === "";
+    distPromised = distPromised || buildSelected || needsBuild;
     if (buildSelected || needsBuild) {
       // The build takes none of the selection's modifiers: `--group ink` describes the
       // convergence rounds to run, not how to build a bundle, and handing it on would make
@@ -367,6 +382,8 @@ try {
     parallel: false,
     concurrency: null,
   };
+  // A full run always produces the shared bundle, so every task may be told where it is.
+  distPromised = true;
   const build =
     externalDist === ""
       ? run(buildTask.name, buildTask.cmd, buildTask.cwd)
