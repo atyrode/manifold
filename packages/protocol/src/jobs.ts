@@ -12,7 +12,7 @@ import { ServiceTunnelFrameSchema } from "./services.ts";
 import { JobResourceBindingsSchema, JobResourceInventorySchema } from "./job-resources.ts";
 
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = 29;
+export const JOB_OWNER_PROTOCOL_VERSION = 30;
 
 const id = z.string().min(1).max(128);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -670,6 +670,17 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
     reason: id,
     admission: JobStartCommandSchema.omit({ type: true }).optional(),
   }),
+  // Retirement requires a signed instance-service admission, supplied here or retained by the owner.
+  z
+    .strictObject({
+      type: z.literal("retire"),
+      jobId: id,
+      reason: id,
+      admission: JobStartCommandSchema.omit({ type: true }).optional(),
+    })
+    .refine(({ admission }) => !admission || admission.request.service !== undefined, {
+      message: "Only instance-service workloads may retire",
+    }),
   z.strictObject({
     type: z.literal("status"),
     jobId: id,

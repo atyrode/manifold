@@ -87,6 +87,7 @@ import {
 import {
   JobStore,
   type JobRecord,
+  type JobCancellation,
   type JobInstallation,
   type JobRunPosition,
 } from "./job-store.ts";
@@ -435,6 +436,17 @@ export class JobService {
         traceId,
         requirements,
       );
+      if (result.previous?.jobId && result.previous.revision !== result.current.revision) {
+        const previousJob = this.jobs.get(result.previous.jobId);
+        if (previousJob?.state === "queued")
+          this.cancelRecord(previousJob, "instance_service_configuration_changed", "retire");
+        else
+          this.jobs.cancel(
+            result.previous.jobId,
+            "instance_service_configuration_changed",
+            "retire",
+          );
+      }
       this.effectiveServices.clear();
       this.serviceTrace(current, callerPluginId, traceId, "configure-instance", {
         serviceId: args.serviceId,
@@ -450,7 +462,8 @@ export class JobService {
       this.instanceFailures.delete(args.serviceId);
       if (result.previous?.jobId) {
         const previousJob = this.jobs.get(result.previous.jobId);
-        if (previousJob) this.cancelRecord(previousJob, "instance_service_configuration_changed");
+        if (previousJob)
+          this.cancelRecord(previousJob, "instance_service_configuration_changed", "retire");
       }
     }
     for (const live of [...this.channels.values()])
@@ -1285,7 +1298,7 @@ export class JobService {
         break;
       }
       refusal =
-        this.jobs.cancellation(ancestor.request.jobId) ??
+        this.jobs.cancellation(ancestor.request.jobId)?.reason ??
         this.reauthorizeDeferred(ancestor.request) ??
         this.invocationRefusal(ancestor.request);
       ancestor = ancestor.request.parent
@@ -1660,11 +1673,11 @@ export class JobService {
     };
   }
 
-  private reauthorizeDeferred(request: JobRequest): string | null {
+  private reauthorizeDeferred(request: JobRequest, retiring = false): string | null {
     const context = this.auth.restoreCredential(request.credential);
     if (!context) return "credential_revoked_or_expired";
     try {
-      const requirements = this.requirements(request);
+      const requirements = this.requirements(request, retiring);
       const policies = requirements.some((requirement) => requirement.ref.kind === "service")
         ? this.effectiveConfiguration(request.machineId).policies
         : [];
@@ -1844,11 +1857,13 @@ export class JobService {
     }
     for (const job of this.jobs.reconcilable()) {
       if (job.state === "queued") continue; // Admission independently checks current authority.
+      const cancellation = this.jobs.cancellation(job.request.jobId);
       const reason =
-        this.jobs.cancellation(job.request.jobId) ??
-        this.reauthorizeDeferred(job.request) ??
+        this.reauthorizeDeferred(job.request, cancellation?.mode === "retire") ??
         this.invocationRefusal(job.request, false);
       if (reason !== null) this.cancelRecord(job, reason);
+      else if (cancellation)
+        this.cancelRecord(job, cancellation.reason, cancellation.mode);
     }
     for (const follower of [...this.followers])
       if (!this.canReadGoverned(follower.auth, follower.node, follower.callerPluginId))
@@ -2853,7 +2868,7 @@ export class JobService {
     this.reconcileAuthority();
     this.accessChanged();
   }
-  private requirements(request: JobRequest): AuthorityRequirement[] {
+  private requirements(request: JobRequest, retiring = false): AuthorityRequirement[] {
     const install = this.jobs.installation(request.machineId, request.pluginId);
     const op = install?.machine.operations[request.operationId];
     if (
@@ -2874,16 +2889,18 @@ export class JobService {
     // gates new admission and service effects, not the continued validity of its grants.
     for (const binding of op.services ?? [])
       if (!this.boundServicePolicy(install, binding)) fail("service_definition_changed");
+    // Retirement removes only the superseded configuration fence, never runtime authority.
     if (request.service) {
       const record = this.instanceServices.get(request.service.serviceId);
       if (
-        !record?.enabled ||
-        record.jobId !== request.jobId ||
-        record.machineId !== request.machineId ||
-        record.revision !== request.service.revision ||
-        record.policy.runtime?.operationId !== request.operationId ||
-        digest(this.instancePolicy(record)) !== request.service.policySha256 ||
-        digest(record.credential) !== digest(request.credential) ||
+        (!retiring &&
+          (!record?.enabled ||
+            record.jobId !== request.jobId ||
+            record.machineId !== request.machineId ||
+            record.revision !== request.service.revision ||
+            record.policy.runtime?.operationId !== request.operationId ||
+            digest(this.instancePolicy(record)) !== request.service.policySha256 ||
+            digest(record.credential) !== digest(request.credential))) ||
         request.limits.timeoutMs !== 0 ||
         request.parent ||
         request.terminal
@@ -3188,7 +3205,7 @@ export class JobService {
         ? "credential_revoked_or_expired"
         : (operationReason ??
           this.jobSchedules.startRefusal(request.jobId, this.runtime.now()) ??
-          this.jobs.cancellation(request.jobId) ??
+          this.jobs.cancellation(request.jobId)?.reason ??
           this.invocationRefusal(request));
       let requirements: AuthorityRequirement[] = [];
       try {
@@ -3564,7 +3581,8 @@ export class JobService {
       });
       for (const job of this.jobs.reconcilable(channel.machineId)) {
         const cancellation = this.jobs.cancellation(job.request.jobId);
-        if (cancellation !== null) this.cancelRecord(job, cancellation);
+        if (cancellation !== null)
+          this.cancelRecord(job, cancellation.reason, cancellation.mode);
         else if (job.state === "queued") this.start(job);
         else
           channel.send({
@@ -3952,7 +3970,16 @@ export class JobService {
     )
       return;
     if (event.type === "workload_empty") {
-      if (this.jobs.confirmEmpty(job.request.jobId)) {
+      const closed = this.store.transaction(() => {
+        if (!this.jobs.confirmEmpty(job.request.jobId)) return false;
+        const record = job.request.service
+          ? this.instanceServices.get(job.request.service.serviceId)
+          : null;
+        if (record && record.credential?.tokenId !== job.request.credential.tokenId)
+          this.auth.revokeNativeServiceCredential(job.request.credential, record.configuredBy);
+        return true;
+      });
+      if (closed) {
         const serviceId = job.request.service?.serviceId;
         if (serviceId && this.instanceReadiness.get(serviceId)?.jobId === job.request.jobId)
           this.instanceReadiness.delete(serviceId);
@@ -4080,7 +4107,7 @@ export class JobService {
   }
   private inputAuthority(job: JobRecord): void {
     const reason =
-      this.jobs.cancellation(job.request.jobId) ??
+      this.jobs.cancellation(job.request.jobId)?.reason ??
       this.reauthorizeDeferred(job.request) ??
       this.invocationRefusal(job.request);
     if (reason) fail(reason);
@@ -4171,9 +4198,14 @@ export class JobService {
       if (job.request.terminal?.terminalId === terminalId)
         this.cancelRecord(job, "terminal_closed");
   }
-  private cancelRecord(job: JobRecord, reason: string): void {
+  private cancelRecord(
+    job: JobRecord,
+    reason: string,
+    mode: JobCancellation["mode"] = "cancel",
+  ): void {
     if (!active.has(job.state) && (!job.request.service || !job.permit || job.ownerClosed)) return;
-    this.jobs.cancel(job.request.jobId, reason);
+    this.jobs.cancel(job.request.jobId, reason, mode);
+    const cancellation = this.jobs.cancellation(job.request.jobId)!;
     if (job.state === "queued") {
       this.jobs.state(job.request.jobId, "cancelled");
       this.jobSchedules.finishInvocation(job.request.jobId);
@@ -4186,14 +4218,15 @@ export class JobService {
       this.channels.get(job.request.machineId)?.channel.send({
         type: "job_command",
         command: {
-          type: "cancel",
+          type: cancellation.mode,
           jobId: job.request.jobId,
-          reason,
+          reason: cancellation.reason,
           ...(job.permit ? { admission: { request: job.request, permit: job.permit } } : {}),
         },
       });
     for (const child of this.jobs.active())
-      if (child.request.parent?.parentJobId === job.request.jobId) this.cancelRecord(child, reason);
+      if (child.request.parent?.parentJobId === job.request.jobId)
+        this.cancelRecord(child, cancellation.reason);
   }
   output(
     auth: AuthContext,

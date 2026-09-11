@@ -6,7 +6,7 @@ import { migrateToSoloCompositions } from "./migrate-solo.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 29;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -690,6 +690,10 @@ CREATE INDEX machine_jobs_instance_service
  (state IN ('queued','admitted','start-committed','started') OR
   (permit IS NOT NULL AND owner_closed=0));
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','28');
+`,
+  29: `
+ALTER TABLE machine_jobs ADD COLUMN cancel_mode TEXT NOT NULL DEFAULT 'cancel' CHECK(cancel_mode IN ('cancel','retire'));
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','29');
 `,
 };
 
