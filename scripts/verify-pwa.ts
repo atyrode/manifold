@@ -37,7 +37,7 @@ import {
 } from "../packages/protocol/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser } from "./cdp.ts";
-import { ownerKeyOf, reserveLoopbackPort, sleep, teardownServer, until } from "./gate-lib.ts";
+import { ownerKeyOf, reserveLoopbackPort, settles, teardownServer, until } from "./gate-lib.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-pwa-");
@@ -129,6 +129,25 @@ async function seenTestId(driver: Browser, testid: string): Promise<boolean> {
   return await driver.evaluate<boolean>(
     `document.querySelector('[data-testid=${testid}]') !== null`,
   );
+}
+
+/**
+ * Answers, rather than throws, whether a rendered condition arrives inside `ms`.
+ *
+ * `settles` with one added tolerance, because the conditions polled here are reached by the page
+ * navigating ITSELF — accepting an update swaps the worker and reloads, the way home assigns a
+ * new URL — and an evaluation landing in the instant the old execution context is gone answers
+ * with an error rather than with `false`. That instant is not a verdict, so it is polled through;
+ * the ceiling still decides, and a miss reads as FAIL instead of as a crash.
+ */
+async function arrives(probe: () => Promise<boolean>, ms: number): Promise<boolean> {
+  return await settles(async () => {
+    try {
+      return await probe();
+    } catch {
+      return false;
+    }
+  }, ms);
 }
 
 /** Sample the actual canvas, not transparent computed html/body backgrounds or theme metadata. */
@@ -259,7 +278,6 @@ try {
     20_000,
     "the shell worker to control the page",
   );
-  assert("the shell worker controls the page", true);
 
   const installability = await driver.send("Page.getInstallabilityErrors", {});
   const installErrors = (installability.result?.["installabilityErrors"] ?? []) as {
@@ -428,11 +446,14 @@ try {
     "the worker's installation release listener",
   );
   await driver.evaluate("window.__pwaReleaseInstall()");
-  await until(async () => await seenTestId(driver, "lens-update"), 20_000, "the update offer");
+  await until(
+    async () => await seenTestId(driver, "lens-update"),
+    20_000,
+    "the deploy to be offered to the live page rather than swapped under it",
+  );
   await driver.send("Page.removeScriptToEvaluateOnNewDocument", {
     identifier: registrationObserver.result?.["identifier"],
   });
-  assert("a deploy is offered to a live page rather than swapped under it", true);
   const bothGenerations = await generations();
   assert(
     "the running generation survives beside the new one until the human accepts",
@@ -443,18 +464,37 @@ try {
   await until(
     async () => await seenTestId(driver, "lens-update"),
     20_000,
-    "the already waiting update offer after reload",
+    "the waiting update to remain offered after reopening the app",
   );
-  assert("a waiting update remains offered after reopening the app", true);
   await driver.evaluate(
     "(document.querySelector('[data-testid=lens-update] button').click(), null)",
   );
-  await sleep(3500);
+  /*
+    Accepting swaps the new worker in, and its activation sweeps the old generation before the
+    page reloads itself (`lens.tsx` reloads on controllerchange). The handover is therefore over
+    when exactly the deployed generation is left AND the reloaded app has painted — which is what
+    the offer's absence is read against, rather than a fixed wait long enough to cover both.
+
+    The ceiling is a minute because activation is the BROWSER's schedule, not this gate's: with
+    the machine loaded, Chromium has been measured taking ~31s between the message reaching the
+    waiting worker and its activate handler finishing the sweep (it defers activation while the
+    outgoing worker still has work in flight). A poll pays only what the handover actually takes,
+    so a ceiling wide enough to never lie about a slow machine costs a fast one nothing — where
+    the fixed 3500ms this replaces simply called that machine broken.
+  */
+  let swept: string[] = [];
+  const handedOver = await arrives(async () => {
+    swept = await generations();
+    return (
+      swept.length === 1 &&
+      swept[0] === `manifold-shell-${deployed}` &&
+      (await driver.evaluate<boolean>("document.getElementById('root').childElementCount > 0"))
+    );
+  }, 60_000);
   assert("accepting the update clears the offer", !(await seenTestId(driver, "lens-update")));
-  const swept = await generations();
   assert(
     "and sweeps every older generation, so no browser stays pinned to an old lens",
-    swept.length === 1 && swept[0] === `manifold-shell-${deployed}`,
+    handedOver,
     swept.join(", "),
   );
 
@@ -472,9 +512,8 @@ try {
   await until(
     async () => await seenTestId(driver, "lens-update"),
     20_000,
-    "a later live update offer",
+    "a later update, arriving after registration, to still be offered",
   );
-  assert("an update arriving after registration is still offered", true);
   await driver.evaluate(
     "(document.querySelector('[data-testid=lens-update] button').click(), null)",
   );
@@ -487,10 +526,9 @@ try {
         current[0] === `manifold-shell-${laterDeploy}`
       );
     },
-    20_000,
+    60_000,
     "the accepted live update to replace the old generation",
   );
-  assert("a later live update activates only after acceptance", true);
 
   // ───────────────────────────────────────────────────────────── 3. offline shell
   console.log("\n3. offline shell");
@@ -502,16 +540,22 @@ try {
     uploadThroughput: 0,
   });
   await driver.goto(`${originA}/`);
-  await sleep(1500);
   // The title is `manifold`, or `manifold · development` when the gate's own build is one (it is:
   // a checkout past a tag is the development channel, `scripts/build-identity.ts`).
   assert(
     "the shell paints with no network",
-    await driver.evaluate<boolean>(
-      "/^manifold( · development)?$/.test(document.title) && document.getElementById('root').childElementCount > 0",
+    await arrives(
+      async () =>
+        await driver.evaluate<boolean>(
+          "/^manifold( · development)?$/.test(document.title) && document.getElementById('root').childElementCount > 0",
+        ),
+      15_000,
     ),
   );
-  assert("the disconnected condition is named on screen", await seenTestId(driver, "lens-offline"));
+  assert(
+    "the disconnected condition is named on screen",
+    await arrives(async () => await seenTestId(driver, "lens-offline"), 15_000),
+  );
   assert(
     "the named condition says which instance is unreachable",
     (
@@ -585,25 +629,35 @@ try {
   // ──────────────────────────────────────────────────── 5. origin configurability
   console.log("\n5. origin configurability");
   await driver.goto(`${originA}/`);
-  await sleep(1000);
-  const grantHere = await driver.evaluate<string>(
-    "localStorage.getItem('manifold.identity') ?? ''",
+  let grantHere = "";
+  assert(
+    "this device holds a grant from the instance that served it",
+    await arrives(async () => {
+      grantHere = await driver.evaluate<string>("localStorage.getItem('manifold.identity') ?? ''");
+      return grantHere !== "";
+    }, 10_000),
   );
-  assert("this device holds a grant from the instance that served it", grantHere !== "");
 
   await driver.goto(`${originA}/?instance=${encodeURIComponent(originB)}#key=${ownerB}`);
-  await sleep(1200);
   assert(
     "the chosen instance is remembered on this device",
-    (await driver.evaluate<string>("localStorage.getItem('manifold:instance') ?? ''")) === originB,
+    await arrives(
+      async () =>
+        (await driver.evaluate<string>("localStorage.getItem('manifold:instance') ?? ''")) ===
+        originB,
+      10_000,
+    ),
   );
   assert(
     "the one-shot carrier is consumed, not left in the URL",
-    (await driver.evaluate<string>("location.search + location.hash")) === "",
+    await arrives(
+      async () => (await driver.evaluate<string>("location.search + location.hash")) === "",
+      10_000,
+    ),
   );
   assert(
     "looking elsewhere is a named, visible condition",
-    await seenTestId(driver, "lens-instance"),
+    await arrives(async () => await seenTestId(driver, "lens-instance"), 10_000),
   );
   await enterIdentity(driver, "pwa-gate-elsewhere", `manifold.identity@${originB}`);
   assert(
@@ -620,29 +674,51 @@ try {
         `document.body.textContent.includes(${JSON.stringify(nameB)})`,
       ),
     25_000,
-    "the foreign instance's own index",
+    "the lens to read the instance it was pointed at, in the foreign instance's own index",
   );
-  assert("the lens reads the instance it was pointed at", true);
   assert(
-    "and nothing from the instance that merely served the bundle",
+    "the lens reads nothing from the instance that merely served the bundle",
     !(await driver.evaluate<boolean>(
       `document.body.textContent.includes(${JSON.stringify(nameA)})`,
     )),
   );
+  /*
+    The socket is dialled after the first fetch answers, so "Open" arrives strictly after the
+    index this section just waited for — an instant read only ever passed because the fixed
+    waits above it happened to be longer than the handshake. The claim is unchanged; what is
+    bounded is now the handshake rather than the gate's patience.
+  */
   assert(
     "the session socket followed the lens across origins",
-    (await driver.evaluate<string>(
-      "document.querySelector('[data-testid=connection-state]')?.textContent ?? ''",
-    )) === "Open",
+    await arrives(
+      async () =>
+        (await driver.evaluate<string>(
+          "document.querySelector('[data-testid=connection-state]')?.textContent ?? ''",
+        )) === "Open",
+      20_000,
+    ),
   );
 
   await driver.evaluate(
     "(document.querySelector('[data-testid=lens-instance] button').click(), null)",
   );
-  await sleep(1500);
+  /*
+    The way home is a navigation (`lens.tsx` assigns `/?instance=`) whose empty carrier is
+    consumed during boot, before React renders (`packages/plugin/src/instance.ts`). So the choice
+    is forgotten once the reloaded app has PAINTED with a clean URL and an empty memory — a
+    painted page being what makes the next line's absence mean anything, where the fixed wait
+    this replaces only hoped to cover the same three steps.
+  */
   assert(
     "the way home forgets the choice",
-    (await driver.evaluate<string>("localStorage.getItem('manifold:instance') ?? ''")) === "",
+    await arrives(
+      async () =>
+        (await driver.evaluate<boolean>(
+          "location.search === '' && document.getElementById('root').childElementCount > 0",
+        )) &&
+        (await driver.evaluate<string>("localStorage.getItem('manifold:instance') ?? ''")) === "",
+      15_000,
+    ),
   );
   assert("and the lens is looking here again", !(await seenTestId(driver, "lens-instance")));
 } catch (error) {

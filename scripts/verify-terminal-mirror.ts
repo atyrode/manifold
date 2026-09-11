@@ -42,6 +42,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ActionOutcomeSchema,
+  ContainerCensusResponseSchema,
   ContainerResponseSchema,
   ContainersResponseSchema,
   elementString,
@@ -348,7 +349,26 @@ try {
     20_000,
     "xterm rendered",
   );
-  await sleep(600);
+  /*
+    A mounted `.xterm-rows` is markup; a PTY on the other end of it is not. The shell's own
+    first prompt is the earliest thing the socket paints, so it is the readable proof that
+    this terminal is attached and its grid is fitted — the two things the click point below
+    and every keystroke after it depend on.
+  */
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `(() => {
+          const frame = document.querySelector('.terminal-frame');
+          if (frame === null) return false;
+          const box = frame.getBoundingClientRect();
+          const painted = frame.querySelector('.xterm-rows')?.textContent || '';
+          return box.width > 0 && box.height > 0 && /\\S/.test(painted);
+        })()`,
+      ),
+    15_000,
+    "the new terminal painted its shell prompt",
+  );
 
   const center = () =>
     browser!.evaluate<{ x: number; y: number }>(
@@ -361,10 +381,25 @@ try {
   const termCount = () =>
     browser!.evaluate<number>("document.querySelectorAll('.terminal-frame').length");
 
+  /*
+    A view whose keyboard is LIVE. Engagement is a round trip — the tile asks, the occupant
+    socket comes up, and only then does `.portal--engaged` replace `.portal--engaging` — and
+    a spectator's keystrokes are dropped rather than queued. Every click-then-type pair below
+    waits for THIS, never for a duration.
+  */
+  const engaged = (nth: number) =>
+    browser!.evaluate<boolean>(
+      `(() => {
+        const frame = document.querySelectorAll('.terminal-frame')[${String(nth)}];
+        const portal = frame === undefined ? null : frame.closest('.portal');
+        return portal !== null && portal.classList.contains('portal--engaged');
+      })()`,
+    );
+
   // Screen state that must exist BEFORE the clone is born.
   const c0 = await center();
   await browser.drag([c0], 30); // click-to-focus
-  await sleep(500);
+  await until(() => engaged(0), 10_000, "the focused view owns the keyboard");
   await browser.typeText("clear; echo PRE_CLONE_STATE");
   await browser.typeText("\r");
   await until(
@@ -394,13 +429,19 @@ try {
   };
   observer.transact((tx) => tx.create(clone));
   await until(async () => (await termCount()) === 2, 10_000, "SDK update produced a mirror");
-  await sleep(1200);
 
   // 1. The clone must render PRE-EXISTING screen state (the zombie regression).
+  //    Polled rather than slept on: the marker on both screens IS this round's claim, and
+  //    a poll that ANSWERS keeps a miss reading as this check's own named FAIL instead of
+  //    an exception that would skip every round below it.
+  const preReplayed = await settles(async () => {
+    const painted = await showing("PRE_CLONE_STATE");
+    return painted.length === 2 && painted.every(Boolean);
+  }, 15_000);
   const pre = await showing("PRE_CLONE_STATE");
   check(
     "clone renders pre-existing screen state",
-    pre.length === 2 && pre.every(Boolean),
+    preReplayed,
     `views showing marker: [${pre.join(", ")}]`,
   );
 
@@ -409,14 +450,17 @@ try {
     "(() => { const b = document.querySelectorAll('.terminal-frame')[0].getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()",
   );
   await browser.drag([first], 30);
-  await sleep(500);
+  await until(() => engaged(0), 10_000, "the first view owns the keyboard");
   await browser.typeText("echo LIVE_MIRROR_OK");
   await browser.typeText("\r");
-  await sleep(1000);
+  const liveMirrored = await settles(async () => {
+    const painted = await showing("LIVE_MIRROR_OK");
+    return painted.length === 2 && painted.every(Boolean);
+  }, 15_000);
   const live = await showing("LIVE_MIRROR_OK");
   check(
     "live output mirrors to both views",
-    live.length === 2 && live.every(Boolean),
+    liveMirrored,
     `views showing marker: [${live.join(", ")}]`,
   );
 
@@ -430,11 +474,14 @@ try {
     25_000,
     "both terminals re-rendered after reload",
   );
-  await sleep(1500);
+  const reloadedBoth = await settles(async () => {
+    const painted = await showing("LIVE_MIRROR_OK");
+    return painted.length === 2 && painted.every(Boolean);
+  }, 20_000);
   const reloaded = await showing("LIVE_MIRROR_OK");
   check(
     "both views render after reload",
-    reloaded.length === 2 && reloaded.every(Boolean),
+    reloadedBoth,
     `views showing marker: [${reloaded.join(", ")}]`,
   );
 
@@ -472,7 +519,31 @@ try {
     tx.patch(source.id, { x: mirrorX(40), y: mirrorY(60), width: 460, height: 320 });
     tx.patch(clone.id, { x: mirrorX(540), y: mirrorY(60), width: 460, height: 320 });
   });
-  await sleep(1500);
+  /*
+    A scene patch is a remote edit like any other, and everything below reads BOXES: the
+    round needs both nodes painted at the geometry just asked for — apart, and wholly inside
+    the window — which is the entire reason this re-layout exists. That state is the wait.
+  */
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `(() => {
+          const boxOf = (id) => {
+            const node = document.querySelector('.react-flow__node[data-id="' + id + '"]');
+            return node === null ? null : node.getBoundingClientRect();
+          };
+          const a = boxOf(${JSON.stringify(source.id)});
+          const b = boxOf(${JSON.stringify(clone.id)});
+          if (a === null || b === null) return false;
+          const onScreen = (r) =>
+            r.left >= 0 && r.top >= 0 &&
+            r.right <= window.innerWidth && r.bottom <= window.innerHeight;
+          return onScreen(a) && onScreen(b) && (a.right <= b.left || b.right <= a.left);
+        })()`,
+      ),
+    10_000,
+    "both mirror nodes painted apart and on screen",
+  );
 
   // 4. The mono portal's chrome is a real POINTER ref. A canvas terminal renders
   //    element-chrome-first: the terminal's own titlebar IS the node's bar, carrying the
@@ -541,9 +612,12 @@ try {
   if (unplaceAt === null) throw new Error("clone node has no unplace control");
   await clickAt(browser, unplaceAt);
   await until(async () => (await termCount()) === 1, 10_000, "mirror unplaced");
-  await sleep(600);
-  const cloneGone = await browser.evaluate<boolean>(
-    `document.querySelector(${JSON.stringify(`.react-flow__node[data-id="${clone.id}"]`)}) === null`,
+  const cloneGone = await settles(
+    () =>
+      browser!.evaluate<boolean>(
+        `document.querySelector(${JSON.stringify(`.react-flow__node[data-id="${clone.id}"]`)}) === null`,
+      ),
+    6_000,
   );
   const survivingViews = await termCount();
   check(
@@ -556,12 +630,15 @@ try {
   );
   const cs = await center();
   await browser.drag([cs], 30);
-  await sleep(500);
+  await until(() => engaged(0), 10_000, "the surviving view owns the keyboard");
   await browser.typeText("echo SURVIVOR_ALIVE");
   await browser.typeText("\r");
-  await sleep(1000);
-  const survivorTypes = await browser.evaluate<boolean>(
-    "(document.querySelector('.xterm-rows')?.textContent || '').includes('SURVIVOR_ALIVE')",
+  const survivorTypes = await settles(
+    () =>
+      browser!.evaluate<boolean>(
+        "(document.querySelector('.xterm-rows')?.textContent || '').includes('SURVIVOR_ALIVE')",
+      ),
+    15_000,
   );
   const exitedStrip = await browser.evaluate<boolean>(
     "document.querySelector('.terminal-exited') !== null",
@@ -641,6 +718,16 @@ try {
     (await listContainers()).find((container) => container.id === id)?.name ?? "";
   const containerIdNamed = async (name: string): Promise<string> =>
     (await listContainers()).find((container) => container.name === name)?.id ?? "";
+  /*
+    What the SERVER believes a container holds. `/api/containers` answers the containment
+    census, derived from each container's live document — the one read out here that can say
+    whether a client's scene write has landed rather than merely been queued.
+  */
+  const censusItemsOf = async (id: string): Promise<number> => {
+    const census = await fetch(`${origin}/api/containers`, { headers: httpHeaders });
+    const listed = ContainerCensusResponseSchema.parse(await census.json());
+    return listed.containers.find((entry) => entry.containerId === id)?.items.length ?? 0;
+  };
   const enterWorkspace = async (target: Browser, displayName: string): Promise<void> => {
     await target.goto(`${origin}/#key=${ownerKey}`);
     if (await target.evaluate<boolean>("document.querySelector('input') !== null")) {
@@ -678,7 +765,15 @@ try {
   watcher = new Browser();
   await watcher.launch();
   await enterWorkspace(watcher, "mirror-gate-watcher");
-  await sleep(1200);
+  /*
+    The identity dialog IS the gate, and it unmounts the instant the grant lands, so its
+    absence is the watcher's admission — nothing here is a duration.
+  */
+  await until(
+    () => watcher!.evaluate<boolean>("document.querySelector('.identity-dialog') === null"),
+    15_000,
+    "the watcher passed the identity gate",
+  );
 
   // 5. A canvas snapped into a tile renders its LIVE canvas: the composition renderer mounts a
   //    real React Flow instance for a container ref, not a name card. Every terminal is
@@ -706,7 +801,16 @@ try {
       zIndex: tx.nextZIndex(),
     }),
   );
-  await sleep(800);
+  /*
+    The write has to be on the SERVER before a second window is mounted onto it, and the
+    census is derived from the container's live document: the element appearing there is the
+    only proof out here that the transaction landed rather than sitting in an outbox.
+  */
+  await until(
+    async () => (await censusItemsOf(embeddedContainerId)) === 1,
+    10_000,
+    "the embedded canvas element reached the server",
+  );
   const mirrorContainerId = source.containerId;
   await browser.goto(`${origin}/p/${mirrorContainerId}`);
   await until(
@@ -714,7 +818,28 @@ try {
     25_000,
     "the terminal's home composition mounted for the canvas drop",
   );
-  await sleep(1500);
+  /*
+    Both ends of the drag have to be on screen before it is dispatched: the index row the
+    sidebar publishes for the new canvas, and a composition leaf with a real box to drop
+    onto. A missing end answers `ok: false`, which would read as a broken envelope contract
+    rather than as the race it would be.
+  */
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `(() => {
+          const row = document.querySelector(
+            '.index-item[data-tree-kind="container"][data-tree-id="${embeddedContainerId}"]',
+          );
+          const leaf = document.querySelector('.composition-leaf');
+          if (row === null || leaf === null) return false;
+          const box = leaf.getBoundingClientRect();
+          return box.width > 0 && box.height > 0;
+        })()`,
+      ),
+    20_000,
+    "the embedded canvas row and its drop target are both on screen",
+  );
   const containerDrop = await nativeDrag(
     browser,
     `.index-item[data-tree-kind="container"][data-tree-id="${embeddedContainerId}"]`,
@@ -793,13 +918,25 @@ try {
     );
   }
   await until(() => composed!.elements.size === 2, 15_000, "compose elements reached the SDK");
-  await sleep(1200);
   const composeElements = [...composed.elements.values()].sort((a, b) => (a.id < b.id ? -1 : 1));
   const anchor = composeElements[0];
   const mover = composeElements[1];
   if (anchor?.type !== "portal" || mover?.type !== "portal") {
     throw new Error("compose canvas does not hold two terminal portals");
   }
+  /*
+    Both portals must be PAINTED, not merely present in the SDK's map: the geometry below is
+    measured off the anchor's node box, and a node React Flow has not mounted has no box.
+  */
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `document.querySelector('.react-flow__node[data-id="${anchor.id}"]') !== null &&
+         document.querySelector('.react-flow__node[data-id="${mover.id}"]') !== null`,
+      ),
+    15_000,
+    "both compose portals painted on the canvas",
+  );
   for (const [element, name] of [
     [anchor, "alpha"],
     [mover, "beta"],
@@ -841,7 +978,28 @@ try {
     tx.patch(anchor.id, { x: laidOutX, y: laidOutY, width: 420, height: 300 });
     tx.patch(mover.id, { x: laidOutX + 480, y: laidOutY, width: 420, height: 300 });
   });
-  await sleep(1500);
+  // The same wait the mirror round makes: the pointer gesture below needs both nodes
+  // painted at the geometry just patched, apart and wholly inside the window.
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `(() => {
+          const boxOf = (id) => {
+            const node = document.querySelector('.react-flow__node[data-id="' + id + '"]');
+            return node === null ? null : node.getBoundingClientRect();
+          };
+          const a = boxOf(${JSON.stringify(anchor.id)});
+          const b = boxOf(${JSON.stringify(mover.id)});
+          if (a === null || b === null) return false;
+          const onScreen = (r) =>
+            r.left >= 0 && r.top >= 0 &&
+            r.right <= window.innerWidth && r.bottom <= window.innerHeight;
+          return onScreen(a) && onScreen(b) && (a.right <= b.left || b.right <= a.left);
+        })()`,
+      ),
+    10_000,
+    "both compose nodes painted apart and on screen",
+  );
 
   /*
     A marker on the anchor's screen BEFORE any composition exists. After the merge the
@@ -857,7 +1015,14 @@ try {
   );
   if (anchorBody === null) throw new Error("the anchor terminal has no body to work in");
   await clickAt(browser, anchorBody);
-  await sleep(900);
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `document.querySelector('.react-flow__node[data-id="${anchor.id}"] .portal--engaged') !== null`,
+      ),
+    10_000,
+    "the anchor terminal owns the keyboard",
+  );
   await browser.typeText("clear; echo COMPOSED_TILE_LIVE");
   await browser.typeText("\r");
   const anchorMarker = `.react-flow__node[data-id="${anchor.id}"] .xterm-rows`;
@@ -871,7 +1036,14 @@ try {
   );
   // Engagement made the anchor an occupant; the compose gesture must not start from it.
   await clickAt(browser, { x: paneFrame.paneLeft + 30, y: paneFrame.paneTop + 30 });
-  await sleep(400);
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "document.querySelector('.portal--engaged, .portal--engaging') === null",
+      ),
+    8_000,
+    "the anchor released occupancy",
+  );
   const grab = await pointIn(
     browser,
     `.react-flow__node[data-id="${mover.id}"] .terminal-titlebar`,
@@ -885,6 +1057,11 @@ try {
     x: anchorRect.left + anchorRect.width * 0.85,
     y: anchorRect.top + anchorRect.height * 0.5,
   };
+  /*
+    The three short holds inside the gesture below are PACING, not waiting: a held pointer
+    drag is a STREAM of moves, and collapsing them into one burst is a different gesture
+    rather than a faster one. Nothing is being waited for, so there is nothing to poll.
+  */
   await pressAt(browser, grab);
   await moveTo(browser, { x: grab.x - 24, y: grab.y + 8 });
   await sleep(80);
@@ -1107,7 +1284,20 @@ try {
   );
   // Back to the canvas: extraction is a canvas gesture, and the portal must be on screen.
   await openCanvas(browser, composeContainerId, "compose canvas remounted after entering");
-  await sleep(1500);
+  /*
+    The extraction is dispatched from the composed portal's own tile handle, so what the
+    round waits for is that handle: the portal repainted after the remount, wearing a
+    draggable titlebar on the tile the gesture grabs.
+  */
+  const extractionHandle = `.react-flow__node[data-id="${anchor.id}"] .portal__tile [data-titlebar-draggable]`;
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        `document.querySelector(${JSON.stringify(extractionHandle)}) !== null`,
+      ),
+    20_000,
+    "the composed portal's tile drag handle is back on the canvas",
+  );
 
   // Extraction leaves ONE item behind, and a composition that still holds something is
   // never retired — only the one emptied by the move is. The watcher walks into the
@@ -1120,11 +1310,11 @@ try {
     "watcher occupied the composed view",
   );
 
-  const extraction = await nativeDrag(
-    browser,
-    `.react-flow__node[data-id="${anchor.id}"] .portal__tile [data-titlebar-draggable]`,
-    { selector: ".react-flow__pane", fx: 0.2, fy: 0.85 },
-  );
+  const extraction = await nativeDrag(browser, extractionHandle, {
+    selector: ".react-flow__pane",
+    fx: 0.2,
+    fy: 0.85,
+  });
   check(
     "a tile drag out of a portal carries the one item envelope onto the canvas",
     extraction.ok &&
