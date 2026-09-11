@@ -3,7 +3,8 @@
   "compilerOptions": {
     "lib": ["ES2024", "DOM"],
     "jsx": "react-jsx",
-    "types": ["bun"]
+    "types": ["bun"],
+    "tsBuildInfoFile": "../../.cache/tsbuildinfo/packages/plugin.tsbuildinfo"
   },
   "include": ["src", "test"]
 }

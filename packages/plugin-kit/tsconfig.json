@@ -4,7 +4,8 @@
     "lib": ["ES2024", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
     "jsx": "react-jsx",
     "types": ["bun"],
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "tsBuildInfoFile": "../../.cache/tsbuildinfo/packages/plugin-kit.tsbuildinfo"
   },
   "include": ["src", "test"]
 }

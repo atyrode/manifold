@@ -2,7 +2,8 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "lib": ["ES2024", "DOM"],
-    "types": ["bun"]
+    "types": ["bun"],
+    "tsBuildInfoFile": "../../.cache/tsbuildinfo/packages/sdk.tsbuildinfo"
   },
   "include": ["src", "test"]
 }

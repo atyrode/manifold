@@ -1,5 +1,8 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "types": ["bun"] },
+  "compilerOptions": {
+    "types": ["bun"],
+    "tsBuildInfoFile": "../../.cache/tsbuildinfo/packages/scene.tsbuildinfo"
+  },
   "include": ["src", "test"]
 }

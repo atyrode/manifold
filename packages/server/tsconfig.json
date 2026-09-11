@@ -3,7 +3,8 @@
   "compilerOptions": {
     "lib": ["ES2024", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
     "jsx": "react-jsx",
-    "types": ["bun"]
+    "types": ["bun"],
+    "tsBuildInfoFile": "../../.cache/tsbuildinfo/packages/server.tsbuildinfo"
   },
   "include": ["src", "test"]
 }
