@@ -644,6 +644,16 @@ try {
 
   // A trackpad's two-finger travel is an ordinary pixel wheel with both deltas.
   // Hovering an unengaged terminal must not hand that event to xterm's scrollbar.
+  // Snapshot replay and authoritative resizing can change row text without scrolling.
+  // The visible scrollbar distinguishes that repaint from leaving the bottom boundary.
+  const scrollbackBottomGap = () =>
+    browser!.evaluate<number | null>(`(() => {
+      const slider=document.querySelector('.xterm .scrollbar.vertical .slider');
+      if(slider===null)return null;
+      const thumb=slider.getBoundingClientRect(),track=slider.parentElement.getBoundingClientRect();
+      if(thumb.height<=0||track.height-thumb.height<=1)return null;
+      return track.bottom-thumb.bottom;
+    })()`);
   const viewport = () =>
     browser!.evaluate<{ scrollX: number; scrollY: number; zoom: number }>(
       "window.__manifold.viewport()",
@@ -679,17 +689,24 @@ try {
     5000,
     "blank-canvas click disengages terminal",
   );
-  const beforeTravel = await viewport();
-  const textBeforeTravel = await browser.evaluate<string>(
-    "document.querySelector('.xterm-rows').textContent",
+  await until(
+    async () => {
+      const gap = await scrollbackBottomGap();
+      return gap !== null && Math.abs(gap) < 1;
+    },
+    5000,
+    "terminal rendered at a nonempty scrollback bottom",
   );
+  const beforeTravel = await viewport();
   await browser.send("Input.dispatchMouseEvent", {
     type: "mouseWheel",
     ...(await terminalPoint()),
     deltaX: 45,
-    deltaY: 60,
+    deltaY: -60,
   });
-  await Bun.sleep(500);
+  await browser.evaluate(
+    "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+  );
   await until(
     async () => {
       const v = await viewport();
@@ -698,13 +715,22 @@ try {
     5000,
     "trackpad travel over inactive terminal",
   );
+  let afterTravelGap: number | null = null;
+  await until(
+    async () => {
+      afterTravelGap = await scrollbackBottomGap();
+      return afterTravelGap !== null;
+    },
+    5000,
+    "terminal scrollback rendered after canvas travel",
+  );
   const afterTravel = await viewport();
-  if (
-    Math.abs(afterTravel.zoom - beforeTravel.zoom) > 0.001 ||
-    (await browser.evaluate<string>("document.querySelector('.xterm-rows').textContent")) !==
-      textBeforeTravel
-  )
-    throw new Error("inactive trackpad travel zoomed canvas or scrolled terminal content");
+  if (Math.abs(afterTravel.zoom - beforeTravel.zoom) > 0.001)
+    throw new Error("inactive trackpad travel zoomed canvas");
+  if (afterTravelGap === null || Math.abs(afterTravelGap) >= 1)
+    throw new Error(
+      `inactive trackpad travel moved terminal scrollback (${String(afterTravelGap)}px from bottom)`,
+    );
   console.log("PASS  trackpad pan crosses inactive terminal without changing its scrollback");
   await browser.send("Input.dispatchMouseEvent", {
     type: "mouseWheel",
@@ -749,10 +775,15 @@ try {
     5000,
     "preceding pinch animation settled",
   );
-  const beforeScroll = await viewport();
-  const textBeforeScroll = await browser.evaluate<string>(
-    "document.querySelector('.xterm-rows').textContent",
+  await until(
+    async () => {
+      const gap = await scrollbackBottomGap();
+      return gap !== null && Math.abs(gap) < 1;
+    },
+    5000,
+    "engaged terminal starts at the scrollback bottom",
   );
+  const beforeScroll = await viewport();
   await browser.send("Input.dispatchMouseEvent", {
     type: "mouseWheel",
     ...(await terminalPoint()),
@@ -760,10 +791,10 @@ try {
     deltaY: -120,
   });
   await until(
-    () =>
-      browser!.evaluate<boolean>(
-        `document.querySelector('.xterm-rows').textContent !== ${JSON.stringify(textBeforeScroll)}`,
-      ),
+    async () => {
+      const gap = await scrollbackBottomGap();
+      return gap !== null && gap >= 1;
+    },
     5000,
     "engaged terminal scrollback",
   );
