@@ -39,6 +39,18 @@ writeFileSync(`${root}/cgroup.subtree_control`, "+cpu +memory +pids");
 const workloads = `${root}/workloads`;
 mkdirSync(workloads);
 writeFileSync(`${workloads}/cgroup.subtree_control`, "+cpu +memory +pids");
+// Whole files, deliberately: 36 of their 74 cases also run in the gate's unit and e2e
+// tasks, seconds out of a fourteen-minute `checks`. They are not redundant here. This
+// unit runs them as uid 0 in an unprivileged user namespace, under private mount
+// propagation and `env -i`, so a refusal that leans on permission bits or on ambient
+// environment fails here and passes in the gate; and the reusable Plugins workflow runs
+// verify:jobs without ever running the gate, so downstream plugin repos get no other
+// execution of them. Trimming to a `-t` allowlist of the 38 gated cases is the obvious
+// idea and the reason this comment exists: bun selects by name, not by predicate, so the
+// first renamed or newly added skipIf(!realLinux) case is silently deselected, the run
+// still exits 0, and a proof that can execute nowhere else stops executing.
+// One process for one fixture set: every case shares the delegated `workloads` tree, the
+// 64KiB output tmpfs and real listening ports, so --parallel would race them.
 const child = Bun.spawn(
   [
     process.execPath,
