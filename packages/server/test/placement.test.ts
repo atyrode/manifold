@@ -491,12 +491,76 @@ afterEach(() => {
 });
 
 describe("the placement algebra, executed", () => {
-  test("every placeable kind x destination is executed or refused by a named rule", async () => {
+  const matrix = [
+    // A terminal landing on a canvas authors a PORTAL onto the composition it lives in.
+    // That is the whole of what `bind` became: one op, shared with every container.
+    ["terminal", "canvas", "portal"],
+    ["terminal", "tile", "add_tile"],
+    ["terminal", "compose", "compose"],
+    // And `park` became `unplace`: there is nowhere to park TO, so releasing is
+    // subtractive and the terminal stays in the composition it lives in.
+    ["terminal", "unplaced", "unplace"],
+    ["canvas", "canvas", "portal"],
+    ["canvas", "tile", "add_tile"],
+    ["canvas", "compose", "compose"],
+    // An embedded canvas is `unplaceable` too: the container outlives every reference
+    // to it.
+    ["canvas", "unplaced", "unplace"],
+    ["composition", "canvas", "portal"],
+    // "Compositions merge, never nest" is now the `solo_only` guard rather than a
+    // missing group: a composition still classified AS a composition holds several
+    // items, so there is nothing for another composition to absorb.
+    ["composition", "tile", "denied:not_solo"],
+    ["composition", "compose", "denied:not_solo"],
+    ["composition", "unplaced", "unplace"],
+    ["text", "canvas", "move_element"],
+    ["text", "tile", "add_tile"],
+    ["text", "compose", "compose"],
+    ["text", "unplaced", "denied:not_accepted"],
+    ["draw", "canvas", "move_element"],
+    ["draw", "tile", "add_tile"],
+    ["draw", "compose", "compose"],
+    ["draw", "unplaced", "denied:not_accepted"],
+    ["tile", "canvas", "extract"],
+    // A leaf is a re-placeable PLACEMENT: both composition cells were
+    // `denied:not_accepted` until the center-swap work, and the operator approved the
+    // flip. An edge MOVES the leaf into the destination, the exact spot of an occupied
+    // leaf EXCHANGES or DISPLACES, and merging onto a canvas portal is that same move
+    // reached through the compose door.
+    ["tile", "tile", "add_tile"],
+    ["tile", "compose", "compose"],
+    // And releasing a leaf re-homes its occupant instead of destroying it, which is what
+    // makes the fullscreen tile-minimize button do something at last.
+    ["tile", "unplaced", "unplace"],
+    /*
+      Structure means nothing outside a TREE, which is the whole content of the
+      `tree_only` guard: a tile destination takes it, the compose door refuses it by
+      name, and a canvas or a release never accepted it in the first place because
+      structure is only `tileable`.
+     */
+    ["structure", "canvas", "denied:not_accepted"],
+    ["structure", "tile", "add_tile"],
+    ["structure", "compose", "denied:no_tree"],
+    ["structure", "unplaced", "denied:not_accepted"],
+    /*
+      A panel has no wire REF form at all: a principal's workspace layout is written
+      whole by `core.space.setLayout`, so the placement door can never be handed one. The
+      matrix still has to ask, and the honest answer from THIS side is that the address
+      resolves to nothing — the algebra's own panel rules are exercised in
+      `packages/protocol/test/placement.test.ts`, where a lookup can produce a panel item.
+     */
+    ["panel", "canvas", "denied:unknown_ref"],
+    ["panel", "tile", "denied:unknown_ref"],
+    ["panel", "compose", "denied:unknown_ref"],
+    ["panel", "unplaced", "denied:unknown_ref"],
+  ] as const;
+
+  test("the matrix covers every declared placeable kind x destination", async () => {
     /*
       The kinds come from BOTH halves of the vocabulary now: the floor's structural kinds and
       the element kinds the real assembly contributes (ADR 0013 §12). Deriving them rather
       than listing them is what keeps this matrix exhaustive as plugins take ownership of
-      kinds — a contributed kind with no ref above fails here.
+      kinds — a contributed kind with no golden row above fails here.
      */
     const composed = (await placementFixture()).plugins.roster();
     const contributed = [...rosterElementTraits(composed).keys()];
@@ -505,109 +569,48 @@ describe("the placement algebra, executed", () => {
       composed (#110): `canvas` and `composition` left `ITEM_KINDS` when the roster opened,
       so the matrix reads them off the roster exactly as it reads `text` and `draw`. That is
       the assertion, not an accommodation — if `core.canvas` stopped declaring `canvas`, the
-      eight golden rows below would go missing and this test would say so.
+      eight golden rows above would no longer match and this test would say so.
     */
     const disciplines = [...rosterDisciplines(composed).keys()];
     const itemKinds = [...Object.keys(ITEM_KINDS), ...disciplines, ...contributed];
     const destinationKinds = Object.keys(DESTINATION_KINDS) as DestinationKind[];
-    const answers: string[] = [];
-    for (const itemKind of itemKinds) {
-      for (const destinationKind of destinationKinds) {
-        // A fresh world per pair: an executed placement mutates state, and the next pair
-        // must be judged against the same starting position as the last.
-        const fixture = await placementFixture();
-        const ref = refs(fixture)[itemKind];
-        const destination = destinations(fixture)[destinationKind];
-        if (ref === undefined) throw new Error(`no ref for ${itemKind}`);
-        if (destination === undefined) throw new Error(`no destination for ${destinationKind}`);
-        const predicted = resolvePlacement(ref, destination, lookupFor(fixture));
-        const outcome = fixture.placement.place({ ref, destination });
-        const label = `${itemKind} -> ${destinationKind}`;
-        if (predicted.ok) {
-          // No silent no-ops and no operational excuses: a pair the declarations allow
-          // must actually be carried out here.
-          expect(`${label}=${outcome.status}`).toBe(`${label}=placed`);
-          if (outcome.status !== "placed") continue;
-          expect(`${label}=${outcome.result.op}`).toBe(`${label}=${predicted.op}`);
-          answers.push(`${label}=${outcome.result.op}`);
-        } else {
-          expect(`${label}=${outcome.status}`).toBe(`${label}=denied`);
-          if (outcome.status !== "denied") continue;
-          expect(`${label}=${outcome.denial.rule}`).toBe(`${label}=${predicted.denial.rule}`);
-          expect(outcome.denial.ref).toEqual(ref);
-          answers.push(`${label}=denied:${outcome.denial.rule}`);
-        }
-      }
-    }
-    // Exhaustive by construction: the declarations decide the pair count, not this file. The
-    // ORDER is the vocabulary's, which is the roster's for contributed kinds, so the golden
-    // rows are compared as a set — the pairs are the contract, not their sequence.
-    expect(answers).toHaveLength(itemKinds.length * destinationKinds.length);
-    expect([...answers].sort()).toEqual(
-      [
-        // A terminal landing on a canvas authors a PORTAL onto the composition it lives in.
-        // That is the whole of what `bind` became: one op, shared with every container.
-        "terminal -> canvas=portal",
-        "terminal -> tile=add_tile",
-        "terminal -> compose=compose",
-        // And `park` became `unplace`: there is nowhere to park TO, so releasing is
-        // subtractive and the terminal stays in the composition it lives in.
-        "terminal -> unplaced=unplace",
-        "canvas -> canvas=portal",
-        "canvas -> tile=add_tile",
-        "canvas -> compose=compose",
-        // An embedded canvas is `unplaceable` too: the container outlives every reference
-        // to it.
-        "canvas -> unplaced=unplace",
-        "composition -> canvas=portal",
-        // "Compositions merge, never nest" is now the `solo_only` guard rather than a
-        // missing group: a composition still classified AS a composition holds several
-        // items, so there is nothing for another composition to absorb.
-        "composition -> tile=denied:not_solo",
-        "composition -> compose=denied:not_solo",
-        "composition -> unplaced=unplace",
-        "text -> canvas=move_element",
-        "text -> tile=add_tile",
-        "text -> compose=compose",
-        "text -> unplaced=denied:not_accepted",
-        "draw -> canvas=move_element",
-        "draw -> tile=add_tile",
-        "draw -> compose=compose",
-        "draw -> unplaced=denied:not_accepted",
-        "tile -> canvas=extract",
-        // A leaf is a re-placeable PLACEMENT: both composition cells were
-        // `denied:not_accepted` until the center-swap work, and the operator approved the
-        // flip. An edge MOVES the leaf into the destination, the exact spot of an occupied
-        // leaf EXCHANGES or DISPLACES, and merging onto a canvas portal is that same move
-        // reached through the compose door.
-        "tile -> tile=add_tile",
-        "tile -> compose=compose",
-        // And releasing a leaf re-homes its occupant instead of destroying it, which is what
-        // makes the fullscreen tile-minimize button do something at last.
-        "tile -> unplaced=unplace",
-        /*
-          Structure means nothing outside a TREE, which is the whole content of the
-          `tree_only` guard: a tile destination takes it, the compose door refuses it by
-          name, and a canvas or a release never accepted it in the first place because
-          structure is only `tileable`.
-         */
-        "structure -> canvas=denied:not_accepted",
-        "structure -> tile=add_tile",
-        "structure -> compose=denied:no_tree",
-        "structure -> unplaced=denied:not_accepted",
-        /*
-        A panel has no wire REF form at all: a principal's workspace layout is written
-        whole by `core.space.setLayout`, so the placement door can never be handed one. The
-        matrix still has to ask, and the honest answer from THIS side is that the address
-        resolves to nothing — the algebra's own panel rules are exercised in
-        `packages/protocol/test/placement.test.ts`, where a lookup can produce a panel item.
-       */
-        "panel -> canvas=denied:unknown_ref",
-        "panel -> tile=denied:unknown_ref",
-        "panel -> compose=denied:unknown_ref",
-        "panel -> unplaced=denied:unknown_ref",
-      ].sort(),
+    // The declarations decide the inventory, not this file. Compare sorted pairs so roster
+    // order is immaterial, while missing, extra, or duplicate golden rows still fail.
+    const declaredPairs = itemKinds.flatMap((itemKind) =>
+      destinationKinds.map((destinationKind) => `${itemKind} -> ${destinationKind}`),
     );
+    const matrixPairs = matrix.map(
+      ([itemKind, destinationKind]) => `${itemKind} -> ${destinationKind}`,
+    );
+    expect(matrix).toHaveLength(itemKinds.length * destinationKinds.length);
+    expect(matrixPairs.sort()).toEqual(declaredPairs.sort());
+  });
+
+  test.each(matrix)("%s -> %s = %s", async (itemKind, destinationKind, expected) => {
+    // A fresh world per pair: an executed placement mutates state, and the next pair
+    // must be judged against the same starting position as the last.
+    const fixture = await placementFixture();
+    const ref = refs(fixture)[itemKind];
+    const destination = destinations(fixture)[destinationKind];
+    if (ref === undefined) throw new Error(`no ref for ${itemKind}`);
+    if (destination === undefined) throw new Error(`no destination for ${destinationKind}`);
+    const predicted = resolvePlacement(ref, destination, lookupFor(fixture));
+    const outcome = fixture.placement.place({ ref, destination });
+    const label = `${itemKind} -> ${destinationKind}`;
+    if (predicted.ok) {
+      // No silent no-ops and no operational excuses: a pair the declarations allow
+      // must actually be carried out here.
+      expect(`${label}=${outcome.status}`).toBe(`${label}=placed`);
+      if (outcome.status !== "placed") return;
+      expect(`${label}=${outcome.result.op}`).toBe(`${label}=${predicted.op}`);
+      expect(`${label}=${outcome.result.op}`).toBe(`${label}=${expected}`);
+    } else {
+      expect(`${label}=${outcome.status}`).toBe(`${label}=denied`);
+      if (outcome.status !== "denied") return;
+      expect(`${label}=${outcome.denial.rule}`).toBe(`${label}=${predicted.denial.rule}`);
+      expect(outcome.denial.ref).toEqual(ref);
+      expect(`${label}=denied:${outcome.denial.rule}`).toBe(`${label}=${expected}`);
+    }
   });
 
   test("an element naming a portal onto a SOLO composition places the TERMINAL inside it", async () => {
