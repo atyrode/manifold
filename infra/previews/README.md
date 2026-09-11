@@ -426,39 +426,6 @@ fixture does not exercise that maintenance/restart handshake. No fixture result 
 be inferred from source review, and its inert test artifact is not provenance for an
 incumbent Manifold transport.
 
-### Temporary, single-use preview reset (#469)
-
-`cutover-legacy-preview.sh` exists only for the reviewed/CI-verified transition in
-[#469](https://github.com/atyrode/manifold/issues/469). The operator has explicitly
-declared the preview container and its work disposable. Production, the dev-01
-native node, the current OMP session and the temporary dotfiles Code CLI/TUI are
-protected. This reset never invokes owner maintenance, native lifecycle commands,
-systemd, Nix activation or production deployment.
-
-Run from the exact reviewed replacement checkout, with `PREVIEW_DEV_CHECKOUT`
-pointing to it and the existing preview/native-owner settings configured:
-
-```sh
-bash infra/previews/cutover-legacy-preview.sh \
-  --reset-disposable-preview "$REVIEWED_REPLACEMENT_FULL_SHA"
-```
-
-The fixed incumbent ID must still identify `manifold-dev-manifold-1`, with its
-preview URL, private namespaces, no elevated device/capability configuration and
-only the named `manifold-dev_manifold-data` mount. Unknown topology refuses before
-any stop. The ordinary image and effective configuration are built from reviewed
-source and frozen privately in tmpfs before mutation.
-
-The operation disables restart for that exact container, stops it (including any
-preview-only terminals), removes the container without removing its volume, and
-starts the sealed ordinary hub with `MANIFOLD_SPAWN_AGENT=0`. No remote machine is
-drained or restarted. A failure after stopping preview requires forward repair;
-there is no legacy rollback or automatic native admission change.
-
-Remove the one-time script and this subsection once native preview is proven.
-This is not a `deploy-dev.sh` mode; its normal retained server-only guard stays
-unchanged.
-
 ## Disk / gc
 
 Run `infra/previews/preview.sh gc-timer` from the stable tooling checkout to install and

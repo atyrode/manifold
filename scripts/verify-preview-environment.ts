@@ -1361,6 +1361,7 @@ await Bun.write(path, ${JSON.stringify('await Bun.write("/data/unsafe-candidate"
         const baseRevision = revision;
         const dockerfile = join(fixtureRepo, "Dockerfile");
         const supportedRecipe = readFileSync(dockerfile, "utf8");
+        const incumbent = await inspectContainer();
         await preserveLive(
           name,
           async () => {
@@ -1373,9 +1374,19 @@ await Bun.write(path, ${JSON.stringify('await Bun.write("/data/unsafe-candidate"
             await command(["git", "checkout", "--detach", revision], { cwd: fixtureRepo });
           },
         );
-        // Rebuild the supported candidate, which must remain usable after refusal.
+        // Restoring reviewed source must replace the container. A rebuild may
+        // produce a new image digest, so compare against this deployment's image.
         await up();
         await ready();
+        const restored = await inspectContainer();
+        requireThat(restored.Id !== incumbent.Id, `${name} reused the stopped incumbent`);
+        const reviewedImage = (
+          await docker(["image", "inspect", finalImage(), "--format", "{{.Id}}"])
+        ).out.trim();
+        requireThat(
+          restored.Image === reviewedImage,
+          `${name} did not activate the reviewed image`,
+        );
       });
     }
     // Each actual overlay is used only to create this verifier's incumbent. The
