@@ -1,5 +1,14 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Browser } from "../../../scripts/cdp.ts";
+import { resolveWebDist } from "../../../scripts/gate-dist.ts";
+import { loadConfig } from "../../server/src/config.ts";
+import { startServer as startInProcessServer, type RunningServer } from "../../server/src/main.ts";
+import type { StoredIdentity } from "../../web/src/api.ts";
 import {
+  ContainerResponseSchema,
   MachineEnrollResponseSchema,
   MachinesResponseSchema,
   MintTokenRequestSchema,
@@ -552,3 +561,248 @@ test("machine re-enroll is idempotent and rotation fences the live agent", async
     await Promise.all([closeRawSockets(rawSockets), stopProcesses(servers)]);
   }
 }, 30_000);
+
+test("a revoked preview browser identity returns through production admission without clearing content", async () => {
+  const dist = resolveWebDist("manifold-identity-web-");
+  const directories: string[] = [];
+  const servers: RunningServer[] = [];
+  const browser = new Browser();
+  try {
+    const productionDir = mkdtempSync(join(tmpdir(), "manifold-identity-production-"));
+    const previewDir = mkdtempSync(join(tmpdir(), "manifold-identity-preview-"));
+    directories.push(productionDir, previewDir);
+    const productionConfig = loadConfig({
+      MANIFOLD_PORT: "0",
+      MANIFOLD_DATA_DIR: productionDir,
+      MANIFOLD_OWNER_KEY: "a".repeat(64),
+      MANIFOLD_SPAWN_AGENT: "0",
+      MANIFOLD_WEB_DIST: dist.distDir,
+      MANIFOLD_PREVIEW_DOMAIN: "localhost",
+    });
+    const production = await startInProcessServer({ config: productionConfig, announce: false });
+    servers.push(production);
+    const previewConfig = loadConfig({
+      MANIFOLD_PORT: "0",
+      MANIFOLD_DATA_DIR: previewDir,
+      MANIFOLD_OWNER_KEY: "b".repeat(64),
+      MANIFOLD_SPAWN_AGENT: "0",
+      MANIFOLD_WEB_DIST: dist.distDir,
+      MANIFOLD_IDENTITY_AUTHORITY: production.publicUrl,
+    });
+    const preview = await startInProcessServer({ config: previewConfig, announce: false });
+    servers.push(preview);
+    previewConfig.publicUrl = `http://preview.localhost:${preview.port}`;
+    const previewOrigin = previewConfig.publicUrl;
+    // Administrative fixture requests stay on the loopback URL; only Chromium needs DNS
+    // for the audience-qualified preview origin.
+    const previewOwner = { httpUrl: preview.publicUrl, ownerKey: previewConfig.ownerKey };
+    const content = ContainerResponseSchema.parse(
+      await ownerAction(previewOwner, "core.index.createContainer", { name: "keep-preview-content" }),
+    ).container;
+    await browser.launch({ incognito: true });
+    await browser.goto(`${production.publicUrl}/#key=${productionConfig.ownerKey}`);
+    await waitFor(
+      () => browser.evaluate<boolean>("document.querySelector('#identity-name') !== null"),
+      10_000,
+      50,
+    );
+    await browser.typeInto("#identity-name", "preview-reviewer");
+    await browser.clickTestId("identity-enter");
+    await waitFor(
+      () => browser.evaluate<boolean>("document.querySelector('.workspace') !== null"),
+      10_000,
+      50,
+    );
+    const productionIdentity = await browser.evaluate<string>(
+      "localStorage.getItem('manifold.identity')",
+    );
+    await browser.goto(`${previewOrigin}/`);
+    await waitFor(
+      () => browser.evaluate<boolean>(
+        `location.origin === ${JSON.stringify(previewOrigin)} &&
+         document.querySelector('.workspace') !== null &&
+         localStorage.getItem('manifold.identity') !== null`,
+      ),
+      20_000,
+      50,
+    );
+    const initial = await browser.evaluate<StoredIdentity>(
+      "JSON.parse(localStorage.getItem('manifold.identity'))",
+    );
+    await browser.evaluate(`localStorage.setItem('identity-test-content', 'keep');
+      localStorage.setItem('manifold.identity@https://elsewhere.example', 'keep-foreign');
+      localStorage.setItem('manifold.ownerKey', ${JSON.stringify(previewConfig.ownerKey)})`);
+    await ownerAction(previewOwner, "core.access.revoke", { principalId: initial.principal.id });
+    const refused = await fetch(`${preview.publicUrl}/api/plugins`, {
+      headers: { authorization: `Bearer ${initial.token}` },
+    });
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toEqual({ error: { code: "forbidden", message: "revoked" } });
+    // No storage edits or admission URL shortcut: reopening the ordinary preview is the
+    // reported broken path, with a locally unexpired but server-revoked credential.
+    await browser.goto(`${previewOrigin}/`);
+    await waitFor(
+      () => browser.evaluate<boolean>(
+        `location.origin === ${JSON.stringify(previewOrigin)} &&
+         document.querySelector('.workspace') !== null &&
+         JSON.parse(localStorage.getItem('manifold.identity') || 'null')?.token !==
+           ${JSON.stringify(initial.token)} &&
+         localStorage.getItem('manifold.identity') !== null`,
+      ),
+      20_000,
+      50,
+    );
+    expect(await browser.evaluate<boolean>(`(async () => {
+      const identity = JSON.parse(localStorage.getItem('manifold.identity'));
+      return (await fetch('/api/plugins', {
+        headers: { authorization: 'Bearer ' + identity.token }
+      })).ok;
+    })()`)).toBe(true);
+    expect(await browser.evaluate<string[]>(
+      `['identity-test-content', 'manifold.identity@https://elsewhere.example',
+        'manifold.ownerKey'].map(key => localStorage.getItem(key))`,
+    )).toEqual(["keep", "keep-foreign", previewConfig.ownerKey]);
+    expect(ContainerResponseSchema.parse(
+      await ownerAction(previewOwner, "core.index.readContainer", { containerId: content.id }),
+    ).container).toEqual(content);
+    await browser.goto(`${production.publicUrl}/`);
+    expect(await browser.evaluate<string>("localStorage.getItem('manifold.identity')")).toBe(
+      productionIdentity,
+    );
+  } finally {
+    await browser.close();
+    for (const server of servers.reverse()) await server.stop();
+    for (const directory of directories) rmSync(directory, { recursive: true, force: true });
+    dist.cleanup();
+  }
+}, 90_000);
+
+test("browser identity survives non-auth failures and a delayed refusal for a replaced token", async () => {
+  const dist = resolveWebDist("manifold-identity-race-web-");
+  const server = await startServer({ env: { MANIFOLD_WEB_DIST: dist.distDir } });
+  const browser = new Browser();
+  try {
+    await browser.launch({ incognito: true });
+    await browser.goto(`${server.httpUrl}/#key=${server.ownerKey}`);
+    await waitFor(
+      () => browser.evaluate<boolean>("document.querySelector('#identity-name') !== null"),
+      10_000,
+      50,
+    );
+    await browser.typeInto("#identity-name", "identity-race");
+    await browser.clickTestId("identity-enter");
+    await waitFor(
+      () => browser.evaluate<boolean>("document.querySelector('.workspace') !== null"),
+      10_000,
+      50,
+    );
+    const original = await browser.evaluate<string>("localStorage.getItem('manifold.identity')");
+    const originalPrincipalId = await browser.evaluate<string>(
+      "JSON.parse(localStorage.getItem('manifold.identity')).principal.id",
+    );
+    for (const failure of [
+      { status: 403, code: "forbidden", message: "containers:read capability required" },
+      { status: 503, code: "forbidden", message: "revoked" },
+      { status: 0, code: "", message: "network unavailable" },
+    ]) {
+      const injected = await browser.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `(() => {
+          const fetch = window.fetch.bind(window);
+          window.fetch = async (input, init) => {
+            if (new URL(input, location.href).pathname === '/api/plugins') {
+              const failure = ${JSON.stringify(failure)};
+              window.__identityFailureSeen = true;
+              if (failure.status === 0) throw new TypeError(failure.message);
+              return Response.json({ error: {
+                code: failure.code, message: failure.message
+              } }, { status: failure.status });
+            }
+            return fetch(input, init);
+          };
+        })()`,
+      });
+      await browser.goto(`${server.httpUrl}/`);
+      await waitFor(
+        () => browser.evaluate<boolean>(
+          "window.__identityFailureSeen === true && document.querySelector('.workspace') !== null",
+        ),
+        10_000,
+        50,
+      );
+      expect(await browser.evaluate<string>("localStorage.getItem('manifold.identity')")).toBe(
+        original,
+      );
+      expect(await browser.evaluate<boolean>("document.querySelector('.gate-screen') === null")).toBe(
+        true,
+      );
+      await browser.send("Page.removeScriptToEvaluateOnNewDocument", {
+        identifier: injected.result?.["identifier"],
+      });
+    }
+    const replacement = await mintToken(server, {
+      principal: { kind: "human", name: "replacement-reviewer", color: "#8f4ac1" },
+      caps: ["*"],
+    });
+    // The request really uses the old token. Delay the server's real revoked response
+    // until a replacement has been installed, without firing a storage event: the
+    // rejection boundary must check the register, not trust a stale React closure.
+    const delayed = await browser.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `(() => {
+        const fetch = window.fetch.bind(window);
+        window.fetch = async (input, init) => {
+          if (new URL(input, location.href).pathname === '/api/plugins') {
+            const response = await fetch(input, init);
+            if (response.status === 403) {
+              const { promise, resolve } = Promise.withResolvers();
+              window.__releaseIdentityResponse = resolve;
+              await promise;
+              return response;
+            }
+            if (response.ok) window.__replacementRosterLoaded = true;
+            return response;
+          }
+          return fetch(input, init);
+        };
+      })()`,
+    });
+    // Other boot reads must not race the one deliberately delayed refusal.
+    await browser.send("Network.enable", {});
+    await browser.send("Network.setBlockedURLs", {
+      urls: ["*/api/bindings", "*/api/settings", "*/api/layout", "*/api/attendance"],
+    });
+    await ownerAction(server, "core.access.revoke", {
+      principalId: originalPrincipalId,
+    });
+    await browser.goto(`${server.httpUrl}/`);
+    await waitFor(
+      () => browser.evaluate<boolean>("typeof window.__releaseIdentityResponse === 'function'"),
+      10_000,
+      50,
+    );
+    await browser.evaluate(`localStorage.setItem('manifold.identity', ${JSON.stringify(JSON.stringify(replacement))});
+      window.__releaseIdentityResponse()`);
+    await browser.send("Network.setBlockedURLs", { urls: [] });
+    await waitFor(
+      () => browser.evaluate<boolean>(
+        "window.__replacementRosterLoaded === true && document.querySelector('.workspace') !== null",
+      ),
+      10_000,
+      50,
+    );
+    expect(await browser.evaluate<string>("localStorage.getItem('manifold.identity')")).toBe(
+      JSON.stringify(replacement),
+    );
+    expect(await browser.evaluate<boolean>("document.querySelector('.gate-screen') === null")).toBe(
+      true,
+    );
+    await browser.send("Page.removeScriptToEvaluateOnNewDocument", {
+      identifier: delayed.result?.["identifier"],
+    });
+  } catch (error) {
+    throw e2eFailure(error, [server]);
+  } finally {
+    await browser.close();
+    await server.stop();
+    dist.cleanup();
+  }
+}, 90_000);

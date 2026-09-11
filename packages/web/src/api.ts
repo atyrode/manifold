@@ -15,7 +15,7 @@ import {
   type Principal,
   type TileLayout,
 } from "@manifold/protocol";
-import { instanceUrl } from "@manifold/plugin/hooks";
+import { instanceOrigin, instanceUrl } from "@manifold/plugin/hooks";
 import { ACCESS_CREATE_PRINCIPAL_ACTION, INDEX_READ_CONTAINER_ACTION } from "./assembly.ts";
 
 /** The browser persists only the bearer token and stable identity it needs after bootstrap. */
@@ -27,6 +27,23 @@ export interface StoredIdentity {
   readonly expiresAt?: number;
 }
 
+interface IdentityRejectionListener {
+  readonly origin: string;
+  readonly authorization: string;
+  readonly invalidate: () => void;
+}
+
+const identityRejectionListeners = new Set<IdentityRejectionListener>();
+
+/** The gate, not an individual plugin, owns recovery for its exact instance credential. */
+export function onIdentityRejected(token: string, invalidate: () => void): () => void {
+  const listener = { origin: instanceOrigin(), authorization: `Bearer ${token}`, invalidate };
+  identityRejectionListeners.add(listener);
+  return () => {
+    identityRejectionListeners.delete(listener);
+  };
+}
+
 async function readBody(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -35,10 +52,28 @@ async function readBody(response: Response): Promise<unknown> {
   }
 }
 
-function errorFromBody(status: number, body: unknown): Error {
+function errorFromBody(
+  status: number,
+  body: unknown,
+  origin: string,
+  authorization: string | null,
+): Error {
   const parsed = HttpErrorSchema.safeParse(body);
-  if (parsed.success) return new Error(parsed.data.error.message);
-  return new Error(`Request failed (${status})`);
+  if (!parsed.success) return new Error(`Request failed (${status})`);
+  const { code, message } = parsed.data.error;
+  // A permission denial is not a dead credential. Only the server's authentication
+  // expiry/revocation refusal can return the browser to admission.
+  if (
+    ((status === 403 && code === "forbidden") || (status === 401 && code === "unauthorized")) &&
+    (message === "revoked" || message === "expired")
+  ) {
+    for (const listener of identityRejectionListeners) {
+      if (listener.origin === origin && listener.authorization === authorization) {
+        listener.invalidate();
+      }
+    }
+  }
+  return new Error(message);
 }
 
 /**
@@ -48,10 +83,14 @@ function errorFromBody(status: number, body: unknown): Error {
  * `instanceOrigin`, AXIOMS §The portable lens), and a relative path would quietly follow the
  * bundle's birthplace instead.
  */
-async function requestJson(path: string, init: RequestInit): Promise<unknown> {
-  const response = await fetch(instanceUrl(path), init);
+export async function requestJson(path: string, init: RequestInit): Promise<unknown> {
+  const url = instanceUrl(path);
+  const authorization = new Headers(init.headers).get("authorization");
+  const response = await fetch(url, init);
   const body = await readBody(response);
-  if (!response.ok) throw errorFromBody(response.status, body);
+  if (!response.ok) {
+    throw errorFromBody(response.status, body, new URL(url).origin, authorization);
+  }
   return body;
 }
 

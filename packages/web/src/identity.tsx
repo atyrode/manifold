@@ -1,11 +1,12 @@
 import { IDENTITY_COLORS, PrincipalSchema } from "@manifold/protocol";
 import { instanceOrigin, isForeignInstance } from "@manifold/plugin/hooks";
 import { Cover } from "@manifold/ui";
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   createPrincipal,
   getPreviewIdentityAuthority,
   issuePreviewIdentity,
+  onIdentityRejected,
   startPreviewIdentity,
   type StoredIdentity,
 } from "./api.ts";
@@ -106,11 +107,6 @@ function PreviewHandoff({
           reason instanceof Error
             ? reason.message
             : "This production identity cannot open the preview.";
-        if (detail === "expired" || detail === "revoked") {
-          window.localStorage.removeItem(credentialKey(IDENTITY_STORAGE));
-          window.location.reload();
-          return;
-        }
         setMessage(detail);
       });
     return () => {
@@ -162,6 +158,26 @@ function loadOwnerKey(): string | null {
   if (ownerKey !== null && OWNER_KEY_PATTERN.test(ownerKey)) return ownerKey;
   if (ownerKey !== null) window.localStorage.removeItem(key);
   return null;
+}
+
+/**
+ * A reply or timer belongs to the credential that started it, not whichever credential
+ * another tab has since installed. Never remove a replacement from the device register.
+ */
+function removeIdentity(token: string): boolean {
+  const key = credentialKey(IDENTITY_STORAGE);
+  const serialized = window.localStorage.getItem(key);
+  if (serialized === null) return true;
+  try {
+    const decoded: unknown = JSON.parse(serialized);
+    if (decoded === null || typeof decoded !== "object" || Reflect.get(decoded, "token") !== token) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+  window.localStorage.removeItem(key);
+  return true;
 }
 
 function loadIdentity(): StoredIdentity | null {
@@ -216,29 +232,42 @@ interface IdentityGateProps {
 export function IdentityGate({ children }: IdentityGateProps) {
   const [identity, setIdentity] = useState<StoredIdentity | null>(() => loadIdentity());
   const [ownerKey] = useState<string | null>(() => loadOwnerKey());
+  const [readmitting, setReadmitting] = useState(false);
   const [name, setName] = useState("");
   const [color, setColor] = useState<(typeof IDENTITY_COLORS)[number]>(IDENTITY_COLORS[3]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const handoff = previewHandoffRequest();
+  const identityOrigin = instanceOrigin();
+  const invalidateIdentity = useCallback(() => {
+    if (identity === null || instanceOrigin() !== identityOrigin) return;
+    if (!removeIdentity(identity.token)) {
+      // A delayed refusal for the old token must leave the new session usable.
+      setIdentity(loadIdentity());
+      return;
+    }
+    setReadmitting(true);
+    setIdentity(null);
+  }, [identity, identityOrigin]);
+  useEffect(() => {
+    if (identity === null) return;
+    return onIdentityRejected(identity.token, invalidateIdentity);
+  }, [identity, invalidateIdentity]);
   useEffect(() => {
     if (identity?.expiresInMs === undefined || identity.receivedAt === undefined) return;
     const timer = window.setTimeout(
-      () => {
-        window.localStorage.removeItem(credentialKey(IDENTITY_STORAGE));
-        setIdentity(null);
-      },
+      invalidateIdentity,
       Math.max(0, identity.expiresInMs - (Date.now() - identity.receivedAt)),
     );
     return () => window.clearTimeout(timer);
-  }, [identity]);
+  }, [identity, invalidateIdentity]);
 
   if (identity !== null && handoff !== null) {
     return <PreviewHandoff identity={identity} request={handoff} />;
   }
   if (identity !== null) return children(identity);
 
-  if (ownerKey === null) return <PreviewAdmission />;
+  if (readmitting || ownerKey === null) return <PreviewAdmission />;
 
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();

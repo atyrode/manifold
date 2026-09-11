@@ -72,7 +72,7 @@ import {
   type ReactNode,
 } from "react";
 import { Cover, Stack } from "@manifold/ui";
-import { dispatchAction, type StoredIdentity } from "./api.ts";
+import { dispatchAction, requestJson, type StoredIdentity } from "./api.ts";
 import { createRoomPipeRegistry, panelSessionHandle } from "./room-pipes.ts";
 import { ContainerErrorBoundary } from "./error-boundary.tsx";
 import { isolatedPanel } from "./isolate/index.ts";
@@ -683,11 +683,10 @@ function EssentialRecovery({
           enabled: true,
         });
       }
-      const response = await fetch(instanceUrl("/api/plugins"), {
+      const body = await requestJson("/api/plugins", {
         headers: { Authorization: `Bearer ${identity.token}` },
       });
-      if (!response.ok) throw new Error(`plugin roster fetch failed (${response.status})`);
-      const restored = PluginsResponseSchema.parse(await response.json());
+      const restored = PluginsResponseSchema.parse(body);
       onRestored(restored.plugins, restored.developerMode === true);
     } catch (reason: unknown) {
       setFailure(
@@ -901,12 +900,11 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
     const controller = new AbortController();
     void (async (): Promise<void> => {
       try {
-        const response = await fetch(instanceUrl("/api/plugins"), {
+        const body = await requestJson("/api/plugins", {
           headers: { Authorization: `Bearer ${identity.token}` },
           signal: controller.signal,
         });
-        if (!response.ok) throw new Error(`plugin roster fetch failed (${response.status})`);
-        const answer = PluginsResponseSchema.parse(await response.json());
+        const answer = PluginsResponseSchema.parse(body);
         publish(answer.plugins, answer.developerMode === true);
       } catch (reason) {
         if (controller.signal.aborted) return;
@@ -929,12 +927,11 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
     const controller = new AbortController();
     void (async (): Promise<void> => {
       try {
-        const response = await fetch(instanceUrl("/api/bindings"), {
+        const body = await requestJson("/api/bindings", {
           headers: { Authorization: `Bearer ${identity.token}` },
           signal: controller.signal,
         });
-        if (!response.ok) throw new Error(`binding override fetch failed (${response.status})`);
-        setOverrides(BindingsResponseSchema.parse(await response.json()).overrides);
+        setOverrides(BindingsResponseSchema.parse(body).overrides);
       } catch (reason) {
         if (controller.signal.aborted) return;
         console.error("evt=binding_overrides_fetch_failed", reason);
@@ -954,12 +951,11 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
     const controller = new AbortController();
     void (async (): Promise<void> => {
       try {
-        const response = await fetch(instanceUrl("/api/settings"), {
+        const body = await requestJson("/api/settings", {
           headers: { Authorization: `Bearer ${identity.token}` },
           signal: controller.signal,
         });
-        if (!response.ok) throw new Error(`plugin settings fetch failed (${response.status})`);
-        setValues(SettingsResponseSchema.parse(await response.json()).values);
+        setValues(SettingsResponseSchema.parse(body).values);
       } catch (reason) {
         if (controller.signal.aborted) return;
         console.error("evt=plugin_settings_fetch_failed", reason);
