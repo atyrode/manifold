@@ -299,13 +299,18 @@ test("retiring an instance preserves admitted descendants but refuses new descen
     f.service.jobs.state(start.request.jobId, "started");
     // Recover already-authorized invocation history. This exercises retirement of
     // retained descendants independently of the service principal's current mint shape.
-    const { service: _service, requestDigest: _digest, ...base } = start.request;
+    const base: Omit<JobRequest, "requestDigest"> & { requestDigest?: string } = {
+      ...start.request,
+    };
+    delete base.service;
+    delete base.requestDigest;
+    const credential = f.auth.credentialReference(f.root);
     for (const jobId of ["admitted-child", "queued-child"]) {
       const unsigned: Omit<JobRequest, "requestDigest"> = {
         ...base,
         jobId,
         parent: { parentJobId: start.request.jobId, invocationId: jobId },
-        credential: f.auth.credentialReference(f.root),
+        credential: { ...credential, caps: [...credential.caps] },
         limits,
       };
       const request: JobRequest = {
@@ -442,7 +447,8 @@ test("replacement replays retirement across restart and waits for confirmed old 
     expect(f.auth.restoreCredential(start.request.credential)).not.toBeNull();
     const retirement = stops().at(-1)!;
     expect(JobCommandSchema.safeParse(retirement).success).toBe(true);
-    const { service: _service, ...ordinaryRequest } = start.request;
+    const ordinaryRequest = { ...start.request };
+    delete ordinaryRequest.service;
     expect(
       JobCommandSchema.safeParse({
         ...retirement,
