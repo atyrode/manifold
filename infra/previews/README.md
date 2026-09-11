@@ -426,75 +426,38 @@ fixture does not exercise that maintenance/restart handshake. No fixture result 
 be inferred from source review, and its inert test artifact is not provenance for an
 incumbent Manifold transport.
 
-### Temporary, single-use legacy preview cutover (#469)
+### Temporary, single-use preview reset (#469)
 
-`cutover-legacy-preview.sh`, its Python controller, and `cutover-legacy-process.ts`
-exist **only for the public, reviewed/CI-verified operation** authorized in
-[#469](https://github.com/atyrode/manifold/issues/469). Remove those three files, their
-focused `legacy-preview-cutover.test.ts` regressions, and this subsection after live proof.
-This is not a selectable `deploy-dev.sh` mode. Its final state is the ordinary hub
-image with explicit `MANIFOLD_SPAWN_AGENT=0`; the ordinary retained guard is unchanged.
+`cutover-legacy-preview.sh` exists only for the reviewed/CI-verified transition in
+[#469](https://github.com/atyrode/manifold/issues/469). The operator has explicitly
+declared the preview container and its work disposable. Production, the dev-01
+native node, the current OMP session and the temporary dotfiles Code CLI/TUI are
+protected. This reset never invokes owner maintenance, native lifecycle commands,
+systemd, Nix activation or production deployment.
 
-Run from the reviewed public migration checkout, with `PREVIEW_DEV_CHECKOUT` pointing
-at the reviewed replacement checkout and the normal explicit native service-owner
-and preview settings already configured:
+Run from the exact reviewed replacement checkout, with `PREVIEW_DEV_CHECKOUT`
+pointing to it and the existing preview/native-owner settings configured:
 
 ```sh
 bash infra/previews/cutover-legacy-preview.sh \
-  --accept-reviewed-interpreted-source \
-  /absolute/public-legacy-approval.json \
-  "$REVIEWED_REPLACEMENT_FULL_SHA"
+  --reset-disposable-preview "$REVIEWED_REPLACEMENT_FULL_SHA"
 ```
 
-The approval JSON is **public metadata only**, never a Docker inspect dump. It names
-`containerId`, `containerName`, `imageId`, `startedAt`, `restartCount`, `legacyRevision`,
-`machineId`, `terminalHostId`, and `socket` (`/data/terminal-host/host.sock`). The six
-fixed process objects `init`, `supervisor`, `daemon`, `server`, `owner`, and `transport`
-each contain host `pid`, integer kernel `startTime`, and container `namespacePid`.
-`runtime` contains the controller's exact `APPROVED_RUNTIME` record: independently
-recovered `path`, `realPath` and `sha256` for tini, Bash, the Nix daemon, Bun, polling
-sleep and the rendered development entrypoint. The source revision is specifically
-`6c153d69685dab1653ec29c622f1e6a6f61d1ce2`; the one existing container ID and image digest
-are pinned in source as well. Never infer approval from pidfiles or terminal inventory.
-The inherited entrypoint starts the application and Nix daemon once, with no respawn;
-its cleanup may run only after owner/transport exit and a no-worker process proof.
-Only its exact `sleep 0.1` polling child and exact stock Bun healthcheck are transient;
-an unproved healthcheck shell, Nix client/worker, descendant or interpreter holds.
-The helper probes application metadata and sends generation-safe pidfd signals as
-the existing application UID 1000. Root is used only for the inherited root-process
-inventory. No sudo, capabilities, container Python install, or host ptrace access is added.
+The fixed incumbent ID must still identify `manifold-dev-manifold-1`, with its
+preview URL, private namespaces, no elevated device/capability configuration and
+only the named `manifold-dev_manifold-data` mount. Unknown topology refuses before
+any stop. The ordinary image and effective configuration are built from reviewed
+source and frozen privately in tmpfs before mutation.
 
-The operator accepts a narrowly weaker **interpreted-source provenance** boundary:
-reviewed commit/current source-byte and interpreter-byte checks cannot prove which
-code was previously loaded, dynamically modified, or executed from installed
-dependencies. Independently review the image provenance and inherited supervisor;
-do not substitute an unknown interpreter or arbitrary process for the approved roles.
-Linux pidfds, readable host `/proc`, unified Docker cgroup metadata, exact known
-process topology, and exclusive operator control over Docker/exec/source/admission
-changes are prerequisites. The development deployment lock excludes cooperating
-deployers, not arbitrary privileged operators. Unsupported or ambiguous shapes hold.
-Before any restart-policy change or drain, the shared ordinary candidate preflight
-validates the built image defaults and frozen final Compose execution/credential
-contract. The cutover uses the same private memory-backed configuration pattern as
-normal deployment and starts precisely that sealed image/configuration after retirement;
-local override changes cannot alter the approved replacement.
+The operation disables restart for that exact container, stops it (including any
+preview-only terminals), removes the container without removing its volume, and
+starts the sealed ordinary hub with `MANIFOLD_SPAWN_AGENT=0`. No remote machine is
+drained or restarted. A failure after stopping preview requires forward repair;
+there is no legacy rollback or automatic native admission change.
 
-The transaction disables the exact container's automatic restart and does not restore
-it on failure. It streams only the reviewed public maintenance CLI into the owning
-container; the owner key is read there, never exported. Drain must name the expected
-host and return `terminalIds=[]`. That is not job-idle evidence: only the same-connection,
-expected-PID atomic shutdown and exact owner acknowledgment authorize proceeding.
-The owner must exit itself before a pidfd signal may retire the reviewed transport.
-No owner is signalled, no work is cancelled, and no credentials, pidfiles, database,
-terminal/job records, volume ownership, or native generation are changed.
-
-Only proved complete retirement permits removal of the stopped exact container
-without `--force` or `--volumes`, then ordinary hub creation on the same named volume,
-identity, networks and existing native service owner. Failures report the last bounded
-phase and never revive a retired legacy owner as rollback. Before drain, admission
-is unchanged; after drain, it is never automatically reopened.
-After retirement, a replacement/health failure requires forward repair of the
-ordinary server-only hub. Neither success nor failure automatically reopens admission.
+Remove the one-time script and this subsection once native preview is proven.
+This is not a `deploy-dev.sh` mode; its normal retained server-only guard stays
+unchanged.
 
 ## Disk / gc
 
