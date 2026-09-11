@@ -712,6 +712,81 @@ describe("machine admission and terminal continuity", () => {
     fix.store.close();
   });
 
+  test("an incompatible native owner keeps terminal continuity and maintenance without job authority", async () => {
+    const fix = fixture("c".repeat(64), ["t1"], "retained-host");
+    const jobs = new JobService(fix.store, fix.auth, fix.runtime);
+    fix.gateway.setJobs(jobs);
+    const keys = generateKeyPairSync("ed25519");
+    const owner: JobOwner = {
+      protocolVersion: JOB_OWNER_PROTOCOL_VERSION - 1,
+      ownerId: "retained-owner",
+      publicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      generation: 1,
+      platforms: ["linux-x64"],
+      inventoryDigest: "a".repeat(64),
+      terminalHostId: "retained-host",
+    };
+    const socket = fix.hello("retained", {
+      terminalHostId: "retained-host",
+      alive: ["t1"],
+      jobOwner: owner,
+    });
+    try {
+      expect(socket.closed).toBeNull();
+      expect(fix.gateway.isOnline(fix.machineId)).toBe(true);
+      expect(fix.status("t1")).toBe("running");
+      for (const frame of machineMessages(socket)) {
+        if (frame.type !== "job_command" || frame.command.type !== "owner_challenge") continue;
+        const proof = {
+          nonce: frame.command.nonce,
+          serverEpoch: frame.command.serverEpoch,
+          machineId: fix.machineId,
+          owner,
+        };
+        fix.gateway.message(
+          "retained",
+          JSON.stringify({
+            type: "job_event",
+            event: {
+              type: "owner_proof",
+              ...proof,
+              signature: sign(null, Buffer.from(canonicalJobJson(proof)), keys.privateKey).toString(
+                "base64",
+              ),
+            },
+          }),
+        );
+      }
+      expect(
+        jobs.describe(fix.root, { machineId: fix.machineId, pluginId: "sample.worker" }).connected,
+      ).toBe(false);
+      const draining = fix.gateway.drain(fix.machineId, true);
+      const request = machineMessages(socket).findLast(
+        (frame) => frame.type === "drain" && frame.draining,
+      );
+      if (request?.type !== "drain") throw new Error("drain request missing");
+      fix.gateway.message(
+        "retained",
+        JSON.stringify({
+          type: "drain_status",
+          requestId: request.requestId,
+          terminalHostId: "retained-host",
+          draining: true,
+          terminalIds: ["t1"],
+        }),
+      );
+      expect(await draining).toEqual({
+        ok: true,
+        status: { terminalHostId: "retained-host", draining: true, terminalIds: ["t1"] },
+      });
+      expect(socket.closed).toBeNull();
+      expect(fix.status("t1")).toBe("running");
+    } finally {
+      fix.gateway.shutdown();
+      fix.store.close();
+    }
+  });
+
   test("owner RPC is proved on the current transport; an ownerless replacement fences its authority", () => {
     const fix = fixture("b".repeat(64), []);
     const jobs = new JobService(fix.store, fix.auth, fix.runtime);
