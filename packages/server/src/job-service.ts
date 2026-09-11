@@ -2503,7 +2503,7 @@ export class JobService {
         )
           pending.finish(new ServiceError("forbidden", "service_unauthorized"));
       }
-      for (const job of this.jobs.active()) {
+      for (const job of this.jobs.reconcilable()) {
         if (job.request.credential.principalId === principalId) {
           this.cancelRecord(job, "credential_revoked");
           continue;

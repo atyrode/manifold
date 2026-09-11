@@ -502,7 +502,7 @@ test("replacement replays retirement across restart and waits for confirmed old 
   }
 });
 
-test.each(["explicit", "consent", "credential"] as const)(
+test.each(["explicit", "consent", "credential", "executor"] as const)(
   "disabled service retirement escalates durably for %s cancellation",
   async (cause) => {
     const { f, policy, start, revision } = await instanceFixture();
@@ -514,6 +514,27 @@ test.each(["explicit", "consent", "credential"] as const)(
         enabled: false,
       });
       expect(f.service.jobs.cancellation(start.request.jobId)?.mode).toBe("retire");
+      if (cause === "executor") {
+        f.service.event(f.channel, {
+          type: "refusal",
+          jobId: start.request.jobId,
+          reason: "resource_owner_unavailable",
+        });
+        f.service.event(f.channel, {
+          type: "workload_empty",
+          jobId: start.request.jobId,
+          requestDigest: start.request.requestDigest,
+          ownerId: f.owner.ownerId,
+          ownerGeneration: f.owner.generation + 1,
+        });
+        f.service.tick();
+        expect(f.service.jobs.get(start.request.jobId)).toMatchObject({
+          state: "interrupted",
+          ownerClosed: false,
+        });
+        expect(f.service.jobs.cancellation(start.request.jobId)?.mode).toBe("retire");
+        expect(f.auth.restoreCredential(start.request.credential)).not.toBeNull();
+      }
       if (cause === "explicit")
         f.service.cancel(f.root, {
           kind: "job",
@@ -523,7 +544,15 @@ test.each(["explicit", "consent", "credential"] as const)(
         });
       else if (cause === "credential")
         f.auth.revokePrincipal(start.request.credential.principalId, f.root);
-      else consent(f, "machines:run", false);
+      else if (cause === "executor") {
+        const machine = f.store.getMachine(f.machineId)!;
+        f.auth.revokePrincipal(f.store.getToken(machine.tokenId)!.principalId, f.root);
+        expect(f.service.jobs.cancellation(start.request.jobId)).toEqual({
+          reason: "executor_revoked",
+          mode: "cancel",
+        });
+        expect(f.auth.restoreCredential(start.request.credential)).not.toBeNull();
+      } else consent(f, "machines:run", false);
       expect(f.service.jobs.cancellation(start.request.jobId)?.mode).toBe("cancel");
       f.service.offline(f.channel);
       f.commands.length = 0;
@@ -541,6 +570,53 @@ test.each(["explicit", "consent", "credential"] as const)(
     }
   },
 );
+
+test("executor revocation does not revive a retiring service after fenced empty confirmation", async () => {
+  const { f, policy, start, revision } = await instanceFixture();
+  try {
+    await f.service.configureInstanceService(f.root, {
+      serviceId: policy.serviceId,
+      expectedRevision: revision,
+      policy,
+      enabled: false,
+    });
+    f.service.event(f.channel, {
+      type: "refusal",
+      jobId: start.request.jobId,
+      reason: "resource_owner_unavailable",
+    });
+    f.service.event(f.channel, {
+      type: "workload_empty",
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+    });
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "stopped",
+    );
+    f.commands.length = 0;
+    const machine = f.store.getMachine(f.machineId)!;
+    f.auth.revokePrincipal(f.store.getToken(machine.tokenId)!.principalId, f.root);
+    f.service.offline(f.channel);
+    prove(f);
+    expect(f.service.jobs.get(start.request.jobId)).toMatchObject({
+      state: "interrupted",
+      ownerClosed: true,
+    });
+    expect(f.service.jobs.cancellation(start.request.jobId)?.mode).toBe("retire");
+    expect(
+      f.commands.filter(
+        (command) =>
+          (command.type === "cancel" || command.type === "retire" || command.type === "status") &&
+          command.jobId === start.request.jobId,
+      ),
+    ).toEqual([]);
+    expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+  } finally {
+    f.store.close();
+  }
+});
 
 test("polling a queued job cannot interrupt its later admitted start", () => {
   const f = fixture();
