@@ -151,9 +151,35 @@ export class InstanceGateway {
     }
   }
 
+  /*
+    BUN'S SEND STATUS IS THREE-VALUED, and only one of the three is a lost frame: positive is
+    bytes written, -1 is "enqueued, the socket is applying backpressure", 0 is dropped. Reading
+    -1 as failure closed a perfectly live authenticated control link the first time the kernel
+    buffer filled — the guest's own welcome, no less. The session sender
+    (`session-channel.ts` acceptSendStatus) and the machine channel (`machine-ws.ts` send)
+    already say this correctly; this is the third channel agreeing with them.
+
+    Backpressure is bounded HERE instead, before the frame is handed over: an enqueue is fine,
+    an unbounded queue is not. The instance channel carries small control frames and has no
+    drain callback, so the bound is the same 1 MiB ceiling the machine channel defaults to, and
+    crossing it is a 1013 close — load shedding the link deliberately rather than growing
+    server memory on behalf of a guest that has stopped reading. Shedding marks the connection
+    closed so the caller's own "frame dropped" close cannot land on top of it and report the
+    wrong reason for a link that was deliberately shed.
+  */
   private send(connection: InstanceConnection, message: HostToGuestMessage): boolean {
     if (connection.closed) return false;
-    return connection.socket.send(JSON.stringify(HostToGuestMessageSchema.parse(message))) > 0;
+    const payload = JSON.stringify(HostToGuestMessageSchema.parse(message));
+    if (connection.socket.bufferedAmount + Buffer.byteLength(payload) > MAX_SESSION_FRAME_BYTES) {
+      this.logger.warn("instance_outbound_overflow", {
+        shareId: connection.shareId,
+        bufferedAmount: connection.socket.bufferedAmount,
+      });
+      connection.closed = true;
+      connection.socket.close(1013, "outbound queue overflow");
+      return false;
+    }
+    return connection.socket.send(payload) !== 0;
   }
 
   private hello(connection: InstanceConnection, message: GuestMessage): void {
@@ -238,7 +264,7 @@ export class InstanceGateway {
         tickets,
       })
     ) {
-      connection.socket.close(1011, "welcome frame dropped");
+      if (!connection.closed) connection.socket.close(1011, "welcome frame dropped");
       return;
     }
     if (older !== undefined && older !== connection) {
@@ -261,7 +287,7 @@ export class InstanceGateway {
       }
       connection.awaitingPong = true;
       if (!this.send(connection, { type: "ping" })) {
-        connection.socket.close(1011, "ping frame dropped");
+        if (!connection.closed) connection.socket.close(1011, "ping frame dropped");
         return;
       }
       this.schedulePing(connection);

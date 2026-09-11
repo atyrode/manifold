@@ -87,6 +87,7 @@ export const LOG_EVENTS = [
   "instance_hello_timeout",
   "instance_liveness_timeout",
   "instance_malformed_frame",
+  "instance_outbound_overflow",
   "instance_rejected",
   "instance_superseded",
   "instance_ticket_issued",
