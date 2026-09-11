@@ -1834,6 +1834,16 @@ function scanTree(dir: string, out: string[]): void {
 
   for (const path of stylesheets) {
     for (const rule of cssRules(readFileSync(join(repoRoot, path), "utf8"))) {
+      /*
+        A form the walk cannot read as an owned selector list — `@font-face`, `@property`, a
+        rule nested in a rule — is reported rather than dropped since #410, and it is not a
+        family claim: §Lexicon registers CLASS families, and these mint a font, a custom
+        property or a relative selector the registry has no row shape for. The tree's sheets
+        are reviewed code checked family by family; the hub refuses the same form in a BUNDLE
+        (`unscopedRule`, above) because it has no registry and no owner to consult. Skipped
+        here by this decision, never by the parser losing it.
+      */
+      if (rule.kind === "unreadable") continue;
       ruleCount++;
       const where = `${path}:${String(rule.line)}`;
       let classed = false;

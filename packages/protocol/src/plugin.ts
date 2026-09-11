@@ -770,12 +770,15 @@ export type PluginLifecycleState = (typeof PLUGIN_LIFECYCLE_STATES)[number];
  *                             from is admitted only behind `engine.plugins.setDeveloperMode`,
  *                             so enable, authoring and the rebuild loop all refuse by this name.
  *   `stylesheet_unscoped`     the bundle's `styles.css` has a selector whose leftmost compound
- *                             is not the plugin's own root class, or a rule with no class at
- *                             all (ADR 0025 §7, S13 at load): ink has one owner, and a sheet
- *                             that reaches past its root is a second writer for somebody's
- *                             family. Named at the install door for a bundle and the unpacked
- *                             build, and here for an enable that re-verifies a stored bundle
- *                             (R8): the detail is the selector, with its line.
+ *                             is not the plugin's own root class, a rule with no class at
+ *                             all, or a form the ownership walk cannot read at all — an
+ *                             at-rule outside its dialect, a rule nested in a rule (ADR 0025
+ *                             §7, S13 at load, #410): ink has one owner, and a sheet that
+ *                             reaches past its root — or that hides where it reaches — is a
+ *                             second writer for somebody's family. Named at the install door
+ *                             for a bundle and the unpacked build, and here for an enable that
+ *                             re-verifies a stored bundle (R8): the detail is the offending
+ *                             selector or form, with its line.
  *
  * A row carries at most one, and the roster carries every row, so a client renders "why"
  * without a second call: which dependency is off is read from this row's manifest against
@@ -817,7 +820,8 @@ export type PluginRefusalReason = (typeof PLUGIN_REFUSAL_REASONS)[number];
  *                          Uninstall never destroys data on its own, and it never strands any.
  *   `no_entry`             the manifest names no half to run — nothing to install.
  *   `stylesheet_unscoped`  `entry.styles` is set and the sheet reaches past the plugin's root
- *                          class (ADR 0025 §7): the detail names the selector and its line.
+ *                          class, or carries a form the ownership walk cannot read (ADR 0025
+ *                          §7, #410): the detail names the offender and its line.
  *                          The same class the toggle answers, because the unpacked build path
  *                          and a bundle install meet the rule at this door.
  */
