@@ -268,7 +268,9 @@ function commandFor(task: Task, selection: Selection): readonly string[] {
   }
   if (selection.roundGroup !== null) {
     if (task.groupable !== true) usage(`${task.name} has no round groups`);
-    extra.push(`--group=${selection.roundGroup}`);
+    // Two arguments, not `--group=x`: verify-convergence.ts refuses the equals form, and a
+    // gate that passes a flag its own task rejects is a fan-out that verifies nothing.
+    extra.push("--group", selection.roundGroup);
   }
   if (selection.parallel) {
     if (task.parallelizable !== true) usage(`${task.name} cannot be run with --parallel`);
@@ -330,7 +332,15 @@ try {
     const buildSelected = selected.some((task) => task.group === "build");
     const needsBuild = selected.some((task) => task.needsDist === true) && externalDist === "";
     if (buildSelected || needsBuild) {
-      const built = await runTask(buildTask, parsed);
+      // The build takes none of the selection's modifiers: `--group ink` describes the
+      // convergence rounds to run, not how to build a bundle, and handing it on would make
+      // the build refuse a flag it has no opinion about.
+      const built = await runTask(buildTask, {
+        ...parsed,
+        shard: null,
+        roundGroup: null,
+        parallel: false,
+      });
       results.push(...built);
       if (built.some((result) => !result.ok)) report(results);
     }
