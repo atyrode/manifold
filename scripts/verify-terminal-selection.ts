@@ -47,6 +47,7 @@ const server = Bun.spawn(["bun", "packages/server/src/main.ts"], {
 
 const failures: string[] = [];
 let browser: Browser | null = null;
+let wheelFixtureStarted = false;
 
 try {
   await until(
@@ -668,30 +669,49 @@ try {
     return {x:(left+right)/2,y:(top+bottom)/2};
   })()`);
 
-  // Fullscreen replay and resizing need not retain the earlier selection fixture's
-  // scrollback. Seed this scenario through the real PTY after returning to canvas:
-  // three screens of fresh output create history, and keyboard input returns xterm
-  // to its bottom. Wait for the final output row AND the returned shell prompt so
-  // neither command echo nor output still arriving can satisfy wheel readiness.
+  // Focus is not input readiness: returning to canvas creates a spectator, and a
+  // click focuses xterm before the occupant join finishes. typeText only awaits
+  // browser key dispatch; it cannot acknowledge the terminal's read-only guard.
+  // Wait for the existing engaged/active signals before sending any seed bytes,
+  // and for the replayed prompt and fitted row geometry before counting screens.
+  wheelFixtureStarted = true;
   await browser.drag([await terminalPoint()], 30);
   await until(
     () =>
-      browser!.evaluate<boolean>(
-        "document.activeElement?.matches('.xterm-helper-textarea') === true",
-      ),
+      browser!.evaluate<boolean>(`(() => {
+        const host = document.querySelector('.portal--engaged .xterm-host:not(.xterm-host--inactive)');
+        if (!host?.contains(document.activeElement)
+          || !document.activeElement?.matches('.xterm-helper-textarea')) return false;
+        const rows = host.querySelector('.xterm-rows');
+        const screen = host.querySelector('.xterm-screen');
+        if (!rows?.firstElementChild || !screen) return false;
+        const text = [...rows.children].map(row => row.textContent.trim());
+        const pasted = text.indexOf('PASTE-ARRIVED');
+        const remaining = host.getBoundingClientRect().height - screen.getBoundingClientRect().height;
+        const rowHeight = rows.firstElementChild.getBoundingClientRect().height;
+        return pasted >= 0 && text.slice(pasted + 1).some(row => row.length > 0)
+          && rowHeight > 0 && remaining >= -1 && remaining < rowHeight;
+      })()`),
     5000,
-    "terminal focused for wheel scrollback fixture",
+    "canvas occupant input, replayed shell prompt and fitted terminal rows ready",
   );
+  // Three fitted screens create fresh history; the output row and returned prompt
+  // below prove the seed finished before either wheel boundary is exercised.
   const wheelRowCount = await browser.evaluate<number>(
     "document.querySelector('.xterm-rows').childElementCount * 3",
   );
-  await browser.typeText(`clear; seq 1 ${wheelRowCount} | sed 's/.*/WHEEL-& scrollback target/'`);
+  // A per-seed marker cannot be satisfied by snapshot replay or command echo:
+  // sed expands '&' to the row number only in the command's actual output.
+  const wheelMarker = `WHEEL-${crypto.randomUUID().slice(0, 8)}`;
+  await browser.typeText(
+    `clear; seq 1 ${wheelRowCount} | sed 's/.*/${wheelMarker}-& scrollback target/'`,
+  );
   await browser.typeText("\r");
   await until(
     () =>
       browser!.evaluate<boolean>(`(() => {
         const rows = [...document.querySelector('.xterm-rows').children].map(row => row.textContent.trim());
-        const last = rows.indexOf('WHEEL-${wheelRowCount} scrollback target');
+        const last = rows.indexOf('${wheelMarker}-${wheelRowCount} scrollback target');
         return last >= 0 && rows.slice(last + 1).some(text => text.length > 0);
       })()`),
     5000,
@@ -838,6 +858,23 @@ try {
   console.log("PASS  engaged terminal keeps ordinary scrollback without panning canvas");
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
+  if (wheelFixtureStarted && browser !== null) {
+    const diagnostic = await browser.evaluate(`(() => {
+      const host = document.querySelector('.xterm-host');
+      const screen = host?.querySelector('.xterm-screen');
+      const rows = host?.querySelector('.xterm-rows');
+      return {
+        portal: host?.closest('.portal')?.className,
+        host: host?.className,
+        focused: host?.contains(document.activeElement),
+        hostHeight: host?.getBoundingClientRect().height,
+        screenHeight: screen?.getBoundingClientRect().height,
+        rowCount: rows?.childElementCount,
+        lastRows: [...(rows?.children ?? [])].slice(-6).map(row => row.textContent.slice(0, 160)),
+      };
+    })()`);
+    console.error("wheel fixture state:", JSON.stringify(diagnostic));
+  }
 } finally {
   await browser?.close();
   await teardownServer(server, dataDir);
