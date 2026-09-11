@@ -207,13 +207,15 @@ require_retained_server_only() {
     fail 'HOLD: retained replacement requires one supported server-only incumbent'
   # Classify matching public settings inside Docker's template; even unexpected
   # values must not be printed. Reject command overrides and shared PID namespaces.
+  # Bare NAME entries in Docker's environment mean unset; only NAME=value can
+  # carry an overriding credential or loader setting.
   configuration=$(docker inspect --format '
     {{- $spawn := false -}}{{- $unsafe := false -}}
     {{- range .Config.Env -}}
       {{- $key := index (split . "=") 0 -}}
       {{- if eq $key "MANIFOLD_SPAWN_AGENT" -}}
         {{- if or $spawn (ne . "MANIFOLD_SPAWN_AGENT=0") -}}{{- $unsafe = true -}}{{- end -}}{{- $spawn = true -}}
-      {{- else if or (eq $key "MANIFOLD_OWNER_KEY") (eq $key "BASH_ENV") (eq $key "ENV") (eq $key "LD_PRELOAD") (eq $key "LD_LIBRARY_PATH") (eq $key "BUN_OPTIONS") (eq $key "NODE_OPTIONS") (eq $key "MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE") (eq $key "MANIFOLD_LOCAL_AGENT_SUPERVISION") -}}
+      {{- else if and (ne . $key) (or (eq $key "MANIFOLD_OWNER_KEY") (eq $key "BASH_ENV") (eq $key "ENV") (eq $key "LD_PRELOAD") (eq $key "LD_LIBRARY_PATH") (eq $key "BUN_OPTIONS") (eq $key "NODE_OPTIONS") (eq $key "MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE") (eq $key "MANIFOLD_LOCAL_AGENT_SUPERVISION")) -}}
         {{- $unsafe = true -}}
       {{- end -}}
     {{- end -}}
