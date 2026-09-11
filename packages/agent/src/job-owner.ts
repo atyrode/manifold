@@ -433,6 +433,7 @@ export class MachineJobOwner {
           if (parentJobId !== null) throw new Error("context_command_forbidden");
           const job = await this.reconcileStart(command);
           this.emitEmpty(job);
+          this.emit({ type: "result", result: job.result }, job);
           await this.retire(job);
           return;
         }

@@ -1954,7 +1954,7 @@ test.skipIf(!linux || !cgroupRoot).each(["read", "tunnel"] as const)(
 
 const instanceServiceWorker = process.env.MANIFOLD_TEST_INSTANCE_SERVICE;
 test.skipIf(!realBackend || !instanceServiceWorker).each([
-  "cooperative", "launch-race", "noncooperative",
+  "cooperative", "lost-completion", "launch-race", "noncooperative",
 ] as const)(
   "instance retirement preserves native %s ownership until confirmed exit",
   async (mode) => {
@@ -2051,17 +2051,21 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
       const draining = Promise.withResolvers<void>();
       const finished = Promise.withResolvers<JobResult>();
       let stdout = "";
-      owner.attach((event) => {
+      let transportConnected = true;
+      const receive = (event: JobEvent): boolean => {
+        // Observe native finalization even when the transport refuses delivery.
+        if (event.type === "result" && event.result.jobId === "retiring" &&
+            event.result.finishedAt !== null) finished.resolve(event.result);
+        if (!transportConnected) return false;
         events.push(JobEventSchema.parse(event));
         if (event.type === "service_ready" && event.jobId === "retiring") ready.resolve();
         if (event.type === "output" && event.jobId === "retiring" && event.outputId === "stdout") {
           stdout += Buffer.from(event.data, "base64").toString();
           if (stdout.includes("draining")) draining.resolve();
         }
-        if (event.type === "result" && event.result.jobId === "retiring" &&
-            event.result.finishedAt !== null) finished.resolve(event.result);
         return true;
-      });
+      };
+      const detach = owner.attach(receive);
       await owner.execute(install);
       await owner.execute({
         type: "configure_services",
@@ -2106,7 +2110,7 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
         event.type === "workload_empty" && event.jobId === "ordinary")).toBe(false);
 
       const command = { type: "start" as const, ...admission("retiring") };
-      if (mode !== "cooperative") {
+      if (mode === "launch-race" || mode === "noncooperative") {
         const nativeStarted = Promise.withResolvers<void>();
         const launch = startLinuxJob;
         const spy = spyOn(nativeRuntime, "startLinuxJob").mockImplementation(async (spec) => {
@@ -2163,10 +2167,23 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
         expect((await finished.promise).state).toBe("cancelled");
         expect(existsSync(join(statePath, "flushed"))).toBe(false);
       } else {
+        if (mode === "lost-completion") transportConnected = false;
         writeFileSync(join(statePath, "flush-allowed"), "release\n");
         const result = await finished.promise;
         expect(result).toMatchObject({ state: "exited", exitCode: 0, reason: null });
         expect(readFileSync(join(statePath, "flushed"), "utf8")).toBe("durable shutdown\n");
+        if (mode === "lost-completion") {
+          expect(events.some((event) => event.type === "workload_empty" ||
+            (event.type === "result" && event.result.finishedAt !== null))).toBe(false);
+          detach();
+          transportConnected = true;
+          owner.attach(receive);
+          events.length = 0;
+          // Reconciliation must recover both fences and the lost terminal result,
+          // without status/start replay or restarting this owner or its workload.
+          await owner.execute(retire);
+          expect(events).toContainEqual({ type: "result", result });
+        }
       }
       expect(events).toContainEqual({
         type: "workload_empty", jobId: "retiring", requestDigest: command.request.requestDigest,

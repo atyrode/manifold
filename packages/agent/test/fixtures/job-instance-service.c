@@ -1,6 +1,7 @@
 /* Build statically only in the disposable native proof harness. */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
+#include <errno.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,7 +9,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-static int retire(void) {
+static int retire(unsigned shutdowns) {
   puts("draining");
   fflush(stdout);
   if (getenv("IGNORE_RETIREMENT")) for (;;) pause();
@@ -19,6 +20,9 @@ static int retire(void) {
   FILE *state = fopen("/home/job/service-state/flushed", "w");
   if (!state || fputs("durable shutdown\n", state) < 0 || fflush(state) ||
       fsync(fileno(state)) || fclose(state)) return 22;
+  state = fopen("/home/job/service-state/shutdowns", "w");
+  if (!state || fprintf(state, "%u\n", shutdowns + 1) < 0 || fflush(state) ||
+      fsync(fileno(state)) || fclose(state)) return 24;
   return 0;
 }
 
@@ -36,6 +40,13 @@ int main(void) {
   state = fopen("/home/job/service-state/starts", "w");
   if (!state || fprintf(state, "%u\n", ++starts) < 0 || fflush(state) ||
       fsync(fileno(state)) || fclose(state)) return 13;
+  /* Capture before readiness: a successor cannot claim a flush completed later. */
+  unsigned shutdowns = 0;
+  state = fopen("/home/job/service-state/shutdowns", "r");
+  if (state) {
+    if (fscanf(state, "%u", &shutdowns) != 1 || fclose(state) || shutdowns >= 1000000)
+      return 25;
+  } else if (errno != ENOENT) return 25;
   int listener = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
   struct sockaddr_in address = { .sin_family = AF_INET, .sin_port = 0,
     .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
@@ -48,7 +59,7 @@ int main(void) {
   FILE *frames = fdopen(dup(channel), "r");
   char frame[8192];
   if (!frames) return 17;
-  do { if (!fgets(frame, sizeof(frame), frames)) return retire(); }
+  do { if (!fgets(frame, sizeof(frame), frames)) return retire(shutdowns); }
   while (!strstr(frame, "\"type\":\"service_ready_result\""));
   if (!strstr(frame, "\"ok\":true")) return 19;
   char authority[180];
@@ -61,7 +72,7 @@ int main(void) {
     if (poll(watch, 2, -1) < 0) return 23;
     if (watch[0].revents) {
       char next[8192];
-      if (read(channel, next, sizeof(next)) <= 0) return retire();
+      if (read(channel, next, sizeof(next)) <= 0) return retire(shutdowns);
     }
     if (!(watch[1].revents & POLLIN)) continue;
     int peer = accept(listener, NULL, NULL);
@@ -80,7 +91,8 @@ int main(void) {
     if (strncmp(request, "GET /snapshot HTTP/1.1\r\n", 24) || !header ||
         strncmp(strchr(header, ':') + 1, authority, strlen(authority))) { close(peer); continue; }
     char body[128], response[512];
-    int bytes = snprintf(body, sizeof(body), "{\"starts\":%u,\"setting\":\"%s\"}", starts, setting);
+    int bytes = snprintf(body, sizeof(body),
+      "{\"starts\":%u,\"shutdowns\":%u,\"setting\":\"%s\"}", starts, shutdowns, setting);
     int length = snprintf(response, sizeof(response),
       "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n"
       "Connection: close\r\n\r\n%s", bytes, body);
