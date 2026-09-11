@@ -1264,6 +1264,66 @@ console.log(JSON.stringify({
         },
       );
     });
+    for (const [name, override] of [
+      ["candidate-owner-command", '    command: ["bun", "packages/agent/src/main.ts", "--terminal-host"]\n'],
+      ["candidate-entrypoint", '    entrypoint: ["/bin/sh", "-c", "touch /data/unsafe-candidate"]\n'],
+      ["candidate-workdir", "    working_dir: /data\n"],
+      ["candidate-shared-pid", "    pid: host\n"],
+      ["candidate-bun-loader", '    environment:\n      BUN_OPTIONS: "--preload=/data/loader.ts"\n'],
+      ["candidate-shell-loader", "    environment:\n      BASH_ENV: /data/loader.sh\n"],
+      ["candidate-native-loader", "    environment:\n      LD_PRELOAD: /data/loader.so\n"],
+      ["candidate-home-loader", "    environment:\n      HOME: /data\n"],
+      ["candidate-null-data-root", "    environment:\n      MANIFOLD_DATA_DIR: null\n"],
+      ["candidate-healthcheck", '    healthcheck:\n      test: ["CMD-SHELL", "touch /data/unsafe-candidate"]\n'],
+      ["candidate-owner-key", `    environment:\n      MANIFOLD_OWNER_KEY: "${"a".repeat(64)}"\n`],
+    ] as const) {
+      await step(`${name} refuses before incumbent mutation`, async () => {
+        await preserveLive(
+          name,
+          async () => {
+            // A separate real Compose override, not a mocked deployment boundary.
+            const unsafeOverlay = join(tooling, "fixture-unsafe-candidate.yaml");
+            writeFileSync(unsafeOverlay, `services:\n  manifold:\n${override}`);
+            env["COMPOSE_FILE"] += `:${unsafeOverlay}`;
+          },
+          async () => {
+            env["COMPOSE_FILE"] = `${join(fixtureRepo, "compose.yaml")}:${developmentOverlay}`;
+            rmSync(join(tooling, "fixture-unsafe-candidate.yaml"), { force: true });
+          },
+        );
+      });
+    }
+    for (const [name, instruction] of [
+      ["candidate-image-command", 'CMD ["bun", "packages/agent/src/main.ts", "--terminal-host"]'],
+      ["candidate-image-loader", "ENV BASH_ENV=/data/loader.sh"],
+      ["candidate-image-owner-key", `ENV MANIFOLD_OWNER_KEY=${"b".repeat(64)}`],
+      ["candidate-image-healthcheck", "HEALTHCHECK CMD touch /data/unsafe-candidate"],
+    ] as const) {
+      await step(`${name} refuses unsafe image defaults before incumbent mutation`, async () => {
+        const base = (await docker(["image", "inspect", "--format", "{{.Id}}", finalImage()])).out.trim();
+        const baseTag = `${project()}:candidate-base`;
+        await docker(["image", "tag", base, baseTag]);
+        const unsafeDockerfile = join(tooling, "Dockerfile.unsafe-candidate");
+        const unsafeOverlay = join(tooling, "fixture-unsafe-candidate.yaml");
+        await preserveLive(
+          name,
+          async () => {
+            writeFileSync(unsafeDockerfile, `FROM ${baseTag}\n${instruction}\n`);
+            writeFileSync(unsafeOverlay, `services:\n  manifold:\n    build:\n      dockerfile: ${unsafeDockerfile}\n`);
+            env["COMPOSE_FILE"] += `:${unsafeOverlay}`;
+          },
+          async () => {
+            env["COMPOSE_FILE"] = `${join(fixtureRepo, "compose.yaml")}:${developmentOverlay}`;
+            rmSync(unsafeDockerfile, { force: true });
+            rmSync(unsafeOverlay, { force: true });
+            await docker(["image", "rm", baseTag]);
+          },
+        );
+        // Rebuild the supported candidate, which must remain usable after refusal.
+        await up();
+        await ready();
+      });
+    }
     // Each actual overlay is used only to create this verifier's incumbent. The
     // deployment callback still resolves the ordinary desired retained stack.
     // Track auxiliary resource identities explicitly as well as labeling them for

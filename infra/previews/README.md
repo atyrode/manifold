@@ -79,6 +79,13 @@ on exit, never printed. Existing host proxy configuration remains operator-owned
 `deploy-dev.sh` builds the ordinary application directly as `<project>:local`, never the
 shared `manifold:local` tag. It requires explicit `MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID`
 and `MANIFOLD_DEV_SPAWN_AGENT=0`. Build and final Compose validation precede replacement.
+The final merge is frozen once in a private memory-backed directory (0700, files 0600)
+and the built image is sealed by content ID before incumbent mutation. Preflight and
+creation consume that same configuration, not newly resolved local overrides.
+Image defaults and effective Compose command, entrypoint, workdir, PID namespace,
+loader environment, healthcheck and execution hooks must have the ordinary server-only
+shape. A configured `MANIFOLD_OWNER_KEY` is refused: only the retained `/data/owner.key`
+may supply owner authority, without credential comparison, export or injection.
 Its **retained** lifecycle stops and updates only `manifold`, with `--no-deps`: no terminal
 retire/resume, recursive ownership rewrite, spoke compilation, build-stamp writes or
 supervisor restart. The existing named volume must already exist; missing data fails closed.
@@ -464,6 +471,11 @@ Linux pidfds, readable host `/proc`, unified Docker cgroup metadata, exact known
 process topology, and exclusive operator control over Docker/exec/source/admission
 changes are prerequisites. The development deployment lock excludes cooperating
 deployers, not arbitrary privileged operators. Unsupported or ambiguous shapes hold.
+Before any restart-policy change or drain, the shared ordinary candidate preflight
+validates the built image defaults and frozen final Compose execution/credential
+contract. The cutover uses the same private memory-backed configuration pattern as
+normal deployment and starts precisely that sealed image/configuration after retirement;
+local override changes cannot alter the approved replacement.
 
 The transaction disables the exact container's automatic restart and does not restore
 it on failure. It streams only the reviewed public maintenance CLI into the owning
