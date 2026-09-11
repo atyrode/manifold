@@ -197,9 +197,11 @@ function loadIdentity(): StoredIdentity | null {
 }
 
 function identityExpired(identity: StoredIdentity): boolean {
-  return identity.expiresInMs !== undefined &&
+  return (
+    identity.expiresInMs !== undefined &&
     identity.receivedAt !== undefined &&
-    Date.now() - identity.receivedAt >= identity.expiresInMs;
+    Date.now() - identity.receivedAt >= identity.expiresInMs
+  );
 }
 
 interface IdentityGateProps {

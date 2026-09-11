@@ -25,6 +25,7 @@ echo "deploy-dev: converging on $1"
 # and an operator at a terminal types the abbreviation.
 git -C "$checkout" fetch -q --tags origin
 git -C "$checkout" checkout -q --detach "$1"
+revision=$(git -C "$checkout" rev-parse HEAD)
 identity "$checkout"
 export MANIFOLD_CHANNEL=development
 echo "deploy-dev: version=$MANIFOLD_VERSION build=$MANIFOLD_BUILD channel=$MANIFOLD_CHANNEL"
@@ -72,7 +73,7 @@ dev_compose() {
   (cd "$checkout" && frozen_retained_compose "$sealed_configuration" "$project" "$@")
 }
 # Build the ordinary application image, not the disposable development environment.
-dev_compose "$final_image" build manifold
+build_retained_hub "$final_configuration" "$checkout" "$final_image" "$revision"
 final_image=$(docker image inspect --format '{{.Id}}' "$final_image")
 [[ $final_image =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'replacement image identity unavailable'
 seal_retained_configuration "$final_configuration" "$final_image" "$sealed_configuration"

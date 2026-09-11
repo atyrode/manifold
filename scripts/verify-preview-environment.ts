@@ -517,8 +517,8 @@ async function freeRange(): Promise<number> {
   throw new Error("could not allocate a free preview/inspector port range");
 }
 async function fixtureRevision(marker: string): Promise<string> {
-  // Only this private repository gets synthetic objects. No commits, refs, or worktrees in
-  // the caller's checkout are touched; its unchanged old-style Dockerfile stays authoritative.
+  // Synthetic revisions stay inside the private fixture repository. The caller's
+  // source and refs are never changed, including when testing an unsafe image recipe.
   await command(["git", "checkout", "--detach", revision || "HEAD"], { cwd: fixtureRepo });
   writeFileSync(join(fixtureRepo, ".preview-environment-fixture"), marker + "\n");
   await command(["git", "add", ".preview-environment-fixture"], { cwd: fixtureRepo });
@@ -1265,16 +1265,28 @@ console.log(JSON.stringify({
       );
     });
     for (const [name, override] of [
-      ["candidate-owner-command", '    command: ["bun", "packages/agent/src/main.ts", "--terminal-host"]\n'],
-      ["candidate-entrypoint", '    entrypoint: ["/bin/sh", "-c", "touch /data/unsafe-candidate"]\n'],
+      [
+        "candidate-owner-command",
+        '    command: ["bun", "packages/agent/src/main.ts", "--terminal-host"]\n',
+      ],
+      [
+        "candidate-entrypoint",
+        '    entrypoint: ["/bin/sh", "-c", "touch /data/unsafe-candidate"]\n',
+      ],
       ["candidate-workdir", "    working_dir: /data\n"],
       ["candidate-shared-pid", "    pid: host\n"],
-      ["candidate-bun-loader", '    environment:\n      BUN_OPTIONS: "--preload=/data/loader.ts"\n'],
+      [
+        "candidate-bun-loader",
+        '    environment:\n      BUN_OPTIONS: "--preload=/data/loader.ts"\n',
+      ],
       ["candidate-shell-loader", "    environment:\n      BASH_ENV: /data/loader.sh\n"],
       ["candidate-native-loader", "    environment:\n      LD_PRELOAD: /data/loader.so\n"],
       ["candidate-home-loader", "    environment:\n      HOME: /data\n"],
       ["candidate-null-data-root", "    environment:\n      MANIFOLD_DATA_DIR: null\n"],
-      ["candidate-healthcheck", '    healthcheck:\n      test: ["CMD-SHELL", "touch /data/unsafe-candidate"]\n'],
+      [
+        "candidate-healthcheck",
+        '    healthcheck:\n      test: ["CMD-SHELL", "touch /data/unsafe-candidate"]\n',
+      ],
       ["candidate-owner-key", `    environment:\n      MANIFOLD_OWNER_KEY: "${"a".repeat(64)}"\n`],
     ] as const) {
       await step(`${name} refuses before incumbent mutation`, async () => {
@@ -1293,6 +1305,48 @@ console.log(JSON.stringify({
         );
       });
     }
+    for (const alternateContext of [false, true]) {
+      await step("unreviewed build source refuses before incumbent mutation", async () => {
+        const base = (
+          await docker(["image", "inspect", "--format", "{{.Id}}", finalImage()])
+        ).out.trim();
+        const baseTag = `${project()}:candidate-base`;
+        const recipe = join(tooling, "Dockerfile.unreviewed");
+        const overlay = join(tooling, "fixture-unreviewed-build.yaml");
+        await docker(["image", "tag", base, baseTag]);
+        const rewrite = `const path = "/app/packages/server/src/main.ts";
+await Bun.write(path, ${JSON.stringify('await Bun.write("/data/unsafe-candidate", "unreviewed");\n')} + await Bun.file(path).text());`;
+        await preserveLive(
+          "unreviewed-build-source",
+          async () => {
+            writeFileSync(
+              recipe,
+              `FROM ${baseTag}\nRUN ${JSON.stringify(["bun", "-e", rewrite])}\n`,
+            );
+            writeFileSync(
+              overlay,
+              `services:\n  manifold:\n    build:\n${
+                alternateContext
+                  ? `      context: ${tooling}\n      dockerfile: Dockerfile.unreviewed`
+                  : `      dockerfile: ${recipe}`
+              }\n`,
+            );
+            env["COMPOSE_FILE"] += `:${overlay}`;
+          },
+          async () => {
+            env["COMPOSE_FILE"] = `${join(fixtureRepo, "compose.yaml")}:${developmentOverlay}`;
+            rmSync(recipe, { force: true });
+            rmSync(overlay, { force: true });
+            await docker(["image", "rm", baseTag]);
+          },
+        );
+        requireThat(
+          (await execBun('console.log(await Bun.file("/data/unsafe-candidate").exists())')) ===
+            "false",
+          "unreviewed source executed against the retained volume",
+        );
+      });
+    }
     for (const [name, instruction] of [
       ["candidate-image-command", 'CMD ["bun", "packages/agent/src/main.ts", "--terminal-host"]'],
       ["candidate-image-loader", "ENV BASH_ENV=/data/loader.sh"],
@@ -1300,23 +1354,19 @@ console.log(JSON.stringify({
       ["candidate-image-healthcheck", "HEALTHCHECK CMD touch /data/unsafe-candidate"],
     ] as const) {
       await step(`${name} refuses unsafe image defaults before incumbent mutation`, async () => {
-        const base = (await docker(["image", "inspect", "--format", "{{.Id}}", finalImage()])).out.trim();
-        const baseTag = `${project()}:candidate-base`;
-        await docker(["image", "tag", base, baseTag]);
-        const unsafeDockerfile = join(tooling, "Dockerfile.unsafe-candidate");
-        const unsafeOverlay = join(tooling, "fixture-unsafe-candidate.yaml");
+        const baseRevision = revision;
+        const dockerfile = join(fixtureRepo, "Dockerfile");
+        const supportedRecipe = readFileSync(dockerfile, "utf8");
         await preserveLive(
           name,
           async () => {
-            writeFileSync(unsafeDockerfile, `FROM ${baseTag}\n${instruction}\n`);
-            writeFileSync(unsafeOverlay, `services:\n  manifold:\n    build:\n      dockerfile: ${unsafeDockerfile}\n`);
-            env["COMPOSE_FILE"] += `:${unsafeOverlay}`;
+            writeFileSync(dockerfile, `${supportedRecipe}\n${instruction}\n`);
+            await command(["git", "add", "Dockerfile"], { cwd: fixtureRepo });
+            revision = await fixtureRevision(name);
           },
           async () => {
-            env["COMPOSE_FILE"] = `${join(fixtureRepo, "compose.yaml")}:${developmentOverlay}`;
-            rmSync(unsafeDockerfile, { force: true });
-            rmSync(unsafeOverlay, { force: true });
-            await docker(["image", "rm", baseTag]);
+            revision = baseRevision;
+            await command(["git", "checkout", "--detach", revision], { cwd: fixtureRepo });
           },
         );
         // Rebuild the supported candidate, which must remain usable after refusal.

@@ -82,6 +82,8 @@ and `MANIFOLD_DEV_SPAWN_AGENT=0`. Build and final Compose validation precede rep
 The final merge is frozen once in a private memory-backed directory (0700, files 0600)
 and the built image is sealed by content ID before incumbent mutation. Preflight and
 creation consume that same configuration, not newly resolved local overrides.
+The image is built from that revision's Git archive, not untracked checkout files.
+Alternate build contexts, recipes and undeclared build inputs are refused before build.
 Image defaults and effective Compose command, entrypoint, workdir, PID namespace,
 loader environment, healthcheck and execution hooks must have the ordinary server-only
 shape. A configured `MANIFOLD_OWNER_KEY` is refused: only the retained `/data/owner.key`

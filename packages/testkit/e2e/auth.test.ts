@@ -597,7 +597,9 @@ test("a revoked preview browser identity returns through production admission wi
     // for the audience-qualified preview origin.
     const previewOwner = { httpUrl: preview.publicUrl, ownerKey: previewConfig.ownerKey };
     const content = ContainerResponseSchema.parse(
-      await ownerAction(previewOwner, "core.index.createContainer", { name: "keep-preview-content" }),
+      await ownerAction(previewOwner, "core.index.createContainer", {
+        name: "keep-preview-content",
+      }),
     ).container;
     await browser.launch({ incognito: true });
     await browser.goto(`${production.publicUrl}/#key=${productionConfig.ownerKey}`);
@@ -618,11 +620,12 @@ test("a revoked preview browser identity returns through production admission wi
     );
     await browser.goto(`${previewOrigin}/`);
     await waitFor(
-      () => browser.evaluate<boolean>(
-        `location.origin === ${JSON.stringify(previewOrigin)} &&
+      () =>
+        browser.evaluate<boolean>(
+          `location.origin === ${JSON.stringify(previewOrigin)} &&
          document.querySelector('.workspace') !== null &&
          localStorage.getItem('manifold.identity') !== null`,
-      ),
+        ),
       20_000,
       50,
     );
@@ -645,9 +648,9 @@ test("a revoked preview browser identity returns through production admission wi
       { admission: "interrupted", expired: false },
       { admission: "failed", expired: true },
     ]) {
-      const stored = JSON.stringify(scenario.expired
-        ? { ...initial, expiresInMs: 0, receivedAt: Date.now() }
-        : initial);
+      const stored = JSON.stringify(
+        scenario.expired ? { ...initial, expiresInMs: 0, receivedAt: Date.now() } : initial,
+      );
       await browser.evaluate(
         `localStorage.setItem('manifold.identity', ${JSON.stringify(stored)})`,
       );
@@ -678,21 +681,24 @@ test("a revoked preview browser identity returns through production admission wi
           await browser.send("Page.reload", {});
         }
         await waitFor(
-          () => browser.evaluate<boolean>(
-            "window.__admissionAttemptSeen === true && document.querySelector('.gate-screen') !== null",
-          ),
+          () =>
+            browser.evaluate<boolean>(
+              "window.__admissionAttemptSeen === true && document.querySelector('.gate-screen') !== null",
+            ),
           10_000,
           50,
         );
-        expect(await browser.evaluate<boolean>(
-          "document.querySelector('#identity-name') === null && document.querySelector('.workspace') === null",
-        )).toBe(true);
-        expect(await browser.evaluate<string>(
-          "localStorage.getItem('manifold.identity')",
-        )).toBe(stored);
-        expect(await browser.evaluate<string>(
-          "localStorage.getItem('manifold.ownerKey')",
-        )).toBe(previewConfig.ownerKey);
+        expect(
+          await browser.evaluate<boolean>(
+            "document.querySelector('#identity-name') === null && document.querySelector('.workspace') === null",
+          ),
+        ).toBe(true);
+        expect(await browser.evaluate<string>("localStorage.getItem('manifold.identity')")).toBe(
+          stored,
+        );
+        expect(await browser.evaluate<string>("localStorage.getItem('manifold.ownerKey')")).toBe(
+          previewConfig.ownerKey,
+        );
         if (scenario.expired) {
           expect(await browser.evaluate<number>("window.__protectedIdentityRequests")).toBe(0);
         }
@@ -705,29 +711,36 @@ test("a revoked preview browser identity returns through production admission wi
     // production handoff after both rejected and locally expired recovery attempts.
     await browser.goto(`${previewOrigin}/`);
     await waitFor(
-      () => browser.evaluate<boolean>(
-        `location.origin === ${JSON.stringify(previewOrigin)} &&
+      () =>
+        browser.evaluate<boolean>(
+          `location.origin === ${JSON.stringify(previewOrigin)} &&
          document.querySelector('.workspace') !== null &&
          JSON.parse(localStorage.getItem('manifold.identity') || 'null')?.token !==
            ${JSON.stringify(initial.token)} &&
          localStorage.getItem('manifold.identity') !== null`,
-      ),
+        ),
       20_000,
       50,
     );
-    expect(await browser.evaluate<boolean>(`(async () => {
+    expect(
+      await browser.evaluate<boolean>(`(async () => {
       const identity = JSON.parse(localStorage.getItem('manifold.identity'));
       return (await fetch('/api/plugins', {
         headers: { authorization: 'Bearer ' + identity.token }
       })).ok;
-    })()`)).toBe(true);
-    expect(await browser.evaluate<string[]>(
-      `['identity-test-content', 'manifold.identity@https://elsewhere.example',
+    })()`),
+    ).toBe(true);
+    expect(
+      await browser.evaluate<string[]>(
+        `['identity-test-content', 'manifold.identity@https://elsewhere.example',
         'manifold.ownerKey'].map(key => localStorage.getItem(key))`,
-    )).toEqual(["keep", "keep-foreign", previewConfig.ownerKey]);
-    expect(ContainerResponseSchema.parse(
-      await ownerAction(previewOwner, "core.index.readContainer", { containerId: content.id }),
-    ).container).toEqual(content);
+      ),
+    ).toEqual(["keep", "keep-foreign", previewConfig.ownerKey]);
+    expect(
+      ContainerResponseSchema.parse(
+        await ownerAction(previewOwner, "core.index.readContainer", { containerId: content.id }),
+      ).container,
+    ).toEqual(content);
     await browser.goto(`${production.publicUrl}/`);
     expect(await browser.evaluate<string>("localStorage.getItem('manifold.identity')")).toBe(
       productionIdentity,
@@ -786,18 +799,19 @@ test("browser identity survives non-auth failures and concurrent register replac
       });
       await browser.goto(`${server.httpUrl}/`);
       await waitFor(
-        () => browser.evaluate<boolean>(
-          "window.__identityFailureSeen === true && document.querySelector('.workspace') !== null",
-        ),
+        () =>
+          browser.evaluate<boolean>(
+            "window.__identityFailureSeen === true && document.querySelector('.workspace') !== null",
+          ),
         10_000,
         50,
       );
       expect(await browser.evaluate<string>("localStorage.getItem('manifold.identity')")).toBe(
         original,
       );
-      expect(await browser.evaluate<boolean>("document.querySelector('.gate-screen') === null")).toBe(
-        true,
-      );
+      expect(
+        await browser.evaluate<boolean>("document.querySelector('.gate-screen') === null"),
+      ).toBe(true);
       await browser.send("Page.removeScriptToEvaluateOnNewDocument", {
         identifier: injected.result?.["identifier"],
       });
@@ -846,9 +860,10 @@ test("browser identity survives non-auth failures and concurrent register replac
       window.__releaseIdentityResponse()`);
     await browser.send("Network.setBlockedURLs", { urls: [] });
     await waitFor(
-      () => browser.evaluate<boolean>(
-        "window.__replacementRosterLoaded === true && document.querySelector('.workspace') !== null",
-      ),
+      () =>
+        browser.evaluate<boolean>(
+          "window.__replacementRosterLoaded === true && document.querySelector('.workspace') !== null",
+        ),
       10_000,
       50,
     );
@@ -911,18 +926,19 @@ test("browser identity survives non-auth failures and concurrent register replac
     );
     await browser.evaluate("window.__releaseIdentityResponse()");
     await waitFor(
-      () => browser.evaluate<boolean>(
-        "window.__identityReadInterleaved === true && document.querySelector('.gate-screen') !== null",
-      ),
+      () =>
+        browser.evaluate<boolean>(
+          "window.__identityReadInterleaved === true && document.querySelector('.gate-screen') !== null",
+        ),
       10_000,
       50,
     );
     expect(await browser.evaluate<string>("localStorage.getItem('manifold.identity')")).toBe(
       JSON.stringify(successor),
     );
-    expect(await browser.evaluate<boolean>("document.querySelector('#identity-name') === null")).toBe(
-      true,
-    );
+    expect(
+      await browser.evaluate<boolean>("document.querySelector('#identity-name') === null"),
+    ).toBe(true);
     await browser.send("Page.removeScriptToEvaluateOnNewDocument", {
       identifier: interleaved.result?.["identifier"],
     });
@@ -954,10 +970,11 @@ test("browser identity survives non-auth failures and concurrent register replac
     });
     await browser.goto(`${server.httpUrl}/`);
     await waitFor(
-      () => browser.evaluate<boolean>(
-        `window.__malformedReadInterleaved === true &&
+      () =>
+        browser.evaluate<boolean>(
+          `window.__malformedReadInterleaved === true &&
          document.querySelector('.gate-screen, .workspace') !== null`,
-      ),
+        ),
       10_000,
       50,
     );

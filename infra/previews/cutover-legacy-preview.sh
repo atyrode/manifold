@@ -72,7 +72,7 @@ dev_compose() {
 }
 docker volume inspect "$volume" >/dev/null 2>&1 || fail 'existing named data volume is missing'
 phase=building-reviewed-hub
-dev_compose "$final_image" build manifold
+build_retained_hub "$final_configuration" "$checkout" "$final_image" "$3"
 # Pin the exact ordinary hub image, not its mutable build tag.
 final_image=$(docker image inspect --format '{{.Id}}' "$final_image")
 [[ $final_image =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'replacement image identity unavailable'

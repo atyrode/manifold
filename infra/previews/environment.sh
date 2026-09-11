@@ -109,6 +109,35 @@ frozen_retained_compose() {
     --env-file /dev/null --file "$configuration" "$@"
 }
 
+# A normal-looking image configuration is not proof of its application source.
+# Build only the selected Git tree, never an override recipe or untracked context.
+build_retained_hub() {
+  local configuration=$1 checkout=$2 image=$3 revision=$4 argument
+  local context
+  local -a build_arguments=()
+  context=$(cd "$checkout" && pwd -P)
+  jq -e --arg context "$context" --arg version "$MANIFOLD_VERSION" \
+    --arg build "$MANIFOLD_BUILD" --arg channel "$MANIFOLD_CHANNEL" '
+    .services.manifold.build as $recipe |
+    $recipe.context == $context and
+    ($recipe.dockerfile == null or $recipe.dockerfile == "Dockerfile") and
+    all($recipe | keys[]; . == "context" or . == "dockerfile" or . == "args") and
+    ($recipe.args.MANIFOLD_VERSION == $version) and
+    ($recipe.args.MANIFOLD_BUILD == $build) and
+    ($recipe.args.MANIFOLD_CHANNEL == $channel) and
+    all($recipe.args | to_entries[];
+      (.key | IN("MANIFOLD_VERSION", "MANIFOLD_BUILD", "MANIFOLD_CHANNEL",
+        "VITE_MANIFOLD_SITE_TITLE", "VITE_MANIFOLD_ICON_BACKGROUND")) and
+      (.value | type == "string"))
+  ' "$configuration" >/dev/null 2>&1 ||
+    fail 'HOLD: retained replacement requires the selected ordinary Git build'
+  while IFS= read -r -d '' argument; do
+    build_arguments+=(--build-arg "$argument")
+  done < <(jq -jr '.services.manifold.build.args | to_entries[] | "\(.key)=\(.value)", "\u0000"' "$configuration")
+  git -C "$checkout" archive --format=tar "$revision" |
+    docker build --file Dockerfile --tag "$image" "${build_arguments[@]}" -
+}
+
 # Resolve the final callback merge, reducing it immediately to a bounded public
 # record. Image defaults count only when the Compose environment omits the key;
 # an explicit null/unknown value is not evidence for the supported persisted root.

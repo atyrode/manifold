@@ -134,28 +134,54 @@ async function cutover(scenario: string) {
       const body = await request.json();
       if (
         new URL(request.url).pathname !== "/api/actions/core.machines.drain" ||
-        body.machineId !== "fixture-machine" || body.draining !== true
-      ) return new Response(null, { status: 400 });
+        body.machineId !== "fixture-machine" ||
+        body.draining !== true
+      )
+        return new Response(null, { status: 400 });
       writeFileSync(join(directory, "drained"), "");
-      return Response.json(scenario === "unknown" ?
-        { ok: false, denial: { rule: "unavailable", message: "inventory unknown" } } :
-        { ok: true, result: { terminalHostId: "fixture-owner", draining: true,
-          terminalIds: scenario === "busy" ? ["retained-terminal"] : [] } });
+      return Response.json(
+        scenario === "unknown"
+          ? { ok: false, denial: { rule: "unavailable", message: "inventory unknown" } }
+          : {
+              ok: true,
+              result: {
+                terminalHostId: "fixture-owner",
+                draining: true,
+                terminalIds: scenario === "busy" ? ["retained-terminal"] : [],
+              },
+            },
+      );
     },
   });
   cleanups.push(() => hub.stop(true));
   const entry = join(directory, "entry.ts");
-  writeFileSync(entry, `import { runMaintenanceCLI } from ${JSON.stringify(resolve(import.meta.dir, "../src/maintenance.ts"))}; process.exitCode = await runMaintenanceCLI(process.argv.slice(2));`);
+  writeFileSync(
+    entry,
+    `import { runMaintenanceCLI } from ${JSON.stringify(resolve(import.meta.dir, "../src/maintenance.ts"))}; process.exitCode = await runMaintenanceCLI(process.argv.slice(2));`,
+  );
   const bundle = join(directory, "maintenance.js");
   const built = await Bun.build({ entrypoints: [entry], target: "bun" });
   if (!built.success) throw new AggregateError(built.logs);
   await Bun.write(bundle, built.outputs[0]!);
-  const process = Bun.spawn(["python3", "-c", fixture,
-    resolve(import.meta.dir, "../../../infra/previews/cutover-legacy-preview.py"),
-    directory, scenario, Bun.which("bun")!, bundle, `http://127.0.0.1:${hub.port}`,
-    String(TERMINAL_HOST_PROTOCOL_VERSION)], { stdout: "pipe", stderr: "pipe" });
+  const process = Bun.spawn(
+    [
+      "python3",
+      "-c",
+      fixture,
+      resolve(import.meta.dir, "../../../infra/previews/cutover-legacy-preview.py"),
+      directory,
+      scenario,
+      Bun.which("bun")!,
+      bundle,
+      `http://127.0.0.1:${hub.port}`,
+      String(TERMINAL_HOST_PROTOCOL_VERSION),
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
   const [stdout, stderr, status] = await Promise.all([
-    new Response(process.stdout).text(), new Response(process.stderr).text(), process.exited,
+    new Response(process.stdout).text(),
+    new Response(process.stderr).text(),
+    process.exited,
   ]);
   if (status !== 0) throw new Error(`fixture failed: ${stderr}`);
   expect(readFileSync(join(directory, "retained-state"), "utf8")).toBe(retained);
