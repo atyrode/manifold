@@ -280,7 +280,10 @@ replace_environment() {
       -c 'chown -R --no-dereference 1000:1000 /data' ||
       fail "$project deployment failed while setting /data ownership"
   fi
-  "$@" "$final_image" up -d --no-build --no-deps manifold
+  # This is a replacement, including when a rejected candidate is followed by
+  # the same reviewed image/configuration. Plain up may reuse the incumbent and
+  # treat its observed Running state as convergence after the separate stop.
+  "$@" "$final_image" up -d --no-build --no-deps --force-recreate manifold
   log "waiting for $project health"
   wait_health "$health_url" "$MANIFOLD_BUILD" || fail "$project deployment failed health check"
   if [[ $lifecycle == disposable ]]; then
