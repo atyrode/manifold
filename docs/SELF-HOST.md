@@ -284,9 +284,10 @@ have `restartIfChanged=false`, `stopIfChanged=false`, `Restart=on-failure` and
 atomic maintenance shutdown stays stopped. Old immutable store paths must remain rooted
 until the retained owner exits; do not garbage-collect its old system generation mid-session.
 Changing a unit definition does not mean the retained owner is running that new version.
-Hub/transport protocol 30 is independent of native owner RPC 2. A compatible retained owner
-keeps its work through a transport upgrade; its missing IPC-2 execution declaration cannot
-be treated as permission to create an unconfined shell.
+Hub/transport protocol 30, terminal-host IPC 2 and native job-owner RPC 30 have separate
+compatibility gates. A compatible transport keeps retained terminals and maintenance
+reachable even when the owner's native RPC cannot admit jobs. An older owner's missing
+IPC-2 execution declaration cannot be treated as permission to create an unconfined shell.
 
 The supported command is `manifold-agent --maintenance`; it does not run the transport,
 acquire its seat, discover machines or credential files, retire terminals, cancel jobs,

@@ -29,6 +29,7 @@ import {
 } from "@manifold/protocol";
 import {
   canonicalJobJson,
+  JOB_OWNER_PROTOCOL_VERSION,
   JobRequestSchema,
   JobCommandSchema,
   MachineHalfSchema,
@@ -3313,7 +3314,7 @@ export class JobService {
     this.store.db
       .query("UPDATE machine_job_installs SET ready=0 WHERE machine_id=?")
       .run(channel.machineId);
-    if (!owner) return;
+    if (!owner || owner.protocolVersion !== JOB_OWNER_PROTOCOL_VERSION) return;
     const pinned = this.jobs.owner(channel.machineId);
     if (
       pinned &&

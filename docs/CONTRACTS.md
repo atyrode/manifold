@@ -2676,6 +2676,11 @@ through a transport or browser upgrade. A native RPC change requires its own coo
 drained owner upgrade. Compatibility alone never proves current execution consent or
 resource readiness, and no PTY, polling or alternate execution path substitutes for it.
 
+A structurally valid native-owner announcement with a different RPC version does not
+invalidate an otherwise compatible machine transport. The owner receives no native
+challenge or job authority, while machine presence, retained terminal continuity and
+the named drain/maintenance path remain available for the coordinated upgrade.
+
 The independent federation set is `{27, 28, 29, 30}`; these machine/native changes leave its
 frames and resource vocabularies unchanged. The earlier per-program and per-job transport
 version gates are retired: every accepted transport understands those frames, while
