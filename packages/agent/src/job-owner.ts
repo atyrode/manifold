@@ -163,6 +163,8 @@ interface InstanceRuntimeService {
   startupTimer: ReturnType<typeof setTimeout> | undefined;
 }
 const ACTIVE: Record<string, true> = { "start-committed": true, started: true };
+// Promise rejection identity preserves the first refusal's mode across retirement races.
+const SERVICE_RETIRED = new Error("service_retired");
 
 /** Independently supervised machine authority. No workload is owned by the websocket transport. */
 export class MachineJobOwner {
@@ -945,7 +947,7 @@ export class MachineJobOwner {
     );
   }
 
-  private async closeServices(job: OwnedJob): Promise<void> {
+  private async closeServices(job: OwnedJob, retiring = false): Promise<void> {
     job.serviceController.abort();
     job.context?.abortServices();
     const instance =
@@ -958,7 +960,7 @@ export class MachineJobOwner {
     }
     job.serviceRuntime?.reject(new Error("service_cancelled"));
     for (const runtime of job.runtimeServices.values()) {
-      runtime.reject(new Error("service_cancelled"));
+      runtime.reject(retiring ? SERVICE_RETIRED : new Error("service_cancelled"));
       runtime.bearer = "";
     }
     await Promise.all([...job.serviceProxies.values()].map((proxy) => proxy.close()));
@@ -1062,11 +1064,11 @@ export class MachineJobOwner {
       const timer = setTimeout(() => ready.reject(new Error("service_start_timeout")), 30_000);
       void ready.promise.then(
         () => clearTimeout(timer),
-        () => {
+        (error: unknown) => {
           clearTimeout(timer);
           const invocation = parent.context?.invocations.get(invocationId);
           if (invocation) invocation.refused = true;
-          if (created.childJobId && this.jobs.has(created.childJobId))
+          if (error !== SERVICE_RETIRED && created.childJobId && this.jobs.has(created.childJobId))
             void this.cancel(created.childJobId).catch(() => {
               this.draining = true;
             });
@@ -2408,7 +2410,7 @@ export class MachineJobOwner {
   private async retire(job: OwnedJob): Promise<void> {
     if (job.cancelRequested || job.retirement.signal.aborted || job.emptyObserved) return;
     job.retirement.abort();
-    const closed = this.closeServices(job);
+    const closed = this.closeServices(job, true);
     // During launch the runtime still borrows childFd. The launch continuation closes
     // the channel after handoff; closing it here could turn retirement into a failed
     // native launch and enter forceful containment.
