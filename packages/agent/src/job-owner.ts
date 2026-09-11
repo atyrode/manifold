@@ -132,7 +132,7 @@ interface OwnedJob {
   childBudgetMs: number;
   outputGap: boolean;
   cancelRequested: boolean;
-  retirement: AbortController;
+  retirement: AbortController | undefined;
   stdio: Partial<Record<"stdout" | "stderr", JobOutputByteStream>>;
   outputSeq: number;
   childExitSent: boolean;
@@ -1988,7 +1988,7 @@ export class MachineJobOwner {
             job.result.state !== "started" ||
             instance.port !== null ||
             job.cancelRequested ||
-            job.retirement.signal.aborted
+            job.retirement?.signal.aborted
           )
             return;
           instance.startupTimer = setTimeout(() => {
@@ -2097,7 +2097,7 @@ export class MachineJobOwner {
           );
           // Closing an unused context during ordinary process exit is not a cancellation.
           if (reason === "context_closed" && !pending && !operation.providesService) return;
-          if (reason === "context_closed" && job.retirement.signal.aborted) return;
+          if (reason === "context_closed" && job.retirement?.signal.aborted) return;
           void this.cancel(request.jobId).catch(() => {
             this.draining = true;
           });
@@ -2137,7 +2137,7 @@ export class MachineJobOwner {
       }
       await this.prepareServiceProxies(job, operation);
       if (job.cancelRequested) throw new Error("cancelled_before_start");
-      if (job.retirement.signal.aborted) throw new Error("retired_before_start");
+      if (job.retirement?.signal.aborted) throw new Error("retired_before_start");
       job.inputFiles = materializeJobInputs(
         operation,
         request.input,
@@ -2166,7 +2166,7 @@ export class MachineJobOwner {
         })),
         delegatedCgroup: parent?.handle?.childDelegation ?? this.options.delegatedCgroup,
         limits: request.limits,
-        ...(request.service
+        ...(job.retirement
           ? { persistentService: true as const, retirementSignal: job.retirement.signal }
           : {}),
         ...(operation.environment ? { environment: operation.environment } : {}),
@@ -2224,7 +2224,7 @@ export class MachineJobOwner {
         .then((result) => this.finish(job, result, parent))
         .catch(() => this.interrupt(job));
       if (job.cancelRequested) await job.handle?.cancel();
-      else if (job.retirement.signal.aborted) job.context.close();
+      else if (job.retirement?.signal.aborted) job.context.close();
     } catch (error) {
       if (!spawnAttempted || (error instanceof LinuxJobRefusal && error.workloadEmpty))
         job.resolveEmpty();
@@ -2250,7 +2250,7 @@ export class MachineJobOwner {
         if (safelyRefused && this.jobs.has(request.jobId)) {
           job.result = {
             ...job.result,
-            state: job.cancelRequested || job.retirement.signal.aborted ? "cancelled" : "refused",
+            state: job.cancelRequested || job.retirement?.signal.aborted ? "cancelled" : "refused",
             reason:
               error instanceof Error && /^[a-zA-Z0-9_-]{1,128}$/.test(error.message)
                 ? error.message
@@ -2408,6 +2408,7 @@ export class MachineJobOwner {
   }
 
   private async retire(job: OwnedJob): Promise<void> {
+    if (!job.retirement) throw new Error("retire_requires_instance_service");
     if (job.cancelRequested || job.retirement.signal.aborted || job.emptyObserved) return;
     job.retirement.abort();
     const closed = this.closeServices(job, true);
@@ -2522,7 +2523,7 @@ export class MachineJobOwner {
       childBudgetMs: 0,
       outputGap: false,
       cancelRequested: false,
-      retirement: new AbortController(),
+      retirement: request.service ? new AbortController() : undefined,
       stdio: {},
       outputSeq: 0,
       childExitSent: false,

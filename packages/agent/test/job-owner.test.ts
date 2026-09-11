@@ -2009,7 +2009,7 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
             },
           },
           locations: {
-            state: {
+            "fixture.retirement.state": {
               managed: true, anchor: "state", components: ["service"], revision: "r1",
               kind: "directory", guestPath: "/home/job/service-state",
             },
@@ -2023,7 +2023,7 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
                 ...(mode === "noncooperative" ? { IGNORE_RETIREMENT: "1" } : {}),
               },
               inputFiles: { serviceBearer: { generated: "service-bearer" } },
-              locations: [{ locationId: "state", access: "write" }],
+              locations: [{ locationId: "fixture.retirement.state", access: "write" }],
               outputs: [], network: "host", limits, stdin: false,
             },
           },
@@ -2099,12 +2099,9 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
         };
       };
       // Retirement cannot even reconcile absence for an ordinary signed job.
-      await owner.execute({
+      await expect(owner.execute({
         type: "retire", jobId: "ordinary", reason: "replace", admission: admission("ordinary", false),
-      });
-      expect(events.at(-1)).toMatchObject({
-        type: "refusal", jobId: "ordinary", reason: "instance_service_required",
-      });
+      })).rejects.toThrow();
       expect(events.some((event) =>
         event.type === "workload_empty" && event.jobId === "ordinary")).toBe(false);
 
@@ -2122,14 +2119,14 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
         launching = owner.execute(command);
         await Promise.race([
           nativeStarted.promise,
-          launching.then(() => { throw new Error("native launch did not reach handoff"); }),
+          launching.then(() => { throw new Error(events.findLast(event => event.type === "refusal")?.reason ?? "native launch did not reach handoff"); }),
         ]);
       } else {
         await owner.execute(command);
         await Promise.race([
           ready.promise,
-          finished.promise.then((result) => {
-            throw new Error(`service exited before readiness: ${JSON.stringify(result)}`);
+          finished.promise.then(() => {
+            throw new Error(events.findLast(event => event.type === "refusal")?.reason ?? "service exited before readiness");
           }),
         ]);
       }

@@ -457,6 +457,7 @@ test("replacement replays retirement across restart and waits for confirmed old 
     f.auth = new AuthService(f.store, key, f.runtime);
     f.root = f.auth.authenticate(key);
     f.service = new JobService(f.store, f.auth, f.runtime);
+    f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
     f.service.setManifestResolver((id) => (id === pluginId ? provider : null));
     f.commands.length = 0;
     prove(f);
