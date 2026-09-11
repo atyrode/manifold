@@ -753,6 +753,103 @@ test("a revoked preview browser identity returns through production admission wi
   }
 }, 90_000);
 
+test("explicit owner links recover rejected standalone identities without cached-owner fallback", async () => {
+  const dist = resolveWebDist("manifold-owner-recovery-web-");
+  const server = await startServer({ env: { MANIFOLD_WEB_DIST: dist.distDir } });
+  try {
+    for (const refusal of ["revoked", "expired"]) {
+      const browser = new Browser();
+      try {
+        await browser.launch({ incognito: true });
+        await browser.goto(`${server.httpUrl}/#key=${server.ownerKey}`);
+        await waitFor(
+          () => browser.evaluate<boolean>("document.querySelector('#identity-name') !== null"),
+          10_000,
+          50,
+        );
+        await browser.typeInto("#identity-name", `standalone-${refusal}`);
+        await browser.clickTestId("identity-enter");
+        await waitFor(
+          () => browser.evaluate<boolean>("document.querySelector('.workspace') !== null"),
+          10_000,
+          50,
+        );
+        if (refusal === "expired") {
+          // Exercise a relative admission deadline without changing the server clock.
+          await browser.evaluate(`(() => {
+            const identity = JSON.parse(localStorage.getItem("manifold.identity"));
+            identity.receivedAt = Date.now();
+            identity.expiresInMs = 60_000;
+            localStorage.setItem("manifold.identity", JSON.stringify(identity));
+          })()`);
+        }
+        const original = await browser.evaluate<string>(
+          "localStorage.getItem('manifold.identity')",
+        );
+        if (refusal === "revoked") {
+          await ownerAction(server, "core.access.revoke", {
+            principalId: (JSON.parse(original) as { principal: { id: string } }).principal.id,
+          });
+        } else {
+          await browser.send("Page.addScriptToEvaluateOnNewDocument", {
+            source: `(() => {
+              const identity = JSON.parse(localStorage.getItem("manifold.identity"));
+              const now = Date.now;
+              Date.now = () => identity.receivedAt + identity.expiresInMs + 1;
+              window.__restoreIdentityClock = () => { Date.now = now; };
+            })()`,
+          });
+        }
+        await browser.goto(`${server.httpUrl}/`);
+        await waitFor(
+          () => browser.evaluate<boolean>("document.querySelector('.gate-screen') !== null"),
+          10_000,
+          50,
+        );
+        expect(await browser.evaluate<string>("localStorage.getItem('manifold.identity')")).toBe(
+          original,
+        );
+        expect(
+          await browser.evaluate<boolean>("document.querySelector('#identity-name') === null"),
+        ).toBe(true);
+        await browser.goto(`${server.httpUrl}/#key=${server.ownerKey}`);
+        await waitFor(
+          () => browser.evaluate<boolean>("document.querySelector('#identity-name') !== null"),
+          10_000,
+          50,
+        );
+        expect(await browser.evaluate<string>("localStorage.getItem('manifold.identity')")).toBe(
+          original,
+        );
+        await browser.evaluate("window.__restoreIdentityClock?.()");
+        await browser.typeInto("#identity-name", `recovered-${refusal}`);
+        await browser.clickTestId("identity-enter");
+        await waitFor(
+          () => browser.evaluate<boolean>("document.querySelector('.workspace') !== null"),
+          10_000,
+          50,
+        );
+        expect(
+          await browser.evaluate<number>(`(async () => {
+          const identity = JSON.parse(localStorage.getItem("manifold.identity"));
+          return (await fetch("/api/plugins", {
+            headers: { Authorization: "Bearer " + identity.token }
+          })).status;
+        })()`),
+        ).toBe(200);
+      } finally {
+        await browser.close();
+      }
+    }
+  } catch (error) {
+    throw e2eFailure(error, [server]);
+  } finally {
+    await server.stop();
+    rmSync(server.dataDir, { recursive: true, force: true });
+    dist.cleanup();
+  }
+}, 90_000);
+
 test("browser identity survives non-auth failures and concurrent register replacement", async () => {
   const dist = resolveWebDist("manifold-identity-race-web-");
   const server = await startServer({ env: { MANIFOLD_WEB_DIST: dist.distDir } });
@@ -999,7 +1096,7 @@ test("browser identity survives non-auth failures and concurrent register replac
   }
 }, 90_000);
 
-test("installed module, stylesheet, and isolated-module refusals return to native admission", async () => {
+test("installed module, stylesheet, and isolated-module refusals recover identity", async () => {
   const dir = mkdtempSync(join(tmpdir(), "manifold-auth-assets-"));
   const dist = resolveWebDist("manifold-auth-assets-web-");
   const server = await startServer({
@@ -1028,9 +1125,28 @@ test("installed module, stylesheet, and isolated-module refusals return to nativ
     };
     const [inRealm, isolated] = await Promise.all([pack("in-realm"), pack("sample")]);
     for (const scenario of [
-      { name: "module", asset: "web.js", bundle: inRealm, hardened: false },
-      { name: "stylesheet", asset: "styles.css", bundle: inRealm, hardened: false },
-      { name: "isolated-module", asset: "web.js", bundle: isolated, hardened: true },
+      { name: "module", asset: "web.js", bundle: inRealm, hardened: false, replacement: false },
+      {
+        name: "stylesheet",
+        asset: "styles.css",
+        bundle: inRealm,
+        hardened: false,
+        replacement: false,
+      },
+      {
+        name: "isolated-module",
+        asset: "web.js",
+        bundle: isolated,
+        hardened: true,
+        replacement: false,
+      },
+      {
+        name: "isolated-replacement",
+        asset: "web.js",
+        bundle: isolated,
+        hardened: true,
+        replacement: true,
+      },
     ]) {
       const browser = new Browser();
       let installed = false;
@@ -1092,6 +1208,10 @@ test("installed module, stylesheet, and isolated-module refusals return to nativ
               return response;
             }
             if (window.__assetWaiting) {
+              const bearer = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get("Authorization");
+              if (window.__replacementToken && bearer === "Bearer " + window.__replacementToken) {
+                return original(input, init);
+              }
               if (path === "/api/identity/preview-config") window.__nativeAdmissionRequested = true;
               return new Promise(() => {});
             }
@@ -1115,6 +1235,13 @@ test("installed module, stylesheet, and isolated-module refusals return to nativ
           50,
         );
         await ownerAction(server, "core.access.revoke", { principalId });
+        const replacement = scenario.replacement
+          ? await mintToken(server, { principalId, caps: ["*"] })
+          : null;
+        if (replacement !== null) {
+          await browser.evaluate(`localStorage.setItem("manifold.identity", ${JSON.stringify(JSON.stringify(replacement))});
+            window.__replacementToken = ${JSON.stringify(replacement.token)}`);
+        }
         await browser.evaluate("window.__releaseAsset()");
         await waitFor(
           () => browser.evaluate<boolean>("window.__assetRefusal !== undefined"),
@@ -1130,16 +1257,39 @@ test("installed module, stylesheet, and isolated-module refusals return to nativ
           code: "forbidden",
           message: "revoked",
         });
-        await waitFor(
-          () => browser.evaluate<boolean>("window.__nativeAdmissionRequested === true"),
-          10_000,
-          50,
-        );
-        expect(
-          await browser.evaluate<boolean>(
-            "document.querySelector('.workspace, #identity-name') === null",
-          ),
-        ).toBe(true);
+        if (replacement === null) {
+          await waitFor(
+            () => browser.evaluate<boolean>("window.__nativeAdmissionRequested === true"),
+            10_000,
+            50,
+          );
+          expect(
+            await browser.evaluate<boolean>(
+              "document.querySelector('.workspace, #identity-name') === null",
+            ),
+          ).toBe(true);
+        } else {
+          await waitFor(
+            () =>
+              browser.evaluate<boolean>(
+                "[...document.querySelectorAll('button')].some(button => button.textContent === 'Bump')",
+              ),
+            10_000,
+            50,
+          );
+          await browser.evaluate(
+            "[...document.querySelectorAll('button')].find(button => button.textContent === 'Bump').click()",
+          );
+          await waitFor(
+            () => browser.evaluate<boolean>("document.body.textContent.includes('count 1')"),
+            10_000,
+            50,
+          );
+          expect(await browser.evaluate<string>("localStorage.getItem('manifold.identity')")).toBe(
+            JSON.stringify(replacement),
+          );
+          expect(await browser.evaluate<boolean>("window.__nativeAdmissionRequested")).toBe(false);
+        }
       } finally {
         await browser.close();
         if (installed) {

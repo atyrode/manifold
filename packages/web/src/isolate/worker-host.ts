@@ -466,6 +466,7 @@ export const WORKER_GRACE_MS = 5_000;
 
 interface Held {
   readonly worker: WorkerHost;
+  readonly token: string;
   refs: number;
   reaper: ReturnType<typeof setTimeout> | null;
 }
@@ -481,6 +482,8 @@ export interface WorkerRegistryOptions {
  * the last release unless another mount reclaims it first. A stopped worker is forgotten, so a
  * faulted plugin gets a fresh worker — and a fresh chance — the next time one of its panels is
  * mounted after the grace, which is what disable-then-enable does.
+ * A new credential retires the old supervisor immediately: its module fetch and
+ * initial authority belong to the previous admission, not the current one.
  */
 export class WorkerRegistry {
   private readonly held = new Map<string, Held>();
@@ -490,6 +493,12 @@ export class WorkerRegistry {
   acquire(pluginId: string, host: HostServices): WorkerLease {
     const key = `${pluginId}\u0000${host.containerId ?? ""}`;
     let held = this.held.get(key);
+    if (held !== undefined && held.token !== host.token) {
+      if (held.reaper !== null) clearTimeout(held.reaper);
+      held.worker.stop();
+      this.held.delete(key);
+      held = undefined;
+    }
     if (held === undefined) {
       const worker = new WorkerHost({
         pluginId,
@@ -499,7 +508,7 @@ export class WorkerRegistry {
         host,
         workerFactory: this.options.workerFactory,
       });
-      held = { worker, refs: 0, reaper: null };
+      held = { worker, token: host.token, refs: 0, reaper: null };
       this.held.set(key, held);
       worker.start();
     }
@@ -517,7 +526,7 @@ export class WorkerRegistry {
         if (released) return;
         released = true;
         hold.refs -= 1;
-        if (hold.refs > 0) return;
+        if (hold.refs > 0 || this.held.get(key) !== hold) return;
         hold.reaper = setTimeout(() => {
           hold.reaper = null;
           if (hold.refs > 0 || this.held.get(key) !== hold) return;

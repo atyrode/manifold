@@ -16,6 +16,7 @@ const IDENTITY_STORAGE = "manifold.identity";
 const OWNER_KEY_PATTERN = /^[0-9a-f]{64}$/i;
 const OWNER_FRAGMENT_PATTERN = /^#key=([0-9a-f]{64})$/i;
 const PREVIEW_NONCE_STORAGE = "manifold.previewNonce";
+let fragmentOwnerKey: { readonly storageKey: string; readonly value: string } | null = null;
 
 function previewHandoffRequest(): { audience: string; nonce: string } | null {
   if (window.location.pathname !== "/auth/preview") return null;
@@ -144,7 +145,9 @@ export function captureOwnerKeyFromFragment(): void {
   const match = OWNER_FRAGMENT_PATTERN.exec(window.location.hash);
   const ownerKey = match?.[1];
   if (ownerKey === undefined) return;
-  window.localStorage.setItem(credentialKey(OWNER_KEY_STORAGE), ownerKey);
+  const storageKey = credentialKey(OWNER_KEY_STORAGE);
+  fragmentOwnerKey = { storageKey, value: ownerKey };
+  window.localStorage.setItem(storageKey, ownerKey);
   window.history.replaceState(
     window.history.state,
     "",
@@ -154,6 +157,7 @@ export function captureOwnerKeyFromFragment(): void {
 
 function loadOwnerKey(): string | null {
   const key = credentialKey(OWNER_KEY_STORAGE);
+  if (fragmentOwnerKey?.storageKey === key) return fragmentOwnerKey.value;
   const ownerKey = window.localStorage.getItem(key);
   if (ownerKey !== null && OWNER_KEY_PATTERN.test(ownerKey)) return ownerKey;
   if (ownerKey !== null) window.localStorage.removeItem(key);
@@ -219,6 +223,7 @@ export function IdentityGate({ children }: IdentityGateProps) {
   const [error, setError] = useState<string | null>(null);
   const handoff = previewHandoffRequest();
   const identityOrigin = instanceOrigin();
+  const explicitOwnerKey = fragmentOwnerKey?.storageKey === credentialKey(OWNER_KEY_STORAGE);
   const invalidateIdentity = useCallback(() => {
     if (identity === null || instanceOrigin() !== identityOrigin) return;
     // Reads are not cross-tab compare-and-delete transactions. Leave the register
@@ -233,6 +238,15 @@ export function IdentityGate({ children }: IdentityGateProps) {
     });
   }, [identity, identityOrigin]);
   useEffect(() => {
+    // A same-document owner link must pass through the same pre-render capture as
+    // a full navigation, rather than leaving the secret in an inert SPA fragment.
+    const openOwnerLink = () => {
+      if (OWNER_FRAGMENT_PATTERN.test(window.location.hash)) window.location.reload();
+    };
+    window.addEventListener("hashchange", openOwnerLink);
+    return () => window.removeEventListener("hashchange", openOwnerLink);
+  }, []);
+  useEffect(() => {
     if (identity === null) return;
     return onIdentityRejected(identity.token, invalidateIdentity);
   }, [identity, invalidateIdentity]);
@@ -245,16 +259,17 @@ export function IdentityGate({ children }: IdentityGateProps) {
     return () => window.clearTimeout(timer);
   }, [identity, invalidateIdentity]);
 
-  // An expired, structurally valid register still means admission, never owner bootstrap.
-  // Do not mount authenticated children even for the render before the expiry effect runs.
-  if (identity !== null && identityExpired(identity)) return <PreviewAdmission />;
+  // A key supplied for this page can recover an unusable identity. Cached owner
+  // authority must never replace a rejected identity implicitly.
+  const expired = identity !== null && identityExpired(identity);
+  if (expired && !explicitOwnerKey) return <PreviewAdmission />;
 
-  if (identity !== null && handoff !== null) {
-    return <PreviewHandoff identity={identity} request={handoff} />;
+  if (identity !== null && !expired) {
+    if (handoff !== null) return <PreviewHandoff identity={identity} request={handoff} />;
+    return children(identity);
   }
-  if (identity !== null) return children(identity);
 
-  if (readmitting || ownerKey === null) return <PreviewAdmission />;
+  if ((readmitting && !explicitOwnerKey) || ownerKey === null) return <PreviewAdmission />;
 
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -265,6 +280,7 @@ export function IdentityGate({ children }: IdentityGateProps) {
     try {
       const grant = await createPrincipal(ownerKey, { name: trimmedName, color });
       window.localStorage.setItem(credentialKey(IDENTITY_STORAGE), JSON.stringify(grant));
+      fragmentOwnerKey = null;
       setIdentity(grant);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "Could not create your identity");
