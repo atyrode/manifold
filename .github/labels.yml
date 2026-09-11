@@ -8,7 +8,7 @@
   description: "Default state: not yet classified; triage assigns type, area, priority and a state"
 - name: "needs-operator"
   color: "b60205"
-  description: "Held for a concrete operator decision recorded as a ## Decision block; the triage runbook drives it to resolution"
+  description: "Held for a concrete operator decision written as a ## Decision block; triage drives it to an answer"
 - name: "agent-ready"
   color: "0e8a16"
   description: "Scoped, prioritized and settled: an agent may claim it and open a PR without asking"

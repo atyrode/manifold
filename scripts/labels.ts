@@ -12,6 +12,8 @@ import { $ } from "bun";
 import { join } from "node:path";
 
 const INVENTORY = ".github/labels.yml";
+/** GitHub rejects a longer label description with HTTP 422. */
+const MAX_DESCRIPTION = 100;
 const repoRoot = join(import.meta.dir, "..");
 
 interface Label {
@@ -36,7 +38,11 @@ function stringField(entry: Record<string, unknown>, key: string, where: string)
   return value;
 }
 
-/** The declared inventory, with every malformed entry a hard error rather than a silent skip. */
+/**
+ * The declared inventory, with every malformed entry a hard error rather than a silent skip.
+ * The description cap is the GitHub API's own (HTTP 422 "description is too long"): checking it
+ * here is what keeps `--apply` from writing half the inventory and then throwing on the rest.
+ */
 function readInventory(text: string): readonly Label[] {
   const parsed: unknown = Bun.YAML.parse(text);
   if (!Array.isArray(parsed)) throw new Error(`${INVENTORY} is not a list of labels`);
@@ -51,7 +57,13 @@ function readInventory(text: string): readonly Label[] {
     if (!/^[0-9a-f]{6}$/i.test(color)) {
       throw new Error(`${INVENTORY}: ${name} has color "${color}", want six hex digits without #`);
     }
-    return { name, color, description: stringField(record, "description", name) };
+    const description = stringField(record, "description", name);
+    if (description.length > MAX_DESCRIPTION) {
+      throw new Error(
+        `${INVENTORY}: ${name} has a ${String(description.length)}-character description; the GitHub API accepts ${String(MAX_DESCRIPTION)}`,
+      );
+    }
+    return { name, color, description };
   });
   const seen = new Set<string>();
   for (const label of labels) {
