@@ -584,8 +584,9 @@ export const ListJobRunsResultSchema = z.strictObject({
   nextCursor: z.string().min(1).max(2048).nullable(),
 });
 export type ListJobRunsResult = z.infer<typeof ListJobRunsResultSchema>;
+/** Retained owner announcements must remain readable for maintenance across RPC upgrades. */
 export const JobOwnerSchema = z.strictObject({
-  protocolVersion: z.literal(JOB_OWNER_PROTOCOL_VERSION),
+  protocolVersion: z.number().int().positive(),
   ownerId: id,
   publicKey: z.string().min(1).max(4096),
   generation: count,
