@@ -5,7 +5,6 @@ import {
   ProjectionProvider,
   RoomPipeRegistrationProvider,
   ViewportRegistrationProvider,
-  instanceUrl,
   sessionUrl,
   type ContainerOverlayProps,
   type OverlayRegistrations,
@@ -72,7 +71,8 @@ import {
   type ReactNode,
 } from "react";
 import { Cover, Stack } from "@manifold/ui";
-import { dispatchAction, requestJson, type StoredIdentity } from "./api.ts";
+import { dispatchAction, type StoredIdentity } from "./api.ts";
+import { requestJson, requestResponse } from "./http.ts";
 import { createRoomPipeRegistry, panelSessionHandle } from "./room-pipes.ts";
 import { ContainerErrorBoundary } from "./error-boundary.tsx";
 import { isolatedPanel } from "./isolate/index.ts";
@@ -750,11 +750,10 @@ async function importWebPlugin(
   token: string,
   signal: AbortSignal,
 ): Promise<WebPluginDef> {
-  const response = await fetch(instanceUrl(webModulePath(id)), {
+  const response = await requestResponse(webModulePath(id), {
     headers: { Authorization: `Bearer ${token}` },
     signal,
   });
-  if (!response.ok) throw new Error(`plugin module fetch failed (${response.status})`);
   const url = URL.createObjectURL(new Blob([await response.text()], { type: "text/javascript" }));
   try {
     const module = (await import(/* @vite-ignore */ url)) as { default?: WebPluginDef };
@@ -775,11 +774,10 @@ async function fetchPluginStylesheet(
   token: string,
   signal: AbortSignal,
 ): Promise<string> {
-  const response = await fetch(instanceUrl(pluginStylesheetPath(id)), {
+  const response = await requestResponse(pluginStylesheetPath(id), {
     headers: { Authorization: `Bearer ${token}` },
     signal,
   });
-  if (!response.ok) throw new Error(`plugin stylesheet fetch failed (${response.status})`);
   return response.text();
 }
 

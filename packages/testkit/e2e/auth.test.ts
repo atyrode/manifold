@@ -4,9 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Browser } from "../../../scripts/cdp.ts";
 import { resolveWebDist } from "../../../scripts/gate-dist.ts";
-import { loadConfig } from "../../server/src/config.ts";
-import { startServer as startInProcessServer, type RunningServer } from "../../server/src/main.ts";
-import type { StoredIdentity } from "../../web/src/api.ts";
 import {
   ContainerResponseSchema,
   MachineEnrollResponseSchema,
@@ -16,6 +13,7 @@ import {
   RevokeResultSchema,
   TokenGrantSchema,
   PROTOCOL_VERSION,
+  type Principal,
 } from "@manifold/protocol";
 import { textToBase64, type SessionClient } from "@manifold/sdk";
 import {
@@ -565,44 +563,46 @@ test("machine re-enroll is idempotent and rotation fences the live agent", async
 test("a revoked preview browser identity returns through production admission without clearing content", async () => {
   const dist = resolveWebDist("manifold-identity-web-");
   const directories: string[] = [];
-  const servers: RunningServer[] = [];
+  const servers: TestServer[] = [];
   const browser = new Browser();
   try {
     const productionDir = mkdtempSync(join(tmpdir(), "manifold-identity-production-"));
     const previewDir = mkdtempSync(join(tmpdir(), "manifold-identity-preview-"));
     directories.push(productionDir, previewDir);
-    const productionConfig = loadConfig({
-      MANIFOLD_PORT: "0",
-      MANIFOLD_DATA_DIR: productionDir,
-      MANIFOLD_OWNER_KEY: "a".repeat(64),
-      MANIFOLD_SPAWN_AGENT: "0",
-      MANIFOLD_WEB_DIST: dist.distDir,
-      MANIFOLD_PREVIEW_DOMAIN: "localhost",
+    const production = await startServer({
+      dataDir: productionDir,
+      ownerKey: "a".repeat(64),
+      env: { MANIFOLD_WEB_DIST: dist.distDir, MANIFOLD_PREVIEW_DOMAIN: "localhost" },
     });
-    const production = await startInProcessServer({ config: productionConfig, announce: false });
     servers.push(production);
-    const previewConfig = loadConfig({
-      MANIFOLD_PORT: "0",
-      MANIFOLD_DATA_DIR: previewDir,
-      MANIFOLD_OWNER_KEY: "b".repeat(64),
-      MANIFOLD_SPAWN_AGENT: "0",
-      MANIFOLD_WEB_DIST: dist.distDir,
-      MANIFOLD_IDENTITY_AUTHORITY: production.publicUrl,
+    const reservation = Bun.serve({ port: 0, fetch: () => new Response(null, { status: 503 }) });
+    const previewPort = reservation.port!;
+    await reservation.stop(true);
+    const previewOrigin = `http://preview.localhost:${previewPort}`;
+    const preview = await startServer({
+      dataDir: previewDir,
+      port: previewPort,
+      ownerKey: "b".repeat(64),
+      env: {
+        MANIFOLD_WEB_DIST: dist.distDir,
+        MANIFOLD_PUBLIC_URL: previewOrigin,
+        MANIFOLD_IDENTITY_AUTHORITY: production.httpUrl,
+      },
     });
-    const preview = await startInProcessServer({ config: previewConfig, announce: false });
     servers.push(preview);
-    previewConfig.publicUrl = `http://preview.localhost:${preview.port}`;
-    const previewOrigin = previewConfig.publicUrl;
     // Administrative fixture requests stay on the loopback URL; only Chromium needs DNS
     // for the audience-qualified preview origin.
-    const previewOwner = { httpUrl: preview.publicUrl, ownerKey: previewConfig.ownerKey };
+    const previewOwner = {
+      httpUrl: `http://localhost:${preview.port}`,
+      ownerKey: preview.ownerKey,
+    };
     const content = ContainerResponseSchema.parse(
       await ownerAction(previewOwner, "core.index.createContainer", {
         name: "keep-preview-content",
       }),
     ).container;
     await browser.launch({ incognito: true });
-    await browser.goto(`${production.publicUrl}/#key=${productionConfig.ownerKey}`);
+    await browser.goto(`${production.httpUrl}/#key=${production.ownerKey}`);
     await waitFor(
       () => browser.evaluate<boolean>("document.querySelector('#identity-name') !== null"),
       10_000,
@@ -629,14 +629,14 @@ test("a revoked preview browser identity returns through production admission wi
       20_000,
       50,
     );
-    const initial = await browser.evaluate<StoredIdentity>(
+    const initial = await browser.evaluate<{ token: string; principal: Principal }>(
       "JSON.parse(localStorage.getItem('manifold.identity'))",
     );
     await browser.evaluate(`localStorage.setItem('identity-test-content', 'keep');
       localStorage.setItem('manifold.identity@https://elsewhere.example', 'keep-foreign');
-      localStorage.setItem('manifold.ownerKey', ${JSON.stringify(previewConfig.ownerKey)})`);
+      localStorage.setItem('manifold.ownerKey', ${JSON.stringify(preview.ownerKey)})`);
     await ownerAction(previewOwner, "core.access.revoke", { principalId: initial.principal.id });
-    const refused = await fetch(`${preview.publicUrl}/api/plugins`, {
+    const refused = await fetch(`${previewOwner.httpUrl}/api/plugins`, {
       headers: { authorization: `Bearer ${initial.token}` },
     });
     expect(refused.status).toBe(403);
@@ -697,7 +697,7 @@ test("a revoked preview browser identity returns through production admission wi
           stored,
         );
         expect(await browser.evaluate<string>("localStorage.getItem('manifold.ownerKey')")).toBe(
-          previewConfig.ownerKey,
+          preview.ownerKey,
         );
         if (scenario.expired) {
           expect(await browser.evaluate<number>("window.__protectedIdentityRequests")).toBe(0);
@@ -735,13 +735,13 @@ test("a revoked preview browser identity returns through production admission wi
         `['identity-test-content', 'manifold.identity@https://elsewhere.example',
         'manifold.ownerKey'].map(key => localStorage.getItem(key))`,
       ),
-    ).toEqual(["keep", "keep-foreign", previewConfig.ownerKey]);
+    ).toEqual(["keep", "keep-foreign", preview.ownerKey]);
     expect(
       ContainerResponseSchema.parse(
         await ownerAction(previewOwner, "core.index.readContainer", { containerId: content.id }),
       ).container,
     ).toEqual(content);
-    await browser.goto(`${production.publicUrl}/`);
+    await browser.goto(`${production.httpUrl}/`);
     expect(await browser.evaluate<string>("localStorage.getItem('manifold.identity')")).toBe(
       productionIdentity,
     );
@@ -998,3 +998,168 @@ test("browser identity survives non-auth failures and concurrent register replac
     dist.cleanup();
   }
 }, 90_000);
+
+test("installed module, stylesheet, and isolated-module refusals return to native admission", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "manifold-auth-assets-"));
+  const dist = resolveWebDist("manifold-auth-assets-web-");
+  const server = await startServer({
+    env: { MANIFOLD_PLUGIN_DEV_PATHS: "1", MANIFOLD_WEB_DIST: dist.distDir },
+  });
+  try {
+    const pack = async (fixture: string) => {
+      const process = Bun.spawn(
+        [
+          "bun",
+          join(import.meta.dir, "../../plugin-kit/src/pack.ts"),
+          join(import.meta.dir, "../../plugin-kit/test/fixtures", fixture),
+          "--out",
+          join(dir, `${fixture}.json`),
+          ...(fixture === "sample" ? ["--self-contained"] : []),
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const [stdout, stderr, exit] = await Promise.all([
+        new Response(process.stdout).text(),
+        new Response(process.stderr).text(),
+        process.exited,
+      ]);
+      if (exit !== 0) throw new Error(`pack ${fixture} failed: ${stderr}`);
+      return JSON.parse(stdout) as { file: string; sha256: string };
+    };
+    const [inRealm, isolated] = await Promise.all([pack("in-realm"), pack("sample")]);
+    for (const scenario of [
+      { name: "module", asset: "web.js", bundle: inRealm, hardened: false },
+      { name: "stylesheet", asset: "styles.css", bundle: inRealm, hardened: false },
+      { name: "isolated-module", asset: "web.js", bundle: isolated, hardened: true },
+    ]) {
+      const browser = new Browser();
+      let installed = false;
+      try {
+        await browser.launch();
+        await browser.goto(`${server.httpUrl}/#key=${server.ownerKey}`);
+        await waitFor(
+          () => browser.evaluate<boolean>("document.querySelector('#identity-name') !== null"),
+          10_000,
+          50,
+        );
+        await browser.typeInto("#identity-name", `asset-${scenario.name}`);
+        await browser.clickTestId("identity-enter");
+        await waitFor(
+          () => browser.evaluate<boolean>("document.querySelector('.workspace') !== null"),
+          10_000,
+          50,
+        );
+        const principalId = await browser.evaluate<string>(
+          "JSON.parse(localStorage.getItem('manifold.identity')).principal.id",
+        );
+        const container = await createContainer(server, `Asset ${scenario.name}`);
+        expect(
+          await browser.evaluate<boolean>(`(async () => {
+            const identity = JSON.parse(localStorage.getItem("manifold.identity"));
+            const headers = { Authorization: "Bearer " + identity.token, "Content-Type": "application/json" };
+            const { layout } = await (await fetch("/api/layout", { headers })).json();
+            layout.root.children.push("asset-counter");
+            layout.root.ratios.push(1);
+            layout["asset-counter"] = { id: "asset-counter", dir: null, ratios: [], children: [],
+              ref: { kind: "panel", panelId: "example.counter.counter" } };
+            return (await (await fetch("/api/actions/core.space.setLayout", {
+              method: "POST", headers, body: JSON.stringify({ layout }),
+            })).json()).ok;
+          })()`),
+        ).toBe(true);
+        await browser.goto(`${server.httpUrl}/p/${container.id}`);
+        await waitFor(
+          () => browser.evaluate<boolean>("document.querySelector('.workspace') !== null"),
+          10_000,
+          50,
+        );
+        // Park, rather than fake, the asset request. Once it is waiting, no new JSON
+        // request may race it to the first genuine authentication refusal.
+        await browser.evaluate(`(() => {
+          const original = window.fetch.bind(window);
+          const target = ${JSON.stringify(`/api/plugins/example.counter/${scenario.asset}`)};
+          window.__assetWaiting = false;
+          window.__otherRequests = 0;
+          window.__nativeAdmissionRequested = false;
+          window.fetch = async (input, init) => {
+            const path = new URL(input instanceof Request ? input.url : input, location.href).pathname;
+            if (path === target && !window.__assetWaiting) {
+              window.__assetWaiting = true;
+              await new Promise(resolve => { window.__releaseAsset = resolve; });
+              const response = await original(input, init);
+              const body = await response.clone().json();
+              window.__assetRefusal = { status: response.status, ...body.error };
+              return response;
+            }
+            if (window.__assetWaiting) {
+              if (path === "/api/identity/preview-config") window.__nativeAdmissionRequested = true;
+              return new Promise(() => {});
+            }
+            window.__otherRequests++;
+            try { return await original(input, init); }
+            finally { window.__otherRequests--; }
+          };
+        })()`);
+        await ownerAction(server, "engine.plugins.install", {
+          source: scenario.bundle.file,
+          sha256: scenario.bundle.sha256,
+          hardened: scenario.hardened,
+        });
+        installed = true;
+        await waitFor(
+          () =>
+            browser.evaluate<boolean>(
+              "window.__assetWaiting === true && window.__otherRequests === 0",
+            ),
+          15_000,
+          50,
+        );
+        await ownerAction(server, "core.access.revoke", { principalId });
+        await browser.evaluate("window.__releaseAsset()");
+        await waitFor(
+          () => browser.evaluate<boolean>("window.__assetRefusal !== undefined"),
+          10_000,
+          50,
+        );
+        expect(
+          await browser.evaluate<{ status: number; code: string; message: string }>(
+            "window.__assetRefusal",
+          ),
+        ).toEqual({
+          status: 403,
+          code: "forbidden",
+          message: "revoked",
+        });
+        await waitFor(
+          () => browser.evaluate<boolean>("window.__nativeAdmissionRequested === true"),
+          10_000,
+          50,
+        );
+        expect(
+          await browser.evaluate<boolean>(
+            "document.querySelector('.workspace, #identity-name') === null",
+          ),
+        ).toBe(true);
+      } finally {
+        await browser.close();
+        if (installed) {
+          await ownerAction(server, "engine.plugins.setEnabled", {
+            id: "example.counter",
+            enabled: false,
+          });
+          await ownerAction(server, "engine.plugins.uninstall", {
+            id: "example.counter",
+            purge: true,
+          });
+        }
+      }
+    }
+  } catch (error) {
+    throw e2eFailure(error, [server]);
+  } finally {
+    await server.stop();
+    rmSync(server.dataDir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+    dist.cleanup();
+  }
+}, 120_000);

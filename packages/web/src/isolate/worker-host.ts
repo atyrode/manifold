@@ -1,5 +1,5 @@
 import type { HostServices, SessionHandle, StreamHandle } from "@manifold/plugin";
-import { instanceUrl } from "@manifold/plugin/hooks";
+import { requestResponse } from "../http.ts";
 import {
   WebIsolateWorkerFrameSchema,
   StreamOpenSchema,
@@ -71,10 +71,9 @@ export function webModulePath(pluginId: string): string {
  * the worker sees `blob:` as its origin, which is why a bundle has to be self-contained.
  */
 async function blobModuleWorker(path: string, token: string, name: string): Promise<WorkerLike> {
-  const response = await fetch(instanceUrl(path), {
+  const response = await requestResponse(path, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!response.ok) throw new Error(`web half fetch failed (${String(response.status)})`);
   const blob = new Blob([await response.arrayBuffer()], { type: "text/javascript" });
   const objectUrl = URL.createObjectURL(blob);
   try {

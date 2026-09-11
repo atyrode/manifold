@@ -1,7 +1,6 @@
 import {
   ActionOutcomeSchema,
   BootstrapPrincipalRequestSchema,
-  HttpErrorSchema,
   LayoutResponseSchema,
   AttendanceResponseSchema,
   ContainerSchema,
@@ -15,7 +14,7 @@ import {
   type Principal,
   type TileLayout,
 } from "@manifold/protocol";
-import { instanceOrigin, instanceUrl } from "@manifold/plugin/hooks";
+import { requestJson } from "./http.ts";
 import { ACCESS_CREATE_PRINCIPAL_ACTION, INDEX_READ_CONTAINER_ACTION } from "./assembly.ts";
 
 /** The browser persists only the bearer token and stable identity it needs after bootstrap. */
@@ -25,73 +24,6 @@ export interface StoredIdentity {
   readonly expiresInMs?: number;
   readonly receivedAt?: number;
   readonly expiresAt?: number;
-}
-
-interface IdentityRejectionListener {
-  readonly origin: string;
-  readonly authorization: string;
-  readonly invalidate: () => void;
-}
-
-const identityRejectionListeners = new Set<IdentityRejectionListener>();
-
-/** The gate, not an individual plugin, owns recovery for its exact instance credential. */
-export function onIdentityRejected(token: string, invalidate: () => void): () => void {
-  const listener = { origin: instanceOrigin(), authorization: `Bearer ${token}`, invalidate };
-  identityRejectionListeners.add(listener);
-  return () => {
-    identityRejectionListeners.delete(listener);
-  };
-}
-
-async function readBody(response: Response): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch {
-    throw new Error(`Server returned a non-JSON response (${response.status})`);
-  }
-}
-
-function errorFromBody(
-  status: number,
-  body: unknown,
-  origin: string,
-  authorization: string | null,
-): Error {
-  const parsed = HttpErrorSchema.safeParse(body);
-  if (!parsed.success) return new Error(`Request failed (${status})`);
-  const { code, message } = parsed.data.error;
-  // A permission denial is not a dead credential. Only the server's authentication
-  // expiry/revocation refusal can return the browser to admission.
-  if (
-    ((status === 403 && code === "forbidden") || (status === 401 && code === "unauthorized")) &&
-    (message === "revoked" || message === "expired")
-  ) {
-    for (const listener of identityRejectionListeners) {
-      if (listener.origin === origin && listener.authorization === authorization) {
-        listener.invalidate();
-      }
-    }
-  }
-  return new Error(message);
-}
-
-/**
- * Every door this layer knocks on is addressed at the INSTANCE, not at the origin that served
- * the page. The two are the same thing for an ordinary self-hosted deployment and deliberately
- * not the same assumption: a lens may be pointed elsewhere (`@manifold/plugin/hooks`
- * `instanceOrigin`, AXIOMS §The portable lens), and a relative path would quietly follow the
- * bundle's birthplace instead.
- */
-export async function requestJson(path: string, init: RequestInit): Promise<unknown> {
-  const url = instanceUrl(path);
-  const authorization = new Headers(init.headers).get("authorization");
-  const response = await fetch(url, init);
-  const body = await readBody(response);
-  if (!response.ok) {
-    throw errorFromBody(response.status, body, new URL(url).origin, authorization);
-  }
-  return body;
 }
 
 function fieldFromObject(body: unknown, field: string): unknown {

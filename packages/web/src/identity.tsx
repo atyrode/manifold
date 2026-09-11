@@ -6,10 +6,10 @@ import {
   createPrincipal,
   getPreviewIdentityAuthority,
   issuePreviewIdentity,
-  onIdentityRejected,
   startPreviewIdentity,
   type StoredIdentity,
 } from "./api.ts";
+import { onIdentityRejected } from "./http.ts";
 
 const OWNER_KEY_STORAGE = "manifold.ownerKey";
 const IDENTITY_STORAGE = "manifold.identity";
