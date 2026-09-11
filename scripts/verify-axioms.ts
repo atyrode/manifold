@@ -43,6 +43,9 @@
  * Self-contained: builds the web bundle to a temp dir (or shares the gate's), spawns its own
  * server + agent on an ephemeral port, restores every plugin it toggled, cleans up.
  * Env: MANIFOLD_CHROMIUM (else system chromium), MANIFOLD_GATE_DIST (shared bundle).
+ * Halves: no argument runs BOTH, in this order, with this output. `--static` runs S1-S19 and
+ * boots nothing at all; `--browser` runs R1-R11 alone. The two are unrelated gates sharing a
+ * file, so CI gives each its own runner (issue #492) while a developer still types the name.
  */
 import {
   mkdirSync,
@@ -116,6 +119,42 @@ const repoRoot = join(import.meta.dir, "..");
 const failures: string[] = [];
 
 const check = checkInto(failures);
+
+/**
+ * WHICH HALF TO RUN. The two gates in this file share nothing but a failure list: the static
+ * half reads the tree with the TypeScript parser in seconds, and the browser half builds a
+ * bundle, boots a server and drives a Chromium for two minutes. CI runs them as two jobs at
+ * once (issue #492), so each has to be askable for by name — while a developer who types the
+ * script's name still gets BOTH, in this order, with this output, because that is the gate
+ * the axioms are actually enforced by.
+ *
+ * An unrecognised argument is fatal rather than ignored: a typo that quietly ran the other
+ * half would be a green tick over a gate nobody had run.
+ */
+const HALVES: readonly string[] = ["--static", "--browser"];
+const selectedHalves = process.argv.slice(2);
+const unknownArguments = selectedHalves.filter((argument) => !HALVES.includes(argument));
+if (unknownArguments.length > 0) {
+  console.error(`verify-axioms: unknown argument ${unknownArguments.join(" ")}`);
+  console.error("usage: bun scripts/verify-axioms.ts [--static | --browser]");
+  process.exit(2);
+}
+/** Both halves unless one of them was asked for by name. */
+const RUN_STATIC = selectedHalves.length === 0 || selectedHalves.includes("--static");
+const RUN_BROWSER = selectedHalves.length === 0 || selectedHalves.includes("--browser");
+
+/**
+ * The one summary line and the one exit code, so a half that stops before the other ends the
+ * way the whole gate ends: same sentence, same code, read by the same eye.
+ */
+function report(): never {
+  console.log(
+    failures.length === 0
+      ? "\naxioms gate: GREEN"
+      : `\naxioms gate: RED\n${failures.map((failure) => ` - ${failure}`).join("\n")}`,
+  );
+  process.exit(failures.length === 0 ? 0 : 1);
+}
 
 /**
  * OPENS THE PLUGIN MANAGER, because the ledger is a MODAL now (issue #91): the rail's row is
@@ -437,7 +476,12 @@ try {
     builtins: new Set(builtins.map((def) => def.manifest.id)),
     distribution: SHIPPED_PLUGIN_IDS,
   });
-  check("S1 server assembly", true, `${String(assembly.roster.length)} plugins composed`);
+  /* The ANSWER is S1's and belongs to the half that owns it; the roster is both halves',
+     because the browser half runs on this composition. So a composition that THREW is
+     reported by whichever half is running (below), and the PASS line only by the static one. */
+  if (RUN_STATIC) {
+    check("S1 server assembly", true, `${String(assembly.roster.length)} plugins composed`);
+  }
 } catch (error) {
   const detail = error instanceof AssemblyError ? error.problems.join(" | ") : String(error);
   check("S1 server assembly", false, detail);
@@ -577,7 +621,7 @@ const WEB_COMPOSITION = "packages/web/src/assembly.ts";
 const SERVER_COMPOSITION = "packages/server/src/assembly.ts";
 
 const webRegistrations: WebRegistration[] = [];
-{
+if (RUN_STATIC) {
   const file = parsed(WEB_COMPOSITION);
   let defs: ts.ArrayLiteralExpression | null = null;
   walk(file, (node) => {
@@ -650,7 +694,7 @@ const webRegistrations: WebRegistration[] = [];
   );
 }
 
-{
+if (RUN_STATIC) {
   /*
     The default is COMPOSED, not a constant and no longer a floor arrangement filled with two
     names either: the enabled roster's own declared seats are the whole input (ADR 0017 S17-B).
@@ -691,20 +735,22 @@ const floorFiles = new Set<string>();
  */
 const floorPaths = new Set<string>();
 const emptyGlobs: string[] = [];
-for (const row of registries.floor) {
-  const matched = sourcesMatching(row.glob);
-  // A glob may legitimately match only non-source files (a stylesheet); liveness (S6) asks
-  // whether ANYTHING is there, so it counts raw matches while the boundary walk takes source.
-  const anything = [...new Bun.Glob(row.glob).scanSync({ cwd: repoRoot, onlyFiles: true })];
-  if (anything.length === 0) emptyGlobs.push(row.glob);
-  for (const path of matched) floorFiles.add(path);
-  for (const hit of anything) {
-    const path = hit.split("\\").join("/");
-    if (!TEST_SOURCE.test(path)) floorPaths.add(path);
+if (RUN_STATIC) {
+  for (const row of registries.floor) {
+    const matched = sourcesMatching(row.glob);
+    // A glob may legitimately match only non-source files (a stylesheet); liveness (S6) asks
+    // whether ANYTHING is there, so it counts raw matches while the boundary walk takes source.
+    const anything = [...new Bun.Glob(row.glob).scanSync({ cwd: repoRoot, onlyFiles: true })];
+    if (anything.length === 0) emptyGlobs.push(row.glob);
+    for (const path of matched) floorFiles.add(path);
+    for (const hit of anything) {
+      const path = hit.split("\\").join("/");
+      if (!TEST_SOURCE.test(path)) floorPaths.add(path);
+    }
   }
 }
 
-{
+if (RUN_STATIC) {
   const offenders: string[] = [];
   for (const path of [...floorFiles].sort()) {
     if (path === WEB_COMPOSITION || path === SERVER_COMPOSITION) continue;
@@ -723,7 +769,7 @@ for (const row of registries.floor) {
   );
 }
 
-{
+if (RUN_STATIC) {
   /**
    * The packages a plugin may name: the four engine packages, the engine's browser subpath
    * `/hooks` (plane mechanism: carry, drop, element host, polling, the tile tree, view state)
@@ -854,7 +900,7 @@ for (const row of registries.floor) {
 
 // ─────────────────────────────────────────────────────────── S3: device-local register
 
-{
+if (RUN_STATIC) {
   const registered = registries.deviceLocal;
   const isRegistered = (key: string): boolean =>
     registered.some((row) => (row.prefix ? key.startsWith(row.key) : key === row.key));
@@ -922,7 +968,7 @@ for (const row of registries.floor) {
 
 // ─────────────────────────────────────────────────────────── S4: data-action markers
 
-{
+if (RUN_STATIC) {
   const markers = new Map<string, string>();
   const sources = [
     ...sourcesMatching("packages/web/src/**"),
@@ -961,7 +1007,7 @@ for (const row of registries.floor) {
 
 // ─────────────────────────────────────────────────────────── S5: plugin packages
 
-{
+if (RUN_STATIC) {
   const problems: string[] = [];
   const declaredByPackage = new Map<string, string[]>();
   for (const owner of PLUGIN_PACKAGES) {
@@ -1023,13 +1069,15 @@ for (const row of registries.floor) {
 
 // ─────────────────────────────────────────────────────────── S6: registry liveness
 
-check(
-  "S6 registry liveness",
-  emptyGlobs.length === 0,
-  emptyGlobs.length === 0
-    ? `${String(registries.floor.length)} floor globs, every one matching`
-    : `floor globs matching nothing: ${list(emptyGlobs)}`,
-);
+if (RUN_STATIC) {
+  check(
+    "S6 registry liveness",
+    emptyGlobs.length === 0,
+    emptyGlobs.length === 0
+      ? `${String(registries.floor.length)} floor globs, every one matching`
+      : `floor globs matching nothing: ${list(emptyGlobs)}`,
+  );
+}
 
 // ─────────────────────────────────────────────────────────── S7: route allowlist
 
@@ -1063,7 +1111,7 @@ const ROUTE_ALLOWLIST: readonly string[] = [
   "/ws",
 ];
 
-{
+if (RUN_STATIC) {
   const routes = new Set<string>();
   const file = parsed("packages/server/src/http.ts");
   const isPathname = (node: ts.Expression): boolean => /pathname$/.test(node.getText(file));
@@ -1117,7 +1165,7 @@ const ROUTE_ALLOWLIST: readonly string[] = [
 
 // ─────────────────────────────────────────────────────────── S8: element vocabulary
 
-{
+if (RUN_STATIC) {
   /*
     S8 reads the subset from the OTHER END now, because the protocol no longer enumerates
     element types (ADR 0013 §16): `SceneElementSchema` is a neutral envelope, so there are no
@@ -1198,7 +1246,7 @@ const ROUTE_ALLOWLIST: readonly string[] = [
  * leaves the unmatched set is by moving into its plugin or by a pillar claiming it in the same
  * commit — never by the gate being taught to tolerate it.
  */
-{
+if (RUN_STATIC) {
   /** How specific a glob is: the literal head before its first wildcard. */
   const specificity = (glob: string): number => {
     const wildcard = glob.search(/[*?[{]/);
@@ -1313,7 +1361,7 @@ const REMOVAL_VERBS: readonly string[] = [
   "unplace",
 ];
 
-{
+if (RUN_STATIC) {
   const builtins = new Set(
     composed.roster.filter((entry) => entry.source === "builtin").map((entry) => entry.manifest.id),
   );
@@ -1500,7 +1548,7 @@ function scanTree(dir: string, out: string[]): void {
   }
 }
 
-{
+if (RUN_STATIC) {
   const lexicon = lexiconRegistry();
   const bannedBy = new Map<string, string>();
   const contradictions: string[] = [];
@@ -1686,7 +1734,7 @@ function scanTree(dir: string, out: string[]): void {
  * values are all string literals is a rival vocabulary, which is how `pad: "view"` and
  * `pad: "canvas"` and `"canvas-pad": "A canvas"` came to ship in one build.
  */
-{
+if (RUN_STATIC) {
   const kinds = Object.keys(ITEM_KINDS).sort();
   const nouns = Object.keys(ITEM_NOUNS).sort();
   const misnamed = Object.entries(ITEM_NOUNS).filter(([kind, noun]) => noun !== kind);
@@ -1773,7 +1821,7 @@ function scanTree(dir: string, out: string[]): void {
  * A rule with no class anywhere is the `*` row's: the reset and the element defaults reach
  * every node in the document, so they are the floor's and a plugin restyling `body` is RED.
  */
-{
+if (RUN_STATIC) {
   const SHARED = "shared";
 
   const owners = new Map<string, string>(
@@ -1934,7 +1982,7 @@ function scanTree(dir: string, out: string[]): void {
  * no live producer fails too, because a name nobody emits is a stale row and an e2e that waits
  * for one would hang until its timeout and blame the feature.
  */
-{
+if (RUN_STATIC) {
   const vocabulary = new Set<string>(LOG_EVENTS);
   const LEVELS = new Set(["info", "warn", "error"]);
   const produced: { readonly where: string; readonly evt: string }[] = [];
@@ -2047,7 +2095,7 @@ function scanTree(dir: string, out: string[]): void {
  * by SHAPE, so `toolbar-${item.id}` answers for every tool a plugin contributes and the
  * register stays small while the vocabulary stays open.
  */
-{
+if (RUN_STATIC) {
   const contracts = registries.gateContracts;
   /*
     Read through the parser, over literal tokens only, for the same reason S14's consumer half
@@ -2246,7 +2294,7 @@ function scanTree(dir: string, out: string[]): void {
 const PLUGIN_SRC_WARN_LINES = 9_000;
 const PLUGIN_SRC_MAX_LINES = 12_000;
 
-{
+if (RUN_STATIC) {
   const files = sourcesMatching("packages/plugin/src/**");
   let total = 0;
   let largest = { path: "", lines: 0 };
@@ -2287,7 +2335,7 @@ const PLUGIN_SRC_MAX_LINES = 12_000;
 const HOSTING_PROVIDER_NOUNS = /clever[- ]?cloud|clever[- ]?apps|clever[- ]?tools|\bCC_[A-Z]/i;
 const OPERATOR_DEPLOYMENT_FILE = ".github/workflows/deploy-hub.yml";
 
-{
+if (RUN_STATIC) {
   const subjects = ["Dockerfile", "compose.yaml", "flake.nix"];
   for (const glob of ["infra/**", "packages/**", "scripts/**", ".github/workflows/**"]) {
     for (const hit of new Bun.Glob(glob).scanSync({ cwd: repoRoot, onlyFiles: true })) {
@@ -2322,7 +2370,7 @@ const OPERATOR_DEPLOYMENT_FILE = ".github/workflows/deploy-hub.yml";
  * compared byte for byte, with the first differing line named, so a hand edit or a stale
  * regeneration fails here instead of drifting.
  */
-{
+if (RUN_STATIC) {
   const { records, problems } = readDecisionRecords(repoRoot);
   check(
     "S19 decision records",
@@ -2352,6 +2400,13 @@ const OPERATOR_DEPLOYMENT_FILE = ".github/workflows/deploy-hub.yml";
 }
 
 // ═══════════════════════════════════════════════════════════ the browser half
+
+/*
+  Asked for the static half alone, the gate stops HERE: nothing below this line is resolved,
+  built, spawned or downloaded — no web bundle, no server, no agent, no Chromium. A flag that
+  still paid for the expensive half would buy CI nothing.
+*/
+if (!RUN_BROWSER) report();
 
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-axi-");
 const dataDir = mkdtempSync(join(tmpdir(), "manifold-axi-data-"));
@@ -2433,6 +2488,29 @@ async function consumeServerLog(): Promise<void> {
         // A non-JSON line is boot chrome; the gate cares only about the structured stream.
       }
     }
+  }
+}
+
+/**
+ * Waits for a measurement to STOP MOVING, or for as long as the fixed pause it replaces used
+ * to cost. The pauses through the arrange rungs were slack for a reflow nobody could observe
+ * from here: a rail split that has just taken a member re-lays its rows, and the boxes the
+ * next gesture aims at are only worth reading once two consecutive reads agree. Quiescence is
+ * what those pauses MEANT, so the gate waits for that instead and keeps the old duration as
+ * the ceiling — a layout that never settles costs exactly what it always did, and one that
+ * settles in a frame costs a frame.
+ *
+ * Never an assertion: a measurement still moving at the ceiling is read anyway, and the rung
+ * that owns the claim says what it makes of what it read.
+ */
+async function quiet(read: () => Promise<unknown>, ms: number): Promise<void> {
+  const deadline = Date.now() + ms;
+  let last = JSON.stringify(await read());
+  while (Date.now() < deadline) {
+    await sleep(80);
+    const now = JSON.stringify(await read());
+    if (now === last) return;
+    last = now;
   }
 }
 
@@ -3426,7 +3504,8 @@ try {
          })()`,
       );
     const seatedSplit = await settles(async () => (await vacantBox()).count > 0, 8_000);
-    await sleep(1_500);
+    // Both drops have landed; what is left is the reflow the two reads below measure.
+    await quiet(vacantBox, 1_500);
     const vacantArmed = await vacantBox();
     await pressF8();
     const vacantDisarmed = await vacantBox();
@@ -3767,7 +3846,7 @@ try {
         button: "left",
         clickCount: 1,
       });
-      await sleep(400);
+      await quiet(railOrder, 400);
       return seen;
     };
 
@@ -3778,7 +3857,7 @@ try {
     await browser.evaluate(
       `document.querySelector('.arrange-scope[data-panel-id="${sidebarPanel}"]')?.click()`,
     );
-    await sleep(400);
+    await settles(async () => (await arrangeChrome()).toolsDisabled > 0, 400);
 
     /*
       ZOOMED IN, the workspace's own OPERATIONS go quiet. Every one of them acts on the ROOT
@@ -3812,7 +3891,10 @@ try {
               ? `${String(scoped.toolsDisabled)} root tools disabled with all ${String(scoped.palette)} palette sources still live, and all ${String(scoped.wireframes)} workspace containers dimmed out of scope`
               : `${String(scoped.dimmed)} of ${String(scoped.wireframes)} wireframe boxes dimmed: the scope crumb says one thing and the paint another`,
     );
-    await sleep(400);
+    /* The scoped rail's grips are the next rung's subject: polled for, not waited out. */
+    const gripsPainted = (): Promise<boolean> =>
+      browser!.evaluate<boolean>(`document.querySelectorAll('.sidebar-section-grip').length >= 3`);
+    await settles(gripsPainted, 400);
 
     /*
       GLYPHLESS, and asserted on the live DOM rather than on the source: the row's TINT is the
@@ -3928,7 +4010,7 @@ try {
         nativeVirtualKeyCode: 40,
       });
     }
-    await sleep(600);
+    await settles(async () => (await railOrder()).join(" ") !== beforeNudge.join(" "), 600);
     const afterNudge = await railOrder();
     const nudged =
       focused !== null &&
@@ -4064,7 +4146,7 @@ try {
         })),
         25,
       );
-      await sleep(600);
+      await quiet(railPaint, 600);
     };
     /** The grab surface of one row, wherever in the rail it currently sits. */
     const railGrip = (id: string): Promise<{ x: number; y: number } | null> =>
@@ -4101,7 +4183,7 @@ try {
       await browser.dragAndDrop(railPalette, railGap);
     }
     const nested = await settles(async () => (await railSplits()).length > 0, 8_000);
-    await sleep(1_500);
+    await quiet(railSplits, 1_500);
     const landed = (await railSplits())[0] ?? null;
     const wedged =
       nested &&
@@ -4140,12 +4222,12 @@ try {
     const seatAim = landed?.seatBox ?? null;
     if (seatAim !== null) await carryTopRow(seatAim);
     const tookOne = await settles(async () => ((await railSplits())[0]?.members ?? 0) === 1, 8_000);
-    await sleep(1_000);
+    await quiet(railSplits, 1_000);
     const withOne = (await railSplits())[0] ?? null;
     const lone = withOne?.memberBoxes[0] ?? null;
     if (lone !== null) await carryTopRow({ x: lone.right - 6, y: lone.y });
     const tookTwo = await settles(async () => ((await railSplits())[0]?.members ?? 0) === 2, 8_000);
-    await sleep(1_000);
+    await quiet(railSplits, 1_000);
     const paired = (await railSplits())[0] ?? null;
     const pairOrder = (paired?.memberBoxes ?? []).map((member) => member.id).join(" ");
     const trailing = paired?.memberBoxes[1] ?? null;
@@ -4158,7 +4240,7 @@ try {
       const now = (await railSplits())[0]?.memberBoxes ?? [];
       return now.length === 2 && now.map((member) => member.id).join(" ") !== pairOrder;
     }, 8_000);
-    await sleep(1_000);
+    await quiet(railSplits, 1_000);
     const reordered = (await railSplits())[0] ?? null;
     const last = reordered?.memberBoxes.at(-1) ?? null;
     if (last !== null) await carryTopRow({ x: last.right - 6, y: last.y });
@@ -4166,7 +4248,7 @@ try {
       async () => ((await railSplits())[0]?.members ?? 0) === 3,
       8_000,
     );
-    await sleep(1_000);
+    await quiet(railSplits, 1_000);
     const trio = (await railSplits())[0] ?? null;
     const abreast =
       trio !== null &&
@@ -4226,7 +4308,7 @@ try {
       async () => (await railSplits()).filter((split) => split.vacant).length > vacantBefore,
       8_000,
     );
-    await sleep(1_200);
+    await quiet(railSplits, 1_200);
     const centreSplit = (await railSplits()).find((split) => split.vacant) ?? null;
     const besideIt =
       tookCentre &&
@@ -4328,17 +4410,17 @@ try {
       (await railSplits()).find((split) => split.dir === "column") ?? null;
     const columnLanded = await settles(async () => (await columnOf()) !== null, 8_000);
     const columnCommits = commitCount() - columnCommitsBefore;
-    await sleep(1_200);
+    await quiet(railSplits, 1_200);
     const columnSeat = (await columnOf())?.seatBox ?? null;
     if (columnSeat !== null) await carryTopRow(columnSeat);
     const columnOne = await settles(async () => ((await columnOf())?.members ?? 0) === 1, 8_000);
-    await sleep(1_000);
+    await quiet(railSplits, 1_000);
     const columnMember = (await columnOf())?.memberBoxes[0] ?? null;
     if (columnMember !== null) {
       await carryTopRow({ x: columnMember.x, y: columnMember.bottom - 4 });
     }
     const columnTwo = await settles(async () => ((await columnOf())?.members ?? 0) === 2, 8_000);
-    await sleep(1_000);
+    await quiet(railSplits, 1_000);
     const columnSplit = await columnOf();
     const oneUnderTheOther =
       columnSplit !== null &&
@@ -4458,10 +4540,13 @@ try {
       deviceScaleFactor: 1,
       mobile: false,
     });
-    await sleep(1_000);
+    /* The override is a round trip to the page, so the window the rail has to fit into is
+       waited FOR rather than assumed, and only then its reflow. */
+    await settles(() => browser!.evaluate<boolean>(`window.innerHeight <= 460`), 1_000);
+    await quiet(stackRoom, 1_000);
     const squeezed = await stackRoom();
     await browser.send("Emulation.clearDeviceMetricsOverride", {});
-    await sleep(600);
+    await settles(() => browser!.evaluate<boolean>(`window.innerHeight > 460`), 600);
     /* One pixel of slack for subpixel layout; the defect measured tens. */
     const crushed = squeezed.filter((stack) => stack.spill > 1 || stack.overlap > 1);
     const occupancies = [...new Set(squeezed.map((stack) => stack.members))].sort();
@@ -5667,9 +5752,4 @@ try {
   cleanupDist();
 }
 
-console.log(
-  failures.length === 0
-    ? "\naxioms gate: GREEN"
-    : `\naxioms gate: RED\n${failures.map((failure) => ` - ${failure}`).join("\n")}`,
-);
-process.exit(failures.length === 0 ? 0 : 1);
+report();
