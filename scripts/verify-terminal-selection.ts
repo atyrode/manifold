@@ -667,6 +667,36 @@ try {
     if(right<=left||bottom<=top)throw new Error('terminal has no visible wheel target');
     return {x:(left+right)/2,y:(top+bottom)/2};
   })()`);
+
+  // Fullscreen replay and resizing need not retain the earlier selection fixture's
+  // scrollback. Seed this scenario through the real PTY after returning to canvas:
+  // three screens of fresh output create history, and keyboard input returns xterm
+  // to its bottom. Wait for the final output row AND the returned shell prompt so
+  // neither command echo nor output still arriving can satisfy wheel readiness.
+  await browser.drag([await terminalPoint()], 30);
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "document.activeElement?.matches('.xterm-helper-textarea') === true",
+      ),
+    5000,
+    "terminal focused for wheel scrollback fixture",
+  );
+  const wheelRowCount = await browser.evaluate<number>(
+    "document.querySelector('.xterm-rows').childElementCount * 3",
+  );
+  await browser.typeText(`clear; seq 1 ${wheelRowCount} | sed 's/.*/WHEEL-& scrollback target/'`);
+  await browser.typeText("\r");
+  await until(
+    () =>
+      browser!.evaluate<boolean>(`(() => {
+        const rows = [...document.querySelector('.xterm-rows').children].map(row => row.textContent.trim());
+        const last = rows.indexOf('WHEEL-${wheelRowCount} scrollback target');
+        return last >= 0 && rows.slice(last + 1).some(text => text.length > 0);
+      })()`),
+    5000,
+    "fresh wheel scrollback output and returned shell prompt painted",
+  );
   const blankPoint = await browser.evaluate<{ x: number; y: number }>(`(() => {
     const r=document.querySelector('.canvas').getBoundingClientRect();
     for(let y=r.bottom-30;y>r.top+30;y-=40)for(let x=r.right-30;x>r.left+30;x-=40){
