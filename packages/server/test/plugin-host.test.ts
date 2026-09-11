@@ -2038,6 +2038,17 @@ describe("PluginHost install doors", () => {
       denial(await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, classless)).message,
     ).toBe("stylesheet_unscoped: styles.css:1 a rule with no class reaches every node (body)");
 
+    // A form the walk cannot ownership-check reaches the door as its own sentence, not as the
+    // silence that used to read as "admitted" (#410).
+    const scoped = fixture.drop(manifest, {
+      "server.js": "export {};",
+      "web.js": "export const web = 1;",
+      "styles.css": "@scope (.plugin-vendor_sample) { .sidebar-section-title { color: red } }",
+    });
+    expect(denial(await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, scoped)).message).toBe(
+      "stylesheet_unscoped: styles.css:1 this at-rule form is outside the dialect the ownership rule reads (@scope (.plugin-vendor_sample))",
+    );
+
     const sheet =
       ".plugin-vendor_sample { color: red }\n.plugin-vendor_sample__title { font-weight: 600 }";
     const rooted = fixture.drop(manifest, {
