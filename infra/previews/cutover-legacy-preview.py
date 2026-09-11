@@ -155,11 +155,12 @@ class DockerBoundary:
         require(self.topology["machine"] == "dev-hub" and self.topology["volume"] == "manifold-dev_manifold-data")
         networks = self.topology["networks"]
         require(1 <= len(networks) <= 16 and all(re.fullmatch(r"[a-zA-Z0-9_.-]{1,128}", n) for n in networks))
+        # Docker records omitted pass-through variables as bare NAME unsets.
         template = """{{ $unsafe := false }}{{ $machine := false }}{{ $data := false }}
 {{ range .Config.Env }}{{ $key := index (split . "=") 0 }}
 {{ if eq $key "MANIFOLD_MACHINE_NAME" }}{{ if or $machine (ne . "MANIFOLD_MACHINE_NAME=dev-hub") }}{{ $unsafe = true }}{{ end }}{{ $machine = true }}
 {{ else if eq $key "MANIFOLD_DATA_DIR" }}{{ if or $data (ne . "MANIFOLD_DATA_DIR=/data") }}{{ $unsafe = true }}{{ end }}{{ $data = true }}
-{{ else if or (eq $key "MANIFOLD_SPAWN_AGENT") (eq $key "BUN_OPTIONS") (eq $key "BUN_PRELOAD") (eq $key "NODE_OPTIONS") (eq $key "LD_PRELOAD") (eq $key "LD_LIBRARY_PATH") (eq $key "LD_AUDIT") (eq $key "ENV") (eq $key "BASH_ENV") (eq $key "MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE") (eq $key "MANIFOLD_LOCAL_AGENT_SUPERVISION") }}{{ $unsafe = true }}{{ end }}{{ end }}
+{{ else if and (ne . $key) (or (eq $key "MANIFOLD_SPAWN_AGENT") (eq $key "BUN_OPTIONS") (eq $key "BUN_PRELOAD") (eq $key "NODE_OPTIONS") (eq $key "LD_PRELOAD") (eq $key "LD_LIBRARY_PATH") (eq $key "LD_AUDIT") (eq $key "ENV") (eq $key "BASH_ENV") (eq $key "MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE") (eq $key "MANIFOLD_LOCAL_AGENT_SUPERVISION")) }}{{ $unsafe = true }}{{ end }}{{ end }}
 {{ range .Mounts }}{{ if or (ne .Destination "/data") (ne .Type "volume") (ne .Name "manifold-dev_manifold-data") (not .RW) }}{{ $unsafe = true }}{{ end }}{{ end }}
 {{ range .HostConfig.Mounts }}{{ if .VolumeOptions }}{{ if .VolumeOptions.Subpath }}{{ $unsafe = true }}{{ end }}{{ end }}{{ end }}
 {{ if and $machine $data (not $unsafe) (eq (len .Mounts) 1) (eq .HostConfig.PidMode "") (eq .HostConfig.IpcMode "private") (eq .HostConfig.UTSMode "") (eq .HostConfig.CgroupnsMode "private") (not .HostConfig.Privileged) (not .HostConfig.AutoRemove) (not .HostConfig.Init) (eq (len .HostConfig.Devices) 0) (eq (len .HostConfig.CapAdd) 0) (eq .Config.User "0:0") (eq .Config.WorkingDir "/app") (eq (json .Config.Cmd) "[\\"/app/infra/entrypoint.sh\\"]") (eq (json .Config.Entrypoint) ENTRY) (eq (index .Config.Labels "com.docker.compose.project") "manifold-dev") (eq (index .Config.Labels "com.docker.compose.service") "manifold") (eq (index .Config.Labels "org.opencontainers.image.revision") REVISION) (eq (index .Config.Labels "org.opencontainers.image.base.digest") BASE) NETWORKS }}approved-legacy-config{{ end }}"""

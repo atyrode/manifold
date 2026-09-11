@@ -58,6 +58,8 @@ const requestSchema = z.discriminatedUnion("mode", [
 
 const healthSource =
   "const r = await fetch('http://127.0.0.1:7777/healthz'); if (!r.ok) process.exit(1);";
+const autoloadEnvironmentFile =
+  /^\.env(?:\.(?:local|(?:development|production|test)(?:\.local)?))?$/;
 const hashBuffer = Buffer.allocUnsafe(64 * 1024);
 const hash = (path: string): string => {
   const descriptor = openSync(path, "r");
@@ -92,7 +94,9 @@ try {
     // Existence only: do not open dotenv or user Bun configuration.
     for (const directory of ["/app", "/home/developer"])
       check(
-        !readdirSync(directory).some((name) => name.startsWith(".env") || name === ".bunfig.toml"),
+        !readdirSync(directory).some(
+          (name) => autoloadEnvironmentFile.test(name) || name === ".bunfig.toml",
+        ),
       );
     check(!existsSync("/bunfig.toml") && !existsSync("/.bunfig.toml"));
     for (const [path, sha256] of Object.entries(request.sources)) {
