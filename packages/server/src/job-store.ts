@@ -22,6 +22,10 @@ export type JobAuditOrigin = Pick<
   TraceAttribution,
   "actor" | "authority" | "door" | "containerId" | "session"
 >;
+export interface JobCancellation {
+  reason: string;
+  mode: "cancel" | "retire";
+}
 export interface JobRecord {
   request: JobRequest;
   state: JobResult["state"];
@@ -437,19 +441,21 @@ export class JobStore {
       this.lifecycle(this.get(jobId)!, state);
     });
   }
-  cancellation(jobId: string): string | null {
-    return (
-      this.store.db
-        .query<{ cancel_reason: string | null }, [string]>(
-          "SELECT cancel_reason FROM machine_jobs WHERE job_id=?",
-        )
-        .get(jobId)?.cancel_reason ?? null
-    );
+  cancellation(jobId: string): JobCancellation | null {
+    const row = this.store.db
+      .query<{ cancel_reason: string | null; cancel_mode: JobCancellation["mode"] }, [string]>(
+        "SELECT cancel_reason,cancel_mode FROM machine_jobs WHERE job_id=?",
+      )
+      .get(jobId);
+    return row?.cancel_reason == null ? null : { reason: row.cancel_reason, mode: row.cancel_mode };
   }
-  cancel(jobId: string, reason: string): void {
+  cancel(jobId: string, reason: string, mode: JobCancellation["mode"] = "cancel"): void {
     this.store.db
-      .query("UPDATE machine_jobs SET cancel_reason=? WHERE job_id=?")
-      .run(reason, jobId);
+      .query(
+        `UPDATE machine_jobs SET cancel_reason=?,cancel_mode=? WHERE job_id=?
+         AND (cancel_reason IS NULL OR cancel_mode='retire' OR ?='cancel')`,
+      )
+      .run(reason, mode, jobId, mode);
   }
   result(result: JobResult): void {
     this.store.transaction(() => {

@@ -81,6 +81,23 @@ function fixture() {
   };
 }
 
+test("retirement survives restart and cannot downgrade a durable forced cancellation", () => {
+  const f = fixture();
+  f.jobs.reserve(request("retiring"), 1);
+  expect(f.jobs.cancellation("retiring")).toBeNull();
+  f.jobs.cancel("retiring", "configuration_changed", "retire");
+  f.reopen();
+  expect(f.jobs.cancellation("retiring")).toEqual({
+    reason: "configuration_changed",
+    mode: "retire",
+  });
+  f.jobs.cancel("retiring", "requested");
+  f.reopen();
+  f.jobs.cancel("retiring", "configuration_changed", "retire");
+  f.reopen();
+  expect(f.jobs.cancellation("retiring")).toEqual({ reason: "requested", mode: "cancel" });
+});
+
 test("native input cursor and unknown attempts survive restart without permitting replay or rewind", () => {
   const f = fixture();
   const job = f.jobs.reserve(request("stdin"), 1);

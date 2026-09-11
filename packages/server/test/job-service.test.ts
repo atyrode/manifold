@@ -8,12 +8,16 @@ import {
   formatManifoldUri,
   PluginBundleSchema,
   JOB_OWNER_PROTOCOL_VERSION,
+  JobCommandSchema,
+  InstanceServiceDescriptionSchema,
+  type ServicePolicy,
   type Cap,
 } from "@manifold/protocol";
 import {
   canonicalJobJson,
   type JobCommand,
   type JobOwner,
+  type JobRequest,
   type MachineHalf,
   type JobFollowUpdate,
 } from "../../protocol/src/jobs.ts";
@@ -71,7 +75,7 @@ interface Fixture {
     send(message: { type: "job_command"; command: JobCommand }): boolean;
   };
 }
-function fixture(path = ":memory:"): Fixture {
+function fixture(path = ":memory:", manifest: MachineHalf = machine): Fixture {
   const store = new ServerStore(openDatabase(path));
   const runtime = new FakeRuntime();
   const auth = new AuthService(store, key, runtime);
@@ -79,7 +83,7 @@ function fixture(path = ":memory:"): Fixture {
   const machineId = auth.enrollMachine("worker", root).machine.id;
   const service = new JobService(store, auth, runtime);
   service.setLifecycleRecorder((record) => store.appendTrace(record));
-  service.setManifestResolver((id) => (id === pluginId ? machine : null));
+  service.setManifestResolver((id) => (id === pluginId ? manifest : null));
   const commands: JobCommand[] = [];
   const channel = {
     machineId,
@@ -102,7 +106,7 @@ function fixture(path = ":memory:"): Fixture {
     pluginId,
     installationRevision: "r1",
     artifactSha256: hash,
-    machine,
+    machine: manifest,
   });
   return {
     store,
@@ -159,6 +163,466 @@ function execute(f: Fixture, jobId = "job", value = "safe") {
     outputs: [],
   });
 }
+
+async function instanceFixture(path = ":memory:") {
+  const provider: MachineHalf = {
+    ...machine,
+    operations: {
+      [operationId]: { ...machine.operations[operationId]!, providesService: true },
+    },
+  };
+  const f = fixture(path, provider);
+  consent(f, "machines:run");
+  consent(f, "jobs:cancel");
+  prove(f);
+  const policy: ServicePolicy = {
+    serviceId: `${pluginId}.broker`,
+    revision: "one",
+    maxConcurrent: 1,
+    runtime: {
+      scope: "instance",
+      pluginId,
+      operationId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+      resourceBindingDigest: createHash("sha256").update(canonicalJobJson(null)).digest("hex"),
+      input: { value: { literal: "safe" } },
+    },
+    operations: {
+      inspect: {
+        method: "GET",
+        readable: true,
+        path: "/inspect",
+        input: {},
+        query: {},
+        body: [],
+        timeoutMs: 1000,
+        maxRequestBytes: 1024,
+        maxResponseBytes: 4096,
+        maxResultBytes: 2048,
+        response: { kind: "projected-json", fields: [["state"]], maxArrayItems: 16 },
+      },
+    },
+  };
+  const configured = await f.service.configureInstanceService(f.root, {
+    serviceId: policy.serviceId,
+    expectedRevision: null,
+    machineId: f.machineId,
+    policy,
+    enabled: true,
+  });
+  const start = f.commands.find((command) => command.type === "start");
+  if (!start || !configured.configuration) throw new Error("instance runtime was not admitted");
+  return { f, policy, provider, start, revision: configured.configuration.revision };
+}
+
+test("disabled services remain stopping through disconnect and terminal results until fenced empty confirmation", async () => {
+  const { f, policy, start, revision } = await instanceFixture();
+  try {
+    const disabled = await f.service.configureInstanceService(f.root, {
+      serviceId: policy.serviceId,
+      expectedRevision: revision,
+      policy,
+      enabled: false,
+    });
+    expect(InstanceServiceDescriptionSchema.parse(disabled).state).toBe("stopping");
+    expect(disabled.configuration?.enabled).toBe(false);
+    f.service.offline(f.channel);
+    expect(
+      f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }),
+    ).toMatchObject({
+      connected: false,
+      state: "stopping",
+    });
+    prove(f);
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        jobId: start.request.jobId,
+        requestDigest: start.request.requestDigest,
+        ownerId: f.owner.ownerId,
+        ownerGeneration: f.owner.generation,
+        state: "exited",
+        exitCode: 0,
+        reason: null,
+        startedAt: f.runtime.now(),
+        finishedAt: f.runtime.now(),
+        usage: null,
+        limits: start.request.limits,
+        outputs: [],
+      },
+    });
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "stopping",
+    );
+    const proof = {
+      type: "workload_empty" as const,
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+    };
+    f.service.event(f.channel, { ...proof, requestDigest: "f".repeat(64) });
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "stopping",
+    );
+    f.service.event(f.channel, proof);
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "stopped",
+    );
+  } finally {
+    f.store.close();
+  }
+});
+
+test("retiring an instance preserves admitted descendants but refuses new descendants and still permits force escalation", async () => {
+  const { f, policy, start, revision } = await instanceFixture();
+  try {
+    consent(f, "operations:invoke");
+    const target = {
+      machineId: f.machineId,
+      pluginId,
+      operationId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+    };
+    const edge = {
+      caller: target,
+      callee: target,
+      resources: [],
+      outputs: [],
+      maxDepth: 3,
+      maxConcurrency: 3,
+      aggregate: { timeoutMs: 3000, memoryBytes: 3145728, processes: 3, outputBytes: 196608 },
+    };
+    f.service.setInvocationEdge(f.root, { edge, enabled: true });
+    f.service.jobs.state(start.request.jobId, "started");
+    // Recover already-authorized invocation history. This exercises retirement of
+    // retained descendants independently of the service principal's current mint shape.
+    const base: Omit<JobRequest, "requestDigest"> & { requestDigest?: string } = {
+      ...start.request,
+    };
+    delete base.service;
+    delete base.requestDigest;
+    const credential = f.auth.credentialReference(f.root);
+    for (const jobId of ["admitted-child", "queued-child"]) {
+      const unsigned: Omit<JobRequest, "requestDigest"> = {
+        ...base,
+        jobId,
+        parent: { parentJobId: start.request.jobId, invocationId: jobId },
+        credential: { ...credential, caps: [...credential.caps] },
+        limits,
+      };
+      const request: JobRequest = {
+        ...unsigned,
+        requestDigest: createHash("sha256").update(canonicalJobJson(unsigned)).digest("hex"),
+      };
+      f.service.jobs.reserve(request, f.runtime.now());
+      f.store.db
+        .query(
+          "INSERT INTO job_invocation_reservations(parent_job_id,invocation_id,job_id,root_job_id,depth,request,edge,active) VALUES(?,?,?,?,1,?,?,1)",
+        )
+        .run(
+          start.request.jobId,
+          jobId,
+          jobId,
+          start.request.jobId,
+          canonicalJobJson(request),
+          canonicalJobJson(edge),
+        );
+      if (jobId === "admitted-child")
+        f.service.jobs.state(jobId, "started", {
+          ...start.permit,
+          jobId,
+          requestDigest: request.requestDigest,
+        });
+    }
+    await f.service.configureInstanceService(f.root, {
+      serviceId: policy.serviceId,
+      expectedRevision: revision,
+      policy,
+      enabled: false,
+    });
+    f.service.event(f.channel, {
+      type: "refusal",
+      jobId: start.request.jobId,
+      reason: "resource_owner_unavailable",
+    });
+    f.service.tick();
+    expect(f.service.jobs.get("admitted-child")?.state).toBe("started");
+    expect(f.service.jobs.cancellation("admitted-child")).toBeNull();
+    expect(f.service.jobs.get("queued-child")?.state).toBe("refused");
+    expect(
+      f.commands.some(
+        (command) =>
+          (command.type === "cancel" || command.type === "retire") &&
+          command.jobId === "admitted-child",
+      ),
+    ).toBe(false);
+    f.service.event(f.channel, {
+      type: "invocation",
+      parentJobId: "admitted-child",
+      invocationId: "late-grandchild",
+      operationId,
+      input: { value: "safe" },
+      outputs: [],
+    });
+    expect(f.commands.at(-1)).toMatchObject({
+      type: "invocation_reply",
+      invocationId: "late-grandchild",
+      jobId: null,
+    });
+    f.service.cancel(f.root, {
+      kind: "job",
+      machineId: f.machineId,
+      operationId,
+      jobId: start.request.jobId,
+    });
+    expect(f.service.jobs.cancellation("admitted-child")?.mode).toBe("cancel");
+    expect(
+      f.commands.some((command) => command.type === "cancel" && command.jobId === "admitted-child"),
+    ).toBe(true);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("disabling a never-admitted service retires it before credential-revocation callbacks", async () => {
+  const { f, policy } = await instanceFixture();
+  try {
+    f.store.setMachineDraining(f.machineId, true);
+    const queuedPolicy = { ...policy, serviceId: `${pluginId}.queued` };
+    const configured = await f.service.configureInstanceService(f.root, {
+      serviceId: queuedPolicy.serviceId,
+      expectedRevision: null,
+      machineId: f.machineId,
+      policy: queuedPolicy,
+      enabled: true,
+    });
+    const queued = f.service.jobs.instanceServiceJobs(queuedPolicy.serviceId)[0]!;
+    expect(queued.state).toBe("queued");
+    expect(queued.permit).toBeNull();
+    await f.service.configureInstanceService(f.root, {
+      serviceId: queuedPolicy.serviceId,
+      expectedRevision: configured.configuration!.revision,
+      policy: queuedPolicy,
+      enabled: false,
+    });
+    expect(f.service.jobs.get(queued.request.jobId)?.state).toBe("cancelled");
+    expect(f.service.jobs.cancellation(queued.request.jobId)?.mode).toBe("retire");
+    expect(f.auth.restoreCredential(queued.request.credential)).toBeNull();
+    expect(f.service.jobs.instanceServiceJobs(queuedPolicy.serviceId)).toEqual([]);
+    expect(
+      f.commands.some(
+        (command) => command.type === "start" && command.request.jobId === queued.request.jobId,
+      ),
+    ).toBe(false);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("replacement replays retirement across restart and waits for confirmed old workload exit", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "job-retirement-"));
+  const path = join(dir, "hub.sqlite");
+  const { f, policy, provider, start, revision } = await instanceFixture(path);
+  try {
+    await f.service.configureInstanceService(f.root, {
+      serviceId: policy.serviceId,
+      expectedRevision: revision,
+      policy: { ...policy, revision: "two" },
+      enabled: true,
+    });
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "stopping",
+    );
+    const stops = () =>
+      f.commands.filter(
+        (command) =>
+          (command.type === "cancel" || command.type === "retire") &&
+          command.jobId === start.request.jobId,
+      );
+    expect(stops().some((command) => command.type === "retire")).toBe(true);
+    expect(stops().some((command) => command.type === "cancel")).toBe(false);
+    expect(f.auth.restoreCredential(start.request.credential)).not.toBeNull();
+    const retirement = stops().at(-1)!;
+    expect(JobCommandSchema.safeParse(retirement).success).toBe(true);
+    const ordinaryRequest = { ...start.request };
+    delete ordinaryRequest.service;
+    expect(
+      JobCommandSchema.safeParse({
+        ...retirement,
+        admission: { request: ordinaryRequest, permit: start.permit },
+      }).success,
+    ).toBe(false);
+    expect(f.commands.filter((command) => command.type === "start")).toHaveLength(1);
+
+    f.service.offline(f.channel);
+    f.store.close();
+    f.store = new ServerStore(openDatabase(path));
+    f.auth = new AuthService(f.store, key, f.runtime);
+    f.root = f.auth.authenticate(key);
+    f.service = new JobService(f.store, f.auth, f.runtime);
+    f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
+    f.service.setManifestResolver((id) => (id === pluginId ? provider : null));
+    f.commands.length = 0;
+    prove(f);
+    f.service.tick();
+    expect(stops().some((command) => command.type === "retire")).toBe(true);
+    expect(stops().some((command) => command.type === "cancel")).toBe(false);
+    expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "stopping",
+    );
+
+    f.service.event(f.channel, {
+      type: "refusal",
+      jobId: start.request.jobId,
+      reason: "resource_owner_unavailable",
+    });
+    f.service.tick();
+    expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+    const proof = {
+      type: "workload_empty" as const,
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+    };
+    f.service.event(f.channel, { ...proof, ownerGeneration: f.owner.generation + 1 });
+    f.service.tick();
+    expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+    f.service.event(f.channel, proof);
+    expect(f.auth.restoreCredential(start.request.credential)).toBeNull();
+    f.service.tick();
+    const replacement = f.commands.filter((command) => command.type === "start");
+    expect(replacement).toHaveLength(1);
+    expect(replacement[0]!.request.jobId).not.toBe(start.request.jobId);
+    expect(f.auth.restoreCredential(replacement[0]!.request.credential)).not.toBeNull();
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "starting",
+    );
+  } finally {
+    f.store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test.each(["explicit", "consent", "credential", "executor"] as const)(
+  "disabled service retirement escalates durably for %s cancellation",
+  async (cause) => {
+    const { f, policy, start, revision } = await instanceFixture();
+    try {
+      await f.service.configureInstanceService(f.root, {
+        serviceId: policy.serviceId,
+        expectedRevision: revision,
+        policy,
+        enabled: false,
+      });
+      expect(f.service.jobs.cancellation(start.request.jobId)?.mode).toBe("retire");
+      if (cause === "executor") {
+        f.service.event(f.channel, {
+          type: "refusal",
+          jobId: start.request.jobId,
+          reason: "resource_owner_unavailable",
+        });
+        f.service.event(f.channel, {
+          type: "workload_empty",
+          jobId: start.request.jobId,
+          requestDigest: start.request.requestDigest,
+          ownerId: f.owner.ownerId,
+          ownerGeneration: f.owner.generation + 1,
+        });
+        f.service.tick();
+        expect(f.service.jobs.get(start.request.jobId)).toMatchObject({
+          state: "interrupted",
+          ownerClosed: false,
+        });
+        expect(f.service.jobs.cancellation(start.request.jobId)?.mode).toBe("retire");
+        expect(f.auth.restoreCredential(start.request.credential)).not.toBeNull();
+      }
+      if (cause === "explicit")
+        f.service.cancel(f.root, {
+          kind: "job",
+          machineId: f.machineId,
+          operationId,
+          jobId: start.request.jobId,
+        });
+      else if (cause === "credential")
+        f.auth.revokePrincipal(start.request.credential.principalId, f.root);
+      else if (cause === "executor") {
+        const machine = f.store.getMachine(f.machineId)!;
+        f.auth.revokePrincipal(f.store.getToken(machine.tokenId)!.principalId, f.root);
+        expect(f.service.jobs.cancellation(start.request.jobId)).toEqual({
+          reason: "executor_revoked",
+          mode: "cancel",
+        });
+        expect(f.auth.restoreCredential(start.request.credential)).not.toBeNull();
+      } else consent(f, "machines:run", false);
+      expect(f.service.jobs.cancellation(start.request.jobId)?.mode).toBe("cancel");
+      f.service.offline(f.channel);
+      f.commands.length = 0;
+      prove(f);
+      const stops = f.commands.filter(
+        (command) =>
+          (command.type === "cancel" || command.type === "retire") &&
+          command.jobId === start.request.jobId,
+      );
+      expect(stops.some((command) => command.type === "cancel")).toBe(true);
+      expect(stops.some((command) => command.type === "retire")).toBe(false);
+      expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+    } finally {
+      f.store.close();
+    }
+  },
+);
+
+test("executor revocation does not revive a retiring service after fenced empty confirmation", async () => {
+  const { f, policy, start, revision } = await instanceFixture();
+  try {
+    await f.service.configureInstanceService(f.root, {
+      serviceId: policy.serviceId,
+      expectedRevision: revision,
+      policy,
+      enabled: false,
+    });
+    f.service.event(f.channel, {
+      type: "refusal",
+      jobId: start.request.jobId,
+      reason: "resource_owner_unavailable",
+    });
+    f.service.event(f.channel, {
+      type: "workload_empty",
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+    });
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "stopped",
+    );
+    f.commands.length = 0;
+    const machine = f.store.getMachine(f.machineId)!;
+    f.auth.revokePrincipal(f.store.getToken(machine.tokenId)!.principalId, f.root);
+    f.service.offline(f.channel);
+    prove(f);
+    expect(f.service.jobs.get(start.request.jobId)).toMatchObject({
+      state: "interrupted",
+      ownerClosed: true,
+    });
+    expect(f.service.jobs.cancellation(start.request.jobId)?.mode).toBe("retire");
+    expect(
+      f.commands.filter(
+        (command) =>
+          (command.type === "cancel" || command.type === "retire" || command.type === "status") &&
+          command.jobId === start.request.jobId,
+      ),
+    ).toEqual([]);
+    expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+  } finally {
+    f.store.close();
+  }
+});
 
 test("polling a queued job cannot interrupt its later admitted start", () => {
   const f = fixture();
@@ -1682,7 +2146,10 @@ describe("durable job authority", () => {
       });
       f.runtime.time += 11;
       f.service.tick();
-      expect(f.service.jobs.cancellation("expiring-live")).toBe("credential_revoked_or_expired");
+      expect(f.service.jobs.cancellation("expiring-live")).toEqual({
+        reason: "credential_revoked_or_expired",
+        mode: "cancel",
+      });
       expect(f.commands.filter((c) => c.type === "cancel").map((c) => c.jobId)).toContain(
         "expiring-live",
       );

@@ -255,7 +255,7 @@ describe("InstanceServiceStore", () => {
     }
   });
 
-  test("service lifetime survives browser revocation and restart; replacement and disable revoke", () => {
+  test("unadmitted service authority survives browser revocation but is revoked by replacement or disable", () => {
     const f = fixture();
     try {
       const browser = f.auth.bootstrapPrincipal({ name: "operator", kind: "human" }, f.root);

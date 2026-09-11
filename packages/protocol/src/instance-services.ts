@@ -23,7 +23,7 @@ export const InstanceServiceDescriptionSchema = z.strictObject({
     })
     .nullable(),
   connected: z.boolean(),
-  state: z.enum(["unconfigured", "stopped", "starting", "ready", "unavailable"]),
+  state: z.enum(["unconfigured", "stopped", "stopping", "starting", "ready", "unavailable"]),
   reason: z.string().max(256).nullable(),
 });
 export const InstanceServicesDescriptionSchema = z.strictObject({

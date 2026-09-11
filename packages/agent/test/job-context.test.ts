@@ -25,6 +25,47 @@ describe.skipIf(process.platform !== "linux")("parent-bound private invocation c
     }
   });
 
+  test("intentional owner close does not turn queued context work into force cancellation", async () => {
+    const native = dlopen("libc.so.6", { dup: { args: [FFIType.i32], returns: FFIType.i32 } });
+    const entered = Promise.withResolvers<void>();
+    const complete = Promise.withResolvers<void>();
+    const failures: string[] = [];
+    const context = new JobContext("retiring-parent", {
+      invoke() {
+        throw new Error("unexpected invocation");
+      },
+      command: async () => {
+        throw new Error("unexpected command");
+      },
+      serviceReady: async () => {
+        entered.resolve();
+        await complete.promise;
+      },
+      failure: (reason) => failures.push(reason),
+    });
+    const child = adoptPrivateSocket(native.symbols.dup(context.childFd));
+    context.releaseChildFd();
+    child.on("error", () => {});
+    try {
+      // Both frames are already queued when readiness pauses on the launch barrier.
+      child.write(
+        '{"type":"service_ready","requestId":"first","port":4321}\n' +
+          '{"type":"service_ready","requestId":"second","port":4321}\n',
+      );
+      await entered.promise;
+      context.close();
+      complete.resolve();
+      // Drain the queued promise chain, not a guessed duration.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(failures).toEqual([]);
+    } finally {
+      complete.resolve();
+      context.close();
+      child.destroy();
+      native.close();
+    }
+  });
+
   test("an unrelated child input receives a correlated rejection without closing the parent's context", async () => {
     const native = dlopen("libc.so.6", { dup: { args: [FFIType.i32], returns: FFIType.i32 } });
     const rejected = Promise.withResolvers<unknown>();

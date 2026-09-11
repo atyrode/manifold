@@ -132,6 +132,7 @@ interface OwnedJob {
   childBudgetMs: number;
   outputGap: boolean;
   cancelRequested: boolean;
+  retirement: AbortController | undefined;
   stdio: Partial<Record<"stdout" | "stderr", JobOutputByteStream>>;
   outputSeq: number;
   childExitSent: boolean;
@@ -162,6 +163,8 @@ interface InstanceRuntimeService {
   startupTimer: ReturnType<typeof setTimeout> | undefined;
 }
 const ACTIVE: Record<string, true> = { "start-committed": true, started: true };
+// Promise rejection identity preserves the first refusal's mode across retirement races.
+const SERVICE_RETIRED = new Error("service_retired");
 
 /** Independently supervised machine authority. No workload is owned by the websocket transport. */
 export class MachineJobOwner {
@@ -424,6 +427,14 @@ export class MachineJobOwner {
           const job = await this.reconcileStart(command);
           this.emitEmpty(job);
           await this.cancel(command.jobId);
+          return;
+        }
+        case "retire": {
+          if (parentJobId !== null) throw new Error("context_command_forbidden");
+          const job = await this.reconcileStart(command);
+          this.emitEmpty(job);
+          this.emit({ type: "result", result: job.result }, job);
+          await this.retire(job);
           return;
         }
         case "configure_services":
@@ -937,7 +948,7 @@ export class MachineJobOwner {
     );
   }
 
-  private async closeServices(job: OwnedJob): Promise<void> {
+  private async closeServices(job: OwnedJob, retiring = false): Promise<void> {
     job.serviceController.abort();
     job.context?.abortServices();
     const instance =
@@ -950,7 +961,7 @@ export class MachineJobOwner {
     }
     job.serviceRuntime?.reject(new Error("service_cancelled"));
     for (const runtime of job.runtimeServices.values()) {
-      runtime.reject(new Error("service_cancelled"));
+      runtime.reject(retiring ? SERVICE_RETIRED : new Error("service_cancelled"));
       runtime.bearer = "";
     }
     await Promise.all([...job.serviceProxies.values()].map((proxy) => proxy.close()));
@@ -1054,11 +1065,11 @@ export class MachineJobOwner {
       const timer = setTimeout(() => ready.reject(new Error("service_start_timeout")), 30_000);
       void ready.promise.then(
         () => clearTimeout(timer),
-        () => {
+        (error: unknown) => {
           clearTimeout(timer);
           const invocation = parent.context?.invocations.get(invocationId);
           if (invocation) invocation.refused = true;
-          if (created.childJobId && this.jobs.has(created.childJobId))
+          if (error !== SERVICE_RETIRED && created.childJobId && this.jobs.has(created.childJobId))
             void this.cancel(created.childJobId).catch(() => {
               this.draining = true;
             });
@@ -1779,14 +1790,19 @@ export class MachineJobOwner {
   }
 
   private async reconcileStart(
-    command: Extract<JobCommand, { type: "status" | "cancel" }>,
+    command: Extract<JobCommand, { type: "status" | "cancel" | "retire" }>,
   ): Promise<OwnedJob> {
     if (command.admission) {
       this.verifyAdmission(command.admission);
       if (command.jobId !== command.admission.request.jobId)
         throw new Error("job_identity_changed");
+      if (command.type === "retire" && !command.admission.request.service)
+        throw new Error("instance_service_required");
     }
-    await this.pendingStarts.get(command.jobId);
+    // Retirement must latch while native launch is in flight, without waiting for it
+    // (or its eventual exit) on the command transport.
+    if (command.type !== "retire" || !this.jobs.has(command.jobId))
+      await this.pendingStarts.get(command.jobId);
     const job = this.jobs.get(command.jobId);
     if (job) {
       if (
@@ -1795,6 +1811,8 @@ export class MachineJobOwner {
           job.result.ownerGeneration !== command.admission.permit.ownerGeneration)
       )
         throw new Error("job_identity_changed");
+      if (command.type === "retire" && !job.request.service)
+        throw new Error("instance_service_required");
       return job;
     }
     if (!command.admission) throw new Error("unknown_job");
@@ -1967,7 +1985,12 @@ export class MachineJobOwner {
             this.instanceRuntimeServices.delete(policy.serviceId);
         });
         void job.launched.then(() => {
-          if (job.result.state !== "started" || instance.port !== null || job.cancelRequested)
+          if (
+            job.result.state !== "started" ||
+            instance.port !== null ||
+            job.cancelRequested ||
+            job.retirement?.signal.aborted
+          )
             return;
           instance.startupTimer = setTimeout(() => {
             void this.cancel(request.jobId).catch(() => {
@@ -2075,6 +2098,7 @@ export class MachineJobOwner {
           );
           // Closing an unused context during ordinary process exit is not a cancellation.
           if (reason === "context_closed" && !pending && !operation.providesService) return;
+          if (reason === "context_closed" && job.retirement?.signal.aborted) return;
           void this.cancel(request.jobId).catch(() => {
             this.draining = true;
           });
@@ -2114,6 +2138,7 @@ export class MachineJobOwner {
       }
       await this.prepareServiceProxies(job, operation);
       if (job.cancelRequested) throw new Error("cancelled_before_start");
+      if (job.retirement?.signal.aborted) throw new Error("retired_before_start");
       job.inputFiles = materializeJobInputs(
         operation,
         request.input,
@@ -2142,7 +2167,9 @@ export class MachineJobOwner {
         })),
         delegatedCgroup: parent?.handle?.childDelegation ?? this.options.delegatedCgroup,
         limits: request.limits,
-        ...(request.service ? { persistentService: true as const } : {}),
+        ...(job.retirement
+          ? { persistentService: true as const, retirementSignal: job.retirement.signal }
+          : {}),
         ...(operation.environment ? { environment: operation.environment } : {}),
         network: operation.network,
         providesService: operation.providesService === true,
@@ -2198,6 +2225,7 @@ export class MachineJobOwner {
         .then((result) => this.finish(job, result, parent))
         .catch(() => this.interrupt(job));
       if (job.cancelRequested) await job.handle?.cancel();
+      else if (job.retirement?.signal.aborted) job.context.close();
     } catch (error) {
       if (!spawnAttempted || (error instanceof LinuxJobRefusal && error.workloadEmpty))
         job.resolveEmpty();
@@ -2223,7 +2251,7 @@ export class MachineJobOwner {
         if (safelyRefused && this.jobs.has(request.jobId)) {
           job.result = {
             ...job.result,
-            state: job.cancelRequested ? "cancelled" : "refused",
+            state: job.cancelRequested || job.retirement?.signal.aborted ? "cancelled" : "refused",
             reason:
               error instanceof Error && /^[a-zA-Z0-9_-]{1,128}$/.test(error.message)
                 ? error.message
@@ -2380,6 +2408,20 @@ export class MachineJobOwner {
     job.resolveFinalized();
   }
 
+  private async retire(job: OwnedJob): Promise<void> {
+    if (!job.retirement) throw new Error("retire_requires_instance_service");
+    if (job.cancelRequested || job.retirement.signal.aborted || job.emptyObserved) return;
+    job.retirement.abort();
+    const closed = this.closeServices(job, true);
+    // During launch the runtime still borrows childFd. The launch continuation closes
+    // the channel after handoff; closing it here could turn retirement into a failed
+    // native launch and enter forceful containment.
+    if (job.handle) job.context?.close();
+    await closed;
+    // finish() alone observes natural exit and releases writers/service exclusion.
+    // In particular, no timeout and no wait for job.empty may block a later cancel.
+  }
+
   private async cancel(jobId: string): Promise<void> {
     const job = this.requireJob(jobId);
     job.cancelRequested = true;
@@ -2482,6 +2524,7 @@ export class MachineJobOwner {
       childBudgetMs: 0,
       outputGap: false,
       cancelRequested: false,
+      retirement: request.service ? new AbortController() : undefined,
       stdio: {},
       outputSeq: 0,
       childExitSent: false,

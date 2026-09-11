@@ -2237,3 +2237,37 @@ INSERT INTO machine_job_inputs VALUES
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("migration 29 preserves legacy forced stops independently of their reason text", () => {
+  const dir = mkdtempSync(join(tmpdir(), "manifold-db-retirement-upgrade-"));
+  const path = join(dir, "manifold.db");
+  let db = new Database(path);
+  try {
+    db.exec(`
+CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO meta VALUES ('schema_version', '28');
+CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, cancel_reason TEXT);
+INSERT INTO machine_jobs VALUES
+  ('legacy', 'instance_service_configuration_changed'),
+  ('active', NULL);
+`);
+    db.close();
+    db = openDatabase(path);
+    expect(db.query("SELECT * FROM machine_jobs ORDER BY job_id").all()).toEqual([
+      { job_id: "active", cancel_reason: null, cancel_mode: "cancel" },
+      {
+        job_id: "legacy",
+        cancel_reason: "instance_service_configuration_changed",
+        cancel_mode: "cancel",
+      },
+    ]);
+    db.close();
+    db = openDatabase(path);
+    expect(db.query("SELECT cancel_mode FROM machine_jobs WHERE job_id='legacy'").get()).toEqual({
+      cancel_mode: "cancel",
+    });
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

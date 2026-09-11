@@ -71,6 +71,8 @@ export interface LinuxJobSpec {
   limits: LinuxJobLimits;
   /** Only native instance-service admission may remove the elapsed-time deadline. */
   persistentService?: true;
+  /** Owner's cooperative instance-service stop intent, available even during launch. */
+  retirementSignal?: AbortSignal;
   /** Service peers must be accepted before the owner releases any application bytes. */
   providesService?: boolean;
   network: "none" | "host";
@@ -282,6 +284,7 @@ export function preflightLinuxJob(spec: LinuxJobSpec): number {
     !Number.isSafeInteger(spec.limits.timeoutMs) ||
     spec.limits.timeoutMs < 0 ||
     (spec.limits.timeoutMs === 0) !== (spec.persistentService === true) ||
+    (spec.retirementSignal !== undefined && spec.persistentService !== true) ||
     spec.limits.processes >= Number.MAX_SAFE_INTEGER ||
     spec.limits.timeoutMs > 2_147_483_647
   )
@@ -843,9 +846,18 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   const result = (async (): Promise<LinuxJobResult> => {
     try {
       const exit = await Promise.race([exited, terminalFailure.promise]);
-      // Even an apparently successful leader may have left descendants. Kill and observe
-      // the whole group before any consumer may seal or publish its output directory.
-      writeControl(groups.root, "cgroup.kill", "1");
+      // Retirement keeps even surviving descendants owned until positive empty proof.
+      // A later cancellation still enters terminate(), including its bounded failure
+      // handling; waiting cooperatively must never manufacture a timeout or kill.
+      while (
+        spec.retirementSignal?.aborted &&
+        !terminating &&
+        counter(readControl(groups.root, "cgroup.events"), "populated") !== 0
+      )
+        await delay(10);
+      // Ordinary exit and forced/security stops retain whole-group containment.
+      if (!spec.retirementSignal?.aborted || terminating)
+        writeControl(groups.root, "cgroup.kill", "1");
       await awaitEmpty(groups.root);
       await drained;
       if (fatal) throw fatal;

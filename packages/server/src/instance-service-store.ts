@@ -163,7 +163,16 @@ export class InstanceServiceStore {
             requirements,
           )
         : null;
-      if (previous?.credential)
+      // A sent admission still owns its old lifetime. Keep its dedicated authority
+      // until the owner proves empty; external revocation remains an independent fence.
+      const retiring = previous?.jobId
+        ? this.store.db
+            .query<{ job_id: string }, [string]>(
+              "SELECT job_id FROM machine_jobs WHERE job_id=? AND permit IS NOT NULL AND owner_closed=0",
+            )
+            .get(previous.jobId)
+        : null;
+      if (previous?.credential && !retiring)
         this.auth.revokeNativeServiceCredential(previous.credential, currentActor.principal.id);
       const current: InstanceServiceRecord = {
         serviceId: args.serviceId,

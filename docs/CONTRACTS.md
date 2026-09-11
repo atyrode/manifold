@@ -2640,8 +2640,9 @@ read a retained IPC-1 owner and resume its existing terminals. Without an explic
 declaration it cannot create new ambient shells. Governed requests still require their
 separate native owner proof and admitted resource/runtime bindings.
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 29. That version covers
-durable instance-owned services, proved readiness and bounded cross-owner service channels.
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 30. That version covers
+durable instance-owned services, cooperative retirement, proved readiness and bounded
+cross-owner service channels.
 It is not the hub/session `PROTOCOL_VERSION`: an unchanged native RPC remains compatible
 through a transport or browser upgrade. A native RPC change requires its own coordinated,
 drained owner upgrade. Compatibility alone never proves current execution consent or
@@ -2842,7 +2843,7 @@ provider handling and postconditions belong to plugins, never the common floor.
   live readiness remains mandatory for new admission and each service effect.
   Retained identity records prevent expired output/result retention from permitting replay.
   A verified start rejected before reservation is durably tombstoned before any
-  `workload_empty` proof. Status/cancel may carry the original signed admission to
+  `workload_empty` proof. Status/cancel/retire may carry the original signed admission to
   abandon a start lost in transit; unknown or invalid authority cannot prove absence,
   and an admitted/in-flight start follows its existing workload lifecycle instead.
   Proofs retain the exact request digest, owner and permit generation across recovery.
@@ -2850,6 +2851,16 @@ provider handling and postconditions belong to plugins, never the common floor.
   result snapshot, but never revives terminal or owner-closed work.
   Empty PTY inventories say nothing about jobs. Drain closes both admission paths without
   merging their lifecycles; cancellation closes input and terminates the execution tree.
+- **Instance-service retirement.** Replacing or disabling an instance-service configuration
+  durably requests cooperative retirement. The owner closes its worker context and service
+  authority, refusing new governed invocations while preserving admitted work without an
+  automatic kill deadline. A dedicated service credential and ownership remain attached to
+  that workload until fenced `workload_empty` proof; an interrupted hub state, lost transport
+  or leader exit does not release them. Descriptions report `stopping` until that proof.
+  Reconciliation replays the retained result as well as empty proof, and replacement waits
+  for the old lifetime to close. Explicit job cancellation and credential, executor,
+  installation or other authority revocation remain forceful; retirement cannot downgrade
+  an already-requested cancellation.
 - **Output and privacy.** `child_exit` is execution observation with `outputsSealed: false`,
   not a final result, writer-drain acknowledgement or closure proof. Sealing waits for the
   execution tree to be empty and authorized overlapping writers to release, including

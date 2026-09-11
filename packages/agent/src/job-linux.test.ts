@@ -1102,6 +1102,76 @@ test.skipIf(!realLinux)(
   },
 );
 
+test.skipIf(!realLinux)(
+  "retirement retains a live delegated workload after leader exit until explicit cancellation",
+  async () => {
+    await withLinux("printf ready; read finish; printf leaving", async (spec) => {
+      const retirement = new AbortController();
+      const parentReady = Promise.withResolvers<void>();
+      const leaderLeaving = Promise.withResolvers<void>();
+      const childReady = Promise.withResolvers<void>();
+      let parentOutput = "";
+      const parent = await startLinuxJob({
+        ...spec,
+        persistentService: true,
+        retirementSignal: retirement.signal,
+        limits: { ...spec.limits, timeoutMs: 0 },
+        onOutput: (frame) => {
+          parentOutput += Buffer.from(frame.bytes).toString();
+          if (parentOutput.includes("ready")) parentReady.resolve();
+          if (parentOutput.includes("leaving")) leaderLeaving.resolve();
+        },
+      });
+      let child: LinuxJobHandle | undefined;
+      try {
+        await Promise.race([
+          parentReady.promise,
+          parent.result.then(() => {
+            throw new Error("parent exited before ready");
+          }),
+        ]);
+        child = await startLinuxJob({
+          ...spec,
+          persistentService: true,
+          limits: { ...spec.limits, timeoutMs: 0 },
+          delegatedCgroup: parent.childDelegation,
+          onOutput: () => childReady.resolve(),
+        });
+        await Promise.race([
+          childReady.promise,
+          child.result.then(() => {
+            throw new Error("child exited before ready");
+          }),
+        ]);
+        retirement.abort();
+        await parent.input(Buffer.from("finish\n"));
+        await leaderLeaving.promise;
+        // Longer than the forced-empty proof deadline: cooperative waiting has none.
+        // Real kernel process exit/cgroup polling cannot be advanced with JS fake timers.
+        await Promise.race([
+          Bun.sleep(10_500),
+          parent.result.then(() => {
+            throw new Error("retirement abandoned live descendants");
+          }),
+          child.result.then(() => {
+            throw new Error("retirement killed a delegated workload");
+          }),
+        ]);
+        expect((await parent.cancel()).reason).toBe("cancelled");
+        expect((await child.result).empty).toBe(true);
+      } finally {
+        await parent.cancel();
+        if (child) {
+          await child.cancel();
+          child.release();
+        }
+        parent.release();
+      }
+    });
+  },
+  20_000,
+);
+
 test.skipIf(!realLinux || !outputRoot)(
   "named output storage returns ENOSPC during writes while the output-only child is still alive",
   async () => {

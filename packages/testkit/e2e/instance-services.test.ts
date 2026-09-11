@@ -420,7 +420,7 @@ test.skipIf(!realBackend)(
         if (!outcome.ok) throw new Error(`consumer action refused: ${outcome.denial.message}`);
         return PublicJobSchema.parse(outcome.result);
       };
-      const run = async (jobId: string, allowed = true, starts = 1) => {
+      const run = async (jobId: string, allowed = true, starts = 1, shutdowns = 0) => {
         const initial = await execute(jobId);
         if (initial.state === "refused")
           throw new Error(`consumer admission refused: ${JSON.stringify(initial.result)}`);
@@ -454,7 +454,7 @@ test.skipIf(!realBackend)(
         );
         if (output.type !== "output") throw new Error("missing consumer output");
         const body = Buffer.from(output.data, "base64").toString();
-        if (allowed) expect(JSON.parse(body)).toEqual({ starts, setting: "reviewed" });
+        if (allowed) expect(JSON.parse(body)).toEqual({ starts, shutdowns, setting: "reviewed" });
         else expect(body).toBe("");
       };
       await run("cross-owner");
@@ -498,15 +498,24 @@ test.skipIf(!realBackend)(
       );
       await run("revoked-consumer", false);
       expect((await instance()).state).toBe("ready");
-      await ownerAction(hub(), "engine.services.configureInstance", {
-        serviceId: SERVICE,
-        expectedRevision: configured.configuration!.revision,
-        machineId: source.machineId,
-        policy,
-        enabled: false,
-      });
-      expect((await instance()).state).toBe("stopped");
-      const stopped = await instance();
+      const disabling = InstanceServiceDescriptionSchema.parse(
+        await ownerAction(hub(), "engine.services.configureInstance", {
+          serviceId: SERVICE,
+          expectedRevision: configured.configuration!.revision,
+          machineId: source.machineId,
+          policy,
+          enabled: false,
+        }),
+      );
+      expect(disabling.state).toBe("stopping");
+      const stopped = await waitFor(
+        async () => {
+          const current = await instance();
+          return current.state === "stopped" ? current : false;
+        },
+        20000,
+        20,
+      );
       const replaced = InstanceServiceDescriptionSchema.parse(
         await ownerAction(hub(), "engine.services.configureInstance", {
           serviceId: SERVICE,
@@ -531,7 +540,9 @@ test.skipIf(!realBackend)(
       await install(sink.machineId, consumer);
       for (const cap of ["machines:run", "network:host", "jobs:read"] as const)
         await consent(sink.machineId, CONSUMER, cap, readerOperation);
-      await run("registry-replaced", true, 2);
+      // The successor snapshots this persisted counter before publishing readiness.
+      // A force-killed predecessor or readiness preceding its flush leaves it at zero.
+      await run("registry-replaced", true, 2, 1);
       await ownerAction(hub(), "engine.services.configureInstance", {
         serviceId: SERVICE,
         expectedRevision: replaced.configuration!.revision,
@@ -539,6 +550,7 @@ test.skipIf(!realBackend)(
         policy,
         enabled: false,
       });
+      await waitFor(async () => (await instance()).state === "stopped", 20000, 20);
     } catch (error) {
       throw e2eFailure(error, [server, ...agents]);
     } finally {
