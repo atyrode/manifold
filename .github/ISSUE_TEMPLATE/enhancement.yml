@@ -1,0 +1,31 @@
+name: Enhancement
+description: A capability the repository should have and does not
+title: "enhancement: "
+labels: [needs-triage, enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Triage assigns area, priority and a state; see `docs/TRIAGE.md`. A change that needs a
+        decision before it can be built belongs on the "Design or decision" form instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What cannot be done today, and who is blocked by that
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What a reviewer can observe when this is done
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Related axioms, contracts, decisions or issues
+    validations:
+      required: false

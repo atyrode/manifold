@@ -1,0 +1,42 @@
+name: Design or decision
+description: A choice that must be made before the work can be built
+title: "design: "
+labels: [needs-triage, design]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Triage turns this into a hold with a decision block, or into ready work once the choice is
+        made; see `docs/TRIAGE.md` §Holds. State the options and their consequences, not only the
+        one you prefer.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: The decision to make, in one sentence
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options
+      description: Options with consequences
+      placeholder: |
+        - A — <option and what it costs or buys>
+        - B — <option and what it costs or buys>
+    validations:
+      required: true
+  - type: textarea
+    id: recommended
+    attributes:
+      label: Recommended
+      description: Recommended option and why
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What is true once the decision is recorded and carried out
+    validations:
+      required: true
