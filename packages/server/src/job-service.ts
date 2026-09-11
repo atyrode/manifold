@@ -2074,13 +2074,32 @@ export class JobService {
       fail("invalid_output_binding");
   }
 
+  private invocationStopReason(parent: JobRecord, admitted: boolean): string | null {
+    let ancestor: JobRecord | null = parent;
+    for (let depth = 0; ancestor; depth++) {
+      if (depth >= 64) return "invocation_depth";
+      const stop = this.jobs.cancellation(ancestor.request.jobId);
+      if (stop && (stop.mode === "cancel" || !admitted)) return stop.reason;
+      ancestor = ancestor.request.parent
+        ? this.jobs.get(ancestor.request.parent.parentJobId)
+        : null;
+    }
+    return null;
+  }
+
   invocationRefusal(request: JobRequest, requireLiveOwner = true): string | null {
     if (!request.parent) return null;
     const parent = this.jobs.get(request.parent.parentJobId);
     const live = this.channels.get(request.machineId);
+    const admitted = this.jobs.get(request.jobId)?.permit != null;
+    const retiring =
+      parent !== null &&
+      this.jobs.cancellation(parent.request.jobId)?.mode === "retire" &&
+      admitted &&
+      !parent.ownerClosed;
     if (
       !parent ||
-      parent.state !== "started" ||
+      (parent.state !== "started" && !retiring) ||
       !parent.permit ||
       parent.request.machineId !== request.machineId ||
       (requireLiveOwner && !live?.proved) ||
@@ -2089,6 +2108,8 @@ export class JobService {
           live.owner.generation !== parent.permit.ownerGeneration))
     )
       return "invocation_parent_not_live";
+    const stop = this.invocationStopReason(parent, admitted);
+    if (stop !== null) return stop;
     const reservation = this.store.db
       .query<{ edge: string; request: string; active: number }, [string]>(
         "SELECT edge,request,active FROM job_invocation_reservations WHERE job_id=?",
@@ -2103,7 +2124,7 @@ export class JobService {
       )
       .get(canonicalJobJson(edge.caller), request.operationId);
     if (!current?.enabled || current.edge !== reservation.edge) return "invocation_edge_changed";
-    return this.reauthorizeDeferred(parent.request);
+    return this.reauthorizeDeferred(parent.request, retiring);
   }
 
   private invoke(machineId: string, event: Extract<JobEvent, { type: "invocation" }>): void {
@@ -2118,6 +2139,8 @@ export class JobService {
       parent.permit.ownerGeneration !== live.owner.generation
     )
       fail("invocation_parent_not_host_bound");
+    const stop = this.invocationStopReason(parent, false);
+    if (stop !== null) fail(stop);
     const { pluginId, operationId, installationRevision, artifactSha256 } = parent.request;
     const caller = { machineId, pluginId, operationId, installationRevision, artifactSha256 };
     const stored = this.store.db
@@ -4224,9 +4247,10 @@ export class JobService {
           ...(job.permit ? { admission: { request: job.request, permit: job.permit } } : {}),
         },
       });
-    for (const child of this.jobs.active())
-      if (child.request.parent?.parentJobId === job.request.jobId)
-        this.cancelRecord(child, cancellation.reason);
+    if (cancellation.mode === "cancel")
+      for (const child of this.jobs.active())
+        if (child.request.parent?.parentJobId === job.request.jobId)
+          this.cancelRecord(child, cancellation.reason);
   }
   output(
     auth: AuthContext,

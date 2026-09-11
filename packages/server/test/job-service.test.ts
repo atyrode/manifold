@@ -16,6 +16,7 @@ import {
   canonicalJobJson,
   type JobCommand,
   type JobOwner,
+  type JobRequest,
   type MachineHalf,
   type JobFollowUpdate,
 } from "../../protocol/src/jobs.ts";
@@ -213,6 +214,115 @@ async function instanceFixture(path = ":memory:") {
   if (!start || !configured.configuration) throw new Error("instance runtime was not admitted");
   return { f, policy, provider, start, revision: configured.configuration.revision };
 }
+
+test("retiring an instance preserves admitted descendants but refuses new descendants and still permits force escalation", async () => {
+  const { f, policy, start, revision } = await instanceFixture();
+  try {
+    consent(f, "operations:invoke");
+    const target = {
+      machineId: f.machineId,
+      pluginId,
+      operationId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+    };
+    const edge = {
+      caller: target,
+      callee: target,
+      resources: [],
+      outputs: [],
+      maxDepth: 3,
+      maxConcurrency: 3,
+      aggregate: { timeoutMs: 3000, memoryBytes: 3145728, processes: 3, outputBytes: 196608 },
+    };
+    f.service.setInvocationEdge(f.root, { edge, enabled: true });
+    f.service.jobs.state(start.request.jobId, "started");
+    // Recover already-authorized invocation history. This exercises retirement of
+    // retained descendants independently of the service principal's current mint shape.
+    const { service: _service, requestDigest: _digest, ...base } = start.request;
+    for (const jobId of ["admitted-child", "queued-child"]) {
+      const unsigned: Omit<JobRequest, "requestDigest"> = {
+        ...base,
+        jobId,
+        parent: { parentJobId: start.request.jobId, invocationId: jobId },
+        credential: f.auth.credentialReference(f.root),
+        limits,
+      };
+      const request: JobRequest = {
+        ...unsigned,
+        requestDigest: createHash("sha256").update(canonicalJobJson(unsigned)).digest("hex"),
+      };
+      f.service.jobs.reserve(request, f.runtime.now());
+      f.store.db
+        .query(
+          "INSERT INTO job_invocation_reservations(parent_job_id,invocation_id,job_id,root_job_id,depth,request,edge,active) VALUES(?,?,?,?,1,?,?,1)",
+        )
+        .run(
+          start.request.jobId,
+          jobId,
+          jobId,
+          start.request.jobId,
+          canonicalJobJson(request),
+          canonicalJobJson(edge),
+        );
+      if (jobId === "admitted-child")
+        f.service.jobs.state(jobId, "started", {
+          ...start.permit,
+          jobId,
+          requestDigest: request.requestDigest,
+        });
+    }
+    await f.service.configureInstanceService(f.root, {
+      serviceId: policy.serviceId,
+      expectedRevision: revision,
+      policy,
+      enabled: false,
+    });
+    f.service.event(f.channel, {
+      type: "refusal",
+      jobId: start.request.jobId,
+      reason: "resource_owner_unavailable",
+    });
+    f.service.tick();
+    expect(f.service.jobs.get("admitted-child")?.state).toBe("started");
+    expect(f.service.jobs.cancellation("admitted-child")).toBeNull();
+    expect(f.service.jobs.get("queued-child")?.state).toBe("refused");
+    expect(
+      f.commands.some(
+        (command) =>
+          (command.type === "cancel" || command.type === "retire") &&
+          command.jobId === "admitted-child",
+      ),
+    ).toBe(false);
+    f.service.event(f.channel, {
+      type: "invocation",
+      parentJobId: "admitted-child",
+      invocationId: "late-grandchild",
+      operationId,
+      input: { value: "safe" },
+      outputs: [],
+    });
+    expect(f.commands.at(-1)).toMatchObject({
+      type: "invocation_reply",
+      invocationId: "late-grandchild",
+      jobId: null,
+    });
+    f.service.cancel(f.root, {
+      kind: "job",
+      machineId: f.machineId,
+      operationId,
+      jobId: start.request.jobId,
+    });
+    expect(f.service.jobs.cancellation("admitted-child")?.mode).toBe("cancel");
+    expect(
+      f.commands.some(
+        (command) => command.type === "cancel" && command.jobId === "admitted-child",
+      ),
+    ).toBe(true);
+  } finally {
+    f.store.close();
+  }
+});
 
 test("disabling a never-admitted service retires it before credential-revocation callbacks", async () => {
   const { f, policy } = await instanceFixture();
