@@ -159,6 +159,9 @@ An agent may squash-merge with branch deletion when **all** of these hold:
 1. The pull request closes an issue carrying `agent-ready` and a priority label.
 2. Required CI is green on the current head: `gh pr checks <n> --required` exits 0 and
    `gh run list --workflow ci.yml --commit <head> --status success --json databaseId` is non-empty.
+   Both halves are load-bearing: a required context that has not reported yet is not a failing one,
+   so `gh pr checks` exits 0 while the run is still `in_progress` — only the concluded run for that
+   exact head commit tells green apart from unfinished.
 3. The newest `## Verdict:` comment is `pass` and is dated after the head commit was pushed.
 4. At least **24 hours** have passed since that verdict — the operator's veto window.
 5. Neither the pull request nor its issue carries `needs-operator`, `design` or `area:infra`.
