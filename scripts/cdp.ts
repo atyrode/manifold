@@ -6,7 +6,7 @@
  * and nothing else.
  */
 import { rmSync } from "node:fs";
-import { reserveLoopbackPort, sleep } from "./gate-lib.ts";
+import { reserveLoopbackPort, sleep, until } from "./gate-lib.ts";
 
 interface CdpFrame {
   id?: number;
@@ -41,6 +41,27 @@ export interface DragPayload {
 /** Bounded so a chatty page cannot grow the driver without limit across a long gate. */
 const MAX_PAGE_MESSAGES = 500;
 const MAX_PAGE_MESSAGE_CHARS = 2_000;
+
+/**
+ * What a navigation is allowed to cost before {@link Browser.goto} answers on a parsed
+ * document alone, and before it gives up entirely.
+ *
+ * The floor is the fixed sleep this replaced, kept as the answer of last resort: below it
+ * the driver waits for the real thing (the document it ASKED for, loaded), past it it is no
+ * slower than the sleep ever was. Only a document that never finishes parsing reaches the
+ * ceiling, and that is a broken page rather than a slow one — 30s is also what one CDP
+ * command is given in {@link Browser.send}, so nothing here outlives the socket's own patience.
+ */
+const NAVIGATION_FLOOR_MS = 1_500;
+const NAVIGATION_CEILING_MS = 30_000;
+
+/**
+ * What the rendered-frame waits after a click and after typing are allowed to cost. Each is
+ * the fixed sleep it replaced, so the worst case is exactly the old behaviour and the normal
+ * case is two animation frames.
+ */
+const CLICK_RENDER_CEILING_MS = 600;
+const TYPE_RENDER_CEILING_MS = 300;
 
 /** Renders one CDP `Runtime.RemoteObject` as the text a reader wants in a dump. */
 function describeRemoteObject(value: unknown): string {
@@ -291,9 +312,93 @@ export class Browser {
     return this.messages.splice(0, this.messages.length);
   }
 
+  /**
+   * The loader id of the document the main frame last COMMITTED, as Chromium reported it.
+   *
+   * `Page.navigate` answers when a navigation STARTS, not when it lands, so a `readyState`
+   * read taken straight after it can still be answered by the page being navigated AWAY
+   * from — and "complete" from the outgoing document is the one answer that must never count
+   * as arrival. The commit is the moment the answers start coming from the document asked for.
+   */
+  private committedLoaderId = "";
+  /** {@link on} has no unsubscribe, so the commit listener is registered once, not per goto. */
+  private commitListening = false;
+
+  /**
+   * Resolves once the page has produced two animation frames, or at `ceilingMs`.
+   *
+   * Two and not one: the first frame is the one the browser was already going to draw, the
+   * second is the one that shows the work the event just queued — a React render scheduled
+   * while the event was dispatched has committed by the time the second callback runs. That
+   * is the condition the fixed sleeps after a click and after typing were standing in for,
+   * and it costs about two frames (~32ms) rather than the tenths of a second they charged.
+   *
+   * Bounded and SILENT at the ceiling instead of throwing, because a page that produces no
+   * frames at all (frozen lifecycle, script execution disabled) never runs the callback, and
+   * for those the ceiling is precisely the fixed wait this replaced: never worse than before,
+   * never a new way to fail. A rejection is swallowed for the same reason — a click that
+   * navigates destroys the execution context under the evaluation, and a sleep tolerated that.
+   */
+  private async renderSettled(ceilingMs: number): Promise<void> {
+    const painted = this.evaluate<boolean>(
+      `(() => { const { promise, resolve } = Promise.withResolvers();
+        requestAnimationFrame(() => requestAnimationFrame(() => { resolve(true); }));
+        return promise; })()`,
+    ).catch(() => false);
+    await Promise.race([painted, sleep(ceilingMs)]);
+  }
+
+  /**
+   * Navigates, and returns when the page is THERE: the document asked for has committed and
+   * has finished loading.
+   *
+   * This was a flat `sleep(1500)`, which is a bound on nothing real. A local page is ready in
+   * a fraction of it, and a slow page is not ready at the end of it either — which is why
+   * every caller polls for its own condition afterwards regardless. So the wait was pure dead
+   * time on every navigation, and the browser gates navigate constantly (`verify-pwa.ts`
+   * alone spent ~21s of a ~40s run inside it).
+   */
   async goto(url: string): Promise<void> {
-    await this.send("Page.navigate", { url });
-    await sleep(1500);
+    if (!this.commitListening) {
+      this.on("Page.frameNavigated", (params) => {
+        const frame = params["frame"];
+        if (frame === null || typeof frame !== "object") return;
+        // Subframes commit too, and a subframe's loader is never this navigation's.
+        if (Reflect.get(frame, "parentId") !== undefined) return;
+        this.committedLoaderId = String(Reflect.get(frame, "loaderId") ?? "");
+      });
+      this.commitListening = true;
+    }
+    const navigated = await this.send("Page.navigate", { url });
+    const loaderId = navigated.result?.["loaderId"];
+    // No loader means no new document: a fragment-only change is a SAME-document navigation,
+    // it fires no load of any kind, and waiting for one would hang every `#key=` re-entry.
+    // What it can still do is re-render, so it is given frames and nothing else.
+    if (typeof loaderId !== "string" || loaderId === "") {
+      await this.renderSettled(NAVIGATION_FLOOR_MS);
+      return;
+    }
+    const startedAt = Date.now();
+    await until(
+      async () => {
+        let state: string;
+        try {
+          state = await this.evaluate<string>("document.readyState");
+        } catch {
+          // A read that lands in the commit seam finds no execution context, which is an
+          // answer about neither document. Ask again — but never charge a page that will not
+          // answer at all more than the floor the fixed sleep already charged it.
+          return Date.now() - startedAt >= NAVIGATION_FLOOR_MS;
+        }
+        if (state === "complete" && this.committedLoaderId === loaderId) return true;
+        if (state === "loading") return false;
+        // Parsed, but either still loading subresources or still on the outgoing document
+        // (an aborted navigation commits nothing): that is what the old sleep settled for.
+        return Date.now() - startedAt >= NAVIGATION_FLOOR_MS;
+      },
+      NAVIGATION_CEILING_MS,
+      `${url} to commit and finish parsing`,
+    );
   }
 
   async evaluate<T>(expression: string): Promise<T> {
@@ -334,7 +439,10 @@ export class Browser {
         hit.click(); return true; })()`,
     );
     if (!clicked) throw new Error(`no enabled element with data-testid ${JSON.stringify(testid)}`);
-    await sleep(600);
+    // The click is dispatched; what a caller is actually waiting on is the page having
+    // RENDERED its answer to it. `sleep(600)` was a guess at that — one a re-render either
+    // beat by half a second or, when the page was busy, did not satisfy anyway.
+    await this.renderSettled(CLICK_RENDER_CEILING_MS);
   }
 
   /**
@@ -349,7 +457,10 @@ export class Browser {
     );
     if (!focused) throw new Error(`no element to type into: ${selector}`);
     await this.typeText(text);
-    await sleep(300);
+    // As with the click: the keystrokes are already acknowledged by the renderer when
+    // `typeText` returns, so all that remains is the render they provoked — React's onChange
+    // enabling the submit button, most often — which is a frame pair, not a flat 300ms.
+    await this.renderSettled(TYPE_RENDER_CEILING_MS);
   }
 
   async typeText(text: string): Promise<void> {
