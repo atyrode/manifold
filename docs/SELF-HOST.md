@@ -315,6 +315,10 @@ replacement. Shutdown checks that identity and a supported maintenance protocol 
 on the same observer connection before making the atomic shutdown request. IPC 1 and IPC 2
 share these maintenance frames; accepting an older owner's empty-shutdown acknowledgment
 does not enable unconfined execution. Unknown protocols hold.
+Supervisor-managed callers must also pass `--expected-pid "$MAIN_PID"` from the explicitly
+selected owner unit. The optional constraint is checked against status on that same
+connection before any shutdown request; a mismatch holds. Independent manual maintenance
+may omit it, but an unbound acknowledgement cannot authorize stopping an arbitrary unit.
 
 For the source-shipping Docker image, use the identical CLI **inside the owning container**;
 the credential read stays inside Manifold:
@@ -326,19 +330,24 @@ docker exec "$CONTAINER_ID" bun packages/agent/src/main.ts --maintenance shutdow
   --socket "$TERMINAL_HOST_SOCKET" --terminal-host-id "$TERMINAL_HOST_ID"
 ```
 
-If the retained container predates this CLI, build the reviewed source into a public Bun
-bundle and stream that code into the same container. This changes no deployed files and
-does not move the credential out of its existing custody:
-
-```sh
-bun build --target bun packages/agent/src/main.ts --outfile /tmp/manifold-maintenance.js
-docker exec -i "$CONTAINER_ID" bun - --maintenance drain \
-  --hub http://127.0.0.1:7777 --machine-id "$MACHINE_ID" \
-  --owner-key-file /data/owner.key < /tmp/manifold-maintenance.js
-```
-
-These are explicit existing container/socket references, not discovery or a private preview
-retirement helper. They do not authorize container replacement or activation.
+For retiring an old external spoke of a retained preview hub, use the source-managed
+[`infra/previews/retire-spoke.sh` operation](../infra/previews/README.md#retire-an-old-development-spoke-before-native-activation).
+Its documented invocation requires the public container, machine, terminal-host identity,
+terminal-host unit, transport unit, separately reviewed immutable transport package, socket
+and private runtime-directory references.
+It bundles only the reviewed maintenance CLI and streams the public code into the owning
+container, including when that container predates the command. The key read remains at
+`/data/owner.key` inside that container; no deployed executable or credential is replaced.
+It closes admission, refuses busy/unknown work, stops only the independent non-owning
+transport before the PID-bound atomic shutdown, and restores that transport on refused
+proof without reopening admission. Both supervisors' propagation and stop hooks are checked;
+owned, metadata-verified runtime drop-ins non-disruptively inhibit restarts across acknowledgement
+and are restored afterward. Only positive acknowledgement permits disabling the old
+supervisors. The helper never stops the owner by unit name: it awaits its own exit and refuses
+an unexpected generation. Actual inactive/dead, PID-zero, disabled state must be proved.
+It never invokes Nix or activates/deploys anything. A native startup guard must independently
+refuse active, enabled/restartable or unobservable old user supervisors; activation must not
+automatically stop or mask them.
 
 Each successful command exits 0 and prints one JSON line. Drain/reopen report
 `{ok:true,command,machineId,terminalHostId,draining,terminalIds}`; drain proves the admission
@@ -828,6 +837,13 @@ and fails unless `/healthz` on the development URL answers exactly that. It is t
 Environment `development`, inert unless the repository variables `DEV_DEPLOY_HOST`,
 `DEV_DEPLOY_USER` and `DEV_DEPLOY_URL` and the secret `DEV_DEPLOY_SSH_KEY` exist, and it names no
 host or provider: the receiver is `infra/previews/receiver.sh`.
+Shared development uses the ordinary application image with
+`MANIFOLD_DEV_SPAWN_AGENT=0` and a required explicit `MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID`.
+It retains the existing dev-hub Compose project, networks, loopback port and named `/data`
+volume; replacement affects only the hub after build/configuration validation, without
+terminal retirement/resume, recursive data ownership changes or spoke rebuild/restart.
+The native execution-only profile remains separately declared and supervised. Numbered
+previews retain their explicitly disposable development-image lifecycle.
 
 **Previews** are an optional development tier: `preview.<domain>` shows integrated `main`,
 `<N>.<domain>` serves PR N's last explicitly deployed SHA, and non-numeric `<name>.<domain>`

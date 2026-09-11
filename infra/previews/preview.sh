@@ -84,7 +84,7 @@ up() {
       fi
     fi
   fi
-  replace_environment "$volume" "$final_image" "manifold-pr-$number" "http://127.0.0.1:$port" compose "$number" "$port"
+  replace_environment disposable "$volume" "$final_image" "manifold-pr-$number" "http://127.0.0.1:$port" compose "$number" "$port"
   register "$number" pr "$port"
   router
   log "https://$number.$PREVIEW_DOMAIN runs $MANIFOLD_BUILD on $development_image"

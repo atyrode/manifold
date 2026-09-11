@@ -1139,6 +1139,12 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
     */
     const to = event.relatedTarget;
     if (to instanceof Node && event.currentTarget.contains(to)) return;
+    // Mounting a preview can leave a descendant without a related target.
+    const underPointer = event.currentTarget.ownerDocument.elementFromPoint(
+      event.clientX,
+      event.clientY,
+    );
+    if (underPointer !== null && event.currentTarget.contains(underPointer)) return;
     if (holdRef.current?.release.kind === "structure") holdRail(null);
   };
 

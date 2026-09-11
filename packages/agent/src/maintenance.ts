@@ -15,7 +15,7 @@ const MAINTENANCE_PROTOCOL_VERSIONS = new Set([1, TERMINAL_HOST_PROTOCOL_VERSION
 const HELP = `usage:
   manifold-agent --maintenance drain --hub URL --machine-id ID --owner-key-file FILE
   manifold-agent --maintenance reopen --hub URL --machine-id ID --owner-key-file FILE
-  manifold-agent --maintenance shutdown --socket PATH --terminal-host-id ID
+  manifold-agent --maintenance shutdown --socket PATH --terminal-host-id ID [--expected-pid POSITIVE_PID]
   manifold-agent --maintenance --help
 
 Only explicitly named references are used. Owner keys are read inside Manifold, never
@@ -24,8 +24,10 @@ accepted as arguments. In the owning container, run the same command with:
 
 Drain closes admission; it is not proof of idle or shutdown. Reopen explicitly cancels
 the drain. Shutdown is an observer request to the named owner, which must itself
-confirm it is drained and retains neither terminals nor jobs. No command retries,
-attaches a transport, retires terminals, cancels jobs, or changes a supervisor.
+confirm it is drained and retains neither terminals nor jobs. Optional --expected-pid
+requires a positive safe integer matching the owner's status PID on the same connection
+before requesting shutdown. No command retries, attaches a transport, retires terminals,
+cancels jobs, or changes a supervisor.
 A failure means hold: a drain latch may already have persisted. Never infer rollback.
 `;
 
@@ -74,7 +76,12 @@ type Options =
       readonly machineId: string;
       readonly ownerKeyFile: string;
     }
-  | { readonly command: "shutdown"; readonly socket: string; readonly terminalHostId: string };
+  | {
+      readonly command: "shutdown";
+      readonly socket: string;
+      readonly terminalHostId: string;
+      readonly expectedPid?: number;
+    };
 
 function isCommand(value: string | undefined): value is Command {
   return value === "drain" || value === "reopen" || value === "shutdown";
@@ -89,7 +96,7 @@ function parseOptions(args: readonly string[]): Options {
   if (!isCommand(command)) throw new Error("invalid_arguments");
   const allowed =
     command === "shutdown"
-      ? ["--socket", "--terminal-host-id"]
+      ? ["--socket", "--terminal-host-id", "--expected-pid"]
       : ["--hub", "--machine-id", "--owner-key-file"];
   const flags = new Map<string, string>();
   for (let at = 1; at < args.length; at += 2) {
@@ -114,10 +121,22 @@ function parseOptions(args: readonly string[]): Options {
     return value;
   };
   if (command === "shutdown") {
+    const rawExpectedPid = flags.get("--expected-pid");
+    const expectedPid = rawExpectedPid === undefined ? undefined : Number(rawExpectedPid);
+    if (
+      rawExpectedPid !== undefined &&
+      (!/^[0-9]+$/u.test(rawExpectedPid) ||
+        !Number.isSafeInteger(expectedPid) ||
+        expectedPid === undefined ||
+        expectedPid <= 0)
+    ) {
+      throw new Error("invalid_arguments");
+    }
     return {
       command,
       socket: required("--socket"),
       terminalHostId: required("--terminal-host-id"),
+      ...(expectedPid === undefined ? {} : { expectedPid }),
     };
   }
   const rawHub = required("--hub");
@@ -214,7 +233,10 @@ function shutdownOwner(options: Extract<Options, { command: "shutdown" }>): Prom
           return;
         }
         if (event.type === "status") {
-          if (event.terminalHostId !== options.terminalHostId) {
+          if (
+            event.terminalHostId !== options.terminalHostId ||
+            (options.expectedPid !== undefined && event.pid !== options.expectedPid)
+          ) {
             finish(failure("owner_identity_mismatch"));
           } else if (!MAINTENANCE_PROTOCOL_VERSIONS.has(event.terminalHostProtocolVersion)) {
             finish(failure("owner_protocol_mismatch"));

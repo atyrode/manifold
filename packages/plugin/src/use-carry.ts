@@ -255,10 +255,14 @@ export function useRemoteGestures(client: SessionClient): ReadonlyMap<string, Ge
       offGesture();
       offReset();
       state.clear();
+      setOverrides(NO_OVERRIDES);
     };
   }, [client]);
 
+  const hasOverrides = overrides.size > 0;
+
   useEffect(() => {
+    if (!hasOverrides) return;
     const state = stateRef.current;
     let animationFrame = 0;
     let previous = performance.now();
@@ -272,7 +276,7 @@ export function useRemoteGestures(client: SessionClient): ReadonlyMap<string, Ge
     };
     animationFrame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animationFrame);
-  }, []);
+  }, [hasOverrides]);
 
   return overrides;
 }
