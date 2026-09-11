@@ -212,18 +212,24 @@ jobs:
           changelog: "true"
           dist: consume
 
-  # verify:convergence's 13 rounds are ONE chain of shared scene state — a later round drags
-  # what an earlier one created — so it cannot be sharded by count. These four groups are its
-  # dependency closures, each self-sufficient from a cold boot.
+  # ONE job, deliberately, even though verify-convergence.ts can split itself four ways.
+  #
+  # The rounds are one chain of shared scene state, and `--group` runs a dependency closure
+  # of them. Three of the four closures are sound. `text` is not: F9 asserts that an undo
+  # restores deleted text, and undo reads the SESSION's history, not the element's — so
+  # lifting that closure out changes what undo means, not just when it runs. It failed on
+  # three separate CI runs, including with the ceiling at 20s, while every other round in
+  # its own group passed.
+  #
+  # Nothing is lost by declining the split: at ~160s this gate is less than half of
+  # `preview (integrated)`, so it is not on the critical path and four runners would buy no
+  # wall clock. The flag stays in the script because the closures are real and useful for
+  # running one of them by hand.
   convergence:
-    name: convergence (${{ matrix.group }})
+    name: convergence
     needs: [plan, build]
     if: needs.plan.outputs.convergence != 'false'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        group: [terminals, ink, text, composition]
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -232,7 +238,6 @@ jobs:
       - uses: ./.github/actions/gate-slice
         with:
           task: convergence
-          group: ${{ matrix.group }}
           dist: consume
 
   # verify-axioms.ts is two gates in one file: a static pass over the axiom registry, and a
