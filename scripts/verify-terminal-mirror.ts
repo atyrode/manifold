@@ -307,13 +307,30 @@ try {
 
   const containerId = await createContainer("terminal-mirror-gate");
 
+  const enterWorkspace = async (target: Browser, displayName: string): Promise<void> => {
+    await target.goto(`${origin}/#key=${ownerKey}`);
+    const hasIdentity = "localStorage.getItem('manifold.identity') !== null";
+    await until(
+      () =>
+        target.evaluate<boolean>(
+          `document.querySelector('#identity-name') !== null || ${hasIdentity}`,
+        ),
+      20_000,
+      "the identity form or existing credential",
+    );
+    if (!(await target.evaluate<boolean>(hasIdentity))) {
+      await target.typeInto("#identity-name", displayName);
+      await target.clickTestId("identity-enter");
+      await until(
+        () => target.evaluate<boolean>(hasIdentity),
+        20_000,
+        "the granted browser identity",
+      );
+    }
+  };
   browser = new Browser();
   await browser.launch();
-  await browser.goto(`${origin}/#key=${ownerKey}`);
-  if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
-    await browser.typeInto("input", "mirror-gate");
-    await browser.clickTestId("identity-enter");
-  }
+  await enterWorkspace(browser, "mirror-gate");
   await browser.goto(`${origin}/p/${containerId}`);
   await until(
     () => browser!.evaluate<boolean>("document.querySelector('.react-flow') !== null"),
@@ -641,13 +658,6 @@ try {
     (await listContainers()).find((container) => container.id === id)?.name ?? "";
   const containerIdNamed = async (name: string): Promise<string> =>
     (await listContainers()).find((container) => container.name === name)?.id ?? "";
-  const enterWorkspace = async (target: Browser, displayName: string): Promise<void> => {
-    await target.goto(`${origin}/#key=${ownerKey}`);
-    if (await target.evaluate<boolean>("document.querySelector('input') !== null")) {
-      await target.typeInto("input", displayName);
-      await target.clickTestId("identity-enter");
-    }
-  };
   const openCanvas = async (target: Browser, id: string, what: string): Promise<void> => {
     await target.goto(`${origin}/p/${id}`);
     await until(
