@@ -1374,14 +1374,18 @@ await Bun.write(path, ${JSON.stringify('await Bun.write("/data/unsafe-candidate"
             await command(["git", "checkout", "--detach", revision], { cwd: fixtureRepo });
           },
         );
-        // Replacing with the same reviewed image must activate a fresh container,
-        // not reuse the incumbent's state after the explicit deployment stop.
+        // Restoring reviewed source must replace the container. A rebuild may
+        // produce a new image digest, so compare against this deployment's image.
         await up();
         await ready();
         const restored = await inspectContainer();
+        requireThat(restored.Id !== incumbent.Id, `${name} reused the stopped incumbent`);
+        const reviewedImage = (
+          await docker(["image", "inspect", finalImage(), "--format", "{{.Id}}"])
+        ).out.trim();
         requireThat(
-          restored.Id !== incumbent.Id && restored.Image === incumbent.Image,
-          `${name} did not replace the incumbent with the reviewed image`,
+          restored.Image === reviewedImage,
+          `${name} did not activate the reviewed image`,
         );
       });
     }
