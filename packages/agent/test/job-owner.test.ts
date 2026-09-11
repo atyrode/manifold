@@ -3,6 +3,7 @@ import { createHash, generateKeyPairSync, sign, verify, createPublicKey } from "
 import { gzipSync } from "node:zlib";
 import {
   chmodSync,
+  existsSync,
   closeSync,
   lstatSync,
   mkdtempSync,
@@ -132,7 +133,7 @@ const compiledProbe = process.env.MANIFOLD_TEST_SYSCALL_PROBE;
 const realBackend = linux && Boolean(bwrap && busybox && cgroupRoot);
 test
   .skipIf(!linux || !cgroupRoot)
-  .each(["expired", "status", "cancel", "recovered-status"] as const)(
+  .each(["expired", "status", "cancel", "retire", "recovered-status"] as const)(
   "never-admitted %s starts close durably without accepting forged absence or replay",
   async (mode) => {
     const root = mkdtempSync(join(tmpdir(), "owner-unadmitted-"));
@@ -221,14 +222,15 @@ test
         mode === "expired"
           ? { type: "start", request, permit }
           : {
-              type: mode === "cancel" ? "cancel" : "status",
+              type: mode === "cancel" || mode === "retire" ? mode : "status",
               jobId: request.jobId,
-              ...(mode === "cancel" ? { reason: "requested" } : {}),
+              ...(mode === "cancel" || mode === "retire" ? { reason: "requested" } : {}),
               admission: { request, permit },
             };
       await owner.execute({
-        type: "status",
+        type: mode === "retire" ? "retire" : "status",
         jobId: request.jobId,
+        ...(mode === "retire" ? { reason: "requested" } : {}),
         admission: {
           request,
           permit: { ...permit, signature: Buffer.alloc(64).toString("base64") },
@@ -236,8 +238,9 @@ test
       });
       const wrongOwner = { ...signed, ownerId: "another-owner" };
       await owner.execute({
-        type: "status",
+        type: mode === "retire" ? "retire" : "status",
         jobId: request.jobId,
+        ...(mode === "retire" ? { reason: "requested" } : {}),
         admission: {
           request,
           permit: {
@@ -1947,4 +1950,249 @@ test.skipIf(!linux || !cgroupRoot).each(["read", "tunnel"] as const)(
       await fixture.close();
     }
   },
+);
+
+const instanceServiceWorker = process.env.MANIFOLD_TEST_INSTANCE_SERVICE;
+test.skipIf(!realBackend || !instanceServiceWorker).each([
+  "cooperative", "launch-race", "noncooperative",
+] as const)(
+  "instance retirement preserves native %s ownership until confirmed exit",
+  async (mode) => {
+    const root = mkdtempSync(join(tmpdir(), "owner-retirement-"));
+    const held: HeldDirectory[] = [];
+    const keys = generateKeyPairSync("ed25519");
+    let owner: MachineJobOwner | undefined;
+    let outputs: JobOutputStore | undefined;
+    let bwrapFd = -1;
+    let restoreLaunch: (() => void) | undefined;
+    const handoff = Promise.withResolvers<void>();
+    let launching: Promise<void> | undefined;
+    try {
+      const state = HeldDirectory.openAbsolute(root, { private: true });
+      const cache = state.openChild("cache", { create: true });
+      const managedState = state.openChild("locations", { create: true });
+      const outputDirectory = state.openChild("outputs", { create: true });
+      const delegatedCgroup = HeldDirectory.openAbsolute(cgroupRoot!);
+      held.push(state, cache, managedState, outputDirectory, delegatedCgroup);
+      const executableParent = HeldDirectory.openAbsolute(dirname(bwrap!));
+      bwrapFd = executableParent.openRuntimeFile(basename(bwrap!));
+      executableParent.close();
+      outputs = JobOutputStore.open(outputDirectory);
+      owner = await MachineJobOwner.open({
+        machineId: "machine",
+        admissionPublicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+        journal: new JobJournal(state.openChild("journal", { create: true })),
+        cache, managedState, outputs, delegatedCgroup,
+        bubblewrapFd: bwrapFd,
+        anchors: {},
+        runtimeTools: {},
+        protectedDirectories: [state],
+        artifactAuthority: { origins: [], maxRedirects: 0, timeoutMs: 1000 },
+      });
+      const bytes = readFileSync(instanceServiceWorker!);
+      const hash = createHash("sha256").update(bytes).digest("hex");
+      const limits = {
+        timeoutMs: 10_000, memoryBytes: 64 * 1024 * 1024, processes: 16, outputBytes: 65536,
+      };
+      const install: Extract<JobCommand, { type: "install" }> = {
+        type: "install",
+        pluginId: "fixture.retirement",
+        installationRevision: "r1",
+        artifactSha256: hash,
+        artifact: { bundleFile: "worker", data: bytes.toString("base64") },
+        machine: {
+          artifacts: {
+            [`linux-${process.arch}`]: {
+              bundleFile: "worker", sha256: hash, format: "raw", entry: ["worker"],
+              entrySha256: hash, maxBytes: bytes.length, maxExpandedBytes: bytes.length,
+              maxMembers: 1,
+            },
+          },
+          locations: {
+            state: {
+              managed: true, anchor: "state", components: ["service"], revision: "r1",
+              kind: "directory", guestPath: "/home/job/service-state",
+            },
+          },
+          operations: {
+            "fixture.retirement.serve": {
+              argv: [], input: {}, runtimeTools: [], providesService: true,
+              environment: {
+                FIXED_SERVICE_SETTING: "reviewed",
+                WAIT_FOR_FLUSH: "1",
+                ...(mode === "noncooperative" ? { IGNORE_RETIREMENT: "1" } : {}),
+              },
+              inputFiles: { serviceBearer: { generated: "service-bearer" } },
+              locations: [{ locationId: "state", access: "write" }],
+              outputs: [], network: "host", limits, stdin: false,
+            },
+          },
+        },
+      };
+      const policy: ServicePolicy = {
+        serviceId: "fixture.retirement.service",
+        revision: "r1",
+        maxConcurrent: 1,
+        runtime: {
+          scope: "instance", pluginId: install.pluginId, operationId: "fixture.retirement.serve",
+          installationRevision: "r1", artifactSha256: hash,
+          resourceBindingDigest: jobDigest(null), input: {},
+        },
+        operations: {
+          snapshot: {
+            readable: true, method: "GET", path: "/snapshot", input: {}, query: {}, body: [],
+            timeoutMs: 1000, maxRequestBytes: 1024, maxResponseBytes: 1024, maxResultBytes: 1024,
+            response: { kind: "projected-json", fields: [["starts"]], maxArrayItems: 1 },
+          },
+        },
+      };
+      const events: JobEvent[] = [];
+      const ready = Promise.withResolvers<void>();
+      const draining = Promise.withResolvers<void>();
+      const finished = Promise.withResolvers<JobResult>();
+      let stdout = "";
+      owner.attach((event) => {
+        events.push(JobEventSchema.parse(event));
+        if (event.type === "service_ready" && event.jobId === "retiring") ready.resolve();
+        if (event.type === "output" && event.jobId === "retiring" && event.outputId === "stdout") {
+          stdout += Buffer.from(event.data, "base64").toString();
+          if (stdout.includes("draining")) draining.resolve();
+        }
+        if (event.type === "result" && event.result.jobId === "retiring" &&
+            event.result.finishedAt !== null) finished.resolve(event.result);
+        return true;
+      });
+      await owner.execute(install);
+      await owner.execute({
+        type: "configure_services",
+        configuration: { revision: jobDigest([policy]), policies: [policy] },
+      });
+      const admission = (jobId: string, instance = true) => {
+        const body = {
+          jobId, machineId: "machine", pluginId: install.pluginId,
+          operationId: "fixture.retirement.serve", installationRevision: "r1",
+          artifactSha256: hash, input: {}, outputs: [],
+          limits: { ...limits, timeoutMs: instance ? 0 : limits.timeoutMs },
+          credential: {
+            principalId: "actor", tokenId: null, grantId: null, caps: [], containerScope: null,
+          },
+          parent: null, traceId: "retirement",
+          ...(instance ? { service: {
+            serviceId: policy.serviceId, revision: "r1", policySha256: jobDigest(policy),
+          } } : {}),
+        };
+        const request = { ...body, requestDigest: jobDigest(body) };
+        const now = Date.now();
+        const permit = {
+          permitId: jobId, jobId, requestDigest: request.requestDigest,
+          ownerId: owner!.identity.ownerId, ownerGeneration: owner!.identity.generation,
+          decisionId: "decision", policyRevision: "policy",
+          issuedAt: now, expiresAt: now + 30000,
+        };
+        return {
+          request,
+          permit: {
+            ...permit,
+            signature: sign(null, Buffer.from(canonicalJobJson(permit)), keys.privateKey)
+              .toString("base64"),
+          },
+        };
+      };
+      // Retirement cannot even reconcile absence for an ordinary signed job.
+      await owner.execute({
+        type: "retire", jobId: "ordinary", reason: "replace", admission: admission("ordinary", false),
+      });
+      expect(events.at(-1)).toMatchObject({
+        type: "refusal", jobId: "ordinary", reason: "instance_service_required",
+      });
+      expect(events.some((event) =>
+        event.type === "workload_empty" && event.jobId === "ordinary")).toBe(false);
+
+      const command = { type: "start" as const, ...admission("retiring") };
+      if (mode !== "cooperative") {
+        const nativeStarted = Promise.withResolvers<void>();
+        const launch = startLinuxJob;
+        const spy = spyOn(nativeRuntime, "startLinuxJob").mockImplementation(async (spec) => {
+          const handle = await launch(spec);
+          nativeStarted.resolve();
+          await handoff.promise;
+          return handle;
+        });
+        restoreLaunch = () => spy.mockRestore();
+        launching = owner.execute(command);
+        await Promise.race([
+          nativeStarted.promise,
+          launching.then(() => { throw new Error("native launch did not reach handoff"); }),
+        ]);
+      } else {
+        await owner.execute(command);
+        await Promise.race([
+          ready.promise,
+          finished.promise.then((result) => {
+            throw new Error(`service exited before readiness: ${JSON.stringify(result)}`);
+          }),
+        ]);
+      }
+      const retire = { type: "retire", jobId: "retiring", reason: "replace",
+        admission: { request: command.request, permit: command.permit } };
+      await owner.execute(retire);
+      await owner.execute(retire);
+      // Retirement returns while launch is pending; native FD handoff can now complete.
+      handoff.resolve();
+      await launching;
+      restoreLaunch?.();
+      restoreLaunch = undefined;
+      await Promise.race([
+        draining.promise,
+        finished.promise.then(() => { throw new Error("worker exited without cooperative shutdown"); }),
+      ]);
+      const statePath = join(root, "locations", install.pluginId, "service");
+      expect(existsSync(join(statePath, "flushed"))).toBe(false);
+      expect(events.some((event) =>
+        event.type === "workload_empty" && event.jobId === "retiring")).toBe(false);
+      events.length = 0;
+      await owner.execute({ type: "status", jobId: "retiring" });
+      expect(events).toContainEqual({
+        type: "result", result: expect.objectContaining({ jobId: "retiring", state: "started" }),
+      });
+      expect(events.some((event) => event.type === "service_ready")).toBe(false);
+      await owner.execute({ type: "start", ...admission("too-early") });
+      expect(events).toContainEqual({
+        type: "refusal", jobId: "too-early", reason: "instance_service_binding_mismatch",
+      });
+      expect(readFileSync(join(statePath, "starts"), "utf8")).toBe("1\n");
+      if (mode === "noncooperative") {
+        await owner.execute({ type: "cancel", jobId: "retiring", reason: "explicit-force" });
+        expect((await finished.promise).state).toBe("cancelled");
+        expect(existsSync(join(statePath, "flushed"))).toBe(false);
+      } else {
+        writeFileSync(join(statePath, "flush-allowed"), "release\n");
+        const result = await finished.promise;
+        expect(result).toMatchObject({ state: "exited", exitCode: 0, reason: null });
+        expect(readFileSync(join(statePath, "flushed"), "utf8")).toBe("durable shutdown\n");
+      }
+      expect(events).toContainEqual({
+        type: "workload_empty", jobId: "retiring", requestDigest: command.request.requestDigest,
+        ownerId: command.permit.ownerId, ownerGeneration: command.permit.ownerGeneration,
+      });
+      // Replay cannot relaunch the retired identity, and exclusion ends only after empty.
+      await owner.execute(retire);
+      await owner.execute(command);
+      expect(readFileSync(join(statePath, "starts"), "utf8")).toBe("1\n");
+      await owner.execute({ type: "start", ...admission("replacement") });
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "state", jobId: "replacement", state: "started",
+      }));
+    } finally {
+      handoff.resolve();
+      await launching;
+      restoreLaunch?.();
+      await owner?.shutdown();
+      outputs?.close();
+      if (bwrapFd >= 0) closeSync(bwrapFd);
+      for (const directory of held.reverse()) directory.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  30_000,
 );

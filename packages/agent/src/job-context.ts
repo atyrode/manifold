@@ -87,7 +87,8 @@ export class JobContext {
   }
 
   private async receive(raw: unknown): Promise<void> {
-    if (this.closed || raw === null || typeof raw !== "object")
+    if (this.closed) return;
+    if (raw === null || typeof raw !== "object")
       throw new Error("invalid_context_message");
     if (Reflect.get(raw, "type") === "service_ready") {
       const request = ServiceReadySchema.parse(raw);
@@ -255,6 +256,7 @@ export class JobContext {
     this.socket.destroy();
   }
   private fail(reason: string): void {
+    if (this.closed) return;
     this.close();
     this.callbacks.failure(reason);
   }

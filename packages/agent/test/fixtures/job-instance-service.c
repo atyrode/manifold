@@ -1,11 +1,26 @@
 /* Build statically only in the disposable native proof harness. */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+static int retire(void) {
+  puts("draining");
+  fflush(stdout);
+  if (getenv("IGNORE_RETIREMENT")) for (;;) pause();
+  /* A killed or prematurely replaced worker cannot commit this final durable state. */
+  if (getenv("WAIT_FOR_FLUSH")) {
+    while (access("/home/job/service-state/flush-allowed", F_OK)) usleep(1000);
+  } else usleep(500000);
+  FILE *state = fopen("/home/job/service-state/flushed", "w");
+  if (!state || fputs("durable shutdown\n", state) < 0 || fflush(state) ||
+      fsync(fileno(state)) || fclose(state)) return 22;
+  return 0;
+}
 
 int main(void) {
   const char *context = getenv("MANIFOLD_JOB_CONTEXT_FD");
@@ -33,12 +48,22 @@ int main(void) {
   FILE *frames = fdopen(dup(channel), "r");
   char frame[8192];
   if (!frames) return 17;
-  do { if (!fgets(frame, sizeof(frame), frames)) return 18; }
+  do { if (!fgets(frame, sizeof(frame), frames)) return retire(); }
   while (!strstr(frame, "\"type\":\"service_ready_result\""));
   if (!strstr(frame, "\"ok\":true")) return 19;
   char authority[180];
   snprintf(authority, sizeof(authority), " Bearer %s\r\n", bearer);
   for (;;) {
+    struct pollfd watch[2] = {
+      { .fd = channel, .events = POLLIN },
+      { .fd = listener, .events = POLLIN },
+    };
+    if (poll(watch, 2, -1) < 0) return 23;
+    if (watch[0].revents) {
+      char next[8192];
+      if (read(channel, next, sizeof(next)) <= 0) return retire();
+    }
+    if (!(watch[1].revents & POLLIN)) continue;
     int peer = accept(listener, NULL, NULL);
     if (peer < 0) return 20;
     char request[8192];
