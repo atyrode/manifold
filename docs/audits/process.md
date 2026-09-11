@@ -14,11 +14,14 @@ changes to the other briefs; a proposal is not authority to enact a process chan
 
 ## Scope
 
-In: `AGENTS.md`; `.github/workflows/ci.yml`, `release.yml`, `deploy-hub.yml`, `deploy-dev.yml` and
-`deploy-preview.yml`; `scripts/release.ts`, `release-core.ts`, `release-notes.ts`, `gate.ts`,
-`generate-web-changelog.ts` and the promotion path (`bun run promote`); `package.json` command
+In: `AGENTS.md`; `.github/workflows/ci.yml`, `release.yml`, `deploy-hub.yml`, `deploy-dev.yml`,
+`deploy-preview.yml` and `triage-policy.yml`; `scripts/release.ts`, `release-core.ts`,
+`release-notes.ts`, `gate.ts`, `generate-web-changelog.ts`, `triage-policy.ts`, `labels.ts`,
+`dispatch.ts` and the promotion path (`bun run promote`); `package.json` command
 routing; `changes/README.md` and pending fragments; the release, fleet-pin and preview procedures
-in `docs/SELF-HOST.md` and `infra/previews/README.md`; the repository's labels; `docs/audits/*`
+in `docs/SELF-HOST.md` and `infra/previews/README.md`; the repository's labels and the lifecycle
+contract in `docs/TRIAGE.md`; `SECURITY.md`; `.github/ISSUE_TEMPLATE/*` and `.github/skills/*`;
+`docs/audits/*`
 including this file and `LOG.md`; and the last 30 days of issues and PRs as evidence of practice.
 That window does not determine whether a preventive rule remains useful. Inaccessible GitHub or
 task evidence is an explicit boundary. Out: product behavior (the other briefs), historical
@@ -44,13 +47,18 @@ task evidence is an explicit boundary. Out: product behavior (the other briefs),
    Check fragments against `changes/README.md` and `scripts/release-core.ts`, and edits to released
    `CHANGELOG.md` sections or `packages/web/src/generated-changelog.ts` against the release-writer
    boundary. Count repeated undocumented practices for step 7, not one finding per deviating PR.
-4. **Labels and holds.** Compare `gh label list --repo atyrode/manifold --json name,description`
-   and actual issue use with [Labels](README.md#labels). Check the documented state exclusivity
-   and named dependencies. An additional live label is not automatically a defect; identify a
-   misleading meaning, broken routing or established undocumented use. Inspect `needs-operator`
-   decision and label history under that owner: distinguish an unresolved concrete decision from
-   a recorded resolution whose status label was not updated. Arbitrary comments are not operator
-   authorization; a resolved decision is not a permanent veto.
+4. **Labels, holds and the triage loop.** Compare
+   `gh label list --repo atyrode/manifold --json name,description` and actual issue use with
+   [`TRIAGE.md`](../TRIAGE.md) §Label model, and run `bun scripts/triage-policy.ts --report` and
+   `bun scripts/labels.ts --check` as evidence: a nonzero exit names the drift, and a clean exit
+   is not proof that the prose owner still matches practice. Check the documented state
+   exclusivity and named dependencies. An additional live label is not automatically a defect;
+   identify a misleading meaning, broken routing or established undocumented use. Inspect
+   `needs-operator` decision and label history under that owner: distinguish an unresolved
+   concrete decision from a recorded resolution whose status label was not updated. Arbitrary
+   comments are not operator authorization; a resolved decision is not a permanent veto. Check
+   the merge grant in §Merge against merges actually performed, and the runbooks against
+   `.github/skills/*`.
 5. **Release and deployment owner routing.** Compare root boundaries with `changes/README.md`,
    `scripts/release.ts`, `release-core.ts`, `release-notes.ts`, `generate-web-changelog.ts`,
    `release.yml` and `scripts/promote.ts`. Verify the actual inputs, refusals and release/promotion
@@ -101,7 +109,7 @@ finding: quote the relevant statement with its source URL, excluding private mat
 
 ```
 Title: [audit:process] <practice/rule>: <established but undocumented | documented but unenforced | contract and workflow disagree>
-Labels: audit, process (+ needs-operator only for a concrete unresolved operator decision)
+Labels: audit, process, needs-triage (+ a ## Decision block when a concrete operator decision is required)
 Body:
 - main rev: <sha7>, audited <date>
 - Contract: <authoritative doc:line | workflow:line | script:line> — "<quote>" (or: none)

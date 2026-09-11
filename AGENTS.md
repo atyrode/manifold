@@ -183,10 +183,13 @@ in [`docs/PLUGINS.md`](docs/PLUGINS.md); deployment and release commands are rou
 - **Release or deployment work:** read [SELF-HOST.md → Environments](docs/SELF-HOST.md#environments)
   and the owning [`release.ts`](scripts/release.ts) / [`promote.ts`](scripts/promote.ts) procedures.
   `bun run release --dry-run` is release-assessment tooling, not an every-task ritual.
-- **Issues, holds or audits:** [Audit README → Labels](docs/audits/README.md#labels) owns issue-state
-  semantics, including unresolved `needs-operator` holds and their recorded resolution.
-  For an audit, read its scoped brief and the [run protocol](docs/audits/README.md#run-protocol);
-  the README owns cadence and ledger duties, not ordinary task completion.
+- **Issues, holds or audits:** [TRIAGE.md](docs/TRIAGE.md) owns issue and pull request lifecycle:
+  states, priority, holds, claims, review and the merge grant. Every new issue starts
+  `needs-triage`; `bun scripts/dispatch.ts --next` is the ready queue. A triage-tasked agent
+  actively drives every `needs-operator` hold to a recorded decision with the operator — holds
+  never resolve by silence. For an audit, read its scoped brief and the
+  [run protocol](docs/audits/README.md#run-protocol); the audit README owns cadence and ledger
+  duties, not ordinary task completion.
 
 ## Delivery
 
@@ -196,7 +199,9 @@ in [`docs/PLUGINS.md`](docs/PLUGINS.md); deployment and release commands are rou
 - Before ready/merge, `bun run gate` and required CI must pass for the current published revision
   and intended integration target, `main`; a stacked branch without that evidence is not ready.
   Follow the common lifecycle above; squash-merge only under granted authority and checks, then
-  delete your branch. Direct commits to `main` are reserved for `bun run release`.
+  delete your branch; the standing grant's mechanical criteria are
+  [TRIAGE.md §Merge](docs/TRIAGE.md#merge). Direct commits to `main` are reserved for
+  `bun run release`.
 - When configured, successful main CI deploys integrated development at `DEV_DEPLOY_URL`.
   For behavioral changes, verify that exact deployed revision there; source, merge, deployment
   and runtime evidence remain distinct. This is not a requirement to deploy unrelated docs/process work.

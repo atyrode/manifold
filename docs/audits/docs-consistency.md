@@ -94,7 +94,7 @@ when its task-specific pointer reaches the owner.
 
 ```
 Title: [audit:docs-consistency] <doc A §x> and <doc B §y> disagree about <rule> | <doc> §x points at <missing target>
-Labels: audit, documentation
+Labels: audit, documentation, needs-triage
 Body:
 - main rev: <sha7>
 - Statement A: <path:line> — "<quote>"

@@ -83,7 +83,7 @@ it false. "This looks unused" is not evidence; the reference search is.
 
 ```
 Title: [audit:dead-code] <symbol|file|branch> in <package> is unreachable
-Labels: audit
+Labels: audit, needs-triage
 Body:
 - main rev: <sha7>
 - Subject: <path:line> — <export | test | comment | branch | script | selector>

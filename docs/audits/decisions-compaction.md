@@ -89,7 +89,7 @@ the exact finding this brief exists for.
 
 ```
 Title: [audit:decisions-compaction] ADR <NNNN> §<M>: <claim summary> has no spec home
-Labels: audit
+Labels: audit, needs-triage
 Body:
 - main rev: <sha7>
 - Record: docs/decisions/<file>:<line> — "<quoted claim or table caption>"

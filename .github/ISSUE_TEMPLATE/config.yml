@@ -1,0 +1,4 @@
+# Blank issues stay enabled: agents file with `gh issue create` and the forms are the browser
+# path. Either way `docs/TRIAGE.md` §Intake applies — Problem and Acceptance, and `needs-triage`
+# until triage classifies it (the Triage policy workflow adds the label when it is missing).
+blank_issues_enabled: true

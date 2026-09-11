@@ -1,0 +1,33 @@
+name: Bug
+description: Something does not work the way it is documented to work
+title: "bug: "
+labels: [needs-triage, bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Triage assigns area, priority and a state; see `docs/TRIAGE.md`. Keep secrets, tokens and
+        key-bearing URLs out of the report.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is wrong, where, on which revision
+      placeholder: On <origin or local>, at <commit or version>, <action> produces <result>.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Reproduction or observed output
+      placeholder: Steps, commands, logs or screenshots — sanitized.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What a reviewer can observe when this is fixed
+    validations:
+      required: true
