@@ -33,6 +33,7 @@ import { JobOutputStore } from "../src/job-outputs.ts";
 import { artifactCacheKey } from "../src/job-artifacts.ts";
 import { LinuxJobRefusal, startLinuxJob, type LinuxJobResult } from "../src/job-linux.ts";
 import * as nativeRuntime from "../src/job-linux.ts";
+import { until } from "../../../scripts/gate-lib.ts";
 
 function tarMember(name: string, contents: Buffer): Buffer {
   const header = Buffer.alloc(512);
@@ -2174,6 +2175,7 @@ test
         events.some((event) => event.type === "workload_empty" && event.jobId === "ordinary"),
       ).toBe(false);
 
+      const statePath = join(root, "locations", install.pluginId, "service");
       const command = { type: "start" as const, ...admission("retiring") };
       if (mode === "launch-race" || mode === "noncooperative") {
         const nativeStarted = Promise.withResolvers<void>();
@@ -2190,11 +2192,26 @@ test
           nativeStarted.promise,
           launching.then(() => {
             throw new Error(
-              events.findLast((event) => event.type === "refusal")?.reason ??
-                "native launch did not reach handoff",
+              events.findLast(
+                (event): event is Extract<JobEvent, { type: "refusal" }> =>
+                  event.type === "refusal" && event.jobId === "retiring",
+              )?.reason ?? "native launch returned without reaching the withheld FD handoff",
             );
           }),
         ]);
+        // startLinuxJob resolves the moment bubblewrap's gate is released, so the native
+        // handle exists before the workload has execed. Retirement, the FD handoff and the
+        // owner's context close then run as one uninterrupted microtask burst, which can
+        // destroy the channel while the worker is still starting: its readiness write fails
+        // and it dies without ever draining. Wait for the workload's own durable first write
+        // — the very value the proofs below read — instead of assuming it won that race.
+        await until(
+          () =>
+            existsSync(join(statePath, "starts")) &&
+            readFileSync(join(statePath, "starts"), "utf8") === "1\n",
+          10_000,
+          "the retiring workload to record its start before the withheld FD handoff",
+        );
       } else {
         await owner.execute(command);
         await Promise.race([
@@ -2226,7 +2243,6 @@ test
           throw new Error("worker exited without cooperative shutdown");
         }),
       ]);
-      const statePath = join(root, "locations", install.pluginId, "service");
       expect(existsSync(join(statePath, "flushed"))).toBe(false);
       expect(
         events.some((event) => event.type === "workload_empty" && event.jobId === "retiring"),

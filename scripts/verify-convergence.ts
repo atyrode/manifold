@@ -25,7 +25,9 @@
  * Self-contained: builds the web bundle to a temp dir, spawns its own server, cleans up
  * even on failure.
  *
- * Usage:  bun scripts/verify-convergence.ts            # or: bun run verify:convergence
+ * Usage:  bun scripts/verify-convergence.ts                 # every group, one boot
+ *         bun scripts/verify-convergence.ts --group ink   # one group, one boot
+ *         bun scripts/verify-convergence.ts --list-groups
  * Env:    MANIFOLD_CHROMIUM (else system chromium)
  *
  * Exit 0 only if every round converges with its expected effect.
@@ -45,7 +47,56 @@ import {
 } from "../packages/protocol/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser } from "./cdp.ts";
-import { ownerKeyOf, sleep, teardownServer, until } from "./gate-lib.ts";
+import { ownerKeyOf, settles, sleep, teardownServer, until } from "./gate-lib.ts";
+
+/**
+ * The rounds are ORDER-COUPLED: F2/F4/F5 drag the terminal F1 creates, F6b and F10 act on
+ * F3's, F8/F9 edit the text F8a seeds, F11 resizes F11a's, F11b resizes the stroke F7
+ * draws, and F12 navigates both browsers off the canvas route and kills browser B. There
+ * is therefore no per-ROUND shard to hand a second runner. What is separable is the
+ * dependency CLOSURE: these four groups share the boot and nothing else — no group reads
+ * an element another group created — so CI can put one on each runner. No flag runs all
+ * four in this file's order, in one boot, which is what `bun run gate` keeps doing.
+ *
+ * Measured on a warm box against a shared `MANIFOLD_GATE_DIST`: ~5s of boot that every
+ * invocation pays, then terminals 15s, text 11s, composition 15s, ink 8s end to end,
+ * against 158s for all four in one process. The split is not just parallelism — most of
+ * that 158s is one cross-group cost the split removes outright (see F5 and F12).
+ */
+const GROUPS = ["terminals", "ink", "text", "composition"] as const;
+type Group = (typeof GROUPS)[number];
+
+const USAGE = `usage: bun scripts/verify-convergence.ts [--group <${GROUPS.join("|")}>] [--list-groups]`;
+const args = process.argv.slice(2);
+// Printed before anything is built or spawned: the CI aggregator diffs this against its
+// job matrix, so a fifth group nobody wired up surfaces as a missing job rather than as
+// rounds that silently never ran.
+if (args.length === 1 && args[0] === "--list-groups") {
+  console.log(GROUPS.join("\n"));
+  process.exit(0);
+}
+const isGroup = (value: string): value is Group => (GROUPS as readonly string[]).includes(value);
+/**
+ * The one group this invocation runs, or null for all of them. An unknown flag or an
+ * unknown group name costs an exit code rather than a three-minute run that ignored it:
+ * a matrix entry that silently verifies NOTHING is the failure mode worth being loud
+ * about. It is refused as a usage line rather than a thrown stack, because the reader is
+ * an operator looking at a CI log, not a developer looking at this file.
+ */
+const requested = ((): Group | null => {
+  if (args.length === 0) return null;
+  const [flag, name] = args;
+  if (args.length !== 2 || flag !== "--group" || name === undefined) {
+    console.error(`${USAGE}\nrefusing: ${args.join(" ")}`);
+    process.exit(1);
+  }
+  if (!isGroup(name)) {
+    console.error(`unknown group "${name}"; valid groups: ${GROUPS.join(", ")}\n${USAGE}`);
+    process.exit(1);
+  }
+  return name;
+})();
+const runs = (group: Group): boolean => requested === null || requested === group;
 
 const repoRoot = join(import.meta.dir, "..");
 const { distDir, cleanup: cleanupDist } = resolveWebDist("manifold-conv-");
@@ -176,7 +227,22 @@ try {
     await browser.launch();
     await browser.goto(`${origin}/#key=${ownerKey}`);
     await browser.evaluate("localStorage.setItem('manifold:debug', '1')");
-    if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
+    /*
+      The identity cover is React-rendered and `goto` returns on a fixed settle, so asking
+      ONCE whether its form is there asks before the page has answered. A slow first paint
+      reads "no form", the gate skips the identity it was supposed to submit, and the
+      container route below then sits on that same cover until `terminal open` times out
+      twenty seconds later — a whole-gate abort during SETUP, reproducible here at roughly
+      one run in four and the shape of the flake this gate carries a retry for. `settles`
+      answers instead of throwing, so a build that needs no identity still falls through
+      exactly as it did.
+    */
+    if (
+      await settles(
+        () => browser.evaluate<boolean>("document.querySelector('input') !== null"),
+        10_000,
+      )
+    ) {
       await browser.typeInto("input", name);
       if (color !== undefined) {
         const selected = await browser.evaluate<boolean>(
@@ -204,8 +270,14 @@ try {
   }
 
   const cursorColor = "#e03131";
-  await openContainer(browserA, "convA", cursorColor);
-  await openContainer(browserB, "convB");
+  // Two independent Chromiums, two independent profiles, two independent identities:
+  // serialising them cost two browser spawns and four page loads of wall clock for an
+  // ordering nothing here relies on. The identity form defaults convB to IDENTITY_COLORS[3]
+  // and convA picks index 0 explicitly, so concurrent submissions cannot race for a color.
+  await Promise.all([
+    openContainer(browserA, "convA", cursorColor),
+    openContainer(browserB, "convB"),
+  ]);
 
   // ------------------------------------------------ presence & status chrome
 
@@ -252,14 +324,26 @@ try {
   // assertion reads the instance rather than pinning the label's grammar.
   const health = (await (await fetch(`${origin}/healthz`)).json()) as { build?: unknown };
   if (typeof health.build !== "string") throw new Error("convA: /healthz names no build");
-  const changelogValid = await browserA.evaluate<boolean>(
-    `(() => {
+  /*
+    The `open` attribute lands the moment the dialog mounts; its releases render after.
+    Reading the content ONCE at that instant asks before the page has answered, and the
+    throw below is in setup, outside any `round()`, so a miss aborts the whole gate
+    instead of failing one assertion — reproduced 4/4 under `taskset -c 0-3`. `settles`
+    asks the same question until the page answers it, and still answers false on a
+    dialog that never renders its releases, so nothing is proved more weakly.
+  */
+  const changelogValid = await settles(
+    () =>
+      browserA.evaluate<boolean>(
+        `(() => {
       const dialog = document.querySelector('.web-changelog-dialog');
       const label = document.querySelector('.sidebar-version')?.textContent ?? '';
       return dialog?.getAttribute('aria-labelledby') === 'web-changelog-title'
         && label.includes(${JSON.stringify(`v${health.build}`)})
         && dialog.querySelectorAll('.web-changelog-releases li').length > 0;
     })()`,
+      ),
+    5_000,
   );
   if (!changelogValid) throw new Error("convA: changelog dialog content or build label invalid");
   await browserA.send("Input.dispatchKeyEvent", {
@@ -304,10 +388,24 @@ try {
   if (identityAfterRefresh !== identityBeforeRefresh) {
     throw new Error("convA: persisted principal changed across page refresh");
   }
-  await browserA.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 620, y: 360 });
+  /*
+    A cursor frame is one ephemeral event and convA has just reloaded: if convB is still
+    re-hydrating when a single `mouseMoved` crosses the wire, nothing ever resends it and
+    the poll below waits out its whole ceiling on a stimulus that is already gone. The
+    throw is not inside a `round()`, so it takes the entire gate with it. Keep a live
+    pointer in flight for the duration instead, jittered so every beat is a new position
+    rather than a coalesced repeat of the last one.
+  */
+  let colorBeat = 0;
   await until(
-    () =>
-      browserB.evaluate<boolean>(
+    async () => {
+      colorBeat += 1;
+      await browserA.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: 620 + (colorBeat % 3),
+        y: 360,
+      });
+      return await browserB.evaluate<boolean>(
         `(() => {
           const cursor = document.querySelector(${JSON.stringify(`[data-cursor-color="${cursorColor}"]`)});
           if (!(cursor instanceof HTMLElement)) return false;
@@ -317,7 +415,8 @@ try {
             && style.display !== "none" && style.visibility !== "hidden"
             && style.color === "rgb(224, 49, 49)";
         })()`,
-      ),
+      );
+    },
     5_000,
     "convA: chosen identity color rendered on convB cursor after refresh",
   );
@@ -359,10 +458,23 @@ try {
     return map;
   }
 
-  async function view(browser: Browser, which: "canvas" | "scene"): Promise<ViewMap> {
-    const snapshots = await browser.evaluate<readonly Snapshot[]>(`window.__manifold.${which}()`);
-    return toViewMap(snapshots);
+  /**
+   * Everything one client can be asked about, read in ONE page task. Canvas, scene and
+   * outbox used to be three separate `Runtime.evaluate` round trips per browser, so the
+   * page advanced between them and a five-view diff could name a disagreement that was
+   * never simultaneously true — at six round trips per poll, in the hottest loop this
+   * gate has.
+   */
+  interface ClientProbe {
+    readonly canvas: readonly Snapshot[];
+    readonly scene: readonly Snapshot[];
+    readonly outbox: number;
   }
+
+  const CLIENT_PROBE = `(() => {
+      const probe = window.__manifold;
+      return { canvas: probe.canvas(), scene: probe.scene(), outbox: probe.outbox() };
+    })()`;
 
   function diffMaps(label: string, expected: ViewMap, actual: ViewMap): string[] {
     const lines: string[] = [];
@@ -463,32 +575,49 @@ try {
       await act();
       await until(
         async () => {
+          /*
+            Sample both browsers FIRST, in parallel, and bracket them with the canonical
+            scene. The observer keeps applying updates while the probes are in flight, so
+            comparing views against a canonical snapshot taken BEFORE them compares two
+            different instants: under load the round trips stretch, the skew widens, and
+            the round burns its 30s ceiling on a disagreement that never existed — while
+            printing that phantom diff as the failure. Requiring the canonical scene to be
+            UNCHANGED across the sampling window is the only atomicity available from
+            outside the page, and it is the one the invariant needs anyway: quiescence.
+          */
+          const canonicalBefore = canonicalView();
+          const [a, b] = await Promise.all([
+            browserA.evaluate<ClientProbe>(CLIENT_PROBE),
+            browserB.evaluate<ClientProbe>(CLIENT_PROBE),
+          ]);
           const canonical = canonicalView();
+          if (!mapsEqual(canonicalBefore, canonical)) {
+            lastDiff = ["canonical: the scene was still advancing while the views were sampled"];
+            return false;
+          }
           const views: [string, ViewMap][] = [
-            ["A.canvas", await view(browserA, "canvas")],
-            ["A.scene", await view(browserA, "scene")],
-            ["B.scene", await view(browserB, "scene")],
-            ["B.canvas", await view(browserB, "canvas")],
+            ["A.canvas", toViewMap(a.canvas)],
+            ["A.scene", toViewMap(a.scene)],
+            ["B.scene", toViewMap(b.scene)],
+            ["B.canvas", toViewMap(b.canvas)],
           ];
           lastDiff = views.flatMap(([label, m]) =>
             mapsEqual(m, canonical) ? [] : diffMaps(label, canonical, m),
           );
-          for (const [browser, label] of [
-            [browserA, "A"],
-            [browserB, "B"],
+          for (const [label, outbox] of [
+            ["A", a.outbox],
+            ["B", b.outbox],
           ] as const) {
-            const outbox = await browser.evaluate<number>("window.__manifold.outbox()");
             if (outbox > 0) lastDiff.push(`${label}.outbox: ${String(outbox)}`);
           }
           // Effect assertions: a silently no-op gesture must fail, not pass vacuously.
-          const canonicalNow = canonicalView();
-          if (canonicalNow.size !== before.size + effect.adds) {
+          if (canonical.size !== before.size + effect.adds) {
             lastDiff.push(
-              `effect: expected ${String(before.size + effect.adds)} canonical elements, have ${String(canonicalNow.size)}`,
+              `effect: expected ${String(before.size + effect.adds)} canonical elements, have ${String(canonical.size)}`,
             );
           }
           for (const id of effect.changes ?? []) {
-            if (canonicalNow.get(id) === before.get(id)) {
+            if (canonical.get(id) === before.get(id)) {
               lastDiff.push(`effect: ${id} canonical stamp did not advance`);
             }
           }
@@ -508,7 +637,11 @@ try {
 
   // ---------------------------------------------------------------- rounds
 
-  console.log(`convergence rounds against ${origin} container ${containerId}`);
+  console.log(
+    `convergence rounds against ${origin} container ${containerId}${
+      requested === null ? "" : ` — group ${requested} only`
+    }`,
+  );
   const canvasLeftA = await browserA.evaluate<number>(
     "document.querySelector('.workspace-canvas')?.getBoundingClientRect().left ?? 0",
   );
@@ -518,25 +651,28 @@ try {
    * a moment after the server is listening.
    */
   let machineId = "";
-  await until(
-    async () => {
-      const outcome = ActionOutcomeSchema.parse(
-        await (
-          await fetch(`${origin}/api/actions/core.machines.list`, {
-            method: "POST",
-            headers: httpHeaders,
-            body: "{}",
-          })
-        ).json(),
-      );
-      if (!outcome.ok) throw new Error(`machines list refused: ${outcome.denial.message}`);
-      const listed = MachinesResponseSchema.parse(outcome.result);
-      machineId = listed.machines.find((machine) => machine.online)?.id ?? "";
-      return machineId !== "";
-    },
-    30_000,
-    "an online machine to open terminals on",
-  );
+  // Only the terminals group opens PTYs, so only it waits on a machine to open them on.
+  if (runs("terminals")) {
+    await until(
+      async () => {
+        const outcome = ActionOutcomeSchema.parse(
+          await (
+            await fetch(`${origin}/api/actions/core.machines.list`, {
+              method: "POST",
+              headers: httpHeaders,
+              body: "{}",
+            })
+          ).json(),
+        );
+        if (!outcome.ok) throw new Error(`machines list refused: ${outcome.denial.message}`);
+        const listed = MachinesResponseSchema.parse(outcome.result);
+        machineId = listed.machines.find((machine) => machine.online)?.id ?? "";
+        return machineId !== "";
+      },
+      30_000,
+      "an online machine to open terminals on",
+    );
+  }
 
   /**
    * Opens one REAL terminal and returns the canvas reference its opener owes — a portal
@@ -773,1062 +909,1104 @@ try {
     await browser.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers });
   };
 
-  const first = await terminalPortal(280, 180);
-  await round("F1 terminal reference projects into both canvases", { adds: 1 }, async () => {
-    sdk.transact((tx) => tx.create(first));
-  });
-  await round(
-    "F2 live remote drag reaches B before A releases",
-    { adds: 0, changes: [first.id] },
-    () => moveFlowNode(browserA, first.id, 150, 90, browserB),
-  );
+  if (runs("terminals")) {
+    const first = await terminalPortal(280, 180);
+    await round("F1 terminal reference projects into both canvases", { adds: 1 }, async () => {
+      sdk.transact((tx) => tx.create(first));
+    });
+    await round(
+      "F2 live remote drag reaches B before A releases",
+      { adds: 0, changes: [first.id] },
+      () => moveFlowNode(browserA, first.id, 150, 90, browserB),
+    );
 
-  const second = await terminalPortal(900, 420);
-  await round("F3 second terminal reference projects into both canvases", { adds: 1 }, async () => {
-    sdk.transact((tx) => tx.create(second));
-  });
-  await round(
-    "F4 concurrent browser moves converge",
-    { adds: 0, changes: [first.id, second.id] },
-    async () => {
-      await Promise.all([
-        moveFlowNode(browserA, second.id, -90, 120),
-        moveFlowNode(browserB, first.id, 110, -70),
-      ]);
-    },
-  );
-  await round(
-    "F5 frozen tab resumes to canonical geometry",
-    { adds: 0, changes: [first.id] },
-    async () => {
-      await browserB.setLifecycle("frozen");
-      try {
-        await moveFlowNode(browserA, first.id, 80, 60);
-        await sleep(500);
-      } finally {
-        // A tab left frozen never resyncs, so every LATER round would fail on B for a
-        // reason that has nothing to do with it. The thaw is not part of the contract.
-        await browserB.setLifecycle("active");
-      }
-    },
-  );
+    const second = await terminalPortal(900, 420);
+    await round(
+      "F3 second terminal reference projects into both canvases",
+      { adds: 1 },
+      async () => {
+        sdk.transact((tx) => tx.create(second));
+      },
+    );
+    await round(
+      "F4 concurrent browser moves converge",
+      { adds: 0, changes: [first.id, second.id] },
+      async () => {
+        await Promise.all([
+          moveFlowNode(browserA, second.id, -90, 120),
+          moveFlowNode(browserB, first.id, 110, -70),
+        ]);
+      },
+    );
+    await round(
+      "F5 frozen tab resumes to canonical geometry",
+      { adds: 0, changes: [first.id] },
+      async () => {
+        /*
+          Freezing is one-way for the REST of the process, and it is not only rAF that
+          never comes back (see F12): every later `Input.dispatchMouseEvent` on this tab
+          takes 5.0s instead of 27ms — measured in isolation on a blank page, and not
+          repaired by thawing, `Page.bringToFront`, focus emulation or a full reload,
+          because `document.visibilityState` stays "hidden" for good. That is why the
+          composition round is its own group: run in the same process as this one it pays
+          26 of those dispatches, 131s, more than four fifths of this gate's wall clock.
+        */
+        await browserB.setLifecycle("frozen");
+        try {
+          await moveFlowNode(browserA, first.id, 80, 60);
+          await sleep(500);
+        } finally {
+          // A tab left frozen never resyncs, so every LATER round would fail on B for a
+          // reason that has nothing to do with it. The thaw is not part of the contract.
+          await browserB.setLifecycle("active");
+        }
+      },
+    );
 
-  const cursorFrames: { readonly x: number; readonly y: number }[] = [];
-  const offCursor = sdk.on("cursor", (message) => {
-    cursorFrames.push({ x: message.x, y: message.y });
-  });
-  const viewportBefore = await browserA.evaluate<Viewport>("window.__manifold.viewport()");
-  const panStart = { x: canvasLeftA + 700, y: 650 };
-  await browserA.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...panStart });
-  await browserA.send("Input.dispatchMouseEvent", {
-    type: "mousePressed",
-    ...panStart,
-    button: "middle",
-    buttons: 4,
-  });
-  for (let index = 1; index <= 14; index += 1) {
+    const cursorFrames: { readonly x: number; readonly y: number }[] = [];
+    const offCursor = sdk.on("cursor", (message) => {
+      cursorFrames.push({ x: message.x, y: message.y });
+    });
+    const viewportBefore = await browserA.evaluate<Viewport>("window.__manifold.viewport()");
+    const panStart = { x: canvasLeftA + 700, y: 650 };
+    await browserA.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...panStart });
     await browserA.send("Input.dispatchMouseEvent", {
-      type: "mouseMoved",
-      x: panStart.x - index * 10,
-      y: panStart.y - index * 6,
+      type: "mousePressed",
+      ...panStart,
       button: "middle",
       buttons: 4,
     });
-    await sleep(15);
-  }
-  await browserA.send("Input.dispatchMouseEvent", {
-    type: "mouseReleased",
-    x: panStart.x - 140,
-    y: panStart.y - 84,
-    button: "middle",
-  });
-  await sleep(300);
-  const viewportAfter = await browserA.evaluate<Viewport>("window.__manifold.viewport()");
-  offCursor();
-  if (
-    Math.abs(viewportAfter.scrollX - viewportBefore.scrollX) < 50 ||
-    Math.abs(viewportAfter.scrollY - viewportBefore.scrollY) < 30
-  ) {
-    throw new Error("Flow viewport did not move under a real middle-button pan");
-  }
-  if (cursorFrames.length < 3) {
-    throw new Error(`Flow pan emitted only ${String(cursorFrames.length)} cursor frames`);
-  }
-  console.log("PASS  F6 viewport pan and cursor transport cross the browser boundary");
-
-  // Presence is worthless when the canvas paints scene content over it. Element
-  // bands grow with every creation (`nextZIndex`), so the presence layer has to
-  // sit above the highest one; fixtures pinned at zIndex 0 are exactly why raised
-  // terminals could hide every remote cursor, selection and live stroke unnoticed.
-  await round(
-    "F6b raising a terminal keeps both canvases converged",
-    {
-      adds: 0,
-      changes: [second.id],
-    },
-    async () => {
-      sdk.transact((tx) => {
-        tx.patch(second.id, { zIndex: tx.nextZIndex() });
-      });
-    },
-  );
-
-  try {
-    const stacked = sdk.elements.get(second.id);
-    if (stacked === undefined) throw new Error("raised terminal missing from the canonical scene");
-    if (stacked.zIndex <= 0) {
-      throw new Error(`raised terminal landed in band ${String(stacked.zIndex)}, expected above 0`);
-    }
-    // Park B's pointer far away so the only cursor over the target is the SDK's.
-    await browserB.send("Input.dispatchMouseEvent", {
-      type: "mouseMoved",
-      ...(await panePoint(browserB, 0.1, 0.9)),
-    });
-    const center = { x: stacked.x + stacked.width / 2, y: stacked.y + stacked.height / 2 };
-    const nodeSelector = JSON.stringify(`.react-flow__node[data-id="${second.id}"]`);
-    const paintProbe = `(() => {
-      const node = document.querySelector(${nodeSelector});
-      if (!(node instanceof HTMLElement)) return { state: "no-node" };
-      const box = node.getBoundingClientRect();
-      const marker = [...document.querySelectorAll(".remote-cursor")].find((cursor) => {
-        const rect = cursor.getBoundingClientRect();
-        return (
-          rect.left >= box.left - 2 &&
-          rect.left <= box.right + 2 &&
-          rect.top >= box.top - 2 &&
-          rect.top <= box.bottom + 2
-        );
-      });
-      if (marker === undefined) return { state: "no-cursor-over-node" };
-      const viewport = document.querySelector(".react-flow__viewport");
-      // Paint order is decided by the nearest ancestor-or-self carrying a numeric
-      // z-index inside the viewport's stacking context.
-      let presenceZ = 0;
-      for (let element = marker; element !== null && element !== viewport; element = element.parentElement) {
-        const band = Number.parseInt(getComputedStyle(element).zIndex, 10);
-        if (Number.isFinite(band)) { presenceZ = band; break; }
-      }
-      const nodeZ = [...document.querySelectorAll(".react-flow__node")].reduce(
-        (max, element) => Math.max(max, Number.parseInt(getComputedStyle(element).zIndex, 10) || 0),
-        0,
-      );
-      return { state: "measured", presenceZ, nodeZ };
-    })()`;
-    // Cursors are ephemeral and interpolated: keep the frame alive across the probe.
-    const cursorBeat = setInterval(() => {
-      sdk.sendCursor(center.x, center.y);
-    }, 100);
-    try {
-      await until(
-        async () => (await browserA.evaluate<PaintProbe>(paintProbe)).state === "measured",
-        5_000,
-        "remote cursor rendered over the raised terminal",
-      );
-      const paint = await browserA.evaluate<PaintProbe>(paintProbe);
-      if ((paint.presenceZ ?? 0) <= (paint.nodeZ ?? 0)) {
-        throw new Error(
-          `presence layer paints at z=${String(paint.presenceZ)}, under scene nodes at z=${String(paint.nodeZ)}`,
-        );
-      }
-      console.log(
-        `PASS  F6b remote cursor paints above raised scene nodes — presence z=${String(paint.presenceZ)} over node z=${String(paint.nodeZ)}`,
-      );
-    } finally {
-      clearInterval(cursorBeat);
-    }
-  } catch (error) {
-    failures.push("F6b presence paint order");
-    console.log(
-      `FAIL  F6b remote cursor paints above raised scene nodes — ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-
-  const drawCountBefore = [...sdk.elements.values()].filter(
-    (element) => element.type === "draw",
-  ).length;
-  await round("F7 live remote stroke renders before pointer release", { adds: 1 }, async () => {
-    const drawClicked = await browserA.evaluate<boolean>(
-      `(() => {
-        const button = document.querySelector('[data-testid="toolbar-draw"]');
-        if (!(button instanceof HTMLButtonElement)) return false;
-        button.click();
-        return true;
-      })()`,
-    );
-    if (!drawClicked) throw new Error("draw tool button was unavailable");
-    await until(
-      () =>
-        browserA.evaluate<boolean>(
-          `document.querySelector('[data-testid="toolbar-draw"]')?.getAttribute("aria-pressed") === "true"`,
-        ),
-      2_000,
-      "draw tool activation",
-    );
-    const start = await panePoint(browserA, 0.55, 0.72);
-    const points = Array.from({ length: 14 }, (_value, index) => ({
-      x: start.x + index * 12,
-      y: start.y + Math.sin(index / 2) * 24,
-    }));
-    const firstPoint = points[0];
-    if (firstPoint === undefined) throw new Error("draw path was empty");
-    await browserA.send("Input.dispatchMouseEvent", {
-      type: "mouseMoved",
-      x: firstPoint.x,
-      y: firstPoint.y,
-    });
-    await browserA.send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x: firstPoint.x,
-      y: firstPoint.y,
-      button: "left",
-      buttons: 1,
-      clickCount: 1,
-    });
-    try {
-      for (const point of points.slice(1)) {
-        await browserA.send("Input.dispatchMouseEvent", {
-          type: "mouseMoved",
-          x: point.x,
-          y: point.y,
-          button: "left",
-          buttons: 1,
-        });
-        await sleep(20);
-      }
-      await until(
-        () =>
-          browserB.evaluate<boolean>(
-            `(() => {
-              const path = document.querySelector(".stroke-preview[data-gesture-element] path");
-              return path instanceof SVGPathElement && (path.getAttribute("d") ?? "").includes("L");
-            })()`,
-          ),
-        5_000,
-        "browser B remote stroke preview before pointer release",
-      );
-    } finally {
-      const last = points.at(-1) ?? firstPoint;
+    for (let index = 1; index <= 14; index += 1) {
       await browserA.send("Input.dispatchMouseEvent", {
-        type: "mouseReleased",
-        x: last.x,
-        y: last.y,
-        button: "left",
-        clickCount: 1,
+        type: "mouseMoved",
+        x: panStart.x - index * 10,
+        y: panStart.y - index * 6,
+        button: "middle",
+        buttons: 4,
       });
+      await sleep(15);
     }
-    await until(
-      () =>
-        [...sdk.elements.values()].filter((element) => element.type === "draw").length ===
-        drawCountBefore + 1,
-      5_000,
-      "persisted draw element",
-    );
-    const draw = [...sdk.elements.values()].find((element) => element.type === "draw");
-    const drawPoints = draw === undefined ? null : elementNumbers(draw, "points");
-    if (drawPoints === null || drawPoints.length < 4) {
-      throw new Error("persisted draw element has fewer than four point values");
+    await browserA.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: panStart.x - 140,
+      y: panStart.y - 84,
+      button: "middle",
+    });
+    await sleep(300);
+    const viewportAfter = await browserA.evaluate<Viewport>("window.__manifold.viewport()");
+    offCursor();
+    if (
+      Math.abs(viewportAfter.scrollX - viewportBefore.scrollX) < 50 ||
+      Math.abs(viewportAfter.scrollY - viewportBefore.scrollY) < 30
+    ) {
+      throw new Error("Flow viewport did not move under a real middle-button pan");
     }
-    const selectActive = await browserA.evaluate<boolean>(
-      `document.querySelector('[data-testid="toolbar-select"]')?.getAttribute("aria-pressed") === "true"`,
-    );
-    if (!selectActive) throw new Error("draw completion did not restore the select tool");
-  });
+    if (cursorFrames.length < 3) {
+      throw new Error(`Flow pan emitted only ${String(cursorFrames.length)} cursor frames`);
+    }
+    console.log("PASS  F6 viewport pan and cursor transport cross the browser boundary");
 
-  const textCountBefore = [...sdk.elements.values()].filter(
-    (element) => element.type === "text",
-  ).length;
-  await round(
-    "F8a double-click creates exactly one collaborative text node",
-    { adds: 1 },
-    async () => {
-      const point = await panePoint(browserA, 0.72, 0.24);
-      await clickAt(browserA, point, 2);
-      await until(
-        () =>
-          [...sdk.elements.values()].filter((element) => element.type === "text").length ===
-          textCountBefore + 1,
-        5_000,
-        "one text element from a double-click",
-      );
-      // Canonical convergence lands before the canvas repaints; wait for the node,
-      // then let the click settle so a second node from one double-click still fails.
-      const renderedTextNodes = `document.querySelectorAll(".react-flow__node-text").length`;
-      await until(
-        async () => (await browserA.evaluate<number>(renderedTextNodes)) === textCountBefore + 1,
-        5_000,
-        "exactly one rendered text node",
-      );
-      await sleep(300);
-      const renderedCount = await browserA.evaluate<number>(renderedTextNodes);
-      if (renderedCount !== textCountBefore + 1) {
+    // Presence is worthless when the canvas paints scene content over it. Element
+    // bands grow with every creation (`nextZIndex`), so the presence layer has to
+    // sit above the highest one; fixtures pinned at zIndex 0 are exactly why raised
+    // terminals could hide every remote cursor, selection and live stroke unnoticed.
+    await round(
+      "F6b raising a terminal keeps both canvases converged",
+      {
+        adds: 0,
+        changes: [second.id],
+      },
+      async () => {
+        sdk.transact((tx) => {
+          tx.patch(second.id, { zIndex: tx.nextZIndex() });
+        });
+      },
+    );
+
+    try {
+      const stacked = sdk.elements.get(second.id);
+      if (stacked === undefined)
+        throw new Error("raised terminal missing from the canonical scene");
+      if (stacked.zIndex <= 0) {
         throw new Error(
-          `double-click rendered ${String(renderedCount - textCountBefore)} text nodes`,
+          `raised terminal landed in band ${String(stacked.zIndex)}, expected above 0`,
         );
       }
+      // Park B's pointer far away so the only cursor over the target is the SDK's.
+      await browserB.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        ...(await panePoint(browserB, 0.1, 0.9)),
+      });
+      const center = { x: stacked.x + stacked.width / 2, y: stacked.y + stacked.height / 2 };
+      const nodeSelector = JSON.stringify(`.react-flow__node[data-id="${second.id}"]`);
+      const paintProbe = `(() => {
+        const node = document.querySelector(${nodeSelector});
+        if (!(node instanceof HTMLElement)) return { state: "no-node" };
+        const box = node.getBoundingClientRect();
+        const marker = [...document.querySelectorAll(".remote-cursor")].find((cursor) => {
+          const rect = cursor.getBoundingClientRect();
+          return (
+            rect.left >= box.left - 2 &&
+            rect.left <= box.right + 2 &&
+            rect.top >= box.top - 2 &&
+            rect.top <= box.bottom + 2
+          );
+        });
+        if (marker === undefined) return { state: "no-cursor-over-node" };
+        const viewport = document.querySelector(".react-flow__viewport");
+        // Paint order is decided by the nearest ancestor-or-self carrying a numeric
+        // z-index inside the viewport's stacking context.
+        let presenceZ = 0;
+        for (let element = marker; element !== null && element !== viewport; element = element.parentElement) {
+          const band = Number.parseInt(getComputedStyle(element).zIndex, 10);
+          if (Number.isFinite(band)) { presenceZ = band; break; }
+        }
+        const nodeZ = [...document.querySelectorAll(".react-flow__node")].reduce(
+          (max, element) => Math.max(max, Number.parseInt(getComputedStyle(element).zIndex, 10) || 0),
+          0,
+        );
+        return { state: "measured", presenceZ, nodeZ };
+      })()`;
+      // Cursors are ephemeral and interpolated: keep the frame alive across the probe.
+      const cursorBeat = setInterval(() => {
+        sdk.sendCursor(center.x, center.y);
+      }, 100);
+      try {
+        await until(
+          async () => (await browserA.evaluate<PaintProbe>(paintProbe)).state === "measured",
+          5_000,
+          "remote cursor rendered over the raised terminal",
+        );
+        const paint = await browserA.evaluate<PaintProbe>(paintProbe);
+        if ((paint.presenceZ ?? 0) <= (paint.nodeZ ?? 0)) {
+          throw new Error(
+            `presence layer paints at z=${String(paint.presenceZ)}, under scene nodes at z=${String(paint.nodeZ)}`,
+          );
+        }
+        console.log(
+          `PASS  F6b remote cursor paints above raised scene nodes — presence z=${String(paint.presenceZ)} over node z=${String(paint.nodeZ)}`,
+        );
+      } finally {
+        clearInterval(cursorBeat);
+      }
+    } catch (error) {
+      failures.push("F6b presence paint order");
+      console.log(
+        `FAIL  F6b remote cursor paints above raised scene nodes — ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    // A canvas terminal resizes from its border like a desktop window: hovering the frame
+    // edge arms the OS resize cursor with no prior selection, and the drag has to reach both
+    // the canonical scene and the other browser. The frame is the PORTAL's — resize is
+    // canvas-item chrome, so it belongs to the node, not to the terminal painted inside it.
+    const resizeTarget = sdk.elements.get(second.id);
+    if (resizeTarget === undefined) {
+      failures.push("F10 border resize");
+      console.log("FAIL  F10 terminal resizes from its border — target terminal missing");
+    } else {
+      const edgeSelector = JSON.stringify(`.react-flow__node[data-id="${second.id}"]`);
+      await round(
+        "F10 terminal resizes from its border without selecting first",
+        { adds: 0, changes: [second.id] },
+        async () => {
+          // Higher-band ink from F7 may cross this terminal's border and correctly own the
+          // pointer there, so park the terminal in clear space before probing its frame.
+          sdk.transact((tx) => {
+            tx.patch(second.id, { x: 300, y: 360 });
+          });
+          await until(
+            () =>
+              browserA.evaluate<boolean>(
+                `(() => {
+                  const node = document.querySelector(${edgeSelector});
+                  if (!(node instanceof HTMLElement)) return false;
+                  const transform = node.style.transform;
+                  return transform.includes("300px") && transform.includes("360px");
+                })()`,
+              ),
+            5_000,
+            "terminal rendered at its parked position",
+          );
+          // Clear any selection so the grab zone cannot be credited to selection handles.
+          await clickAt(browserA, await panePoint(browserA, 0.5, 0.86), 1);
+          await sleep(200);
+          const borders = await browserA.evaluate<{
+            readonly selected: boolean;
+            readonly cursors: Readonly<Record<string, string>>;
+            readonly hits: Readonly<Record<string, string>>;
+          }>(
+            `(() => {
+              const node = document.querySelector(${edgeSelector});
+              if (!(node instanceof HTMLElement)) throw new Error("terminal node missing");
+              const rect = node.getBoundingClientRect();
+              const midX = rect.left + rect.width / 2;
+              const midY = rect.top + rect.height / 2;
+              const points = {
+                left: [rect.left + 1, midY],
+                right: [rect.right - 1, midY],
+                top: [midX, rect.top + 1],
+                bottom: [midX, rect.bottom - 1],
+                topLeft: [rect.left + 2, rect.top + 2],
+                topRight: [rect.right - 2, rect.top + 2],
+                bottomLeft: [rect.left + 2, rect.bottom - 2],
+                bottomRight: [rect.right - 2, rect.bottom - 2],
+              };
+              const cursors = {};
+              const hits = {};
+              for (const [name, [x, y]] of Object.entries(points)) {
+                const hit = document.elementFromPoint(x, y);
+                cursors[name] = hit === null ? "none" : getComputedStyle(hit).cursor;
+                hits[name] = hit === null ? "none" : hit.tagName + "." + String(hit.className).slice(0, 80);
+              }
+              return { selected: node.classList.contains("selected"), cursors, hits };
+            })()`,
+          );
+          if (borders.selected) throw new Error("terminal was already selected before the hover");
+          const wanted: Readonly<Record<string, string>> = {
+            left: "ew-resize",
+            right: "ew-resize",
+            top: "ns-resize",
+            bottom: "ns-resize",
+            topLeft: "nwse-resize",
+            bottomRight: "nwse-resize",
+            topRight: "nesw-resize",
+            bottomLeft: "nesw-resize",
+          };
+          for (const [name, expected] of Object.entries(wanted)) {
+            if (borders.cursors[name] !== expected) {
+              throw new Error(
+                `border ${name} shows cursor ${String(borders.cursors[name])} on ${String(
+                  borders.hits[name],
+                )}, expected ${expected}`,
+              );
+            }
+          }
+          // Deselection re-renders the node: wait for the grab zone, then drive the drag
+          // from the control's own centre so the press cannot land a pixel off it.
+          await until(
+            () =>
+              browserA.evaluate<boolean>(
+                `document.querySelector(${edgeSelector})?.querySelector(".portal-resize-edge.right") !== null`,
+              ),
+            5_000,
+            "right border grab zone",
+          );
+          const grab = await browserA.evaluate<{
+            readonly x: number;
+            readonly y: number;
+            readonly width: number;
+          }>(
+            `(() => {
+              const node = document.querySelector(${edgeSelector});
+              const handle = node.querySelector(".portal-resize-edge.right");
+              const rect = handle.getBoundingClientRect();
+              return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: rect.width };
+            })()`,
+          );
+          if (grab.width < 4) {
+            throw new Error(`border grab zone is only ${grab.width.toFixed(1)}px wide`);
+          }
+          // Hover first: the press has to land on an element the pointer already occupies.
+          await browserA.send("Input.dispatchMouseEvent", {
+            type: "mouseMoved",
+            x: grab.x,
+            y: grab.y,
+          });
+          await sleep(120);
+          await browserA.drag(
+            [
+              { x: grab.x, y: grab.y },
+              { x: grab.x + 20, y: grab.y },
+              { x: grab.x + 60, y: grab.y },
+              { x: grab.x + 100, y: grab.y },
+              { x: grab.x + 130, y: grab.y },
+            ],
+            30,
+          );
+          try {
+            await until(
+              () => (sdk.elements.get(second.id)?.width ?? 0) > resizeTarget.width + 60,
+              5_000,
+              "canonical width after the border drag",
+            );
+          } catch (error) {
+            const rendered = await browserA.evaluate<number>(
+              `(() => {
+                const node = document.querySelector(${edgeSelector});
+                return node instanceof HTMLElement ? node.getBoundingClientRect().width : -1;
+              })()`,
+            );
+            throw new Error(
+              `${error instanceof Error ? error.message : String(error)} (canonical=${String(
+                sdk.elements.get(second.id)?.width,
+              )} rendered=${rendered.toFixed(1)} started=${String(resizeTarget.width)})`,
+            );
+          }
+        },
+      );
+    }
+  }
+
+  if (runs("ink")) {
+    const drawCountBefore = [...sdk.elements.values()].filter(
+      (element) => element.type === "draw",
+    ).length;
+    await round("F7 live remote stroke renders before pointer release", { adds: 1 }, async () => {
+      const drawClicked = await browserA.evaluate<boolean>(
+        `(() => {
+          const button = document.querySelector('[data-testid="toolbar-draw"]');
+          if (!(button instanceof HTMLButtonElement)) return false;
+          button.click();
+          return true;
+        })()`,
+      );
+      if (!drawClicked) throw new Error("draw tool button was unavailable");
       await until(
         () =>
           browserA.evaluate<boolean>(
-            `document.querySelector(".canvas-text__editor") instanceof HTMLTextAreaElement`,
+            `document.querySelector('[data-testid="toolbar-draw"]')?.getAttribute("aria-pressed") === "true"`,
           ),
-        5_000,
-        "browser A text editor",
+        2_000,
+        "draw tool activation",
       );
-    },
-  );
-
-  const textElement = [...sdk.elements.values()].find((element) => element.type === "text");
-  if (textElement?.type !== "text") {
-    failures.push("F8 collaborative text typing");
-    console.log("FAIL  F8 collaborative text typing — text setup did not produce an element");
-  } else {
-    await round(
-      "F8 collaborative Y.Text typing is live and convergent",
-      { adds: 0, changes: [textElement.id] },
-      async () => {
-        const focusedA = await browserA.evaluate<boolean>(
-          `(() => {
-            const editor = document.querySelector(".canvas-text__editor");
-            if (!(editor instanceof HTMLTextAreaElement)) return false;
-            editor.focus();
-            editor.setSelectionRange(editor.value.length, editor.value.length);
-            return true;
-          })()`,
-        );
-        if (!focusedA) throw new Error("browser A text editor lost focus");
-        await browserA.typeText("hello");
+      const start = await panePoint(browserA, 0.55, 0.72);
+      const points = Array.from({ length: 14 }, (_value, index) => ({
+        x: start.x + index * 12,
+        y: start.y + Math.sin(index / 2) * 24,
+      }));
+      const firstPoint = points[0];
+      if (firstPoint === undefined) throw new Error("draw path was empty");
+      await browserA.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: firstPoint.x,
+        y: firstPoint.y,
+      });
+      await browserA.send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: firstPoint.x,
+        y: firstPoint.y,
+        button: "left",
+        buttons: 1,
+        clickCount: 1,
+      });
+      try {
+        for (const point of points.slice(1)) {
+          await browserA.send("Input.dispatchMouseEvent", {
+            type: "mouseMoved",
+            x: point.x,
+            y: point.y,
+            button: "left",
+            buttons: 1,
+          });
+          await sleep(20);
+        }
         await until(
           () =>
             browserB.evaluate<boolean>(
               `(() => {
-                const text = document.querySelector(".canvas-text");
-                return text instanceof HTMLElement && (text.textContent ?? "").includes("hello");
+                const path = document.querySelector(".stroke-preview[data-gesture-element] path");
+                return path instanceof SVGPathElement && (path.getAttribute("d") ?? "").includes("L");
               })()`,
             ),
           5_000,
-          "browser B live hello text",
+          "browser B remote stroke preview before pointer release",
         );
-        const textCenter = await browserB.evaluate<{ readonly x: number; readonly y: number }>(
+      } finally {
+        const last = points.at(-1) ?? firstPoint;
+        await browserA.send("Input.dispatchMouseEvent", {
+          type: "mouseReleased",
+          x: last.x,
+          y: last.y,
+          button: "left",
+          clickCount: 1,
+        });
+      }
+      await until(
+        () =>
+          [...sdk.elements.values()].filter((element) => element.type === "draw").length ===
+          drawCountBefore + 1,
+        5_000,
+        "persisted draw element",
+      );
+      const draw = [...sdk.elements.values()].find((element) => element.type === "draw");
+      const drawPoints = draw === undefined ? null : elementNumbers(draw, "points");
+      if (drawPoints === null || drawPoints.length < 4) {
+        throw new Error("persisted draw element has fewer than four point values");
+      }
+      const selectActive = await browserA.evaluate<boolean>(
+        `document.querySelector('[data-testid="toolbar-select"]')?.getAttribute("aria-pressed") === "true"`,
+      );
+      if (!selectActive) throw new Error("draw completion did not restore the select tool");
+    });
+  }
+
+  if (runs("text")) {
+    const textCountBefore = [...sdk.elements.values()].filter(
+      (element) => element.type === "text",
+    ).length;
+    await round(
+      "F8a double-click creates exactly one collaborative text node",
+      { adds: 1 },
+      async () => {
+        const point = await panePoint(browserA, 0.72, 0.24);
+        await clickAt(browserA, point, 2);
+        await until(
+          () =>
+            [...sdk.elements.values()].filter((element) => element.type === "text").length ===
+            textCountBefore + 1,
+          5_000,
+          "one text element from a double-click",
+        );
+        // Canonical convergence lands before the canvas repaints; wait for the node,
+        // then let the click settle so a second node from one double-click still fails.
+        const renderedTextNodes = `document.querySelectorAll(".react-flow__node-text").length`;
+        await until(
+          async () => (await browserA.evaluate<number>(renderedTextNodes)) === textCountBefore + 1,
+          5_000,
+          "exactly one rendered text node",
+        );
+        await sleep(300);
+        const renderedCount = await browserA.evaluate<number>(renderedTextNodes);
+        if (renderedCount !== textCountBefore + 1) {
+          throw new Error(
+            `double-click rendered ${String(renderedCount - textCountBefore)} text nodes`,
+          );
+        }
+        await until(
+          () =>
+            browserA.evaluate<boolean>(
+              `document.querySelector(".canvas-text__editor") instanceof HTMLTextAreaElement`,
+            ),
+          5_000,
+          "browser A text editor",
+        );
+      },
+    );
+
+    const textElement = [...sdk.elements.values()].find((element) => element.type === "text");
+    if (textElement?.type !== "text") {
+      failures.push("F8 collaborative text typing");
+      console.log("FAIL  F8 collaborative text typing — text setup did not produce an element");
+    } else {
+      await round(
+        "F8 collaborative Y.Text typing is live and convergent",
+        { adds: 0, changes: [textElement.id] },
+        async () => {
+          const focusedA = await browserA.evaluate<boolean>(
+            `(() => {
+              const editor = document.querySelector(".canvas-text__editor");
+              if (!(editor instanceof HTMLTextAreaElement)) return false;
+              editor.focus();
+              editor.setSelectionRange(editor.value.length, editor.value.length);
+              return true;
+            })()`,
+          );
+          if (!focusedA) throw new Error("browser A text editor lost focus");
+          await browserA.typeText("hello");
+          await until(
+            () =>
+              browserB.evaluate<boolean>(
+                `(() => {
+                  const text = document.querySelector(".canvas-text");
+                  return text instanceof HTMLElement && (text.textContent ?? "").includes("hello");
+                })()`,
+              ),
+            5_000,
+            "browser B live hello text",
+          );
+          const textCenter = await browserB.evaluate<{ readonly x: number; readonly y: number }>(
+            `(() => {
+              const node = document.querySelector(${JSON.stringify(
+                `.react-flow__node[data-id="${textElement.id}"]`,
+              )});
+              if (!(node instanceof HTMLElement)) throw new Error("text node missing in browser B");
+              const rect = node.getBoundingClientRect();
+              return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+            })()`,
+          );
+          await clickAt(browserB, textCenter, 2);
+          await until(
+            () =>
+              browserB.evaluate<boolean>(
+                `document.querySelector(".canvas-text__editor") instanceof HTMLTextAreaElement`,
+              ),
+            5_000,
+            "browser B text editor",
+          );
+          await browserB.evaluate(
+            `(() => {
+              const editor = document.querySelector(".canvas-text__editor");
+              if (!(editor instanceof HTMLTextAreaElement)) return;
+              editor.focus();
+              editor.setSelectionRange(editor.value.length, editor.value.length);
+            })()`,
+          );
+          await browserB.typeText(" world");
+          await until(
+            () => {
+              const current = sdk.elements.get(textElement.id);
+              const text = current === undefined ? null : elementString(current, "text");
+              return text !== null && text.includes("hello") && text.includes(" world");
+            },
+            5_000,
+            "merged Y.Text content",
+          );
+          for (const browser of [browserA, browserB]) {
+            await until(
+              () =>
+                browser.evaluate<boolean>(
+                  `(() => {
+                    const node = document.querySelector(${JSON.stringify(
+                      `.react-flow__node[data-id="${textElement.id}"]`,
+                    )});
+                    const value =
+                      node?.querySelector("textarea") instanceof HTMLTextAreaElement
+                        ? node.querySelector("textarea").value
+                        : node?.textContent ?? "";
+                    return value.includes("hello") && value.includes(" world");
+                  })()`,
+                ),
+              5_000,
+              "live merged text in both browsers",
+            );
+          }
+          await pressKey(browserA, "Escape", "Escape");
+          await pressKey(browserB, "Escape", "Escape");
+        },
+      );
+
+      try {
+        const textCenter = await browserA.evaluate<{ readonly x: number; readonly y: number }>(
           `(() => {
             const node = document.querySelector(${JSON.stringify(
               `.react-flow__node[data-id="${textElement.id}"]`,
             )});
-            if (!(node instanceof HTMLElement)) throw new Error("text node missing in browser B");
+            if (!(node instanceof HTMLElement)) throw new Error("text node missing before delete");
             const rect = node.getBoundingClientRect();
             return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
           })()`,
         );
-        await clickAt(browserB, textCenter, 2);
+        await clickAt(browserA, textCenter, 1);
         await until(
           () =>
-            browserB.evaluate<boolean>(
-              `document.querySelector(".canvas-text__editor") instanceof HTMLTextAreaElement`,
+            browserA.evaluate<boolean>(
+              `document.querySelector(${JSON.stringify(
+                `.react-flow__node[data-id="${textElement.id}"]`,
+              )})?.classList.contains("selected") === true`,
             ),
           5_000,
-          "browser B text editor",
+          "text selection before delete",
         );
-        await browserB.evaluate(
-          `(() => {
-            const editor = document.querySelector(".canvas-text__editor");
-            if (!(editor instanceof HTMLTextAreaElement)) return;
-            editor.focus();
-            editor.setSelectionRange(editor.value.length, editor.value.length);
-          })()`,
-        );
-        await browserB.typeText(" world");
+        await browserA.evaluate(`document.querySelector(".canvas")?.focus()`);
+        await pressKey(browserA, "Delete", "Delete");
         await until(
-          () => {
-            const current = sdk.elements.get(textElement.id);
-            const text = current === undefined ? null : elementString(current, "text");
-            return text !== null && text.includes("hello") && text.includes(" world");
-          },
+          async () =>
+            !sdk.elements.has(textElement.id) &&
+            !(await browserA.evaluate<readonly Snapshot[]>("window.__manifold.canvas()")).some(
+              (element) => element.id === textElement.id,
+            ) &&
+            !(await browserB.evaluate<readonly Snapshot[]>("window.__manifold.canvas()")).some(
+              (element) => element.id === textElement.id,
+            ),
           5_000,
-          "merged Y.Text content",
+          "text deletion in both browsers",
         );
-        for (const browser of [browserA, browserB]) {
-          await until(
-            () =>
-              browser.evaluate<boolean>(
-                `(() => {
-                  const node = document.querySelector(${JSON.stringify(
-                    `.react-flow__node[data-id="${textElement.id}"]`,
-                  )});
-                  const value =
-                    node?.querySelector("textarea") instanceof HTMLTextAreaElement
-                      ? node.querySelector("textarea").value
-                      : node?.textContent ?? "";
-                  return value.includes("hello") && value.includes(" world");
-                })()`,
-              ),
-            5_000,
-            "live merged text in both browsers",
-          );
-        }
-        await pressKey(browserA, "Escape", "Escape");
-        await pressKey(browserB, "Escape", "Escape");
-      },
-    );
+        await browserA.evaluate(`document.querySelector(".canvas")?.focus()`);
+        await pressKey(browserA, "z", "KeyZ", 2);
+        await until(
+          async () =>
+            sdk.elements.get(textElement.id)?.type === "text" &&
+            (await browserA.evaluate<readonly Snapshot[]>("window.__manifold.canvas()")).some(
+              (element) => element.id === textElement.id,
+            ) &&
+            (await browserB.evaluate<readonly Snapshot[]>("window.__manifold.canvas()")).some(
+              (element) => element.id === textElement.id,
+            ),
+          // Eight seconds was written for a page that had been running for twenty: at HEAD
+          // this round came after F1-F7. As `--group text` it is the fifth thing a cold
+          // browser does, and a two-core runner failed here twice while every other round
+          // in the group passed. The ceiling is the only thing lengthened — the condition
+          // asserted is unchanged, so a genuinely broken undo still fails, just later.
+          20_000,
+          "text restoration after undo",
+        );
+        console.log("PASS  F9 delete and undo restore the text on both browsers");
+      } catch (error) {
+        failures.push("F9 delete and undo");
+        console.log(
+          `FAIL  F9 delete and undo — ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
 
-    try {
-      const textCenter = await browserA.evaluate<{ readonly x: number; readonly y: number }>(
-        `(() => {
-          const node = document.querySelector(${JSON.stringify(
-            `.react-flow__node[data-id="${textElement.id}"]`,
-          )});
-          if (!(node instanceof HTMLElement)) throw new Error("text node missing before delete");
-          const rect = node.getBoundingClientRect();
-          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-        })()`,
+    // Text and ink keep the classic contract: no handles until the element is selected,
+    // then the bounding box resizes it. Only terminals grab by their border.
+    const textIdsBefore = new Set(
+      [...sdk.elements.values()].filter((element) => element.type === "text").map((el) => el.id),
+    );
+    // Created through the canvas so the node is guaranteed inside the browser viewport:
+    // an SDK-seeded element can land off-screen, where synthetic clicks hit nothing.
+    await round("F11a double-click seeds a text node on screen", { adds: 1 }, async () => {
+      await clickAt(browserA, await panePoint(browserA, 0.3, 0.62), 2);
+      await until(
+        () =>
+          [...sdk.elements.values()].some(
+            (element) => element.type === "text" && !textIdsBefore.has(element.id),
+          ),
+        5_000,
+        "text element from the double-click",
       );
-      await clickAt(browserA, textCenter, 1);
+      // Empty text is deleted on blur, so the editor must actually receive the keystrokes.
       await until(
         () =>
           browserA.evaluate<boolean>(
-            `document.querySelector(${JSON.stringify(
-              `.react-flow__node[data-id="${textElement.id}"]`,
-            )})?.classList.contains("selected") === true`,
+            `(() => {
+              const editor = document.querySelector(".canvas-text__editor");
+              if (!(editor instanceof HTMLTextAreaElement)) return false;
+              editor.focus();
+              return document.activeElement === editor;
+            })()`,
           ),
         5_000,
-        "text selection before delete",
+        "focused text editor",
       );
-      await browserA.evaluate(`document.querySelector(".canvas")?.focus()`);
-      await pressKey(browserA, "Delete", "Delete");
+      await browserA.typeText("resize me");
       await until(
-        async () =>
-          !sdk.elements.has(textElement.id) &&
-          !(await browserA.evaluate<readonly Snapshot[]>("window.__manifold.canvas()")).some(
-            (element) => element.id === textElement.id,
-          ) &&
-          !(await browserB.evaluate<readonly Snapshot[]>("window.__manifold.canvas()")).some(
-            (element) => element.id === textElement.id,
+        () =>
+          browserA.evaluate<boolean>(
+            `document.querySelector(".canvas-text__editor")?.value === "resize me"`,
           ),
         5_000,
-        "text deletion in both browsers",
+        "typed text in the editor",
       );
-      await browserA.evaluate(`document.querySelector(".canvas")?.focus()`);
-      await pressKey(browserA, "z", "KeyZ", 2);
-      await until(
-        async () =>
-          sdk.elements.get(textElement.id)?.type === "text" &&
-          (await browserA.evaluate<readonly Snapshot[]>("window.__manifold.canvas()")).some(
-            (element) => element.id === textElement.id,
-          ) &&
-          (await browserB.evaluate<readonly Snapshot[]>("window.__manifold.canvas()")).some(
-            (element) => element.id === textElement.id,
-          ),
-        8_000,
-        "text restoration after undo",
-      );
-      console.log("PASS  F9 delete and undo restore the text on both browsers");
-    } catch (error) {
-      failures.push("F9 delete and undo");
-      console.log(
-        `FAIL  F9 delete and undo — ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
+      await pressKey(browserA, "Escape", "Escape");
+      await sleep(200);
+    });
 
-  // A canvas terminal resizes from its border like a desktop window: hovering the frame
-  // edge arms the OS resize cursor with no prior selection, and the drag has to reach both
-  // the canonical scene and the other browser. The frame is the PORTAL's — resize is
-  // canvas-item chrome, so it belongs to the node, not to the terminal painted inside it.
-  const resizeTarget = sdk.elements.get(second.id);
-  if (resizeTarget === undefined) {
-    failures.push("F10 border resize");
-    console.log("FAIL  F10 terminal resizes from its border — target terminal missing");
-  } else {
-    const edgeSelector = JSON.stringify(`.react-flow__node[data-id="${second.id}"]`);
-    await round(
-      "F10 terminal resizes from its border without selecting first",
-      { adds: 0, changes: [second.id] },
-      async () => {
-        // Higher-band ink from F7 may cross this terminal's border and correctly own the
-        // pointer there, so park the terminal in clear space before probing its frame.
-        sdk.transact((tx) => {
-          tx.patch(second.id, { x: 300, y: 360 });
-        });
-        await until(
-          () =>
-            browserA.evaluate<boolean>(
-              `(() => {
-                const node = document.querySelector(${edgeSelector});
-                if (!(node instanceof HTMLElement)) return false;
-                const transform = node.style.transform;
-                return transform.includes("300px") && transform.includes("360px");
-              })()`,
-            ),
-          5_000,
-          "terminal rendered at its parked position",
-        );
-        // Clear any selection so the grab zone cannot be credited to selection handles.
-        await clickAt(browserA, await panePoint(browserA, 0.5, 0.86), 1);
-        await sleep(200);
-        const borders = await browserA.evaluate<{
-          readonly selected: boolean;
-          readonly cursors: Readonly<Record<string, string>>;
-          readonly hits: Readonly<Record<string, string>>;
-        }>(
-          `(() => {
-            const node = document.querySelector(${edgeSelector});
-            if (!(node instanceof HTMLElement)) throw new Error("terminal node missing");
-            const rect = node.getBoundingClientRect();
-            const midX = rect.left + rect.width / 2;
-            const midY = rect.top + rect.height / 2;
-            const points = {
-              left: [rect.left + 1, midY],
-              right: [rect.right - 1, midY],
-              top: [midX, rect.top + 1],
-              bottom: [midX, rect.bottom - 1],
-              topLeft: [rect.left + 2, rect.top + 2],
-              topRight: [rect.right - 2, rect.top + 2],
-              bottomLeft: [rect.left + 2, rect.bottom - 2],
-              bottomRight: [rect.right - 2, rect.bottom - 2],
-            };
-            const cursors = {};
-            const hits = {};
-            for (const [name, [x, y]] of Object.entries(points)) {
-              const hit = document.elementFromPoint(x, y);
-              cursors[name] = hit === null ? "none" : getComputedStyle(hit).cursor;
-              hits[name] = hit === null ? "none" : hit.tagName + "." + String(hit.className).slice(0, 80);
-            }
-            return { selected: node.classList.contains("selected"), cursors, hits };
-          })()`,
-        );
-        if (borders.selected) throw new Error("terminal was already selected before the hover");
-        const wanted: Readonly<Record<string, string>> = {
-          left: "ew-resize",
-          right: "ew-resize",
-          top: "ns-resize",
-          bottom: "ns-resize",
-          topLeft: "nwse-resize",
-          bottomRight: "nwse-resize",
-          topRight: "nesw-resize",
-          bottomLeft: "nesw-resize",
-        };
-        for (const [name, expected] of Object.entries(wanted)) {
-          if (borders.cursors[name] !== expected) {
+    const boxId =
+      [...sdk.elements.values()].find(
+        (element) => element.type === "text" && !textIdsBefore.has(element.id),
+      )?.id ?? "";
+    const boxSelector = JSON.stringify(`.react-flow__node[data-id="${boxId}"]`);
+    const handleSelector = JSON.stringify(
+      `.react-flow__node[data-id="${boxId}"] .react-flow__resize-control.handle.bottom.right`,
+    );
+
+    const textTarget = sdk.elements.get(boxId);
+    if (textTarget === undefined) {
+      failures.push("F11 text bounding-box resize");
+      console.log("FAIL  F11 text resizes from its selection box — seeded element missing");
+    } else {
+      await round(
+        "F11 text resizes from its selection box after selection",
+        { adds: 0, changes: [boxId] },
+        async () => {
+          await until(
+            () => browserA.evaluate<boolean>(`document.querySelector(${boxSelector}) !== null`),
+            5_000,
+            "text node rendered on A",
+          );
+          // Creation leaves the new node selected; the contract under test starts unselected.
+          await clickAt(browserA, await panePoint(browserA, 0.5, 0.86), 1);
+          await sleep(250);
+          const unselectedHandles = await browserA.evaluate<number>(
+            `document.querySelectorAll(${handleSelector}).length`,
+          );
+          if (unselectedHandles !== 0) {
             throw new Error(
-              `border ${name} shows cursor ${String(borders.cursors[name])} on ${String(
-                borders.hits[name],
-              )}, expected ${expected}`,
+              `unselected text node already shows ${String(unselectedHandles)} handles`,
             );
           }
-        }
-        // Deselection re-renders the node: wait for the grab zone, then drive the drag
-        // from the control's own centre so the press cannot land a pixel off it.
-        await until(
-          () =>
-            browserA.evaluate<boolean>(
-              `document.querySelector(${edgeSelector})?.querySelector(".portal-resize-edge.right") !== null`,
-            ),
-          5_000,
-          "right border grab zone",
-        );
-        const grab = await browserA.evaluate<{
-          readonly x: number;
-          readonly y: number;
-          readonly width: number;
-        }>(
-          `(() => {
-            const node = document.querySelector(${edgeSelector});
-            const handle = node.querySelector(".portal-resize-edge.right");
-            const rect = handle.getBoundingClientRect();
-            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: rect.width };
-          })()`,
-        );
-        if (grab.width < 4) {
-          throw new Error(`border grab zone is only ${grab.width.toFixed(1)}px wide`);
-        }
-        // Hover first: the press has to land on an element the pointer already occupies.
-        await browserA.send("Input.dispatchMouseEvent", {
-          type: "mouseMoved",
-          x: grab.x,
-          y: grab.y,
-        });
-        await sleep(120);
-        await browserA.drag(
-          [
-            { x: grab.x, y: grab.y },
-            { x: grab.x + 20, y: grab.y },
-            { x: grab.x + 60, y: grab.y },
-            { x: grab.x + 100, y: grab.y },
-            { x: grab.x + 130, y: grab.y },
-          ],
-          30,
-        );
-        try {
-          await until(
-            () => (sdk.elements.get(second.id)?.width ?? 0) > resizeTarget.width + 60,
-            5_000,
-            "canonical width after the border drag",
-          );
-        } catch (error) {
-          const rendered = await browserA.evaluate<number>(
-            `(() => {
-              const node = document.querySelector(${edgeSelector});
-              return node instanceof HTMLElement ? node.getBoundingClientRect().width : -1;
-            })()`,
-          );
-          throw new Error(
-            `${error instanceof Error ? error.message : String(error)} (canonical=${String(
-              sdk.elements.get(second.id)?.width,
-            )} rendered=${rendered.toFixed(1)} started=${String(resizeTarget.width)})`,
-          );
-        }
-      },
-    );
-  }
-
-  // Text and ink keep the classic contract: no handles until the element is selected,
-  // then the bounding box resizes it. Only terminals grab by their border.
-  const textIdsBefore = new Set(
-    [...sdk.elements.values()].filter((element) => element.type === "text").map((el) => el.id),
-  );
-  // Created through the canvas so the node is guaranteed inside the browser viewport:
-  // an SDK-seeded element can land off-screen, where synthetic clicks hit nothing.
-  await round("F11a double-click seeds a text node on screen", { adds: 1 }, async () => {
-    await clickAt(browserA, await panePoint(browserA, 0.3, 0.62), 2);
-    await until(
-      () =>
-        [...sdk.elements.values()].some(
-          (element) => element.type === "text" && !textIdsBefore.has(element.id),
-        ),
-      5_000,
-      "text element from the double-click",
-    );
-    // Empty text is deleted on blur, so the editor must actually receive the keystrokes.
-    await until(
-      () =>
-        browserA.evaluate<boolean>(
-          `(() => {
-            const editor = document.querySelector(".canvas-text__editor");
-            if (!(editor instanceof HTMLTextAreaElement)) return false;
-            editor.focus();
-            return document.activeElement === editor;
-          })()`,
-        ),
-      5_000,
-      "focused text editor",
-    );
-    await browserA.typeText("resize me");
-    await until(
-      () =>
-        browserA.evaluate<boolean>(
-          `document.querySelector(".canvas-text__editor")?.value === "resize me"`,
-        ),
-      5_000,
-      "typed text in the editor",
-    );
-    await pressKey(browserA, "Escape", "Escape");
-    await sleep(200);
-  });
-
-  const boxId =
-    [...sdk.elements.values()].find(
-      (element) => element.type === "text" && !textIdsBefore.has(element.id),
-    )?.id ?? "";
-  const boxSelector = JSON.stringify(`.react-flow__node[data-id="${boxId}"]`);
-  const handleSelector = JSON.stringify(
-    `.react-flow__node[data-id="${boxId}"] .react-flow__resize-control.handle.bottom.right`,
-  );
-
-  const textTarget = sdk.elements.get(boxId);
-  if (textTarget === undefined) {
-    failures.push("F11 text bounding-box resize");
-    console.log("FAIL  F11 text resizes from its selection box — seeded element missing");
-  } else {
-    await round(
-      "F11 text resizes from its selection box after selection",
-      { adds: 0, changes: [boxId] },
-      async () => {
-        await until(
-          () => browserA.evaluate<boolean>(`document.querySelector(${boxSelector}) !== null`),
-          5_000,
-          "text node rendered on A",
-        );
-        // Creation leaves the new node selected; the contract under test starts unselected.
-        await clickAt(browserA, await panePoint(browserA, 0.5, 0.86), 1);
-        await sleep(250);
-        const unselectedHandles = await browserA.evaluate<number>(
-          `document.querySelectorAll(${handleSelector}).length`,
-        );
-        if (unselectedHandles !== 0) {
-          throw new Error(
-            `unselected text node already shows ${String(unselectedHandles)} handles`,
-          );
-        }
-        const center = await browserA.evaluate<{ readonly x: number; readonly y: number }>(
-          `(() => {
-            const node = document.querySelector(${boxSelector});
-            const rect = node.getBoundingClientRect();
-            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-          })()`,
-        );
-        await clickAt(browserA, center, 1);
-        try {
-          await until(
-            () => browserA.evaluate<boolean>(`document.querySelector(${handleSelector}) !== null`),
-            5_000,
-            "bounding-box handles after selection",
-          );
-        } catch (error) {
-          const state = await browserA.evaluate<string>(
+          const center = await browserA.evaluate<{ readonly x: number; readonly y: number }>(
             `(() => {
               const node = document.querySelector(${boxSelector});
               const rect = node.getBoundingClientRect();
-              return JSON.stringify({
-                selected: node.className,
-                rect: [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)],
-                clicked: [Math.round(${String(center.x)}), Math.round(${String(center.y)})],
-                controls: node.querySelectorAll(".react-flow__resize-control").length,
-                inner: node.innerHTML.slice(0, 120),
-              });
+              return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
             })()`,
           );
-          throw new Error(`${error instanceof Error ? error.message : String(error)} ${state}`);
-        }
-        const handle = await browserA.evaluate<{ readonly x: number; readonly y: number }>(
-          `(() => {
-            const control = document.querySelector(${handleSelector});
-            const rect = control.getBoundingClientRect();
-            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-          })()`,
-        );
-        await browserA.send("Input.dispatchMouseEvent", {
-          type: "mouseMoved",
-          x: handle.x,
-          y: handle.y,
-        });
-        await sleep(120);
-        await browserA.drag(
-          [
-            { x: handle.x, y: handle.y },
-            { x: handle.x + 30, y: handle.y + 20 },
-            { x: handle.x + 70, y: handle.y + 45 },
-            { x: handle.x + 110, y: handle.y + 70 },
-          ],
-          30,
-        );
-        await until(
-          () => {
-            const element = sdk.elements.get(boxId);
-            return (
-              element !== undefined &&
-              element.width > textTarget.width + 50 &&
-              element.height > textTarget.height + 30
+          await clickAt(browserA, center, 1);
+          try {
+            await until(
+              () =>
+                browserA.evaluate<boolean>(`document.querySelector(${handleSelector}) !== null`),
+              5_000,
+              "bounding-box handles after selection",
             );
-          },
-          5_000,
-          "canonical text geometry after the handle drag",
-        );
-      },
-    );
-  }
-
-  // Freehand ink shares the text contract, and its box carries a viewBox so resizing
-  // scales the stroke instead of growing an empty frame around it.
-  const inkElement = [...sdk.elements.values()].find((element) => element.type === "draw");
-  if (inkElement === undefined) {
-    failures.push("F11b draw bounding-box resize");
-    console.log("FAIL  F11b freehand resizes from its selection box — no stroke on the canvas");
-  } else {
-    const inkSelector = JSON.stringify(`.react-flow__node[data-id="${inkElement.id}"]`);
-    const inkHandle = JSON.stringify(
-      `.react-flow__node[data-id="${inkElement.id}"] .react-flow__resize-control.handle.bottom.right`,
-    );
-    await round(
-      "F11b freehand resizes from its selection box and scales its ink",
-      { adds: 0, changes: [inkElement.id] },
-      async () => {
-        await clickAt(browserA, await panePoint(browserA, 0.5, 0.86), 1);
-        await sleep(250);
-        if (
-          (await browserA.evaluate<number>(`document.querySelectorAll(${inkHandle}).length`)) !== 0
-        ) {
-          throw new Error("unselected stroke already shows bounding-box handles");
-        }
-        // Click the ink itself: the stroke is the only hit target inside its box.
-        const onStroke = await browserA.evaluate<{
-          readonly x: number;
-          readonly y: number;
-          readonly inkWidth: number;
-        }>(
-          `(() => {
-            const path = document.querySelector(${inkSelector}).querySelector("path");
-            const point = path.getPointAtLength(path.getTotalLength() / 2);
-            const ctm = path.getScreenCTM();
-            return {
-              x: ctm.a * point.x + ctm.c * point.y + ctm.e,
-              y: ctm.b * point.x + ctm.d * point.y + ctm.f,
-              inkWidth: path.getBoundingClientRect().width,
-            };
-          })()`,
-        );
-        await clickAt(browserA, { x: onStroke.x, y: onStroke.y }, 1);
-        await until(
-          () => browserA.evaluate<boolean>(`document.querySelector(${inkHandle}) !== null`),
-          5_000,
-          "bounding-box handles on the selected stroke",
-        );
-        const handle = await browserA.evaluate<{ readonly x: number; readonly y: number }>(
-          `(() => {
-            const control = document.querySelector(${inkHandle});
-            const rect = control.getBoundingClientRect();
-            const point = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-            const hit = document.elementFromPoint(point.x, point.y);
-            if (hit === null || !control.contains(hit)) {
-              throw new Error("selected stroke resize handle is covered by " +
-                (hit === null ? "no hit target" : hit.tagName + "." + hit.getAttribute("class")));
-            }
-            return point;
-          })()`,
-        );
-        await browserA.send("Input.dispatchMouseEvent", {
-          type: "mouseMoved",
-          x: handle.x,
-          y: handle.y,
-        });
-        await sleep(120);
-        await browserA.drag(
-          [
-            { x: handle.x, y: handle.y },
-            { x: handle.x + 40, y: handle.y + 30 },
-            { x: handle.x + 90, y: handle.y + 65 },
-            { x: handle.x + 140, y: handle.y + 100 },
-          ],
-          30,
-        );
-        await until(
-          () => {
-            const element = sdk.elements.get(inkElement.id);
-            return element !== undefined && element.width > inkElement.width + 60;
-          },
-          5_000,
-          "canonical stroke geometry after the handle drag",
-        );
-        const inkAfter = await browserA.evaluate<number>(
-          `document.querySelector(${inkSelector}).querySelector("path").getBoundingClientRect().width`,
-        );
-        if (inkAfter < onStroke.inkWidth + 40) {
-          throw new Error(
-            `stroke did not scale with its box: ink ${onStroke.inkWidth.toFixed(1)} -> ${inkAfter.toFixed(1)}`,
+          } catch (error) {
+            const state = await browserA.evaluate<string>(
+              `(() => {
+                const node = document.querySelector(${boxSelector});
+                const rect = node.getBoundingClientRect();
+                return JSON.stringify({
+                  selected: node.className,
+                  rect: [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)],
+                  clicked: [Math.round(${String(center.x)}), Math.round(${String(center.y)})],
+                  controls: node.querySelectorAll(".react-flow__resize-control").length,
+                  inner: node.innerHTML.slice(0, 120),
+                });
+              })()`,
+            );
+            throw new Error(`${error instanceof Error ? error.message : String(error)} ${state}`);
+          }
+          const handle = await browserA.evaluate<{ readonly x: number; readonly y: number }>(
+            `(() => {
+              const control = document.querySelector(${handleSelector});
+              const rect = control.getBoundingClientRect();
+              return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+            })()`,
           );
-        }
-      },
-    );
+          await browserA.send("Input.dispatchMouseEvent", {
+            type: "mouseMoved",
+            x: handle.x,
+            y: handle.y,
+          });
+          await sleep(120);
+          await browserA.drag(
+            [
+              { x: handle.x, y: handle.y },
+              { x: handle.x + 30, y: handle.y + 20 },
+              { x: handle.x + 70, y: handle.y + 45 },
+              { x: handle.x + 110, y: handle.y + 70 },
+            ],
+            30,
+          );
+          await until(
+            () => {
+              const element = sdk.elements.get(boxId);
+              return (
+                element !== undefined &&
+                element.width > textTarget.width + 50 &&
+                element.height > textTarget.height + 30
+              );
+            },
+            5_000,
+            "canonical text geometry after the handle drag",
+          );
+        },
+      );
+    }
   }
 
-  // Presence is a renderer-level contract, not a canvas feature. A composition has no
-  // React Flow viewport to ride, so its cursors paint on an absolutely-positioned
-  // `.composition-presence-layer` over the tile area and travel the wire as view-root
-  // FRACTIONS: tile ratios are shared CRDT state, so a fraction resolves to the same
-  // tile for every viewer. This round runs LAST — it navigates both browsers off the
-  // canvas container, then kills browser B to prove a departed tab's cursor is pruned.
-  //
-  // convB sends and convA receives, not the other way round: F5 froze convB's tab, and
-  // a page thawed out of `Page.setWebLifecycleState("frozen")` stays
-  // `visibilityState: "hidden"` for the rest of the terminal, so its
-  // requestAnimationFrame never fires again (measured; `Page.bringToFront` does not
-  // revive it). Sending is event-driven and works in a hidden page, but a receiver
-  // needs the animation frame to ease a cursor toward each new position, so the
-  // live-motion assertions have to watch the browser that was never frozen.
-  try {
-    const viewResponse = await fetch(`${origin}/api/actions/core.index.createContainer`, {
-      method: "POST",
-      headers: httpHeaders,
-      body: JSON.stringify({ name: "convergence-view", discipline: "composition" }),
-    });
-    if (!viewResponse.ok) {
-      throw new Error(`composition creation failed with ${String(viewResponse.status)}`);
-    }
-    const viewOutcome = ActionOutcomeSchema.parse(await viewResponse.json());
-    if (!viewOutcome.ok) throw new Error(`createContainer refused: ${viewOutcome.denial.message}`);
-    const containerId = ContainerResponseSchema.parse(viewOutcome.result).container.id;
-
-    // Parked on the sidebar, outside the tile area: the receiver must not emit cursors
-    // of its own, or the sender's own overlay could no longer prove the absence of a
-    // self-echo. Layout-driven synthetic pointer moves never reach `.composition-body`.
-    await browserA.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 40, y: 420 });
-
-    const openView = async (browser: Browser, label: string): Promise<void> => {
-      await browser.goto(`${origin}/p/${containerId}`);
-      // A composition route mounts no canvas, so neither the debug probe nor the sidebar
-      // connection chip exists here: the rendered root leaf is the readiness signal.
-      await until(
-        () =>
-          browser.evaluate<boolean>(
-            "document.querySelector('.composition-view .composition-body .composition-leaf') !== null",
-          ),
-        20_000,
-        `${label}: composition rendered`,
+  if (runs("ink")) {
+    // Freehand ink shares the text contract, and its box carries a viewBox so resizing
+    // scales the stroke instead of growing an empty frame around it.
+    const inkElement = [...sdk.elements.values()].find((element) => element.type === "draw");
+    if (inkElement === undefined) {
+      failures.push("F11b draw bounding-box resize");
+      console.log("FAIL  F11b freehand resizes from its selection box — no stroke on the canvas");
+    } else {
+      const inkSelector = JSON.stringify(`.react-flow__node[data-id="${inkElement.id}"]`);
+      const inkHandle = JSON.stringify(
+        `.react-flow__node[data-id="${inkElement.id}"] .react-flow__resize-control.handle.bottom.right`,
       );
-    };
-    await openView(browserA, "convA");
-    await openView(browserB, "convB");
+      await round(
+        "F11b freehand resizes from its selection box and scales its ink",
+        { adds: 0, changes: [inkElement.id] },
+        async () => {
+          await clickAt(browserA, await panePoint(browserA, 0.5, 0.86), 1);
+          await sleep(250);
+          if (
+            (await browserA.evaluate<number>(`document.querySelectorAll(${inkHandle}).length`)) !==
+            0
+          ) {
+            throw new Error("unselected stroke already shows bounding-box handles");
+          }
+          // Click the ink itself: the stroke is the only hit target inside its box.
+          const onStroke = await browserA.evaluate<{
+            readonly x: number;
+            readonly y: number;
+            readonly inkWidth: number;
+          }>(
+            `(() => {
+              const path = document.querySelector(${inkSelector}).querySelector("path");
+              const point = path.getPointAtLength(path.getTotalLength() / 2);
+              const ctm = path.getScreenCTM();
+              return {
+                x: ctm.a * point.x + ctm.c * point.y + ctm.e,
+                y: ctm.b * point.x + ctm.d * point.y + ctm.f,
+                inkWidth: path.getBoundingClientRect().width,
+              };
+            })()`,
+          );
+          await clickAt(browserA, { x: onStroke.x, y: onStroke.y }, 1);
+          await until(
+            () => browserA.evaluate<boolean>(`document.querySelector(${inkHandle}) !== null`),
+            5_000,
+            "bounding-box handles on the selected stroke",
+          );
+          const handle = await browserA.evaluate<{ readonly x: number; readonly y: number }>(
+            `(() => {
+              const control = document.querySelector(${inkHandle});
+              const rect = control.getBoundingClientRect();
+              const point = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+              const hit = document.elementFromPoint(point.x, point.y);
+              if (hit === null || !control.contains(hit)) {
+                throw new Error("selected stroke resize handle is covered by " +
+                  (hit === null ? "no hit target" : hit.tagName + "." + hit.getAttribute("class")));
+              }
+              return point;
+            })()`,
+          );
+          await browserA.send("Input.dispatchMouseEvent", {
+            type: "mouseMoved",
+            x: handle.x,
+            y: handle.y,
+          });
+          await sleep(120);
+          await browserA.drag(
+            [
+              { x: handle.x, y: handle.y },
+              { x: handle.x + 40, y: handle.y + 30 },
+              { x: handle.x + 90, y: handle.y + 65 },
+              { x: handle.x + 140, y: handle.y + 100 },
+            ],
+            30,
+          );
+          await until(
+            () => {
+              const element = sdk.elements.get(inkElement.id);
+              return element !== undefined && element.width > inkElement.width + 60;
+            },
+            5_000,
+            "canonical stroke geometry after the handle drag",
+          );
+          const inkAfter = await browserA.evaluate<number>(
+            `document.querySelector(${inkSelector}).querySelector("path").getBoundingClientRect().width`,
+          );
+          if (inkAfter < onStroke.inkWidth + 40) {
+            throw new Error(
+              `stroke did not scale with its box: ink ${onStroke.inkWidth.toFixed(1)} -> ${inkAfter.toFixed(1)}`,
+            );
+          }
+        },
+      );
+    }
+  }
 
-    // The paint resolves its color from the roster, so the round asserts the sender's
-    // own stored identity color rather than a hard-coded one.
-    const senderColor = await browserB.evaluate<string>(
-      `(() => {
-        const raw = localStorage.getItem("manifold.identity");
-        if (raw === null) throw new Error("convB has no stored identity");
-        const color = JSON.parse(raw).principal.color;
-        if (typeof color !== "string" || color === "") {
-          throw new Error("convB identity carries no color");
-        }
-        return color;
-      })()`,
-    );
+  if (runs("composition")) {
+    // Presence is a renderer-level contract, not a canvas feature. A composition has no
+    // React Flow viewport to ride, so its cursors paint on an absolutely-positioned
+    // `.composition-presence-layer` over the tile area and travel the wire as view-root
+    // FRACTIONS: tile ratios are shared CRDT state, so a fraction resolves to the same
+    // tile for every viewer. This round runs LAST, and is a group of its own for that
+    // reason — it navigates both browsers off the canvas container and then kills browser
+    // B to prove a departed tab's cursor is pruned, so nothing can follow it in a process.
+    //
+    // convB sends and convA receives, not the other way round. When the terminals group
+    // ran first, F5 froze convB's tab, and a page thawed out of
+    // `Page.setWebLifecycleState("frozen")` stays `visibilityState: "hidden"` for the rest
+    // of the terminal, so its requestAnimationFrame never fires again (measured;
+    // `Page.bringToFront` does not revive it). Sending is event-driven and works in a
+    // hidden page, but a receiver needs the animation frame to ease a cursor toward each
+    // new position, so the live-motion assertions have to watch the browser that was never
+    // frozen. This group keeps that direction when it runs alone: it costs nothing, and a
+    // direction that only works in one invocation mode is a trap for the next reader.
+    //
+    // The same freeze is why this group is worth a runner of its own. Every pointer move
+    // below is dispatched on convB, and a once-frozen tab answers `Input.dispatchMouseEvent`
+    // in 5.0s instead of 27ms for the rest of the process: 26 moves, 131s. Measured
+    // 133s here after the terminals group and 5.3s as `--group composition`.
+    try {
+      const viewResponse = await fetch(`${origin}/api/actions/core.index.createContainer`, {
+        method: "POST",
+        headers: httpHeaders,
+        body: JSON.stringify({ name: "convergence-view", discipline: "composition" }),
+      });
+      if (!viewResponse.ok) {
+        throw new Error(`composition creation failed with ${String(viewResponse.status)}`);
+      }
+      const viewOutcome = ActionOutcomeSchema.parse(await viewResponse.json());
+      if (!viewOutcome.ok)
+        throw new Error(`createContainer refused: ${viewOutcome.denial.message}`);
+      const containerId = ContainerResponseSchema.parse(viewOutcome.result).container.id;
 
-    /** A pointer position at a fraction of the browser's own tile area. */
-    const tileAreaPoint = async (
-      browser: Browser,
-      fx: number,
-      fy: number,
-    ): Promise<{ readonly x: number; readonly y: number }> =>
-      await browser.evaluate(
+      // Parked on the sidebar, outside the tile area: the receiver must not emit cursors
+      // of its own, or the sender's own overlay could no longer prove the absence of a
+      // self-echo. Layout-driven synthetic pointer moves never reach `.composition-body`.
+      await browserA.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 40, y: 420 });
+
+      const openView = async (browser: Browser, label: string): Promise<void> => {
+        await browser.goto(`${origin}/p/${containerId}`);
+        // A composition route mounts no canvas, so neither the debug probe nor the sidebar
+        // connection chip exists here: the rendered root leaf is the readiness signal.
+        await until(
+          () =>
+            browser.evaluate<boolean>(
+              "document.querySelector('.composition-view .composition-body .composition-leaf') !== null",
+            ),
+          20_000,
+          `${label}: composition rendered`,
+        );
+      };
+      await openView(browserA, "convA");
+      await openView(browserB, "convB");
+
+      // The paint resolves its color from the roster, so the round asserts the sender's
+      // own stored identity color rather than a hard-coded one.
+      const senderColor = await browserB.evaluate<string>(
         `(() => {
-          const body = document.querySelector(".composition-body");
-          if (!(body instanceof HTMLElement)) throw new Error("tile area missing");
-          const box = body.getBoundingClientRect();
-          return {
-            x: box.left + box.width * ${String(fx)},
-            y: box.top + box.height * ${String(fy)},
-          };
+          const raw = localStorage.getItem("manifold.identity");
+          if (raw === null) throw new Error("convB has no stored identity");
+          const color = JSON.parse(raw).principal.color;
+          if (typeof color !== "string" || color === "") {
+            throw new Error("convB identity carries no color");
+          }
+          return color;
         })()`,
       );
 
-    /** Sweeps a real pointer across the tile area, ending on the target fraction. */
-    const sweepTileArea = async (
-      browser: Browser,
-      from: readonly [number, number],
-      to: readonly [number, number],
-    ): Promise<void> => {
-      const steps = 12;
-      for (let index = 0; index <= steps; index += 1) {
-        const point = await tileAreaPoint(
-          browser,
-          from[0] + ((to[0] - from[0]) * index) / steps,
-          from[1] + ((to[1] - from[1]) * index) / steps,
+      /** A pointer position at a fraction of the browser's own tile area. */
+      const tileAreaPoint = async (
+        browser: Browser,
+        fx: number,
+        fy: number,
+      ): Promise<{ readonly x: number; readonly y: number }> =>
+        await browser.evaluate(
+          `(() => {
+            const body = document.querySelector(".composition-body");
+            if (!(body instanceof HTMLElement)) throw new Error("tile area missing");
+            const box = body.getBoundingClientRect();
+            return {
+              x: box.left + box.width * ${String(fx)},
+              y: box.top + box.height * ${String(fy)},
+            };
+          })()`,
         );
-        await browser.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
-        await sleep(20);
-      }
-    };
 
-    // One expression serves both browsers: on convA it proves the remote cursor arrived,
-    // on convB that the sender never paints its own echo.
-    const viewCursor = `(() => {
-      const body = document.querySelector(".composition-body");
-      if (!(body instanceof HTMLElement)) return { state: "no-body" };
-      const box = body.getBoundingClientRect();
-      const layer = document.querySelector(".composition-presence-layer");
-      if (!(layer instanceof HTMLElement)) return { state: "no-layer" };
-      const painted = [...layer.querySelectorAll(".remote-cursor")];
-      const count = painted.length;
-      const cursor = painted.find(
-        (node) => node.getAttribute("data-cursor-color") === ${JSON.stringify(senderColor)},
-      );
-      if (!(cursor instanceof HTMLElement)) return { state: "no-cursor", count };
-      const rect = cursor.getBoundingClientRect();
-      const style = getComputedStyle(cursor);
-      const layerBox = layer.getBoundingClientRect();
-      return {
-        state: "measured",
-        count,
-        // The label span trails the arrow, so only the tip locates the pointer.
-        fx: (rect.left - box.left) / box.width,
-        fy: (rect.top - box.top) / box.height,
-        width: rect.width,
-        height: rect.height,
-        // Containment is asserted on the tip alone: the overlay is deliberately
-        // unclipped, so a label near the right edge spills past the tile area.
-        inside:
-          rect.left >= box.left - 2 &&
-          rect.left <= box.right + 2 &&
-          rect.top >= box.top - 2 &&
-          rect.top <= box.bottom + 2,
-        visible: style.display !== "none" && style.visibility !== "hidden",
-        layerFills:
-          Math.abs(layerBox.left - box.left) <= 2 &&
-          Math.abs(layerBox.top - box.top) <= 2 &&
-          Math.abs(layerBox.width - box.width) <= 2 &&
-          Math.abs(layerBox.height - box.height) <= 2,
+      /** Sweeps a real pointer across the tile area, ending on the target fraction. */
+      const sweepTileArea = async (
+        browser: Browser,
+        from: readonly [number, number],
+        to: readonly [number, number],
+      ): Promise<void> => {
+        const steps = 12;
+        for (let index = 0; index <= steps; index += 1) {
+          const point = await tileAreaPoint(
+            browser,
+            from[0] + ((to[0] - from[0]) * index) / steps,
+            from[1] + ((to[1] - from[1]) * index) / steps,
+          );
+          await browser.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+          await sleep(20);
+        }
       };
-    })()`;
 
-    const firstTarget: readonly [number, number] = [0.34, 0.4];
-    const secondTarget: readonly [number, number] = [0.74, 0.72];
-    // A wrong coordinate space is what this tolerance catches: raw client pixels clamp
-    // to [0,1] and pin the arrow in a corner, flow coordinates land it out of bounds.
-    const tolerance = 0.12;
-
-    await sweepTileArea(browserB, [0.16, 0.24], firstTarget);
-    await until(
-      async () => {
-        const probe = await browserA.evaluate<ViewCursorProbe>(viewCursor);
-        return (
-          probe.state === "measured" &&
-          probe.inside === true &&
-          probe.visible === true &&
-          (probe.width ?? 0) > 0 &&
-          (probe.height ?? 0) > 0 &&
-          Math.abs((probe.fx ?? -1) - firstTarget[0]) <= tolerance &&
-          Math.abs((probe.fy ?? -1) - firstTarget[1]) <= tolerance
+      // One expression serves both browsers: on convA it proves the remote cursor arrived,
+      // on convB that the sender never paints its own echo.
+      const viewCursor = `(() => {
+        const body = document.querySelector(".composition-body");
+        if (!(body instanceof HTMLElement)) return { state: "no-body" };
+        const box = body.getBoundingClientRect();
+        const layer = document.querySelector(".composition-presence-layer");
+        if (!(layer instanceof HTMLElement)) return { state: "no-layer" };
+        const painted = [...layer.querySelectorAll(".remote-cursor")];
+        const count = painted.length;
+        const cursor = painted.find(
+          (node) => node.getAttribute("data-cursor-color") === ${JSON.stringify(senderColor)},
         );
-      },
-      8_000,
-      "convA: convB's cursor painted at its pointer fraction in the composition overlay",
-    );
-    const arrived = await browserA.evaluate<ViewCursorProbe>(viewCursor);
-    if (arrived.layerFills !== true) {
-      throw new Error("the composition presence overlay does not cover its view root");
-    }
+        if (!(cursor instanceof HTMLElement)) return { state: "no-cursor", count };
+        const rect = cursor.getBoundingClientRect();
+        const style = getComputedStyle(cursor);
+        const layerBox = layer.getBoundingClientRect();
+        return {
+          state: "measured",
+          count,
+          // The label span trails the arrow, so only the tip locates the pointer.
+          fx: (rect.left - box.left) / box.width,
+          fy: (rect.top - box.top) / box.height,
+          width: rect.width,
+          height: rect.height,
+          // Containment is asserted on the tip alone: the overlay is deliberately
+          // unclipped, so a label near the right edge spills past the tile area.
+          inside:
+            rect.left >= box.left - 2 &&
+            rect.left <= box.right + 2 &&
+            rect.top >= box.top - 2 &&
+            rect.top <= box.bottom + 2,
+          visible: style.display !== "none" && style.visibility !== "hidden",
+          layerFills:
+            Math.abs(layerBox.left - box.left) <= 2 &&
+            Math.abs(layerBox.top - box.top) <= 2 &&
+            Math.abs(layerBox.width - box.width) <= 2 &&
+            Math.abs(layerBox.height - box.height) <= 2,
+        };
+      })()`;
 
-    await sweepTileArea(browserB, firstTarget, secondTarget);
-    await until(
-      async () => {
-        const probe = await browserA.evaluate<ViewCursorProbe>(viewCursor);
-        if (probe.state !== "measured" || probe.inside !== true) return false;
-        return (
-          Math.abs((probe.fx ?? -1) - secondTarget[0]) <= tolerance &&
-          Math.abs((probe.fy ?? -1) - secondTarget[1]) <= tolerance
+      const firstTarget: readonly [number, number] = [0.34, 0.4];
+      const secondTarget: readonly [number, number] = [0.74, 0.72];
+      // A wrong coordinate space is what this tolerance catches: raw client pixels clamp
+      // to [0,1] and pin the arrow in a corner, flow coordinates land it out of bounds.
+      const tolerance = 0.12;
+
+      await sweepTileArea(browserB, [0.16, 0.24], firstTarget);
+      await until(
+        async () => {
+          const probe = await browserA.evaluate<ViewCursorProbe>(viewCursor);
+          return (
+            probe.state === "measured" &&
+            probe.inside === true &&
+            probe.visible === true &&
+            (probe.width ?? 0) > 0 &&
+            (probe.height ?? 0) > 0 &&
+            Math.abs((probe.fx ?? -1) - firstTarget[0]) <= tolerance &&
+            Math.abs((probe.fy ?? -1) - firstTarget[1]) <= tolerance
+          );
+        },
+        8_000,
+        "convA: convB's cursor painted at its pointer fraction in the composition overlay",
+      );
+      const arrived = await browserA.evaluate<ViewCursorProbe>(viewCursor);
+      if (arrived.layerFills !== true) {
+        throw new Error("the composition presence overlay does not cover its view root");
+      }
+
+      await sweepTileArea(browserB, firstTarget, secondTarget);
+      await until(
+        async () => {
+          const probe = await browserA.evaluate<ViewCursorProbe>(viewCursor);
+          if (probe.state !== "measured" || probe.inside !== true) return false;
+          return (
+            Math.abs((probe.fx ?? -1) - secondTarget[0]) <= tolerance &&
+            Math.abs((probe.fy ?? -1) - secondTarget[1]) <= tolerance
+          );
+        },
+        8_000,
+        "convA: composition cursor tracks convB's pointer across the tile area",
+      );
+      const tracked = await browserA.evaluate<ViewCursorProbe>(viewCursor);
+
+      // convA's pointer never entered the tile area, so convB's overlay must be empty:
+      // anything painted there is convB's own frame echoed back into its own paint.
+      const selfEcho = await browserB.evaluate<ViewCursorProbe>(viewCursor);
+      if (selfEcho.state === "measured") {
+        throw new Error(
+          `convB paints its own cursor back at fraction ${(selfEcho.fx ?? -1).toFixed(3)},${(selfEcho.fy ?? -1).toFixed(3)}`,
         );
-      },
-      8_000,
-      "convA: composition cursor tracks convB's pointer across the tile area",
-    );
-    const tracked = await browserA.evaluate<ViewCursorProbe>(viewCursor);
+      }
+      if ((selfEcho.count ?? 0) !== 0) {
+        throw new Error(
+          `convB overlay shows ${String(selfEcho.count)} cursors though only convB moved its pointer`,
+        );
+      }
 
-    // convA's pointer never entered the tile area, so convB's overlay must be empty:
-    // anything painted there is convB's own frame echoed back into its own paint.
-    const selfEcho = await browserB.evaluate<ViewCursorProbe>(viewCursor);
-    if (selfEcho.state === "measured") {
-      throw new Error(
-        `convB paints its own cursor back at fraction ${(selfEcho.fx ?? -1).toFixed(3)},${(selfEcho.fy ?? -1).toFixed(3)}`,
+      // Killing the tab is the abrupt departure the roster prune has to survive; the
+      // remaining viewer must retire the cursor instead of keeping a ghost arrow.
+      await browserB.close();
+      await until(
+        async () => (await browserA.evaluate<ViewCursorProbe>(viewCursor)).state !== "measured",
+        15_000,
+        "convA: the departed tab's cursor retired from the overlay",
+      );
+      console.log(
+        `PASS  F12 composition cursors converge on the presence overlay — tracked from ${(arrived.fx ?? -1).toFixed(3)},${(arrived.fy ?? -1).toFixed(3)} to ${(tracked.fx ?? -1).toFixed(3)},${(tracked.fy ?? -1).toFixed(3)}, no self-echo, pruned on tab close`,
+      );
+    } catch (error) {
+      failures.push("F12 composition cursor convergence");
+      console.log(
+        `FAIL  F12 composition cursors converge on the presence overlay — ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    if ((selfEcho.count ?? 0) !== 0) {
-      throw new Error(
-        `convB overlay shows ${String(selfEcho.count)} cursors though only convB moved its pointer`,
-      );
-    }
-
-    // Killing the tab is the abrupt departure the roster prune has to survive; the
-    // remaining viewer must retire the cursor instead of keeping a ghost arrow.
-    await browserB.close();
-    await until(
-      async () => (await browserA.evaluate<ViewCursorProbe>(viewCursor)).state !== "measured",
-      15_000,
-      "convA: the departed tab's cursor retired from the overlay",
-    );
-    console.log(
-      `PASS  F12 composition cursors converge on the presence overlay — tracked from ${(arrived.fx ?? -1).toFixed(3)},${(arrived.fy ?? -1).toFixed(3)} to ${(tracked.fx ?? -1).toFixed(3)},${(tracked.fy ?? -1).toFixed(3)}, no self-echo, pruned on tab close`,
-    );
-  } catch (error) {
-    failures.push("F12 composition cursor convergence");
-    console.log(
-      `FAIL  F12 composition cursors converge on the presence overlay — ${error instanceof Error ? error.message : String(error)}`,
-    );
   }
 } finally {
   // ---------------------------------------------------------------- teardown
@@ -1843,4 +2021,8 @@ if (failures.length > 0) {
   console.log(`\nFAILED rounds: ${failures.join(", ")}`);
   process.exit(1);
 }
-console.log("\nall convergence rounds passed");
+console.log(
+  requested === null
+    ? "\nall convergence rounds passed"
+    : `\nall convergence rounds in group ${requested} passed`,
+);

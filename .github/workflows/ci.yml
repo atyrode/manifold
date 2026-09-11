@@ -1,6 +1,16 @@
-# The gate runs on every pull request into main and every push to main; manual dispatch also
-# supplies post-merge evidence for repository-token merges, which do not trigger push runs.
-# `bun run release` requires green main CI; the Release workflow does not repeat the gate.
+# The gate runs on every pull request into main, every push to main, and every merge-queue
+# entry; manual dispatch also supplies post-merge evidence for repository-token merges, which
+# do not trigger push runs. `bun run release` requires green main CI; the Release workflow
+# does not repeat the gate.
+#
+# One job per slice of scripts/gate.ts's task registry, not one job for the whole gate.
+# `bun run gate` still runs every task locally in memory-bounded phases, because one developer
+# box has one memory ceiling; CI gets a runner per slice, so the wall clock is the SLOWEST
+# slice instead of the sum of all of them. Nothing here decides what a slice runs — the
+# registry does, and scripts/ci-coverage.ts fails the run if a registry group has no job.
+#
+# `gate` at the bottom is the only required context. It refuses any job that did not report,
+# and it accepts a skipped job only when the plan said that job's inputs were untouched.
 name: CI
 
 on:
@@ -8,86 +18,481 @@ on:
     branches: [main]
   push:
     branches: [main]
+  merge_group:
   workflow_dispatch:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  checks:
-    name: checks
+  # Which slices this change can actually affect. Derived from what each check READS, never
+  # from what a path looks like: docs/**, CHANGELOG.md and REGISTRY.md are inputs to
+  # verify:axioms and verify:budgets, so a "docs-only" change does not skip them. Anything
+  # unrecognised runs everything (scripts/ci-plan.ts).
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      types: ${{ steps.plan.outputs.types }}
+      style: ${{ steps.plan.outputs.style }}
+      trace: ${{ steps.plan.outputs.trace }}
+      unit: ${{ steps.plan.outputs.unit }}
+      e2e: ${{ steps.plan.outputs.e2e }}
+      convergence: ${{ steps.plan.outputs.convergence }}
+      axioms_static: ${{ steps.plan.outputs.axioms_static }}
+      axioms_browser: ${{ steps.plan.outputs.axioms_browser }}
+      terminal_selection: ${{ steps.plan.outputs.terminal_selection }}
+      terminal_mirror: ${{ steps.plan.outputs.terminal_mirror }}
+      tile_drop: ${{ steps.plan.outputs.tile_drop }}
+      budgets: ${{ steps.plan.outputs.budgets }}
+      pwa: ${{ steps.plan.outputs.pwa }}
+      runtime_jobs: ${{ steps.plan.outputs.runtime_jobs }}
+      runtime_browser: ${{ steps.plan.outputs.runtime_browser }}
+      preview: ${{ steps.plan.outputs.preview }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/bun-workspace
+      - name: Plan the run
+        id: plan
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # A pull request has a base to diff against. A push to main, a merge-queue entry and
+          # a manual dispatch do not, and must verify everything: main is the branch every
+          # other plan is derived against, so it never runs a reduced gate.
+          if [[ "${{ github.event_name }}" == pull_request ]]; then
+            git diff --name-only "$BASE...HEAD" | tee /dev/stderr \
+              | bun scripts/ci-plan.ts --github-output >> "$GITHUB_OUTPUT"
+          else
+            bun scripts/ci-plan.ts --all --github-output >> "$GITHUB_OUTPUT"
+          fi
+          echo "--- plan ---" && cat "$GITHUB_OUTPUT"
+
+  # Built once, read by every browser gate and by the sandboxed browser proof. Four of them
+  # rebuilding an identical bundle was most of the old gate's wall time, and the sandboxed
+  # proof was silently building a fifth copy of its own.
+  build:
+    name: build
+    needs: plan
+    # `!= 'false'` and never `== 'true'`: an empty or missing plan output must RUN the job.
+    # A renamed job or a plan step that died would otherwise read as "not needed" and skip.
+    if: needs.plan.outputs.build != 'false'
     runs-on: ubuntu-latest
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: ./.github/actions/gate-slice
         with:
-          bun-version: "1.4.2"
+          task: build
+          dist: produce
+          changelog: "true"
+      # A per-run artifact keyed to this exact commit, and deliberately NOT a cache.
+      # verify-convergence.ts compares the sidebar version label, which is baked into the
+      # bundle at build time, against /healthz, which derives the build live from the tree.
+      # A bundle from any other tree therefore fails convergence in SETUP, before any round,
+      # and reads like a convergence bug rather than a stale artifact. Measured: a 90-minute
+      # old bundle reddened all four convergence groups with no code change.
+      - name: Publish it for the gates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-dist
+          path: web-dist
+          retention-days: 1
 
-      - name: Cache bun's download store
+  types:
+    name: types
+    needs: plan
+    if: needs.plan.outputs.types != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      # tsc versions files by CONTENT and stamps its own version into the buildinfo, so a
+      # stale or partial restore re-checks what changed rather than replaying a wrong green.
+      # That is why the restore key is deliberately loose: a near miss still saves most of it.
+      - name: Cache the incremental typecheck state
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-
+          path: .cache/tsbuildinfo
+          key: tsbuildinfo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            tsbuildinfo-${{ runner.os }}-
+      - uses: ./.github/actions/gate-slice
+        with:
+          task: types
+          changelog: "true"
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Install Linux containment fixtures
-        run: bash scripts/install-runtime-ci.sh
-
-      - name: Verify real machine jobs and browser runtime
-        run: |
-          bash scripts/verify-runtime.sh --system jobs
-          bash scripts/verify-runtime.sh --system browser
-
-      - name: Gate
-        run: bun run gate
-
-  preview-environment:
-    name: preview-environment
+  style:
+    name: style
+    needs: plan
+    if: needs.plan.outputs.style != 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: Install Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: ./.github/actions/gate-slice
         with:
-          bun-version: "1.4.2"
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-      - name: Verify preview development environment
-        run: bun scripts/verify-preview-environment.ts
-      - name: Verify integrated development environment
-        run: bun scripts/verify-preview-environment.ts --integrated
+          task: style
+
+  trace:
+    name: trace
+    needs: plan
+    if: needs.plan.outputs.trace != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/gate-slice
+        with:
+          task: trace
+
+  # Sharded by file across runners, and each shard runs its own files in parallel worker
+  # processes. Locally the gate still runs one process, because `--parallel` beside six
+  # compilers is what the gate's memory ceiling exists to prevent.
+  unit:
+    name: unit (${{ matrix.shard }}/4)
+    needs: plan
+    if: needs.plan.outputs.unit != 'false'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/gate-slice
+        with:
+          task: unit
+          shard: ${{ matrix.shard }}/4
+          parallel: "true"
+          changelog: "true"
+
+  # The testkit's browser cases need the bundle. Not optional, and the failure mode is
+  # unkind: gate.ts sets MANIFOLD_GATE_DIST for every task, so with no artifact it points at
+  # an EMPTY temp dir, and gate-dist.ts reads a set variable as "already built" and serves
+  # nothing. A full local gate hides it because the concurrent build fills that same dir.
+  e2e:
+    name: e2e (${{ matrix.shard }}/3)
+    needs: [plan, build]
+    if: needs.plan.outputs.e2e != 'false'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/gate-slice
+        with:
+          task: e2e
+          shard: ${{ matrix.shard }}/3
+          changelog: "true"
+          dist: consume
+
+  # ONE job, deliberately, even though verify-convergence.ts can split itself four ways.
+  #
+  # The rounds are one chain of shared scene state, and `--group` runs a dependency closure
+  # of them. Three of the four closures are sound. `text` is not: F9 asserts that an undo
+  # restores deleted text, and undo reads the SESSION's history, not the element's — so
+  # lifting that closure out changes what undo means, not just when it runs. It failed on
+  # three separate CI runs, including with the ceiling at 20s, while every other round in
+  # its own group passed.
+  #
+  # Nothing is lost by declining the split: at ~160s this gate is less than half of
+  # `preview (integrated)`, so it is not on the critical path and four runners would buy no
+  # wall clock. The flag stays in the script because the closures are real and useful for
+  # running one of them by hand.
+  convergence:
+    name: convergence
+    needs: [plan, build]
+    if: needs.plan.outputs.convergence != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/gate-slice
+        with:
+          task: convergence
+          dist: consume
+
+  # verify-axioms.ts is two gates in one file: a static pass over the axiom registry, and a
+  # browser pass. The static half needs no Chromium, so it reports in seconds instead of
+  # queueing behind one.
+  axioms-static:
+    name: axioms-static
+    needs: plan
+    if: needs.plan.outputs.axioms_static != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/gate-slice
+        with:
+          task: axioms-static
+
+  axioms-browser:
+    name: axioms-browser
+    needs: [plan, build]
+    if: needs.plan.outputs.axioms_browser != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/gate-slice
+        with:
+          task: axioms-browser
+          dist: consume
+
+  terminal-selection:
+    name: terminal-selection
+    needs: [plan, build]
+    if: needs.plan.outputs.terminal_selection != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/gate-slice
+        with:
+          task: verify:terminal-selection
+          dist: consume
+
+  terminal-mirror:
+    name: terminal-mirror
+    needs: [plan, build]
+    if: needs.plan.outputs.terminal_mirror != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/gate-slice
+        with:
+          task: verify:terminal-mirror
+          dist: consume
+
+  tile-drop:
+    name: tile-drop
+    needs: [plan, build]
+    if: needs.plan.outputs.tile_drop != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/gate-slice
+        with:
+          task: verify:tile-drop
+          dist: consume
+
+  budgets:
+    name: budgets
+    needs: [plan, build]
+    if: needs.plan.outputs.budgets != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/gate-slice
+        with:
+          task: verify:budgets
+          dist: consume
+
+  pwa:
+    name: pwa
+    needs: [plan, build]
+    if: needs.plan.outputs.pwa != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/gate-slice
+        with:
+          task: verify:pwa
+          dist: consume
+
+  # The two sandboxed Linux proofs. Each builds its own disposable systemd unit and its own
+  # static probes and shares nothing with the other, so they were two sequential steps for no
+  # reason. bubblewrap is built from a pinned upstream commit, so it is cached rather than
+  # recompiled twice per run.
+  runtime-jobs:
+    name: runtime-jobs
+    needs: plan
+    if: needs.plan.outputs.runtime_jobs != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/bun-workspace
+      - name: Cache the pinned bubblewrap build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/manifold-bwrap
+          key: bwrap-${{ runner.os }}-${{ env.ImageOS }}-1b80120ef26a28e065e67f89bfef873f13bdd317
+      - name: Install Linux containment fixtures
+        env:
+          MANIFOLD_BWRAP_CACHE: ~/.cache/manifold-bwrap
+        run: bash scripts/install-runtime-ci.sh
+      - name: Verify real machine jobs
+        run: bash scripts/verify-runtime.sh --system jobs
+
+  runtime-browser:
+    name: runtime-browser
+    needs: [plan, build]
+    if: needs.plan.outputs.runtime_browser != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/bun-workspace
+      - name: Cache the pinned bubblewrap build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/manifold-bwrap
+          key: bwrap-${{ runner.os }}-${{ env.ImageOS }}-1b80120ef26a28e065e67f89bfef873f13bdd317
+      - name: Install Linux containment fixtures
+        env:
+          MANIFOLD_BWRAP_CACHE: ~/.cache/manifold-bwrap
+        run: bash scripts/install-runtime-ci.sh
+      - name: Fetch the shared web bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: web-dist
+          path: ${{ github.workspace }}/web-dist
+      - name: Verify the browser runtime
+        env:
+          # Without this the proof builds a whole web bundle of its own INSIDE the sandbox.
+          MANIFOLD_GATE_DIST: ${{ github.workspace }}/web-dist
+        run: bash scripts/verify-runtime.sh --system browser
+
+  # Two independent environment proofs that were two sequential steps in one job.
+  preview:
+    name: preview (${{ matrix.mode }})
+    needs: plan
+    if: needs.plan.outputs.preview != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [development, integrated]
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/bun-workspace
+      - name: Verify the ${{ matrix.mode }} environment
+        run: |
+          if [[ "${{ matrix.mode }}" == integrated ]]; then
+            bun scripts/verify-preview-environment.ts --integrated
+          else
+            bun scripts/verify-preview-environment.ts
+          fi
       - name: Retain verification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: preview-environment-evidence
+          name: preview-environment-evidence-${{ matrix.mode }}
           path: ${{ runner.temp }}/preview-environment-artifacts-*
           retention-days: 1
 
   gate:
     name: gate
     if: always()
-    needs: [checks, preview-environment]
+    needs:
+      - plan
+      - build
+      - types
+      - style
+      - trace
+      - unit
+      - e2e
+      - convergence
+      - axioms-static
+      - axioms-browser
+      - terminal-selection
+      - terminal-mirror
+      - tile-drop
+      - budgets
+      - pwa
+      - runtime-jobs
+      - runtime-browser
+      - preview
     runs-on: ubuntu-latest
     steps:
-      - name: Require both verification jobs
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/bun-workspace
+      # A task group with no job would otherwise make this whole workflow green while
+      # verifying less than `bun run gate` does.
+      - name: Every gate task is scheduled
+        run: bun scripts/ci-coverage.ts
+      - name: Require every verification job
         env:
-          CHECKS: ${{ needs.checks.result }}
-          PREVIEW_ENVIRONMENT: ${{ needs.preview-environment.result }}
-        run: test "$CHECKS" = success && test "$PREVIEW_ENVIRONMENT" = success
+          RESULTS: ${{ toJSON(needs) }}
+          PLAN: ${{ toJSON(needs.plan.outputs) }}
+        run: |
+          set -euo pipefail
+          # A job may be skipped ONLY because the plan said its inputs were untouched. Skipped
+          # for any other reason — including a dependency that failed, which GitHub also
+          # reports as `skipped` — is a failure here. That is the difference between "this
+          # change cannot affect it" and "nobody checked".
+          failed=0
+          while read -r job result; do
+            [[ $job == plan ]] && continue
+            planned=$(jq -r --arg k "${job//-/_}" '.[$k] // "true"' <<<"$PLAN")
+            if [[ $result == success ]]; then
+              verdict=PASS
+            elif [[ $result == skipped && $planned == false ]]; then
+              verdict="SKIP  (inputs untouched)"
+            else
+              verdict=FAIL
+              failed=1
+            fi
+            printf '%-20s %-10s %s\n' "$job" "$result" "$verdict"
+          done < <(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<<"$RESULTS")
+          printf '\ngate: %s\n' "$([[ $failed == 0 ]] && echo GREEN || echo RED)"
+          exit "$failed"

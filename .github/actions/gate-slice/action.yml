@@ -1,0 +1,63 @@
+# Runs one slice of scripts/gate.ts's task registry on this runner.
+#
+# The slice name is a group or task from `bun scripts/gate.ts --list`, so the command a CI job
+# runs is the command the registry defines — a job cannot drift from the gate by spelling
+# `bun test` itself. scripts/ci-coverage.ts checks the other direction: that every group in the
+# registry is named by some job in the workflow.
+name: Gate slice
+description: Run one group or task of the repository gate.
+
+inputs:
+  task:
+    description: Group or task name, as printed by `gate.ts --list`.
+    required: true
+  dist:
+    description: >
+      `consume` downloads the web bundle the build job published and points MANIFOLD_GATE_DIST
+      at it; `produce` points there without downloading, which is how the build job writes the
+      bundle everyone else reads. Empty means this slice needs no bundle.
+
+      One build serves every consumer because the gates only ever READ it and it is
+      byte-identical for all of them — the same reason `bun run gate` shares one locally.
+    default: ""
+  changelog:
+    description: Generate the web changelog module before running.
+    default: "false"
+  shard:
+    description: "Shard as i/n, for the tasks whose suite splits by file."
+    default: ""
+  group:
+    description: Round group, for verify:convergence's dependency-closed slices.
+    default: ""
+  parallel:
+    description: Run test files in parallel worker processes.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/bun-workspace
+      with:
+        changelog: ${{ inputs.changelog }}
+
+    - name: Fetch the shared web bundle
+      if: inputs.dist == 'consume'
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: web-dist
+        path: ${{ github.workspace }}/web-dist
+
+    - name: Run the slice
+      shell: bash
+      env:
+        # Absolute on purpose: verify-runtime.sh refuses a relative override, and the browser
+        # gates hand this path to a server running from a different working directory.
+        MANIFOLD_GATE_DIST: ${{ inputs.dist != '' && format('{0}/web-dist', github.workspace) || '' }}
+      run: |
+        set -euo pipefail
+        args=(--only "${{ inputs.task }}")
+        [[ -n "${{ inputs.shard }}" ]] && args+=(--shard "${{ inputs.shard }}")
+        [[ -n "${{ inputs.group }}" ]] && args+=(--group "${{ inputs.group }}")
+        [[ "${{ inputs.parallel }}" == true ]] && args+=(--parallel)
+        printf 'gate slice:'; printf ' %q' "${args[@]}"; printf '\n'
+        bun scripts/gate.ts "${args[@]}"

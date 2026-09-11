@@ -1,0 +1,41 @@
+# Every fanned-out CI job needs the same three things before it can do any work: the pinned
+# Bun, a warm dependency store, and linked node_modules. Repeating that in a dozen jobs is how
+# the pin silently drifts in one of them, so it lives here once.
+#
+# The dependency store cache carries a loose restore-key on purpose: a lockfile change should
+# still start from the previous store rather than re-downloading every tarball. That is safe
+# because `--frozen-lockfile` decides what is installed, not the cache.
+name: Bun workspace
+description: Pinned Bun, a warm dependency store, and installed workspace dependencies.
+
+inputs:
+  changelog:
+    description: >
+      Generate packages/web's changelog module. The web typecheck and the web bundle both
+      import it and it is untracked, so any job doing either must ask for it. Requires tags
+      in the checkout: it resolves the current version with `git describe --tags`.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Bun
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      with:
+        bun-version: "1.4.2"
+
+    - name: Cache bun's download store
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ~/.bun/install/cache
+        key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+        restore-keys: bun-${{ runner.os }}-
+
+    - name: Install dependencies
+      shell: bash
+      run: bun install --frozen-lockfile
+
+    - name: Generate the web changelog module
+      if: inputs.changelog == 'true'
+      shell: bash
+      run: bun run changelog:generate
