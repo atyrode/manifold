@@ -459,7 +459,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Tes
   // Tests bootstrap by parsing the pre-authed ready line; stdout here is an
   // in-memory capture, not a persisted log stream, so opting in is safe.
   env.MANIFOLD_ANNOUNCE_KEY = "1";
-  if (port !== 0) env.MANIFOLD_PUBLIC_URL = `http://localhost:${port}`;
+  if (port !== 0 && options.env?.["MANIFOLD_PUBLIC_URL"] === undefined) {
+    env.MANIFOLD_PUBLIC_URL = `http://localhost:${port}`;
+  }
 
   const { promise: ready, resolve, reject } = Promise.withResolvers<ReadyInfo>();
   let settled = false;

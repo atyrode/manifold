@@ -58,32 +58,125 @@ build_environment() {
   [[ $probe == manifold-preview-environment-ok ]] ||
     fail 'development image did not execute the supplied command probe'
 }
+# Classify image defaults without exposing environment values. Both defaults and
+# overrides must be ordinary: an override must not hide an unsafe built image.
+retained_image_contract() {
+  docker image inspect "$1" 2>/dev/null | jq -cer '
+    def unsafe: test("^(MANIFOLD_OWNER_KEY|MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE|MANIFOLD_LOCAL_AGENT_SUPERVISION|BASH_ENV|BASH_FUNC_.*|ENV|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|XDG_CONFIG_HOME|LD_.*|NODE_OPTIONS|NODE_PATH)$") or
+      (startswith("BUN_") and . != "BUN_VERSION" and . != "BUN_INSTALL" and . != "BUN_INSTALL_BIN" and . != "BUN_RUNTIME_TRANSPILER_CACHE_PATH");
+    .[0].Config |
+    select(.Cmd == ["/app/infra/entrypoint.sh"] and
+      .Entrypoint == ["/usr/local/bin/docker-entrypoint.sh"] and .WorkingDir == "/app" and
+      ((.Shell // ["/bin/sh", "-c"]) == ["/bin/sh", "-c"]) and
+      (.OnBuild // [] | length) == 0 and
+      all((.Volumes // {} | keys[]); . == "/data") and
+      all(.Env[]?; (split("=")[0] | unsafe | not)) and
+      all(.Env[]?; if startswith("PATH=") then . == "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin" else true end) and
+      all(.Env[]?;
+        if startswith("HOME=") then . == "HOME=/root" or . == "HOME=/home/bun"
+        elif startswith("BUN_INSTALL=") then . == "BUN_INSTALL=/usr/local/bun" or . == "BUN_INSTALL=/usr/local"
+        elif startswith("BUN_INSTALL_BIN=") then . == "BUN_INSTALL_BIN=/usr/local/bin"
+        elif startswith("BUN_RUNTIME_TRANSPILER_CACHE_PATH=") then . == "BUN_RUNTIME_TRANSPILER_CACHE_PATH=0"
+        else true end) and
+      all(.Env[]?; if startswith("MANIFOLD_REPLICA_BUCKET=") then . == "MANIFOLD_REPLICA_BUCKET=" else true end) and
+      (.Healthcheck.Test == ["CMD-SHELL", "bun -e \"const r = await fetch('\''http://127.0.0.1:7777/healthz'\''); if (!r.ok) process.exit(1);\""])) |
+    {data: ([.Env[]? | select(startswith("MANIFOLD_DATA_DIR="))] == ["MANIFOLD_DATA_DIR=/data"])}
+  ' 2>/dev/null
+}
+
+# The input is already the final resolved merge, in the caller-owned 0700 tmpfs
+# directory. Escape literal dollars before Compose reads it again: interpolation
+# must not turn a resolved credential or command into a different configuration.
+seal_retained_configuration() {
+  local configuration=$1 image=$2 sealed=$3
+  jq --arg image "$image" '
+    .services.manifold.image = $image | .services.manifold.pull_policy = "never" |
+    walk(if type == "string" then gsub("\\$"; "$$") else . end)
+  ' "$configuration" >"$sealed" 2>/dev/null ||
+    fail 'HOLD: cannot seal retained replacement configuration'
+  chmod 600 "$sealed"
+}
+# Compose null environment entries mean removal, not image-default inheritance.
+# Preserve them and prevent a later host export from resolving them on the next
+# invocation. Only names (never values) enter this subprocess argument list.
+frozen_retained_compose() {
+  local configuration=$1 project=$2 key
+  local -a unset_environment=()
+  shift 2
+  while IFS= read -r -d '' key; do
+    unset_environment+=(-u "$key")
+  done < <(jq -jr '[.services[].environment // {} | to_entries[] | select(.value == null) | .key] | unique[] | ., "\u0000"' "$configuration")
+  env "${unset_environment[@]}" docker compose --project-name "$project" \
+    --env-file /dev/null --file "$configuration" "$@"
+}
+
+# A normal-looking image configuration is not proof of its application source.
+# Build only the selected Git tree, never an override recipe or untracked context.
+build_retained_hub() {
+  local configuration=$1 checkout=$2 image=$3 revision=$4 argument
+  local context
+  local -a build_arguments=()
+  context=$(cd "$checkout" && pwd -P)
+  jq -e --arg context "$context" --arg version "$MANIFOLD_VERSION" \
+    --arg build "$MANIFOLD_BUILD" --arg channel "$MANIFOLD_CHANNEL" '
+    .services.manifold.build as $recipe |
+    $recipe.context == $context and
+    ($recipe.dockerfile == null or $recipe.dockerfile == "Dockerfile") and
+    all($recipe | keys[]; . == "context" or . == "dockerfile" or . == "args") and
+    ($recipe.args.MANIFOLD_VERSION == $version) and
+    ($recipe.args.MANIFOLD_BUILD == $build) and
+    ($recipe.args.MANIFOLD_CHANNEL == $channel) and
+    all($recipe.args | to_entries[];
+      (.key | IN("MANIFOLD_VERSION", "MANIFOLD_BUILD", "MANIFOLD_CHANNEL",
+        "VITE_MANIFOLD_SITE_TITLE", "VITE_MANIFOLD_ICON_BACKGROUND")) and
+      (.value | type == "string"))
+  ' "$configuration" >/dev/null 2>&1 ||
+    fail 'HOLD: retained replacement requires the selected ordinary Git build'
+  while IFS= read -r -d '' argument; do
+    build_arguments+=(--build-arg "$argument")
+  done < <(jq -jr '.services.manifold.build.args | to_entries[] | "\(.key)=\(.value)", "\u0000"' "$configuration")
+  git -C "$checkout" archive --format=tar "$revision" |
+    docker build --load --file Dockerfile --tag "$image" "${build_arguments[@]}" -
+}
+
 # Resolve the final callback merge, reducing it immediately to a bounded public
 # record. Image defaults count only when the Compose environment omits the key;
 # an explicit null/unknown value is not evidence for the supported persisted root.
 retained_topology() {
   local volume=$1 image=$2 image_data
   shift 2
-  image_data=$(docker image inspect --format '
-    {{- $data := false -}}{{- $unsafe := false -}}
-    {{- range .Config.Env -}}
-      {{- if eq (index (split . "=") 0) "MANIFOLD_DATA_DIR" -}}
-        {{- if or $data (ne . "MANIFOLD_DATA_DIR=/data") -}}{{- $unsafe = true -}}{{- end -}}{{- $data = true -}}
-      {{- end -}}
-    {{- end -}}
-    {{- if and $data (not $unsafe) -}}retained-data-root{{- end -}}' "$image" 2>/dev/null) ||
-    fail 'HOLD: cannot classify retained replacement data root'
+  image_data=$(retained_image_contract "$image") ||
+    fail 'HOLD: retained replacement image has unsupported execution or credential configuration'
   "$@" "$image" config --format json 2>/dev/null |
-    jq -cer --arg volume "$volume" --arg image "$image" --arg image_data "$image_data" '
+    jq -cer --arg volume "$volume" --arg image "$image" --argjson image_data "$image_data" '
       . as $config | .services.manifold as $service |
       [$service.networks | keys[] | $config.networks[.].name] | sort as $networks |
       select(
         $service.image == $image and
         $service.environment.MANIFOLD_MACHINE_NAME == "dev-hub" and
         $service.environment.MANIFOLD_SPAWN_AGENT == "0" and
+        ($service.command == ["/app/infra/entrypoint.sh"] or
+          ($service.command == null and $service.entrypoint == null)) and
+        ($service.entrypoint == null or $service.entrypoint == ["/usr/local/bin/docker-entrypoint.sh"]) and
+        ($service.working_dir == null or $service.working_dir == "/app") and
+        ($service.pid == null or $service.pid == "") and
+        ($service.user == null) and ($service.init == null or $service.init == false) and
+        ($service.scale == null or $service.scale == 1) and
+        ($service.deploy.replicas == null or $service.deploy.replicas == 1) and
+        ($service.runtime == null or $service.runtime == "runc") and
+        ($service.use_api_socket == null or $service.use_api_socket == false) and
+        ($service.privileged == null or $service.privileged == false) and
+        all(["cap_add", "devices", "device_cgroup_rules", "security_opt", "sysctls", "configs", "secrets", "post_start", "pre_stop", "volumes_from", "env_file", "tmpfs"][];
+          . as $key | ($service[$key] // [] | length) == 0) and
+        ($service.environment.MANIFOLD_OWNER_KEY == null) and
+        all($service.environment | keys[];
+          test("^(PATH|HOME|XDG_CONFIG_HOME|BASH_ENV|BASH_FUNC_.*|ENV|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|LD_.*|BUN_.*|NODE_OPTIONS|NODE_PATH|MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE|MANIFOLD_LOCAL_AGENT_SUPERVISION)$") | not) and
+        ($service.environment.MANIFOLD_REPLICA_BUCKET == null or $service.environment.MANIFOLD_REPLICA_BUCKET == "") and
+        ($service.healthcheck.test == null or $service.healthcheck.test == ["NONE"] or
+          $service.healthcheck.test == ["CMD-SHELL", "bun -e \"const r = await fetch('\''http://127.0.0.1:7777/healthz'\''); if (!r.ok) process.exit(1);\""]) and
         (if $service.environment | has("MANIFOLD_DATA_DIR")
          then $service.environment.MANIFOLD_DATA_DIR == "/data"
-         else $image_data == "retained-data-root" end) and
+         else $image_data.data end) and
         ($service.network_mode == null) and
         ($service.volumes | length) == 1 and
         $service.volumes[0].type == "volume" and
@@ -114,13 +207,15 @@ require_retained_server_only() {
     fail 'HOLD: retained replacement requires one supported server-only incumbent'
   # Classify matching public settings inside Docker's template; even unexpected
   # values must not be printed. Reject command overrides and shared PID namespaces.
+  # Bare NAME entries in Docker's environment mean unset; only NAME=value can
+  # carry an overriding credential or loader setting.
   configuration=$(docker inspect --format '
     {{- $spawn := false -}}{{- $unsafe := false -}}
     {{- range .Config.Env -}}
       {{- $key := index (split . "=") 0 -}}
       {{- if eq $key "MANIFOLD_SPAWN_AGENT" -}}
         {{- if or $spawn (ne . "MANIFOLD_SPAWN_AGENT=0") -}}{{- $unsafe = true -}}{{- end -}}{{- $spawn = true -}}
-      {{- else if or (eq $key "BUN_OPTIONS") (eq $key "NODE_OPTIONS") (eq $key "MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE") (eq $key "MANIFOLD_LOCAL_AGENT_SUPERVISION") -}}
+      {{- else if and (ne . $key) (or (eq $key "MANIFOLD_OWNER_KEY") (eq $key "BASH_ENV") (eq $key "ENV") (eq $key "LD_PRELOAD") (eq $key "LD_LIBRARY_PATH") (eq $key "BUN_OPTIONS") (eq $key "NODE_OPTIONS") (eq $key "MANIFOLD_LOCAL_JOB_OWNER_TEMPLATE") (eq $key "MANIFOLD_LOCAL_AGENT_SUPERVISION")) -}}
         {{- $unsafe = true -}}
       {{- end -}}
     {{- end -}}

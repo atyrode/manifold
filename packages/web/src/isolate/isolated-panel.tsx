@@ -46,30 +46,35 @@ function ignoreEvent(): void {}
 
 function IsolatedInstance({ pluginId, panelId, host }: IsolatedInstanceProps): ReactElement {
   const [instance] = useState(() => crypto.randomUUID());
-  const [state, setState] = useState<PanelState>(LOADING);
+  const [state, setState] = useState<PanelState & { readonly token: string }>(() => ({
+    ...LOADING,
+    token: host.token,
+  }));
   const lease = useRef<WorkerLease | null>(null);
   /*
     The host ref is read at mount time without being a dependency: the gate rebuilds it on every
     composition change, and re-mounting the instance for each would make the guest re-init a
-    panel nobody touched. The newest ref still serves every call — see the second effect.
+    panel nobody touched. Credential changes acquire a fresh supervisor; all other host
+    changes still serve every call through the second effect.
   */
   const hostAtMount = useEffectEvent((): HostServices => host);
 
   useEffect(() => {
-    const held = WORKERS.acquire(pluginId, hostAtMount());
+    const currentHost = hostAtMount();
+    const held = WORKERS.acquire(pluginId, currentHost);
     lease.current = held;
     const unmount = held.worker.mount(
       instance,
       panelId,
-      (tree) => setState({ kind: "tree", tree }),
-      (error) => setState({ kind: "fault", error }),
+      (tree) => setState({ kind: "tree", tree, token: currentHost.token }),
+      (error) => setState({ kind: "fault", error, token: currentHost.token }),
     );
     return () => {
       unmount();
       held.release();
       lease.current = null;
     };
-  }, [pluginId, panelId, instance]);
+  }, [pluginId, panelId, instance, host.token]);
 
   useEffect(() => {
     lease.current?.worker.bind(host);
@@ -82,7 +87,8 @@ function IsolatedInstance({ pluginId, panelId, host }: IsolatedInstanceProps): R
     [instance],
   );
 
-  switch (state.kind) {
+  const currentState = state.token === host.token ? state : LOADING;
+  switch (currentState.kind) {
     case "loading": {
       const title = host.assembly.panels.get(panelRefId(pluginId, panelId))?.title;
       return (
@@ -95,15 +101,15 @@ function IsolatedInstance({ pluginId, panelId, host }: IsolatedInstanceProps): R
     case "fault":
       return (
         <VocabularyRenderer
-          tree={{ type: "empty", text: state.error }}
+          tree={{ type: "empty", text: currentState.error }}
           onEvent={ignoreEvent}
           tone="danger"
         />
       );
     case "tree":
-      return <VocabularyRenderer tree={state.tree} onEvent={onEvent} />;
+      return <VocabularyRenderer tree={currentState.tree} onEvent={onEvent} />;
     default: {
-      const unreachable: never = state;
+      const unreachable: never = currentState;
       throw new Error(`unhandled panel state ${String(unreachable)}`);
     }
   }

@@ -1,7 +1,6 @@
 import {
   ActionOutcomeSchema,
   BootstrapPrincipalRequestSchema,
-  HttpErrorSchema,
   LayoutResponseSchema,
   AttendanceResponseSchema,
   ContainerSchema,
@@ -15,7 +14,7 @@ import {
   type Principal,
   type TileLayout,
 } from "@manifold/protocol";
-import { instanceUrl } from "@manifold/plugin/hooks";
+import { requestJson } from "./http.ts";
 import { ACCESS_CREATE_PRINCIPAL_ACTION, INDEX_READ_CONTAINER_ACTION } from "./assembly.ts";
 
 /** The browser persists only the bearer token and stable identity it needs after bootstrap. */
@@ -25,34 +24,6 @@ export interface StoredIdentity {
   readonly expiresInMs?: number;
   readonly receivedAt?: number;
   readonly expiresAt?: number;
-}
-
-async function readBody(response: Response): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch {
-    throw new Error(`Server returned a non-JSON response (${response.status})`);
-  }
-}
-
-function errorFromBody(status: number, body: unknown): Error {
-  const parsed = HttpErrorSchema.safeParse(body);
-  if (parsed.success) return new Error(parsed.data.error.message);
-  return new Error(`Request failed (${status})`);
-}
-
-/**
- * Every door this layer knocks on is addressed at the INSTANCE, not at the origin that served
- * the page. The two are the same thing for an ordinary self-hosted deployment and deliberately
- * not the same assumption: a lens may be pointed elsewhere (`@manifold/plugin/hooks`
- * `instanceOrigin`, AXIOMS §The portable lens), and a relative path would quietly follow the
- * bundle's birthplace instead.
- */
-async function requestJson(path: string, init: RequestInit): Promise<unknown> {
-  const response = await fetch(instanceUrl(path), init);
-  const body = await readBody(response);
-  if (!response.ok) throw errorFromBody(response.status, body);
-  return body;
 }
 
 function fieldFromObject(body: unknown, field: string): unknown {

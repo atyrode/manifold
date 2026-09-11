@@ -1,7 +1,7 @@
 import { IDENTITY_COLORS, PrincipalSchema } from "@manifold/protocol";
 import { instanceOrigin, isForeignInstance } from "@manifold/plugin/hooks";
 import { Cover } from "@manifold/ui";
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   createPrincipal,
   getPreviewIdentityAuthority,
@@ -9,12 +9,14 @@ import {
   startPreviewIdentity,
   type StoredIdentity,
 } from "./api.ts";
+import { onIdentityRejected } from "./http.ts";
 
 const OWNER_KEY_STORAGE = "manifold.ownerKey";
 const IDENTITY_STORAGE = "manifold.identity";
 const OWNER_KEY_PATTERN = /^[0-9a-f]{64}$/i;
 const OWNER_FRAGMENT_PATTERN = /^#key=([0-9a-f]{64})$/i;
 const PREVIEW_NONCE_STORAGE = "manifold.previewNonce";
+let fragmentOwnerKey: { readonly storageKey: string; readonly value: string } | null = null;
 
 function previewHandoffRequest(): { audience: string; nonce: string } | null {
   if (window.location.pathname !== "/auth/preview") return null;
@@ -106,11 +108,6 @@ function PreviewHandoff({
           reason instanceof Error
             ? reason.message
             : "This production identity cannot open the preview.";
-        if (detail === "expired" || detail === "revoked") {
-          window.localStorage.removeItem(credentialKey(IDENTITY_STORAGE));
-          window.location.reload();
-          return;
-        }
         setMessage(detail);
       });
     return () => {
@@ -148,7 +145,9 @@ export function captureOwnerKeyFromFragment(): void {
   const match = OWNER_FRAGMENT_PATTERN.exec(window.location.hash);
   const ownerKey = match?.[1];
   if (ownerKey === undefined) return;
-  window.localStorage.setItem(credentialKey(OWNER_KEY_STORAGE), ownerKey);
+  const storageKey = credentialKey(OWNER_KEY_STORAGE);
+  fragmentOwnerKey = { storageKey, value: ownerKey };
+  window.localStorage.setItem(storageKey, ownerKey);
   window.history.replaceState(
     window.history.state,
     "",
@@ -158,6 +157,7 @@ export function captureOwnerKeyFromFragment(): void {
 
 function loadOwnerKey(): string | null {
   const key = credentialKey(OWNER_KEY_STORAGE);
+  if (fragmentOwnerKey?.storageKey === key) return fragmentOwnerKey.value;
   const ownerKey = window.localStorage.getItem(key);
   if (ownerKey !== null && OWNER_KEY_PATTERN.test(ownerKey)) return ownerKey;
   if (ownerKey !== null) window.localStorage.removeItem(key);
@@ -188,13 +188,6 @@ function loadIdentity(): StoredIdentity | null {
     ) {
       throw new Error("invalid identity");
     }
-    if (
-      typeof expiresInMs === "number" &&
-      typeof receivedAt === "number" &&
-      Date.now() - receivedAt >= expiresInMs
-    ) {
-      throw new Error("expired identity");
-    }
     return {
       token,
       principal: principal.data,
@@ -203,9 +196,16 @@ function loadIdentity(): StoredIdentity | null {
       ...(typeof receivedAt === "number" ? { receivedAt } : {}),
     };
   } catch {
-    window.localStorage.removeItem(credentialKey(IDENTITY_STORAGE));
     return null;
   }
+}
+
+function identityExpired(identity: StoredIdentity): boolean {
+  return (
+    identity.expiresInMs !== undefined &&
+    identity.receivedAt !== undefined &&
+    Date.now() - identity.receivedAt >= identity.expiresInMs
+  );
 }
 
 interface IdentityGateProps {
@@ -216,29 +216,60 @@ interface IdentityGateProps {
 export function IdentityGate({ children }: IdentityGateProps) {
   const [identity, setIdentity] = useState<StoredIdentity | null>(() => loadIdentity());
   const [ownerKey] = useState<string | null>(() => loadOwnerKey());
+  const [readmitting, setReadmitting] = useState(false);
   const [name, setName] = useState("");
   const [color, setColor] = useState<(typeof IDENTITY_COLORS)[number]>(IDENTITY_COLORS[3]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const handoff = previewHandoffRequest();
+  const identityOrigin = instanceOrigin();
+  const explicitOwnerKey = fragmentOwnerKey?.storageKey === credentialKey(OWNER_KEY_STORAGE);
+  const invalidateIdentity = useCallback(() => {
+    if (identity === null || instanceOrigin() !== identityOrigin) return;
+    // Reads are not cross-tab compare-and-delete transactions. Leave the register
+    // untouched: admission replaces it, and reload must still see the old credential
+    // rather than treating a failed handoff as a first visit with an owner key.
+    const replacement = loadIdentity();
+    setReadmitting(true);
+    setIdentity((current) => {
+      // A queued callback only invalidates the in-memory bearer that started it.
+      if (current?.token !== identity.token) return current;
+      return replacement !== null && replacement.token !== identity.token ? replacement : null;
+    });
+  }, [identity, identityOrigin]);
+  useEffect(() => {
+    // A same-document owner link must pass through the same pre-render capture as
+    // a full navigation, rather than leaving the secret in an inert SPA fragment.
+    const openOwnerLink = () => {
+      if (OWNER_FRAGMENT_PATTERN.test(window.location.hash)) window.location.reload();
+    };
+    window.addEventListener("hashchange", openOwnerLink);
+    return () => window.removeEventListener("hashchange", openOwnerLink);
+  }, []);
+  useEffect(() => {
+    if (identity === null) return;
+    return onIdentityRejected(identity.token, invalidateIdentity);
+  }, [identity, invalidateIdentity]);
   useEffect(() => {
     if (identity?.expiresInMs === undefined || identity.receivedAt === undefined) return;
     const timer = window.setTimeout(
-      () => {
-        window.localStorage.removeItem(credentialKey(IDENTITY_STORAGE));
-        setIdentity(null);
-      },
+      invalidateIdentity,
       Math.max(0, identity.expiresInMs - (Date.now() - identity.receivedAt)),
     );
     return () => window.clearTimeout(timer);
-  }, [identity]);
+  }, [identity, invalidateIdentity]);
 
-  if (identity !== null && handoff !== null) {
-    return <PreviewHandoff identity={identity} request={handoff} />;
+  // A key supplied for this page can recover an unusable identity. Cached owner
+  // authority must never replace a rejected identity implicitly.
+  const expired = identity !== null && identityExpired(identity);
+  if (expired && !explicitOwnerKey) return <PreviewAdmission />;
+
+  if (identity !== null && !expired) {
+    if (handoff !== null) return <PreviewHandoff identity={identity} request={handoff} />;
+    return children(identity);
   }
-  if (identity !== null) return children(identity);
 
-  if (ownerKey === null) return <PreviewAdmission />;
+  if ((readmitting && !explicitOwnerKey) || ownerKey === null) return <PreviewAdmission />;
 
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -249,6 +280,7 @@ export function IdentityGate({ children }: IdentityGateProps) {
     try {
       const grant = await createPrincipal(ownerKey, { name: trimmedName, color });
       window.localStorage.setItem(credentialKey(IDENTITY_STORAGE), JSON.stringify(grant));
+      fragmentOwnerKey = null;
       setIdentity(grant);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "Could not create your identity");

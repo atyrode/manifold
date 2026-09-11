@@ -79,6 +79,15 @@ on exit, never printed. Existing host proxy configuration remains operator-owned
 `deploy-dev.sh` builds the ordinary application directly as `<project>:local`, never the
 shared `manifold:local` tag. It requires explicit `MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID`
 and `MANIFOLD_DEV_SPAWN_AGENT=0`. Build and final Compose validation precede replacement.
+The final merge is frozen once in a private memory-backed directory (0700, files 0600)
+and the built image is sealed by content ID before incumbent mutation. Preflight and
+creation consume that same configuration, not newly resolved local overrides.
+The image is built from that revision's Git archive, not untracked checkout files.
+Alternate build contexts, recipes and undeclared build inputs are refused before build.
+Image defaults and effective Compose command, entrypoint, workdir, PID namespace,
+loader environment, healthcheck and execution hooks must have the ordinary server-only
+shape. A configured `MANIFOLD_OWNER_KEY` is refused: only the retained `/data/owner.key`
+may supply owner authority, without credential comparison, export or injection.
 Its **retained** lifecycle stops and updates only `manifold`, with `--no-deps`: no terminal
 retire/resume, recursive ownership rewrite, spoke compilation, build-stamp writes or
 supervisor restart. The existing named volume must already exist; missing data fails closed.
@@ -416,6 +425,39 @@ policy restoration on refusal, and an unexpected replacement generation. The ker
 fixture does not exercise that maintenance/restart handshake. No fixture result may
 be inferred from source review, and its inert test artifact is not provenance for an
 incumbent Manifold transport.
+
+### Temporary, single-use preview reset (#469)
+
+`cutover-legacy-preview.sh` exists only for the reviewed/CI-verified transition in
+[#469](https://github.com/atyrode/manifold/issues/469). The operator has explicitly
+declared the preview container and its work disposable. Production, the dev-01
+native node, the current OMP session and the temporary dotfiles Code CLI/TUI are
+protected. This reset never invokes owner maintenance, native lifecycle commands,
+systemd, Nix activation or production deployment.
+
+Run from the exact reviewed replacement checkout, with `PREVIEW_DEV_CHECKOUT`
+pointing to it and the existing preview/native-owner settings configured:
+
+```sh
+bash infra/previews/cutover-legacy-preview.sh \
+  --reset-disposable-preview "$REVIEWED_REPLACEMENT_FULL_SHA"
+```
+
+The fixed incumbent ID must still identify `manifold-dev-manifold-1`, with its
+preview URL, private namespaces, no elevated device/capability configuration and
+only the named `manifold-dev_manifold-data` mount. Unknown topology refuses before
+any stop. The ordinary image and effective configuration are built from reviewed
+source and frozen privately in tmpfs before mutation.
+
+The operation disables restart for that exact container, stops it (including any
+preview-only terminals), removes the container without removing its volume, and
+starts the sealed ordinary hub with `MANIFOLD_SPAWN_AGENT=0`. No remote machine is
+drained or restarted. A failure after stopping preview requires forward repair;
+there is no legacy rollback or automatic native admission change.
+
+Remove the one-time script and this subsection once native preview is proven.
+This is not a `deploy-dev.sh` mode; its normal retained server-only guard stays
+unchanged.
 
 ## Disk / gc
 

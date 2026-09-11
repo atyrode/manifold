@@ -25,12 +25,14 @@ echo "deploy-dev: converging on $1"
 # and an operator at a terminal types the abbreviation.
 git -C "$checkout" fetch -q --tags origin
 git -C "$checkout" checkout -q --detach "$1"
+revision=$(git -C "$checkout" rev-parse HEAD)
 identity "$checkout"
 export MANIFOLD_CHANNEL=development
 echo "deploy-dev: version=$MANIFOLD_VERSION build=$MANIFOLD_BUILD channel=$MANIFOLD_CHANNEL"
 # Compose's resolved configuration can contain credentials. Keep it only in a private
 # memory-backed directory, never in the persistent preview checkout or deployment state.
-[[ -d /dev/shm ]] || fail 'integrated deployment requires memory-backed temporary storage'
+[[ -d /dev/shm && $(stat -f -c %T /dev/shm) == tmpfs ]] ||
+  fail 'integrated deployment requires memory-backed temporary storage'
 configuration_dir=$(mktemp -d /dev/shm/manifold-dev-compose.XXXXXX)
 configuration="$configuration_dir/compose.json"
 trap 'rm -rf -- "$configuration_dir"' EXIT
@@ -39,10 +41,12 @@ trap 'rm -rf -- "$configuration_dir"' EXIT
 project=$(jq -er '.name' "$configuration")
 [[ $project =~ ^manifold-dev(-[a-z0-9-]+)?$ ]] || fail 'integrated deployment requires a manifold-dev Compose project'
 final_image="$project:local"
+resolved_configuration="$configuration_dir/resolved-compose.json"
+seal_retained_configuration "$configuration" "$final_image" "$resolved_configuration"
 dev_compose() {
   local image=$1; shift
-  (cd "$checkout" && PREVIEW_IMAGE="$image" docker compose --project-name "$project" \
-    --file "$configuration" --file "$here/compose.development.yaml" "$@")
+  (cd "$checkout" && PREVIEW_IMAGE="$image" frozen_retained_compose "$resolved_configuration" "$project" \
+    --file "$here/compose.development.yaml" "$@")
 }
 # Check the final merge, including the deployment overlay, not just the host base.
 # Keep this credential-bearing configuration in the same private memory directory.
@@ -61,8 +65,19 @@ volume=$(jq -er '.services.manifold.volumes[] | select(.target == "/data") | .so
 volume=$(jq -er --arg source "$volume" '.volumes[$source].name' "$final_configuration")
 # A shared/external production volume is not a development migration target.
 [[ $volume == "${project}_manifold-data" ]] || fail 'integrated deployment requires its project-owned manifold-data volume'
+# From this point neither the checkout overrides nor the deployment overlay are
+# consulted again, including during build. Keep the original merge for resealing.
+sealed_configuration="$configuration_dir/sealed-compose.json"
+seal_retained_configuration "$final_configuration" "$final_image" "$sealed_configuration"
+dev_compose() {
+  local image=$1; shift
+  (cd "$checkout" && frozen_retained_compose "$sealed_configuration" "$project" "$@")
+}
 # Build the ordinary application image, not the disposable development environment.
-dev_compose "$final_image" build manifold
+build_retained_hub "$final_configuration" "$checkout" "$final_image" "$revision"
+final_image=$(docker image inspect --format '{{.Id}}' "$final_image")
+[[ $final_image =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'replacement image identity unavailable'
+seal_retained_configuration "$final_configuration" "$final_image" "$sealed_configuration"
 # Retained data must already exist: a typo must not silently create a fresh identity.
 docker volume inspect "$volume" >/dev/null 2>&1 || fail 'retained development data volume is missing'
 replace_environment retained "$volume" "$final_image" "$project" "$public_url" dev_compose
