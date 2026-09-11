@@ -457,7 +457,24 @@ try {
   browser = new Browser();
   await browser.launch();
   await browser.goto(`${origin}/#key=${ownerKey}`);
-  if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
+  /*
+    The identity cover is React-rendered and `goto` returns on a FIXED 1500ms settle, so
+    asking ONCE whether its form is there asks before the page has answered. Measured on
+    four pinned cores the form lands at 1333-1436ms — a margin of well under 200ms. A
+    slower runner core reads "no form", the gate skips the identity it was supposed to
+    submit, the composition route below then sits on that same cover, and the `until`
+    twenty seconds later throws during SETUP: no round has run, so the whole gate aborts
+    with no named failure at all. Reproduced 2/3 with the same cores under contention;
+    the CI signature was a 43.3s run reporting no sub-assertion FAIL line. `settles`
+    answers instead of throwing, so a build that needs no identity still falls through
+    exactly as it did.
+  */
+  if (
+    await settles(
+      () => browser!.evaluate<boolean>("document.querySelector('input') !== null"),
+      10_000,
+    )
+  ) {
     await browser.typeInto("input", "tile-drop-gate");
     await browser.clickTestId("identity-enter");
   }
@@ -530,7 +547,31 @@ try {
 
   /* ── Rounds 1 + 3 + 5 + 7 ride one gesture: C dropped on the lower half of B ── */
 
-  // Round 5's spy and round 7's stamp go in before the gesture.
+  /*
+    Round 5's spy and round 7's stamp go in before the gesture — ONCE, because the read
+    below wraps `WebSocket.prototype.send` and a second wrap would double-count frames.
+    So its preconditions are polled instead: "both terminals rendered" above proves
+    `.composition-leaf .xterm`, which lives INSIDE the content host, while this read needs
+    that host already re-parented under `[data-tile-id=leafB]` with a laid-out box
+    (`tile-tree.tsx` seats hosts in a later effect). Sampling once in that window returns
+    null, and round 7's probe then dereferences `window.__motionKeeper` and aborts the
+    whole gate with a page TypeError and no named failure. Ten seconds without a seated,
+    measured pane is a real defect, not a race.
+  */
+  await settles(
+    () =>
+      browser!.evaluate<boolean>(
+        `(() => {
+          const keeper = document.querySelector('[data-tile-id="${leafB}"] .xterm');
+          const host = keeper?.closest('.tile-content-host');
+          if (keeper === null || host === null || host === undefined) return false;
+          const box = host.getBoundingClientRect();
+          return keeper.offsetWidth > 0 && keeper.offsetHeight > 0 &&
+            box.width > 0 && box.height > 0;
+        })()`,
+      ),
+    10_000,
+  );
   const paneBBefore = await browser.evaluate<(Rect & { w: number; h: number }) | null>(
     `(() => {
       window.__resizeFrames = [];
@@ -1046,7 +1087,14 @@ try {
   viewer = new Browser();
   await viewer.launch();
   await viewer.goto(`${origin}/#key=${ownerKey}`);
-  if (await viewer.evaluate<boolean>("document.querySelector('input') !== null")) {
+  // The viewer's cover is the same one-shot race as the dragger's above, and its miss
+  // aborts the gate at "viewer mounted the composition route" instead of here.
+  if (
+    await settles(
+      () => viewer!.evaluate<boolean>("document.querySelector('input') !== null"),
+      10_000,
+    )
+  ) {
     await viewer.typeInto("input", "tile-drop-viewer");
     await viewer.clickTestId("identity-enter");
   }
