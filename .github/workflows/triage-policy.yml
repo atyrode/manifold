@@ -45,5 +45,11 @@ jobs:
       - name: Apply the tracker invariants
         run: bun scripts/triage-policy.ts --fix --summary "$GITHUB_STEP_SUMMARY"
 
+      # `always()`, because the policy step exits nonzero on any violation it cannot fix itself —
+      # the normal state of a tracker with work in it. Without this the noisier check silently
+      # hides the quieter one, and label drift could sit there for weeks unlooked-at. The two read
+      # different things; neither is a precondition for the other, and the job still fails if
+      # either does.
       - name: Check the label inventory
+        if: always()
         run: bun scripts/labels.ts --check
