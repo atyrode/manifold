@@ -2,7 +2,7 @@
 // Single-use #469 adapter. Streamed as the existing root/application UID, never
 // installed in /data. No private-file/environment reads or numeric-PID signals.
 import { dlopen, FFIType } from "bun:ffi";
-import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, readSync } from "node:fs";
 import { z } from "zod";
 
 const artifactPath = z.string().regex(/^\/nix\/store\/[a-z0-9]{32}-[^/]+\/bin\/[^/]+$/);
@@ -24,8 +24,19 @@ const requestSchema = z.discriminatedUnion("mode", [
 ]);
 
 const healthSource = "const r = await fetch('http://127.0.0.1:7777/healthz'); if (!r.ok) process.exit(1);";
-const hash = (path: string): string =>
-  new Bun.CryptoHasher("sha256").update(readFileSync(path)).digest("hex");
+const hashBuffer = Buffer.allocUnsafe(64 * 1024);
+const hash = (path: string): string => {
+  const descriptor = openSync(path, "r");
+  try {
+    const hasher = new Bun.CryptoHasher("sha256");
+    let length: number;
+    while ((length = readSync(descriptor, hashBuffer, 0, hashBuffer.length, null)) !== 0)
+      hasher.update(hashBuffer.subarray(0, length));
+    return hasher.digest("hex");
+  } finally {
+    closeSync(descriptor);
+  }
+};
 const check = (condition: unknown): void => { if (!condition) throw new Error(); };
 const fields = (pid: number): string[] => {
   const value = readFileSync(`/proc/${pid}/stat`, "utf8");

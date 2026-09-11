@@ -6,10 +6,12 @@ source "$here/common.sh"
 source "$here/environment.sh"
 phase=preflight
 bundle_dir=
+configuration_dir=
 cleanup() {
   local code=$?
   trap - EXIT
   [[ -z $bundle_dir ]] || rm -rf -- "$bundle_dir"
+  [[ -z $configuration_dir ]] || rm -rf -- "$configuration_dir"
   if ((code)); then
     printf 'legacy-cutover: HOLD phase=%s; no rollback, native activation or admission reopening\n' "$phase" >&2
   fi
@@ -40,31 +42,41 @@ export MANIFOLD_DOMAIN="preview.$PREVIEW_DOMAIN" MANIFOLD_IDENTITY_AUTHORITY="ht
 project=manifold-dev
 volume=manifold-dev_manifold-data
 public_url=${PREVIEW_DEV_URL:-https://preview.$PREVIEW_DOMAIN}
-# Compose owns configuration/credential handling. Its resolved configuration flows
-# directly to Compose, never to a shell variable, log, file, or Python controller.
+# Resolve local overrides exactly once, using the ordinary deployment's private
+# tmpfs pattern. Configuration/credentials never enter logs or the controller.
+[[ -d /dev/shm ]] || fail 'memory-backed replacement configuration storage required'
+configuration_dir=$(mktemp -d /dev/shm/manifold-legacy-compose.XXXXXX)
+configuration="$configuration_dir/compose.json"
+final_configuration="$configuration_dir/final-compose.json"
+sealed_configuration="$configuration_dir/sealed-compose.json"
+(cd "$checkout" && docker compose config --format json) >"$configuration" 2>/dev/null ||
+  fail 'cannot resolve the existing development stack'
+final_image="$project:local"
+resolved_configuration="$configuration_dir/resolved-compose.json"
+seal_retained_configuration "$configuration" "$final_image" "$resolved_configuration"
+(cd "$checkout" && PREVIEW_IMAGE="$final_image" frozen_retained_compose "$resolved_configuration" "$project" \
+  --file "$here/compose.development.yaml" config --format json) >"$final_configuration" 2>/dev/null ||
+  fail 'cannot resolve the final development stack'
+jq -e --arg port "$PREVIEW_DEV_PORT" --arg url "https://preview.$PREVIEW_DOMAIN" \
+  --arg owner "$MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID" '
+  .services.manifold as $s |
+  $s.environment.MANIFOLD_MACHINE_NAME == "dev-hub" and
+  $s.environment.MANIFOLD_PUBLIC_URL == $url and
+  $s.environment.MANIFOLD_SERVICE_OWNER_MACHINE_ID == $owner and
+  ([ $s.ports[]? | select(.target == 7777 and .host_ip == "127.0.0.1" and (.published | tostring) == $port) ] | length) == 1
+' "$final_configuration" >/dev/null 2>&1 || fail 'final development topology differs from the existing public hub contract'
+seal_retained_configuration "$final_configuration" "$final_image" "$sealed_configuration"
 dev_compose() {
   local image=$1; shift
-  (cd "$checkout" && docker compose config --format json 2>/dev/null |
-    PREVIEW_IMAGE="$image" docker compose --project-name "$project" --file - \
-      --file "$here/compose.development.yaml" "$@")
+  (cd "$checkout" && frozen_retained_compose "$sealed_configuration" "$project" "$@")
 }
-final_image="$project:local"
-# Reduce the final merge to public safety facts only, before building or draining.
-dev_compose "$final_image" config --format json 2>/dev/null |
-  jq -e --arg port "$PREVIEW_DEV_PORT" --arg url "https://preview.$PREVIEW_DOMAIN" \
-    --arg owner "$MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID" '
-    .services.manifold as $s |
-    $s.environment.MANIFOLD_MACHINE_NAME == "dev-hub" and
-    $s.environment.MANIFOLD_PUBLIC_URL == $url and
-    $s.environment.MANIFOLD_SERVICE_OWNER_MACHINE_ID == $owner and
-    ([ $s.ports[]? | select(.target == 7777 and .host_ip == "127.0.0.1" and (.published | tostring) == $port) ] | length) == 1
-  ' >/dev/null || fail 'final development topology differs from the existing public hub contract'
 docker volume inspect "$volume" >/dev/null 2>&1 || fail 'existing named data volume is missing'
 phase=building-reviewed-hub
 dev_compose "$final_image" build manifold
 # Pin the exact ordinary hub image, not its mutable build tag.
 final_image=$(docker image inspect --format '{{.Id}}' "$final_image")
 [[ $final_image =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'replacement image identity unavailable'
+seal_retained_configuration "$final_configuration" "$final_image" "$sealed_configuration"
 topology=$(retained_topology "$volume" "$final_image" dev_compose)
 [[ -d /dev/shm ]] || fail 'memory-backed public maintenance bundle storage required'
 bundle_dir=$(mktemp -d /dev/shm/manifold-legacy-cutover.XXXXXX)
