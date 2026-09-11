@@ -9,6 +9,7 @@ import {
   PluginBundleSchema,
   JOB_OWNER_PROTOCOL_VERSION,
   JobCommandSchema,
+  InstanceServiceDescriptionSchema,
   type ServicePolicy,
   type Cap,
 } from "@manifold/protocol";
@@ -215,6 +216,63 @@ async function instanceFixture(path = ":memory:") {
   return { f, policy, provider, start, revision: configured.configuration.revision };
 }
 
+test("disabled services remain stopping through disconnect and terminal results until fenced empty confirmation", async () => {
+  const { f, policy, start, revision } = await instanceFixture();
+  try {
+    const disabled = await f.service.configureInstanceService(f.root, {
+      serviceId: policy.serviceId,
+      expectedRevision: revision,
+      policy,
+      enabled: false,
+    });
+    expect(InstanceServiceDescriptionSchema.parse(disabled).state).toBe("stopping");
+    expect(disabled.configuration?.enabled).toBe(false);
+    f.service.offline(f.channel);
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId })).toMatchObject({
+      connected: false,
+      state: "stopping",
+    });
+    prove(f);
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        jobId: start.request.jobId,
+        requestDigest: start.request.requestDigest,
+        ownerId: f.owner.ownerId,
+        ownerGeneration: f.owner.generation,
+        state: "exited",
+        exitCode: 0,
+        reason: null,
+        startedAt: f.runtime.now(),
+        finishedAt: f.runtime.now(),
+        usage: null,
+        limits: start.request.limits,
+        outputs: [],
+      },
+    });
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "stopping",
+    );
+    const proof = {
+      type: "workload_empty" as const,
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+    };
+    f.service.event(f.channel, { ...proof, requestDigest: "f".repeat(64) });
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "stopping",
+    );
+    f.service.event(f.channel, proof);
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "stopped",
+    );
+  } finally {
+    f.store.close();
+  }
+});
+
 test("retiring an instance preserves admitted descendants but refuses new descendants and still permits force escalation", async () => {
   const { f, policy, start, revision } = await instanceFixture();
   try {
@@ -370,6 +428,9 @@ test("replacement replays retirement across restart and waits for confirmed old 
       policy: { ...policy, revision: "two" },
       enabled: true,
     });
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "stopping",
+    );
     const stops = () =>
       f.commands.filter(
         (command) =>
@@ -403,6 +464,9 @@ test("replacement replays retirement across restart and waits for confirmed old 
     expect(stops().some((command) => command.type === "retire")).toBe(true);
     expect(stops().some((command) => command.type === "cancel")).toBe(false);
     expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "stopping",
+    );
 
     f.service.event(f.channel, {
       type: "refusal",
@@ -428,6 +492,9 @@ test("replacement replays retirement across restart and waits for confirmed old 
     expect(replacement).toHaveLength(1);
     expect(replacement[0]!.request.jobId).not.toBe(start.request.jobId);
     expect(f.auth.restoreCredential(replacement[0]!.request.credential)).not.toBeNull();
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "starting",
+    );
   } finally {
     f.store.close();
     rmSync(dir, { recursive: true, force: true });

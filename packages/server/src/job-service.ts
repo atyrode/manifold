@@ -293,7 +293,17 @@ export class JobService {
       : null;
     const owner = record ? this.instanceOwner(record.machineId) : null;
     const target = owner ?? defaultOwner;
-    const reason = record ? this.instanceReason(record) : null;
+    const stopping =
+      record !== null &&
+      this.jobs.instanceServiceJobs(serviceId).some(
+        (job) =>
+          job.permit !== null &&
+          !job.ownerClosed &&
+          (!record.enabled ||
+            job.request.service?.revision !== record.revision ||
+            this.jobs.cancellation(job.request.jobId) !== null),
+      );
+    const reason = stopping ? "instance_service_stopping" : record ? this.instanceReason(record) : null;
     return {
       serviceId,
       defaultOwner,
@@ -309,13 +319,15 @@ export class JobService {
       connected: target !== null && this.channels.get(target.machineId)?.proved === true,
       state: !record
         ? "unconfigured"
-        : !record.enabled
-          ? "stopped"
-          : reason === null
-            ? "ready"
-            : reason === "instance_service_starting"
-              ? "starting"
-              : "unavailable",
+        : stopping
+          ? "stopping"
+          : !record.enabled
+            ? "stopped"
+            : reason === null
+              ? "ready"
+              : reason === "instance_service_starting"
+                ? "starting"
+                : "unavailable",
       reason,
     };
   }

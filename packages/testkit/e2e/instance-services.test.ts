@@ -498,15 +498,20 @@ test.skipIf(!realBackend)(
       );
       await run("revoked-consumer", false);
       expect((await instance()).state).toBe("ready");
-      await ownerAction(hub(), "engine.services.configureInstance", {
-        serviceId: SERVICE,
-        expectedRevision: configured.configuration!.revision,
-        machineId: source.machineId,
-        policy,
-        enabled: false,
-      });
-      expect((await instance()).state).toBe("stopped");
-      const stopped = await instance();
+      const disabling = InstanceServiceDescriptionSchema.parse(
+        await ownerAction(hub(), "engine.services.configureInstance", {
+          serviceId: SERVICE,
+          expectedRevision: configured.configuration!.revision,
+          machineId: source.machineId,
+          policy,
+          enabled: false,
+        }),
+      );
+      expect(disabling.state).toBe("stopping");
+      const stopped = await waitFor(async () => {
+        const current = await instance();
+        return current.state === "stopped" ? current : false;
+      }, 20000, 20);
       const replaced = InstanceServiceDescriptionSchema.parse(
         await ownerAction(hub(), "engine.services.configureInstance", {
           serviceId: SERVICE,
@@ -539,6 +544,7 @@ test.skipIf(!realBackend)(
         policy,
         enabled: false,
       });
+      await waitFor(async () => (await instance()).state === "stopped", 20000, 20);
     } catch (error) {
       throw e2eFailure(error, [server, ...agents]);
     } finally {
