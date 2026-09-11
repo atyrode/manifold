@@ -1530,7 +1530,12 @@ installed or unpacked plugin's `styles.css` has no row here, so the hub is its S
 selector's leftmost compound must anchor on the plugin's own root class,
 `.plugin-<id with each "." as "_">` (or a part of it under `__`, a seam no id can produce), a
 classless rule is refused outright, and the refusal is `stylesheet_unscoped` by name — at the
-install door, at the unpacked build, and when a stored bundle is re-verified. The walk is ONE
+install door, at the unpacked build, and when a stored bundle is re-verified. What the walk
+reads is a bounded DIALECT (#410): style rules, `@keyframes`, and the grouping at-rules
+`@media` / `@supports` / `@container` / `@layer`, whose bodies it descends. Every other at-rule
+form and every rule nested inside a rule is refused by ITS name (`outside_dialect`,
+`nested_rule`) rather than skipped, because a form the checker cannot read is a form it would
+otherwise admit — `@scope` and `@import` did exactly that before #410. The walk is ONE
 module, `packages/protocol/src/stylesheet.ts`, imported by `verify:axioms` for the tree and by
 the hub for a bundle ([One authoritative implementation](docs/CONTRACTS.md#one-authoritative-implementation)); a kit fixture's sheet under `test/fixtures/` is read the
 hub's way by the gate ("S13 css ownership at load") and registers no family. It binds `core.*`

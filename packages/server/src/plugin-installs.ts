@@ -17,6 +17,7 @@ import {
   unscopedRule,
   type PluginBundle,
   type PluginInstallRefusal,
+  type UnscopedRule,
 } from "@manifold/protocol";
 import { sha256Hex, type PluginInstallRow } from "./stores.ts";
 import { deliveredArtifact, verifyBundledArtifacts } from "@manifold/plugin-kit/artifacts";
@@ -243,11 +244,24 @@ export function parseBundle(bytes: Uint8Array): PluginBundle {
 }
 
 /**
+ * Why a sheet was refused, as the sentence an author acts on — one per walk reason, keyed by
+ * the union so a reason added to the walk is a compile error here rather than a message that
+ * says the wrong thing (#410).
+ */
+const STYLESHEET_WHY: Record<UnscopedRule["reason"], string> = {
+  classless: "a rule with no class reaches every node",
+  outside_root: "the leftmost compound is not this plugin's root class",
+  outside_dialect: "this at-rule form is outside the dialect the ownership rule reads",
+  nested_rule: "a rule nested inside a rule is not read; write the selector out",
+};
+
+/**
  * S13 AT LOAD (ADR 0025 §7, #258): a bundle that declares `entry.styles` is admitted only if
  * every selector of its `styles.css` is rooted at the plugin's own class, by the one walk the
- * gate reads the tree with (`@manifold/protocol` `unscopedRule`). The refusal names the first
- * selector and its line, which is what an author fixes. A sheet nobody declared is not read:
- * the loader never fetches it either.
+ * gate reads the tree with (`@manifold/protocol` `unscopedRule`) — and only if every form in it
+ * is one that walk can read at all (§DIALECT). The refusal names the first offender and its
+ * line, which is what an author fixes. A sheet nobody declared is not read: the loader never
+ * fetches it either.
  */
 export function stylesheetRefusal(bundle: PluginBundle): InstallRefusal | null {
   if (bundle.manifest.entry.styles !== true) return null;
@@ -259,7 +273,7 @@ export function stylesheetRefusal(bundle: PluginBundle): InstallRefusal | null {
   if (offender === null) return null;
   return new InstallRefusal(
     "stylesheet_unscoped",
-    `${PLUGIN_BUNDLE_STYLES_FILE}:${String(offender.line)} ${offender.reason === "classless" ? "a rule with no class reaches every node" : "the leftmost compound is not this plugin's root class"} (${offender.selector})`,
+    `${PLUGIN_BUNDLE_STYLES_FILE}:${String(offender.line)} ${STYLESHEET_WHY[offender.reason]} (${offender.selector})`,
   );
 }
 

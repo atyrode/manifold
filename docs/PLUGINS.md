@@ -2889,6 +2889,17 @@ refused by `pack` rather than left behind silently. The hub admits it under S13'
 - **A rule with no class is refused outright** — `body`, `:root`, `[data-x]` — because it reaches
   every node in the document. Read the ground's tokens (§7b) instead; set your own under your root.
 - **`@keyframes` names meet the same rule**: `@keyframes plugin-example_hello__pulse`.
+- **The dialect is what the walk can own** (#410). Style rules, `@keyframes`, and the four
+  grouping at-rules — `@media`, `@supports`, `@container`, `@layer` — which it reads through to
+  the selectors inside. Every other at-rule is refused `outside_dialect` by name, `@scope` and
+  `@import` included, and so is every global-name form (`@font-face`, `@property`,
+  `@counter-style`, `@page`, `@charset`, `@namespace`, `@layer a, b;`): each mints a name that
+  has no root to hang from, and a checker that skipped them would be answering "admitted" for a
+  construct nobody checked. A rule nested inside a rule is refused `nested_rule` for the same
+  reason — `&` may sit anywhere, so `.plugin-example_hello { .sidebar & { … } }` is the
+  `.sidebar .plugin-example_hello` the rule above already refuses. Write the descendant selector
+  out from your root and the walk reads it; nothing the dialect refuses is something you cannot
+  say another way.
 
 The refusal is `stylesheet_unscoped: styles.css:<line> <why> (<selector>)`, from the install door for
 a bundle and from the authoring door or the rebuild loop for an unpacked directory — before anything

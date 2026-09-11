@@ -1675,6 +1675,31 @@ code; the rule makes a second writer for a shell family impossible by constructi
 artifact that is declarative. It binds `core.*` too — their sheets are in the tree, where S13 checks
 them; no runtime check reads a tree row's CSS, because the build already did.
 
+**The dialect it can own (#410).** A form the walk cannot ownership-check is REFUSED BY NAME,
+never skipped: the verdict it had no way to compute is the one an author reads as permission.
+What it reads is a style rule's selector list, a `@keyframes` name, and the four GROUPING
+at-rules — `@media`, `@supports`, `@container`, `@layer` — whose preludes carry no selector and
+whose bodies it descends. Every other at-rule refuses `outside_dialect`, naming the form as
+written: `@scope`, whose scoping root, `to` limit and implicit `:scope` relativity all change
+what "the leftmost compound" means, so a foreign selector inside it would be measured against
+nothing; `@import`, whose bytes the walk never read and the install door never hashed; and every
+global-name form — `@font-face`, `@property`, `@counter-style`, `@page`, `@charset`,
+`@namespace`, the statement `@layer a, b;` — which mints a name with no root to hang it from. A
+rule nested inside a rule refuses `nested_rule`: `&` may sit anywhere in a nested selector, so
+`.plugin-x { .sidebar & { … } }` is the `.sidebar .plugin-x` the flat rule already refuses, and
+one selector list is all this walk judges. Nothing the dialect cannot say is lost — a scoped or
+nested rule is a descendant selector from the plugin's own root, which it does read — and
+widening the dialect later widens the door without moving it: a form that becomes readable
+becomes admissible, and nothing already admitted turns. A `@keyframes` name is owned where a
+`@layer` name is not because an animation is REFERENCED by name from `animation`, while a layer
+only orders declarations that already exist, every one of them the plugin's own under this rule.
+The tree's sheets meet the same parser and report the same forms; `verify:axioms` skips them
+there BY DECISION, because `@font-face` in `packages/plugins/terminals` and `@property` in
+`packages/ui` are reviewed code whose families §Lexicon owns by name, while a bundle has no
+registry row and no owner to consult. This too is ownership and not isolation: a refused
+`@import` is a sheet the rule cannot attribute, not a fetch the engine prevents — in-realm code
+still holds the DOM and can add a `<link>` from JavaScript.
+
 The loader fetches an admitted sheet beside the module (`GET /api/plugins/:id/styles.css`, bearer
 in the header, same pin) and injects it as `<style data-plugin="<id>">` in the document head when
 the module is imported; the element is removed when the row leaves the wanted set — disabled,
@@ -1910,7 +1935,10 @@ is `artifact_invalid` with the row standing, an authored sheet painting a shell 
 `styles.css` at the new pin, and OFF disables the row, marks it, 404s its module and refuses its
 enable by name. The sheet's own proof: `packages/protocol/test/stylesheet.test.ts` (the walk:
 rooted passes; a shell family leftmost, wrapped in `:is()`/`:where()` or written to the root's
-left, a classless rule, a cousin id's root and a bare `@keyframes` refuse), the host suite (a
+left, a classless rule, a cousin id's root and a bare `@keyframes` refuse — and the dialect: a
+foreign selector under `@scope`, an `@import` with or without its semicolon, a global-name or
+unknown at-rule and a rule nested in a rule all refuse by name, while the grouping four keep
+descending to the selector inside), the host suite (a
 bundle refused `stylesheet_unscoped` writing nothing, a rooted one served and 404 while off, an
 undeclared member never served) and `packages/testkit/e2e/in-realm-plugin.test.ts` in a real
 Chromium: the fixture's `<style data-plugin="example.counter">` arrives with the module, paints
