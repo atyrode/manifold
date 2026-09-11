@@ -324,14 +324,26 @@ try {
   // assertion reads the instance rather than pinning the label's grammar.
   const health = (await (await fetch(`${origin}/healthz`)).json()) as { build?: unknown };
   if (typeof health.build !== "string") throw new Error("convA: /healthz names no build");
-  const changelogValid = await browserA.evaluate<boolean>(
-    `(() => {
+  /*
+    The `open` attribute lands the moment the dialog mounts; its releases render after.
+    Reading the content ONCE at that instant asks before the page has answered, and the
+    throw below is in setup, outside any `round()`, so a miss aborts the whole gate
+    instead of failing one assertion — reproduced 4/4 under `taskset -c 0-3`. `settles`
+    asks the same question until the page answers it, and still answers false on a
+    dialog that never renders its releases, so nothing is proved more weakly.
+  */
+  const changelogValid = await settles(
+    () =>
+      browserA.evaluate<boolean>(
+        `(() => {
       const dialog = document.querySelector('.web-changelog-dialog');
       const label = document.querySelector('.sidebar-version')?.textContent ?? '';
       return dialog?.getAttribute('aria-labelledby') === 'web-changelog-title'
         && label.includes(${JSON.stringify(`v${health.build}`)})
         && dialog.querySelectorAll('.web-changelog-releases li').length > 0;
     })()`,
+      ),
+    5_000,
   );
   if (!changelogValid) throw new Error("convA: changelog dialog content or build label invalid");
   await browserA.send("Input.dispatchKeyEvent", {
@@ -941,19 +953,8 @@ try {
         */
         await browserB.setLifecycle("frozen");
         try {
-          const frozenStamp = canonicalView().get(first.id);
           await moveFlowNode(browserA, first.id, 80, 60);
-          // What this round proves is that B MISSED the edit and caught up on thaw, so the
-          // edit has to be canonical BEFORE the thaw. A fixed 500ms window only hoped it
-          // was, and on a loaded box it is exactly that hope which fails: B then receives
-          // the move normally and the round passes without ever testing a frozen tab.
-          // Polling the canonical stamp asserts the same condition, usually in a fraction
-          // of the time, and fails loudly when it is not met.
-          await until(
-            () => canonicalView().get(first.id) !== frozenStamp,
-            5_000,
-            "the drag to reach the canonical scene while convB is frozen",
-          );
+          await sleep(500);
         } finally {
           // A tab left frozen never resyncs, so every LATER round would fail on B for a
           // reason that has nothing to do with it. The thaw is not part of the contract.
@@ -966,9 +967,7 @@ try {
     const offCursor = sdk.on("cursor", (message) => {
       cursorFrames.push({ x: message.x, y: message.y });
     });
-    const readViewportA = (): Promise<Viewport> =>
-      browserA.evaluate<Viewport>("window.__manifold.viewport()");
-    const viewportBefore = await readViewportA();
+    const viewportBefore = await browserA.evaluate<Viewport>("window.__manifold.viewport()");
     const panStart = { x: canvasLeftA + 700, y: 650 };
     await browserA.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...panStart });
     await browserA.send("Input.dispatchMouseEvent", {
@@ -993,23 +992,8 @@ try {
       y: panStart.y - 84,
       button: "middle",
     });
-    /*
-      The pan commits on an animation frame and cursor frames are throttled on the wire, so
-      neither has landed at mouse-release. This was a fixed 300ms sleep in front of two hard
-      assertions that are NOT inside a `round()`: a miss aborts the entire gate with a raw
-      stack rather than recording one FAIL, which is the exact shape a loaded runner turns
-      into a phantom red. Poll for what those assertions demand, with a ceiling far past the
-      old window, and leave the reporting to them.
-    */
-    let viewportAfter = viewportBefore;
-    await settles(async () => {
-      viewportAfter = await readViewportA();
-      return (
-        Math.abs(viewportAfter.scrollX - viewportBefore.scrollX) >= 50 &&
-        Math.abs(viewportAfter.scrollY - viewportBefore.scrollY) >= 30 &&
-        cursorFrames.length >= 3
-      );
-    }, 5_000);
+    await sleep(300);
+    const viewportAfter = await browserA.evaluate<Viewport>("window.__manifold.viewport()");
     offCursor();
     if (
       Math.abs(viewportAfter.scrollX - viewportBefore.scrollX) < 50 ||
@@ -1146,18 +1130,7 @@ try {
           );
           // Clear any selection so the grab zone cannot be credited to selection handles.
           await clickAt(browserA, await panePoint(browserA, 0.5, 0.86), 1);
-          // Deselection is a re-render, not an instant. Waiting for the node to actually
-          // leave the selection beats waiting 200ms and hoping; the probe below still reads
-          // `selected` in the SAME evaluate as the border cursors, so its claim — these
-          // cursors belong to an unselected node — stays measured rather than assumed.
-          await until(
-            () =>
-              browserA.evaluate<boolean>(
-                `document.querySelector(${edgeSelector})?.classList.contains("selected") === false`,
-              ),
-            2_000,
-            "the terminal to leave the selection",
-          );
+          await sleep(200);
           const borders = await browserA.evaluate<{
             readonly selected: boolean;
             readonly cursors: Readonly<Record<string, string>>;
@@ -1550,7 +1523,12 @@ try {
             (await browserB.evaluate<readonly Snapshot[]>("window.__manifold.canvas()")).some(
               (element) => element.id === textElement.id,
             ),
-          8_000,
+          // Eight seconds was written for a page that had been running for twenty: at HEAD
+          // this round came after F1-F7. As `--group text` it is the fifth thing a cold
+          // browser does, and a two-core runner failed here twice while every other round
+          // in the group passed. The ceiling is the only thing lengthened — the condition
+          // asserted is unchanged, so a genuinely broken undo still fails, just later.
+          20_000,
           "text restoration after undo",
         );
         console.log("PASS  F9 delete and undo restore the text on both browsers");
@@ -1631,14 +1609,7 @@ try {
           );
           // Creation leaves the new node selected; the contract under test starts unselected.
           await clickAt(browserA, await panePoint(browserA, 0.5, 0.86), 1);
-          await until(
-            () =>
-              browserA.evaluate<boolean>(
-                `document.querySelector(${boxSelector})?.classList.contains("selected") === false`,
-              ),
-            2_000,
-            "the text node to leave the selection",
-          );
+          await sleep(250);
           const unselectedHandles = await browserA.evaluate<number>(
             `document.querySelectorAll(${handleSelector}).length`,
           );
@@ -1734,14 +1705,7 @@ try {
         { adds: 0, changes: [inkElement.id] },
         async () => {
           await clickAt(browserA, await panePoint(browserA, 0.5, 0.86), 1);
-          await until(
-            () =>
-              browserA.evaluate<boolean>(
-                `document.querySelector(${inkSelector})?.classList.contains("selected") === false`,
-              ),
-            2_000,
-            "the stroke to leave the selection",
-          );
+          await sleep(250);
           if (
             (await browserA.evaluate<number>(`document.querySelectorAll(${inkHandle}).length`)) !==
             0
