@@ -295,15 +295,21 @@ export class JobService {
     const target = owner ?? defaultOwner;
     const stopping =
       record !== null &&
-      this.jobs.instanceServiceJobs(serviceId).some(
-        (job) =>
-          job.permit !== null &&
-          !job.ownerClosed &&
-          (!record.enabled ||
-            job.request.service?.revision !== record.revision ||
-            this.jobs.cancellation(job.request.jobId) !== null),
-      );
-    const reason = stopping ? "instance_service_stopping" : record ? this.instanceReason(record) : null;
+      this.jobs
+        .instanceServiceJobs(serviceId)
+        .some(
+          (job) =>
+            job.permit !== null &&
+            !job.ownerClosed &&
+            (!record.enabled ||
+              job.request.service?.revision !== record.revision ||
+              this.jobs.cancellation(job.request.jobId) !== null),
+        );
+    const reason = stopping
+      ? "instance_service_stopping"
+      : record
+        ? this.instanceReason(record)
+        : null;
     return {
       serviceId,
       defaultOwner,
@@ -1874,8 +1880,7 @@ export class JobService {
         this.reauthorizeDeferred(job.request, cancellation?.mode === "retire") ??
         this.invocationRefusal(job.request, false);
       if (reason !== null) this.cancelRecord(job, reason);
-      else if (cancellation)
-        this.cancelRecord(job, cancellation.reason, cancellation.mode);
+      else if (cancellation) this.cancelRecord(job, cancellation.reason, cancellation.mode);
     }
     for (const follower of [...this.followers])
       if (!this.canReadGoverned(follower.auth, follower.node, follower.callerPluginId))
@@ -3616,8 +3621,7 @@ export class JobService {
       });
       for (const job of this.jobs.reconcilable(channel.machineId)) {
         const cancellation = this.jobs.cancellation(job.request.jobId);
-        if (cancellation !== null)
-          this.cancelRecord(job, cancellation.reason, cancellation.mode);
+        if (cancellation !== null) this.cancelRecord(job, cancellation.reason, cancellation.mode);
         else if (job.state === "queued") this.start(job);
         else
           channel.send({

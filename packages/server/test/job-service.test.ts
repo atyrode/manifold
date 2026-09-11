@@ -228,7 +228,9 @@ test("disabled services remain stopping through disconnect and terminal results 
     expect(InstanceServiceDescriptionSchema.parse(disabled).state).toBe("stopping");
     expect(disabled.configuration?.enabled).toBe(false);
     f.service.offline(f.channel);
-    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId })).toMatchObject({
+    expect(
+      f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }),
+    ).toMatchObject({
       connected: false,
       state: "stopping",
     });
@@ -373,9 +375,7 @@ test("retiring an instance preserves admitted descendants but refuses new descen
     });
     expect(f.service.jobs.cancellation("admitted-child")?.mode).toBe("cancel");
     expect(
-      f.commands.some(
-        (command) => command.type === "cancel" && command.jobId === "admitted-child",
-      ),
+      f.commands.some((command) => command.type === "cancel" && command.jobId === "admitted-child"),
     ).toBe(true);
   } finally {
     f.store.close();

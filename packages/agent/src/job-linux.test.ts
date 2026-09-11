@@ -1126,7 +1126,9 @@ test.skipIf(!realLinux)(
       try {
         await Promise.race([
           parentReady.promise,
-          parent.result.then(() => { throw new Error("parent exited before ready"); }),
+          parent.result.then(() => {
+            throw new Error("parent exited before ready");
+          }),
         ]);
         child = await startLinuxJob({
           ...spec,
@@ -1137,7 +1139,9 @@ test.skipIf(!realLinux)(
         });
         await Promise.race([
           childReady.promise,
-          child.result.then(() => { throw new Error("child exited before ready"); }),
+          child.result.then(() => {
+            throw new Error("child exited before ready");
+          }),
         ]);
         retirement.abort();
         await parent.input(Buffer.from("finish\n"));
@@ -1146,8 +1150,12 @@ test.skipIf(!realLinux)(
         // Real kernel process exit/cgroup polling cannot be advanced with JS fake timers.
         await Promise.race([
           Bun.sleep(10_500),
-          parent.result.then(() => { throw new Error("retirement abandoned live descendants"); }),
-          child.result.then(() => { throw new Error("retirement killed a delegated workload"); }),
+          parent.result.then(() => {
+            throw new Error("retirement abandoned live descendants");
+          }),
+          child.result.then(() => {
+            throw new Error("retirement killed a delegated workload");
+          }),
         ]);
         expect((await parent.cancel()).reason).toBe("cancelled");
         expect((await child.result).empty).toBe(true);

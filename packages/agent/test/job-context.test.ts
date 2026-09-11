@@ -31,8 +31,12 @@ describe.skipIf(process.platform !== "linux")("parent-bound private invocation c
     const complete = Promise.withResolvers<void>();
     const failures: string[] = [];
     const context = new JobContext("retiring-parent", {
-      invoke() { throw new Error("unexpected invocation"); },
-      command: async () => { throw new Error("unexpected command"); },
+      invoke() {
+        throw new Error("unexpected invocation");
+      },
+      command: async () => {
+        throw new Error("unexpected command");
+      },
       serviceReady: async () => {
         entered.resolve();
         await complete.promise;
@@ -46,7 +50,7 @@ describe.skipIf(process.platform !== "linux")("parent-bound private invocation c
       // Both frames are already queued when readiness pauses on the launch barrier.
       child.write(
         '{"type":"service_ready","requestId":"first","port":4321}\n' +
-        '{"type":"service_ready","requestId":"second","port":4321}\n',
+          '{"type":"service_ready","requestId":"second","port":4321}\n',
       );
       await entered.promise;
       context.close();

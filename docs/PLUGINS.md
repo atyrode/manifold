@@ -1326,14 +1326,14 @@ second current compatibility contract. It is numbered 0033 because merged main a
 0031 for terminal inline graphics; that decision and its protocol-26 graphics history remain
 unchanged.
 
-**Protocol support is not deployment authority.** Session/browser joins require protocol 28. Governed owners require protocol 28 for pinned resources, scoped services and correlated
-input receipts. Machine transports at 16–27 remain accepted only for terminal service:
-they cannot advertise a governed owner or exchange job traffic. Upgrade an independent
-owner and its transport together; its existing workloads remain owned while disconnected.
-Instance peers accept 27 and 28 because this change preserves their wire. Publication,
-preview delivery, production promotion and fleet installation are distinct actions; this
-guide grants no live rollout authorization. See
-[Protocol and compatibility](CONTRACTS.md#protocol-and-compatibility).
+**Protocol support is not deployment authority.** Native owners negotiate
+`JOB_OWNER_PROTOCOL_VERSION` independently of the session and transport wire.
+Cooperative instance-service retirement requires native RPC 30. Supported browser,
+machine and federation joins are defined by
+[Protocol and compatibility](CONTRACTS.md#protocol-and-compatibility), not inferred
+from an available terminal connection. Publication, preview delivery, production
+promotion and fleet installation are distinct actions; this guide grants no live
+rollout authorization.
 
 The in-realm handle types are public imports, not server-internal APIs:
 
@@ -1438,8 +1438,8 @@ installed operations declaring `providesService`, with current pins and readines
 Cross-plugin runtime discovery belongs here; an ordinary `ctx.jobs` handle remains scoped
 to its own plugin. Configuration uses `expectedRevision` compare-and-set.
 
-A service runtime names an exact independently installed provider operation plus bounded
-input mappings. It starts as an owned nested job, never as a private persistent daemon.
+A per-invocation service runtime names an exact independently installed provider operation
+plus bounded input mappings. It starts as an owned nested job, never as a private daemon.
 Native Plugins inspects candidate invocation edges through `engine.jobs.inspectInvocations`;
 an owner explicitly reviews depth, concurrency, aggregate and output ceilings before
 `setInvocationEdge`. Source policy/runtime pins must still match at approval. Stale edges
@@ -1460,6 +1460,14 @@ For Linux service providers, `setsockopt(IPPROTO_TCP, TCP_DEFER_ACCEPT)` returns
 Servers may omit that optimization; neither queued connections nor inherited deferred
 listeners receive an ownership exception. A server that still waits for request bytes
 before accepting cannot satisfy this boundary.
+
+An instance-owned service has its own governed lifetime. On replacement or disable,
+the native owner closes its worker context and signals retirement without immediately
+killing its workload. A provider must stop accepting work, await admitted mutations and
+durable cleanup, and then exit; do not terminate the process before cleanup settles.
+The configuration remains `stopping` until whole-workload emptiness is proved, and its
+replacement cannot start early. Explicit cancellation and authority revocation still
+force termination. See [instance-service retirement](CONTRACTS.md#governed-machine-jobs).
 
 `ctx.jobs.execute({ jobId, machineId, operationId, input, outputs, limits? })` returns safe
 job metadata. `outputs` contains exact `{ name, locationId, components }` bindings.

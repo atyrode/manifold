@@ -508,10 +508,14 @@ test.skipIf(!realBackend)(
         }),
       );
       expect(disabling.state).toBe("stopping");
-      const stopped = await waitFor(async () => {
-        const current = await instance();
-        return current.state === "stopped" ? current : false;
-      }, 20000, 20);
+      const stopped = await waitFor(
+        async () => {
+          const current = await instance();
+          return current.state === "stopped" ? current : false;
+        },
+        20000,
+        20,
+      );
       const replaced = InstanceServiceDescriptionSchema.parse(
         await ownerAction(hub(), "engine.services.configureInstance", {
           serviceId: SERVICE,

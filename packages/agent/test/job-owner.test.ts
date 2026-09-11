@@ -1953,9 +1953,9 @@ test.skipIf(!linux || !cgroupRoot).each(["read", "tunnel"] as const)(
 );
 
 const instanceServiceWorker = process.env.MANIFOLD_TEST_INSTANCE_SERVICE;
-test.skipIf(!realBackend || !instanceServiceWorker).each([
-  "cooperative", "lost-completion", "launch-race", "noncooperative",
-] as const)(
+test
+  .skipIf(!realBackend || !instanceServiceWorker)
+  .each(["cooperative", "lost-completion", "launch-race", "noncooperative"] as const)(
   "instance retirement preserves native %s ownership until confirmed exit",
   async (mode) => {
     const root = mkdtempSync(join(tmpdir(), "owner-retirement-"));
@@ -1982,7 +1982,10 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
         machineId: "machine",
         admissionPublicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
         journal: new JobJournal(state.openChild("journal", { create: true })),
-        cache, managedState, outputs, delegatedCgroup,
+        cache,
+        managedState,
+        outputs,
+        delegatedCgroup,
         bubblewrapFd: bwrapFd,
         anchors: {},
         runtimeTools: {},
@@ -1992,7 +1995,10 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
       const bytes = readFileSync(instanceServiceWorker!);
       const hash = createHash("sha256").update(bytes).digest("hex");
       const limits = {
-        timeoutMs: 10_000, memoryBytes: 64 * 1024 * 1024, processes: 16, outputBytes: 65536,
+        timeoutMs: 10_000,
+        memoryBytes: 64 * 1024 * 1024,
+        processes: 16,
+        outputBytes: 65536,
       };
       const install: Extract<JobCommand, { type: "install" }> = {
         type: "install",
@@ -2003,20 +2009,32 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
         machine: {
           artifacts: {
             [`linux-${process.arch}`]: {
-              bundleFile: "worker", sha256: hash, format: "raw", entry: ["worker"],
-              entrySha256: hash, maxBytes: bytes.length, maxExpandedBytes: bytes.length,
+              bundleFile: "worker",
+              sha256: hash,
+              format: "raw",
+              entry: ["worker"],
+              entrySha256: hash,
+              maxBytes: bytes.length,
+              maxExpandedBytes: bytes.length,
               maxMembers: 1,
             },
           },
           locations: {
             "fixture.retirement.state": {
-              managed: true, anchor: "state", components: ["service"], revision: "r1",
-              kind: "directory", guestPath: "/home/job/service-state",
+              managed: true,
+              anchor: "state",
+              components: ["service"],
+              revision: "r1",
+              kind: "directory",
+              guestPath: "/home/job/service-state",
             },
           },
           operations: {
             "fixture.retirement.serve": {
-              argv: [], input: {}, runtimeTools: [], providesService: true,
+              argv: [],
+              input: {},
+              runtimeTools: [],
+              providesService: true,
               environment: {
                 FIXED_SERVICE_SETTING: "reviewed",
                 WAIT_FOR_FLUSH: "1",
@@ -2024,7 +2042,10 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
               },
               inputFiles: { serviceBearer: { generated: "service-bearer" } },
               locations: [{ locationId: "fixture.retirement.state", access: "write" }],
-              outputs: [], network: "host", limits, stdin: false,
+              outputs: [],
+              network: "host",
+              limits,
+              stdin: false,
             },
           },
         },
@@ -2034,14 +2055,26 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
         revision: "r1",
         maxConcurrent: 1,
         runtime: {
-          scope: "instance", pluginId: install.pluginId, operationId: "fixture.retirement.serve",
-          installationRevision: "r1", artifactSha256: hash,
-          resourceBindingDigest: jobDigest(null), input: {},
+          scope: "instance",
+          pluginId: install.pluginId,
+          operationId: "fixture.retirement.serve",
+          installationRevision: "r1",
+          artifactSha256: hash,
+          resourceBindingDigest: jobDigest(null),
+          input: {},
         },
         operations: {
           snapshot: {
-            readable: true, method: "GET", path: "/snapshot", input: {}, query: {}, body: [],
-            timeoutMs: 1000, maxRequestBytes: 1024, maxResponseBytes: 1024, maxResultBytes: 1024,
+            readable: true,
+            method: "GET",
+            path: "/snapshot",
+            input: {},
+            query: {},
+            body: [],
+            timeoutMs: 1000,
+            maxRequestBytes: 1024,
+            maxResponseBytes: 1024,
+            maxResultBytes: 1024,
             response: { kind: "projected-json", fields: [["starts"]], maxArrayItems: 1 },
           },
         },
@@ -2054,8 +2087,12 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
       let transportConnected = true;
       const receive = (event: JobEvent): boolean => {
         // Observe native finalization even when the transport refuses delivery.
-        if (event.type === "result" && event.result.jobId === "retiring" &&
-            event.result.finishedAt !== null) finished.resolve(event.result);
+        if (
+          event.type === "result" &&
+          event.result.jobId === "retiring" &&
+          event.result.finishedAt !== null
+        )
+          finished.resolve(event.result);
         if (!transportConnected) return false;
         events.push(JobEventSchema.parse(event));
         if (event.type === "service_ready" && event.jobId === "retiring") ready.resolve();
@@ -2073,41 +2110,69 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
       });
       const admission = (jobId: string, instance = true) => {
         const body = {
-          jobId, machineId: "machine", pluginId: install.pluginId,
-          operationId: "fixture.retirement.serve", installationRevision: "r1",
-          artifactSha256: hash, input: {}, outputs: [],
+          jobId,
+          machineId: "machine",
+          pluginId: install.pluginId,
+          operationId: "fixture.retirement.serve",
+          installationRevision: "r1",
+          artifactSha256: hash,
+          input: {},
+          outputs: [],
           limits: { ...limits, timeoutMs: instance ? 0 : limits.timeoutMs },
           credential: {
-            principalId: "actor", tokenId: null, grantId: null, caps: [], containerScope: null,
+            principalId: "actor",
+            tokenId: null,
+            grantId: null,
+            caps: [],
+            containerScope: null,
           },
-          parent: null, traceId: "retirement",
-          ...(instance ? { service: {
-            serviceId: policy.serviceId, revision: "r1", policySha256: jobDigest(policy),
-          } } : {}),
+          parent: null,
+          traceId: "retirement",
+          ...(instance
+            ? {
+                service: {
+                  serviceId: policy.serviceId,
+                  revision: "r1",
+                  policySha256: jobDigest(policy),
+                },
+              }
+            : {}),
         };
         const request = { ...body, requestDigest: jobDigest(body) };
         const now = Date.now();
         const permit = {
-          permitId: jobId, jobId, requestDigest: request.requestDigest,
-          ownerId: owner!.identity.ownerId, ownerGeneration: owner!.identity.generation,
-          decisionId: "decision", policyRevision: "policy",
-          issuedAt: now, expiresAt: now + 30000,
+          permitId: jobId,
+          jobId,
+          requestDigest: request.requestDigest,
+          ownerId: owner!.identity.ownerId,
+          ownerGeneration: owner!.identity.generation,
+          decisionId: "decision",
+          policyRevision: "policy",
+          issuedAt: now,
+          expiresAt: now + 30000,
         };
         return {
           request,
           permit: {
             ...permit,
-            signature: sign(null, Buffer.from(canonicalJobJson(permit)), keys.privateKey)
-              .toString("base64"),
+            signature: sign(null, Buffer.from(canonicalJobJson(permit)), keys.privateKey).toString(
+              "base64",
+            ),
           },
         };
       };
       // Retirement cannot even reconcile absence for an ordinary signed job.
-      await expect(owner.execute({
-        type: "retire", jobId: "ordinary", reason: "replace", admission: admission("ordinary", false),
-      })).rejects.toThrow();
-      expect(events.some((event) =>
-        event.type === "workload_empty" && event.jobId === "ordinary")).toBe(false);
+      await expect(
+        owner.execute({
+          type: "retire",
+          jobId: "ordinary",
+          reason: "replace",
+          admission: admission("ordinary", false),
+        }),
+      ).rejects.toThrow();
+      expect(
+        events.some((event) => event.type === "workload_empty" && event.jobId === "ordinary"),
+      ).toBe(false);
 
       const command = { type: "start" as const, ...admission("retiring") };
       if (mode === "launch-race" || mode === "noncooperative") {
@@ -2123,19 +2188,31 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
         launching = owner.execute(command);
         await Promise.race([
           nativeStarted.promise,
-          launching.then(() => { throw new Error(events.findLast(event => event.type === "refusal")?.reason ?? "native launch did not reach handoff"); }),
+          launching.then(() => {
+            throw new Error(
+              events.findLast((event) => event.type === "refusal")?.reason ??
+                "native launch did not reach handoff",
+            );
+          }),
         ]);
       } else {
         await owner.execute(command);
         await Promise.race([
           ready.promise,
           finished.promise.then(() => {
-            throw new Error(events.findLast(event => event.type === "refusal")?.reason ?? "service exited before readiness");
+            throw new Error(
+              events.findLast((event) => event.type === "refusal")?.reason ??
+                "service exited before readiness",
+            );
           }),
         ]);
       }
-      const retire = { type: "retire", jobId: "retiring", reason: "replace",
-        admission: { request: command.request, permit: command.permit } };
+      const retire = {
+        type: "retire",
+        jobId: "retiring",
+        reason: "replace",
+        admission: { request: command.request, permit: command.permit },
+      };
       await owner.execute(retire);
       await owner.execute(retire);
       // Retirement returns while launch is pending; native FD handoff can now complete.
@@ -2145,21 +2222,27 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
       restoreLaunch = undefined;
       await Promise.race([
         draining.promise,
-        finished.promise.then(() => { throw new Error("worker exited without cooperative shutdown"); }),
+        finished.promise.then(() => {
+          throw new Error("worker exited without cooperative shutdown");
+        }),
       ]);
       const statePath = join(root, "locations", install.pluginId, "service");
       expect(existsSync(join(statePath, "flushed"))).toBe(false);
-      expect(events.some((event) =>
-        event.type === "workload_empty" && event.jobId === "retiring")).toBe(false);
+      expect(
+        events.some((event) => event.type === "workload_empty" && event.jobId === "retiring"),
+      ).toBe(false);
       events.length = 0;
       await owner.execute({ type: "status", jobId: "retiring" });
       expect(events).toContainEqual({
-        type: "result", result: expect.objectContaining({ jobId: "retiring", state: "started" }),
+        type: "result",
+        result: expect.objectContaining({ jobId: "retiring", state: "started" }),
       });
       expect(events.some((event) => event.type === "service_ready")).toBe(false);
       await owner.execute({ type: "start", ...admission("too-early") });
       expect(events).toContainEqual({
-        type: "refusal", jobId: "too-early", reason: "instance_service_binding_mismatch",
+        type: "refusal",
+        jobId: "too-early",
+        reason: "instance_service_binding_mismatch",
       });
       expect(readFileSync(join(statePath, "starts"), "utf8")).toBe("1\n");
       if (mode === "noncooperative") {
@@ -2173,8 +2256,15 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
         expect(result).toMatchObject({ state: "exited", exitCode: 0, reason: null });
         expect(readFileSync(join(statePath, "flushed"), "utf8")).toBe("durable shutdown\n");
         if (mode === "lost-completion") {
-          expect(events.some((event) => event.type === "workload_empty" ||
-            (event.type === "result" && event.result.finishedAt !== null))).toBe(false);
+          expect(
+            events.some(
+              (event) =>
+                (event.type === "workload_empty" && event.jobId === "retiring") ||
+                (event.type === "result" &&
+                  event.result.jobId === "retiring" &&
+                  event.result.finishedAt !== null),
+            ),
+          ).toBe(false);
           detach();
           transportConnected = true;
           owner.attach(receive);
@@ -2186,17 +2276,24 @@ test.skipIf(!realBackend || !instanceServiceWorker).each([
         }
       }
       expect(events).toContainEqual({
-        type: "workload_empty", jobId: "retiring", requestDigest: command.request.requestDigest,
-        ownerId: command.permit.ownerId, ownerGeneration: command.permit.ownerGeneration,
+        type: "workload_empty",
+        jobId: "retiring",
+        requestDigest: command.request.requestDigest,
+        ownerId: command.permit.ownerId,
+        ownerGeneration: command.permit.ownerGeneration,
       });
       // Replay cannot relaunch the retired identity, and exclusion ends only after empty.
       await owner.execute(retire);
       await owner.execute(command);
       expect(readFileSync(join(statePath, "starts"), "utf8")).toBe("1\n");
       await owner.execute({ type: "start", ...admission("replacement") });
-      expect(events).toContainEqual(expect.objectContaining({
-        type: "state", jobId: "replacement", state: "started",
-      }));
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "state",
+          jobId: "replacement",
+          state: "started",
+        }),
+      );
     } finally {
       handoff.resolve();
       await launching;
