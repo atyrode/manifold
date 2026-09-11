@@ -1273,6 +1273,10 @@ console.log(JSON.stringify({
         "candidate-entrypoint",
         '    entrypoint: ["/bin/sh", "-c", "touch /data/unsafe-candidate"]\n',
       ],
+      [
+        "candidate-stock-entrypoint-without-command",
+        '    entrypoint: ["/usr/local/bin/docker-entrypoint.sh"]\n',
+      ],
       ["candidate-workdir", "    working_dir: /data\n"],
       ["candidate-shared-pid", "    pid: host\n"],
       [

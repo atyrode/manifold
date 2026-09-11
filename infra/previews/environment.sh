@@ -71,7 +71,7 @@ retained_image_contract() {
       (.OnBuild // [] | length) == 0 and
       all((.Volumes // {} | keys[]); . == "/data") and
       all(.Env[]?; (split("=")[0] | unsafe | not)) and
-      all(.Env[]?; if startswith("PATH=") then . == "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" else true end) and
+      all(.Env[]?; if startswith("PATH=") then . == "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin" else true end) and
       all(.Env[]?;
         if startswith("HOME=") then . == "HOME=/root" or . == "HOME=/home/bun"
         elif startswith("BUN_INSTALL=") then . == "BUN_INSTALL=/usr/local/bun" or . == "BUN_INSTALL=/usr/local"
@@ -136,7 +136,7 @@ build_retained_hub() {
     build_arguments+=(--build-arg "$argument")
   done < <(jq -jr '.services.manifold.build.args | to_entries[] | "\(.key)=\(.value)", "\u0000"' "$configuration")
   git -C "$checkout" archive --format=tar "$revision" |
-    docker build --file Dockerfile --tag "$image" "${build_arguments[@]}" -
+    docker build --load --file Dockerfile --tag "$image" "${build_arguments[@]}" -
 }
 
 # Resolve the final callback merge, reducing it immediately to a bounded public
@@ -155,7 +155,8 @@ retained_topology() {
         $service.image == $image and
         $service.environment.MANIFOLD_MACHINE_NAME == "dev-hub" and
         $service.environment.MANIFOLD_SPAWN_AGENT == "0" and
-        ($service.command == null or $service.command == ["/app/infra/entrypoint.sh"]) and
+        ($service.command == ["/app/infra/entrypoint.sh"] or
+          ($service.command == null and $service.entrypoint == null)) and
         ($service.entrypoint == null or $service.entrypoint == ["/usr/local/bin/docker-entrypoint.sh"]) and
         ($service.working_dir == null or $service.working_dir == "/app") and
         ($service.pid == null or $service.pid == "") and
