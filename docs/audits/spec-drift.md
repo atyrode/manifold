@@ -92,7 +92,7 @@ missing member is drift; a paragraph that happens not to mention something is no
 
 ```
 Title: [audit:spec-drift] <one line: what the spec says vs what the tree does>
-Labels: audit
+Labels: audit, needs-triage
 Body:
 - main rev: <sha7>
 - Spec: <path:line> — "<quoted sentence>"

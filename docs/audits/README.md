@@ -27,19 +27,13 @@ reading a brief does not start an audit or require a ledger row.
 
 ## Labels
 
-These are the repository's issue-state semantics, not proof of the live GitHub label inventory.
-A process audit compares them with the actual labels and their use; it does not make this page a
-copy of every GitHub default or incidental label.
+[`TRIAGE.md`](../TRIAGE.md) §Label model owns issue-state semantics — the state, type, area and
+priority dimensions, the exclusivity rule and the `needs-triage` default — and
+[`.github/labels.yml`](../../.github/labels.yml) is the label inventory that
+`bun scripts/labels.ts --check` proves. What follows is what the labels an audit applies mean; a
+process audit compares both owners with actual label use, and neither page is a copy of every
+GitHub default or incidental label.
 
-- Every open issue except a `tracking` umbrella carries exactly one of `needs-operator`,
-  `agent-ready`, or `blocked`:
-  - `needs-operator` — held for a concrete unresolved operator decision. Agents do not merge
-    while it remains unresolved. Record the precise decision when supplied and update the label
-    before resuming under the normal merge checks and authority. A resolved decision is not a
-    permanent veto; arbitrary comment text is not operator authorization.
-  - `agent-ready` — scoped and settled; an agent may pick it up and open a PR without asking,
-    subject to the repository's existing ownership and authority boundaries.
-  - `blocked` — waits on another issue or PR named in the body.
 - `audit` — a finding from a run of a brief in this directory.
 - `process` — repository process: CI/CD, releases, coordination, audits.
 - `prerequisite` — blocks other tracked work.
@@ -63,10 +57,14 @@ copy of every GitHub default or incidental label.
    explicit evidence boundary, never a silently skipped step or permission to acquire access,
    activate a system or broaden the audit. Use read-only inspection for commands with side effects.
 3. **File one GitHub issue per independently actionable finding when authorized.** Labels: `audit`
-   plus the brief's label above (`process` for the meta-brief). Prefix titles `[audit:<brief>]`.
-   Use the brief's Output contract: source locations, the contradicted statement or demonstrated
-   defect, proposed fix and whether a mechanical PR is appropriate. If publication is outside the
-   task's authority, return the findings and record that boundary rather than publishing them.
+   plus the brief's label above (`process` for the meta-brief) and `needs-triage`, the state every
+   new issue starts in. Prefix titles `[audit:<brief>]`. File at most **10 issues per run**; put
+   the rest in one `[audit:<brief>] Overflow findings (<date>)` issue and record the overflow count
+   in the ledger row, per [`TRIAGE.md`](../TRIAGE.md) §Intake. Use the brief's Output contract:
+   source locations, the contradicted statement or demonstrated defect, proposed fix and whether a
+   mechanical PR is appropriate. A run may propose a state and priority under a
+   `## Proposed triage` line; triage decides. If publication is outside the task's authority,
+   return the findings and record that boundary rather than publishing them.
 4. **An audit may open a repair PR only for a purely mechanical correction within its authority.**
    Examples include a meaning-preserving pointer correction or a proven unreachable export and its
    obsolete test. Deleting a branch that merely looks dead, changing a rule or changing a check
