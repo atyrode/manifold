@@ -638,8 +638,71 @@ test("a revoked preview browser identity returns through production admission wi
     });
     expect(refused.status).toBe(403);
     expect(await refused.json()).toEqual({ error: { code: "forbidden", message: "revoked" } });
-    // No storage edits or admission URL shortcut: reopening the ordinary preview is the
-    // reported broken path, with a locally unexpired but server-revoked credential.
+    // Recovery must remain native even when its first attempt fails or is interrupted.
+    // Keep the rejected register and cached owner key across a real browser Reload.
+    for (const scenario of [
+      { admission: "failed", expired: false },
+      { admission: "interrupted", expired: false },
+      { admission: "failed", expired: true },
+    ]) {
+      const stored = JSON.stringify(scenario.expired
+        ? { ...initial, expiresInMs: 0, receivedAt: Date.now() }
+        : initial);
+      await browser.evaluate(
+        `localStorage.setItem('manifold.identity', ${JSON.stringify(stored)})`,
+      );
+      const unavailable = await browser.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `(() => {
+          const fetch = window.fetch.bind(window);
+          window.__protectedIdentityRequests = 0;
+          window.fetch = async (input, init) => {
+            const path = new URL(input, location.href).pathname;
+            if (path === '/api/plugins') window.__protectedIdentityRequests++;
+            if (path === '/api/identity/preview-start') {
+              window.__admissionAttemptSeen = true;
+              if (${JSON.stringify(scenario.admission)} === 'interrupted') {
+                return Promise.withResolvers().promise;
+              }
+              return Response.json({ error: {
+                code: 'unavailable', message: 'Admission temporarily unavailable'
+              } }, { status: 503 });
+            }
+            return fetch(input, init);
+          };
+        })()`,
+      });
+      await browser.goto(`${previewOrigin}/`);
+      for (const reload of [false, true]) {
+        if (reload) {
+          await browser.evaluate("window.__admissionAttemptSeen = false");
+          await browser.send("Page.reload", {});
+        }
+        await waitFor(
+          () => browser.evaluate<boolean>(
+            "window.__admissionAttemptSeen === true && document.querySelector('.gate-screen') !== null",
+          ),
+          10_000,
+          50,
+        );
+        expect(await browser.evaluate<boolean>(
+          "document.querySelector('#identity-name') === null && document.querySelector('.workspace') === null",
+        )).toBe(true);
+        expect(await browser.evaluate<string>(
+          "localStorage.getItem('manifold.identity')",
+        )).toBe(stored);
+        expect(await browser.evaluate<string>(
+          "localStorage.getItem('manifold.ownerKey')",
+        )).toBe(previewConfig.ownerKey);
+        if (scenario.expired) {
+          expect(await browser.evaluate<number>("window.__protectedIdentityRequests")).toBe(0);
+        }
+      }
+      await browser.send("Page.removeScriptToEvaluateOnNewDocument", {
+        identifier: unavailable.result?.["identifier"],
+      });
+    }
+    // No admission URL shortcut: reopening the ordinary preview must complete the same
+    // production handoff after both rejected and locally expired recovery attempts.
     await browser.goto(`${previewOrigin}/`);
     await waitFor(
       () => browser.evaluate<boolean>(
@@ -677,7 +740,7 @@ test("a revoked preview browser identity returns through production admission wi
   }
 }, 90_000);
 
-test("browser identity survives non-auth failures and a delayed refusal for a replaced token", async () => {
+test("browser identity survives non-auth failures and concurrent register replacement", async () => {
   const dist = resolveWebDist("manifold-identity-race-web-");
   const server = await startServer({ env: { MANIFOLD_WEB_DIST: dist.distDir } });
   const browser = new Browser();
@@ -798,6 +861,118 @@ test("browser identity survives non-auth failures and a delayed refusal for a re
     await browser.send("Page.removeScriptToEvaluateOnNewDocument", {
       identifier: delayed.result?.["identifier"],
     });
+    const successor = await mintToken(server, {
+      principal: { kind: "human", name: "successor-reviewer", color: "#8f4ac1" },
+      caps: ["*"],
+    });
+    // Model the exact cross-tab interleaving: getItem snapshots the rejected bearer,
+    // then another tab stores a successor before that old read returns. A subsequent
+    // removeItem would erase the successor even though the old snapshot matched.
+    const interleaved = await browser.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `(() => {
+        const getItem = Storage.prototype.getItem;
+        Storage.prototype.getItem = function(key) {
+          const snapshot = getItem.call(this, key);
+          if (this === localStorage && key === 'manifold.identity' &&
+              window.__replaceAfterIdentityRead) {
+            window.__replaceAfterIdentityRead = false;
+            localStorage.setItem(key, ${JSON.stringify(JSON.stringify(successor))});
+            window.__identityReadInterleaved = true;
+          }
+          return snapshot;
+        };
+        const fetch = window.fetch.bind(window);
+        window.fetch = async (input, init) => {
+          if (new URL(input, location.href).pathname === '/api/plugins') {
+            const response = await fetch(input, init);
+            if (response.status === 403) {
+              const { promise, resolve } = Promise.withResolvers();
+              window.__releaseIdentityResponse = () => {
+                window.__replaceAfterIdentityRead = true;
+                resolve();
+              };
+              await promise;
+            }
+            return response;
+          }
+          return fetch(input, init);
+        };
+      })()`,
+    });
+    await browser.send("Network.setBlockedURLs", {
+      urls: ["*/api/bindings", "*/api/settings", "*/api/layout", "*/api/attendance"],
+    });
+    await ownerAction(server, "core.access.revoke", { principalId: replacement.principal.id });
+    await browser.goto(`${server.httpUrl}/`);
+    await waitFor(
+      () => browser.evaluate<boolean>("typeof window.__releaseIdentityResponse === 'function'"),
+      10_000,
+      50,
+    );
+    await browser.evaluate("window.__releaseIdentityResponse()");
+    await waitFor(
+      () => browser.evaluate<boolean>(
+        "window.__identityReadInterleaved === true && document.querySelector('.gate-screen') !== null",
+      ),
+      10_000,
+      50,
+    );
+    expect(await browser.evaluate<string>("localStorage.getItem('manifold.identity')")).toBe(
+      JSON.stringify(successor),
+    );
+    expect(await browser.evaluate<boolean>("document.querySelector('#identity-name') === null")).toBe(
+      true,
+    );
+    await browser.send("Page.removeScriptToEvaluateOnNewDocument", {
+      identifier: interleaved.result?.["identifier"],
+    });
+    await browser.send("Network.setBlockedURLs", { urls: [] });
+    await browser.goto(`${server.httpUrl}/`);
+    await waitFor(
+      () => browser.evaluate<boolean>("document.querySelector('.workspace') !== null"),
+      10_000,
+      50,
+    );
+    expect(await browser.evaluate<string>("localStorage.getItem('manifold.identity')")).toBe(
+      JSON.stringify(successor),
+    );
+
+    // Parsing an earlier malformed snapshot must not delete a concurrent admission either.
+    const malformed = await browser.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `(() => {
+        localStorage.setItem('manifold.identity', '{');
+        const getItem = Storage.prototype.getItem;
+        Storage.prototype.getItem = function(key) {
+          const snapshot = getItem.call(this, key);
+          if (this === localStorage && key === 'manifold.identity' && snapshot === '{') {
+            localStorage.setItem(key, ${JSON.stringify(JSON.stringify(successor))});
+            window.__malformedReadInterleaved = true;
+          }
+          return snapshot;
+        };
+      })()`,
+    });
+    await browser.goto(`${server.httpUrl}/`);
+    await waitFor(
+      () => browser.evaluate<boolean>(
+        `window.__malformedReadInterleaved === true &&
+         document.querySelector('.gate-screen, .workspace') !== null`,
+      ),
+      10_000,
+      50,
+    );
+    expect(await browser.evaluate<string>("localStorage.getItem('manifold.identity')")).toBe(
+      JSON.stringify(successor),
+    );
+    await browser.send("Page.removeScriptToEvaluateOnNewDocument", {
+      identifier: malformed.result?.["identifier"],
+    });
+    await browser.goto(`${server.httpUrl}/`);
+    await waitFor(
+      () => browser.evaluate<boolean>("document.querySelector('.workspace') !== null"),
+      10_000,
+      50,
+    );
   } catch (error) {
     throw e2eFailure(error, [server]);
   } finally {

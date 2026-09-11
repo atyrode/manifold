@@ -16,7 +16,7 @@ The revocation argument the lease served was weaker than it looked. Revoking a p
 
 A preview identity's token is an ordinary interactive credential: `acceptPreviewIdentity` mints with the `interactive` lifetime and the separate `preview` expiry kind is gone. Fourteen days is the one lifetime a human browser credential has, on production and on every preview alike.
 
-Everything else in ADR 0027 stands: the assertion is single-use and short-lived, the credential is stored only on the preview origin, the browser removes it at expiry and repeats the production handoff, and session sockets are fenced `4403 expired` when it lapses. The trace ledger still records `preview_identity_accepted` with the expiry it minted.
+Everything else in ADR 0027 stands: the assertion is single-use and short-lived, the credential is stored only on the preview origin, the browser invalidates its in-memory identity at expiry and repeats the production handoff, and session sockets are fenced `4403 expired` when it lapses. Invalidation leaves the shared identity register untouched until ordinary admission replaces it, so a reload during failed or interrupted admission cannot fall back to a cached owner key. Structurally valid expired records require admission before authenticated children mount. The trace ledger still records `preview_identity_accepted` with the expiry it minted.
 
 ## Consequences
 

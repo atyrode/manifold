@@ -402,13 +402,19 @@ other credential carry only their effective concrete capabilities at `manifold:/
 verifies issuer, audience, signature, browser-bound nonce, a positive lifetime of at most 60 seconds
 and assertion id, then deterministically maps `(issuer, sourcePrincipalId)` to a local principal
 with `origin: issuer` and mints a preview-local token with the ordinary interactive lifetime
-(fourteen days, the same as a production browser credential; ADR 0028). The browser removes it at
-expiry and repeats the production check. A definitive HTTP `forbidden` / `revoked` or `expired`
-also invalidates only the exact current instance credential and re-enters ordinary preview
-admission above the plugin roster and rail, without falling back to a stored owner key.
-Permission denials, network failures and server errors retain the identity; a delayed refusal
-for an older token cannot remove its replacement. No workspace content or other instance's
-credentials are cleared. Session sockets close `4403 expired` when their credential expires.
+(fourteen days, the same as a production browser credential; ADR 0028). Expiry or a definitive
+HTTP `forbidden` / `revoked` or `expired` invalidates only the exact current instance's
+in-memory credential and re-enters ordinary preview admission above the plugin roster and
+rail, without falling back to a stored owner key. Invalidation and parsing never delete the
+shared identity register: ordinary admission replaces it. Keeping the old record makes a
+failed or interrupted handoff return through admission on reload, not owner-key bootstrap;
+a structurally valid expired record goes directly to admission without mounting authenticated
+children. Permission denials, network failures and server errors retain the identity.
+A delayed refusal adopts a different structurally valid credential it observes in the register
+(or re-enters admission if that replacement is expired). A replacement written after that read
+may require a redundant admission, but cannot be erased by the old callback. No new persistent
+recovery marker is needed; no workspace content or other instance's credentials are cleared.
+Session sockets close `4403 expired` when their credential expires.
 A new or renewed preview sees production revocation or grant changes immediately; an
 already-open preview is bounded by its own credential's expiry or by revoking that preview
 principal's sessions on the preview. Assertions are single-use within a server process

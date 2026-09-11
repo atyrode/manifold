@@ -160,26 +160,6 @@ function loadOwnerKey(): string | null {
   return null;
 }
 
-/**
- * A reply or timer belongs to the credential that started it, not whichever credential
- * another tab has since installed. Never remove a replacement from the device register.
- */
-function removeIdentity(token: string): boolean {
-  const key = credentialKey(IDENTITY_STORAGE);
-  const serialized = window.localStorage.getItem(key);
-  if (serialized === null) return true;
-  try {
-    const decoded: unknown = JSON.parse(serialized);
-    if (decoded === null || typeof decoded !== "object" || Reflect.get(decoded, "token") !== token) {
-      return false;
-    }
-  } catch {
-    return false;
-  }
-  window.localStorage.removeItem(key);
-  return true;
-}
-
 function loadIdentity(): StoredIdentity | null {
   const serialized = window.localStorage.getItem(credentialKey(IDENTITY_STORAGE));
   if (serialized === null) return null;
@@ -204,13 +184,6 @@ function loadIdentity(): StoredIdentity | null {
     ) {
       throw new Error("invalid identity");
     }
-    if (
-      typeof expiresInMs === "number" &&
-      typeof receivedAt === "number" &&
-      Date.now() - receivedAt >= expiresInMs
-    ) {
-      throw new Error("expired identity");
-    }
     return {
       token,
       principal: principal.data,
@@ -219,9 +192,14 @@ function loadIdentity(): StoredIdentity | null {
       ...(typeof receivedAt === "number" ? { receivedAt } : {}),
     };
   } catch {
-    window.localStorage.removeItem(credentialKey(IDENTITY_STORAGE));
     return null;
   }
+}
+
+function identityExpired(identity: StoredIdentity): boolean {
+  return identity.expiresInMs !== undefined &&
+    identity.receivedAt !== undefined &&
+    Date.now() - identity.receivedAt >= identity.expiresInMs;
 }
 
 interface IdentityGateProps {
@@ -241,13 +219,16 @@ export function IdentityGate({ children }: IdentityGateProps) {
   const identityOrigin = instanceOrigin();
   const invalidateIdentity = useCallback(() => {
     if (identity === null || instanceOrigin() !== identityOrigin) return;
-    if (!removeIdentity(identity.token)) {
-      // A delayed refusal for the old token must leave the new session usable.
-      setIdentity(loadIdentity());
-      return;
-    }
+    // Reads are not cross-tab compare-and-delete transactions. Leave the register
+    // untouched: admission replaces it, and reload must still see the old credential
+    // rather than treating a failed handoff as a first visit with an owner key.
+    const replacement = loadIdentity();
     setReadmitting(true);
-    setIdentity(null);
+    setIdentity((current) => {
+      // A queued callback only invalidates the in-memory bearer that started it.
+      if (current?.token !== identity.token) return current;
+      return replacement !== null && replacement.token !== identity.token ? replacement : null;
+    });
   }, [identity, identityOrigin]);
   useEffect(() => {
     if (identity === null) return;
@@ -261,6 +242,10 @@ export function IdentityGate({ children }: IdentityGateProps) {
     );
     return () => window.clearTimeout(timer);
   }, [identity, invalidateIdentity]);
+
+  // An expired, structurally valid register still means admission, never owner bootstrap.
+  // Do not mount authenticated children even for the render before the expiry effect runs.
+  if (identity !== null && identityExpired(identity)) return <PreviewAdmission />;
 
   if (identity !== null && handoff !== null) {
     return <PreviewHandoff identity={identity} request={handoff} />;

@@ -42,7 +42,8 @@ proofs are consumed on success; assertions cannot be reused within the process l
 After verification the preview deterministically maps `(issuer, source principal id)` to a local
 human principal whose `origin` names production and mints an ordinary preview-local token with the
 asserted capabilities. That token expires after 15 minutes. The browser stores it only on the
-preview origin and removes it at expiry, which restarts the same production handoff. Session
+preview origin and invalidates its in-memory identity at expiry, which restarts the same
+production handoff. The stored record remains until successful admission replaces it. Session
 sockets are fenced with close code 4403 / `expired` at credential expiry. Production revocation or
 authority changes therefore reach an already-open preview no later than the current 15-minute
 local lease; a newly opened or renewed preview sees them immediately.
