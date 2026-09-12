@@ -2677,16 +2677,22 @@ Packing is the artifact; the loop is `dev` (issue #319), and it exists because t
 a hardened plugin change is on a running hub — the child respawned, the web half re-served
 `no-store`, a browser reload. `dev` walks a directory for every `manifest.json` (a part inside its
 parent's directory, ADR 0023; `node_modules` and `dist` are never entered), packs each into a
-temporary directory, installs parents before parts, then watches the directory and repeats on
-change, debounced, installing only the bundles whose sha moved. One JSON line per cycle. The same
-loop without `--hardened` is the in-realm author's loop, walked through in §10.
+temporary directory, orders the complete batch with `familyOrder`, then watches the directory and
+repeats on change, debounced, installing only bundles whose sha moved. Supplied required
+dependencies and namespace parents precede consumers; independent ready bundles retain
+depth-then-id order. Duplicate ids and dependency cycles refuse the batch before installation.
+Dependencies absent from the batch are not created, enabled or installed; the hub still decides
+their availability. One JSON line is reported per cycle. The same loop without `--hardened` is the
+in-realm author's loop, walked through in §10.
 
 Repositories with generated worker artifacts can call the exported `devLoop` with a
-`build(packDir)` callback. It returns the complete family in parent-before-part order as
-`{ id, file, sha256, bytes }` entries produced by the kit's packer. The callback finishes
-every bundle before installation begins; a failed build leaves installed bundles alone.
-The native loop still owns watching, change coalescing, hash checks, delivery and temporary
-output cleanup. Keep source staging outside the watched root.
+`build(packDir)` callback. It returns the complete batch as `{ file, sha256, bytes }` results from
+the kit's packer. The callback finishes every bundle before installation begins; a failed build
+leaves installed bundles alone. The native loop rereads identity and required dependencies from
+those finished bundle bytes, rejects a post-compilation hash change, orders the complete result
+with `familyOrder`, and owns watching, change coalescing, delivery and temporary output cleanup.
+Discovery metadata and a custom builder's summary are never installation authority. Keep source
+staging outside the watched root.
 
 ```sh
 # from a manifold checkout, pointing at your plugins directory
@@ -2743,13 +2749,15 @@ bun run --cwd packages/plugin-kit verify <bundle>... --hardened
 ```
 
 It spawns this checkout's server (a temporary data dir, a fixed throwaway owner key, a free port,
-`MANIFOLD_PLUGIN_DEV_PATHS=1`), installs the bundles parents first whatever order the shell glob
-handed them, and for each asserts that its roster row is enabled and its `lifecycle` is neither
-`enable_failed` nor `isolate_crashed`, then dispatches every door the row publishes with `{}` as
-the owner and requires any answer but `unavailable` — `invalid_args` and `refused` come from your
-code in your process, which is the fact being checked; `unavailable` is the runner saying that
-process is gone or mute. Then it uninstalls with `purge` in reverse. The first failure exits
-non-zero naming the bundle, the row or the door.
+`MANIFOLD_PLUGIN_DEV_PATHS=1`) and inspects and orders every supplied bundle before starting it.
+Required dependencies and namespace parents install before consumers regardless of shell-glob
+order; duplicate ids or dependency cycles refuse the complete batch before installation. For each
+bundle, verification asserts that its roster row is enabled and its `lifecycle` is neither
+`enable_failed` nor `isolate_crashed`, then dispatches every published door with `{}` as the owner
+and requires any answer but `unavailable` — `invalid_args` and `refused` come from your code in your
+process, which is the fact being checked; `unavailable` is the runner saying that process is gone or
+mute. Then it uninstalls with `purge` in the exact reverse order. The first failure exits non-zero
+naming the bundle, the row or the door.
 
 In CI, the reusable workflow `.github/workflows/plugins.yml` (`workflow_call`, input
 `plugins-dir`, default `plugins`) does the whole sequence: it checks the caller out at `caller/`,

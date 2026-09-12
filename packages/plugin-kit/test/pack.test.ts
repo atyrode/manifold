@@ -1,12 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+  closeSync,
   cpSync,
+  fstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
-  statSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import {
@@ -398,15 +401,19 @@ describe("in-memory compilation", () => {
 
   const snapshot = () =>
     [".", ...readdirSync(source, { recursive: true })].sort().map((name) => {
-      const path = `${source}/${name}`;
-      const stat = statSync(path);
-      return {
-        name,
-        mode: stat.mode,
-        mtimeMs: stat.mtimeMs,
-        ctimeMs: stat.ctimeMs,
-        contents: stat.isFile() ? readFileSync(path).toString("base64") : null,
-      };
+      const descriptor = openSync(`${source}/${name}`, "r");
+      try {
+        const stat = fstatSync(descriptor);
+        return {
+          name,
+          mode: stat.mode,
+          mtimeMs: stat.mtimeMs,
+          ctimeMs: stat.ctimeMs,
+          contents: stat.isFile() ? readFileSync(descriptor).toString("base64") : null,
+        };
+      } finally {
+        closeSync(descriptor);
+      }
     });
 
   const serverValue = async (compiled: PluginBundle): Promise<unknown> => {
@@ -443,6 +450,25 @@ describe("in-memory compilation", () => {
     expect([...generated.members].map(([name, bytes]) => [name, Buffer.from(bytes)])).toEqual(
       membersBefore,
     );
+  });
+
+  test("compiled halves use admitted metadata when the root manifest is a stable symlink", async () => {
+    const linked = `${dir}/generated-source-linked`;
+    cpSync(source, linked, { recursive: true });
+    const onDisk = readFileSync(`${linked}/manifest.json`);
+    rmSync(`${linked}/manifest.json`);
+    await Bun.write(`${linked}/metadata.json`, onDisk);
+    symlinkSync("metadata.json", `${linked}/manifest.json`);
+    const generated = supplied();
+    const result = await compilePlugin(linked, { shared: false, generated });
+    const compiled = PluginBundleSchema.parse(JSON.parse(new TextDecoder().decode(result.bytes)));
+    expect(await serverValue(compiled)).toEqual({
+      manifest: compiled.manifest,
+      nested,
+      settings,
+    });
+    const web = await import(`data:text/javascript;base64,${compiled.files["web.js"]!}`);
+    expect(web.default).toEqual({ manifest: compiled.manifest, nested, settings });
   });
 
   test("owns the supplied manifest, map and byte views before awaiting source reads", async () => {

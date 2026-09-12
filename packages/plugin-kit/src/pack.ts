@@ -272,7 +272,7 @@ export async function compilePlugin(
     manifestPlugins.push({
       name: "manifold-generated-manifest",
       setup(builder) {
-        builder.onLoad({ filter: /manifest\.json$/, namespace: "file" }, ({ path }) => {
+        builder.onLoad({ filter: /.*/, namespace: "file" }, ({ path }) => {
           if (path === rootManifest) return { contents, loader: "json" };
           return undefined;
         });
