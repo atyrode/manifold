@@ -1,5 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import {
   ISOLATE_MAX_ARTIFACT_BYTES,
@@ -352,7 +360,10 @@ describe("in-memory compilation", () => {
       Bun.write(`${source}/manifest.json`, JSON.stringify(original)),
       Bun.write(`${source}/nested/manifest.json`, JSON.stringify(nested)),
       Bun.write(`${source}/settings.json`, JSON.stringify(settings)),
-      Bun.write(`${source}/server.ts`, `${imports}\nconsole.log(JSON.stringify({manifest, nested, settings}));`),
+      Bun.write(
+        `${source}/server.ts`,
+        `${imports}\nconsole.log(JSON.stringify({manifest, nested, settings}));`,
+      ),
       Bun.write(`${source}/web.ts`, `${imports}\nexport default {manifest, nested, settings};`),
       Bun.write(`${source}/worker`, originalWorker),
       Bun.write(`${source}/engine`, originalEngine),
@@ -376,7 +387,13 @@ describe("in-memory compilation", () => {
         },
       },
     });
-    return { manifest, members: new Map<string, Uint8Array>([["worker", worker], ["engine", engine]]) };
+    return {
+      manifest,
+      members: new Map<string, Uint8Array>([
+        ["worker", worker],
+        ["engine", engine],
+      ]),
+    };
   };
 
   const snapshot = () =>
@@ -412,7 +429,7 @@ describe("in-memory compilation", () => {
     const result = await compilePlugin(source, { shared: false, generated });
     const compiled = PluginBundleSchema.parse(JSON.parse(new TextDecoder().decode(result.bytes)));
     expect(result.sha256).toBe(createHash("sha256").update(result.bytes).digest("hex"));
-    expect(compiled.manifest).toEqual(manifestBefore);
+    expect<PluginManifest>(compiled.manifest).toEqual(manifestBefore);
     expect(compiled.manifest.machine).not.toEqual(original.machine);
     expect(Object.keys(compiled.files).sort()).toEqual(["engine", "server.js", "web.js", "worker"]);
     for (const [name, bytes] of generated.members)
@@ -423,13 +440,17 @@ describe("in-memory compilation", () => {
     expect(web.default).toEqual({ manifest: compiled.manifest, nested, settings });
     expect(snapshot()).toEqual(before);
     expect(generated.manifest).toEqual(manifestBefore);
-    expect([...generated.members].map(([name, bytes]) => [name, Buffer.from(bytes)])).toEqual(membersBefore);
+    expect([...generated.members].map(([name, bytes]) => [name, Buffer.from(bytes)])).toEqual(
+      membersBefore,
+    );
   });
 
   test("owns the supplied manifest, map and byte views before awaiting source reads", async () => {
     const generated = supplied();
     const manifest = structuredClone(generated.manifest);
-    const members = [...generated.members].map(([name, bytes]) => [name, Buffer.from(bytes)] as const);
+    const members = [...generated.members].map(
+      ([name, bytes]) => [name, Buffer.from(bytes)] as const,
+    );
     const options: CompileOptions = { shared: false, generated };
     const pending = compilePlugin(source, options);
     generated.manifest.id = "substituted.identity";
@@ -440,7 +461,7 @@ describe("in-memory compilation", () => {
     generated.members.set("unused", new Uint8Array([1]));
     const result = await pending;
     const compiled = PluginBundleSchema.parse(JSON.parse(new TextDecoder().decode(result.bytes)));
-    expect(compiled.manifest).toEqual(manifest);
+    expect<PluginManifest>(compiled.manifest).toEqual(manifest);
     for (const [name, bytes] of members)
       expect(Buffer.from(compiled.files[name]!, "base64")).toEqual(bytes);
     expect(await serverValue(compiled)).toEqual({ manifest, nested, settings });
@@ -479,14 +500,17 @@ describe("in-memory compilation", () => {
     expect(snapshot()).toEqual(before);
   });
 
-  test.each(["server.js", "web.js", "styles.css"])("refuses generated member collision with %s", async (name) => {
-    const generated = supplied();
-    const worker = generated.members.get("worker")!;
-    generated.manifest.machine!.artifacts["linux-x64"] = raw(name, worker);
-    generated.members.delete("worker");
-    generated.members.set(name, worker);
-    await expect(compilePlugin(source, { shared: false, generated })).rejects.toThrow();
-  });
+  test.each(["server.js", "web.js", "styles.css"])(
+    "refuses generated member collision with %s",
+    async (name) => {
+      const generated = supplied();
+      const worker = generated.members.get("worker")!;
+      generated.manifest.machine!.artifacts["linux-x64"] = raw(name, worker);
+      generated.members.delete("worker");
+      generated.members.set(name, worker);
+      await expect(compilePlugin(source, { shared: false, generated })).rejects.toThrow();
+    },
+  );
 
   test("refuses malformed, empty and oversized generated byte views", async () => {
     const malformed = supplied();
@@ -496,7 +520,10 @@ describe("in-memory compilation", () => {
     empty.members.set("worker", new Uint8Array());
     await expect(compilePlugin(source, { shared: false, generated: empty })).rejects.toThrow();
     const oversized = supplied();
-    oversized.members.set("worker", new Uint8Array(oversized.members.get("worker")!.byteLength + 1));
+    oversized.members.set(
+      "worker",
+      new Uint8Array(oversized.members.get("worker")!.byteLength + 1),
+    );
     await expect(compilePlugin(source, { shared: false, generated: oversized })).rejects.toThrow();
   });
 
@@ -513,7 +540,9 @@ describe("in-memory compilation", () => {
   test("applies transport, extracted executable and archive verification to generated artifacts", async () => {
     const substituted = supplied();
     substituted.members.get("worker")!.fill(0);
-    await expect(compilePlugin(source, { shared: false, generated: substituted })).rejects.toThrow();
+    await expect(
+      compilePlugin(source, { shared: false, generated: substituted }),
+    ).rejects.toThrow();
     const executable = supplied();
     executable.manifest.machine!.tools!.engine!["linux-x64"]!.entrySha256 = "0".repeat(64);
     await expect(compilePlugin(source, { shared: false, generated: executable })).rejects.toThrow();
@@ -525,7 +554,7 @@ describe("in-memory compilation", () => {
   test("the original file packer publishes exactly the verified compilation bytes", async () => {
     const compiled = await compilePlugin(source, { shared: false });
     const result = await packPlugin(source, `${dir}/file-parity.json`, { shared: false });
-    expect(await Bun.file(result.file).bytes()).toEqual(compiled.bytes);
+    expect(compiled.bytes).toEqual(await Bun.file(result.file).bytes());
     expect(result.sha256).toBe(compiled.sha256);
     expect(result.bytes).toBe(compiled.bytes.byteLength);
     const artifact = PluginBundleSchema.parse(JSON.parse(new TextDecoder().decode(compiled.bytes)));

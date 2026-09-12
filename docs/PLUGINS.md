@@ -3048,6 +3048,18 @@ pin the door demands; identical source and dependencies produce identical bytes 
 the source's absolute location or the pack process's working directory. `--self-contained` is
 §9's flag and not yours.
 
+Build integrations that generate machine artifacts use `compilePlugin(pluginDir, options)`
+from `@manifold/plugin-kit/pack`. It returns verified `{ bytes, sha256 }` without writing
+source or output files. `options.generated` supplies a schema-validated manifest and a
+`ReadonlyMap<string, Uint8Array>` containing every declared bundled machine member; absent,
+unused, colliding, oversized or incorrectly hashed members are refused without disk fallback.
+The supplied manifest must keep the source plugin's identity and entry declaration. The
+compiler snapshots generated inputs before awaiting and substitutes that exact root manifest
+in both compiled halves and bundle metadata, leaving unrelated JSON imports alone.
+`packPlugin` remains the file-writing convenience over the same compiler. Source and installed
+dependencies are trusted build inputs and must stay stable; compilation grants no installation
+or execution authority.
+
 ### Install with the door
 
 The door is `engine.plugins.install` (§7). The kit knocks on it for you, reading the roster first:
