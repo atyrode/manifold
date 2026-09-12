@@ -1457,6 +1457,44 @@ export class PluginHost {
         `plugin "${pluginId}" has active dispatches: ${outcome.reason}`,
       );
   }
+
+  /**
+   * ONE FILE PER PLUGIN, opened lazily and kept (ADR 0034 §1). Null when this host has no
+   * data directory — a unit fixture — because a path is the whole of what makes the file this
+   * plugin's and nobody else's, and inventing one under the process's cwd would put a
+   * workspace's rows somewhere no backup looks.
+   *
+   * The handle exists whether or not the manifest DECLARES a database: the purge verb and the
+   * uninstall guard have to answer for a file a plugin wrote before its manifest stopped
+   * asking for one, and opening is lazy, so a plugin that never touches SQL never creates a
+   * file. What the declaration decides is whether `ctx.database` is handed out, which is
+   * `slice(...)` below.
+   */
+  private database(pluginId: string): PluginDatabaseAdmin | null {
+    if (this.dataDir === null) return null;
+    const existing = this.databases.get(pluginId);
+    if (existing !== undefined) return existing;
+    const declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.database;
+    const created = openPluginDatabase({
+      dataDir: this.dataDir,
+      pluginId,
+      ...(declared?.maxBytes === undefined ? {} : { maxBytes: declared.maxBytes }),
+      now: () => this.runtime.now(),
+    });
+    this.databases.set(pluginId, created);
+    return created;
+  }
+
+  /**
+   * The database slice a CONTEXT carries: present exactly when the manifest declared one
+   * (ADR 0034 §6), so a plugin that asked for no file cannot reach one by accident and the
+   * proxy answers `slice_unavailable` for the same reason on the other side of the boundary.
+   */
+  private databaseSlice(pluginId: string): PluginDatabase | undefined {
+    const declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.database;
+    if (declared === undefined) return undefined;
+    return this.database(pluginId) ?? undefined;
+  }
   /** Applies every migration the current assembly found owing. True if any ran. */
   private async runPendingMigrations(): Promise<boolean> {
     let ran = false;
@@ -2780,6 +2818,7 @@ export class PluginHost {
           };
     const database = this.databaseSlice(pluginId);
     const lease = this.storageLease(pluginId);
+    const database = this.databaseSlice(pluginId);
     const ctx: ActionCtx = {
       traceId,
       credential: this.authService.credentialReference(auth),

@@ -245,11 +245,10 @@ function serveJobsCall(
 /**
  * The plugin's own database, or the refusal that says it never asked for one. A manifest
  * without `database` has no slice on either side of the boundary (ADR 0034 §6), and the word
- * is the one the guest runtime already uses for a member stage 1 does not carry. A migration
- * is refused the same way, because its request carries storage and nothing else.
+ * is the one the guest runtime already uses for a member stage 1 does not carry.
  */
 function databaseOf(served: ServedCtx, method: IsolateCtxMethod): PluginDatabase {
-  const database = served.kind === "migration" ? undefined : served.ctx.database;
+  const database = served.ctx.database;
   if (database === undefined) throw new Error(`slice_unavailable: ${method}`);
   return database;
 }
@@ -276,10 +275,7 @@ function paramsArg(
 }
 
 /** The statement list of a served `batch`, narrowed to the shape the contract takes. */
-function statementsArg(
-  args: readonly unknown[],
-  method: IsolateCtxMethod,
-): readonly SqlStatement[] {
+function statementsArg(args: readonly unknown[], method: IsolateCtxMethod): readonly SqlStatement[] {
   const value = args[0];
   if (!Array.isArray(value)) {
     throw new Error(`${method}: argument 0 must be an array of statements`);

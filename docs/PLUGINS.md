@@ -910,13 +910,8 @@ type SqlParam = string | number | bigint | boolean | null | Uint8Array;
 interface PluginDatabase {
   readonly pluginId: string;
   query<Row>(sql: string, params?: readonly SqlParam[]): Promise<readonly Row[]>; // SELECT and RETURNING; [] otherwise
-  run(
-    sql: string,
-    params?: readonly SqlParam[],
-  ): Promise<{ changes: number; lastInsertRowid: number }>;
-  batch(
-    statements: readonly { sql: string; params?: readonly SqlParam[] }[],
-  ): Promise<readonly (readonly SqlRow[])[]>;
+  run(sql: string, params?: readonly SqlParam[]): Promise<{ changes: number; lastInsertRowid: number }>;
+  batch(statements: readonly { sql: string; params?: readonly SqlParam[] }[]): Promise<readonly (readonly SqlRow[])[]>;
 }
 ```
 
@@ -932,10 +927,7 @@ with a `RETURNING`), and read what changed.
 ```ts
 await ctx.database.run("INSERT INTO records(id, kind) VALUES (?, ?)", [id, "proposal"]);
 const [inserted, counted] = await ctx.database.batch([
-  {
-    sql: "UPDATE records SET kind = ? WHERE id = ? AND kind = ? RETURNING id",
-    params: ["filed", id, "proposal"],
-  },
+  { sql: "UPDATE records SET kind = ? WHERE id = ? AND kind = ? RETURNING id", params: ["filed", id, "proposal"] },
   { sql: "SELECT count(*) AS n FROM records WHERE kind = 'filed'" },
 ]);
 if (inserted.length === 0) return { refused: "somebody else filed it first" };
@@ -945,15 +937,15 @@ if (inserted.length === 0) return { refused: "somebody else filed it first" };
 `PluginDatabaseError` — never a throw, exactly as storage rejects, so one `try`/`catch` around an
 `await` is your whole failure path in-realm and isolated alike:
 
-| Bound                    | Value                              |
-| ------------------------ | ---------------------------------- |
-| statement text           | ≤ 64 KiB                           |
-| parameters per statement | ≤ 999 (SQLite's own)               |
-| statements per `batch`   | ≤ 256                              |
-| rows returned per call   | ≤ 10,000 — page past it            |
-| result bytes per call    | ≤ 4 MiB                            |
-| one call's deadline      | 5 s; a `batch` past it rolls back  |
-| the file                 | `database.maxBytes`, ceiling 4 GiB |
+| Bound                            | Value                              |
+| -------------------------------- | ---------------------------------- |
+| statement text                   | ≤ 64 KiB                           |
+| parameters per statement         | ≤ 999 (SQLite's own)               |
+| statements per `batch`           | ≤ 256                              |
+| rows returned per call           | ≤ 10,000 — page past it            |
+| result bytes per call            | ≤ 4 MiB                            |
+| one call's deadline              | 5 s; a `batch` past it rolls back  |
+| the file                         | `database.maxBytes`, ceiling 4 GiB |
 
 `ATTACH`, `DETACH`, `VACUUM`, `PRAGMA` and `load_extension` are refused by inspecting the first
 keyword before anything runs, and the file is opened with `trusted_schema` off. That is a guard
@@ -972,27 +964,12 @@ migrations: [
     name: "2026-09-12-create-records",
     to: { major: 1, minor: 0 },
     migrate: async (storage, database) => {
-      await database?.run(
-        "CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, kind TEXT NOT NULL)",
-      );
+      await database?.run("CREATE TABLE records(id TEXT PRIMARY KEY, kind TEXT NOT NULL)");
       await storage.set("schema", "records");
     },
   },
 ];
 ```
-
-**Write DDL that can run twice.** §4's chain stages your keys, the applied-name ledger and the
-version stamp and publishes them in one transaction — but your file is not `manifold.db`, so its
-statements commit as they run. A chain that throws or times out publishes no ledger entry, which
-means the same migration is planned again on the next boot: `CREATE TABLE IF NOT EXISTS`, and a
-data statement guarded by its own `WHERE`, are what make the second attempt succeed.
-
-**A hardened guest's migration is storage-only.** §4's migration request carries the plugin's
-keys and nothing else — the engine admits `storage.*` calls from a migrating guest and refuses
-everything else — so `database` is `undefined` there and a `database.*` call is answered
-`slice_unavailable`. Make your tables in `onEnable` instead, the way the reference plugin does:
-the lifecycle context carries the slice, `CREATE TABLE IF NOT EXISTS` is idempotent, and it runs
-before your first dispatch either way.
 
 There is no schema DSL, because SQL is the schema DSL. And there is still **one** data version and
 **one** ledger: `dataVersion` and the `$migration:` rows live in your key-value namespace whether
@@ -1011,7 +988,6 @@ It is not a document plane (§5 is still where large blobs and collaborative tex
 shared database (no plugin reads another's rows — cross-plugin data travels through actions and
 events), not a query API over the engine's own tables, and not a replacement for `ctx.storage`: a
 preference is still a key. The reasoning is `docs/decisions/0034-plugin-database.md`.
-
 ### Element types are reserved while you are away
 
 The engine records which plugin owns which element `type` (a workspace-level `meta` row, beside the
