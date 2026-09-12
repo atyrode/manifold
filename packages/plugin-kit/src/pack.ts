@@ -117,7 +117,9 @@ async function build(
     entrypoints: [entrypoint],
     target,
     format: "esm",
-    minify: false,
+    // Bun's readable output embeds source-path comments relative to the process cwd. The bundle
+    // hash is a security pin, so remove those comments in the build rather than rewriting output.
+    minify: { whitespace: true },
     plugins,
     /*
       A bundle is a PRODUCTION artifact whatever the packing process's NODE_ENV: the shell it

@@ -2959,8 +2959,9 @@ bun run --cwd packages/plugin-kit pack <plugin-dir> --out <id>.manifold-plugin.j
 
 One JSON document (`PluginBundleSchema`): `format: 1`, your manifest, `builtAgainst`, and the
 built halves as base64 members. The printed `sha256` is over the file's exact bytes and is the
-pin the door demands; the bytes depend on the build inputs, so pack from the same working
-directory when you mean to reproduce a pin. `--self-contained` is §9's flag and not yours.
+pin the door demands; identical source and dependencies produce identical bytes regardless of
+the source's absolute location or the pack process's working directory. `--self-contained` is
+§9's flag and not yours.
 
 ### Install with the door
 
