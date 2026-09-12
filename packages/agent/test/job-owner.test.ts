@@ -2038,7 +2038,9 @@ test
               environment: {
                 FIXED_SERVICE_SETTING: "reviewed",
                 WAIT_FOR_FLUSH: "1",
-                ...(mode === "noncooperative" ? { IGNORE_RETIREMENT: "1" } : {}),
+                ...(mode === "noncooperative"
+                  ? { IGNORE_RETIREMENT: "1", WAIT_FOR_CONTEXT_CLOSE: "1" }
+                  : {}),
               },
               inputFiles: { serviceBearer: { generated: "service-bearer" } },
               locations: [{ locationId: "fixture.retirement.state", access: "write" }],
@@ -2222,8 +2224,10 @@ test
       restoreLaunch = undefined;
       await Promise.race([
         draining.promise,
-        finished.promise.then(() => {
-          throw new Error("worker exited without cooperative shutdown");
+        finished.promise.then((result) => {
+          throw new Error(
+            `worker exited without cooperative shutdown (${result.state}, exit ${result.exitCode}, ${result.reason})`,
+          );
         }),
       ]);
       const statePath = join(root, "locations", install.pluginId, "service");
