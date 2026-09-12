@@ -107,7 +107,13 @@ import {
   type InstalledArtifact,
 } from "./plugin-installs.ts";
 import type { RoomManager } from "./room.ts";
-import type { MachineRecord, PluginInstallRow, PluginMigrationSession, ServerStore, TraceAttribution } from "./stores.ts";
+import type {
+  MachineRecord,
+  PluginInstallRow,
+  PluginMigrationSession,
+  ServerStore,
+  TraceAttribution,
+} from "./stores.ts";
 import type { DrainOutcome, TerminalBroker } from "./terminal-broker.ts";
 import { StreamService } from "./stream-service.ts";
 import type { StreamProducer, PluginStreamContext, PluginServiceContext } from "@manifold/plugin";
@@ -1114,14 +1120,18 @@ export class PluginHost {
           const invoke = migration.migrate.bind(migration);
           return {
             ...metadata,
-            migrate: (storage) => invoke({
-              pluginId: storage.pluginId,
-              get: async (key) => { assertStorageKey(key); return storage.get(key); },
-              set: storage.set,
-              compareAndSet: storage.compareAndSet,
-              delete: storage.delete,
-              keys: storage.keys,
-            }),
+            migrate: (storage) =>
+              invoke({
+                pluginId: storage.pluginId,
+                get: async (key) => {
+                  assertStorageKey(key);
+                  return storage.get(key);
+                },
+                set: storage.set,
+                compareAndSet: storage.compareAndSet,
+                delete: storage.delete,
+                keys: storage.keys,
+              }),
           };
         });
         return { ...def, manifest: bundle.manifest, migrations: adapted };
@@ -1271,16 +1281,39 @@ export class PluginHost {
       if (!open) throw new Error("plugin storage request is closed");
     };
     return {
-      close: () => { open = false; },
+      close: () => {
+        open = false;
+      },
       storage: {
         pluginId,
-        get: async (key) => { check(); return storage.get(key); },
-        set: async (key, value) => { check(); await storage.set(key, value); },
-        compareAndSet: async (key, expected, value) => { check(); return storage.compareAndSet(key, expected, value); },
-        delete: async (key) => { check(); await storage.delete(key); },
-        keys: async (prefix) => { check(); return storage.keys(prefix); },
-        dataVersion: async () => { check(); return storage.dataVersion(); },
-        appliedMigrations: async () => { check(); return storage.appliedMigrations(); },
+        get: async (key) => {
+          check();
+          return storage.get(key);
+        },
+        set: async (key, value) => {
+          check();
+          await storage.set(key, value);
+        },
+        compareAndSet: async (key, expected, value) => {
+          check();
+          return storage.compareAndSet(key, expected, value);
+        },
+        delete: async (key) => {
+          check();
+          await storage.delete(key);
+        },
+        keys: async (prefix) => {
+          check();
+          return storage.keys(prefix);
+        },
+        dataVersion: async () => {
+          check();
+          return storage.dataVersion();
+        },
+        appliedMigrations: async () => {
+          check();
+          return storage.appliedMigrations();
+        },
       },
     };
   }
@@ -1292,7 +1325,10 @@ export class PluginHost {
       await Promise.all(pending);
     }, ISOLATE_MIGRATION_DEADLINE_MS);
     if (!outcome.ok)
-      throw new InstallRefusal("artifact_invalid", `plugin "${pluginId}" has active dispatches: ${outcome.reason}`);
+      throw new InstallRefusal(
+        "artifact_invalid",
+        `plugin "${pluginId}" has active dispatches: ${outcome.reason}`,
+      );
   }
 
   /** Applies every migration the current assembly found owing. True if any ran. */
@@ -1316,24 +1352,31 @@ export class PluginHost {
   ): Promise<PluginMigrationSession> {
     const staged = this.store.beginPluginMigration(pluginId, migrations.length > 0);
     const admin = staged.storage;
+    let closeActiveLease = (): void => {};
     try {
       const outcome = await runHook(async () => {
         for (const migration of migrations) {
           // A callback sees public storage only, and its handle expires before the next
           // migration starts; the engine alone records names and the eventual version.
           const lease = this.storageLease(pluginId, admin);
+          closeActiveLease = lease.close;
           try {
             await migration.migrate(lease.storage);
           } finally {
             lease.close();
+            if (closeActiveLease === lease.close) closeActiveLease = (): void => {};
           }
           await admin.recordMigration(migration.name, this.runtime.now());
         }
         if (declared !== undefined) await admin.stampDataVersion(declared);
       }, ISOLATE_MIGRATION_DEADLINE_MS);
+      // `runHook` cannot cancel an in-realm promise. Expire its authority when the engine
+      // stops waiting, rather than when that promise eventually settles.
+      closeActiveLease();
       if (!outcome.ok) throw new Error(`plugin migration failed: ${outcome.reason}`);
       return staged;
     } catch (error) {
+      closeActiveLease();
       staged.discard();
       throw error;
     }

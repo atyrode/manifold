@@ -679,10 +679,14 @@ describe("named storage migrations", () => {
   ])("refuses malformed or ambiguous migration metadata: %j", async (...descriptors) => {
     const versioned = { ...manifest, dataVersion: { major: 2, minor: 0 } };
     const fake = host({
-      manifest: versioned, actions: [], handlers: {},
+      manifest: versioned,
+      actions: [],
+      handlers: {},
       migrations: descriptors.map((descriptor) => ({
         ...descriptor,
-        migrate: () => { throw new Error("must not run during load"); },
+        migrate: () => {
+          throw new Error("must not run during load");
+        },
       })),
     });
     fake.send({ t: "load", pluginId: manifest.id, manifest: versioned, dir: "/unused" });
@@ -694,7 +698,9 @@ describe("named storage migrations", () => {
     const migration = {
       name: "widen",
       to: { major: 2, minor: 0 },
-      migrate: () => { invocations += 1; },
+      migrate: () => {
+        invocations += 1;
+      },
     };
     const missing = host({ manifest, actions: [], handlers: {}, migrations: [migration] });
     load(missing);
@@ -703,7 +709,8 @@ describe("named storage migrations", () => {
     const fake = host({ manifest: versioned, actions: [], handlers: {}, migrations: [migration] });
     fake.send({ t: "load", pluginId: manifest.id, manifest: versioned, dir: "/unused" });
     expect(await fake.next()).toMatchObject({
-      t: "loaded", migrations: [{ name: "widen", to: { major: 2, minor: 0 } }],
+      t: "loaded",
+      migrations: [{ name: "widen", to: { major: 2, minor: 0 } }],
     });
     for (const descriptor of [
       { name: "unknown", to: { major: 2, minor: 0 } },
@@ -711,7 +718,8 @@ describe("named storage migrations", () => {
     ]) {
       fake.send({ t: "migrate", id: descriptor.name, migration: descriptor });
       expect(await fake.next()).toMatchObject({
-        t: "migrated", outcome: { ok: false },
+        t: "migrated",
+        outcome: { ok: false },
       });
     }
     expect(invocations).toBe(0);

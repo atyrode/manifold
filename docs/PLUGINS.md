@@ -817,6 +817,11 @@ the migration name and target version; its callback executes in the guest while 
 the same correlated proxy as ordinary plugin storage. No auth, services, jobs, terminal, lifecycle
 emission or another plugin's storage rides that request.
 
+The ten-second deadline can kill a hardened guest. An in-realm migration is trusted code in the
+server process: JavaScript cannot preempt a synchronous CPU loop, so its deadline bounds awaited
+work but cannot interrupt a callback that never yields. Install such code only under the same
+in-process trust decision as its ordinary server half.
+
 The transformed rows, applied-name ledger, declared version, install row and element claims publish
 in one synchronous native transaction after the callbacks finish. A throw, timeout, child crash,
 malformed or cross-call reply, late storage use, or conflicting writer publishes none of them and

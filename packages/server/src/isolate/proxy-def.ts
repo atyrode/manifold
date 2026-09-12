@@ -1,4 +1,11 @@
-import type { AnyActionDef, AssemblyDelta, LifecycleCtx, PluginLifecycle, PluginMigration, PluginStorage } from "@manifold/plugin";
+import type {
+  AnyActionDef,
+  AssemblyDelta,
+  LifecycleCtx,
+  PluginLifecycle,
+  PluginMigration,
+  PluginStorage,
+} from "@manifold/plugin";
 import {
   CapSchema,
   GuestMigrationDeclarationsSchema,

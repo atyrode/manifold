@@ -1,4 +1,11 @@
-import type { AssemblyDelta, LifecycleCtx, StreamProducer, JobFollow, PluginMigration, PluginStorage } from "@manifold/plugin";
+import type {
+  AssemblyDelta,
+  LifecycleCtx,
+  StreamProducer,
+  JobFollow,
+  PluginMigration,
+  PluginStorage,
+} from "@manifold/plugin";
 import {
   ISOLATE_CRASH_BUDGET,
   ISOLATE_DISPATCH_DEADLINE_MS,
@@ -273,7 +280,11 @@ export class IsolateSupervisor implements IsolateRunner {
   ): Promise<void> {
     if (this.isolates.get(isolate.ref.pluginId) !== isolate)
       throw new IsolateDenial("unavailable", "migration belongs to a retired plugin");
-    if (isolate.pending.size !== 0 || isolate.producers.size !== 0 || isolate.jobObservers.size !== 0)
+    if (
+      isolate.pending.size !== 0 ||
+      isolate.producers.size !== 0 ||
+      isolate.jobObservers.size !== 0
+    )
       throw new IsolateDenial("unavailable", "migration requires a drained guest");
     const frame = await this.request(
       isolate.ref.pluginId,
@@ -533,12 +544,16 @@ export class IsolateSupervisor implements IsolateRunner {
           return;
         }
         const expected =
-          pending.request.t === "dispatch" ? "dispatched" :
-          pending.request.t === "hook" ? "hooked" : "migrated";
+          pending.request.t === "dispatch"
+            ? "dispatched"
+            : pending.request.t === "hook"
+              ? "hooked"
+              : "migrated";
         if (
           frame.t !== expected ||
           (pending.request.t === "migrate" &&
-            (frame.t !== "migrated" || frame.name !== pending.request.migration.name ||
+            (frame.t !== "migrated" ||
+              frame.name !== pending.request.migration.name ||
               pending.serving !== 0))
         ) {
           pending.fail(new IsolateDenial("unavailable", "isolate answered out of protocol"));
@@ -611,8 +626,10 @@ export class IsolateSupervisor implements IsolateRunner {
     try {
       if (migration !== null) {
         if (
-          pending?.served.kind !== "migration" || !frame.method.startsWith("storage.") ||
-          migration.calls.has(frame.id) || migration.calls.size >= MAX_MIGRATION_STORAGE_OPERATIONS
+          pending?.served.kind !== "migration" ||
+          !frame.method.startsWith("storage.") ||
+          migration.calls.has(frame.id) ||
+          migration.calls.size >= MAX_MIGRATION_STORAGE_OPERATIONS
         ) {
           this.failMigration(isolate, "invalid migration storage call");
           throw new Error("migration may call only its own storage with fresh call ids");

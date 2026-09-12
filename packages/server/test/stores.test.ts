@@ -167,7 +167,11 @@ describe("private plugin migration publication", () => {
       await draft.storage.recordMigration("widen", 1);
       await draft.storage.stampDataVersion({ major: 2, minor: 0 });
       await store.pluginStorage("test.other").set("independent", "committed");
-      expect(() => draft.commit(() => { throw new Error("row publication failed"); })).toThrow();
+      expect(() =>
+        draft.commit(() => {
+          throw new Error("row publication failed");
+        }),
+      ).toThrow();
       expect(await live.get("row")).toBe("original");
       expect(await live.dataVersion()).toEqual({ major: 1, minor: 0 });
       expect(await live.appliedMigrations()).toEqual([]);

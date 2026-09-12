@@ -386,7 +386,9 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     { readonly method: IsolateCtxMethod; resolve(value: unknown): void; reject(error: Error): void }
   >();
   const actions = new Map(def.actions.map((action) => [action.name, action] as const));
-  const migrations = new Map((def.migrations ?? []).map((migration) => [migration.name, migration]));
+  const migrations = new Map(
+    (def.migrations ?? []).map((migration) => [migration.name, migration]),
+  );
   let loaded = false;
   const producerClosures = new Map<string, () => void>();
   type JobNotification = Extract<IsolateHostFrame, { t: "job_update" }>;

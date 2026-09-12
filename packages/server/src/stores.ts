@@ -942,7 +942,9 @@ export class ServerStore {
       const query = includeData
         ? "SELECT key, value FROM plugin_kv WHERE plugin_id = ? ORDER BY key"
         : "SELECT key, value FROM plugin_kv WHERE plugin_id = ? AND key LIKE '$%' ORDER BY key";
-      for (const row of this.db.query<{ key: string; value: string }, [string]>(query).iterate(pluginId)) {
+      for (const row of this.db
+        .query<{ key: string; value: string }, [string]>(query)
+        .iterate(pluginId)) {
         bytes += Buffer.byteLength(row.key) + Buffer.byteLength(row.value);
         if (rows.size >= 4096 || bytes > 16 * 1024 * 1024)
           throw new Error("plugin migration exceeds the 4096 row / 16 MiB staging bound");
@@ -969,7 +971,9 @@ export class ServerStore {
       write: (key: string, value: string): void => {
         assertOpen();
         const previous = rows.get(key);
-        const nextBytes = bytes + Buffer.byteLength(value) -
+        const nextBytes =
+          bytes +
+          Buffer.byteLength(value) -
           (previous === undefined ? -Buffer.byteLength(key) : Buffer.byteLength(previous));
         if ((previous === undefined && rows.size >= 4096) || nextBytes > 16 * 1024 * 1024)
           throw new Error("plugin migration exceeds the 4096 row / 16 MiB staging bound");
@@ -985,7 +989,9 @@ export class ServerStore {
     };
     return {
       storage: this.storageHandle(pluginId, draft),
-      discard: () => { open = false; },
+      discard: () => {
+        open = false;
+      },
       commit: (publish) => {
         assertOpen();
         open = false;
@@ -1011,22 +1017,27 @@ export class ServerStore {
     };
   }
 
-  private storageHandle(pluginId: string, draft?: {
-    readonly rows: Map<string, string>;
-    assertOpen(): void;
-    write(key: string, value: string): void;
-    drop(key: string): void;
-  }): PluginStorageAdmin {
+  private storageHandle(
+    pluginId: string,
+    draft?: {
+      readonly rows: Map<string, string>;
+      assertOpen(): void;
+      write(key: string, value: string): void;
+      drop(key: string): void;
+    },
+  ): PluginStorageAdmin {
     const read = (key: string): string | null => {
       if (draft !== undefined) {
         draft.assertOpen();
         return draft.rows.get(key) ?? null;
       }
-      return this.db
-        .query<PluginKvRow, [string, string]>(
-          "SELECT value FROM plugin_kv WHERE plugin_id = ? AND key = ?",
-        )
-        .get(pluginId, key)?.value ?? null;
+      return (
+        this.db
+          .query<PluginKvRow, [string, string]>(
+            "SELECT value FROM plugin_kv WHERE plugin_id = ? AND key = ?",
+          )
+          .get(pluginId, key)?.value ?? null
+      );
     };
     const write = (key: string, value: string): void => {
       if (draft !== undefined) return draft.write(key, value);
@@ -1059,11 +1070,13 @@ export class ServerStore {
         draft.assertOpen();
         return draft.rows.size;
       }
-      return this.db
-        .query<PluginKvCountRow, [string]>(
-          "SELECT count(*) AS total FROM plugin_kv WHERE plugin_id = ?",
-        )
-        .get(pluginId)?.total ?? 0;
+      return (
+        this.db
+          .query<PluginKvCountRow, [string]>(
+            "SELECT count(*) AS total FROM plugin_kv WHERE plugin_id = ?",
+          )
+          .get(pluginId)?.total ?? 0
+      );
     };
     return {
       pluginId,
