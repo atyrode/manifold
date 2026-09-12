@@ -54,8 +54,16 @@ int main(void) {
       listen(listener, 8)) return 14;
   socklen_t size = sizeof(address);
   if (getsockname(listener, (struct sockaddr *)&address, &size)) return 15;
+  /* Force the first readiness write to follow retirement instead of racing the owner's close. */
+  if (getenv("WAIT_FOR_CONTEXT_CLOSE")) {
+    struct pollfd closure = { .fd = channel };
+    if (poll(&closure, 1, 10000) != 1 || !(closure.revents & POLLHUP)) return 26;
+  }
   if (dprintf(channel, "{\"type\":\"service_ready\",\"requestId\":\"ready\",\"port\":%u}\n",
-              ntohs(address.sin_port)) < 0) return 16;
+              ntohs(address.sin_port)) < 0) {
+    if (errno == EPIPE || errno == ECONNRESET) return retire(shutdowns);
+    return 16;
+  }
   FILE *frames = fdopen(dup(channel), "r");
   char frame[8192];
   if (!frames) return 17;
