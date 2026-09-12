@@ -156,12 +156,11 @@ export function compareDataVersion(left: PluginDataVersion, right: PluginDataVer
  * running anything, and `assembleRoster` can refuse a migration claiming to reach past the
  * version its own code declares.
  *
- * Promise-returning, because the storage it is handed is (ADR 0016 §4). All-or-nothing
- * survives the change on one condition, which the in-realm implementation meets: a storage
- * call resolves immediately — synchronous SQLite inside, no queue — so a chain of awaited
- * storage calls runs to completion in one turn of the event loop, and a dispatch, which
- * arrives as I/O, cannot interleave with it. A migration that awaits anything ELSE (a timer,
- * a file, the network) opens exactly the window this rule closes, and must not.
+ * Promise-returning because storage may cross the guest IPC boundary (ADR 0016 §4).
+ * The host drains this plugin's admitted dispatches and refuses new ones during an update,
+ * runs the bounded chain on private storage, then commits data, ledger and version together.
+ * No SQLite transaction spans a callback await. Failure discards the whole chain, and the
+ * callback's storage handle expires: late work cannot mutate retained or committed data.
  */
 export interface PluginMigration {
   readonly name: string;

@@ -5,6 +5,7 @@ import {
   ENGINE_UNINSTALLED_EVENT,
   LIFECYCLE_TIMEOUT_MS,
   assembleRoster,
+  assertStorageKey,
   compareDataVersion,
   enginePluginsActions,
   enginePluginsManifest,
@@ -17,6 +18,7 @@ import {
   type AssemblyEnv,
   type EmitEvent,
   type LifecycleCtx,
+  type HookOutcome,
   type PluginAuthorRequest,
   type PluginAuthorResult,
   type PluginDef,
@@ -27,7 +29,10 @@ import {
   type PluginStorageAdmin,
   type PluginStoredData,
 } from "@manifold/plugin";
+import type { ServerMigration as GuestMigration } from "@manifold/plugin-kit/server";
 import {
+  GuestMigrationDeclarationsSchema,
+  ISOLATE_MIGRATION_DEADLINE_MS,
   CAPS,
   GOVERNED_CAPS,
   ManifoldRefSchema,
@@ -102,7 +107,13 @@ import {
   type InstalledArtifact,
 } from "./plugin-installs.ts";
 import type { RoomManager } from "./room.ts";
-import type { MachineRecord, PluginInstallRow, ServerStore, TraceAttribution } from "./stores.ts";
+import type {
+  MachineRecord,
+  PluginInstallRow,
+  PluginMigrationSession,
+  ServerStore,
+  TraceAttribution,
+} from "./stores.ts";
 import type { DrainOutcome, TerminalBroker } from "./terminal-broker.ts";
 import { StreamService } from "./stream-service.ts";
 import type { StreamProducer, PluginStreamContext, PluginServiceContext } from "@manifold/plugin";
@@ -817,6 +828,7 @@ export class PluginHost {
   /** Assembly mutations share the runner's one-child-per-id and data-commit boundary. */
   private assemblyChange: Promise<void> = Promise.resolve();
   private replacing: string | null = null;
+  private readonly activeDispatches = new Map<string, Set<Promise<void>>>();
   private readonly isolates: IsolateDeps | null;
   /**
    * The unpacked directory's hands (ADR 0025 §4): present exactly when this host admits
@@ -1096,7 +1108,33 @@ export class PluginHost {
         ) {
           throw new Error("server module must default-export a ServerPluginDef");
         }
-        return { ...def, manifest: bundle.manifest };
+        const migrations: readonly GuestMigration[] = def.migrations ?? [];
+        const declarations = GuestMigrationDeclarationsSchema.parse({
+          dataVersion: bundle.manifest.dataVersion,
+          migrations: migrations.map(({ name, to }) => ({ name, to })),
+        });
+        const adapted = declarations.migrations.map((metadata, index): PluginMigration => {
+          const migration = migrations[index];
+          if (migration === undefined || typeof migration.migrate !== "function")
+            throw new Error(`migration "${metadata.name}" has no callback`);
+          const invoke = migration.migrate.bind(migration);
+          return {
+            ...metadata,
+            migrate: (storage) =>
+              invoke({
+                pluginId: storage.pluginId,
+                get: async (key) => {
+                  assertStorageKey(key);
+                  return storage.get(key);
+                },
+                set: storage.set,
+                compareAndSet: storage.compareAndSet,
+                delete: storage.delete,
+                keys: storage.keys,
+              }),
+          };
+        });
+        return { ...def, manifest: bundle.manifest, migrations: adapted };
       } catch (error) {
         throw new IsolateLoadError(error instanceof Error ? error.message : "server import failed");
       } finally {
@@ -1233,6 +1271,66 @@ export class PluginHost {
     return created;
   }
 
+  /** A completed/timed-out handler cannot retain storage authority into a later version. */
+  private storageLease(
+    pluginId: string,
+    storage: PluginStorage = this.storage(pluginId),
+  ): { storage: PluginStorage; close(): void } {
+    let open = true;
+    const check = (): void => {
+      if (!open) throw new Error("plugin storage request is closed");
+    };
+    return {
+      close: () => {
+        open = false;
+      },
+      storage: {
+        pluginId,
+        get: async (key) => {
+          check();
+          return storage.get(key);
+        },
+        set: async (key, value) => {
+          check();
+          await storage.set(key, value);
+        },
+        compareAndSet: async (key, expected, value) => {
+          check();
+          return storage.compareAndSet(key, expected, value);
+        },
+        delete: async (key) => {
+          check();
+          await storage.delete(key);
+        },
+        keys: async (prefix) => {
+          check();
+          return storage.keys(prefix);
+        },
+        dataVersion: async () => {
+          check();
+          return storage.dataVersion();
+        },
+        appliedMigrations: async () => {
+          check();
+          return storage.appliedMigrations();
+        },
+      },
+    };
+  }
+
+  private async drainDispatches(pluginId: string): Promise<void> {
+    const pending = this.activeDispatches.get(pluginId);
+    if (pending === undefined || pending.size === 0) return;
+    const outcome = await runHook(async () => {
+      await Promise.all(pending);
+    }, ISOLATE_MIGRATION_DEADLINE_MS);
+    if (!outcome.ok)
+      throw new InstallRefusal(
+        "artifact_invalid",
+        `plugin "${pluginId}" has active dispatches: ${outcome.reason}`,
+      );
+  }
+
   /** Applies every migration the current assembly found owing. True if any ran. */
   private async runPendingMigrations(): Promise<boolean> {
     let ran = false;
@@ -1243,28 +1341,57 @@ export class PluginHost {
   }
 
   /**
-   * One plugin's migration chain, in order, each recorded by NAME before the next runs. The
-   * ledger entry is what makes a migration at-most-once across restarts, and the version
-   * stamp is what makes the next boot's plan a no-op.
-   *
-   * A throwing migration is fatal by design: the alternative is serving requests over data
-   * a plugin declared it cannot read. There is no half-migrated state to reason about
-   * because there is no catch here — and no interleaving to reason about either, because the
-   * storage every await here resolves against settles synchronously (`PluginMigration`).
+   * Stage the entire chain, including the native ledger/version, on private plugin storage.
+   * No data is published on failure, timeout or process loss; late work sees a closed handle.
+   * The caller commits synchronously, optionally with the installed row and element claims.
    */
+  private async prepareMigrations(
+    pluginId: string,
+    migrations: readonly PluginMigration[],
+    declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.dataVersion,
+  ): Promise<PluginMigrationSession> {
+    const staged = this.store.beginPluginMigration(pluginId, migrations.length > 0);
+    const admin = staged.storage;
+    let closeActiveLease = (): void => {};
+    try {
+      const outcome = await runHook(async () => {
+        for (const migration of migrations) {
+          // A callback sees public storage only, and its handle expires before the next
+          // migration starts; the engine alone records names and the eventual version.
+          const lease = this.storageLease(pluginId, admin);
+          closeActiveLease = lease.close;
+          try {
+            await migration.migrate(lease.storage);
+          } finally {
+            lease.close();
+            if (closeActiveLease === lease.close) closeActiveLease = (): void => {};
+          }
+          await admin.recordMigration(migration.name, this.runtime.now());
+        }
+        if (declared !== undefined) await admin.stampDataVersion(declared);
+      }, ISOLATE_MIGRATION_DEADLINE_MS);
+      // `runHook` cannot cancel an in-realm promise. Expire its authority when the engine
+      // stops waiting, rather than when that promise eventually settles.
+      closeActiveLease();
+      if (!outcome.ok) throw new Error(`plugin migration failed: ${outcome.reason}`);
+      return staged;
+    } catch (error) {
+      closeActiveLease();
+      staged.discard();
+      throw error;
+    }
+  }
+
   private async applyMigrations(
     pluginId: string,
     migrations: readonly PluginMigration[],
     declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.dataVersion,
   ): Promise<boolean> {
     if (migrations.length === 0) return false;
-    const storage = this.storage(pluginId);
-    for (const migration of migrations) {
-      await migration.migrate(storage);
-      await storage.recordMigration(migration.name, this.runtime.now());
+    const staged = await this.prepareMigrations(pluginId, migrations, declared);
+    staged.commit();
+    for (const migration of migrations)
       this.logger.info("plugin_migration", { plugin: pluginId, migration: migration.name });
-    }
-    if (declared !== undefined) await storage.stampDataVersion(declared);
     return true;
   }
 
@@ -1342,7 +1469,20 @@ export class PluginHost {
     enabled: boolean,
     changedBy: string,
   ): Promise<ActionRefused | { ok: true }> {
-    return this.changeAssembly(() => this.setEnabledNow(id, enabled, changedBy));
+    return this.changeAssembly(async () => {
+      if (!enabled || this.assembled.enabled(id) || this.assembled.builtin(id))
+        return this.setEnabledNow(id, enabled, changedBy);
+      this.replacing = id;
+      try {
+        await this.drainDispatches(id);
+        return await this.setEnabledNow(id, enabled, changedBy);
+      } catch (error) {
+        if (error instanceof InstallRefusal) return { refused: error.message };
+        throw error;
+      } finally {
+        this.replacing = null;
+      }
+    });
   }
 
   private async setEnabledNow(
@@ -1502,7 +1642,7 @@ export class PluginHost {
     const def = this.defs.find((candidate) => candidate.manifest.id === id);
     const onPurge = def?.lifecycle?.onPurge;
     if (onPurge !== undefined) {
-      const outcome = await runHook(() => onPurge(this.lifecycleCtx(id)), this.lifecycleTimeoutMs);
+      const outcome = await this.runLifecycle(id, onPurge);
       if (!outcome.ok) {
         this.logger.error("plugin_lifecycle", {
           plugin: id,
@@ -1647,6 +1787,9 @@ export class PluginHost {
     let row: PluginInstallRow;
     this.replacing = id;
     try {
+      // Refuse new dispatches above, and finish admitted old handlers before any hook,
+      // runner replacement or snapshot. Other plugins remain independently serviceable.
+      await this.drainDispatches(id);
       // Only a verified hardened module has a child to restore. A boot-unverified row keeps
       // its fail-closed def on rollback; unreadable old bytes must not prevent its repair.
       if (previousChild) {
@@ -1695,34 +1838,28 @@ export class PluginHost {
         ...consent,
         actions: prospective.roster.find((entry) => entry.manifest.id === id)?.actions ?? [],
       };
-      // PluginMigration permits awaiting synchronous storage calls, never I/O. Data and
-      // ledger share the new row's savepoint; no lifecycle hook or runner I/O runs inside it.
-      this.store.db.exec("SAVEPOINT plugin_install");
+      let staged: PluginMigrationSession | undefined;
       try {
         if (prospective.enabled(id)) {
-          try {
-            await this.applyMigrations(
-              id,
-              prospective.pendingMigrations.get(id) ?? [],
-              bundle.manifest.dataVersion,
-            );
-          } catch (error) {
-            throw new InstallRefusal(
-              "artifact_invalid",
-              error instanceof Error ? error.message : "migration failed",
-            );
-          }
-          if (bundle.manifest.dataVersion !== undefined)
-            await this.storage(id).stampDataVersion(bundle.manifest.dataVersion);
+          staged = await this.prepareMigrations(
+            id,
+            prospective.pendingMigrations.get(id) ?? [],
+            bundle.manifest.dataVersion,
+          );
         }
-        this.store.putPluginInstall(row);
-        const types = bundle.manifest.contributes.elements.map((element) => element.type);
-        if (types.length > 0) this.store.claimElementTypes(id, types);
-        this.store.db.exec("RELEASE plugin_install");
+        const publish = (): void => {
+          this.store.putPluginInstall(row);
+          const types = bundle.manifest.contributes.elements.map((element) => element.type);
+          if (types.length > 0) this.store.claimElementTypes(id, types);
+        };
+        if (staged !== undefined) staged.commit(publish);
+        else this.store.transaction(publish);
       } catch (error) {
-        this.store.db.exec("ROLLBACK TO plugin_install");
-        this.store.db.exec("RELEASE plugin_install");
-        throw error;
+        staged?.discard();
+        throw new InstallRefusal(
+          "artifact_invalid",
+          error instanceof Error ? error.message : "migration failed",
+        );
       }
       this.installed.set(id, { row, bundle, web, styles });
       this.installedDefs.set(
@@ -2035,10 +2172,10 @@ export class PluginHost {
     return { sha256: entry.row.sha256, bytes: entry.styles };
   }
 
-  private lifecycleCtx(pluginId: string): LifecycleCtx {
+  private lifecycleCtx(pluginId: string, storage: PluginStorage): LifecycleCtx {
     return {
       pluginId,
-      storage: this.storage(pluginId),
+      storage,
       now: () => this.runtime.now(),
       /*
         A lifecycle hook's emission is NOT staged: the transition that called the hook has
@@ -2051,6 +2188,21 @@ export class PluginHost {
         this.events.emit(pluginId, ref, kind, null, payload ?? {});
       },
     };
+  }
+
+  private async runLifecycle(
+    pluginId: string,
+    invoke: (ctx: LifecycleCtx) => void | Promise<void>,
+  ): Promise<HookOutcome> {
+    const lease = this.storageLease(pluginId);
+    try {
+      return await runHook(
+        () => invoke(this.lifecycleCtx(pluginId, lease.storage)),
+        this.lifecycleTimeoutMs,
+      );
+    } finally {
+      lease.close();
+    }
   }
 
   /**
@@ -2079,10 +2231,7 @@ export class PluginHost {
     for (const id of survivors) {
       const changed = this.defs.find((def) => def.manifest.id === id)?.lifecycle?.onAssemblyChanged;
       if (changed === undefined) continue;
-      const outcome = await runHook(
-        () => changed(this.lifecycleCtx(id), delta),
-        this.lifecycleTimeoutMs,
-      );
+      const outcome = await this.runLifecycle(id, (ctx) => changed(ctx, delta));
       if (outcome.ok) continue;
       // No lifecycle CLASS for this one, and deliberately none: the plugin's own enablement
       // did not move, so there is no state about it to correct — only a report to make.
@@ -2107,7 +2256,7 @@ export class PluginHost {
       this.lifecycleStates.delete(id);
       return;
     }
-    const outcome = await runHook(() => invoke(this.lifecycleCtx(id)), this.lifecycleTimeoutMs);
+    const outcome = await this.runLifecycle(id, invoke);
     if (outcome.ok) {
       this.lifecycleStates.delete(id);
       return;
@@ -2139,9 +2288,26 @@ export class PluginHost {
     rawArgs: unknown,
     session: string | null = null,
   ): Promise<ActionOutcome> {
+    const pluginId = this.assembled.actions.get(fullName)?.plugin.id;
+    const settled = Promise.withResolvers<void>();
+    let active: Set<Promise<void>> | undefined;
+    if (pluginId !== undefined) {
+      active = this.activeDispatches.get(pluginId);
+      if (active === undefined) {
+        active = new Set();
+        this.activeDispatches.set(pluginId, active);
+      }
+      active.add(settled.promise);
+    }
     let outcome: ActionOutcome;
     try {
-      outcome = await this.run(auth, fullName, rawArgs, session);
+      try {
+        outcome = await this.run(auth, fullName, rawArgs, session);
+      } finally {
+        settled.resolve();
+        active?.delete(settled.promise);
+        if (pluginId !== undefined && active?.size === 0) this.activeDispatches.delete(pluginId);
+      }
     } catch (error) {
       this.logger.error("action", {
         name: fullName,
@@ -2346,6 +2512,7 @@ export class PluginHost {
               (cap) => withinCeiling(cap, auth.caps) && withinCeiling(cap, nativeCaps),
             ),
           };
+    const lease = this.storageLease(pluginId);
     const ctx: ActionCtx = {
       traceId,
       credential: this.authService.credentialReference(auth),
@@ -2460,7 +2627,7 @@ export class PluginHost {
         open: (dialId) => identityCallAsync(() => this.dialer.open(dialId, auth.principal)),
         list: () => identityCall(() => this.dialer.list()),
       },
-      storage: this.storage(pluginId),
+      storage: lease.storage,
       now: () => this.runtime.now(),
       newId: () => this.runtime.newId(),
       target: (ref) => {
@@ -2473,8 +2640,15 @@ export class PluginHost {
     };
     const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
     let produced: unknown;
+    const admitted = async (): Promise<unknown> => {
+      try {
+        return await invoke(ctx, parsed.data);
+      } finally {
+        lease.close();
+      }
+    };
     try {
-      produced = await invoke(ctx, parsed.data);
+      produced = await admitted();
     } catch (error) {
       streamAdmissionOpen = false;
       for (const producer of openedStreams) producer.close();

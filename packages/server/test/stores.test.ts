@@ -133,6 +133,56 @@ describe("ServerStore plugin storage compare-and-set", () => {
   });
 });
 
+describe("private plugin migration publication", () => {
+  test("a conflicting old writer aborts publication and closes the migration handle", async () => {
+    const store = testStore();
+    try {
+      const live = store.pluginStorage("test.migrating");
+      await live.set("row", "original");
+      await live.stampDataVersion({ major: 1, minor: 0 });
+      const draft = store.beginPluginMigration("test.migrating");
+      await draft.storage.set("row", "transformed");
+      await draft.storage.recordMigration("widen", 1);
+      await draft.storage.stampDataVersion({ major: 2, minor: 0 });
+      await live.set("row", "concurrent");
+      expect(() => draft.commit()).toThrow("storage changed");
+      expect(await live.get("row")).toBe("concurrent");
+      expect(await live.dataVersion()).toEqual({ major: 1, minor: 0 });
+      expect(await live.appliedMigrations()).toEqual([]);
+      await expect(draft.storage.get("row")).rejects.toThrow("closed");
+      await expect(draft.storage.set("row", "late")).rejects.toThrow("closed");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("native publication failure rolls back transformed bytes, ledger and version together", async () => {
+    const store = testStore();
+    try {
+      const live = store.pluginStorage("test.migrating");
+      await live.set("row", "original");
+      await live.stampDataVersion({ major: 1, minor: 0 });
+      const draft = store.beginPluginMigration("test.migrating");
+      expect(await draft.storage.compareAndSet("row", "original", "transformed")).toBe(true);
+      await draft.storage.recordMigration("widen", 1);
+      await draft.storage.stampDataVersion({ major: 2, minor: 0 });
+      await store.pluginStorage("test.other").set("independent", "committed");
+      expect(() =>
+        draft.commit(() => {
+          throw new Error("row publication failed");
+        }),
+      ).toThrow();
+      expect(await live.get("row")).toBe("original");
+      expect(await live.dataVersion()).toEqual({ major: 1, minor: 0 });
+      expect(await live.appliedMigrations()).toEqual([]);
+      expect(await store.pluginStorage("test.other").get("independent")).toBe("committed");
+      await expect(draft.storage.set("row", "late")).rejects.toThrow("closed");
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe("ServerStore event retention", () => {
   test("addEvent prunes rows older than 30 days using the caller timestamp", () => {
     const store = testStore();

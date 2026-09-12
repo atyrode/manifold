@@ -3,8 +3,10 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { installBundle } from "@manifold/plugin-kit/install";
+import { packPlugin } from "@manifold/plugin-kit/pack";
 import {
   canonicalJobJson,
   JOB_OWNER_PROTOCOL_VERSION,
@@ -51,6 +53,7 @@ import {
   type IsolateState,
 } from "../src/isolate/contract.ts";
 import { serveCtxCall } from "../src/isolate/proxy-def.ts";
+import { IsolateSupervisor } from "../src/isolate/supervisor.ts";
 import { silentLogger } from "../src/log.ts";
 import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
 import { PLUGIN_UPLOADS_DIR } from "../src/plugin-installs.ts";
@@ -1706,6 +1709,272 @@ async function installFixture(
     },
   };
 }
+
+/** Real authored exports, packed and admitted through the ordinary pinned install door. */
+async function migrationBundle(
+  fixture: InstallFixture,
+  major: number,
+  failure:
+    | "none"
+    | "throw"
+    | "timeout"
+    | "crash"
+    | "malformed"
+    | "cross-call"
+    | "slice"
+    | "loaded"
+    | "load_failed" = "none",
+): Promise<{ source: string; sha256: string }> {
+  const manifest: PluginManifest = {
+    ...SAMPLE_MANIFEST,
+    version: `${String(major)}.0.0`,
+    dataVersion: { major, minor: 0 },
+    capabilities: [],
+    entry: { server: true },
+  };
+  const dir = mkdtempSync(join(fixture.dataDir, "migration-author-"));
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+  writeFileSync(
+    join(dir, "server.ts"),
+    `
+    import { z } from ${JSON.stringify(fileURLToPath(import.meta.resolve("zod")))};
+    import { defineServerAction, defineServerPlugin } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@manifold/plugin-kit/server")))};
+    const manifest = ${JSON.stringify(manifest)};
+    let migrationId;
+    const def = {
+      manifest,
+      actions: ["read", "hold"].map(name => defineServerAction({
+        name, title: name, caps: [], input: z.strictObject({}), result: z.unknown()
+      })),
+      handlers: {
+        async read(ctx) { return JSON.parse(await ctx.storage.get("row") ?? "null"); },
+        async hold(ctx) {
+          await ctx.storage.set("entered", "yes");
+          while (await ctx.storage.get("release") !== "yes") await Bun.sleep(1);
+          return JSON.parse(await ctx.storage.get("row"));
+        }
+      },
+      migrations: ${
+        major === 1
+          ? "[]"
+          : `[
+        { name: "canonical-v3", to: { major: 2, minor: 0 }, async migrate(storage) {
+          const before = await storage.get("row");
+          const row = JSON.parse(before);
+          if (row.schema !== 2) throw new Error("migration ran more than once");
+          await storage.set("row", JSON.stringify({ ...row, schema: 3, choice: row.model }));
+          await storage.set("applied", String(Number(await storage.get("applied") ?? "0") + 1));
+          ${failure === "throw" ? 'throw new Error("transformation refused");' : ""}
+          ${failure === "timeout" ? "await Promise.withResolvers().promise;" : ""}
+          ${failure === "crash" ? "process.exit(7);" : ""}
+          ${failure === "malformed" ? 'process.send({t:"migrated", id:migrationId, name:"canonical-v3", outcome:{ok:"yes"}});' : ""}
+          ${failure === "cross-call" ? 'process.send({t:"migrated", id:"retired-request", name:"canonical-v3", outcome:{ok:true}});' : ""}
+          ${failure === "slice" ? 'process.send({t:"call", id:migrationId + ":forbidden", method:"newId", args:[]});' : ""}
+          ${failure === "loaded" ? 'process.send({t:"loaded", actions:[], hooks:{onEnable:false,onDisable:false,onAssemblyChanged:false}});' : ""}
+          ${failure === "load_failed" ? 'process.send({t:"load_failed", error:"wrong-phase load failure"});' : ""}
+        } }
+      ]`
+      }
+    };
+    defineServerPlugin(def);
+    if (typeof process.send === "function")
+      process.on("message", frame => { if (frame.t === "migrate") migrationId = frame.id; });
+    export default def;
+  `,
+  );
+  const source = join(
+    fixture.dataDir,
+    PLUGIN_UPLOADS_DIR,
+    `${String(major)}-${failure}.manifold-plugin.json`,
+  );
+  const packed = await packPlugin(dir, source);
+  return { source, sha256: packed.sha256 };
+}
+
+// Real subprocess IPC and child exit are not driven by the host's fake clock. Poll the
+// observable boundary, never a guessed "long enough" delay.
+async function untilMigration(predicate: () => Promise<boolean>): Promise<void> {
+  const until = Date.now() + 3000;
+  while (!(await predicate())) {
+    if (Date.now() >= until) throw new Error("migration boundary did not arrive");
+    await Bun.sleep(1);
+  }
+}
+
+describe("installed guest storage migrations", () => {
+  test.each([false, true])(
+    "drains old dispatch and atomically serves transformed data (hardened: %s)",
+    async (hardened) => {
+      const f = await installFixture();
+      const runner = new IsolateSupervisor({ logger: silentLogger, runtime: f.runtime });
+      const releaseDraft = Promise.withResolvers<void>();
+      const inFlight: Promise<unknown>[] = [];
+      try {
+        const host = await customHost(f, [], { isolates: { ...f.isolates, runner } });
+        const first = await migrationBundle(f, 1);
+        const next = await migrationBundle(f, 2);
+        expect(
+          (await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, { ...first, hardened })).ok,
+        ).toBe(true);
+        const storage = f.store.pluginStorage(SAMPLE_ID);
+        const original = { schema: 2, revision: 7, model: "kept" };
+        await storage.set("row", JSON.stringify(original));
+        const old = host.dispatch(f.owner, `${SAMPLE_ID}.hold`, {});
+        inFlight.push(old);
+        await untilMigration(async () => (await storage.get("entered")) === "yes");
+        const drafting = Promise.withResolvers<void>();
+        const begin = f.store.beginPluginMigration.bind(f.store);
+        f.store.beginPluginMigration = (id, includeData) => {
+          const session = begin(id, includeData);
+          return {
+            ...session,
+            storage: {
+              ...session.storage,
+              set: async (key, value) => {
+                await session.storage.set(key, value);
+                if (id === SAMPLE_ID && key === "row") {
+                  drafting.resolve();
+                  await releaseDraft.promise;
+                }
+              },
+            },
+          };
+        };
+        const upgrade = host.dispatch(f.owner, ENGINE_INSTALL_ACTION, {
+          ...next,
+          hardened,
+          replace: true,
+        });
+        inFlight.push(upgrade);
+        await untilMigration(async () => {
+          const result = await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {});
+          return !result.ok && result.denial.rule === "unavailable";
+        });
+        expect(await storage.dataVersion()).toEqual({ major: 1, minor: 0 });
+        await storage.set("release", "yes");
+        expect(await old).toEqual({ ok: true, result: original });
+        await drafting.promise;
+        expect(JSON.parse((await storage.get("row"))!)).toEqual(original);
+        expect(await storage.appliedMigrations()).toEqual([]);
+        expect(denial(await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {})).rule).toBe(
+          "unavailable",
+        );
+        // An unrelated namespace commits during IPC, outside the migration's transaction.
+        await f.store.pluginStorage("test.other").set("live", "retained");
+        releaseDraft.resolve();
+        expect((await upgrade).ok).toBe(true);
+        const transformed = { ...original, schema: 3, choice: "kept" };
+        expect(await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {})).toEqual({
+          ok: true,
+          result: transformed,
+        });
+        expect(await storage.appliedMigrations()).toEqual(["canonical-v3"]);
+        expect(await storage.dataVersion()).toEqual({ major: 2, minor: 0 });
+        expect(await storage.get("applied")).toBe("1");
+        expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+        expect(await host.setEnabled(SAMPLE_ID, true, "admin")).toEqual({ ok: true });
+        expect(await storage.get("applied")).toBe("1");
+        expect(
+          denial(
+            await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, {
+              ...first,
+              hardened,
+              replace: true,
+            }),
+          ).message,
+        ).toContain("major downgrade");
+        expect(await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {})).toEqual({
+          ok: true,
+          result: transformed,
+        });
+        expect(await f.store.pluginStorage("test.other").get("live")).toBe("retained");
+      } finally {
+        releaseDraft.resolve();
+        await f.store.pluginStorage(SAMPLE_ID).set("release", "yes");
+        await Promise.allSettled(inFlight);
+        await runner.close();
+        f.store.close();
+        rmSync(f.dataDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.each([
+    "throw",
+    "timeout",
+    "crash",
+    "malformed",
+    "cross-call",
+    "slice",
+    "loaded",
+    "load_failed",
+  ] as const)(
+    "%s never publishes a draft, records success, or loses another plugin's commit",
+    async (failure) => {
+      const f = await installFixture();
+      const runner = new IsolateSupervisor({
+        logger: silentLogger,
+        runtime: f.runtime,
+        migrationDeadlineMs: failure === "timeout" ? 100 : 10_000,
+      });
+      try {
+        const host = await customHost(f, [], { isolates: { ...f.isolates, runner } });
+        const first = await migrationBundle(f, 1);
+        const next = await migrationBundle(f, 2, failure);
+        expect(
+          (await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, { ...first, hardened: true })).ok,
+        ).toBe(true);
+        const storage = f.store.pluginStorage(SAMPLE_ID);
+        const original = { schema: 2, revision: 7, model: "retained" };
+        await storage.set("row", JSON.stringify(original));
+        const installed = f.store.pluginInstalls();
+        const begin = f.store.beginPluginMigration.bind(f.store);
+        f.store.beginPluginMigration = (id, includeData) => {
+          const session = begin(id, includeData);
+          return {
+            ...session,
+            storage: {
+              ...session.storage,
+              set: async (key, value) => {
+                await session.storage.set(key, value);
+                if (key === "row") {
+                  expect(JSON.parse((await storage.get("row"))!)).toEqual(original);
+                  expect(denial(await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {})).rule).toBe(
+                    "unavailable",
+                  );
+                  await f.store
+                    .pluginStorage("test.other")
+                    .set("live", "committed-during-migration");
+                }
+              },
+            },
+          };
+        };
+        const outcome = await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, {
+          ...next,
+          hardened: true,
+          replace: true,
+        });
+        expect(denial(outcome).message).toContain("artifact_invalid");
+        expect(f.store.pluginInstalls()).toEqual(installed);
+        expect(await storage.appliedMigrations()).toEqual([]);
+        expect(await storage.dataVersion()).toEqual({ major: 1, minor: 0 });
+        expect(await storage.get("applied")).toBeNull();
+        expect(await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {})).toEqual({
+          ok: true,
+          result: original,
+        });
+        expect(await f.store.pluginStorage("test.other").get("live")).toBe(
+          "committed-during-migration",
+        );
+      } finally {
+        await runner.close();
+        f.store.close();
+        rmSync(f.dataDir, { recursive: true, force: true });
+      }
+    },
+  );
+});
 
 function installedRow(host: PluginHost, id: string): PluginRoster[number] {
   const row = host.roster().find((entry) => entry.manifest.id === id);
