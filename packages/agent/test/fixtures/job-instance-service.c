@@ -61,7 +61,10 @@ int main(void) {
   if (!frames) return 17;
   do { if (!fgets(frame, sizeof(frame), frames)) return retire(shutdowns); }
   while (!strstr(frame, "\"type\":\"service_ready_result\""));
-  if (!strstr(frame, "\"ok\":true")) return 19;
+  if (!strstr(frame, "\"ok\":true")) {
+    if (strstr(frame, "\"refusal\":\"service_closed\"")) return retire(shutdowns);
+    return 19;
+  }
   char authority[180];
   snprintf(authority, sizeof(authority), " Bearer %s\r\n", bearer);
   for (;;) {
