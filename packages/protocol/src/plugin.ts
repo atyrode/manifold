@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CapSchema, type Cap } from "./capabilities.ts";
+import { CapSchema, type Cap, type PluginCap } from "./capabilities.ts";
 import { EventKindSchema } from "./events.ts";
 import { ContainerDisciplineSchema } from "./layout.ts";
 import { MAX_STREAM_DESCRIPTORS, StreamDescriptorSchema, streamVocabulary } from "./stream.ts";
@@ -73,6 +73,64 @@ export const CORE_NAMESPACE_PREFIX = "core.";
 export const LOCAL_NAME_PATTERN = /^[a-z][a-zA-Z0-9-]*$/;
 export const LocalNameSchema = z.string().regex(LOCAL_NAME_PATTERN).max(32);
 export type LocalName = z.infer<typeof LocalNameSchema>;
+
+/**
+ * A PLUGIN'S OWN CAPABILITY (ADR 0035): `<pluginId>:<name>`, and the pair is the whole law.
+ *
+ * The engine's vocabulary is a closed enum (`CAPS`) because every name in it is authority over
+ * a door the engine owns. A plugin that acts per machine, per repository, per anything the
+ * engine has no word for needs a name of its own, and the only safe place to put it is the
+ * namespace the plugin already owns: the same `<pluginId>.<local>` discipline every other
+ * published name follows, with `:` instead of `.` so a cap can never be mistaken for an
+ * action. Declaring `atyrode.babel:archive` claims nothing outside `atyrode.babel`, and the
+ * manifest check below refuses a manifest that names another plugin's namespace.
+ *
+ * It lives HERE rather than in `capabilities.ts` for one reason and it is not taste: a
+ * namespace IS a plugin id, so the form is `PluginIdSchema` and `LocalNameSchema` composed,
+ * and those laws live in this file. `capabilities.ts` holds the TYPES (`PluginCap`,
+ * `AuthoredCap`, `AskableCap`) because the vocabulary is its concept and a type needs no
+ * import; putting the SCHEMA there would mean importing this file from the one file it
+ * already imports, and a cycle between two modules that both build schemas at import time is
+ * a boot-order bug waiting for the first reordered import.
+ *
+ * The bound is the two ids' own bounds plus the separator; `templateLiteral` composes the
+ * parts' patterns but not their `max`, so the length is a check of its own rather than an
+ * assumption.
+ */
+export const MAX_PLUGIN_CAP_LENGTH = 64 + 1 + 32;
+
+/**
+ * `PluginCap` is a TEMPLATE type carrying the plugin id's mandatory dot, which is what stops
+ * `Cap | PluginCap` from collapsing into "any string with a colon" — and `templateLiteral`
+ * cannot infer that, because a part built from `z.string().regex(...)` infers as `string` and
+ * the dot lives inside the id's own pattern. So the schema states the type it validates, and
+ * the assertion is sound BY THE PATTERN: `PluginIdSchema` admits nothing without at least one
+ * `.`, and every accepted value is therefore `${string}.${string}:${string}`.
+ */
+export const PluginCapSchema = z
+  .templateLiteral([PluginIdSchema, ":", LocalNameSchema])
+  .check(z.maxLength(MAX_PLUGIN_CAP_LENGTH)) as unknown as z.ZodType<PluginCap, string>;
+
+/** A capability as anything that DECLARES one names it: the engine's own, or a plugin's. */
+export const AuthoredCapSchema = z.union([CapSchema, PluginCapSchema]);
+
+/**
+ * A capability an authority question may name — the wildcard excluded, because `*` is the
+ * engine's "everything" and an authority question is asked about one capability at a node.
+ */
+export const AskableCapSchema = z.union([CapSchema.exclude(["*"]), PluginCapSchema]);
+
+/**
+ * WHOSE capability this is, or null for one of the engine's own (and for anything malformed).
+ *
+ * The one reader of a capability's namespace, so the split is spelled once: the declaring
+ * plugin is everything before the first `:`, and a name the schema refuses has no namespace at
+ * all rather than a guessed one.
+ */
+export function pluginCapNamespace(cap: string): string | null {
+  if (!PluginCapSchema.safeParse(cap).success) return null;
+  return cap.slice(0, cap.indexOf(":"));
+}
 
 const TitleSchema = z.string().min(1).max(64);
 
@@ -558,71 +616,105 @@ export const PluginEntrySchema = z.strictObject({
 });
 export type PluginEntry = z.infer<typeof PluginEntrySchema>;
 
-export const PluginManifestSchema = z.strictObject({
-  id: PluginIdSchema,
-  version: z.string().min(1).max(32),
-  title: TitleSchema,
-  description: z.string().max(500),
-  /**
-   * The ceiling on this plugin's authority: every action it declares must ask for a subset
-   * of these, and a dispatch intersects them with the CALLER's caps. Declaring caps here is
-   * what makes a manifest auditable without reading the plugin's code.
-   */
-  capabilities: CapSchema.array().max(16),
-  /**
-   * An essential plugin cannot be disabled: the workspace has no way to render itself
-   * without it, so the refusal is kinder than the blank screen. `core.shell` is the only
-   * essential plugin this wave.
-   *
-   * The refusal it raises is the `essential` member of `PLUGIN_REFUSAL_REASONS` — a CLASS,
-   * not a sentence, and one of several: a system with a single reason to refuse a disable
-   * grows its second one immediately (a required dependency, an owned element type), and
-   * clients that switched on prose would have to be rewritten each time.
-   */
-  essential: z.boolean().optional(),
-  contributes: ContributesSchema,
-  machine: MachineHalfSchema.optional(),
-  /**
-   * Declared relationships. Absent ≡ none, which is every manifest written before this
-   * field existed: a plugin naming nothing composes exactly as it did.
-   */
-  dependencies: PluginDependencyMapSchema.optional(),
-  /**
-   * SOFT ordering: compose me after these, if they are here at all. A missing id in this
-   * list is not an error — that is the whole difference from a dependency — and the
-   * resulting order (topological, ties by lexicographic id) is the order lifecycle hooks
-   * fan out in, so "after" is a statement about sequence and nothing else.
-   */
-  after: PluginIdSchema.array().max(16).optional(),
-  /** Absent ≡ unversioned data: nothing to migrate, nothing to refuse. */
-  dataVersion: PluginDataVersionSchema.optional(),
-  /** Absent ≡ `{ mode: DEFAULT_DORMANT_MODE }` — a named, inert ghost. */
-  dormant: PluginDormantSchema.optional(),
-  /**
-   * What a purge of this plugin would destroy, declared for audit visibility. It is a
-   * DESCRIPTION, never a trigger: nothing here is bound to the disable verb.
-   */
-  purges: PluginPurgeTargetSchema.array().max(PLUGIN_PURGE_TARGETS.length).optional(),
-  /**
-   * Which halves an INSTALLED bundle runs, and where (ADR 0016 §8 stage 2). Absent for every
-   * in-tree manifest: a package compiled into the build is found by the two `assembly.ts`
-   * files, not by this field. `PluginBundleSchema` requires it.
-   */
-  entry: PluginEntrySchema.optional(),
-  /**
-   * Where this plugin comes from, for a reader who wants to look: the repository its code
-   * lives in (the manager shows it), a homepage, and a changelog — which the update flow
-   * (#238) reads to say what a newer version changes. Absent ≡ the author said nothing, which
-   * is every in-tree manifest.
-   */
-  links: z
-    .strictObject({
-      repository: z.string().url().max(512).optional(),
-      homepage: z.string().url().max(512).optional(),
-      changelog: z.string().url().max(512).optional(),
-    })
-    .optional(),
-});
+/**
+ * How many capabilities one manifest may declare. Named rather than inline because the
+ * install door's `grant` is bounded by it too (a grant can never exceed a declaration), and a
+ * bound restated at the second site is a bound that drifts at the third.
+ */
+export const MAX_MANIFEST_CAPABILITIES = 16;
+
+export const PluginManifestSchema = z
+  .strictObject({
+    id: PluginIdSchema,
+    version: z.string().min(1).max(32),
+    title: TitleSchema,
+    description: z.string().max(500),
+    /**
+     * The ceiling on this plugin's authority: every action it declares must ask for a subset
+     * of these, and a dispatch intersects them with the CALLER's caps. Declaring caps here is
+     * what makes a manifest auditable without reading the plugin's code.
+     *
+     * A member is one of the ENGINE's capabilities or one of this plugin's OWN
+     * (`<thisId>:<name>`, ADR 0035) — and the namespace is checked below, because a ceiling
+     * that could name `otherPlugin:admin` would let a manifest declare authority over a
+     * vocabulary it does not own.
+     */
+    capabilities: AuthoredCapSchema.array().max(MAX_MANIFEST_CAPABILITIES),
+    /**
+     * An essential plugin cannot be disabled: the workspace has no way to render itself
+     * without it, so the refusal is kinder than the blank screen. `core.shell` is the only
+     * essential plugin this wave.
+     *
+     * The refusal it raises is the `essential` member of `PLUGIN_REFUSAL_REASONS` — a CLASS,
+     * not a sentence, and one of several: a system with a single reason to refuse a disable
+     * grows its second one immediately (a required dependency, an owned element type), and
+     * clients that switched on prose would have to be rewritten each time.
+     */
+    essential: z.boolean().optional(),
+    contributes: ContributesSchema,
+    machine: MachineHalfSchema.optional(),
+    /**
+     * Declared relationships. Absent ≡ none, which is every manifest written before this
+     * field existed: a plugin naming nothing composes exactly as it did.
+     */
+    dependencies: PluginDependencyMapSchema.optional(),
+    /**
+     * SOFT ordering: compose me after these, if they are here at all. A missing id in this
+     * list is not an error — that is the whole difference from a dependency — and the
+     * resulting order (topological, ties by lexicographic id) is the order lifecycle hooks
+     * fan out in, so "after" is a statement about sequence and nothing else.
+     */
+    after: PluginIdSchema.array().max(16).optional(),
+    /** Absent ≡ unversioned data: nothing to migrate, nothing to refuse. */
+    dataVersion: PluginDataVersionSchema.optional(),
+    /** Absent ≡ `{ mode: DEFAULT_DORMANT_MODE }` — a named, inert ghost. */
+    dormant: PluginDormantSchema.optional(),
+    /**
+     * What a purge of this plugin would destroy, declared for audit visibility. It is a
+     * DESCRIPTION, never a trigger: nothing here is bound to the disable verb.
+     */
+    purges: PluginPurgeTargetSchema.array().max(PLUGIN_PURGE_TARGETS.length).optional(),
+    /**
+     * Which halves an INSTALLED bundle runs, and where (ADR 0016 §8 stage 2). Absent for every
+     * in-tree manifest: a package compiled into the build is found by the two `assembly.ts`
+     * files, not by this field. `PluginBundleSchema` requires it.
+     */
+    entry: PluginEntrySchema.optional(),
+    /**
+     * Where this plugin comes from, for a reader who wants to look: the repository its code
+     * lives in (the manager shows it), a homepage, and a changelog — which the update flow
+     * (#238) reads to say what a newer version changes. Absent ≡ the author said nothing, which
+     * is every in-tree manifest.
+     */
+    links: z
+      .strictObject({
+        repository: z.string().url().max(512).optional(),
+        homepage: z.string().url().max(512).optional(),
+        changelog: z.string().url().max(512).optional(),
+      })
+      .optional(),
+  })
+  /*
+    A PLUGIN DECLARES ITS OWN CAPABILITIES AND NOBODY ELSE'S (ADR 0035).
+
+    The check is here rather than at assembly because this schema is where every reader meets
+    a manifest — the bundle door, the kit's `pack`, the unpacked watcher, assembly itself — and
+    a namespace rule enforced at one of them is a rule the others admit. `null` from
+    `pluginCapNamespace` is one of the engine's own names (or a malformed one the array's
+    element schema already refused), which is why the loop only has the foreign case to say.
+  */
+  .check((ctx) => {
+    for (const cap of ctx.value.capabilities) {
+      const namespace = pluginCapNamespace(cap);
+      if (namespace === null || namespace === ctx.value.id) continue;
+      ctx.issues.push({
+        code: "custom",
+        input: cap,
+        path: ["capabilities"],
+        message: `capability "${cap}" is in plugin "${namespace}"'s namespace, not "${ctx.value.id}"'s`,
+      });
+    }
+  });
 export type PluginManifest = z.infer<typeof PluginManifestSchema>;
 
 /**
@@ -647,9 +739,16 @@ export const ACTION_SCOPES = ["workspace", "container"] as const;
 export const ActionScopeSchema = z.enum(ACTION_SCOPES);
 export type ActionScope = (typeof ACTION_SCOPES)[number];
 
-/** A validated structured reference at an own-property path in the action input. */
+/**
+ * A validated structured reference at an own-property path in the action input.
+ *
+ * The cap may be one of this plugin's own (ADR 0035), and that pairing is the whole point of
+ * the two halves together: `{ cap: "atyrode.babel:archive", target: ["machine"] }` is how a
+ * plugin asks the waterfall a question about its OWN authority at a node the engine addresses
+ * but has no capability for.
+ */
 export const ActionRequirementSchema = z.strictObject({
-  cap: CapSchema.exclude(["*"]),
+  cap: AskableCapSchema,
   target: z.array(z.string().min(1).max(128)).min(1).max(8),
 });
 export type ActionRequirement = z.infer<typeof ActionRequirementSchema>;
@@ -690,7 +789,8 @@ export const ActionSummarySchema = z.strictObject({
   /** Fully qualified: `${pluginId}.${localName}`. */
   name: z.string(),
   title: z.string(),
-  caps: CapSchema.array(),
+  /** What the CALLER must hold: the engine's capabilities, or this plugin's own (ADR 0035). */
+  caps: AuthoredCapSchema.array(),
   /** Native API ceiling only; never caller permission, a grant, or target admission. */
   delegates: ActionDelegatesSchema.optional(),
   /**
@@ -873,7 +973,7 @@ export const PluginInstallSchema = z.strictObject({
   sha256: z.string().length(64),
   /** The url or path as given, so an operator can tell where a stranger's code came from. */
   source: z.string().max(2048),
-  grantedCaps: CapSchema.array(),
+  grantedCaps: AuthoredCapSchema.array(),
   installedBy: z.string().min(1).max(128),
   installedAt: z.number().int().min(0),
   refusal: PluginInstallRefusalSchema.optional(),
@@ -1096,6 +1196,18 @@ export function pluginVocabulary(): Record<string, unknown> {
       the live roster's answer, and this package describes shapes, never their inhabitants.
     */
     coreNamespace: CORE_NAMESPACE_PREFIX,
+    /*
+      THE OPEN HALF OF THE CAPABILITY VOCABULARY (ADR 0035). The engine's closed enum is
+      published as `caps` in `instanceVocabulary`'s neighbour and named in every action row;
+      what a reader cannot infer from an enum is that a NAMESPACED name is legal at all, and
+      in whose namespace. So the form is published as a schema — pattern and bound — beside
+      the namespace rules that decide who may declare one: a manifest may name only its own,
+      and a grant may name anybody's, because a grant is written by a principal rather than
+      by a plugin.
+    */
+    pluginCap: z.toJSONSchema(PluginCapSchema),
+    maxPluginCapLength: MAX_PLUGIN_CAP_LENGTH,
+    authoredCap: z.toJSONSchema(AuthoredCapSchema),
     sources: PLUGIN_SOURCES,
     dependencyTypes: PLUGIN_DEPENDENCY_TYPES,
     dormantModes: PLUGIN_DORMANT_MODES,

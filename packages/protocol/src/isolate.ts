@@ -671,7 +671,14 @@ export const MAX_PLUGIN_BUNDLE_FILES = 64;
 export const PluginBundleSchema = z
   .strictObject({
     format: z.literal(PLUGIN_BUNDLE_FORMAT),
-    manifest: PluginManifestSchema.extend({ entry: PluginEntrySchema }),
+    /*
+      `safeExtend`, not `extend`: the manifest carries a refinement of its own (a capability
+      must be the engine's or the declaring plugin's, ADR 0035), and zod refuses to overwrite
+      a key on a refined object through `extend` precisely because the discarded checks would
+      be invisible. Requiring `entry` here must not buy a manifest that skips its namespace
+      rule — a BUNDLE is exactly the manifest a stranger wrote.
+    */
+    manifest: PluginManifestSchema.safeExtend({ entry: PluginEntrySchema }),
     /** Shared React and floor-package versions used at build time (ADR 0025). */
     builtAgainst: z.record(z.string(), z.string()).optional(),
     files: z

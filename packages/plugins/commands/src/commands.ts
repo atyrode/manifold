@@ -1,5 +1,5 @@
 import type { ComposedBinding } from "@manifold/plugin";
-import { rosterDisciplines } from "@manifold/protocol";
+import { isEngineCap, rosterDisciplines } from "@manifold/protocol";
 import type { ActionSummary, Cap, IndexEntry, PluginRoster } from "@manifold/protocol";
 
 /**
@@ -87,7 +87,15 @@ export function doorRefusal(
 ): string | null {
   if (!pluginEnabled && action.cleanup !== true) return `${pluginTitle} is disabled`;
   if (caps !== null && !caps.includes("*")) {
-    const missing = action.caps.filter((cap) => cap !== "*" && !caps.includes(cap));
+    /*
+      THE ENGINE'S CAPABILITIES ONLY. A plugin's own capability (ADR 0035) is held by a grant
+      row at a node, never by the flat cap array a client can read of itself, so this list
+      cannot pre-judge one: a door needing `<plugin>:<name>` is offered and the door answers.
+      Greying it out from what a client can see would hide every door a grant made reachable.
+    */
+    const missing = action.caps.filter(
+      (cap) => cap !== "*" && isEngineCap(cap) && !caps.includes(cap),
+    );
     if (action.caps.includes("*") && !caps.includes("*")) return "requires full authority";
     if (missing.length > 0) return `requires ${missing.join(", ")}`;
   }

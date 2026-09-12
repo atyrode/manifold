@@ -308,9 +308,32 @@ Rules worth knowing before you write one:
   authority without reading its actions. **The permission waterfall (ADR 0011) did not change
   this.** A door intersects two sides: what the ACTION declares it needs, and what the CALLER is
   evaluated to hold. Grants on the node tree replaced the second side only — a manifest still
-  bounds what your actions may DECLARE, in the same flat cap vocabulary, and you never write a
-  grant to raise your own ceiling. If a manifest had to grow a node or an effect to keep working,
-  the two sides were never orthogonal in the first place.
+  bounds what your actions may DECLARE, and you never write a grant to raise your own ceiling.
+  If a manifest had to grow a node or an effect to keep working, the two sides were never
+  orthogonal in the first place.
+- **You may declare capabilities of your OWN** (ADR 0035), named `<yourPluginId>:<name>` —
+  `"atyrode.babel:archive"` — beside the engine's closed set, in the same `capabilities` array.
+  Use one when the authority your door needs is yours rather than the engine's: reusing
+  `containers:write` to mean "archive this machine's sessions" misdescribes authority exactly
+  where an operator audits it. The rules:
+  - **Your namespace only.** A manifest naming another plugin's namespace is refused by the
+    manifest schema, and a part declares its own id, not its parent's.
+  - **`*` is not a substitute.** The wildcard is the ENGINE's "everything" and never expands
+    into your namespace, so your action's cap must be declared here explicitly — and a root
+    caller, the owner key included, holds it only where a grant row names it.
+  - **A grant is how anybody holds it.** Your capability is never minted into a token; a
+    principal holds it because `core.access.grant` wrote a row for them at a node (below), so
+    it can be administered per machine without re-minting anyone's credential.
+  - **It is never governed and never a `delegate`.** Governed consent binds a capability to a
+    pinned artifact revision, and `delegates` is a native-API ceiling; both are the engine's.
+    An action may declare one of yours beside `machines:run` — the door asks each at its own
+    target.
+- **A grant may be scoped to one enrolled machine** (ADR 0035): `manifold://machine/<id>` is a
+  node, with that machine's operations, jobs, outputs, locations and services beneath it. Reach
+  it by declaring a requirement — `requirements: [{ cap: "atyrode.babel:archive", target: ["machine"] }]`
+  with a `ManifoldRef` at that argument path — which is the only question that names a node
+  rather than your caller's container or anchor. A container-scoped caller is refused there
+  whatever the rows say: a machine is not inside a container.
 - **`dependencies` are declared per plugin id** with a `type` of `required`, `optional` or
   `incompatible`, plus an optional `reason` that is shown to whoever hits the refusal. A missing or
   disabled `required` dependency, or a present `incompatible` one, refuses assembly naming both
@@ -506,11 +529,31 @@ import { z } from "zod";
 export const rename = defineAction({
   name: "rename", // LOCAL name; full name is `core.terminals.rename`
   title: "Rename terminal",
-  caps: ["terminals:write"], // MUST be ⊆ manifest.capabilities
+  caps: ["terminals:write"], // MUST be ⊆ manifest.capabilities; may be your own `<id>:<name>`
   input: z.strictObject({ terminalId: z.string().min(1), name: z.string().min(1).max(120) }),
   result: z.strictObject({ terminalId: z.string(), name: z.string() }),
 });
 ```
+
+A door whose authority is per machine names the node it is asked at, rather than relying on the
+caller's container or anchor (ADR 0035):
+
+```ts
+export const archive = defineAction({
+  name: "archive",
+  title: "Archive this machine's sessions",
+  caps: ["atyrode.babel:archive"], // declared in the manifest's own namespace
+  // Every declared cap needs a target and every target a declared cap; the value at that
+  // argument path is a `ManifoldRef`, and the rows AT that node decide.
+  requirements: [{ cap: "atyrode.babel:archive", target: ["machine"] }],
+  input: z.strictObject({ machine: ManifoldRefSchema }),
+  result: z.strictObject({ archived: z.number() }),
+});
+```
+
+`core.access.grant { principal, node: "manifold://machine/<id>", caps: ["atyrode.babel:archive"],
+effect: "allow", reach: "subtree" }` is then the whole administration: one principal, one
+machine, one verb.
 
 Two optional fields on an action are declared carve-outs from exactly one rung of the denial ladder,
 and they are the only ones:

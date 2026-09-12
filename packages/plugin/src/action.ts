@@ -1,4 +1,4 @@
-import type { ActionRequirement, ActionScope, Cap } from "@manifold/protocol";
+import type { ActionRequirement, ActionScope, AuthoredCap, Cap } from "@manifold/protocol";
 import type { z } from "zod";
 
 /**
@@ -26,7 +26,12 @@ export interface ActionDef<In = unknown, Out = unknown> {
    */
   readonly name: string;
   readonly title: string;
-  readonly caps: readonly Cap[];
+  /**
+   * What the CALLER must hold: one of the engine's capabilities, or one this plugin declared
+   * in its own namespace (`<pluginId>:<name>`, ADR 0035). `delegates` below stays the engine's
+   * closed set — a delegate is a NATIVE API ceiling, and the native APIs are the engine's.
+   */
+  readonly caps: readonly AuthoredCap[];
   /**
    * Native job/service capability ceiling, not caller permission or target admission.
    * Each native call resolves concrete targets and checks the original caller's authority

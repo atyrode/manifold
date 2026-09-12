@@ -1,6 +1,6 @@
 import type { AnyActionDef, AssemblyDelta, LifecycleCtx, PluginLifecycle } from "@manifold/plugin";
 import {
-  CapSchema,
+  AskableCapSchema,
   ManifoldRefSchema,
   LocalNameSchema,
   PlaceRequestSchema,
@@ -247,8 +247,14 @@ export async function serveCtxCall(
     case "services.invokeInstance":
       return ctx.services.invokeInstance(serviceDoorSchemas.invokeInstance.parse(args[0]));
     case "auth.allows": {
-      const cap = CapSchema.safeParse(args[0]);
-      if (!cap.success || cap.data === "*") {
+      /*
+        The ASKABLE vocabulary: the engine's capabilities without the wildcard, plus a plugin's
+        own namespaced ones (ADR 0035). A hardened row's whole point is that its authority is
+        its own, so the one authority question it may ask has to admit the names it declared —
+        the host still answers from the rows, so admitting the NAME grants nothing.
+      */
+      const cap = AskableCapSchema.safeParse(args[0]);
+      if (!cap.success) {
         throw new Error(`${method}: argument 0 must be a capability other than "*"`);
       }
       const ref = args[1] === undefined ? undefined : ManifoldRefSchema.safeParse(args[1]);

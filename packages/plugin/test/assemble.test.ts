@@ -1,5 +1,6 @@
 import {
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
+  type Cap,
   type PluginManifest,
   type StreamDescriptor,
 } from "@manifold/protocol";
@@ -70,8 +71,10 @@ const shell: PluginDef = {
 describe("assembleRoster", () => {
   test("native delegates cannot expand manifest authority or bypass direct target requirements", () => {
     const orchestrator = (
-      delegates: PluginManifest["capabilities"],
-      capabilities = delegates,
+      // A delegate is a NATIVE API ceiling, so it is the engine's closed set even now that a
+      // manifest's own ceiling may also name the plugin's capabilities (ADR 0035).
+      delegates: readonly Cap[],
+      capabilities: PluginManifest["capabilities"] = [...delegates],
     ): PluginDef => ({
       manifest: manifest({ id: "acme.orchestrator", capabilities }),
       actions: [
@@ -95,7 +98,7 @@ describe("assembleRoster", () => {
       ["*"],
       ["tokens:mint"],
       ["containers:write"],
-    ] satisfies PluginManifest["capabilities"][]) {
+    ] satisfies (readonly Cap[])[]) {
       expect(() => assembleRoster([orchestrator(delegates, ["*"])], NONE)).toThrow(AssemblyError);
     }
     expect(() =>
@@ -113,6 +116,31 @@ describe("assembleRoster", () => {
         NONE,
       ),
     ).toThrow(AssemblyError);
+  });
+  test("a wildcard ceiling does not stand in for a plugin's own capability", () => {
+    /*
+      ADR 0035: `*` is the ENGINE's "everything", and expanding it over a namespaced name
+      would mean a manifest declaring `["*"]` silently held every capability every plugin
+      could ever define — including its own, undeclared. So an action asking for its plugin's
+      capability needs the manifest to have written it down, and the ceiling says which.
+    */
+    const door = (capabilities: PluginManifest["capabilities"]): PluginDef => ({
+      manifest: manifest({ id: "acme.product", capabilities }),
+      actions: [
+        defineAction({
+          name: "archive",
+          title: "Archive",
+          caps: ["acme.product:archive"],
+          input: z.strictObject({}),
+          result: z.strictObject({}),
+        }),
+      ],
+    });
+    expect(
+      assembleRoster([door(["acme.product:archive"])], NONE).roster[0]?.actions[0],
+    ).toMatchObject({ caps: ["acme.product:archive"] });
+    expect(() => assembleRoster([door(["*"])], NONE)).toThrow(AssemblyError);
+    expect(() => assembleRoster([door([])], NONE)).toThrow(AssemblyError);
   });
   test("stream kinds are plugin-qualified and disabled contributors retain their claims", () => {
     const descriptor: StreamDescriptor = {
