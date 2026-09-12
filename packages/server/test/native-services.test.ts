@@ -867,6 +867,9 @@ async function orchestratorHost(f: {
     hook: async () => {
       throw new Error("no lifecycle hook declared");
     },
+    settled: async () => {
+      throw new Error("no lifecycle hook declared");
+    },
   });
   const clock = new FakeClock(f.runtime);
   const rooms = new RoomManager(f.store, f.runtime, clock, silentLogger, testTileTrees);

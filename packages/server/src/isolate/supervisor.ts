@@ -1,4 +1,10 @@
-import type { AssemblyDelta, LifecycleCtx, StreamProducer, JobFollow } from "@manifold/plugin";
+import type {
+  AssemblyDelta,
+  JobSettledCtx,
+  LifecycleCtx,
+  StreamProducer,
+  JobFollow,
+} from "@manifold/plugin";
 import {
   ISOLATE_CRASH_BUDGET,
   ISOLATE_DISPATCH_DEADLINE_MS,
@@ -9,6 +15,7 @@ import {
   type IsolateHostFrame,
   type RuntimeDeps,
   type JobFollowUpdate,
+  type SettledJob,
 } from "@manifold/protocol";
 import type { Logger } from "../log.ts";
 import type { ActionCtx } from "../plugin-host.ts";
@@ -153,6 +160,7 @@ export class IsolateSupervisor implements IsolateRunner {
     const transport: IsolateTransport = {
       dispatch: (action, args, ctx) => this.dispatch(pluginId, action, args, ctx),
       hook: (hook, ctx, delta) => this.hook(pluginId, hook, ctx, delta),
+      settled: (ctx, job) => this.settled(pluginId, ctx, job),
     };
     try {
       return buildIsolateDef(ref.manifest, isolate.loaded, transport);
@@ -234,8 +242,9 @@ export class IsolateSupervisor implements IsolateRunner {
     ctx: LifecycleCtx,
     delta?: AssemblyDelta,
   ): Promise<void> {
-    const frame = await this.request(
+    await this.hooked(
       pluginId,
+      hook,
       (id) => ({
         t: "hook",
         id,
@@ -246,6 +255,23 @@ export class IsolateSupervisor implements IsolateRunner {
       }),
       { kind: "hook", ctx },
     );
+  }
+  /** The settled hook carries the job slice, so its child calls are served from that ctx. */
+  private async settled(pluginId: string, ctx: JobSettledCtx, job: SettledJob): Promise<void> {
+    await this.hooked(
+      pluginId,
+      "onJobSettled",
+      (id) => ({ t: "hook", id, hook: "onJobSettled", job }),
+      { kind: "settled", ctx },
+    );
+  }
+  private async hooked(
+    pluginId: string,
+    hook: IsolateHook,
+    build: (id: string) => IsolateHostFrame,
+    served: ServedCtx,
+  ): Promise<void> {
+    const frame = await this.request(pluginId, build, served);
     if (frame.t !== "hooked") {
       this.logger.warn("isolate_call_failed", {
         plugin: pluginId,

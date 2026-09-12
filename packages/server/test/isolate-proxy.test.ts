@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import type { LifecycleCtx, PluginStorage } from "@manifold/plugin";
+import type { JobSettledCtx, LifecycleCtx, PluginStorage } from "@manifold/plugin";
 import { attachServerGuest } from "@manifold/plugin-kit/server";
-import type { IsolateChildFrame, PluginManifest } from "@manifold/protocol";
+import type { IsolateChildFrame, PluginManifest, SettledJob } from "@manifold/protocol";
 import { z } from "zod";
 import { IsolateDenial, IsolateLoadError } from "../src/isolate/contract.ts";
 import {
@@ -47,7 +47,13 @@ function loaded(names: readonly string[], hooks: Partial<Loaded["hooks"]> = {}):
       input: inputSchema,
       result: {},
     })),
-    hooks: { onEnable: false, onDisable: false, onAssemblyChanged: false, ...hooks },
+    hooks: {
+      onEnable: false,
+      onDisable: false,
+      onAssemblyChanged: false,
+      onJobSettled: false,
+      ...hooks,
+    },
   };
 }
 
@@ -55,10 +61,10 @@ const principal = { id: "p1", kind: "agent" as const, name: "Bot", color: "#abcd
 
 function scripted(outcome: IsolateDispatchOutcome): IsolateTransport & {
   readonly dispatches: { action: string; args: unknown }[];
-  readonly hooks: { hook: string; delta: unknown }[];
+  readonly hooks: { hook: string; payload: unknown }[];
 } {
   const dispatches: { action: string; args: unknown }[] = [];
-  const hooks: { hook: string; delta: unknown }[] = [];
+  const hooks: { hook: string; payload: unknown }[] = [];
   return {
     dispatches,
     hooks,
@@ -67,7 +73,10 @@ function scripted(outcome: IsolateDispatchOutcome): IsolateTransport & {
       return outcome;
     },
     hook: async (hook, _ctx, delta) => {
-      hooks.push({ hook, delta });
+      hooks.push({ hook, payload: delta });
+    },
+    settled: async (_ctx, job) => {
+      hooks.push({ hook: "onJobSettled", payload: job });
     },
   };
 }
@@ -186,11 +195,11 @@ describe("buildIsolateDef", () => {
     await expect(refused.def.handlers.echo?.(ctx, {} as never)).resolves.toEqual({ refused: "no" });
   });
 
-  test("only the hooks the child declared exist, and a delta rides its hook", async () => {
+  test("only the hooks the child declared exist, and a delta or a settled job rides its hook", async () => {
     const transport = scripted({ ok: true, result: null, emits: [] });
     const { def, lifecycle } = buildIsolateDef(
       manifest,
-      loaded([], { onAssemblyChanged: true }),
+      loaded([], { onAssemblyChanged: true, onJobSettled: true }),
       transport,
     );
     expect(def.lifecycle).toBe(lifecycle);
@@ -202,9 +211,22 @@ describe("buildIsolateDef", () => {
       now: () => 0,
       emit: () => {},
     };
+    const job: SettledJob = {
+      jobId: "j1",
+      machineId: "m1",
+      operationId: "a.b.run",
+      pluginId: manifest.id,
+      state: "exited",
+      exitCode: 0,
+      reason: null,
+      finishedAt: 4,
+      outputs: [{ outputId: "o1", name: "report", sha256: "c".repeat(64), bytes: 12, files: 1 }],
+    };
     await lifecycle.onAssemblyChanged?.(lifecycleCtx, { enabled: ["a.b"], disabled: [] });
+    await lifecycle.onJobSettled?.({ ...lifecycleCtx, jobs: {} as JobSettledCtx["jobs"] }, job);
     expect(transport.hooks).toEqual([
-      { hook: "onAssemblyChanged", delta: { enabled: ["a.b"], disabled: [] } },
+      { hook: "onAssemblyChanged", payload: { enabled: ["a.b"], disabled: [] } },
+      { hook: "onJobSettled", payload: job },
     ]);
   });
 });

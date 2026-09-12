@@ -23,7 +23,7 @@ import {
 } from "../../protocol/src/jobs.ts";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
-import { JobService, type JobRecord } from "../src/job-service.ts";
+import { JobService, type JobRecord, type SettledJobDelivery } from "../src/job-service.ts";
 import { jobContext } from "../src/job-doors.ts";
 import { ServerStore } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
@@ -2799,6 +2799,217 @@ describe("durable job authority", () => {
         eof: true,
       });
       await expect(pending).rejects.toThrow("output_authority_revoked");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  /** The owner's sealed two-output result, which is what both readers need. */
+  function settle(f: Fixture, job: JobRecord): void {
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        jobId: "job",
+        requestDigest: job.request.requestDigest,
+        ownerId: f.owner.ownerId,
+        ownerGeneration: f.owner.generation,
+        state: "exited",
+        exitCode: 0,
+        reason: null,
+        startedAt: 0,
+        finishedAt: 7,
+        usage: { elapsedMs: 1, memoryBytes: 1, processes: 1, outputBytes: 8 },
+        limits,
+        outputs: [
+          { outputId: "o-out", name: "stdout", sha256: hash, bytes: 5, files: 1 },
+          { outputId: "o-err", name: "stderr", sha256: "b".repeat(64), bytes: 3, files: 1 },
+        ],
+      },
+    });
+  }
+  function finished(f: Fixture): JobRecord {
+    consent(f, "machines:run");
+    prove(f);
+    const job = execute(f);
+    settle(f, job);
+    return job;
+  }
+  /** Answers the owner's pending private read with `data`, the way a proved machine would. */
+  function answerRead(f: Fixture, data: string, eof: boolean): void {
+    const request = f.commands.at(-1);
+    if (request?.type !== "output_read") throw new Error("private output read missing");
+    f.service.event(f.channel, {
+      type: "output",
+      jobId: "job",
+      outputId: request.outputId,
+      requestId: request.requestId,
+      seq: 0,
+      data,
+      eof,
+    });
+  }
+
+  test("a named output of a finished job pages exactly against its sealed length", async () => {
+    const f = fixture();
+    try {
+      finished(f);
+      consent(f, "jobs:read");
+      const node = { kind: "job" as const, machineId: f.machineId, operationId, jobId: "job" };
+      const first = f.service.outputs(f.root, node, "stdout", 0, 3);
+      answerRead(f, "YWJj", false);
+      expect(await first).toEqual({
+        jobId: "job",
+        outputId: "o-out",
+        name: "stdout",
+        sha256: hash,
+        files: 1,
+        total: 5,
+        offset: 0,
+        data: "YWJj",
+        eof: false,
+      });
+      const second = f.service.outputs(f.root, node, "stdout", 3, 3);
+      const command = f.commands.at(-1);
+      if (command?.type !== "output_read") throw new Error("second page missing");
+      expect({
+        offset: command.offset,
+        maxBytes: command.maxBytes,
+        outputId: command.outputId,
+      }).toEqual({ offset: 3, maxBytes: 3, outputId: "o-out" });
+      answerRead(f, "ZGU=", true);
+      expect(await second).toMatchObject({ offset: 3, data: "ZGU=", eof: true, total: 5 });
+      // The name selects the output; nothing here ever quoted an owner-minted id.
+      const other = f.service.outputs(f.root, node, "stderr", 0, 8);
+      answerRead(f, "Zmls", true);
+      expect(await other).toMatchObject({ outputId: "o-err", total: 3, name: "stderr" });
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("outputs refuses another plugin, an unfinished job and a name the result never sealed", async () => {
+    const f = fixture();
+    try {
+      consent(f, "machines:run");
+      prove(f);
+      const job = execute(f);
+      consent(f, "jobs:read");
+      const node = { kind: "job" as const, machineId: f.machineId, operationId, jobId: "job" };
+      await expect(f.service.outputs(f.root, node, "stdout", 0, 4)).rejects.toThrow(
+        "job_unfinished",
+      );
+      expect(f.commands.some((command) => command.type === "output_read")).toBe(false);
+      settle(f, job);
+      await expect(f.service.outputs(f.root, node, "stdout", 0, 4, "other.plugin")).rejects.toThrow(
+        "governed_authority_refused",
+      );
+      await expect(f.service.outputs(f.root, node, "report", 0, 4)).rejects.toThrow(
+        "unknown_job_output",
+      );
+      expect(f.commands.some((command) => command.type === "output_read")).toBe(false);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("the journal retains lifecycle frames of a finished job and pages them, byte frames excluded", () => {
+    const f = fixture();
+    try {
+      consent(f, "machines:run");
+      prove(f);
+      const job = execute(f);
+      f.service.publishJobEvent("job", {
+        type: "state",
+        jobId: "job",
+        requestDigest: job.request.requestDigest,
+        ownerId: f.owner.ownerId,
+        ownerGeneration: f.owner.generation,
+        state: "started",
+      });
+      f.service.publishJobEvent("job", {
+        type: "output",
+        jobId: "job",
+        requestId: "job",
+        outputId: "stdout",
+        seq: 1,
+        data: "YWJj",
+        eof: false,
+      });
+      settle(f, job);
+      consent(f, "jobs:read");
+      const node = { kind: "job" as const, machineId: f.machineId, operationId, jobId: "job" };
+      const page = f.service.journal(f.root, node, 0, 64);
+      expect(page.events.map((frame) => frame.event.type)).toEqual(["state", "result"]);
+      // Sequence 2 was the stdout frame: a hole is the contract, not a lost record.
+      expect(page.events.map((frame) => frame.seq)).toEqual([1, 3]);
+      expect({ firstSeq: page.firstSeq, nextAfter: page.nextAfter, jobId: page.jobId }).toEqual({
+        firstSeq: 1,
+        nextAfter: null,
+        jobId: "job",
+      });
+      const first = f.service.journal(f.root, node, 0, 1);
+      expect(first.events.map((frame) => frame.seq)).toEqual([1]);
+      expect(first.nextAfter).toBe(1);
+      const next = f.service.journal(f.root, node, first.nextAfter!, 1);
+      expect(next.events.map((frame) => frame.seq)).toEqual([3]);
+      expect(f.service.journal(f.root, node, 3, 1).events).toEqual([]);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("the journal refuses another plugin and a job that has not finished", () => {
+    const f = fixture();
+    try {
+      consent(f, "machines:run");
+      prove(f);
+      const job = execute(f);
+      consent(f, "jobs:read");
+      const node = { kind: "job" as const, machineId: f.machineId, operationId, jobId: "job" };
+      f.service.publishJobEvent("job", {
+        type: "state",
+        jobId: "job",
+        requestDigest: job.request.requestDigest,
+        ownerId: f.owner.ownerId,
+        ownerGeneration: f.owner.generation,
+        state: "started",
+      });
+      expect(() => f.service.journal(f.root, node, 0, 64)).toThrow("job_unfinished");
+      settle(f, job);
+      expect(() => f.service.journal(f.root, node, 0, 64, "other.plugin")).toThrow(
+        "governed_authority_refused",
+      );
+      expect(f.service.journal(f.root, node, 0, 64).events.length).toBeGreaterThan(0);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("a settled job is announced to its own plugin with its own credential", () => {
+    const f = fixture();
+    try {
+      const deliveries: SettledJobDelivery[] = [];
+      f.service.setSettledListener((delivery) => deliveries.push(delivery));
+      finished(f);
+      expect(deliveries.map((delivery) => delivery.settled)).toEqual([
+        {
+          jobId: "job",
+          machineId: f.machineId,
+          operationId,
+          pluginId,
+          state: "exited",
+          exitCode: 0,
+          reason: null,
+          finishedAt: 7,
+          outputs: [
+            { outputId: "o-out", name: "stdout", sha256: hash, bytes: 5, files: 1 },
+            { outputId: "o-err", name: "stderr", sha256: "b".repeat(64), bytes: 3, files: 1 },
+          ],
+        },
+      ]);
+      // The wake carries the job's own restored credential, never ambient plugin authority.
+      expect(deliveries[0]?.auth?.principal.id).toBe(f.root.principal.id);
+      expect(deliveries[0]?.traceId).toBe("trace-1");
     } finally {
       f.store.close();
     }

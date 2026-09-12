@@ -48,9 +48,14 @@ import {
 } from "@manifold/protocol";
 import {
   JobFollowSnapshotSchema,
+  JobJournalPageSchema,
+  JobOutputPageSchema,
   type JobFollowSnapshot,
   type JobFollowUpdate,
+  type JobJournalPage,
+  type JobOutputPage,
   type JobResult,
+  type SettledJob,
   type JobEvent,
 } from "../../protocol/src/jobs.ts";
 import { z } from "zod";
@@ -190,8 +195,17 @@ export interface GuestJobs {
     offset: number;
     maxBytes: number;
   }): Promise<Extract<JobEvent, { type: "output" }>>;
+  outputs(args: {
+    node: GuestJobNode;
+    name: string;
+    offset: number;
+    limit: number;
+  }): Promise<JobOutputPage>;
+  journal(args: { node: GuestJobNode; after?: number; limit?: number }): Promise<JobJournalPage>;
   follow(node: GuestJobNode, receive: (update: JobFollowUpdate) => void): Promise<GuestJobFollow>;
 }
+/** What a settled-job hook may reach: every job verb except the live subscription. */
+export type GuestSettledJobs = Omit<GuestJobs, "follow">;
 
 /** The native service contract with asynchronous host calls across the isolate boundary. */
 export interface GuestServices {
@@ -243,11 +257,17 @@ export interface GuestLifecycleCtx {
   readonly emit: GuestEmit;
   now(): number;
 }
+/** The settled hook's ctx: an ordinary hook ctx plus the settled job's own job authority. */
+export interface GuestJobSettledCtx extends GuestLifecycleCtx {
+  readonly jobs: GuestSettledJobs;
+}
 
 export interface GuestLifecycle {
   onEnable?(ctx: GuestLifecycleCtx): void | Promise<void>;
   onDisable?(ctx: GuestLifecycleCtx): void | Promise<void>;
   onAssemblyChanged?(ctx: GuestLifecycleCtx, delta: AssemblyDelta): void | Promise<void>;
+  /** A job this plugin started reached a terminal state; the one wake a server half gets. */
+  onJobSettled?(ctx: GuestJobSettledCtx, job: SettledJob): void | Promise<void>;
 }
 
 /**
@@ -485,6 +505,25 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       (await call("storage.keys", prefix === undefined ? [] : [prefix])) as readonly string[],
   });
 
+  /** Every job verb but `follow`: a live subscription belongs to a dispatch, not to a hook. */
+  const jobsFor = (call: Call): GuestSettledJobs => ({
+    describe: async (args) => (await call("jobs.describe", [args])) as JobDescription,
+    execute: async (args) => (await call("jobs.execute", [args])) as GuestJobStatus,
+    status: async (node) => (await call("jobs.status", [node])) as GuestJobStatus,
+    listRuns: async (args) =>
+      ListJobRunsResultSchema.parse(
+        await call("jobs.listRuns", [ListJobRunsArgsSchema.parse(args)]),
+      ),
+    input: async (args) => (await call("jobs.input", [args])) as { accepted: true },
+    cancel: async (node) => {
+      await call("jobs.cancel", [node]);
+    },
+    output: async (args) =>
+      (await call("jobs.output", [args])) as Extract<JobEvent, { type: "output" }>,
+    outputs: async (args) => JobOutputPageSchema.parse(await call("jobs.outputs", [args])),
+    journal: async (args) => JobJournalPageSchema.parse(await call("jobs.journal", [args])),
+  });
+
   const dispatchCtx = (call: Call, carried: IsolateDispatchCtx, staged: Emission[]): GuestCtx => {
     const ctx: GuestCtx = {
       traceId: carried.traceId,
@@ -505,19 +544,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       newId: async () => (await call("newId", [])) as string,
       storage: storageFor(call),
       jobs: {
-        describe: async (args) => (await call("jobs.describe", [args])) as JobDescription,
-        execute: async (args) => (await call("jobs.execute", [args])) as GuestJobStatus,
-        status: async (node) => (await call("jobs.status", [node])) as GuestJobStatus,
-        listRuns: async (args) =>
-          ListJobRunsResultSchema.parse(
-            await call("jobs.listRuns", [ListJobRunsArgsSchema.parse(args)]),
-          ),
-        input: async (args) => (await call("jobs.input", [args])) as { accepted: true },
-        cancel: async (node) => {
-          await call("jobs.cancel", [node]);
-        },
-        output: async (args) =>
-          (await call("jobs.output", [args])) as Extract<JobEvent, { type: "output" }>,
+        ...jobsFor(call),
         follow: async (node, receive) => {
           if (observers.size >= 16) throw new Error("too many job observations");
           const id = `j${String(++nextObserver)}`;
@@ -728,6 +755,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         onEnable: def.lifecycle?.onEnable !== undefined,
         onDisable: def.lifecycle?.onDisable !== undefined,
         onAssemblyChanged: def.lifecycle?.onAssemblyChanged !== undefined,
+        onJobSettled: def.lifecycle?.onJobSettled !== undefined,
       },
     });
   };
@@ -803,6 +831,13 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
             throw new Error("onAssemblyChanged is not declared");
           }
           await lifecycle.onAssemblyChanged(ctx, frame.delta ?? { enabled: [], disabled: [] });
+          break;
+        case "onJobSettled":
+          if (lifecycle.onJobSettled === undefined) {
+            throw new Error("onJobSettled is not declared");
+          }
+          if (frame.job === undefined) throw new Error("onJobSettled carries no settled job");
+          await lifecycle.onJobSettled({ ...ctx, jobs: jobsFor(requests.call) }, frame.job);
           break;
         default: {
           const never: never = frame.hook;

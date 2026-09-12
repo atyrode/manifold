@@ -1,4 +1,11 @@
-import type { AnyActionDef, AssemblyDelta, LifecycleCtx, PluginLifecycle } from "@manifold/plugin";
+import type {
+  AnyActionDef,
+  AssemblyDelta,
+  JobSettledCtx,
+  LifecycleCtx,
+  PluginJobContext,
+  PluginLifecycle,
+} from "@manifold/plugin";
 import {
   CapSchema,
   ManifoldRefSchema,
@@ -10,6 +17,7 @@ import {
   type IsolateCtxMethod,
   type IsolateHook,
   type PluginManifest,
+  type SettledJob,
 } from "@manifold/protocol";
 import { z } from "zod";
 import type { ActionCtx, ActionHandler } from "../plugin-host.ts";
@@ -36,6 +44,8 @@ export type IsolateDispatchOutcome = Extract<IsolateChildFrame, { t: "dispatched
 export interface IsolateTransport {
   dispatch(action: string, args: unknown, ctx: ActionCtx): Promise<IsolateDispatchOutcome>;
   hook(hook: IsolateHook, ctx: LifecycleCtx, delta?: AssemblyDelta): Promise<void>;
+  /** `onJobSettled` alone: its own ctx (the job slice rides it) and its own argument. */
+  settled(ctx: JobSettledCtx, job: SettledJob): Promise<void>;
 }
 
 /**
@@ -115,6 +125,9 @@ export function buildIsolateDef(
     ...(loaded.hooks.onAssemblyChanged
       ? { onAssemblyChanged: (ctx, delta) => transport.hook("onAssemblyChanged", ctx, delta) }
       : {}),
+    ...(loaded.hooks.onJobSettled
+      ? { onJobSettled: (ctx, job) => transport.settled(ctx, job) }
+      : {}),
   };
   return { def: { manifest, actions, handlers, lifecycle }, lifecycle };
 }
@@ -123,10 +136,13 @@ export function buildIsolateDef(
  * The request a child's `call` belongs to. A dispatch serves the whole `ISOLATE_CTX_METHODS`
  * list from the caller's `ActionCtx`; a lifecycle hook has only its `LifecycleCtx`, so it
  * serves storage and answers `slice_unavailable` for the rest — the same word the guest
- * runtime uses for a slice stage 1 does not carry.
+ * runtime uses for a slice stage 1 does not carry. `onJobSettled` sits between them: it is a
+ * hook, and it carries the job slice bound to the settled job's own credential, so it serves
+ * storage and `jobs.*` and nothing else.
  */
 export type ServedCtx =
   | { readonly kind: "dispatch"; readonly ctx: ActionCtx }
+  | { readonly kind: "settled"; readonly ctx: JobSettledCtx }
   | { readonly kind: "hook"; readonly ctx: LifecycleCtx };
 
 /** The positional argument at `index`, which the served method needs to be a string. */
@@ -136,6 +152,49 @@ function stringArg(args: readonly unknown[], index: number, method: IsolateCtxMe
     throw new Error(`${method}: argument ${String(index)} must be a string`);
   }
   return value;
+}
+
+/** The `jobs.*` slice, which a dispatch and a settled hook serve from their own ctx. */
+const JOB_METHODS = [
+  "jobs.describe",
+  "jobs.execute",
+  "jobs.status",
+  "jobs.listRuns",
+  "jobs.input",
+  "jobs.cancel",
+  "jobs.output",
+  "jobs.outputs",
+  "jobs.journal",
+] as const;
+type JobsCtxMethod = (typeof JOB_METHODS)[number];
+function jobsMethod(method: IsolateCtxMethod): method is JobsCtxMethod {
+  return (JOB_METHODS as readonly string[]).includes(method);
+}
+function serveJobsCall(
+  method: JobsCtxMethod,
+  args: readonly unknown[],
+  jobs: PluginJobContext,
+): unknown {
+  switch (method) {
+    case "jobs.describe":
+      return jobs.describe(jobDoorSchemas.describe.parse(args[0]));
+    case "jobs.execute":
+      return jobs.execute(JobExecuteArgsSchema.parse(args[0]));
+    case "jobs.status":
+      return jobs.status(jobDoorSchemas.status.parse({ node: args[0] }).node);
+    case "jobs.listRuns":
+      return jobs.listRuns(ListJobRunsArgsSchema.parse(args[0]));
+    case "jobs.input":
+      return jobs.input(jobDoorSchemas.input.parse(args[0]));
+    case "jobs.cancel":
+      return jobs.cancel(jobDoorSchemas.cancel.parse({ node: args[0] }).node);
+    case "jobs.output":
+      return jobs.output(jobDoorSchemas.output.parse(args[0]));
+    case "jobs.outputs":
+      return jobs.outputs(jobDoorSchemas.outputs.parse(args[0]));
+    case "jobs.journal":
+      return jobs.journal(jobDoorSchemas.journal.parse(args[0]));
+  }
 }
 
 /**
@@ -182,6 +241,8 @@ export async function serveCtxCall(
     case "jobs.input":
     case "jobs.cancel":
     case "jobs.output":
+    case "jobs.outputs":
+    case "jobs.journal":
     case "services.describe":
     case "services.readConfiguration":
     case "services.configureConfiguration":
@@ -203,23 +264,23 @@ export async function serveCtxCall(
     case "host.enabled":
       break;
   }
+  if (served.kind === "settled") {
+    if (!jobsMethod(method)) throw new Error(`slice_unavailable: ${method}`);
+    return serveJobsCall(method, args, served.ctx.jobs);
+  }
   if (served.kind !== "dispatch") throw new Error(`slice_unavailable: ${method}`);
   const ctx = served.ctx;
   switch (method) {
     case "jobs.describe":
-      return ctx.jobs.describe(jobDoorSchemas.describe.parse(args[0]));
     case "jobs.execute":
-      return ctx.jobs.execute(JobExecuteArgsSchema.parse(args[0]));
     case "jobs.status":
-      return ctx.jobs.status(jobDoorSchemas.status.parse({ node: args[0] }).node);
     case "jobs.listRuns":
-      return ctx.jobs.listRuns(ListJobRunsArgsSchema.parse(args[0]));
     case "jobs.input":
-      return ctx.jobs.input(jobDoorSchemas.input.parse(args[0]));
     case "jobs.cancel":
-      return ctx.jobs.cancel(jobDoorSchemas.cancel.parse({ node: args[0] }).node);
     case "jobs.output":
-      return ctx.jobs.output(jobDoorSchemas.output.parse(args[0]));
+    case "jobs.outputs":
+    case "jobs.journal":
+      return serveJobsCall(method, args, ctx.jobs);
     case "services.describe":
       return ctx.services.describe(serviceDoorSchemas.describe.parse(args[0]));
     case "services.readConfiguration":

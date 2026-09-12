@@ -220,7 +220,12 @@ describe("load", () => {
       type: "object",
       properties: { text: { type: "string", minLength: 1 } },
     });
-    expect(loaded.hooks).toEqual({ onEnable: true, onDisable: false, onAssemblyChanged: false });
+    expect(loaded.hooks).toEqual({
+      onEnable: true,
+      onDisable: false,
+      onAssemblyChanged: false,
+      onJobSettled: false,
+    });
   });
 
   test("refuses to load under another id or with an action nobody handles", async () => {

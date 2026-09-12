@@ -936,6 +936,79 @@ export const JobFollowUpdateSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export type JobFollowUpdate = z.infer<typeof JobFollowUpdateSchema>;
+/**
+ * What a finished job left behind for a reader who was not following it.
+ *
+ * Follow is live and in memory; the journal is the DURABLE half of the SAME sequence, and it
+ * retains LIFECYCLE frames only. Byte-channel frames are deliberately absent: a durable public
+ * record carries lifecycle, attribution and digest facts, never a transcript (ADR 0033
+ * §Lifecycle and durability). A reader therefore sees holes in `seq` where stdout/stderr frames
+ * passed, and those holes are the contract rather than loss — what retention dropped is the
+ * prefix below `firstSeq`.
+ */
+export const JobLifecycleEventSchema = z.union([
+  JobEventSchema.options[2],
+  JobEventSchema.options[4],
+  JobEventSchema.options[5],
+]);
+export type JobLifecycleEvent = z.infer<typeof JobLifecycleEventSchema>;
+export const MAX_JOB_JOURNAL_EVENTS = 128;
+export const JobJournalPageSchema = z.strictObject({
+  jobId: id,
+  events: z
+    .array(z.strictObject({ seq: count, at: count, event: JobLifecycleEventSchema }))
+    .max(MAX_JOB_JOURNAL_EVENTS),
+  /** The oldest sequence still retained for this job, or null once nothing is. */
+  firstSeq: count.nullable(),
+  /** The `after` that continues this page, or null when the caller reached the end. */
+  nextAfter: count.nullable(),
+});
+export type JobJournalPage = z.infer<typeof JobJournalPageSchema>;
+/** One bounded page of one sealed output, addressed by the name its operation declared. */
+export const MAX_JOB_OUTPUT_PAGE_BYTES = 65536;
+export const JobOutputPageSchema = z.strictObject({
+  jobId: id,
+  outputId: id,
+  name: component,
+  sha256: hash,
+  files: count,
+  /** The sealed length the owner published; `offset + data` never passes it. */
+  total: count,
+  offset: count,
+  data: chunk.data,
+  eof: z.boolean(),
+});
+export type JobOutputPage = z.infer<typeof JobOutputPageSchema>;
+/**
+ * A settled job, as the plugin that started it is told.
+ *
+ * It is the ONE wake a server half has for its own finished work: doors answer callers and
+ * panels only run while somebody is looking, so without this a background half learns that
+ * its job ended by being asked. It names the NODE (machine, operation, job) rather than
+ * describing the run, because addressing it again — reading its outputs, its journal, or
+ * starting the next one — is the whole point, and every one of those is a governed read the
+ * hook's own authority still has to discharge.
+ *
+ * The terminal states are the job states that are not active, unreduced: `exited` with a
+ * code is not success (ADR 0033 §Lifecycle and durability — exit 0 is process success and
+ * never a product postcondition), and `reason` carries the owner's own word for a deadline,
+ * an output limit or a refusal. Output entries are the sealed descriptors, never bytes.
+ */
+export const SettledJobSchema = z.strictObject({
+  jobId: id,
+  machineId: id,
+  operationId: id,
+  pluginId: id,
+  state: JobStateSchema.exclude(["queued", "admitted", "start-committed", "started"]),
+  exitCode: z.number().int().nullable(),
+  reason: id.nullable(),
+  finishedAt: count.nullable(),
+  /** Present only for a schedule occurrence, which is how a beat recognizes its own run. */
+  scheduleId: id.optional(),
+  revision: id.optional(),
+  outputs: JobResultSchema.shape.outputs,
+});
+export type SettledJob = z.infer<typeof SettledJobSchema>;
 /** Canonical signing/digest encoding: sorted object keys, order-preserving arrays. */
 export function canonicalJobJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
