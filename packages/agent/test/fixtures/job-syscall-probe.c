@@ -1,17 +1,54 @@
 #define _GNU_SOURCE
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
+#include <resolv.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+static int resolve_fixture(const char *port_text) {
+  char *end;
+  long port = strtol(port_text, &end, 10);
+  if (*end || port < 1 || port > 65535 || res_init() != 0) return 30;
+  _res.nscount = 1;
+  _res.nsaddr_list[0] = (struct sockaddr_in){
+    .sin_family = AF_INET,
+    .sin_port = htons((unsigned short)port),
+    .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+  };
+  _res.retrans = 1;
+  _res.retry = 1;
+  struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM};
+  struct addrinfo *addresses;
+  int result = getaddrinfo("native-dns.test", NULL, &hints, &addresses);
+  if (result != 0) {
+    fprintf(stderr, "lookup failed: %s\n", gai_strerror(result));
+    return 31;
+  }
+  for (struct addrinfo *address = addresses; address; address = address->ai_next) {
+    char host[NI_MAXHOST];
+    if (getnameinfo(address->ai_addr, address->ai_addrlen, host, sizeof(host),
+                    NULL, 0, NI_NUMERICHOST) != 0) {
+      freeaddrinfo(addresses);
+      return 32;
+    }
+    puts(host);
+  }
+  freeaddrinfo(addresses);
+  return 0;
+}
+
 /* Disposable test artifact, not an agent runtime dependency. Build statically for
  * the target architecture and supply MANIFOLD_TEST_SYSCALL_PROBE to the Linux and owner tests. */
 int main(int argc, char **argv) {
+  if (argc == 3 && strcmp(argv[1], "dns") == 0) return resolve_fixture(argv[2]);
   if (argc == 2 && strcmp(argv[1], "worker") == 0) {
     fputs("private-once", stdout);
     fputs("diagnostic", stderr);

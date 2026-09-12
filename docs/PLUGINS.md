@@ -1362,6 +1362,9 @@ unrestricted process. Terminal transports remain usable independently of job ava
 Even host-network jobs cannot use `sendmsg`, `sendmmsg`, `io_uring` or alternate/compatibility
 ABIs (including x86 `int 0x80`/x32); select runtime libraries compatible with that constraint.
 The filter prevents descriptor export beyond tracked writers, not all dangerous syscalls.
+Host-network Linux jobs default `RES_OPTIONS` to `single-request`, so glibc sends A and
+AAAA queries individually instead of using the forbidden batching syscall. An operation's
+reviewed fixed environment may explicitly replace that default; the syscall filter still applies.
 Fresh installation can reuse privately held cache entries only after rechecking the
 approved HTTPS origin, ownership, modes, selected-file digests and size bounds. Missing
 entries permit normal acquisition; corrupt or substituted cache bytes refuse rather than

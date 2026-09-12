@@ -644,6 +644,8 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   ]) {
     args.push("--perms", "0700", "--dir", path!, "--setenv", name!, path!);
   }
+  // glibc batches dual-stack DNS with sendmmsg, which the descriptor-export filter forbids.
+  if (spec.network === "host") args.push("--setenv", "RES_OPTIONS", "single-request");
   for (const [name, value] of Object.entries(spec.environment ?? {}))
     args.push("--setenv", name, value);
   if (spec.network === "none") args.push("--unshare-net");

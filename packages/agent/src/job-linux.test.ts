@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { createSocket } from "node:dgram";
 import {
   closeSync,
   constants,
@@ -1305,6 +1306,75 @@ test.skipIf(!realLinux || !outputRoot)(
       directory.close();
       rmSync(privatePath, { recursive: true });
       rmSync(path, { recursive: true });
+    }
+  },
+);
+
+test.skipIf(!realLinux || !syscallProbe)(
+  "host-network DNS resolves both address families without descriptor-export syscalls",
+  async () => {
+    const dns = createSocket("udp4");
+    const ready = Promise.withResolvers<void>();
+    dns.on("error", ready.reject);
+    dns.on("message", (query, peer) => {
+      const name = Buffer.from("\x0anative-dns\x04test\x00");
+      const questionEnd = 12 + name.length + 4;
+      if (
+        query.length < questionEnd ||
+        query.readUInt16BE(4) !== 1 ||
+        !query.subarray(12, 12 + name.length).equals(name) ||
+        query.readUInt16BE(questionEnd - 2) !== 1
+      )
+        return;
+      const type = query.readUInt16BE(questionEnd - 4);
+      const address =
+        type === 1
+          ? Buffer.from([192, 0, 2, 10])
+          : type === 28
+            ? Buffer.from("20010db8000000000000000000000010", "hex")
+            : null;
+      if (!address) return;
+      const response = Buffer.alloc(questionEnd + 12 + address.length);
+      query.copy(response, 0, 0, questionEnd);
+      response.writeUInt16BE(0x8180, 2);
+      response.writeUInt16BE(1, 6);
+      response.writeUInt16BE(0, 8);
+      response.writeUInt16BE(0, 10);
+      response.writeUInt16BE(0xc00c, questionEnd);
+      response.writeUInt16BE(type, questionEnd + 2);
+      response.writeUInt16BE(1, questionEnd + 4);
+      response.writeUInt32BE(60, questionEnd + 6);
+      response.writeUInt16BE(address.length, questionEnd + 10);
+      address.copy(response, questionEnd + 12);
+      dns.send(response, peer.port, peer.address);
+    });
+    dns.bind(0, "127.0.0.1", ready.resolve);
+    await ready.promise;
+    let fd = -1;
+    try {
+      fd = openSync(syscallProbe!, constants.O_RDONLY | constants.O_NOFOLLOW);
+      await withLinux("", async (spec) => {
+        let text = "";
+        const handle = await startLinuxJob({
+          ...spec,
+          artifactFd: fd,
+          argv: ["dns", String(dns.address().port)],
+          network: "host",
+          onOutput: (frame) => {
+            text += Buffer.from(frame.bytes).toString();
+          },
+        });
+        try {
+          expect((await handle.result).exitCode).toBe(0);
+          expect(text.trim().split("\n").sort()).toEqual(["192.0.2.10", "2001:db8::10"]);
+        } finally {
+          await handle.cancel();
+          handle.release();
+        }
+      });
+    } finally {
+      if (fd >= 0) closeSync(fd);
+      await new Promise<void>((resolve) => dns.close(resolve));
     }
   },
 );
