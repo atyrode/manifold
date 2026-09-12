@@ -228,6 +228,34 @@ describe("plugin manifest", () => {
     ).toBe(false);
   });
 
+  test("a plugin may declare capabilities in its OWN namespace and in nobody else's", () => {
+    /*
+      ADR 0035: the engine's half of the vocabulary stays a closed enum, and the open half is
+      namespaced by the declaring plugin's id. The ceiling is where that is enforced, because
+      a manifest naming `otherPlugin:admin` would be declaring authority over a vocabulary it
+      does not own — and every reader of a manifest (the bundle door, the kit's pack, the
+      unpacked watcher, assembly) meets it through this schema.
+    */
+    const own = manifest({ id: "acme.product", capabilities: ["acme.product:archive"] });
+    expect(PluginManifestSchema.parse(own).capabilities).toEqual(["acme.product:archive"]);
+    for (const capabilities of [
+      ["other.plugin:archive"],
+      // A part declares its own namespace, not its parent's, and not the other way round.
+      ["acme.product.part:archive"],
+      // The form is `<pluginId>:<localName>`: no bare word, no dotted local name, no capital.
+      ["archive"],
+      ["acme.product:Archive"],
+      ["acme.product:archive.now"],
+      ["acme.product:"],
+    ]) {
+      expect(
+        PluginManifestSchema.safeParse(manifest({ id: "acme.product", capabilities } as never))
+          .success,
+        capabilities.join(),
+      ).toBe(false);
+    }
+  });
+
   test("every contribution list is bounded, so one manifest cannot flood a registry", () => {
     const nine = Array.from({ length: 9 }, (_v, index) => ({
       id: `panel-${index}`,
