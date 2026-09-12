@@ -467,12 +467,7 @@ describe("serveCtxCall", () => {
       receive({ t: "load", pluginId: manifest.id, manifest, dir: "/unused" });
       receive({ t: "hook", id: "rows", hook: "onEnable" });
       expect(await completed.promise).toMatchObject({ ok: true });
-      expect(seen).toEqual([
-        1,
-        [{ body: "first" }],
-        "PluginDatabaseError",
-        [{ body: "first" }],
-      ]);
+      expect(seen).toEqual([1, [{ body: "first" }], "PluginDatabaseError", [{ body: "first" }]]);
     } finally {
       database.close();
       rmSync(dataDir, { recursive: true, force: true });

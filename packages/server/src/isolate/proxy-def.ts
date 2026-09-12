@@ -180,7 +180,10 @@ function paramsArg(
 }
 
 /** The statement list of a served `batch`, narrowed to the shape the contract takes. */
-function statementsArg(args: readonly unknown[], method: IsolateCtxMethod): readonly SqlStatement[] {
+function statementsArg(
+  args: readonly unknown[],
+  method: IsolateCtxMethod,
+): readonly SqlStatement[] {
   const value = args[0];
   if (!Array.isArray(value)) {
     throw new Error(`${method}: argument 0 must be an array of statements`);

@@ -56,11 +56,19 @@ data without knowing its shape. What is missing is one thing: a place a plugin m
    interface PluginDatabase {
      readonly pluginId: string;
      /** One statement, bound parameters, rows back (SELECT and RETURNING); other statements return []. */
-     query<Row = Record<string, SqlParam>>(sql: string, params?: readonly SqlParam[]): Promise<readonly Row[]>;
+     query<Row = Record<string, SqlParam>>(
+       sql: string,
+       params?: readonly SqlParam[],
+     ): Promise<readonly Row[]>;
      /** One statement, bound parameters, its change count and last rowid back. */
-     run(sql: string, params?: readonly SqlParam[]): Promise<{ changes: number; lastInsertRowid: number }>;
+     run(
+       sql: string,
+       params?: readonly SqlParam[],
+     ): Promise<{ changes: number; lastInsertRowid: number }>;
      /** Several statements in one IMMEDIATE transaction, all or none; the results in order. */
-     batch(statements: readonly { sql: string; params?: readonly SqlParam[] }[]): Promise<readonly (readonly Record<string, SqlParam>[])[]>;
+     batch(
+       statements: readonly { sql: string; params?: readonly SqlParam[] }[],
+     ): Promise<readonly (readonly Record<string, SqlParam>[])[]>;
    }
    ```
 

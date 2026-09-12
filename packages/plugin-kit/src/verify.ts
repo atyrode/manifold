@@ -216,7 +216,8 @@ async function verifyOne(
     }
     doors[action.name] = outcome.ok ? "ok" : outcome.denial.rule;
   }
-  if (row.manifest.database === undefined) return { bundle, id: facts.id, sha256: facts.sha256, doors };
+  if (row.manifest.database === undefined)
+    return { bundle, id: facts.id, sha256: facts.sha256, doors };
   /*
     A DECLARED DATABASE IS A FILE THE ENGINE OPENED. The doors have answered by now, and a
     plugin that declared `database` and never reached it through one of them — or reached a

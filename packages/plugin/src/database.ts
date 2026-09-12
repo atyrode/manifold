@@ -38,7 +38,10 @@ export interface PluginDatabase {
    * yield their rows; every other statement yields an empty array (use `run` to learn what
    * it changed).
    */
-  query<Row extends SqlRow = SqlRow>(sql: string, params?: readonly SqlParam[]): Promise<readonly Row[]>;
+  query<Row extends SqlRow = SqlRow>(
+    sql: string,
+    params?: readonly SqlParam[],
+  ): Promise<readonly Row[]>;
   /** One statement, bound parameters, its change count and the last inserted rowid back. */
   run(sql: string, params?: readonly SqlParam[]): Promise<SqlRunResult>;
   /**

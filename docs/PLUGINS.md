@@ -855,8 +855,13 @@ type SqlParam = string | number | bigint | boolean | null | Uint8Array;
 interface PluginDatabase {
   readonly pluginId: string;
   query<Row>(sql: string, params?: readonly SqlParam[]): Promise<readonly Row[]>; // SELECT and RETURNING; [] otherwise
-  run(sql: string, params?: readonly SqlParam[]): Promise<{ changes: number; lastInsertRowid: number }>;
-  batch(statements: readonly { sql: string; params?: readonly SqlParam[] }[]): Promise<readonly (readonly SqlRow[])[]>;
+  run(
+    sql: string,
+    params?: readonly SqlParam[],
+  ): Promise<{ changes: number; lastInsertRowid: number }>;
+  batch(
+    statements: readonly { sql: string; params?: readonly SqlParam[] }[],
+  ): Promise<readonly (readonly SqlRow[])[]>;
 }
 ```
 
@@ -872,7 +877,10 @@ with a `RETURNING`), and read what changed.
 ```ts
 await ctx.database.run("INSERT INTO records(id, kind) VALUES (?, ?)", [id, "proposal"]);
 const [inserted, counted] = await ctx.database.batch([
-  { sql: "UPDATE records SET kind = ? WHERE id = ? AND kind = ? RETURNING id", params: ["filed", id, "proposal"] },
+  {
+    sql: "UPDATE records SET kind = ? WHERE id = ? AND kind = ? RETURNING id",
+    params: ["filed", id, "proposal"],
+  },
   { sql: "SELECT count(*) AS n FROM records WHERE kind = 'filed'" },
 ]);
 if (inserted.length === 0) return { refused: "somebody else filed it first" };
@@ -882,15 +890,15 @@ if (inserted.length === 0) return { refused: "somebody else filed it first" };
 `PluginDatabaseError` — never a throw, exactly as storage rejects, so one `try`/`catch` around an
 `await` is your whole failure path in-realm and isolated alike:
 
-| Bound                            | Value                              |
-| -------------------------------- | ---------------------------------- |
-| statement text                   | ≤ 64 KiB                           |
-| parameters per statement         | ≤ 999 (SQLite's own)               |
-| statements per `batch`           | ≤ 256                              |
-| rows returned per call           | ≤ 10,000 — page past it            |
-| result bytes per call            | ≤ 4 MiB                            |
-| one call's deadline              | 5 s; a `batch` past it rolls back  |
-| the file                         | `database.maxBytes`, ceiling 4 GiB |
+| Bound                    | Value                              |
+| ------------------------ | ---------------------------------- |
+| statement text           | ≤ 64 KiB                           |
+| parameters per statement | ≤ 999 (SQLite's own)               |
+| statements per `batch`   | ≤ 256                              |
+| rows returned per call   | ≤ 10,000 — page past it            |
+| result bytes per call    | ≤ 4 MiB                            |
+| one call's deadline      | 5 s; a `batch` past it rolls back  |
+| the file                 | `database.maxBytes`, ceiling 4 GiB |
 
 `ATTACH`, `DETACH`, `VACUUM`, `PRAGMA` and `load_extension` are refused by inspecting the first
 keyword before anything runs, and the file is opened with `trusted_schema` off. That is a guard
