@@ -12,6 +12,10 @@ import {
   InstanceServiceDescriptionSchema,
   type ServicePolicy,
   type Cap,
+  JobDeploymentRequestSchema,
+  JobDeploymentSchema,
+  JobDeploymentDescriptionSchema,
+  type JobDeploymentRequest,
 } from "@manifold/protocol";
 import {
   canonicalJobJson,
@@ -619,6 +623,66 @@ test("executor revocation does not revive a retiring service after fenced empty 
       ),
     ).toEqual([]);
     expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("installation acknowledgement requires proof on both initial connection and reconnect", () => {
+  const f = fixture();
+  try {
+    consent(f, "machines:run");
+    for (const jobId of ["before-first-proof", "before-reconnect-proof"]) {
+      f.commands.length = 0;
+      f.service.online(f.channel, f.owner, "epoch");
+      const challenge = f.commands.at(-1);
+      if (challenge?.type !== "owner_challenge") throw new Error("owner challenge missing");
+      expect(execute(f, jobId).state).toBe("queued");
+      const installed = {
+        type: "installed" as const,
+        pluginId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+      };
+      f.service.event(f.channel, installed);
+      expect(
+        f.service.describe(f.root, { machineId: f.machineId, pluginId }).installation?.ready,
+      ).toBe(false);
+      expect(
+        f.commands.filter((command) => command.type === "install" || command.type === "start"),
+      ).toEqual([]);
+      const body = {
+        nonce: challenge.nonce,
+        serverEpoch: challenge.serverEpoch,
+        machineId: f.machineId,
+        owner: f.owner,
+      };
+      f.service.event(f.channel, {
+        type: "owner_proof",
+        ...body,
+        signature: sign(null, Buffer.from(canonicalJobJson(body)), f.privateKey).toString("base64"),
+      });
+      expect(f.commands.find((command) => command.type === "install")).toMatchObject({
+        pluginId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+      });
+      expect(
+        f.service.describe(f.root, { machineId: f.machineId, pluginId }).installation?.ready,
+      ).toBe(false);
+      expect(f.service.jobs.get(jobId)?.state).toBe("queued");
+      expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+      f.service.event(f.channel, installed);
+      expect(
+        f.service.describe(f.root, { machineId: f.machineId, pluginId }).installation?.ready,
+      ).toBe(true);
+      expect(f.service.jobs.get(jobId)?.state).toBe("start-committed");
+      expect(
+        f.commands
+          .filter((command) => command.type === "start")
+          .map((command) => command.request.jobId),
+      ).toEqual([jobId]);
+    }
   } finally {
     f.store.close();
   }
@@ -2799,6 +2863,799 @@ describe("durable job authority", () => {
         eof: true,
       });
       await expect(pending).rejects.toThrow("output_authority_revoked");
+    } finally {
+      f.store.close();
+    }
+  });
+});
+
+describe("reviewed native deployment approvals", () => {
+  function request(
+    f: Fixture,
+    deploymentId: string,
+    operationIds: string[] = [],
+  ): JobDeploymentRequest {
+    return {
+      deploymentId,
+      pluginId,
+      targets: [{ machineId: f.machineId, platform: "linux-x64" }],
+      operationIds,
+    };
+  }
+  function apply(f: Fixture, value: JobDeploymentRequest) {
+    const review = f.service.reviewDeployment(f.root, value);
+    return {
+      review,
+      deployment: f.service.applyDeployment(
+        f.root,
+        { request: value, reviewDigest: review.reviewDigest },
+        "deployment-trace",
+      ),
+    };
+  }
+  function replacement(f: Fixture): MachineHalf {
+    const next = structuredClone(machine);
+    next.artifacts["linux-x64"]!.sha256 = "c".repeat(64);
+    next.artifacts["linux-x64"]!.entrySha256 = "c".repeat(64);
+    f.service.setManifestResolver((id) => (id === pluginId ? next : null));
+    return next;
+  }
+  function boundFixture() {
+    const f = fixture();
+    f.owner.resources = {
+      tools: { node: "d".repeat(64) },
+      services: {},
+      anchors: {},
+      serviceDefinitions: {},
+    };
+    prove(f);
+    const bound = structuredClone(machine);
+    bound.requiresResourceBindings = true;
+    bound.operations[operationId]!.runtimeTools = ["node"];
+    f.service.setManifestResolver((id) => (id === pluginId ? bound : null));
+    f.service.install(f.root, {
+      machineId: f.machineId,
+      pluginId,
+      installationRevision: "bound",
+      artifactSha256: hash,
+      machine: bound,
+      resourceBindings: { tools: { node: "d".repeat(64) }, services: {}, anchors: {} },
+    });
+    f.service.offline(f.channel);
+    f.commands.length = 0;
+    return { f, bound };
+  }
+
+  test("stale review refuses before installation or consent effects", () => {
+    const f = fixture();
+    try {
+      prove(f);
+      const value = request(f, "stale", [operationId]);
+      const review = f.service.reviewDeployment(f.root, value);
+      replacement(f);
+      f.commands.length = 0;
+      expect(() =>
+        f.service.applyDeployment(
+          f.root,
+          { request: value, reviewDigest: review.reviewDigest },
+          "trace",
+        ),
+      ).toThrow("deployment_review_stale");
+      expect(
+        f.service.describe(f.root, { machineId: f.machineId, pluginId }).installation?.revision,
+      ).toBe("r1");
+      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents).toEqual([]);
+      expect(f.commands).toEqual([]);
+      expect(f.service.listDeployments(f.root, { pluginId, limit: 20 }).deployments).toEqual([]);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("install-only is explicit, waits for native acknowledgement, and grants no execution", () => {
+    const f = fixture();
+    try {
+      prove(f);
+      replacement(f);
+      const value = request(f, "install-only");
+      expect(
+        JobDeploymentRequestSchema.safeParse({ ...value, operationIds: undefined }).success,
+      ).toBe(false);
+      f.commands.length = 0;
+      const { review, deployment } = apply(f, value);
+      expect(review.targets[0]!.consents).toEqual([]);
+      expect(JobDeploymentSchema.parse(deployment).targets[0]!.state).toBe("installing");
+      const install = f.commands.find((command) => command.type === "install");
+      if (install?.type !== "install") throw new Error("reviewed install missing");
+      const reviewedInstallationRevision = review.targets[0]!.installationRevision;
+      if (reviewedInstallationRevision === null)
+        throw new Error("reviewed installation revision missing");
+      expect(install.installationRevision).toBe(reviewedInstallationRevision);
+      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents).toEqual([]);
+      f.service.event(f.channel, {
+        type: "installed",
+        pluginId,
+        installationRevision: install.installationRevision,
+        artifactSha256: install.artifactSha256,
+      });
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("ready");
+      expect(execute(f, "install-is-not-consent").state).toBe("refused");
+      expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("every administrative method refuses non-root and plugin handles remain confined", () => {
+    const f = fixture();
+    try {
+      prove(f);
+      const value = request(f, "admin");
+      const { review, deployment } = apply(f, value);
+      const token = f.auth.mintToken(
+        { principal: { name: "inspector", kind: "agent" }, caps: ["machines:run"] },
+        f.root,
+      );
+      const reader = f.auth.authenticate(token.token);
+      expect(() => f.service.reviewDeployment(reader, value)).toThrow("deployment_admin_required");
+      expect(() =>
+        f.service.applyDeployment(
+          reader,
+          { request: value, reviewDigest: review.reviewDigest },
+          "trace",
+        ),
+      ).toThrow("deployment_admin_required");
+      expect(() => f.service.readDeployment(reader, { deploymentId: value.deploymentId })).toThrow(
+        "deployment_admin_required",
+      );
+      expect(() => f.service.listDeployments(reader, { pluginId, limit: 20 })).toThrow(
+        "deployment_admin_required",
+      );
+      expect(() =>
+        f.service.cancelDeployment(reader, {
+          deploymentId: value.deploymentId,
+          expectedRevision: deployment.revision,
+        }),
+      ).toThrow("deployment_admin_required");
+      const product = jobContext(() => f.service, reader, pluginId, 1);
+      expect(
+        JobDeploymentDescriptionSchema.parse(
+          product.describeDeployment({ machineId: f.machineId, pluginId }),
+        ).installation,
+      ).toMatchObject({ revision: "r1", machine });
+      expect(() =>
+        product.describeDeployment({ machineId: f.machineId, pluginId: "other.worker" }),
+      ).toThrow();
+      expect(() =>
+        product.applyDeployment({ request: value, reviewDigest: review.reviewDigest }),
+      ).toThrow("job_admin_required");
+      f.auth.revokePrincipal(token.principal.id, f.root);
+      expect(() => product.describeDeployment({ machineId: f.machineId, pluginId })).toThrow();
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("offline approved native pins apply once on proved reconnect, never on unproved transport", () => {
+    const { f } = boundFixture();
+    try {
+      const value = request(f, "offline-pins", [operationId]);
+      const { review, deployment } = apply(f, value);
+      expect(deployment.targets[0]!.state).toBe("pending");
+      expect(review.targets[0]!.resources).toEqual([
+        { group: "tools", name: "node", sha256: "d".repeat(64) },
+      ]);
+      expect(f.commands).toEqual([]);
+      prove(f, true);
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("pending");
+      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents).toEqual([]);
+      prove(f);
+      const before = f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents;
+      expect(before.find((consent) => consent.cap === "machines:run")?.enabled).toBe(true);
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("installing");
+      f.service.event(f.channel, {
+        type: "installed",
+        pluginId,
+        installationRevision: "bound",
+        artifactSha256: hash,
+        resources: {
+          artifactAvailable: true,
+          tools: [{ alias: "node", managed: false, available: true }],
+          operations: [{ operationId, available: true }],
+        },
+      });
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("ready");
+      f.service.offline(f.channel);
+      prove(f);
+      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents).toEqual(
+        before,
+      );
+      expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("unknown offline resources cannot become a future automatic binding", () => {
+    const f = fixture();
+    try {
+      prove(f);
+      f.service.offline(f.channel);
+      const unknown = structuredClone(machine);
+      unknown.requiresResourceBindings = true;
+      unknown.operations[operationId]!.runtimeTools = ["new-tool"];
+      f.service.setManifestResolver(() => unknown);
+      const value = request(f, "unknown-pins");
+      const review = f.service.reviewDeployment(f.root, value);
+      expect(review.targets[0]).toMatchObject({
+        approvable: false,
+        reason: "resource_evidence_unknown",
+      });
+      expect(() =>
+        f.service.applyDeployment(
+          f.root,
+          { request: value, reviewDigest: review.reviewDigest },
+          "trace",
+        ),
+      ).toThrow("deployment_unapprovable");
+      expect(
+        f.service.describe(f.root, { machineId: f.machineId, pluginId }).installation?.revision,
+      ).toBe("r1");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("changed resource pins or declaration permanently fence a pending approval", () => {
+    for (const change of ["resources", "declaration"] as const) {
+      const { f, bound } = boundFixture();
+      try {
+        const value = request(f, `changed-${change}`, [operationId]);
+        apply(f, value);
+        if (change === "resources") f.owner.resources!.tools.node = "e".repeat(64);
+        else
+          f.service.setManifestResolver(() => ({
+            ...bound,
+            operations: { [operationId]: { ...bound.operations[operationId]!, network: "host" } },
+          }));
+        prove(f);
+        expect(
+          f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+        ).toBe("needs_review");
+        expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents).toEqual(
+          [],
+        );
+        f.owner.resources!.tools.node = "d".repeat(64);
+        f.service.setManifestResolver(() => bound);
+        prove(f);
+        expect(
+          f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+        ).toBe("needs_review");
+        expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents).toEqual(
+          [],
+        );
+      } finally {
+        f.store.close();
+      }
+    }
+  });
+
+  test("executor revocation and changed consent cannot grant a pending scope", () => {
+    for (const change of ["executor", "consent"] as const) {
+      const f = fixture();
+      try {
+        prove(f);
+        f.service.offline(f.channel);
+        const value = request(f, `revoked-${change}`, [operationId]);
+        apply(f, value);
+        if (change === "executor") f.auth.revokeMachine(f.machineId, f.root);
+        else consent(f, "machines:run", false);
+        prove(f);
+        expect(
+          f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+        ).toBe("needs_review");
+        expect(
+          f.service
+            .describe(f.root, { machineId: f.machineId, pluginId })
+            .consents.filter((row) => row.enabled),
+        ).toEqual([]);
+      } finally {
+        f.store.close();
+      }
+    }
+  });
+
+  test("same approval is idempotent, conflicting identity refuses, and revoked consent never resurrects", () => {
+    const f = fixture();
+    try {
+      prove(f);
+      const value = request(f, "deduplicated", [operationId]);
+      const { review, deployment } = apply(f, value);
+      const args = { request: value, reviewDigest: review.reviewDigest };
+      const original = f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents;
+      expect(f.service.applyDeployment(f.root, args, "another-trace")).toEqual(deployment);
+      expect(() =>
+        f.service.applyDeployment(
+          f.root,
+          { ...args, request: { ...value, operationIds: [] } },
+          "conflict",
+        ),
+      ).toThrow("deployment_id_conflict");
+      consent(f, "machines:run", false);
+      const revoked = f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents;
+      expect(revoked).not.toEqual(original);
+      expect(f.service.applyDeployment(f.root, args, "old-approval").targets[0]!.state).toBe(
+        "needs_review",
+      );
+      prove(f);
+      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents).toEqual(
+        revoked,
+      );
+      expect(execute(f, "must-remain-denied").state).toBe("refused");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("competing pending targets refuse; cancellation stops only unapplied effects", () => {
+    const f = fixture();
+    try {
+      prove(f);
+      f.service.offline(f.channel);
+      const first = request(f, "first", [operationId]);
+      const { deployment } = apply(f, first);
+      const other = request(f, "competing");
+      const review = f.service.reviewDeployment(f.root, other);
+      expect(() =>
+        f.service.applyDeployment(
+          f.root,
+          { request: other, reviewDigest: review.reviewDigest },
+          "trace",
+        ),
+      ).toThrow("deployment_target_pending");
+      expect(() =>
+        f.service.cancelDeployment(f.root, {
+          deploymentId: first.deploymentId,
+          expectedRevision: deployment.revision + 1,
+        }),
+      ).toThrow("deployment_revision_stale");
+      const cancelled = f.service.cancelDeployment(f.root, {
+        deploymentId: first.deploymentId,
+        expectedRevision: deployment.revision,
+      });
+      expect(cancelled.targets[0]!.state).toBe("cancelled");
+      prove(f);
+      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents).toEqual([]);
+      expect(
+        f.service.describe(f.root, { machineId: f.machineId, pluginId }).installation?.revision,
+      ).toBe("r1");
+      const completed = apply(f, other).deployment;
+      const preserved = f.service.cancelDeployment(f.root, {
+        deploymentId: other.deploymentId,
+        expectedRevision: completed.revision,
+      });
+      expect(preserved.targets[0]!.state).toBe("ready");
+      expect(
+        f.service.describe(f.root, { machineId: f.machineId, pluginId }).installation?.ready,
+      ).toBe(true);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("cancel between write-ahead claim and effects cannot grant consent", () => {
+    const f = fixture();
+    try {
+      prove(f);
+      const value = request(f, "cancel-at-fence", [operationId]);
+      f.service.setLifecycleRecorder((record) => {
+        f.store.appendTrace(record);
+        if (record.payload.deploymentLifecycle === "applying") {
+          const current = f.service.readDeployment(f.root, { deploymentId: value.deploymentId });
+          f.service.cancelDeployment(f.root, {
+            deploymentId: value.deploymentId,
+            expectedRevision: current.revision,
+          });
+        }
+      });
+      const { deployment } = apply(f, value);
+      expect(deployment.targets[0]!.state).toBe("cancelled");
+      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents).toEqual([]);
+      f.service.tick();
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("cancelled");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("busy native work stays live while a reviewed replacement waits", () => {
+    const f = fixture();
+    try {
+      consent(f, "machines:run");
+      prove(f);
+      const live = execute(f, "live");
+      replacement(f);
+      f.commands.length = 0;
+      const value = request(f, "wait-for-work");
+      const { deployment } = apply(f, value);
+      expect(deployment.targets[0]).toMatchObject({
+        state: "pending",
+        reason: "active_installation",
+      });
+      expect(f.service.jobs.get(live.request.jobId)?.state).toBe("start-committed");
+      expect(f.commands).toEqual([]);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("terminal history retention preserves live approvals and permanently fences retired IDs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-deployment-retention-"));
+    const path = join(dir, "db.sqlite");
+    const f = fixture(path);
+    try {
+      prove(f);
+      const destination = (name: string): Fixture => {
+        const machineId = f.auth.enrollMachine(name, f.root).machine.id;
+        const target = { ...f, machineId, channel: { machineId, send: f.channel.send } };
+        f.service.install(f.root, {
+          machineId,
+          pluginId,
+          installationRevision: "r1",
+          artifactSha256: hash,
+          machine,
+        });
+        prove(target);
+        return target;
+      };
+      const pending = destination("pending");
+      f.service.offline(pending.channel);
+      const pendingApproval = apply(
+        pending,
+        request(pending, "keep-pending", [operationId]),
+      ).deployment;
+      const applying = destination("applying");
+      f.service.offline(applying.channel);
+      apply(applying, request(applying, "keep-applying", [operationId]));
+      // Persist the actual crash boundary: admission claimed, effects not yet committed.
+      f.store.db
+        .query(
+          "UPDATE machine_job_deployment_targets SET phase='applying',attempt='interrupted' WHERE deployment_id=?",
+        )
+        .run("keep-applying");
+      const uncertain = destination("uncertain");
+      f.service.offline(uncertain.channel);
+      apply(uncertain, request(uncertain, "keep-uncertain", [operationId]));
+      f.store.db
+        .query(
+          "UPDATE machine_job_deployment_targets SET phase='needs_review',reason='deployment_application_uncertain' WHERE deployment_id=?",
+        )
+        .run("keep-uncertain");
+      const installing = destination("installing");
+      f.service.install(f.root, {
+        machineId: installing.machineId,
+        pluginId,
+        installationRevision: "awaiting-ack",
+        artifactSha256: hash,
+        machine,
+      });
+      const installingApproval = apply(
+        installing,
+        request(installing, "keep-installing"),
+      ).deployment;
+      expect(installingApproval.targets[0]!.state).toBe("installing");
+      const cancelled = destination("cancelled-history");
+      f.service.offline(cancelled.channel);
+      const staleRequest = request(cancelled, "history-1");
+      let staleDigest = "";
+      let staleRevision = 0;
+      // More than 256 of EACH terminal kind, not just 256 cumulative attempts.
+      for (let index = 0; index < 514; index++) {
+        f.runtime.time = index + 1;
+        const target = index % 2 === 0 ? f : cancelled;
+        const value = request(target, `history-${index}`);
+        const { review, deployment } = apply(target, value);
+        if (target === cancelled) {
+          const result = f.service.cancelDeployment(f.root, {
+            deploymentId: value.deploymentId,
+            expectedRevision: deployment.revision,
+          });
+          expect(result.targets[0]!.state).toBe("cancelled");
+          if (index === 1) {
+            staleDigest = review.reviewDigest;
+            staleRevision = result.revision;
+          }
+        } else expect(deployment.targets[0]!.state).toBe("ready");
+      }
+      expect(() => f.service.readDeployment(f.root, { deploymentId: "history-261" })).toThrow(
+        "deployment_not_found",
+      );
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: "history-262" }).targets[0]!.state,
+      ).toBe("ready");
+      // A failed admission must roll back the terminal payload pruned to make its room.
+      const competing = request(pending, "competing-at-capacity");
+      const competingReview = f.service.reviewDeployment(f.root, competing);
+      expect(() =>
+        f.service.applyDeployment(
+          f.root,
+          {
+            request: competing,
+            reviewDigest: competingReview.reviewDigest,
+          },
+          "competing",
+        ),
+      ).toThrow("deployment_target_pending");
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: "history-262" }).targets[0]!.state,
+      ).toBe("ready");
+      // Oldest means approval time first, even if wall clock moved backwards.
+      f.runtime.time = 0;
+      const backdatedRequest = request(f, "backdated-terminal");
+      const backdated = apply(f, backdatedRequest);
+      f.runtime.time = 515;
+      expect(apply(f, request(f, "new-retained-approval")).deployment.targets[0]!.state).toBe(
+        "ready",
+      );
+      expect(() =>
+        f.service.readDeployment(f.root, { deploymentId: backdatedRequest.deploymentId }),
+      ).toThrow("deployment_not_found");
+      const listed = f.service.listDeployments(f.root, { pluginId, limit: 100 }).deployments;
+      expect(listed[0]!.deploymentId).toBe("new-retained-approval");
+      expect(
+        listed.some((deployment) => deployment.deploymentId === backdatedRequest.deploymentId),
+      ).toBe(false);
+      expect(
+        f.service.describeDeployment(f.root, { machineId: f.machineId, pluginId }, pluginId)
+          .deployment?.deploymentId,
+      ).toBe("new-retained-approval");
+      expect(() => f.service.reviewDeployment(f.root, staleRequest)).toThrow(
+        "deployment_id_retired",
+      );
+      expect(() =>
+        f.service.applyDeployment(
+          f.root,
+          {
+            request: staleRequest,
+            reviewDigest: staleDigest,
+          },
+          "stale-cancelled",
+        ),
+      ).toThrow("deployment_id_retired");
+      expect(() =>
+        f.service.cancelDeployment(f.root, {
+          deploymentId: staleRequest.deploymentId,
+          expectedRevision: staleRevision,
+        }),
+      ).toThrow("deployment_not_found");
+      expect(() =>
+        f.service.applyDeployment(
+          f.root,
+          {
+            request: backdatedRequest,
+            reviewDigest: backdated.review.reviewDigest,
+          },
+          "stale-completed",
+        ),
+      ).toThrow("deployment_id_retired");
+      expect(f.service.readDeployment(f.root, { deploymentId: "keep-pending" })).toEqual(
+        pendingApproval,
+      );
+      expect(f.service.readDeployment(f.root, { deploymentId: "keep-installing" })).toEqual(
+        installingApproval,
+      );
+      for (const deploymentId of ["keep-applying", "keep-uncertain"])
+        expect(f.service.readDeployment(f.root, { deploymentId }).targets[0]).toMatchObject({
+          state: "needs_review",
+          reason: "deployment_application_uncertain",
+        });
+      prove(pending);
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: "keep-pending" }).targets[0]!.state,
+      ).toBe("ready");
+      expect(execute(pending, "retained-pending-starts").state).toBe("start-committed");
+      f.service.event(installing.channel, {
+        type: "installed",
+        pluginId,
+        installationRevision: "awaiting-ack",
+        artifactSha256: hash,
+      });
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: "keep-installing" }).targets[0]!.state,
+      ).toBe("ready");
+      // Compact replay fences outlive the process, unlike an in-memory retired-ID cache.
+      f.store.close();
+      f.store = new ServerStore(openDatabase(path));
+      f.auth = new AuthService(f.store, key, f.runtime);
+      f.root = f.auth.authenticate(key);
+      f.service = new JobService(f.store, f.auth, f.runtime);
+      f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
+      f.service.setManifestResolver((id) => (id === pluginId ? machine : null));
+      expect(() =>
+        f.service.applyDeployment(
+          f.root,
+          {
+            request: staleRequest,
+            reviewDigest: staleDigest,
+          },
+          "stale-after-restart",
+        ),
+      ).toThrow("deployment_id_retired");
+      expect(() =>
+        f.service.readDeployment(f.root, { deploymentId: staleRequest.deploymentId }),
+      ).toThrow("deployment_not_found");
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: "keep-applying" }).targets[0],
+      ).toMatchObject({
+        state: "needs_review",
+        reason: "deployment_application_uncertain",
+      });
+    } finally {
+      f.store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("capacity refuses only while every retained review still awaits native acknowledgement", () => {
+    const f = fixture();
+    try {
+      prove(f);
+      f.service.install(f.root, {
+        machineId: f.machineId,
+        pluginId,
+        installationRevision: "awaiting-ack",
+        artifactSha256: hash,
+        machine,
+      });
+      for (let index = 0; index < 256; index++)
+        expect(apply(f, request(f, `installing-${index}`)).deployment.targets[0]!.state).toBe(
+          "installing",
+        );
+      const value = request(f, "after-capacity");
+      const review = f.service.reviewDeployment(f.root, value);
+      const args = { request: value, reviewDigest: review.reviewDigest };
+      expect(() => f.service.applyDeployment(f.root, args, "full")).toThrow("deployment_capacity");
+      for (const deploymentId of ["installing-0", "installing-255"])
+        expect(f.service.readDeployment(f.root, { deploymentId }).targets[0]!.state).toBe(
+          "installing",
+        );
+      expect(() => f.service.readDeployment(f.root, { deploymentId: value.deploymentId })).toThrow(
+        "deployment_not_found",
+      );
+      f.service.event(f.channel, {
+        type: "installed",
+        pluginId,
+        installationRevision: "awaiting-ack",
+        artifactSha256: hash,
+      });
+      expect(f.service.applyDeployment(f.root, args, "acknowledged").targets[0]!.state).toBe(
+        "ready",
+      );
+      // All approval timestamps tie: admission order breaks the tie deterministically.
+      expect(() => f.service.readDeployment(f.root, { deploymentId: "installing-0" })).toThrow(
+        "deployment_not_found",
+      );
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: "installing-1" }).targets[0]!.state,
+      ).toBe("ready");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("restart preserves applied receipts and fences an uncertain interrupted claim", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-deployment-restart-"));
+    const path = join(dir, "db.sqlite");
+    const f = fixture(path);
+    try {
+      prove(f);
+      const applied = request(f, "durable-effects", [operationId]);
+      apply(f, applied);
+      consent(f, "machines:run", false);
+      f.service.offline(f.channel);
+      const interrupted = request(f, "uncertain");
+      apply(f, interrupted);
+      // The durable write-ahead fence with no receipt is precisely the crash boundary.
+      f.store.db
+        .query(
+          "UPDATE machine_job_deployment_targets SET phase='applying',attempt='lost-process' WHERE deployment_id=?",
+        )
+        .run(interrupted.deploymentId);
+      f.store.close();
+      f.store = new ServerStore(openDatabase(path));
+      f.auth = new AuthService(f.store, key, f.runtime);
+      f.root = f.auth.authenticate(key);
+      f.service = new JobService(f.store, f.auth, f.runtime);
+      f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
+      f.service.setManifestResolver((id) => (id === pluginId ? machine : null));
+      prove(f);
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: interrupted.deploymentId }).targets[0],
+      ).toMatchObject({ state: "needs_review", reason: "deployment_application_uncertain" });
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: applied.deploymentId }).targets[0],
+      ).toMatchObject({ state: "needs_review", reason: "consent_changed" });
+      expect(execute(f, "restart-must-not-grant").state).toBe("refused");
+      expect(
+        f.store.listEvents({ type: "trace", limit: 100 }).some((row) => {
+          const payload = JSON.parse(row.payload);
+          return (
+            payload.deploymentLifecycle === "needs_review" &&
+            payload.parentTrace === "deployment-trace"
+          );
+        }),
+      ).toBe(true);
+    } finally {
+      f.store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("deferred installation attribution precedes its effects and retains the original dispatch", () => {
+    const f = fixture();
+    try {
+      prove(f);
+      f.service.offline(f.channel);
+      replacement(f);
+      const value = request(f, "deferred-trace");
+      const traceId = String(
+        f.store.appendTrace({
+          actor: f.root.principal.id,
+          authority: "root",
+          door: "engine.jobs.applyDeployment",
+          containerId: null,
+          session: "operator-session",
+          ts: f.runtime.now(),
+          payload: {},
+          outcome: null,
+          targets: [],
+        }),
+      );
+      const review = f.service.reviewDeployment(f.root, value);
+      f.service.applyDeployment(
+        f.root,
+        { request: value, reviewDigest: review.reviewDigest },
+        traceId,
+      );
+      f.service.setLifecycleRecorder((record) => {
+        if (record.payload.deploymentLifecycle === "applying")
+          expect(
+            f.service.describe(f.root, { machineId: f.machineId, pluginId }).installation?.revision,
+          ).toBe("r1");
+        f.store.appendTrace(record);
+      });
+      prove(f);
+      const records = f.store
+        .listEvents({ type: "trace", limit: 100 })
+        .map((row) => ({ row, payload: JSON.parse(row.payload) }))
+        .filter(({ payload }) => payload.deploymentId === value.deploymentId);
+      expect(records.map(({ payload }) => payload.deploymentLifecycle).sort()).toEqual([
+        "applied",
+        "applying",
+      ]);
+      for (const { row, payload } of records) {
+        expect(row).toMatchObject({
+          principalId: f.root.principal.id,
+          authority: "root",
+          door: "engine.jobs.applyDeployment",
+          session: "operator-session",
+        });
+        expect(payload).toMatchObject({
+          parentTrace: traceId,
+          originTraceAvailable: true,
+          reviewDigest: review.reviewDigest,
+        });
+      }
     } finally {
       f.store.close();
     }

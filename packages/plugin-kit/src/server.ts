@@ -17,6 +17,9 @@ import {
   type ListJobRunsArgs,
   type ListJobRunsResult,
   type JobDescription,
+  JobDeploymentDescribeArgsSchema,
+  JobDeploymentDescriptionSchema,
+  type JobDeploymentDescription,
   type ActionScope,
   type ActionRequirement,
   type ActionSummary,
@@ -174,6 +177,10 @@ export interface GuestJobs {
     pluginId: string;
     installationRevision?: string;
   }): Promise<JobDescription>;
+  describeDeployment(args: {
+    machineId: string;
+    pluginId: string;
+  }): Promise<JobDeploymentDescription>;
   execute(args: GuestJobRequest): Promise<GuestJobStatus>;
   status(node: GuestJobNode): Promise<GuestJobStatus>;
   listRuns(args: ListJobRunsArgs): Promise<ListJobRunsResult>;
@@ -506,6 +513,10 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       storage: storageFor(call),
       jobs: {
         describe: async (args) => (await call("jobs.describe", [args])) as JobDescription,
+        describeDeployment: async (args) =>
+          JobDeploymentDescriptionSchema.parse(
+            await call("jobs.describeDeployment", [JobDeploymentDescribeArgsSchema.parse(args)]),
+          ),
         execute: async (args) => (await call("jobs.execute", [args])) as GuestJobStatus,
         status: async (node) => (await call("jobs.status", [node])) as GuestJobStatus,
         listRuns: async (args) =>

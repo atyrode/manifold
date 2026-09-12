@@ -176,6 +176,7 @@ export async function serveCtxCall(
         args[0] === undefined ? undefined : stringArg(args, 0, method),
       );
     case "jobs.describe":
+    case "jobs.describeDeployment":
     case "jobs.execute":
     case "jobs.status":
     case "jobs.listRuns":
@@ -208,6 +209,8 @@ export async function serveCtxCall(
   switch (method) {
     case "jobs.describe":
       return ctx.jobs.describe(jobDoorSchemas.describe.parse(args[0]));
+    case "jobs.describeDeployment":
+      return ctx.jobs.describeDeployment(jobDoorSchemas.describeDeployment.parse(args[0]));
     case "jobs.execute":
       return ctx.jobs.execute(JobExecuteArgsSchema.parse(args[0]));
     case "jobs.status":
