@@ -365,6 +365,7 @@ export const ISOLATE_CTX_METHODS = [
   "streams.publish",
   "streams.close",
   "jobs.describe",
+  "jobs.describeDeployment",
   "jobs.execute",
   "jobs.status",
   "jobs.listRuns",

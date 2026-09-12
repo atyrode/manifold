@@ -1,5 +1,6 @@
 import type {
   JobDescription,
+  JobDeploymentDescription,
   JobEvent,
   JobFollowSnapshot,
   JobFollowUpdate,
@@ -62,6 +63,7 @@ export interface PluginJobContext {
     pluginId: string;
     installationRevision?: string | undefined;
   }): JobDescription;
+  describeDeployment(args: { machineId: string; pluginId: string }): JobDeploymentDescription;
   execute(args: JobExecution): PublicJob;
   status(node: JobNode): PublicJob;
   listRuns(args: ListJobRunsArgs): ListJobRunsResult;

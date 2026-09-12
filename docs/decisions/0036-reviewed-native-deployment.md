@@ -1,4 +1,4 @@
-# ADR 0034: Reviewed native deployment approvals
+# ADR 0036: Reviewed native deployment approvals
 
 Date: 2026-09-12
 Status: accepted

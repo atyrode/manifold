@@ -21,7 +21,9 @@ export const JobDeploymentRequestSchema = z.strictObject({
     )
     .min(1)
     .max(64)
-    .refine((targets) => new Set(targets.map((target) => target.machineId)).size === targets.length),
+    .refine(
+      (targets) => new Set(targets.map((target) => target.machineId)).size === targets.length,
+    ),
   operationIds: z
     .array(JobRequestSchema.shape.operationId)
     .max(128)
@@ -127,6 +129,13 @@ export const JobDeploymentDescribeArgsSchema = z.strictObject({
   pluginId: JobRequestSchema.shape.pluginId,
 });
 export const JobDeploymentDescriptionSchema = z.strictObject({
+  installation: z
+    .strictObject({
+      revision: JobRequestSchema.shape.installationRevision,
+      artifactSha256: JobRequestSchema.shape.artifactSha256,
+      machine: MachineHalfSchema,
+    })
+    .nullable(),
   deployment: z
     .strictObject({
       deploymentId: id,

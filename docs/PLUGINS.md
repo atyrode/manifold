@@ -1341,10 +1341,10 @@ The in-realm handle types are public imports, not server-internal APIs:
 import type { PluginJobContext, PluginStreamContext } from "@manifold/plugin";
 ```
 
-`PluginJobContext` supplies `describe`, `execute`, `status`, `follow`, `input`, `cancel`,
-`output`, `schedule`, `schedules` and `disableSchedule`. `PluginStreamContext` supplies
-`open`; the exported `JobFollow` and `StreamProducer` type their handles. Hardened
-`GuestJobs`/stream handles use their asynchronous bridge counterparts.
+`PluginJobContext` supplies `describe`, `describeDeployment`, `execute`, `status`, `listRuns`,
+`follow`, `input`, `cancel`, `output`, `schedule`, `schedules` and `disableSchedule`.
+`PluginStreamContext` supplies `open`; the exported `JobFollow` and `StreamProducer` type
+their handles. Hardened `GuestJobs`/stream handles use their asynchronous bridge counterparts.
 
 **Declare before executing.** The optional machine half declares per-platform HTTPS
 artifacts with real archive/executable SHA256, bounded extraction and optional separately
@@ -1410,6 +1410,83 @@ Operations independently report readiness and their `resourceBindingDigest`; a p
 configured installation does not make unrelated operations unavailable. An explicit
 `workingDirectory` selects one declared location. Managed companions retain their own
 artifact/member hashes; no source executable or host-PATH fallback is permitted.
+
+**Review installation through the same native authority.** The existing per-machine
+runtime inspector already installs artifacts and reviews revision-bound resource/operation
+consent. [ADR 0036](decisions/0036-reviewed-native-deployment.md) extends that review path
+to an explicit set of destinations and retained pending approval; it does not replace the
+installer or introduce a product-owned reconnect worker. The six public actions, bounds
+and lifecycle rules are in
+[CONTRACTS §Governed machine jobs](CONTRACTS.md#governed-machine-jobs). They are ordinary
+typed action doors, available headlessly through the same dispatcher used by Native Plugins.
+
+A root client submits `engine.jobs.reviewDeployment` with
+`{ deploymentId, pluginId, targets: [{ machineId, platform? }], operationIds }`.
+Use 1–64 distinct exact destinations and at most 128 distinct declared operations.
+An empty `operationIds` array selects installation only, not every operation and not a
+revocation of existing consent. Selected operations expand to their concrete operation,
+stdin, location and host-network rights; the review lists exact node/capability pairs
+and existing consent revisions. This is operation selection, not an independently editable
+permission list or implicit service/invocation-edge configuration. Rendering a machine
+checkbox, displaying a declaration or receiving a review grants nothing.
+
+Validate requests and parse responses with the public `JobDeploymentRequestSchema`,
+`JobDeploymentReviewSchema`, `JobDeploymentApplyArgsSchema`, `JobDeploymentSchema` and
+the corresponding read/list/cancel/describe schemas from `@manifold/protocol`; do not copy
+the wire shapes into a product.
+Present the server's immutable declaration, selected artifacts, existing/proposed installation
+pins, concrete resources, consent changes and per-target reasons. Submit only that review's
+unchanged `{ request, reviewDigest }` to `engine.jobs.applyDeployment`. Changes to the
+selection, declaration, actor or current installation/resource/consent evidence require
+another review. The server recomputes the digest against current state; browser-local
+confirmation alone is not approval.
+
+Known offline destinations can remain pending, using only already-promoted native resource
+pins and proved identity. Missing evidence blocks approval rather than granting authority
+over whatever appears on reconnect. Every pending effect rechecks the original current
+authority and reviewed scope before the existing install/consent functions run. A durable
+`pending` → `applying` fence precedes effects; interrupted application without a committed
+receipt becomes `needs_review`, never permission to replay. Approval or `installing` is not
+readiness: `ready` requires the current owner's exact installed acknowledgement and current
+readiness of selected operations. An install-only approval grants no execution consent even
+when ready. Applying does not execute operations.
+
+After apply, recover authoritative progress with `engine.jobs.readDeployment({ deploymentId })`
+or `engine.jobs.listDeployments({ pluginId, limit? })`, not the local draft. List returns
+`{ deployments }`, newest first, at most 100 (default 20). An uncertain action response
+does not prove that nothing committed: read the same ID before deciding what happened.
+An exact duplicate apply recovers that approval under current root authority; it does not
+regrant revoked consent or update a changed installation. Use
+`engine.jobs.cancelDeployment({ deploymentId, expectedRevision })` with the latest retained
+revision to stop unapplied targets. Cancellation is not uninstall, purge or revocation of
+already committed effects; those remain observable. These five administrative doors are
+native/root-only and absent from product and hardened guest execution handles.
+
+At most 256 reviewed approval payloads are retained. Admission transactionally retires
+the oldest completed or cancelled payloads when needed; pending, applying, installing
+and uncertain approvals are never reclaimed. Retired IDs disappear from progress reads
+but remain compact replay fences, so reusing an old ID cannot recreate its authority.
+If all retained approvals are still active or uncertain, new admission refuses
+`deployment_capacity` until an existing approval becomes terminal.
+
+Products instead use `ctx.jobs.describeDeployment({ machineId, pluginId })`, also exposed as
+`engine.jobs.describeDeployment` and the asynchronous `GuestJobs.describeDeployment`.
+It rechecks current machine `machines:run` authority and the handle's own plugin ID, including
+absence; neither an ID nor a cached response grants access. `JobDeploymentDescriptionSchema`
+parses `{ deployment, installation }`. The nullable `deployment` contains only the latest
+target's ID, machine/plugin IDs, revision, state and reason, not operator attribution,
+the complete review or other destinations. Independently, nullable `installation` is
+`{ revision, artifactSha256, machine }` from the actual current native installation's retained
+declaration, not from the newest manifest or proposed approval. Render that declaration when
+showing installed operations/resources; use `describe` for readiness, consent and historical
+revision selection. This separate read does not change the existing strict `JobDescription`.
+
+Subscribe shared reads to the existing `engine.jobs` topic's `job_access_changed` invalidation
+and machine connectivity events, and reread after reconnect. Events are not progress records
+or an authority cache. Action and deferred lifecycle attribution use the existing journal;
+do not store an operator credential, invent a product deployment queue or claim native
+preparation proves product readiness. Contextual permission requests and an initial
+independently selectable permission checklist are not provided by this extension.
 
 **Coordinate effects without acquiring authority.** An action may declare `delegates` for
 native job/resource/service capabilities it uses through `ctx.jobs` or `ctx.services`.
