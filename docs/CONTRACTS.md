@@ -2964,21 +2964,21 @@ provider handling and postconditions belong to plugins, never the common floor.
   availability still depends on the proved owner and retained bytes; purged/released
   output references do not become readable again on re-enable or reinstall.
 - **Reading a finished job.** `engine.jobs.outputs` / `ctx.jobs.outputs({ node, name, offset,
-  limit })` reads one declared output of a FINISHED job of the calling plugin, addressed by
+limit })` reads one declared output of a FINISHED job of the calling plugin, addressed by
   the operation's output name rather than by an owner-minted output ID, in pages of at most
   64 KiB. It answers `{ jobId, outputId, name, sha256, files, total, offset, data, eof }`,
   where `total` is the sealed length. An unfinished job refuses `job_unfinished`, an unsealed
   name refuses `unknown_job_output`, and another plugin's job refuses like every other job
   door; the page itself is the same authorized private read as `output`, so a consent revoked
   between pages refuses the next one. `engine.jobs.journal` / `ctx.jobs.journal({ node,
-  after?, limit? })` reads that finished job's durable LIFECYCLE frames — `{ jobId, events:
-  [{ seq, at, event }], firstSeq, nextAfter }`, at most 128 retained per job, oldest dropped
+after?, limit? })` reads that finished job's durable LIFECYCLE frames — `{ jobId, events:
+[{ seq, at, event }], firstSeq, nextAfter }`, at most 128 retained per job, oldest dropped
   first and dropped entirely on purge. Byte-channel frames are never journaled, so gaps in
   `seq` are stdout/stderr and never loss, and `firstSeq` discloses what retention dropped.
   Neither door starts, resumes or re-executes anything, and neither replaces `follow`.
 - **Settled-job wake.** A server half may declare `onJobSettled(ctx, job)`; the host calls it
   once per settled job of THAT plugin with `{ jobId, machineId, operationId, pluginId, state,
-  exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's own terminal
+exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's own terminal
   state and sealed output descriptors, never bytes. It is published after the result and its
   journal frame are durable, delivery is at-least-once, and consumers must be idempotent.
   `ctx.jobs` on that hook is bound to the job's ORIGINAL credential, restored and rechecked

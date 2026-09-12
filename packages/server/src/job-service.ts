@@ -1565,7 +1565,12 @@ export class JobService {
     const result = job.result;
     if (result === null) return null;
     const state = result.state;
-    if (state === "queued" || state === "admitted" || state === "start-committed" || state === "started")
+    if (
+      state === "queued" ||
+      state === "admitted" ||
+      state === "start-committed" ||
+      state === "started"
+    )
       return null;
     const origin = authority.origin;
     return {
@@ -2469,8 +2474,7 @@ export class JobService {
       .query("UPDATE machine_jobs SET event_seq=?,output_seq=? WHERE job_id=?")
       .run(seq, event.type === "output" ? event.seq : previous.output_seq, jobId);
     this.retainJobEvent(jobId, seq, event, reason !== null);
-    if (event.type !== "output")
-      this.jobs.appendJournal(jobId, seq, this.runtime.now(), event);
+    if (event.type !== "output") this.jobs.appendJournal(jobId, seq, this.runtime.now(), event);
     if (event.type === "result") this.wakeOwner(jobId);
     if (this.followQueue.length >= 64) {
       for (const follower of [...this.followers]) this.closeFollower(follower, "limit");

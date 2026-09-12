@@ -2871,8 +2871,11 @@ describe("durable job authority", () => {
       const second = f.service.outputs(f.root, node, "stdout", 3, 3);
       const command = f.commands.at(-1);
       if (command?.type !== "output_read") throw new Error("second page missing");
-      expect({ offset: command.offset, maxBytes: command.maxBytes, outputId: command.outputId })
-        .toEqual({ offset: 3, maxBytes: 3, outputId: "o-out" });
+      expect({
+        offset: command.offset,
+        maxBytes: command.maxBytes,
+        outputId: command.outputId,
+      }).toEqual({ offset: 3, maxBytes: 3, outputId: "o-out" });
       answerRead(f, "ZGU=", true);
       expect(await second).toMatchObject({ offset: 3, data: "ZGU=", eof: true, total: 5 });
       // The name selects the output; nothing here ever quoted an owner-minted id.
