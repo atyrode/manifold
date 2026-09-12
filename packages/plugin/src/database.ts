@@ -17,8 +17,6 @@
  * failure path a plugin writes is a `try`/`catch` around an `await`, whichever way it runs.
  */
 
-import { CEILING_DATABASE_MAX_BYTES } from "@manifold/protocol";
-
 /** A bound parameter: what SQLite can hold and what crosses the isolate boundary intact. */
 export type SqlParam = string | number | bigint | boolean | null | Uint8Array;
 
@@ -38,10 +36,7 @@ export interface PluginDatabase {
    * yield their rows; every other statement yields an empty array (use `run` to learn what
    * it changed).
    */
-  query<Row extends SqlRow = SqlRow>(
-    sql: string,
-    params?: readonly SqlParam[],
-  ): Promise<readonly Row[]>;
+  query<Row extends SqlRow = SqlRow>(sql: string, params?: readonly SqlParam[]): Promise<readonly Row[]>;
   /** One statement, bound parameters, its change count and the last inserted rowid back. */
   run(sql: string, params?: readonly SqlParam[]): Promise<SqlRunResult>;
   /**
@@ -98,9 +93,9 @@ export const MAX_SQL_ROWS = 10_000;
 export const MAX_SQL_RESULT_BYTES = 4 * 1024 * 1024;
 /** A call runs under this deadline; a batch that passes it is rolled back. */
 export const SQL_DEADLINE_MS = 5_000;
-/** The file's size unless the manifest asks for more; the ceiling is the wire's (`@manifold/protocol`). */
+/** The file's size unless the manifest asks for more, and the ceiling the engine will grant. */
 export const DEFAULT_DATABASE_MAX_BYTES = 256 * 1024 * 1024;
-export { CEILING_DATABASE_MAX_BYTES };
+export const CEILING_DATABASE_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 /** SQLite's page size on every file the engine opens; the byte cap is expressed in these. */
 export const DATABASE_PAGE_BYTES = 4096;
 
