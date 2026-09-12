@@ -809,15 +809,22 @@ export const serverDef = {
 };
 ```
 
-A migration is **all-or-nothing on one condition: it awaits nothing but its storage handle.** Every
-storage call settles before it returns, so a chain of awaited storage calls runs to completion in one
-turn of the event loop and no dispatch — which arrives as I/O — can interleave with half a
-conversion. A migration that awaits a timer, a file or the network opens exactly that window, and
-must not. They run at boot for enabled plugins (awaited before the server binds its socket) and at
-the enablement door for a plugin being switched on — never for a disabled one, whose data is
-retained untouched and re-judged when someone turns it back on. Applied names are recorded in the
-ledger, so none ever runs twice. The rules the engine applies, adopted from Home Assistant's
-asymmetry:
+A migration receives only its plugin's bounded storage handle. The engine first refuses new
+dispatches for that plugin and drains admitted old calls; other plugins keep serving. It snapshots
+at most 4,096 rows and 16 MiB into a private draft, then runs at most 128 uniquely named migration
+callbacks, 65,536 storage operations and ten seconds for the chain. A hardened guest receives only
+the migration name and target version; its callback executes in the guest while storage calls use
+the same correlated proxy as ordinary plugin storage. No auth, services, jobs, terminal, lifecycle
+emission or another plugin's storage rides that request.
+
+The transformed rows, applied-name ledger, declared version, install row and element claims publish
+in one synchronous native transaction after the callbacks finish. A throw, timeout, child crash,
+malformed or cross-call reply, late storage use, or conflicting writer publishes none of them and
+does not replace the old serving runtime. They run at boot for enabled plugins (awaited before the
+server binds its socket) and at replacement or enablement for the affected plugin — never for a
+disabled one, whose data is retained untouched and re-judged when someone turns it back on. Applied
+names are recorded in the ledger, so none ever runs twice. The rules the engine applies, adopted
+from Home Assistant's asymmetry:
 
 | Stored vs. manifest `dataVersion` | Outcome                                            |
 | --------------------------------- | -------------------------------------------------- |

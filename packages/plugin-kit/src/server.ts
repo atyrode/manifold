@@ -9,6 +9,7 @@ import {
   EventPayloadSchema,
   IsolateChildFrameSchema,
   IsolateHostFrameSchema,
+  GuestMigrationDeclarationsSchema,
   MAX_ISOLATE_ACTIONS,
   MAX_ISOLATE_EMITS,
   ManifoldRefSchema,
@@ -36,6 +37,7 @@ import {
   type PlaceResponse,
   type PlacementDenial,
   type PluginManifest,
+  type PluginDataVersion,
   type PluginRoster,
   type Principal,
   type ServiceConfiguration,
@@ -132,6 +134,13 @@ export interface GuestStorage {
   compareAndSet(key: string, expected: string | null, value: string): Promise<boolean>;
   delete(key: string): Promise<void>;
   keys(prefix?: string): Promise<readonly string[]>;
+}
+
+/** A named transformation of this plugin's retained data, committed by the native ledger. */
+export interface ServerMigration {
+  readonly name: string;
+  readonly to: PluginDataVersion;
+  migrate(storage: GuestStorage): void | Promise<void>;
 }
 
 /** What the engine's placement executor answers, restated over protocol types. */
@@ -269,6 +278,7 @@ export interface ServerPluginDef {
   readonly actions: readonly ServerActionDef[];
   readonly handlers: Readonly<Record<string, ServerHandler>>;
   readonly lifecycle?: GuestLifecycle | undefined;
+  readonly migrations?: readonly ServerMigration[] | undefined;
 }
 
 // ---------------------------------------------------------------------------- the transport
@@ -376,6 +386,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     { readonly method: IsolateCtxMethod; resolve(value: unknown): void; reject(error: Error): void }
   >();
   const actions = new Map(def.actions.map((action) => [action.name, action] as const));
+  const migrations = new Map((def.migrations ?? []).map((migration) => [migration.name, migration]));
   let loaded = false;
   const producerClosures = new Map<string, () => void>();
   type JobNotification = Extract<IsolateHostFrame, { t: "job_update" }>;
@@ -414,6 +425,11 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       },
       close: () => {
         open = false;
+        for (const [id, waiting] of pending) {
+          if (!id.startsWith(`${requestId}:`)) continue;
+          pending.delete(id);
+          waiting.reject(new Error(`request "${requestId}" already answered`));
+        }
       },
     };
   };
@@ -727,6 +743,14 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     let summaries: ActionSummary[];
     try {
       summaries = describe(frame.pluginId);
+      GuestMigrationDeclarationsSchema.parse({
+        dataVersion: frame.manifest.dataVersion,
+        migrations: (def.migrations ?? []).map(({ name, to }) => ({ name, to })),
+      });
+      for (const migration of def.migrations ?? []) {
+        if (typeof migration.migrate !== "function")
+          throw new Error(`migration "${migration.name}" has no callback`);
+      }
     } catch (error) {
       post({ t: "load_failed", error: errorText(error) });
       return;
@@ -740,6 +764,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         onDisable: def.lifecycle?.onDisable !== undefined,
         onAssemblyChanged: def.lifecycle?.onAssemblyChanged !== undefined,
       },
+      migrations: (def.migrations ?? []).map(({ name, to }) => ({ name, to })),
     });
   };
 
@@ -829,6 +854,33 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     post({ t: "hooked", id: frame.id, ok: true });
   };
 
+  const onMigrate = async (frame: Extract<IsolateHostFrame, { t: "migrate" }>): Promise<void> => {
+    const requests = callsFor(frame.id);
+    try {
+      const migration = migrations.get(frame.migration.name);
+      if (
+        !loaded ||
+        migration === undefined ||
+        migration.to.major !== frame.migration.to.major ||
+        migration.to.minor !== frame.migration.to.minor
+      ) {
+        throw new Error("unknown migration or target");
+      }
+      // No lifecycle context, caller authority, emissions or long-lived handles.
+      await migration.migrate(storageFor(requests.call));
+      post({ t: "migrated", id: frame.id, name: migration.name, outcome: { ok: true } });
+    } catch (error) {
+      post({
+        t: "migrated",
+        id: frame.id,
+        name: frame.migration.name,
+        outcome: { ok: false, error: errorText(error).slice(0, 2048) },
+      });
+    } finally {
+      requests.close();
+    }
+  };
+
   const onReply = (frame: Extract<IsolateHostFrame, { t: "reply" }>): void => {
     const waiting = pending.get(frame.id);
     if (waiting === undefined) {
@@ -856,6 +908,9 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         return;
       case "hook":
         void onHook(host);
+        return;
+      case "migrate":
+        void onMigrate(host);
         return;
       case "reply":
         onReply(host);

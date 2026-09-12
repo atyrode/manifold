@@ -1,6 +1,7 @@
-import type { AnyActionDef, AssemblyDelta, LifecycleCtx, PluginLifecycle } from "@manifold/plugin";
+import type { AnyActionDef, AssemblyDelta, LifecycleCtx, PluginLifecycle, PluginMigration, PluginStorage } from "@manifold/plugin";
 import {
   CapSchema,
+  GuestMigrationDeclarationsSchema,
   ManifoldRefSchema,
   LocalNameSchema,
   PlaceRequestSchema,
@@ -36,6 +37,7 @@ export type IsolateDispatchOutcome = Extract<IsolateChildFrame, { t: "dispatched
 export interface IsolateTransport {
   dispatch(action: string, args: unknown, ctx: ActionCtx): Promise<IsolateDispatchOutcome>;
   hook(hook: IsolateHook, ctx: LifecycleCtx, delta?: AssemblyDelta): Promise<void>;
+  migrate(migration: Pick<PluginMigration, "name" | "to">, storage: PluginStorage): Promise<void>;
 }
 
 /**
@@ -85,6 +87,12 @@ export function buildIsolateDef(
   loaded: LoadedFrame,
   transport: IsolateTransport,
 ): IsolateLoadResult {
+  const declarations = GuestMigrationDeclarationsSchema.safeParse({
+    dataVersion: manifest.dataVersion,
+    migrations: loaded.migrations ?? [],
+  });
+  if (!declarations.success) throw new IsolateLoadError(declarations.error.message);
+  const { migrations } = declarations.data;
   const actions: AnyActionDef[] = [];
   const handlers: Record<string, ActionHandler> = {};
   for (const summary of loaded.actions) {
@@ -116,7 +124,19 @@ export function buildIsolateDef(
       ? { onAssemblyChanged: (ctx, delta) => transport.hook("onAssemblyChanged", ctx, delta) }
       : {}),
   };
-  return { def: { manifest, actions, handlers, lifecycle }, lifecycle };
+  return {
+    def: {
+      manifest,
+      actions,
+      handlers,
+      lifecycle,
+      migrations: migrations.map((migration) => ({
+        ...migration,
+        migrate: (storage) => transport.migrate(migration, storage),
+      })),
+    },
+    lifecycle,
+  };
 }
 
 /**
@@ -127,7 +147,8 @@ export function buildIsolateDef(
  */
 export type ServedCtx =
   | { readonly kind: "dispatch"; readonly ctx: ActionCtx }
-  | { readonly kind: "hook"; readonly ctx: LifecycleCtx };
+  | { readonly kind: "hook"; readonly ctx: LifecycleCtx }
+  | { readonly kind: "migration"; readonly ctx: { readonly storage: PluginStorage } };
 
 /** The positional argument at `index`, which the served method needs to be a string. */
 function stringArg(args: readonly unknown[], index: number, method: IsolateCtxMethod): string {

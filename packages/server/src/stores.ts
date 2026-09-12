@@ -13,6 +13,7 @@ import {
 } from "@manifold/plugin";
 import {
   ActionSummarySchema,
+  MAX_MIGRATION_STORAGE_OPERATIONS,
   BindingOverridesSchema,
   CapSchema,
   ContainerDisciplineSchema,
@@ -723,6 +724,13 @@ function toTerminal(row: TerminalDbRow): StoredTerminal {
   };
 }
 
+/** A private migration draft; publication is synchronous with the caller's native metadata. */
+export interface PluginMigrationSession {
+  readonly storage: PluginStorageAdmin;
+  commit(publish?: () => void): void;
+  discard(): void;
+}
+
 /** Synchronous repository over the server-owned SQLite schema. */
 export class ServerStore {
   private readonly eventCountByContainer = new Map<string, number>();
@@ -919,13 +927,109 @@ export class ServerStore {
    * a caller reads off its own statements is the ordering the database saw.
    */
   pluginStorage(pluginId: string): PluginStorageAdmin {
-    const read = (key: string): string | null =>
-      this.db
+    return this.storageHandle(pluginId);
+  }
+
+  /**
+   * Private bounded KV snapshot. No SQLite transaction survives an await. The host drains
+   * this plugin first, then publishes its changes and ledger in one synchronous transaction.
+   * A conflict (including a retained old storage handle writing in the meantime) aborts.
+   */
+  beginPluginMigration(pluginId: string, includeData = true): PluginMigrationSession {
+    const snapshot = (): Map<string, string> => {
+      const rows = new Map<string, string>();
+      let bytes = 0;
+      const query = includeData
+        ? "SELECT key, value FROM plugin_kv WHERE plugin_id = ? ORDER BY key"
+        : "SELECT key, value FROM plugin_kv WHERE plugin_id = ? AND key LIKE '$%' ORDER BY key";
+      for (const row of this.db.query<{ key: string; value: string }, [string]>(query).iterate(pluginId)) {
+        bytes += Buffer.byteLength(row.key) + Buffer.byteLength(row.value);
+        if (rows.size >= 4096 || bytes > 16 * 1024 * 1024)
+          throw new Error("plugin migration exceeds the 4096 row / 16 MiB staging bound");
+        rows.set(row.key, row.value);
+      }
+      return rows;
+    };
+    const before = snapshot();
+    const rows = new Map(before);
+    let open = true;
+    let operations = 0;
+    let bytes = 0;
+    for (const [key, value] of rows) bytes += Buffer.byteLength(key) + Buffer.byteLength(value);
+    const assertOpen = (): void => {
+      if (!open) throw new Error("plugin migration storage is closed");
+      if (++operations > MAX_MIGRATION_STORAGE_OPERATIONS) {
+        open = false;
+        throw new Error("plugin migration exceeded its storage operation budget");
+      }
+    };
+    const draft = {
+      rows,
+      assertOpen,
+      write: (key: string, value: string): void => {
+        assertOpen();
+        const previous = rows.get(key);
+        const nextBytes = bytes + Buffer.byteLength(value) -
+          (previous === undefined ? -Buffer.byteLength(key) : Buffer.byteLength(previous));
+        if ((previous === undefined && rows.size >= 4096) || nextBytes > 16 * 1024 * 1024)
+          throw new Error("plugin migration exceeds the 4096 row / 16 MiB staging bound");
+        rows.set(key, value);
+        bytes = nextBytes;
+      },
+      drop: (key: string): void => {
+        assertOpen();
+        const previous = rows.get(key);
+        if (previous !== undefined) bytes -= Buffer.byteLength(key) + Buffer.byteLength(previous);
+        rows.delete(key);
+      },
+    };
+    return {
+      storage: this.storageHandle(pluginId, draft),
+      discard: () => { open = false; },
+      commit: (publish) => {
+        assertOpen();
+        open = false;
+        this.transaction(() => {
+          const current = snapshot();
+          if (current.size !== before.size)
+            throw new Error("plugin storage changed while migration was staged");
+          for (const [key, value] of before)
+            if (current.get(key) !== value)
+              throw new Error("plugin storage changed while migration was staged");
+          const write = this.db.query<void, [string, string, string]>(
+            "INSERT OR REPLACE INTO plugin_kv(plugin_id, key, value) VALUES (?, ?, ?)",
+          );
+          const drop = this.db.query<void, [string, string]>(
+            "DELETE FROM plugin_kv WHERE plugin_id = ? AND key = ?",
+          );
+          for (const key of before.keys()) if (!rows.has(key)) drop.run(pluginId, key);
+          for (const [key, value] of rows)
+            if (before.get(key) !== value) write.run(pluginId, key, value);
+          publish?.();
+        });
+      },
+    };
+  }
+
+  private storageHandle(pluginId: string, draft?: {
+    readonly rows: Map<string, string>;
+    assertOpen(): void;
+    write(key: string, value: string): void;
+    drop(key: string): void;
+  }): PluginStorageAdmin {
+    const read = (key: string): string | null => {
+      if (draft !== undefined) {
+        draft.assertOpen();
+        return draft.rows.get(key) ?? null;
+      }
+      return this.db
         .query<PluginKvRow, [string, string]>(
           "SELECT value FROM plugin_kv WHERE plugin_id = ? AND key = ?",
         )
         .get(pluginId, key)?.value ?? null;
+    };
     const write = (key: string, value: string): void => {
+      if (draft !== undefined) return draft.write(key, value);
       this.db
         .query<void, [string, string, string]>(
           "INSERT OR REPLACE INTO plugin_kv(plugin_id, key, value) VALUES (?, ?, ?)",
@@ -933,23 +1037,34 @@ export class ServerStore {
         .run(pluginId, key, value);
     };
     const drop = (key: string): void => {
+      if (draft !== undefined) return draft.drop(key);
       this.db
         .query<void, [string, string]>("DELETE FROM plugin_kv WHERE plugin_id = ? AND key = ?")
         .run(pluginId, key);
     };
-    const scan = (prefix: string): readonly string[] =>
-      this.db
+    const scan = (prefix: string): readonly string[] => {
+      if (draft !== undefined) {
+        draft.assertOpen();
+        return [...draft.rows.keys()].filter((key) => key.startsWith(prefix)).sort();
+      }
+      return this.db
         .query<PluginKvKeyRow, [string, string]>(
           "SELECT key FROM plugin_kv WHERE plugin_id = ? AND key LIKE ? || '%' ORDER BY key",
         )
         .all(pluginId, prefix)
         .map((row) => row.key);
-    const total = (): number =>
-      this.db
+    };
+    const total = (): number => {
+      if (draft !== undefined) {
+        draft.assertOpen();
+        return draft.rows.size;
+      }
+      return this.db
         .query<PluginKvCountRow, [string]>(
           "SELECT count(*) AS total FROM plugin_kv WHERE plugin_id = ?",
         )
         .get(pluginId)?.total ?? 0;
+    };
     return {
       pluginId,
       get: async (key) => read(key),
@@ -962,6 +1077,11 @@ export class ServerStore {
         assertStorageKey(key);
         if (expected !== null) assertStorageValue(key, expected);
         assertStorageValue(key, value);
+        if (draft !== undefined) {
+          if (read(key) !== expected) return false;
+          write(key, value);
+          return true;
+        }
         // Each condition and write is one SQLite statement, including competing creators.
         // Never split the comparison from the mutation across awaited storage calls.
         if (expected === null) {
@@ -1004,6 +1124,10 @@ export class ServerStore {
       count: async () => total(),
       clear: async () => {
         const removed = total();
+        if (draft !== undefined) {
+          for (const key of draft.rows.keys()) draft.drop(key);
+          return removed;
+        }
         this.db.query<void, [string]>("DELETE FROM plugin_kv WHERE plugin_id = ?").run(pluginId);
         return removed;
       },
