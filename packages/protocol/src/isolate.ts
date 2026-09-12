@@ -336,8 +336,9 @@ export const ISOLATE_MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 /** Correlates a request with its answer on either ipc direction; sender-chosen, opaque. */
 const frameId = z.string().min(1).max(64);
 
-/** Prose about a failure, bounded because the child writes it and the host logs it. */
-const errorText = z.string().max(2048);
+/** Maximum failure prose carried by an isolate frame. */
+export const ISOLATE_ERROR_TEXT_MAX = 2_048;
+const errorText = z.string().max(ISOLATE_ERROR_TEXT_MAX);
 
 /**
  * The ctx slices a child may CALL BACK into (ADR 0016 §2), each one an RPC the host serves on
