@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
   PLUGIN_BUNDLE_SERVER_FILE,
@@ -73,6 +73,36 @@ describe("the artifact", () => {
     expect(bundle.manifest.id).toBe("example.counter");
     expect(bundle.manifest.entry).toEqual({ server: true, web: "web.js" });
     expect(Object.keys(bundle.files).sort()).toEqual([PLUGIN_BUNDLE_SERVER_FILE, "web.js"]);
+  });
+
+  test("pack output is independent of source location and process cwd", async () => {
+    const locations = mkdtempSync(`${KIT}/.pack-location-`);
+    const first = `${locations}/first/sample`;
+    const second = `${locations}/another/depth/sample`;
+    const run = async (source: string, out: string, cwd: string): Promise<PackResult> => {
+      const command = Bun.spawn(
+        ["bun", `${KIT}/src/pack.ts`, source, "--out", out, "--self-contained"],
+        { cwd, stdout: "pipe", stderr: "pipe" },
+      );
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(command.stdout).text(),
+        new Response(command.stderr).text(),
+        command.exited,
+      ]);
+      if (code !== 0) throw new Error(`pack exited ${String(code)}: ${stderr}`);
+      return PackResultSchema.parse(JSON.parse(stdout));
+    };
+    try {
+      cpSync(SAMPLE, first, { recursive: true });
+      cpSync(SAMPLE, second, { recursive: true });
+      const left = await run(first, `${locations}/first.json`, KIT);
+      const right = await run(second, `${locations}/second.json`, `${KIT}/../..`);
+      expect(right.sha256).toBe(left.sha256);
+      expect(right.bytes).toBe(left.bytes);
+      expect(await Bun.file(right.file).bytes()).toEqual(await Bun.file(left.file).bytes());
+    } finally {
+      rmSync(locations, { recursive: true, force: true });
+    }
   });
 
   test("packing carries managed tool members once and verifies their own pinned bytes", async () => {
