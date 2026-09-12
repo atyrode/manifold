@@ -1333,7 +1333,9 @@ describe("PluginHost database", () => {
   const KEYS_ID = "test.keys";
 
   /** Two plugins that differ in one manifest line: one declares a database, one does not. */
-  function databaseDefs(options: { readonly migration?: boolean } = {}): readonly ServerPluginDef[] {
+  function databaseDefs(
+    options: { readonly migration?: boolean } = {},
+  ): readonly ServerPluginDef[] {
     return [
       {
         manifest: {
@@ -1358,7 +1360,9 @@ describe("PluginHost database", () => {
         handlers: {
           write: async (ctx: ActionCtx) => {
             if (ctx.database === undefined) return { note: "", declared: false };
-            await ctx.database.run("CREATE TABLE IF NOT EXISTS notes(id INTEGER PRIMARY KEY, body TEXT NOT NULL)");
+            await ctx.database.run(
+              "CREATE TABLE IF NOT EXISTS notes(id INTEGER PRIMARY KEY, body TEXT NOT NULL)",
+            );
             await ctx.database.run("INSERT INTO notes(body) VALUES (?)", ["kept"]);
             const rows = await ctx.database.query<{ body: string }>("SELECT body FROM notes");
             return { note: rows[0]?.body ?? "", declared: true };
@@ -1375,7 +1379,9 @@ describe("PluginHost database", () => {
                       await storage.set("migrated", "without a database");
                       return;
                     }
-                    await database.run("CREATE TABLE notes(id INTEGER PRIMARY KEY, body TEXT NOT NULL)");
+                    await database.run(
+                      "CREATE TABLE notes(id INTEGER PRIMARY KEY, body TEXT NOT NULL)",
+                    );
                     await storage.set("migrated", "with a database");
                   },
                 },
@@ -2469,8 +2475,13 @@ describe("PluginHost install doors", () => {
     try {
       const { source, sha256 } = fixture.drop({ ...SAMPLE_MANIFEST, database: {} });
       expect(
-        (await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256, hardened: true }))
-          .ok,
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            source,
+            sha256,
+            hardened: true,
+          })
+        ).ok,
       ).toBe(true);
       expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
         ok: true,

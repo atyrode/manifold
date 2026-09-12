@@ -15,7 +15,9 @@ describe("a plugin's own tables", () => {
     const { dataDir, done } = scratch();
     try {
       const db = openPluginDatabase({ dataDir, pluginId: "atyrode.example" });
-      await db.run("CREATE TABLE records(id TEXT PRIMARY KEY, kind TEXT NOT NULL, score INTEGER NOT NULL)");
+      await db.run(
+        "CREATE TABLE records(id TEXT PRIMARY KEY, kind TEXT NOT NULL, score INTEGER NOT NULL)",
+      );
       const written = await db.run("INSERT INTO records(id, kind, score) VALUES (?, ?, ?)", [
         "rec_1",
         "proposal",
@@ -137,7 +139,11 @@ describe("a plugin's own tables", () => {
     const { dataDir, done } = scratch();
     try {
       let clock = 0;
-      const db = openPluginDatabase({ dataDir, pluginId: "atyrode.example", now: () => (clock += 3000) });
+      const db = openPluginDatabase({
+        dataDir,
+        pluginId: "atyrode.example",
+        now: () => (clock += 3000),
+      });
       await db.run("CREATE TABLE t(v TEXT)");
       await expect(
         db.batch([

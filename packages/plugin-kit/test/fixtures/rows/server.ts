@@ -21,7 +21,9 @@ const records = defineServerAction({
 });
 
 export const handlers = {
-  async records(ctx: GuestCtx): Promise<{ kept: number; rolledBack: boolean } | { refused: string }> {
+  async records(
+    ctx: GuestCtx,
+  ): Promise<{ kept: number; rolledBack: boolean } | { refused: string }> {
     const database = ctx.database;
     if (database === undefined) return { refused: "this plugin declared a database and got none" };
     await database.run("INSERT INTO records(body) VALUES (?)", ["one"]);

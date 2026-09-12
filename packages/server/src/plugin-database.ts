@@ -53,7 +53,10 @@ export function pluginDatabasePath(dataDir: string, pluginId: string): string {
 export function openPluginDatabase(options: PluginDatabaseOptions): PluginDatabaseAdmin {
   const { dataDir, pluginId } = options;
   const path = pluginDatabasePath(dataDir, pluginId);
-  const maxPages = Math.max(1, Math.floor(grantedDatabaseMaxBytes(options.maxBytes) / DATABASE_PAGE_BYTES));
+  const maxPages = Math.max(
+    1,
+    Math.floor(grantedDatabaseMaxBytes(options.maxBytes) / DATABASE_PAGE_BYTES),
+  );
   const now = options.now ?? (() => Date.now());
   let handle: Database | null = null;
 
@@ -72,7 +75,11 @@ export function openPluginDatabase(options: PluginDatabaseOptions): PluginDataba
   };
 
   /** Runs one validated statement and returns its rows, bounded. */
-  const rows = (db: Database, sql: string, params: readonly SqlParam[] | undefined): readonly SqlRow[] => {
+  const rows = (
+    db: Database,
+    sql: string,
+    params: readonly SqlParam[] | undefined,
+  ): readonly SqlRow[] => {
     const statement = db.query<SqlRow, SqlParam[]>(sql);
     try {
       const result = statement.all(...((params ?? []) as SqlParam[]));
@@ -103,7 +110,11 @@ export function openPluginDatabase(options: PluginDatabaseOptions): PluginDataba
     }
   };
 
-  const changes = (db: Database, sql: string, params: readonly SqlParam[] | undefined): SqlRunResult => {
+  const changes = (
+    db: Database,
+    sql: string,
+    params: readonly SqlParam[] | undefined,
+  ): SqlRunResult => {
     const statement = db.query<void, SqlParam[]>(sql);
     try {
       const result = statement.run(...((params ?? []) as SqlParam[]));
