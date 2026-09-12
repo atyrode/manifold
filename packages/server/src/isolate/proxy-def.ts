@@ -1,4 +1,12 @@
-import type { AnyActionDef, AssemblyDelta, LifecycleCtx, PluginLifecycle } from "@manifold/plugin";
+import type {
+  AnyActionDef,
+  AssemblyDelta,
+  LifecycleCtx,
+  PluginDatabase,
+  PluginLifecycle,
+  SqlParam,
+  SqlStatement,
+} from "@manifold/plugin";
 import {
   CapSchema,
   ManifoldRefSchema,
@@ -122,8 +130,9 @@ export function buildIsolateDef(
 /**
  * The request a child's `call` belongs to. A dispatch serves the whole `ISOLATE_CTX_METHODS`
  * list from the caller's `ActionCtx`; a lifecycle hook has only its `LifecycleCtx`, so it
- * serves storage and answers `slice_unavailable` for the rest — the same word the guest
- * runtime uses for a slice stage 1 does not carry.
+ * serves storage and the plugin's own database — a hook orders its OWN durable state, and
+ * rows are as much of that as keys — and answers `slice_unavailable` for the rest, the same
+ * word the guest runtime uses for a slice stage 1 does not carry.
  */
 export type ServedCtx =
   | { readonly kind: "dispatch"; readonly ctx: ActionCtx }
@@ -136,6 +145,55 @@ function stringArg(args: readonly unknown[], index: number, method: IsolateCtxMe
     throw new Error(`${method}: argument ${String(index)} must be a string`);
   }
   return value;
+}
+
+/**
+ * The plugin's own database, or the refusal that says it never asked for one. A manifest
+ * without `database` has no slice on either side of the boundary (ADR 0034 §6), and the word
+ * is the one the guest runtime already uses for a member stage 1 does not carry.
+ */
+function databaseOf(served: ServedCtx, method: IsolateCtxMethod): PluginDatabase {
+  const database = served.ctx.database;
+  if (database === undefined) throw new Error(`slice_unavailable: ${method}`);
+  return database;
+}
+
+/**
+ * The bound parameters of one served statement. The frame schema bounds how many ARGUMENTS a
+ * call carries and nothing about their shape, so the list is narrowed here; every value in it
+ * is judged by the contract's own `assertSqlParams` inside the promise the database returns,
+ * which is where a refusal becomes a rejection the plugin can catch.
+ */
+function paramsArg(
+  args: readonly unknown[],
+  index: number,
+  method: IsolateCtxMethod,
+): readonly SqlParam[] | undefined {
+  const value = args[index];
+  // `undefined` and `null` both mean "this statement binds nothing": the frame is JSON, which
+  // carries no `undefined`, so an omitted argument arrives as either depending on the sender.
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error(`${method}: argument ${String(index)} must be an array of parameters`);
+  }
+  return value as readonly SqlParam[];
+}
+
+/** The statement list of a served `batch`, narrowed to the shape the contract takes. */
+function statementsArg(
+  args: readonly unknown[],
+  method: IsolateCtxMethod,
+): readonly SqlStatement[] {
+  const value = args[0];
+  if (!Array.isArray(value)) {
+    throw new Error(`${method}: argument 0 must be an array of statements`);
+  }
+  for (const statement of value as readonly unknown[]) {
+    if (statement === null || typeof statement !== "object" || !("sql" in statement)) {
+      throw new Error(`${method}: every statement must be an object with a sql string`);
+    }
+  }
+  return value as readonly SqlStatement[];
 }
 
 /**
@@ -175,6 +233,15 @@ export async function serveCtxCall(
       return served.ctx.storage.keys(
         args[0] === undefined ? undefined : stringArg(args, 0, method),
       );
+    case "database.query":
+      return databaseOf(served, method).query(
+        stringArg(args, 0, method),
+        paramsArg(args, 1, method),
+      );
+    case "database.run":
+      return databaseOf(served, method).run(stringArg(args, 0, method), paramsArg(args, 1, method));
+    case "database.batch":
+      return databaseOf(served, method).batch(statementsArg(args, method));
     case "jobs.describe":
     case "jobs.execute":
     case "jobs.status":

@@ -275,7 +275,8 @@ conversion work list — which floor surface becomes which plugin, and the rulin
     worker per isolated plugin in the browser; ADR 0025 keeps that runner as the installer's
     option and makes in-realm, with the full engine API, the default for every row.
   - **Settings** — a `core.settings` plugin over per-principal preferences. The mechanism is
-    already floor and already neutral: `ctx.storage` is a namespaced per-plugin key-value store,
+    already floor and already neutral: `ctx.storage` is a namespaced per-plugin key-value store —
+    with `ctx.database` beside it for a plugin whose data is rows rather than keys (ADR 0034) —
     so a preference is a plugin's own row and there is nothing for the engine to centralize. What
     the wave adds is the PANEL — one place a human edits what is currently edited nowhere — and
     the rule it must obey is that the panel is neutral over what it edits: a settings panel

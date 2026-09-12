@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { LifecycleCtx, PluginStorage } from "@manifold/plugin";
+import { PluginDatabaseError } from "@manifold/plugin-kit";
 import { attachServerGuest } from "@manifold/plugin-kit/server";
+import { openPluginDatabase } from "../src/plugin-database.ts";
 import type { IsolateChildFrame, PluginManifest } from "@manifold/protocol";
 import { z } from "zod";
 import { IsolateDenial, IsolateLoadError } from "../src/isolate/contract.ts";
@@ -383,6 +388,103 @@ describe("serveCtxCall", () => {
     ] as const) {
       await expect(serveCtxCall(method, [{ machineId: "machine" }], served)).rejects.toThrow(
         "slice_unavailable",
+      );
+    }
+  });
+
+  test("the three database verbs round-trip, and a refusal arrives as PluginDatabaseError", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "manifold-proxy-db-"));
+    const database = openPluginDatabase({ dataDir, pluginId: manifest.id });
+    const storage = testStore().pluginStorage(manifest.id);
+    /*
+      The whole conversation in one process: the guest's `ctx.database` posts `call` frames, a
+      scripted host answers each from `serveCtxCall` against the engine's real file, and what
+      the plugin sees is the same three verbs an in-realm handler sees (ADR 0016 §4 — one
+      contract). The hook slice is served too, because a hook orders its own durable state.
+     */
+    const served = {
+      kind: "hook" as const,
+      ctx: { pluginId: manifest.id, storage, database, now: () => 0, emit: () => {} },
+    };
+    const seen: unknown[] = [];
+    let receive: (frame: unknown) => void = () => {};
+    const completed = Promise.withResolvers<Extract<IsolateChildFrame, { t: "hooked" }>>();
+    attachServerGuest(
+      {
+        manifest: { ...manifest, database: { maxBytes: 4 * 1024 * 1024 } },
+        actions: [],
+        handlers: {},
+        lifecycle: {
+          async onEnable(ctx) {
+            const db = ctx.database;
+            if (db === undefined) throw new Error("a declaring plugin got no database");
+            await db.run("CREATE TABLE records(id INTEGER PRIMARY KEY, body TEXT NOT NULL)");
+            const written = await db.run("INSERT INTO records(body) VALUES (?)", ["first"]);
+            seen.push(written.changes);
+            seen.push(await db.query("SELECT body FROM records"));
+            // A batch is the transaction: the second statement violates NOT NULL, so the
+            // first must not survive it — the rollback is what the plugin is promised.
+            await db
+              .batch([
+                { sql: "INSERT INTO records(body) VALUES (?)", params: ["second"] },
+                { sql: "INSERT INTO records(body) VALUES (NULL)" },
+              ])
+              .then(
+                () => seen.push("committed"),
+                (error: unknown) => {
+                  seen.push(error instanceof PluginDatabaseError ? error.name : String(error));
+                },
+              );
+            seen.push(await db.query("SELECT body FROM records"));
+          },
+        },
+      },
+      {
+        onMessage: (listener) => {
+          receive = listener;
+        },
+        send: (frame) => {
+          if (frame.t === "call") {
+            void serveCtxCall(frame.method, frame.args, served).then(
+              (result) => receive({ t: "reply", id: frame.id, ok: true, result }),
+              (error: unknown) =>
+                receive({
+                  t: "reply",
+                  id: frame.id,
+                  ok: false,
+                  error: error instanceof Error ? error.message : String(error),
+                }),
+            );
+          } else if (frame.t === "hooked") {
+            completed.resolve(frame);
+          }
+        },
+        warn: () => {},
+        exit: () => {},
+      },
+    );
+    try {
+      receive({ t: "load", pluginId: manifest.id, manifest, dir: "/unused" });
+      receive({ t: "hook", id: "rows", hook: "onEnable" });
+      expect(await completed.promise).toMatchObject({ ok: true });
+      expect(seen).toEqual([1, [{ body: "first" }], "PluginDatabaseError", [{ body: "first" }]]);
+    } finally {
+      database.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a plugin that declared no database has no slice on either side of the boundary", async () => {
+    const storage = testStore().pluginStorage(manifest.id);
+    const served = {
+      kind: "hook" as const,
+      ctx: { pluginId: manifest.id, storage, now: () => 0, emit: () => {} },
+    };
+    // The host's answer to a forged call frame: the word the guest runtime already uses for a
+    // member it does not carry, so an absent slice is a named refusal rather than a TypeError.
+    for (const method of ["database.query", "database.run", "database.batch"] as const) {
+      await expect(serveCtxCall(method, ["SELECT 1"], served)).rejects.toThrow(
+        `slice_unavailable: ${method}`,
       );
     }
   });

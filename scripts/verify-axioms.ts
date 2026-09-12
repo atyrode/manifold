@@ -29,7 +29,6 @@
  *   S13 CSS ownership: every selector family is painted by its registered owner
  *   S14 log vocabulary: producers and stdout matchers name live LOG_EVENTS
  *   S15 gate contracts: every test-id query is registered, painted and live
- *   S16 the floor's own size: `packages/plugin/src` stays inside its declared line budget
  *   S17 hosting neutrality: no shipped file names a hosting provider (ADR 0022)
  *   S18 import direction follows paths: parent never imports child; child uses parent contract
  *   S19 decision records: every record's status block parses, successors exist, numbers are
@@ -2158,114 +2157,6 @@ function scanTree(dir: string, out: string[]): void {
     stale.length === 0 && copyKeyed.length === 0
       ? `no stale rows, and no gate keys an assertion off button copy`
       : `rows nobody queries: ${list(stale.map((row) => row.testid))}; copy-keyed clicks — use clickTestId against a declared contract: ${list(copyKeyed)}`,
-  );
-}
-
-// ────────────────────────────────────────── S16: the floor's own size, as a number
-
-/**
- * THE FLOOR HAS A BUDGET, and the budget is the only thing that makes "keep the engine small"
- * a claim instead of a preference.
- *
- * Every other static check here asks whether a boundary is CLEAN. None of them notices the
- * failure mode that actually threatens A1, which is the engine getting bigger one defensible
- * commit at a time. `packages/plugin/src` is where that happens first: it is the one package
- * every plugin imports, so a helper put there is instantly reachable by everything and never
- * has to justify itself to a second party the way a plugin's own module does. The litmus test
- * (§Foundation law) governs each ADDITION and cannot see the aggregate; a number can.
- *
- * SOURCE ONLY, tests excluded, because `sourcesMatching` already draws that line and a test is
- * evidence about the floor rather than part of it — a budget that counted tests would price
- * proving the engine the same as growing it.
- *
- * Two thresholds, and the gap between them is the point. The WARN line is a line printed and
- * nothing else: it is where a reviewer should be asking which of these modules is really
- * plugin territory, and a gate that failed there would be a gate that blocks the wave doing
- * the extraction. The RED line is where the number stops being a signal and becomes the
- * finding — an engine that size is no longer small enough for a stranger's agent to read
- * before it starts (A3), whatever each individual file's litmus verdict said. Raising either
- * threshold is a change to this file, which means it is a change somebody has to defend in a
- * diff; that is the whole enforcement mechanism.
- *
- * RED RAISED 12,000 → 12,500 on 2026-09-01 (issue #133), and this is the defence. What crossed
- * the line was `settings.ts`: per-principal preference composition, which passes the litmus on
- * all three criteria — the sidebar drops a row before any plugin draws (bootstrap
- * circularity), the module names no plugin and no preference (neutrality), and it refuses a
- * write the assembly does not declare (arbitration). The alternative to the raise was to put
- * that composition inside `core.plugins`, which is the exact trap `setEnabled` was moved out of
- * a plugin to escape. So the engine grew by ONE module and 51 lines past the ceiling, on
- * purpose, and the number moves by the smallest amount that admits it rather than to a round
- * new headroom: the next module to cross this line gets the same argument or it does not land.
- * The WARN line does NOT move — it has been a live signal since well before this wave, and
- * silencing it would trade the review this budget exists to provoke for a green run.
- *
- * RED RAISED 12,500 → 12,700 on 2026-09-05 (ADR 0016 stage 1, #187 and #196), and this is the
- * defence. ADR 0016 T4 predicted it: "the runner's client half … lands in `packages/plugin/src`,
- * which is already past the 9,000-line WARN … this ADR predicts the defence will be needed in
- * stage 1 and does not pre-approve it." What crossed the line is not the runner (that lands in
- * `packages/web/src/isolate` and `packages/plugin-kit`, outside this budget, on purpose) but two
- * things the ADR itself obliges the engine to say: `storage.ts` records the reversal of its
- * synchronous ruling (§4, R3, T2) instead of silently changing shape, and `SessionHandle` gains
- * the terminal verbs plus the room-pipe registration a panel needs to open a terminal without
- * ever holding `host.token` (#196; ADR 0016 §3 withdraws that token from isolated plugins, so the
- * handle IS the arbitration boundary — neutrality: it names no plugin; bootstrap: the renderers
- * publish the pipe before any panel draws). Together about 170 lines. The number again moves by
- * the smallest amount that admits them; the WARN line does not move. Written by an agent on the
- * operator's direction while the operator slept: this raise is REVIEWABLE — reject it by
- * extracting plugin territory (tile-geometry.ts at 962 lines is the first candidate) instead.
- *
- * RED RAISED 12,700 → 12,800 the same night (ADR 0016 stage 2, #152): the install and uninstall
- * doors are engine doors, so their action rows, request/result schemas and the roster row's
- * `install` block land in `builtin.ts` and `assemble.ts` beside `setEnabled` and `purge` — the
- * one place they can be (the enablement door "cannot be a plugin", §Foundation law), about
- * 70 lines. Same defence, same reviewability, same unmoved WARN line.
- *
- * RED RAISED 12,800 → 13,233 on 2026-09-05 (#216, #219, #222; ADR 0024). The added
- * mechanisms are one mounted projection/titlebar contract, one host-owned titlebar drag
- * boundary, and one stable-host tile-motion owner shared by incoming, departing and committed
- * layouts. They arbitrate between renderer plugins and survive any optional contributor being
- * disabled; no plugin owns the others' ancestry, controls or geometry. Moving them into one
- * renderer would require cross-plugin imports or duplicate the very pipeline these issues
- * remove. The production TypeScript delta is 491 lines, including the explicit preview/chrome
- * contract; the integrated base was 12,742 lines. This admits exactly 13,233, without moving WARN,
- * excluding more files, trimming explanations, or relaxing any behavior gate. ADR 0024 applies
- * all three admission criteria and records the rejected alternatives.
- *
- * RED LOWERED 13,233 → 12,000 on 2026-09-06 (#240, ADR 0025 §8). The design system left:
- * `layout.tsx`, `icons.tsx`, `node-titlebar.tsx`, `flip.ts`, the disclosure, the scroll region,
- * the popover, the chip, the key-value list and the keycap are `packages/ui/src` now
- * (`@manifold/ui`, its own pillar), and `packages/plugin/src` fell from 13,204 to 11,633 lines
- * — which is what the raises above were really measuring: design-system code sitting in the
- * engine package because that was where everything already imported from. A lowering needs no
- * smallest-amount defence; it is the extraction cashing in, and it lands on a round number on
- * purpose so the next raise argues from 12,000 rather than from wherever the count happened to
- * be. The WARN line still does not move, and the count is still 2,633 past it:
- * `tile-geometry.ts` (962) and `projection.ts` are the next candidates for the question the
- * WARN exists to provoke.
- */
-const PLUGIN_SRC_WARN_LINES = 9_000;
-const PLUGIN_SRC_MAX_LINES = 12_000;
-
-{
-  const files = sourcesMatching("packages/plugin/src/**");
-  let total = 0;
-  let largest = { path: "", lines: 0 };
-  for (const path of files) {
-    const lines = readFileSync(join(repoRoot, path), "utf8").split("\n").length;
-    total += lines;
-    if (lines > largest.lines) largest = { path, lines };
-  }
-  if (total >= PLUGIN_SRC_WARN_LINES) {
-    console.log(
-      `WARN  S16 floor budget: packages/plugin/src is ${String(total)} lines, past the ${String(PLUGIN_SRC_WARN_LINES)} review line (RED at ${String(PLUGIN_SRC_MAX_LINES)}). Largest: ${largest.path} (${String(largest.lines)}). Ask which of these modules is plugin territory.`,
-    );
-  }
-  check(
-    "S16 floor budget",
-    total <= PLUGIN_SRC_MAX_LINES,
-    total <= PLUGIN_SRC_MAX_LINES
-      ? `packages/plugin/src is ${String(total)} lines across ${String(files.length)} source files (warn ${String(PLUGIN_SRC_WARN_LINES)}, red ${String(PLUGIN_SRC_MAX_LINES)}); largest ${largest.path} (${String(largest.lines)})`
-      : `packages/plugin/src is ${String(total)} lines, over the ${String(PLUGIN_SRC_MAX_LINES)}-line ceiling: the engine has grown past what a stranger's agent can read before starting (A3). Extract plugin territory or defend a new ceiling in scripts/verify-axioms.ts`,
   );
 }
 

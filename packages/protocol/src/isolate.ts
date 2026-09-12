@@ -341,11 +341,12 @@ const errorText = z.string().max(2048);
 
 /**
  * The ctx slices a child may CALL BACK into (ADR 0016 §2), each one an RPC the host serves on
- * the plugin's behalf: storage namespaced by plugin id, the dispatching caller's authority,
- * and the two host services a first-party slice already reaches by method name. Everything
- * else in `ActionCtx` is NOT served in stage 1 — the guest runtime raises
- * `IsolateSliceUnavailable(method)` and maps it to `{ ok: false, rule: "refused" }`, so the
- * absence is a named refusal at the door rather than a hang or a throw.
+ * the plugin's behalf: storage namespaced by plugin id, the plugin's own database when its
+ * manifest declared one, the dispatching caller's authority, and the two host services a
+ * first-party slice already reaches by method name. Everything else in `ActionCtx` is NOT
+ * served in stage 1 — the guest runtime raises `IsolateSliceUnavailable(method)` and maps it
+ * to `{ ok: false, rule: "refused" }`, so the absence is a named refusal at the door rather
+ * than a hang or a throw.
  */
 export const ISOLATE_CTX_METHODS = [
   "storage.get",
@@ -353,6 +354,9 @@ export const ISOLATE_CTX_METHODS = [
   "storage.compareAndSet",
   "storage.delete",
   "storage.keys",
+  "database.query",
+  "database.run",
+  "database.batch",
   "auth.allows",
   "outsideScope",
   "newId",

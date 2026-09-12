@@ -433,6 +433,7 @@ export {
   ActionDelegatesSchema,
   ActionTracePolicySchema,
   type ActionRequirement,
+  CEILING_DATABASE_MAX_BYTES,
   CORE_NAMESPACE_PREFIX,
   DEFAULT_DORMANT_MODE,
   DEFAULT_SEAT_RATIO,
