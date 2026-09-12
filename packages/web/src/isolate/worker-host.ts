@@ -1,12 +1,15 @@
 import type { HostServices, SessionHandle, StreamHandle } from "@manifold/plugin";
 import { requestResponse } from "../http.ts";
 import {
+  ISOLATE_ERROR_TEXT_MAX,
+  IsolateReplyFrameSchema,
   WebIsolateWorkerFrameSchema,
   StreamOpenSchema,
   type Cap,
   type PlacementDestination,
   type PlacementRef,
   type Principal,
+  type IsolateReplyFrame,
   type UiNode,
   type WebHostMethod,
   type WebIsolateHostFrame,
@@ -95,14 +98,22 @@ type OpenTerminalOpts = Parameters<SessionHandle["openTerminal"]>[0];
 function unservedCall(data: unknown): { readonly id: string; readonly method: string } | null {
   if (typeof data !== "object" || data === null) return null;
   const { t, id, method } = data as { t?: unknown; id?: unknown; method?: unknown };
-  if (t !== "call" || typeof id !== "string" || id === "" || typeof method !== "string") {
-    return null;
-  }
-  return { id, method };
+  if (t !== "call" || typeof id !== "string" || typeof method !== "string") return null;
+  const reply = IsolateReplyFrameSchema.safeParse({ t: "reply", id, ok: false, error: "" });
+  return reply.success ? { id, method } : null;
 }
 
 function describe(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
+}
+
+function refusalFrame(id: string, reason: unknown, prefix = ""): IsolateReplyFrame {
+  return IsolateReplyFrameSchema.parse({
+    t: "reply",
+    id,
+    ok: false,
+    error: `${prefix}${describe(reason)}`.slice(0, ISOLATE_ERROR_TEXT_MAX),
+  });
 }
 
 function argText(method: WebHostMethod, args: readonly unknown[], index: number): string {
@@ -266,12 +277,7 @@ export class WorkerHost {
     if (!parsed.success) {
       const unserved = unservedCall(data);
       if (unserved !== null) {
-        this.post({
-          t: "reply",
-          id: unserved.id,
-          ok: false,
-          error: `slice_unavailable: ${unserved.method}`,
-        });
+        this.reply(refusalFrame(unserved.id, `slice_unavailable: ${unserved.method}`));
         return;
       }
       const issues = parsed.error.issues
@@ -313,24 +319,24 @@ export class WorkerHost {
   }
 
   private async serve(frame: CallFrame): Promise<void> {
-    let reply: WebIsolateHostFrame;
+    let reply: IsolateReplyFrame;
     try {
       const result: unknown = await this.dispatch(frame.method, frame.args);
       reply = { t: "reply", id: frame.id, ok: true, result };
     } catch (reason) {
-      reply = { t: "reply", id: frame.id, ok: false, error: describe(reason) };
+      reply = refusalFrame(frame.id, reason);
     }
     if (this.fault !== null || this.stopped) return;
+    this.reply(reply);
+  }
+
+  private reply(frame: IsolateReplyFrame): void {
+    const reply = IsolateReplyFrameSchema.parse(frame);
     try {
       this.post(reply);
     } catch (reason) {
-      // A result the structured clone refuses (a live handle, a function): the refusal names it.
-      this.post({
-        t: "reply",
-        id: frame.id,
-        ok: false,
-        error: `result not serialisable: ${describe(reason)}`,
-      });
+      // A result the structured clone refuses (a live handle, a function): answer once by id.
+      this.post(refusalFrame(frame.id, reason, "result not serialisable: "));
     }
   }
 
