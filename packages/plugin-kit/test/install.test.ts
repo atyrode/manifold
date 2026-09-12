@@ -20,16 +20,27 @@ test.skipIf(!canSpawnServer())(
     try {
       const bundle = async (version: string, missing = false) => {
         const source = join(dir, `${version}.manifold-plugin.json`);
-        await Bun.write(source, JSON.stringify({
-          format: 1,
-          manifest: {
-            id, version, title: "Retained", description: "Installer continuity regression",
-            capabilities: [], contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
-            entry: { web: "web.js" },
-            ...(missing ? { dependencies: { "example.absent": { type: "required" } } } : {}),
-          },
-          files: { "web.js": Buffer.from(`export const version = ${JSON.stringify(version)};`).toString("base64") },
-        }));
+        await Bun.write(
+          source,
+          JSON.stringify({
+            format: 1,
+            manifest: {
+              id,
+              version,
+              title: "Retained",
+              description: "Installer continuity regression",
+              capabilities: [],
+              contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+              entry: { web: "web.js" },
+              ...(missing ? { dependencies: { "example.absent": { type: "required" } } } : {}),
+            },
+            files: {
+              "web.js": Buffer.from(`export const version = ${JSON.stringify(version)};`).toString(
+                "base64",
+              ),
+            },
+          }),
+        );
         return source;
       };
       const first = await bundle("1.0.0");
@@ -38,15 +49,21 @@ test.skipIf(!canSpawnServer())(
       await ownerAction(server, "engine.plugins.setEnabled", { id, enabled: false });
       const disabled = (await roster(server)).find((row) => row.manifest.id === id)!;
       const broken = await bundle("9.0.0", true);
-      await expect(installBundle({ source: broken, hub: server })).rejects.toThrow("artifact_invalid");
+      await expect(installBundle({ source: broken, hub: server })).rejects.toThrow(
+        "artifact_invalid",
+      );
       expect((await roster(server)).find((row) => row.manifest.id === id)).toEqual(disabled);
       const second = await bundle("2.0.0");
       const replacement = await installBundle({ source: second, hub: server });
       expect(replacement.outcome).toBe("replaced");
       expect((await roster(server)).find((row) => row.manifest.id === id)).toMatchObject({
-        enabled: false, manifest: { version: "2.0.0" }, install: { sha256: replacement.sha256 },
+        enabled: false,
+        manifest: { version: "2.0.0" },
+        install: { sha256: replacement.sha256 },
       });
-      await expect(installBundle({ source: first, sha256: replacement.sha256, hub: server })).rejects.toThrow("not the pinned");
+      await expect(
+        installBundle({ source: first, sha256: replacement.sha256, hub: server }),
+      ).rejects.toThrow("not the pinned");
       expect((await roster(server)).find((row) => row.manifest.id === id)?.enabled).toBe(false);
       await ownerAction(server, "engine.plugins.setEnabled", { id, enabled: true });
       const module = await fetch(`${server.url}/api/plugins/${id}/web.js`, {

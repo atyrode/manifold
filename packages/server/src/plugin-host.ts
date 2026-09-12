@@ -90,7 +90,6 @@ import {
   IsolateLoadError,
   isolateLifecycleState,
   type IsolateRunner,
-  type IsolateState,
 } from "./isolate/contract.ts";
 import { localActionDef } from "./isolate/proxy-def.ts";
 import { redactFields, type Logger } from "./log.ts";
@@ -1053,8 +1052,8 @@ export class PluginHost {
       }
     }
     this.syncDefs();
-    this.isolates.runner.onState((pluginId, state) => {
-      this.onIsolateState(pluginId, state);
+    this.isolates.runner.onState((pluginId) => {
+      this.onIsolateState(pluginId);
     });
   }
 
@@ -1125,30 +1124,43 @@ export class PluginHost {
    * state that maps to no lifecycle clears only an isolate state — a hook's own
    * `enable_failed` is a different report and stands until the next transition.
    */
-  private onIsolateState(pluginId: string, state: IsolateState): void {
-    // A candidate child is not the published installation. Install or rollback publishes
-    // its final state, never an asynchronous reassembly of a half-replaced index.
-    if (this.replacing === pluginId) return;
+  private reconcileIsolateState(pluginId: string): boolean {
+    const installed = this.installed.get(pluginId);
+    if (
+      this.isolates === null ||
+      installed?.row.hardened !== true ||
+      installed.bundle?.manifest.entry.server !== true
+    )
+      return false;
+    // Notifications can belong to a retired child. Only the runner's current child for
+    // this verified installation owns a roster state; in-realm modules and failed repairs do not.
+    const state = this.isolates.runner.state(pluginId);
     const lifecycle = isolateLifecycleState(state);
+    const current = this.lifecycleStates.get(pluginId);
+    if (lifecycle === current) return false;
     if (lifecycle !== undefined) {
       this.lifecycleStates.set(pluginId, lifecycle);
     } else {
-      const current = this.lifecycleStates.get(pluginId);
-      if (current !== "isolate_starting" && current !== "isolate_crashed") return;
+      if (current !== "isolate_starting" && current !== "isolate_crashed") return false;
       this.lifecycleStates.delete(pluginId);
     }
+    return true;
+  }
+
+  private onIsolateState(pluginId: string): void {
+    // A candidate child is not the published installation. Leaving replacement reconciles
+    // the surviving child, including terminal transitions that arrive during admission.
+    if (this.replacing === pluginId || !this.reconcileIsolateState(pluginId)) return;
     this.changeAssembly(async () => {
       this.assembled = await this.reassemble();
       this.publish();
-    }).catch(
-      (error: unknown) => {
-        this.logger.error("plugin_lifecycle", {
-          plugin: pluginId,
-          hook: "state",
-          error: error instanceof Error ? error.message : "reassembly failed",
-        });
-      },
-    );
+    }).catch((error: unknown) => {
+      this.logger.error("plugin_lifecycle", {
+        plugin: pluginId,
+        hook: "state",
+        error: error instanceof Error ? error.message : "reassembly failed",
+      });
+    });
   }
 
   /** One composition over the store's current enablement and the facts `env` reads fresh. */
@@ -1294,7 +1306,9 @@ export class PluginHost {
   private async changeAssembly<T>(change: () => Promise<T>): Promise<T> {
     const preceding = this.assemblyChange;
     let release!: () => void;
-    this.assemblyChange = new Promise<void>((resolve) => { release = resolve; });
+    this.assemblyChange = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     await preceding;
     try {
       return await change();
@@ -1645,7 +1659,9 @@ export class PluginHost {
       const dataState = new Map(env.dataState);
       dataState.delete(id);
       this.preflightInstall(
-        id, { manifest: bundle.manifest, actions: [], handlers: {} }, { ...env, dataState },
+        id,
+        { manifest: bundle.manifest, actions: [], handlers: {} },
+        { ...env, dataState },
       );
       let candidate: ServerPluginDef;
       if (consent.hardened !== true) {
@@ -1686,7 +1702,9 @@ export class PluginHost {
         if (prospective.enabled(id)) {
           try {
             await this.applyMigrations(
-              id, prospective.pendingMigrations.get(id) ?? [], bundle.manifest.dataVersion,
+              id,
+              prospective.pendingMigrations.get(id) ?? [],
+              bundle.manifest.dataVersion,
             );
           } catch (error) {
             throw new InstallRefusal(
@@ -1721,13 +1739,18 @@ export class PluginHost {
         if (previousLifecycle === undefined) this.lifecycleStates.delete(id);
         else this.lifecycleStates.set(id, previousLifecycle);
         if (notified) await this.hook(id, "onEnable", "enable_failed");
+        this.replacing = null;
+        this.reconcileIsolateState(id);
         this.assembled = await this.reassemble();
         this.publish();
       } catch (rollbackError) {
         this.lifecycleStates.set(id, "enable_failed");
         this.assembled = await this.reassemble();
         this.publish();
-        throw new AggregateError([error, rollbackError], `replacement and rollback failed for ${id}`);
+        throw new AggregateError(
+          [error, rollbackError],
+          `replacement and rollback failed for ${id}`,
+        );
       }
       if (error instanceof InstallRefusal) return { refused: error.message };
       if (error instanceof AssemblyError)
@@ -1754,6 +1777,8 @@ export class PluginHost {
       disabled: [],
     };
     if (delta.enabled.length > 0) await this.fanOut(delta, wasEnabled);
+    this.replacing = null;
+    if (this.reconcileIsolateState(id)) this.assembled = await this.reassemble();
     this.publish();
     this.logger.info("plugin_installed", {
       plugin: id,
@@ -1780,7 +1805,9 @@ export class PluginHost {
     const defs = new Map(this.installedDefs);
     defs.set(id, candidate);
     const assembly = assembleRoster(
-      [...this.firstParty, ...defs.values()], this.store.disabledPlugins(), env,
+      [...this.firstParty, ...defs.values()],
+      this.store.disabledPlugins(),
+      env,
     );
     for (const row of assembly.roster) {
       if (!row.enabled) continue;
