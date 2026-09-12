@@ -21,6 +21,8 @@ import {
   type ActionRequirement,
   type ActionSummary,
   type AssemblyDelta,
+  type AskableCap,
+  type AuthoredCap,
   type Cap,
   type EventKind,
   type EventPayload,
@@ -88,8 +90,13 @@ export interface ServerActionDef<In = unknown, Out = unknown> {
   /** LOCAL name (`bump`); the roster publishes `${manifest.id}.${name}`. */
   readonly name: string;
   readonly title: string;
-  /** What invoking this action requires of the CALLER; a subset of the manifest's ceiling. */
-  readonly caps: readonly Cap[];
+  /**
+   * What invoking this action requires of the CALLER; a subset of the manifest's ceiling,
+   * which may name this plugin's OWN capabilities (`<pluginId>:<name>`, ADR 0035) beside the
+   * engine's. `delegates` below stays the engine's closed set: a delegate is a native API
+   * ceiling, and the native APIs are the engine's.
+   */
+  readonly caps: readonly AuthoredCap[];
   /** Native job/service ceiling, not caller permission; native calls still authorize targets and consent. */
   readonly delegates?: readonly Cap[];
   /** Absent ≡ `"workspace"`; `"container"` confines the door to `ctx.containerScope`. */
@@ -118,7 +125,12 @@ export interface GuestAuth {
   readonly caps: readonly Cap[];
   readonly containerScope: string | null;
   readonly isRoot: boolean;
-  allows(cap: Exclude<Cap, "*">, ref?: ManifoldRef): Promise<boolean>;
+  /**
+   * One authority question, asked of the host's waterfall. `cap` may be one of this plugin's
+   * own capabilities, and `ref` is where it is asked — `{ kind: "machine", machineId }` for a
+   * plugin whose authority is per machine (ADR 0035).
+   */
+  allows(cap: AskableCap, ref?: ManifoldRef): Promise<boolean>;
 }
 
 /**

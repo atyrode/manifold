@@ -262,6 +262,7 @@ describe("the published vocabulary", () => {
     */
     const contract = buildProtocolJsonSchema()["grantContract"] as Record<string, unknown>;
     expect(Object.keys(contract).sort()).toEqual([
+      "cap",
       "createRequest",
       "effects",
       "grant",

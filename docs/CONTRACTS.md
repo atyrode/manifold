@@ -453,11 +453,28 @@ independently. The path is SYNTACTIC: containment is read off the URI, so evalua
 store beyond the grant rows themselves.
 
 Machine-scoped rows use this same waterfall, including allow/deny precedence and live
-invalidation, without reaching sibling machines or containers. This recognizes the scope;
-it does not change door admission: `core.machines.revoke` still requires workspace
-`machines:mint`, but names the machine as its trace target. The admitted-door policy for
-per-machine grants remains owed to #156/#190. Sharing remains container-only (ADR 0014):
-a machine reference is a valid address, not permission to mint a machine share.
+invalidation, without reaching sibling machines or containers. The door that reaches one is a
+plugin action's declared `requirements: [{ cap, target }]`, evaluated with `allowsRef` at the
+`ManifoldRef` in the caller's arguments (ADR 0035); `allows(context, cap)` asks at a container
+or the credential's anchor and never sees a machine row. Engine fleet doors are unchanged:
+`core.machines.revoke` still requires workspace `machines:mint` and names the machine as its
+trace target, because its argument is a bare machine id — grading those doors at their machine
+is owed to #156/#190. A container-scoped credential is refused at a machine node whatever the
+rows say. Sharing remains container-only (ADR 0014): a machine reference is a valid address,
+not permission to mint a machine share.
+
+**The capability vocabulary is closed for the engine and open for a plugin (ADR 0035).** `CAPS`
+stays the engine's enum. A manifest may also declare capabilities in its OWN namespace,
+`<pluginId>:<name>` (`atyrode.babel:archive`), refused by `PluginManifestSchema` when it names
+another plugin's namespace; actions and grant rows may name one exactly like a built-in, and
+`grantContract.cap` publishes the union. A grant row may name any well-formed capability,
+because a row is written by a principal rather than by a plugin and must survive an install or
+an uninstall; what makes an undeclared name inert is the door. **`*` never expands into a
+plugin's namespace** — the open half has no roster-independent enumeration — so a root
+credential and the owner key hold a plugin's capability only where a row names it. A plugin
+capability is never minted into a credential (`mintToken` refuses it by schema), never governed
+and never a `delegate`; an install's `grantedCaps` may carry one and grants it by default,
+since it confers authority over nothing but the declaring plugin's own doors.
 
 | #   | Rule                        | Reading                                                                                             |
 | --- | --------------------------- | --------------------------------------------------------------------------------------------------- |

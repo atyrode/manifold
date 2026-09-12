@@ -33,6 +33,8 @@ import {
 import {
   CAPS,
   GOVERNED_CAPS,
+  hasCap,
+  isEngineCap,
   ManifoldRefSchema,
   CORE_NAMESPACE_PREFIX,
   ENGINE_NAMESPACE_PREFIX,
@@ -47,6 +49,8 @@ import type {
   ActionDenialRule,
   ActionOutcome,
   BootstrapPrincipalRequest,
+  AskableCap,
+  AuthoredCap,
   Cap,
   CreateGrantRequest,
   Dial,
@@ -125,7 +129,8 @@ export interface ActionAuth {
   readonly caps: readonly Cap[];
   readonly containerScope: string | null;
   readonly isRoot: boolean;
-  allows(cap: Exclude<Cap, "*">, ref?: ManifoldRef): boolean;
+  /** One evaluator question: the engine's capabilities, or this plugin's own (ADR 0035). */
+  allows(cap: AskableCap, ref?: ManifoldRef): boolean;
 }
 
 /**
@@ -281,9 +286,14 @@ const UNGRANTED_BY_DEFAULT: Partial<Record<Cap, true>> = {
   "plugins:manage": true,
 };
 
-/** A cap the manifest's ceiling covers: named, or anything but `*` when `*` is declared. */
-function withinCeiling(cap: Cap, declared: readonly Cap[]): boolean {
-  return declared.includes(cap) || (cap !== "*" && declared.includes("*"));
+/**
+ * A cap the manifest's ceiling covers: named, or — for one of the engine's own — anything but
+ * `*` when `*` is declared. `hasCap` is the one place that wildcard reach is spelled, and it
+ * stops at the engine's vocabulary: a plugin's own capability (ADR 0035) must be DECLARED, so
+ * a wildcard ceiling never stands in for a namespaced name nobody wrote down.
+ */
+function withinCeiling(cap: AuthoredCap, declared: readonly AuthoredCap[]): boolean {
+  return cap === "*" ? declared.includes("*") : hasCap(declared, cap);
 }
 
 /**
@@ -291,18 +301,32 @@ function withinCeiling(cap: Cap, declared: readonly Cap[]): boolean {
  * set, widened by whatever the installer named — restricted in both halves to caps that exist
  * and that the manifest actually declared, because a grant is `granted ∩ declared` at the door
  * and publishing a cap the plugin could never exercise would misdescribe the row.
+ *
+ * A PLUGIN'S OWN CAPABILITY IS GRANTED BY DEFAULT (ADR 0035), which is not a widening of what
+ * an installer consents to: the high-risk set exists because `*`, `tokens:mint` and
+ * `plugins:manage` hand a stranger's code authority over the WORKSPACE, and a name in the
+ * plugin's own namespace confers authority over nothing but that plugin's own doors — whose
+ * callers still need a grant row naming it. Withholding one would mean installing a plugin
+ * with its own doors dead, which is what the enablement toggle already says out loud.
  */
-function grantFor(declared: readonly Cap[], widen: readonly Cap[] | undefined): Cap[] {
-  const granted = new Set<Cap>();
+function grantFor(
+  declared: readonly AuthoredCap[],
+  widen: readonly AuthoredCap[] | undefined,
+): AuthoredCap[] {
+  const granted = new Set<AuthoredCap>();
   for (const cap of declared) {
-    if (CAPS.includes(cap) && UNGRANTED_BY_DEFAULT[cap] !== true && !GOVERNED_CAPS.includes(cap))
-      granted.add(cap);
+    if (!isEngineCap(cap)) granted.add(cap);
+    else if (UNGRANTED_BY_DEFAULT[cap] !== true && !GOVERNED_CAPS.includes(cap)) granted.add(cap);
   }
   for (const cap of widen ?? []) {
-    if (CAPS.includes(cap) && !GOVERNED_CAPS.includes(cap) && withinCeiling(cap, declared))
-      granted.add(cap);
+    if (!GOVERNED_CAPS.includes(cap) && withinCeiling(cap, declared)) granted.add(cap);
   }
-  return CAPS.filter((cap) => granted.has(cap));
+  // The engine's own order first, then the namespaced names sorted: a published grant reads
+  // the same however the manifest happened to order its declaration.
+  return [
+    ...CAPS.filter((cap) => granted.has(cap)),
+    ...[...granted].filter((cap) => !isEngineCap(cap)).sort(),
+  ];
 }
 
 /**
@@ -744,7 +768,7 @@ const TRACE_PAYLOAD_MAX_CHARS = 4_096;
  * the cap list becomes its detail; today `allows` answers a boolean, so the cap name is the
  * most precise honest answer available (ADR 0018 §6).
  */
-function traceAuthority(auth: AuthContext, caps: readonly Cap[]): string {
+function traceAuthority(auth: AuthContext, caps: readonly AuthoredCap[]): string {
   if (auth.isRoot) return TRACE_AUTHORITY_ROOT;
   if (caps.length === 0) return TRACE_AUTHORITY_OPEN;
   return caps.join("+");
@@ -2277,7 +2301,15 @@ export class PluginHost {
       if (!ref.success) return refuse("invalid_args", "invalid authority target");
       if (!this.authService.allowsRef(auth, declared.cap, ref.data))
         return refuse("forbidden", `${declared.cap} capability required at target`);
-      requirements.push({ cap: declared.cap, ref: ref.data });
+      /*
+        THE GOVERNED LIST IS THE ENGINE'S VOCABULARY (ADR 0035). Every declared requirement is
+        discharged above, at its own target, through the one evaluator — that is the whole check
+        for a plugin's own capability, because governed admission binds a capability to an
+        artifact or resource REVISION and a namespaced name has none to bind. So a plugin cap
+        passes the door and never enters a job's admission evidence, where every entry has to be
+        re-dischargeable against consent at each deferred effect.
+      */
+      if (isEngineCap(declared.cap)) requirements.push({ cap: declared.cap, ref: ref.data });
     }
     let admission: GovernedAdmissionDecision | null = null;
     if (entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap))) {

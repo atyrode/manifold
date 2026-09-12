@@ -270,7 +270,17 @@ export {
 } from "./terminal-host.ts";
 export { trackTerminalPrivateMode, type TerminalModeParser } from "./terminal-private-mode.ts";
 export { reconnectDelayMs } from "./backoff.ts";
-export { CAPS, GOVERNED_CAPS, CapSchema, hasCap, type Cap } from "./capabilities.ts";
+export {
+  CAPS,
+  GOVERNED_CAPS,
+  CapSchema,
+  hasCap,
+  isEngineCap,
+  type AskableCap,
+  type AuthoredCap,
+  type Cap,
+  type PluginCap,
+} from "./capabilities.ts";
 export { IDENTITY_COLORS, PrincipalSchema, identityColorFor, type Principal } from "./principal.ts";
 export {
   EVENT_KIND_PATTERN,
@@ -443,7 +453,13 @@ export {
   ActionDelegatesSchema,
   ActionTracePolicySchema,
   type ActionRequirement,
+  AskableCapSchema,
+  AuthoredCapSchema,
   CEILING_DATABASE_MAX_BYTES,
+  MAX_MANIFEST_CAPABILITIES,
+  MAX_PLUGIN_CAP_LENGTH,
+  PluginCapSchema,
+  pluginCapNamespace,
   CORE_NAMESPACE_PREFIX,
   DEFAULT_DORMANT_MODE,
   DEFAULT_SEAT_RATIO,

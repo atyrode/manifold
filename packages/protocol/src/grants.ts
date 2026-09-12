@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CapSchema } from "./capabilities.ts";
+import { AuthoredCapSchema } from "./plugin.ts";
 import { InstanceOriginSchema } from "./origin.ts";
 import { MANIFOLD_URI_SCHEME, containmentPath } from "./uri.ts";
 
@@ -67,6 +67,14 @@ export const MAX_GRANT_NODE_LENGTH = 4 * 128 * 9 + 64;
  * Validation is the containment walk itself, which is the strongest possible check available
  * here: a node this returns null for is one no evaluator could ever reach, so accepting it
  * would be storing a row that can never fire.
+ *
+ * EVERY ADDRESSABLE NODE, which is what makes "on this machine" sayable (ADR 0035):
+ * `manifold://machine/<id>` sits directly under the root and carries its operations, jobs,
+ * outputs, locations and services beneath it, so a `subtree` row there is authority over one
+ * enrolled machine and everything the fleet addresses through it. The walk is SYNTACTIC, so
+ * this reader does not ask whether that machine is enrolled — a row naming a machine this
+ * workspace never enrolled can never fire, and refusing it here would make a write depend on
+ * inventory the evaluator deliberately never reads.
  */
 export const GrantNodeSchema = z
   .string()
@@ -95,7 +103,15 @@ export const GrantSchema = z.strictObject({
   id: z.string().min(1).max(MAX_GRANT_ID_LENGTH),
   principal: GrantPrincipalSchema,
   node: GrantNodeSchema,
-  caps: z.array(CapSchema).min(1),
+  /**
+   * WHAT. The engine's own capabilities and a plugin's own namespaced ones alike (ADR 0035):
+   * a row is written by a PRINCIPAL about somebody's authority, so unlike a manifest — which
+   * may only declare its own namespace — a grant may name any plugin's capability. What makes
+   * an undeclared name inert is the door, where the action's declaration is the other half of
+   * the intersection; a row naming a vocabulary nobody declared answers no question, exactly
+   * as ADR 0011 says of a grant that grants nothing.
+   */
+  caps: z.array(AuthoredCapSchema).min(1),
   effect: GrantEffectSchema,
   reach: GrantReachSchema,
   createdBy: z.string().min(1).max(128),
@@ -112,7 +128,7 @@ export type Grant = z.infer<typeof GrantSchema>;
 export const CreateGrantRequestSchema = z.strictObject({
   principal: GrantPrincipalSchema,
   node: GrantNodeSchema,
-  caps: z.array(CapSchema).min(1),
+  caps: z.array(AuthoredCapSchema).min(1),
   effect: GrantEffectSchema,
   reach: GrantReachSchema,
 });
@@ -177,6 +193,13 @@ export function grantVocabulary(): Record<string, unknown> {
     maxIdLength: MAX_GRANT_ID_LENGTH,
     principal: z.toJSONSchema(GrantPrincipalSchema),
     node: z.toJSONSchema(GrantNodeSchema),
+    /*
+      The cap vocabulary a row may name: the engine's closed enum or a plugin's namespaced
+      capability (ADR 0035). Published as its own entry rather than left inside `grant`,
+      because "may I grant a capability the engine has never heard of?" is the question a
+      plugin author arrives with, and the answer is a shape rather than a sentence.
+    */
+    cap: z.toJSONSchema(AuthoredCapSchema),
     grant: z.toJSONSchema(GrantSchema),
     createRequest: z.toJSONSchema(CreateGrantRequestSchema),
     revokeRequest: z.toJSONSchema(RevokeGrantRequestSchema),

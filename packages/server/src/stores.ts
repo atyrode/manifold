@@ -13,6 +13,7 @@ import {
 } from "@manifold/plugin";
 import {
   ActionSummarySchema,
+  AuthoredCapSchema,
   BindingOverridesSchema,
   CapSchema,
   ContainerDisciplineSchema,
@@ -25,6 +26,7 @@ import {
   validateTileLayout,
   type ActionSummary,
   type BindingOverrides,
+  type AuthoredCap,
   type Cap,
   type Container,
   type Grant,
@@ -352,7 +354,8 @@ export interface PluginInstallRow {
   readonly pluginId: string;
   readonly sha256: string;
   readonly source: string;
-  readonly grantedCaps: readonly Cap[];
+  /** The installer's consent, which may name the plugin's own capabilities too (ADR 0035). */
+  readonly grantedCaps: readonly AuthoredCap[];
   readonly installedBy: string;
   readonly installedAt: number;
   readonly bundlePath: string;
@@ -543,9 +546,20 @@ function toToken(row: TokenRow): TokenRecord {
   };
 }
 
+/** A CREDENTIAL's caps: a token, a share and a dial carry the engine's vocabulary only. */
 function parseCaps(raw: string): readonly Cap[] {
   const parsed: unknown = JSON.parse(raw);
   return CapSchema.array().parse(parsed);
+}
+
+/**
+ * An INSTALL's granted caps, which are read over the open vocabulary (ADR 0035): an installer
+ * consents to what the manifest declared, and a manifest may declare the plugin's own
+ * namespaced capabilities beside the engine's.
+ */
+function parseAuthoredCaps(raw: string): readonly AuthoredCap[] {
+  const parsed: unknown = JSON.parse(raw);
+  return AuthoredCapSchema.array().parse(parsed);
 }
 
 function parseActions(raw: string): readonly ActionSummary[] {
@@ -659,7 +673,7 @@ function toPluginInstall(row: PluginInstallDbRow): PluginInstallRow {
     pluginId: row.plugin_id,
     sha256: row.sha256,
     source: row.source,
-    grantedCaps: parseCaps(row.granted_caps),
+    grantedCaps: parseAuthoredCaps(row.granted_caps),
     installedBy: row.installed_by,
     installedAt: row.installed_at,
     bundlePath: row.bundle_path,
