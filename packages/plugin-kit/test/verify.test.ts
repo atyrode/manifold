@@ -138,8 +138,8 @@ test.skipIf(!canSpawnServer())(
         "installed",
       );
 
-      // Switching the parent off alone is refused by the engine while the part is on; the
-      // replace path takes the part down first and brings both back.
+      // Replacement preserves both enablement choices without invoking the destructive
+      // disable path merely to change the parent's bytes.
       const edited = `${dir}/edited-parent.manifold-plugin.json`;
       await Bun.write(
         edited,

@@ -1763,8 +1763,7 @@ client switches on the prefix): `artifact_unreadable`, `artifact_invalid` (wrong
 manifest that fails the schema, or an assembly refusal such as a duplicate id caught at install
 time and rolled back rather than raised at boot), `hash_mismatch`, `already_installed` (same id,
 different hash, no `replace: true`), `not_installed`, `namespace_reserved` (`engine.` / `core.`),
-`still_enabled` (uninstall and replace both require the row disabled first — except the hub's own
-unpacked replace, §Unpacked plugins), `storage_retained`,
+`still_enabled` (uninstall requires the row disabled first), `storage_retained`,
 `no_entry`, `stylesheet_unscoped` (the sheet reaches past the plugin's root class — S13 at load,
 above; the detail names `styles.css:<line>` and the selector). **Uninstall** (`{ id, purge? }`) removes the row and the files and never destroys
 plugin storage on its own: while the plugin's namespace holds rows — reserved ones included, the
@@ -1912,10 +1911,13 @@ removes; unnamed files stay), logs `plugin_authored` (count of files, never cont
 and answers `PluginAuthorResult` — the install result plus `sha256`, the pin the roster now shows.
 While off it refuses `developer_mode_off: <id>` before writing.
 
-**The one admission difference.** A running unpacked row replaced by the hub's own rebuild is
-replaced LIVE rather than refused `still_enabled`: the old module hears `onDisable`, the row is
-re-imported fresh, `onEnable` fans out, the installer on the row stays whoever first admitted it,
-and the previous artifact leaves the disk. Same bytes (same hash) replace nothing and publish
+**Live replacement.** An unpacked rebuild and `engine.plugins.install { replace: true }`
+share the live replacement path: the old module hears `onDisable`, the row is re-imported
+fresh, and `onEnable` fans out without changing durable target/dependent enablement. The
+unpacked installer remains whoever first admitted it, and the previous artifact leaves the disk.
+An unchanged verified machine declaration preserves native installation, consent and service
+identity; changed or unverifiable scope disables native execution until separately reviewed.
+Same bytes (same hash) replace nothing and publish
 nothing. A build error, a manifest the schema refuses, an `AssemblyError` in the edit or a
 manifest whose `id` is not the directory's answers `artifact_invalid: <detail>`, logs
 `plugin_authored_build_failed`, rolls back to the previous row and wakes it again (`onEnable`).
