@@ -93,3 +93,34 @@ The shared operation/resource and stream mechanisms extend existing protocol, tr
 ## Authority vocabulary
 
 Use closed capabilities with canonical resource nodes, not a dynamic string capability or a parallel job ACL: machines:run, jobs:read, jobs:input, jobs:cancel, locations:read, locations:write, locations:create, operations:invoke and network:host. Operation/location nodes belong beneath their authenticated machine; jobs resolve to their admitted operation; output nodes belong to their job. Plugin-qualified IDs are declaration data. Every new execution/resource consent remains absent until explicitly granted for the exact artifact/resource revision.
+
+## Addendum 2026-09-12: reading a finished job, and being told it finished
+
+This record is history and is not rewritten; this clause is a later ruling on the shipped
+shape, and [CONTRACTS.md](../CONTRACTS.md#governed-machine-jobs) and
+[PLUGINS.md](../PLUGINS.md#governed-jobs-and-continuous-streams) remain the normative form.
+
+§Lifecycle and durability rules the live plane: `follow` is a bounded replay window and
+explicitly "not a durable transcript or a reason to poll status". It left a plugin that was
+not watching with no way back to its own finished work, and a server half with no wake at
+all — a door needs a caller and a panel needs a reader, so a background half learned that
+its job ended by being asked. Three additions close that, and none of them widens authority:
+
+- `engine.jobs.outputs` reads one SEALED output of a finished job of the calling plugin by
+  the operation's declared NAME, in bounded pages beside the sealed length. It is the
+  existing private owner read with the name→ID resolution moved behind the same walk, so a
+  plugin never has to retain an owner-minted identity to read what it produced.
+- `engine.jobs.journal` reads that job's retained LIFECYCLE frames — state, result, refusal —
+  bounded to 128 per job and dropped on purge. Byte-channel frames are deliberately NOT
+  journaled: a durable public record carries lifecycle, attribution and digest facts, never
+  a transcript, so holes in the sequence are the contract rather than loss.
+- `onJobSettled` is a lifecycle hook for the owning plugin, delivered after the result and
+  its journal frame are durable, carrying safe metadata and the job's node. Its `ctx.jobs` is
+  bound to the job's ORIGINAL credential, restored and rechecked at delivery — the lineage
+  §Execution and authority already requires for deferred effects — so a revoked or expired
+  credential yields no wake, and `follow` is not served to a hook. It cannot veto or delay
+  anything, and nothing waits on it.
+
+What is NOT admitted: durable retention of output or stdio bytes, a second audit API beside
+the one journal, an ambient plugin credential, and any read that skips the permission
+waterfall. Exit 0 remains process success and never a product postcondition.

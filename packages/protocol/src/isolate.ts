@@ -12,7 +12,7 @@ import {
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
 import { StreamServerMessageSchema } from "./stream.ts";
-import { JobFollowUpdateSchema, machineArtifacts } from "./jobs.ts";
+import { JobFollowUpdateSchema, SettledJobSchema, machineArtifacts } from "./jobs.ts";
 
 /**
  * THE ISOLATION VOCABULARY (ADR 0016): everything that crosses the boundary between the engine
@@ -375,6 +375,8 @@ export const ISOLATE_CTX_METHODS = [
   "jobs.input",
   "jobs.cancel",
   "jobs.output",
+  "jobs.outputs",
+  "jobs.journal",
   "jobs.follow",
   "jobs.ack",
   "jobs.unfollow",
@@ -393,8 +395,13 @@ export const ISOLATE_CTX_METHODS = [
 export const IsolateCtxMethodSchema = z.enum(ISOLATE_CTX_METHODS);
 export type IsolateCtxMethod = (typeof ISOLATE_CTX_METHODS)[number];
 
-/** The three lifecycle hooks a server half may declare; `purge` never crosses (it is the host's). */
-export const ISOLATE_HOOKS = ["onEnable", "onDisable", "onAssemblyChanged"] as const;
+/** The four lifecycle hooks a server half may declare; `purge` never crosses (it is the host's). */
+export const ISOLATE_HOOKS = [
+  "onEnable",
+  "onDisable",
+  "onAssemblyChanged",
+  "onJobSettled",
+] as const;
 export const IsolateHookSchema = z.enum(ISOLATE_HOOKS);
 export type IsolateHook = (typeof ISOLATE_HOOKS)[number];
 
@@ -475,6 +482,7 @@ export const IsolateHostFrameSchema = z.discriminatedUnion("t", [
     id: frameId,
     hook: IsolateHookSchema,
     delta: AssemblyDeltaSchema.optional(),
+    job: SettledJobSchema.optional(),
   }),
   z.strictObject({
     t: z.literal("job_update"),
@@ -509,6 +517,7 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
       onEnable: z.boolean(),
       onDisable: z.boolean(),
       onAssemblyChanged: z.boolean(),
+      onJobSettled: z.boolean(),
     }),
   }),
   z.strictObject({ t: z.literal("load_failed"), error: errorText }),

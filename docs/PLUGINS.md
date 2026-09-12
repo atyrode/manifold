@@ -1656,6 +1656,36 @@ ranges and `gap` closure; the 128-event/256-KiB job replay is not a durable tran
 Consume the snapshot and subsequent watermarks without duplicate effects or hidden loss.
 Release the follow when its consumer ends, rather than repeatedly polling `status`.
 
+**Read what a finished job left behind.** `ctx.jobs.outputs({ node, name, offset, limit })`
+reads ONE output of your own FINISHED job by the name its operation declared, in pages of at
+most 64 KiB, and answers `{ jobId, outputId, name, sha256, files, total, offset, data, eof }`.
+`total` is the sealed length, so paging is arithmetic against it rather than a guess, and the
+owner-minted output ID is disclosed rather than demanded — a plugin addresses its own job node
+and a name. An unfinished job refuses `job_unfinished` (a result is the only evidence anything
+was sealed), a name the result never sealed refuses, and another plugin's job refuses exactly
+as `status` does. `ctx.jobs.journal({ node, after?, limit? })` reads that finished job's
+retained LIFECYCLE frames — `{ jobId, events: [{ seq, at, event }], firstSeq, nextAfter }`, at
+most 128 per job — through the same authority walk. Byte frames are never journaled, so holes
+in `seq` are stdout/stderr passing and never loss; `firstSeq` is the oldest sequence retention
+kept and `nextAfter` continues the page. Browser halves dispatch `engine.jobs.outputs` and
+`engine.jobs.journal` with the same arguments. Neither is a substitute for `follow`: they
+answer after the fact, and following a running job is still the live plane.
+
+**Be woken when your own job ends.** A server half declares `lifecycle.onJobSettled(ctx, job)`
+and is handed, once per settled job IT started,
+`{ jobId, machineId, operationId, pluginId, state, exitCode, reason, finishedAt, scheduleId?, revision?, outputs }`
+— the job's own terminal state (`exited`, `interrupted`, `cancelled`, `refused`) with the
+owner's `reason`, and the sealed output descriptors, never bytes. It is the one wake a
+background half has: a door needs a caller and a panel needs a reader. The payload names the
+NODE, so `ctx.jobs` — bound to the CREDENTIAL THE JOB RAN UNDER, restored and rechecked at
+delivery — reads `outputs`, `journal` or `status` and may start the next job; a revoked or
+expired credential simply has no wake to deliver. `follow` is not on that slice: a live
+subscription belongs to a dispatch. Same bound and same no-veto rule as the other hooks
+(`LIFECYCLE_TIMEOUT_MS`): nothing waits for it, a throw is logged and never retried, delivery
+is at-least-once so the consumer stays idempotent, and a disabled plugin is not woken because
+its jobs were cancelled rather than delivered. Exit 0 is process success and not your
+postcondition. Do not poll `status` or keep a refresh timer in place of declaring the hook.
+
 Raw follow/output bytes can contain secrets. Publish only your product's safe metadata
 onto its public stream; keep raw inputs, stdout/stderr, prompts and private output bodies
 out of events, errors and traces. Generic job doors are `trace: "opaque"` before validation

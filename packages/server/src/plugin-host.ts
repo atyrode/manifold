@@ -16,6 +16,7 @@ import {
   type AssemblyDelta,
   type AssemblyEnv,
   type EmitEvent,
+  type JobSettledCtx,
   type LifecycleCtx,
   type PluginAuthorRequest,
   type PluginAuthorResult,
@@ -110,7 +111,7 @@ import type { DrainOutcome, TerminalBroker } from "./terminal-broker.ts";
 import { StreamService } from "./stream-service.ts";
 import type { StreamProducer, PluginStreamContext, PluginServiceContext } from "@manifold/plugin";
 import { jobContext, jobDoors, type JobContext } from "./job-doors.ts";
-import type { JobService } from "./job-service.ts";
+import type { JobService, SettledJobDelivery } from "./job-service.ts";
 import { serviceContext, serviceDoors } from "./service-doors.ts";
 
 /**
@@ -880,6 +881,9 @@ export class PluginHost {
       );
     });
     jobs.setBundleResolver((pluginId) => this.installed.get(pluginId)?.bundle ?? null);
+    jobs.setSettledListener((delivery) => {
+      void this.jobSettled(delivery);
+    });
     this.jobs = jobs;
     this.streams.reconcile();
   }
@@ -2056,6 +2060,49 @@ export class PluginHost {
     }
     this.lifecycleStates.set(id, failure);
     this.logger.error("plugin_lifecycle", { plugin: id, hook: name, error: outcome.reason });
+  }
+  /**
+   * One settled job, delivered to the half that started it and to nobody else.
+   *
+   * It rides `runHook`'s bound like every other hook and it is the only one nothing waits
+   * for: the job is already over, so a slow or throwing consumer delays nothing and earns a
+   * log line rather than a retry or a lifecycle state — a failure here is not an enable or a
+   * disable that went wrong. A disabled plugin is skipped: its jobs were cancelled on the way
+   * out, and waking a half that is not serving would be creation while disabled (D12).
+   */
+  private async jobSettled(delivery: SettledJobDelivery): Promise<void> {
+    const id = delivery.settled.pluginId;
+    if (!this.assembled.enabled(id)) return;
+    const invoke = this.defs.find((def) => def.manifest.id === id)?.lifecycle?.onJobSettled;
+    if (invoke === undefined) return;
+    const auth = delivery.auth;
+    if (auth === null) {
+      this.logger.warn("plugin_lifecycle", {
+        plugin: id,
+        hook: "onJobSettled",
+        error: "the job's credential is revoked or expired",
+      });
+      return;
+    }
+    const ctx: JobSettledCtx = {
+      ...this.lifecycleCtx(id),
+      jobs: jobContext(
+        () => {
+          if (this.jobs === null) throw new ServiceError("forbidden", "job service unavailable");
+          return this.jobs;
+        },
+        auth,
+        id,
+        delivery.traceId,
+      ),
+    };
+    const outcome = await runHook(() => invoke(ctx, delivery.settled), this.lifecycleTimeoutMs);
+    if (outcome.ok) return;
+    this.logger.error("plugin_lifecycle", {
+      plugin: id,
+      hook: "onJobSettled",
+      error: outcome.reason,
+    });
   }
 
   private publish(): void {
