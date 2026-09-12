@@ -2242,9 +2242,23 @@ function scanTree(dir: string, out: string[]): void {
  * be. The WARN line still does not move, and the count is still 2,633 past it:
  * `tile-geometry.ts` (962) and `projection.ts` are the next candidates for the question the
  * WARN exists to provoke.
+ *
+ * RED RAISED 12,000 → 12,179 on 2026-09-12 (ADR 0034, #504), and this is the defence. What
+ * crossed the line is `database.ts`: the contract of a plugin's own durable tables beside its
+ * key-value ref, plus the twenty lines of ctx assembly that hand it over. It passes the litmus
+ * on all three criteria. Arbitration: the engine owns the file, the byte ceiling, the page
+ * size, the statement refusal list and the purge — a plugin that opened its own SQLite would
+ * be a plugin whose purge is a guess, which is the exact reason `ctx.storage` was never a
+ * path. Neutrality: the module names no plugin and no table; it is a promise-returning
+ * `query`/`run`/`batch` over a namespace the manifest declares. Bootstrap: the migration
+ * ledger runs before any panel draws, the same ledger `ctx.storage` already uses, so a store
+ * that fails to migrate keeps its plugin dormant instead of half-served. The alternative was
+ * to serialize rows into `plugin_kv` values, which the ADR rejects with numbers: 65 KiB per
+ * value against records that cite whole transcripts. The number moves by the smallest amount
+ * that admits it; the WARN line does not move, and its two candidates above are unchanged.
  */
 const PLUGIN_SRC_WARN_LINES = 9_000;
-const PLUGIN_SRC_MAX_LINES = 12_000;
+const PLUGIN_SRC_MAX_LINES = 12_179;
 
 {
   const files = sourcesMatching("packages/plugin/src/**");

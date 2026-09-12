@@ -229,6 +229,7 @@ export const manifest: PluginManifest = {
   capabilities: ["scenes:write"], // the union of everything this plugin's actions may need
   // essential: true,              // optional; seven shipped seats claim it
   dataVersion: { major: 1, minor: 0 }, // the shape of the data you store
+  // database: { maxBytes: 268435456 }, // optional; ask for your own SQLite file (§4)
   dependencies: {
     "core.canvas": {
       type: "required",
@@ -325,6 +326,9 @@ Rules worth knowing before you write one:
 - **`dataVersion` governs your stored rows** (§4). Bump `minor` freely; bumping `major` without a
   migration refuses to assemble your plugin, and data written by a newer `major` than your code
   refuses too — the engine never guesses at your schema.
+- **`database` asks for tables of your own** (§4). Absent ≡ no file and no `ctx.database`;
+  declaring it opens `<data>/plugins/<your.id>/data.db` on first use, and `maxBytes` is a request
+  the engine grants up to its 4 GiB ceiling.
 - **`links` says where you come from**: `repository`, `homepage` and `changelog`, each an
   `https://` URL, all optional. The plugin manager shows `repository`; the update flow (#238)
   reads `changelog` to say what a newer version changes. Absent ≡ you said nothing.
@@ -829,6 +833,106 @@ asymmetry:
 
 A refusal here is per plugin and named on the roster; it never takes the workspace down, and it never
 stops the server booting because of a plugin that is switched off.
+
+### Your tables: `ctx.database`
+
+`ctx.storage` is where a plugin keeps **keys**. `ctx.database` is where it keeps **rows** — one
+SQLite file of your own, opened and owned by the engine at `<data>/plugins/<your.id>/data.db`, for
+plugins whose data is a graph read by query rather than a setting read by name. You get it by
+asking for it in the manifest, and only then:
+
+```jsonc
+// manifest.json
+"database": { "maxBytes": 268435456 } // optional request; default 256 MiB, ceiling 4 GiB
+```
+
+A plugin that declares nothing has no `ctx.database` at all — the member is **absent**, not empty,
+and an isolated one that reaches for it anyway is refused `slice_unavailable`. This is the same
+rule on both sides of the boundary, and it is why the file exists only for plugins that asked.
+
+```ts
+type SqlParam = string | number | bigint | boolean | null | Uint8Array;
+interface PluginDatabase {
+  readonly pluginId: string;
+  query<Row>(sql: string, params?: readonly SqlParam[]): Promise<readonly Row[]>; // SELECT and RETURNING; [] otherwise
+  run(sql: string, params?: readonly SqlParam[]): Promise<{ changes: number; lastInsertRowid: number }>;
+  batch(statements: readonly { sql: string; params?: readonly SqlParam[] }[]): Promise<readonly (readonly SqlRow[])[]>;
+}
+```
+
+**`batch` IS the transaction, and there is no open handle.** A transaction that spanned your
+`await`s would hold a write lock across dispatch turns in-realm and across RPC round trips
+isolated, and its deadline and rollback would be a second consistency model beside
+`compareAndSet`'s — so the contract does not offer one. `batch` runs `BEGIN IMMEDIATE`, executes
+your statements in order, and commits all of them or none; the results come back one array per
+statement, in order. Read-then-decide-then-write is the same shape it is for storage: read,
+decide, then a `batch` whose first statements are your own guards (`UPDATE … WHERE revision = ?`
+with a `RETURNING`), and read what changed.
+
+```ts
+await ctx.database.run("INSERT INTO records(id, kind) VALUES (?, ?)", [id, "proposal"]);
+const [inserted, counted] = await ctx.database.batch([
+  { sql: "UPDATE records SET kind = ? WHERE id = ? AND kind = ? RETURNING id", params: ["filed", id, "proposal"] },
+  { sql: "SELECT count(*) AS n FROM records WHERE kind = 'filed'" },
+]);
+if (inserted.length === 0) return { refused: "somebody else filed it first" };
+```
+
+**The bounds are numbers, checked by the engine, and every refusal is a rejection** with
+`PluginDatabaseError` — never a throw, exactly as storage rejects, so one `try`/`catch` around an
+`await` is your whole failure path in-realm and isolated alike:
+
+| Bound                            | Value                              |
+| -------------------------------- | ---------------------------------- |
+| statement text                   | ≤ 64 KiB                           |
+| parameters per statement         | ≤ 999 (SQLite's own)               |
+| statements per `batch`           | ≤ 256                              |
+| rows returned per call           | ≤ 10,000 — page past it            |
+| result bytes per call            | ≤ 4 MiB                            |
+| one call's deadline              | 5 s; a `batch` past it rolls back  |
+| the file                         | `database.maxBytes`, ceiling 4 GiB |
+
+`ATTACH`, `DETACH`, `VACUUM`, `PRAGMA` and `load_extension` are refused by inspecting the first
+keyword before anything runs, and the file is opened with `trusted_schema` off. That is a guard
+against reaching outside your own file, not a sandbox. Your file is yours alone: the path comes
+from your manifest id, so two plugins cannot name each other's, and the engine never reads your
+tables for any purpose but purge and count. One caveat worth knowing before you store a blob: a
+hardened plugin's calls cross an ipc boundary that is **JSON**, so a `Uint8Array` parameter is
+in-realm only in practice; encode it if your plugin may be installed hardened.
+
+**Your tables are made by a migration, or lazily by your own code.** `PluginMigration.migrate`
+takes the database as its second parameter, present for exactly the plugins that declared one:
+
+```ts
+migrations: [
+  {
+    name: "2026-09-12-create-records",
+    to: { major: 1, minor: 0 },
+    migrate: async (storage, database) => {
+      await database?.run("CREATE TABLE records(id TEXT PRIMARY KEY, kind TEXT NOT NULL)");
+      await storage.set("schema", "records");
+    },
+  },
+];
+```
+
+There is no schema DSL, because SQL is the schema DSL. And there is still **one** data version and
+**one** ledger: `dataVersion` and the `$migration:` rows live in your key-value namespace whether
+your data is keys, rows or both, so §4's migration table above governs all of it unchanged.
+
+**Lifecycle follows storage's, to the letter.** A disable retains the file (the engine closes its
+handle; re-enabling opens the same file in place). An uninstall retains it — and refuses
+`storage_retained` naming both your key count and your page count, so a plugin whose data is rows
+can no more be uninstalled in silence than one whose data is keys. A purge closes the handle and
+deletes `data.db` with its `-wal` and `-shm`, and its record says how many bytes went:
+`{ id, removed: { storage, elements, ownership }, databaseBytes }`. The engine's backup of
+`<data>/` includes `plugins/`; your tables are **not** in `manifold.db`, and nothing should assume
+they are.
+
+It is not a document plane (§5 is still where large blobs and collaborative text belong), not a
+shared database (no plugin reads another's rows — cross-plugin data travels through actions and
+events), not a query API over the engine's own tables, and not a replacement for `ctx.storage`: a
+preference is still a key. The reasoning is `docs/decisions/0034-plugin-database.md`.
 
 ### Element types are reserved while you are away
 

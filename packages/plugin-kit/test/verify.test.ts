@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { PluginBundleSchema } from "@manifold/protocol";
-import { roster } from "../src/hub.ts";
+import { dispatch, roster } from "../src/hub.ts";
 import { installBundle } from "../src/install.ts";
 import { canSpawnServer, startServer, verifyBundles, VerifyFailure } from "../src/verify.ts";
 
@@ -15,26 +15,33 @@ import { canSpawnServer, startServer, verifyBundles, VerifyFailure } from "../sr
 
 const KIT = `${import.meta.dir}/..`;
 const SAMPLE = `${import.meta.dir}/fixtures/sample`;
+const ROWS = `${import.meta.dir}/fixtures/rows`;
 const PLUGIN_ID = "example.counter";
+const ROWS_ID = "example.rows";
 const PART_ID = `${PLUGIN_ID}.part`;
 const E2E_TIMEOUT_MS = 90_000;
 
 let dir = "";
 let bundle = "";
+let rowsBundle = "";
+
+/** Packs one fixture directory the way an author's release would: the command, a second process. */
+async function pack(source: string, out: string): Promise<void> {
+  const command = Bun.spawn(["bun", `${KIT}/src/pack.ts`, source, "--out", out, "--self-contained"], {
+    cwd: KIT,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stderr, code] = await Promise.all([new Response(command.stderr).text(), command.exited]);
+  if (code !== 0) throw new Error(`pack exited ${String(code)}: ${stderr}`);
+}
 
 beforeAll(async () => {
   dir = mkdtempSync(`${tmpdir()}/plugin-kit-verify-`);
   bundle = `${dir}/${PLUGIN_ID}.manifold-plugin.json`;
-  const command = Bun.spawn(
-    ["bun", `${KIT}/src/pack.ts`, SAMPLE, "--out", bundle, "--self-contained"],
-    {
-      cwd: KIT,
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
-  const [stderr, code] = await Promise.all([new Response(command.stderr).text(), command.exited]);
-  if (code !== 0) throw new Error(`pack exited ${String(code)}: ${stderr}`);
+  rowsBundle = `${dir}/${ROWS_ID}.manifold-plugin.json`;
+  await pack(SAMPLE, bundle);
+  await pack(ROWS, rowsBundle);
 });
 
 afterAll(() => {
@@ -157,6 +164,43 @@ test.skipIf(!canSpawnServer())(
       expect(child?.enabled).toBe(true);
       expect(child?.lifecycle).toBeUndefined();
       expect(child?.refusal).toBeUndefined();
+    } finally {
+      await server.stop();
+    }
+  },
+  E2E_TIMEOUT_MS,
+);
+
+test.skipIf(!canSpawnServer())(
+  "verify drives a declaring plugin's own tables end to end, and the purge takes the file",
+  async () => {
+    /*
+      THE WHOLE DATABASE PATH, in one spawned engine (ADR 0034): the manifest declares
+      `database`, the guest runtime hands the child a `ctx.database`, every call crosses the
+      ipc boundary as `database.query`/`run`/`batch`, and the engine answers each against the
+      plugin's own file. `kept: 3` is the proof of the batch rule — one row from `run`, two
+      from the batch that commits, NONE from the batch whose second statement fails, because
+      a batch is the transaction and a failed one rolls back whole.
+     */
+    const reports = await verifyBundles([rowsBundle], undefined, { hardened: true });
+    expect(reports).toEqual([
+      {
+        bundle: rowsBundle,
+        id: ROWS_ID,
+        sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        doors: { [`${ROWS_ID}.records`]: "ok" },
+        databaseBytes: expect.any(Number),
+      },
+    ]);
+    expect(reports[0]?.databaseBytes ?? 0).toBeGreaterThan(0);
+
+    // The door's own answer, read through a second run's dispatch: `verify` reports the rung,
+    // so the count and the rollback are asserted where the result is visible.
+    const server = await startServer();
+    try {
+      await installBundle({ source: rowsBundle, hub: server, hardened: true });
+      const outcome = await dispatch(server, server.ownerKey, `${ROWS_ID}.records`, {});
+      expect(outcome).toEqual({ ok: true, result: { kept: 3, rolledBack: true } });
     } finally {
       await server.stop();
     }

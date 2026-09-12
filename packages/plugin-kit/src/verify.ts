@@ -26,7 +26,9 @@ import {
  * lifecycle is not a failure, and every door the row publishes ANSWERS when knocked with `{}`
  * as the owner. Any answer but `unavailable` will do: `invalid_args` and `refused` come from
  * the plugin's own code in its own process, which is the fact being checked; `unavailable` is
- * the runner saying that process is gone or mute. Then it uninstalls with `purge` in reverse.
+ * the runner saying that process is gone or mute. A bundle that declares `database` is held to
+ * one thing more: its own file must exist by the time its doors have answered, and must be
+ * gone once the purge has run (ADR 0034 §5). Then it uninstalls with `purge` in reverse.
  *
  * The first failure exits non-zero naming the bundle, the row or the door. One JSON line per
  * bundle on success. `@manifold/testkit` is private, so the thin spawn is repeated here rather
@@ -51,6 +53,13 @@ export interface VerifyReport {
   readonly sha256: string;
   /** Every door the row published, each with the rung it answered (`ok` for a result). */
   readonly doors: Readonly<Record<string, string>>;
+  /**
+   * Bytes the plugin's own SQLite file held once its doors had answered, and 0 after the
+   * purge took it. Absent for a bundle whose manifest declares no `database` — there is no
+   * file to size, and reporting 0 would read as "it was empty" rather than "it asked for
+   * none".
+   */
+  readonly databaseBytes?: number;
 }
 
 /** A named failure: the command exits on the first one, and the test reads its fields. */
@@ -161,8 +170,26 @@ export async function startServer(): Promise<SpawnedServer> {
   return { url: new URL(readyUrl).origin, ownerKey: OWNER_KEY, dataDir, output, stop };
 }
 
+/**
+ * Where a plugin's own SQLite file lives, as ADR 0034 §1 states the layout:
+ * `<dataDir>/plugins/<pluginId>/data.db`. Repeated here rather than imported for the reason
+ * the spawn above is — this command reaches a checkout's server entry and nothing behind it,
+ * and an author repository has only this file.
+ */
+function databaseFile(dataDir: string, pluginId: string): string {
+  return join(dataDir, "plugins", pluginId, "data.db");
+}
+
+/** Bytes the file and its journal occupy right now; 0 when nothing was ever opened. */
+async function databaseBytes(dataDir: string, pluginId: string): Promise<number> {
+  const path = databaseFile(dataDir, pluginId);
+  let total = 0;
+  for (const suffix of ["", "-wal", "-shm"]) total += Bun.file(`${path}${suffix}`).size;
+  return total;
+}
+
 async function verifyOne(
-  hub: Hub,
+  hub: SpawnedServer,
   facts: BundleFacts,
   bundle: string,
   hardened: boolean,
@@ -189,7 +216,21 @@ async function verifyOne(
     }
     doors[action.name] = outcome.ok ? "ok" : outcome.denial.rule;
   }
-  return { bundle, id: facts.id, sha256: facts.sha256, doors };
+  if (row.manifest.database === undefined) return { bundle, id: facts.id, sha256: facts.sha256, doors };
+  /*
+    A DECLARED DATABASE IS A FILE THE ENGINE OPENED. The doors have answered by now, and a
+    plugin that declared `database` and never reached it through one of them — or reached a
+    handle the engine never bound to a file — leaves nothing at the path the ADR names. That
+    absence is the failure this checks: the bundle asked for a slice the engine did not serve.
+   */
+  const bytes = await databaseBytes(hub.dataDir, facts.id);
+  if (bytes === 0) {
+    throw new VerifyFailure(
+      bundle,
+      `row ${facts.id} declares a database but nothing was written to ${databaseFile(hub.dataDir, facts.id)}`,
+    );
+  }
+  return { bundle, id: facts.id, sha256: facts.sha256, doors, databaseBytes: bytes };
 }
 
 /**
@@ -236,6 +277,17 @@ export async function verifyBundles(
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         throw new VerifyFailure(entry.bundle, `uninstall of ${entry.id}: ${detail}`);
+      }
+      /*
+        PURGE MEANS THE FILE IS GONE (ADR 0034 §5). An uninstall that left `data.db` behind
+        would leave a stranger's rows in a workspace that has no row, no door and no manager
+        entry to reach them by — the "purge is a guess" failure this mechanism exists to end.
+      */
+      if (await databaseBytes(hub.dataDir, entry.id)) {
+        throw new VerifyFailure(
+          entry.bundle,
+          `purge left ${databaseFile(hub.dataDir, entry.id)} behind`,
+        );
       }
     }
   } catch (error) {

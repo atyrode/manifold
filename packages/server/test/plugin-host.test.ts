@@ -1,6 +1,6 @@
 import "../src/shared-modules.ts";
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -42,9 +42,11 @@ import { serveCtxCall } from "../src/isolate/proxy-def.ts";
 import { silentLogger } from "../src/log.ts";
 import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
 import { PLUGIN_UPLOADS_DIR } from "../src/plugin-installs.ts";
+import { pluginDatabasePath } from "../src/plugin-database.ts";
 import {
   OUTSIDE_SCOPE_REFUSAL,
   PluginHost,
+  type ActionCtx,
   type IsolateDeps,
   type MachineAdmission,
   type ServerPluginDef,
@@ -770,6 +772,7 @@ async function customHost(
     readonly lifecycleTimeoutMs?: number;
     readonly distribution?: ReadonlySet<string>;
     readonly isolates?: IsolateDeps;
+    readonly dataDir?: string;
   } = {},
 ): Promise<PluginHost> {
   // The hub reads the assembly of the host it is handed to, exactly as `main.ts` wires it.
@@ -1229,6 +1232,8 @@ describe("PluginHost storage, migrations and purge", () => {
     expect(outcome).toEqual({
       id: VERSIONED_ID,
       removed: { storage: 2, elements: 1, ownership: 1 },
+      // A plugin that declared no database still reports a size, and 0 is a real size.
+      databaseBytes: 0,
     });
     expect(await storage.get("row")).toBeNull();
     expect(await storage.dataVersion()).toBeNull();
@@ -1254,9 +1259,185 @@ describe("PluginHost storage, migrations and purge", () => {
     expect(outcome).toEqual({
       ok: true,
       // One row: the data-version stamp the engine wrote when the plugin started serving.
-      result: { id: VERSIONED_ID, removed: { storage: 1, elements: 1, ownership: 1 } },
+      result: {
+        id: VERSIONED_ID,
+        removed: { storage: 1, elements: 1, ownership: 1 },
+        databaseBytes: 0,
+      },
     });
     fixture.store.close();
+  });
+});
+
+/**
+ * THE PLUGIN'S OWN TABLES, from the host's side (ADR 0034).
+ *
+ * The engine's file is `plugin-database.test.ts`'s subject. What these cases pin is the
+ * WIRING: who gets a slice and who does not, that a migration is handed one, and that the
+ * file follows storage's lifecycle — retained by a disable, destroyed by a purge, and
+ * refusing a silent uninstall exactly as a namespace holding keys does.
+ */
+describe("PluginHost database", () => {
+  const ROWS_ID = "test.rows";
+  const KEYS_ID = "test.keys";
+
+  /** Two plugins that differ in one manifest line: one declares a database, one does not. */
+  function databaseDefs(options: { readonly migration?: boolean } = {}): readonly ServerPluginDef[] {
+    return [
+      {
+        manifest: {
+          id: ROWS_ID,
+          version: "1.0.0",
+          title: "Rows",
+          description: "Keeps its data as rows.",
+          capabilities: [],
+          database: { maxBytes: 4 * 1024 * 1024 },
+          ...(options.migration === true ? { dataVersion: { major: 2, minor: 0 } } : {}),
+          contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+        },
+        actions: [
+          defineAction({
+            name: "write",
+            title: "Write a row",
+            caps: [],
+            input: z.strictObject({}),
+            result: z.strictObject({ note: z.string(), declared: z.boolean() }),
+          }),
+        ],
+        handlers: {
+          write: async (ctx: ActionCtx) => {
+            if (ctx.database === undefined) return { note: "", declared: false };
+            await ctx.database.run("CREATE TABLE IF NOT EXISTS notes(id INTEGER PRIMARY KEY, body TEXT NOT NULL)");
+            await ctx.database.run("INSERT INTO notes(body) VALUES (?)", ["kept"]);
+            const rows = await ctx.database.query<{ body: string }>("SELECT body FROM notes");
+            return { note: rows[0]?.body ?? "", declared: true };
+          },
+        },
+        ...(options.migration === true
+          ? {
+              migrations: [
+                {
+                  name: "0001-make-the-table",
+                  to: { major: 2, minor: 0 },
+                  migrate: async (storage, database) => {
+                    if (database === undefined) {
+                      await storage.set("migrated", "without a database");
+                      return;
+                    }
+                    await database.run("CREATE TABLE notes(id INTEGER PRIMARY KEY, body TEXT NOT NULL)");
+                    await storage.set("migrated", "with a database");
+                  },
+                },
+              ],
+            }
+          : {}),
+      },
+      {
+        manifest: {
+          id: KEYS_ID,
+          version: "1.0.0",
+          title: "Keys",
+          description: "Keeps its data as keys.",
+          capabilities: [],
+          contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+        },
+        actions: [
+          defineAction({
+            name: "look",
+            title: "Look for a database",
+            caps: [],
+            input: z.strictObject({}),
+            result: z.strictObject({ declared: z.boolean() }),
+          }),
+        ],
+        handlers: {
+          look: async (ctx: ActionCtx) => ({ declared: ctx.database !== undefined }),
+        },
+      },
+    ];
+  }
+
+  test("the slice reaches the plugin that declared a database, and nobody else", async () => {
+    const fixture = await hostFixture();
+    const dataDir = mkdtempSync(join(tmpdir(), "manifold-host-db-"));
+    const host = await customHost(fixture, databaseDefs(), { dataDir });
+    try {
+      expect(await host.dispatch(fixture.owner, `${ROWS_ID}.write`, {})).toEqual({
+        ok: true,
+        result: { note: "kept", declared: true },
+      });
+      /*
+        The declaration is the whole of what decides it (ADR 0034 §6): the second plugin runs
+        in the same host, on the same data directory, and has no slice at all — so a file
+        exists only for the plugin that asked for one, and nothing was created for the other.
+      */
+      expect(await host.dispatch(fixture.owner, `${KEYS_ID}.look`, {})).toEqual({
+        ok: true,
+        result: { declared: false },
+      });
+      expect(existsSync(pluginDatabasePath(dataDir, ROWS_ID))).toBe(true);
+      expect(existsSync(pluginDatabasePath(dataDir, KEYS_ID))).toBe(false);
+    } finally {
+      host.close();
+      fixture.store.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a migration is handed the database, and makes the table its plugin then writes to", async () => {
+    const fixture = await hostFixture();
+    const dataDir = mkdtempSync(join(tmpdir(), "manifold-host-db-"));
+    const storage = fixture.store.pluginStorage(ROWS_ID);
+    await storage.stampDataVersion({ major: 1, minor: 0 });
+    const host = await customHost(fixture, databaseDefs({ migration: true }), { dataDir });
+    try {
+      // The ledger and the stamp stay in `plugin_kv` whatever shape the data has, so ONE
+      // version and ONE ledger answer for a plugin whose data is keys, rows or both.
+      expect(await storage.get("migrated")).toBe("with a database");
+      expect(await storage.appliedMigrations()).toEqual(["0001-make-the-table"]);
+      expect(await storage.dataVersion()).toEqual({ major: 2, minor: 0 });
+      // The table the migration created is the one the handler inserts into: a second
+      // `CREATE TABLE` would have thrown rather than returned.
+      expect(await host.dispatch(fixture.owner, `${ROWS_ID}.write`, {})).toEqual({
+        ok: true,
+        result: { note: "kept", declared: true },
+      });
+    } finally {
+      host.close();
+      fixture.store.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("purge deletes the file with its journal and reports the bytes that went", async () => {
+    const fixture = await hostFixture();
+    const dataDir = mkdtempSync(join(tmpdir(), "manifold-host-db-"));
+    const host = await customHost(fixture, databaseDefs(), { dataDir });
+    try {
+      await host.dispatch(fixture.owner, `${ROWS_ID}.write`, {});
+      // A DISABLE RETAINS: the rows are still on disk when the plugin stops serving, which is
+      // what makes purge the separate, explicitly named act that destroys them.
+      await host.setEnabled(ROWS_ID, false, "admin");
+      expect(existsSync(pluginDatabasePath(dataDir, ROWS_ID))).toBe(true);
+
+      const outcome = await host.purge(ROWS_ID, "admin");
+      if ("refused" in outcome) throw new Error(outcome.refused);
+      expect(outcome.id).toBe(ROWS_ID);
+      expect(outcome.databaseBytes).toBeGreaterThan(0);
+      expect(existsSync(pluginDatabasePath(dataDir, ROWS_ID))).toBe(false);
+      expect(existsSync(`${pluginDatabasePath(dataDir, ROWS_ID)}-wal`)).toBe(false);
+
+      // The next open starts from no file at all, so the purged plugin is a fresh one.
+      await host.setEnabled(ROWS_ID, true, "admin");
+      expect(await host.dispatch(fixture.owner, `${ROWS_ID}.write`, {})).toEqual({
+        ok: true,
+        result: { note: "kept", declared: true },
+      });
+    } finally {
+      host.close();
+      fixture.store.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1925,7 +2106,7 @@ describe("PluginHost install doors", () => {
     const retained = await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID });
     expect(denial(retained)).toEqual({
       rule: "refused",
-      message: "storage_retained: 1 keys; purge first or pass purge: true",
+      message: "storage_retained: 1 keys and 0 database pages; purge first or pass purge: true",
     });
     expect(fixture.store.pluginInstalls().map((row) => row.pluginId)).toEqual([SAMPLE_ID]);
     expect(existsSync(stored.bundlePath)).toBe(true);
@@ -1948,6 +2129,57 @@ describe("PluginHost install doors", () => {
         .message,
     ).toMatch(/^not_installed: /);
     fixture.store.close();
+  });
+
+  test("a row whose data is ROWS is refused a silent uninstall exactly as one holding keys is", async () => {
+    /*
+      #233's guard widened to the shape ADR 0034 added (§5). The sample declares a database and
+      its door writes a table; it holds NO keys, so the only thing standing between it and a
+      silent uninstall is the page count — which is the whole point of counting it.
+    */
+    const fixture = await installFixture((ref) =>
+      sampleLoad(ref, {
+        ping: async (ctx: unknown) => {
+          const database = (ctx as ActionCtx).database;
+          if (database === undefined) return { pong: false };
+          await database.run("CREATE TABLE records(id INTEGER PRIMARY KEY, body TEXT NOT NULL)");
+          await database.run("INSERT INTO records(body) VALUES (?)", ["kept"]);
+          return { pong: true };
+        },
+      }),
+    );
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    try {
+      const { source, sha256 } = fixture.drop({ ...SAMPLE_MANIFEST, database: {} });
+      expect(
+        (await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, { source, sha256, hardened: true }))
+          .ok,
+      ).toBe(true);
+      expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+        ok: true,
+        result: { pong: true },
+      });
+      expect(await fixture.store.pluginStorage(SAMPLE_ID).count()).toBe(0);
+
+      expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+      const retained = await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, {
+        id: SAMPLE_ID,
+      });
+      expect(denial(retained).rule).toBe("refused");
+      expect(denial(retained).message).toMatch(
+        /^storage_retained: 0 keys and [1-9]\d* database pages; /,
+      );
+      expect(existsSync(pluginDatabasePath(fixture.dataDir, SAMPLE_ID))).toBe(true);
+
+      // Consent, and the file goes with the row: the purge runs first and reports the bytes.
+      expect(
+        await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID, purge: true }),
+      ).toEqual({ ok: true, result: {} });
+      expect(existsSync(pluginDatabasePath(fixture.dataDir, SAMPLE_ID))).toBe(false);
+    } finally {
+      host.close();
+      fixture.store.close();
+    }
   });
 
   test("uninstall forgets the switch: a reinstall of the same id is on, like a first install", async () => {

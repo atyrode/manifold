@@ -1,4 +1,5 @@
 import type { PluginDataVersion } from "@manifold/protocol";
+import type { PluginDatabase } from "./database.ts";
 
 /**
  * PER-PLUGIN STORAGE — the one place a plugin may keep durable data of its own.
@@ -166,7 +167,16 @@ export function compareDataVersion(left: PluginDataVersion, right: PluginDataVer
 export interface PluginMigration {
   readonly name: string;
   readonly to: PluginDataVersion;
-  migrate(storage: PluginStorage): void | Promise<void>;
+  /**
+   * `database` is present exactly when this plugin's manifest declares `database` (ADR 0034
+   * §3): the ledger and the version stamp stay in `plugin_kv`, so a plugin has ONE data
+   * version and ONE ledger whether its data is keys, rows or both, and a migration creates
+   * its tables with ordinary `CREATE TABLE` statements through `database.run`. The parameter
+   * is optional so every migration written before the file existed keeps compiling and keeps
+   * meaning what it meant; a migration that reaches for it without declaring the file in its
+   * manifest gets `undefined`, which is the honest answer.
+   */
+  migrate(storage: PluginStorage, database?: PluginDatabase): void | Promise<void>;
 }
 
 /**
