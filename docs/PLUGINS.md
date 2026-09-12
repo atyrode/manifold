@@ -2765,6 +2765,13 @@ jobs:
       plugins-dir: plugins
 ```
 
+Callers that require an explicit verified dependency tree or disposable test inputs may
+set `prepare-command`. It runs after their frozen install and before typechecking and
+unit tests; the default does nothing. Preparation remains the caller's responsibility
+and does not grant production or fleet authority. `pack-verify-command` replaces only
+the later pack/verify pair and suppresses artifact upload, so disposable source-artifact
+proofs do not accidentally publish their fixture bundles.
+
 `plugins/MANIFOLD_REV` and that `@<rev>` are bumped together, so the workflow and the kit it runs
 are one commit of this repository. The author repository's `plugins/package.json` wraps the kit:
 `verify` is `bun ../../manifold/packages/plugin-kit/src/verify.ts dist/*.manifold-plugin.json`

@@ -22,6 +22,10 @@ on:
         description: Optional combined pack/verify command managing disposable artifacts; outputs are never uploaded
         type: string
         default: ""
+      prepare-command:
+        description: Optional caller-owned preparation after frozen installation and before checks/tests
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -85,6 +89,13 @@ jobs:
       - name: Install the plugins' dependencies
         working-directory: caller/${{ inputs.plugins-dir }}
         run: bun install --frozen-lockfile
+
+      - name: Prepare caller dependencies and disposable fixtures
+        if: inputs.prepare-command != ''
+        working-directory: caller/${{ inputs.plugins-dir }}
+        env:
+          PREPARE_COMMAND: ${{ inputs.prepare-command }}
+        run: bash -euo pipefail -c "$PREPARE_COMMAND"
 
       - name: Typecheck
         working-directory: caller/${{ inputs.plugins-dir }}
