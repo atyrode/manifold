@@ -223,10 +223,7 @@ describe("buildIsolateDef", () => {
       outputs: [{ outputId: "o1", name: "report", sha256: "c".repeat(64), bytes: 12, files: 1 }],
     };
     await lifecycle.onAssemblyChanged?.(lifecycleCtx, { enabled: ["a.b"], disabled: [] });
-    await lifecycle.onJobSettled?.(
-      { ...lifecycleCtx, jobs: {} as JobSettledCtx["jobs"] },
-      job,
-    );
+    await lifecycle.onJobSettled?.({ ...lifecycleCtx, jobs: {} as JobSettledCtx["jobs"] }, job);
     expect(transport.hooks).toEqual([
       { hook: "onAssemblyChanged", payload: { enabled: ["a.b"], disabled: [] } },
       { hook: "onJobSettled", payload: job },
