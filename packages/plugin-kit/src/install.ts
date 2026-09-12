@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { PluginBundleSchema, type PluginRoster } from "@manifold/protocol";
+import { PluginBundleSchema } from "@manifold/protocol";
 import { resolve } from "node:path";
 import { assertOwnerKey, ownerAction, parseHubUrl, roster, type Hub } from "./hub.ts";
 
@@ -10,10 +10,9 @@ import { assertOwnerKey, ownerAction, parseHubUrl, roster, type Hub } from "./hu
  *         [--sha256 <hex>] [--deliver path | docker:<container>] [--owner-key-file <path>]
  *
  * The command is IDEMPOTENT over the roster it reads first: the same id at the same sha is
- * `unchanged` and nothing is asked of the hub; another sha is a `replaced` — the row is
- * switched off, installed over with `replace: true` and switched back on, the three steps
- * `engine.plugins.install` demands (`docs/PLUGINS.md` §7), with any enabled row that requires
- * it taken down first and brought back after (a parent under its parts, ADR 0023); an absent
+ * `unchanged` and nothing is asked of the hub; another sha is a `replaced` through
+ * `engine.plugins.install` with `replace: true`. The host replaces the module without
+ * changing the target's or its dependents' durable enablement or native approvals. An absent
  * id is `installed`. One JSON line answers, `{ id, sha256, hub, outcome }`, and a refusal exits
  * non-zero naming the class and detail on stderr, never a stack.
  *
@@ -177,29 +176,6 @@ async function deliver(facts: BundleFacts, delivery: Delivery): Promise<string> 
   return target;
 }
 
-/**
- * The ENABLED rows that require `id`, transitively, deepest first: the order they must be
- * switched off in before `id` may be, because the engine refuses to disable a plugin an enabled
- * row declares `required` (`missing_dependency`). A part inside its parent (ADR 0023) is the
- * everyday case; the walk is general.
- */
-function enabledDependents(rows: PluginRoster, id: string): string[] {
-  const order: string[] = [];
-  const seen = new Set<string>([id]);
-  const visit = (target: string): void => {
-    for (const row of rows) {
-      const dependent = row.manifest.id;
-      if (seen.has(dependent) || !row.enabled) continue;
-      if (row.manifest.dependencies?.[target]?.type !== "required") continue;
-      seen.add(dependent);
-      visit(dependent);
-      order.push(dependent);
-    }
-  };
-  visit(id);
-  return order;
-}
-
 export async function installBundle(options: InstallOptions): Promise<InstallReport> {
   const facts = await inspectBundle(options.source);
   if (options.sha256 !== undefined && options.sha256.toLowerCase() !== facts.sha256) {
@@ -230,29 +206,12 @@ export async function installBundle(options: InstallOptions): Promise<InstallRep
     });
     return report("installed");
   }
-  // A replace needs the row off (`still_enabled`), and the row cannot go off while an enabled
-  // dependent requires it — so the family goes dark from the leaves in, and comes back from the
-  // root out. A fresh install is on by default while a replace keeps the switch where it was,
-  // so the target is flipped back explicitly. A refused replace leaves the OLD bundle in place,
-  // and everything goes back on the same way: an upgrade that did not happen must not read as
-  // an outage on the hub.
-  const off = [...enabledDependents(rows, facts.id), facts.id];
-  const on = [...off].reverse();
-  const setEnabled = (id: string, enabled: boolean): Promise<unknown> =>
-    ownerAction(hub, "engine.plugins.setEnabled", { id, enabled });
-  for (const id of off) await setEnabled(id, false);
-  try {
-    await ownerAction(hub, "engine.plugins.install", {
-      source,
-      sha256: facts.sha256,
-      replace: true,
-      hardened: options.hardened === true,
-    });
-  } catch (error) {
-    for (const id of on) await setEnabled(id, true).catch(() => {});
-    throw error;
-  }
-  for (const id of on) await setEnabled(id, true);
+  await ownerAction(hub, "engine.plugins.install", {
+    source,
+    sha256: facts.sha256,
+    replace: true,
+    hardened: options.hardened === true,
+  });
   return report("replaced");
 }
 

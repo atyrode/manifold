@@ -2153,8 +2153,11 @@ engine.plugins.uninstall { id, purge? }                                   → {}
   installer names them. The grant is published on the row (`install.grantedCaps`) and enforced at
   rung 4 BEFORE the caller's own caps: a door needing a cap the installer withheld is `forbidden`
   with `<cap> not granted to plugin <id>`, whoever asked.
-- **`replace: true`** upgrades an id already installed at another hash; like `uninstall`, it needs
-  the row switched OFF first (`still_enabled`).
+- **`replace: true`** upgrades an installed id without changing its or its dependents'
+  enablement. The engine preflights the replacement and restores the old serving module
+  on failed admission. An intentionally disabled row stays disabled. An unchanged
+  verified machine declaration retains native installations, consent and service jobs;
+  changed or unverifiable native scope disables execution until a fresh native review.
 - **`hardened: true`** runs the row on ADR 0016's runner — its own Bun process and its own
   `Worker`, against §9's narrower interface — instead of in-realm. Absent or false is in-realm.
   The installer chooses it, never the manifest; the row publishes it as `install.hardened` and
@@ -2694,15 +2697,13 @@ bun run dev -- --hub http://127.0.0.1:7912 --deliver docker:manifold-dev-manifol
 
 Every cycle is `install`, the one-shot command underneath, and `install` is idempotent over the
 hub's roster: it reads `GET /api/plugins` first, and the same id at the same sha and hardening is
-`unchanged` (nothing asked of the hub); another sha or runner choice is `replaced` — `setEnabled false`,
-`engine.plugins.install { replace: true }`, `setEnabled true`, the three steps §7 demands; an
-absent id is `installed`. A replace is FAMILY-aware: the engine refuses to switch off a row an
-enabled row declares `required` (`missing_dependency`), so replacing `atyrode.code` while
-`atyrode.code.generator` is on switches the dependents off first, deepest first (transitively,
-read from the roster's manifests), then the target, and after the install switches the target
-and then the dependents back on in reverse. If the replace is refused, the old bundle stays and
-everything goes back on in that same order. It answers one line, `{ id, sha256, hub, outcome }`,
-and a refusal exits non-zero with the class and detail (`hash_mismatch: …`) on stderr.
+`unchanged` (nothing asked of the hub); another sha or runner choice is `replaced` through
+`engine.plugins.install { replace: true }`; an absent id is `installed`. Replacement uses
+the engine's live assembly path without disable/re-enable calls. The target and its required
+dependents retain their enablement, and failed admission restores the old serving module.
+Explicit disable remains a separate authority-changing action, never an installation step.
+It answers one line, `{ id, sha256, hub, outcome }`, and a refusal exits non-zero with the
+class and detail (`hash_mismatch: …`) on stderr.
 
 ```sh
 bun run --cwd packages/plugin-kit install:bundle <bundle | https://…> --hub <url> \

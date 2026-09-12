@@ -37,6 +37,7 @@ import {
   type TerminalExecution,
   PLUGIN_BUNDLE_STYLES_FILE,
   formatManifoldUri,
+  canonicalJobJson,
   TRACE_AUTHORITY_OPEN,
   TRACE_AUTHORITY_ROOT,
 } from "@manifold/protocol";
@@ -814,6 +815,9 @@ export class PluginHost {
   /** Installed plugins by id: the row, the verified bundle, and the def the runner produced. */
   private readonly installed = new Map<string, InstalledPlugin>();
   private readonly installedDefs = new Map<string, ServerPluginDef>();
+  /** Assembly mutations share the runner's one-child-per-id and data-commit boundary. */
+  private assemblyChange: Promise<void> = Promise.resolve();
+  private replacing: string | null = null;
   private readonly isolates: IsolateDeps | null;
   /**
    * The unpacked directory's hands (ADR 0025 §4): present exactly when this host admits
@@ -1122,6 +1126,9 @@ export class PluginHost {
    * `enable_failed` is a different report and stands until the next transition.
    */
   private onIsolateState(pluginId: string, state: IsolateState): void {
+    // A candidate child is not the published installation. Install or rollback publishes
+    // its final state, never an asynchronous reassembly of a half-replaced index.
+    if (this.replacing === pluginId) return;
     const lifecycle = isolateLifecycleState(state);
     if (lifecycle !== undefined) {
       this.lifecycleStates.set(pluginId, lifecycle);
@@ -1130,11 +1137,10 @@ export class PluginHost {
       if (current !== "isolate_starting" && current !== "isolate_crashed") return;
       this.lifecycleStates.delete(pluginId);
     }
-    this.reassemble().then(
-      (assembly) => {
-        this.assembled = assembly;
-        this.publish();
-      },
+    this.changeAssembly(async () => {
+      this.assembled = await this.reassemble();
+      this.publish();
+    }).catch(
       (error: unknown) => {
         this.logger.error("plugin_lifecycle", {
           plugin: pluginId,
@@ -1237,6 +1243,7 @@ export class PluginHost {
   private async applyMigrations(
     pluginId: string,
     migrations: readonly PluginMigration[],
+    declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.dataVersion,
   ): Promise<boolean> {
     if (migrations.length === 0) return false;
     const storage = this.storage(pluginId);
@@ -1245,7 +1252,6 @@ export class PluginHost {
       await storage.recordMigration(migration.name, this.runtime.now());
       this.logger.info("plugin_migration", { plugin: pluginId, migration: migration.name });
     }
-    const declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.dataVersion;
     if (declared !== undefined) await storage.stampDataVersion(declared);
     return true;
   }
@@ -1285,6 +1291,18 @@ export class PluginHost {
     return this.authored?.watch() ?? (() => {});
   }
 
+  private async changeAssembly<T>(change: () => Promise<T>): Promise<T> {
+    const preceding = this.assemblyChange;
+    let release!: () => void;
+    this.assemblyChange = new Promise<void>((resolve) => { release = resolve; });
+    await preceding;
+    try {
+      return await change();
+    } finally {
+      release();
+    }
+  }
+
   /**
    * Flips workspace-global enablement, persists it with attribution, reassembles, tells the
    * plugins that survived, and publishes the new roster.
@@ -1306,6 +1324,14 @@ export class PluginHost {
    *   safely read by its code, and no migration bridges the gap.
    */
   async setEnabled(
+    id: string,
+    enabled: boolean,
+    changedBy: string,
+  ): Promise<ActionRefused | { ok: true }> {
+    return this.changeAssembly(() => this.setEnabledNow(id, enabled, changedBy));
+  }
+
+  private async setEnabledNow(
     id: string,
     enabled: boolean,
     changedBy: string,
@@ -1443,6 +1469,10 @@ export class PluginHost {
    * purge released the reservation, so a replacement may now claim the type deliberately.
    */
   async purge(id: string, purgedBy: string): Promise<ActionRefused | PluginPurgeResult> {
+    return this.changeAssembly(() => this.purgeNow(id, purgedBy));
+  }
+
+  private async purgeNow(id: string, purgedBy: string): Promise<ActionRefused | PluginPurgeResult> {
     const entry = this.assembled.roster.find((candidate) => candidate.manifest.id === id);
     if (entry === undefined) return refused("unknown_plugin", [id]);
     if (this.assembled.builtin(id)) return refused("builtin", [id]);
@@ -1496,35 +1526,34 @@ export class PluginHost {
   }
 
   /**
-   * THE INSTALL DOOR (ADR 0016 §8 stage 2). In order, and the order is the contract:
+   * The install and replacement door. Artifact integrity, assembly and data compatibility
+   * are preflighted before committing an installation. A replacement preserves the durable
+   * enablement switch, including an intentionally disabled row, and never toggles dependents.
    *
-   *  1. the artifact is read, pinned and parsed, and NOTHING is written until the bundle is
-   *     admitted (`plugin-installs.ts`): a `hash_mismatch` or a refused manifest leaves no
-   *     file behind;
-   *  2. admission is the host's verdict — `namespace_reserved` for `engine.` / `core.`,
-   *     `already_installed` unless `replace`, `still_enabled` for a replace of a running row;
-   *  3. the runner spawns the child and the assembly is rebuilt with the new def. A load
-   *     failure or an `AssemblyError` (a duplicate id, a colliding action name) ROLLS BACK —
-   *     files, child, the host's index — and answers `artifact_invalid` naming the problem, so
-   *     a stranger's bundle is refused at the door rather than surfacing as a boot that will
-   *     not come up;
-   *  4. the row is persisted, once, with the grant (`grantFor`: declared minus the high-risk
-   *     set, widened by `grant`) and the doors the assembly just published — the record a boot
-   *     that cannot re-verify the bundle puts on the roster in the file's place.
+   * Enabled modules use the same lifecycle as an authored edit: old onDisable, new onEnable.
+   * These are module notifications, NOT an operator disable of native authority. Unchanged
+   * machine declarations retain the exact installations, consents and running service jobs;
+   * a changed declaration fences native execution at commit and still needs native review.
    *
-   * Then the transition is announced exactly as a toggle is: hooks fan out (an install of an
-   * enabled row IS an enable), the roster is published, one log line, one event.
-   *
-   * `unpacked` is the rebuild loop knocking (ADR 0025 §4): the artifact is what the hub just
-   * packed from `<data>/authored/<id>/`, the row lands as `mode: "unpacked"`, and the manifest
-   * must name the directory it was built from. It is the ONE difference in admission: a
-   * running unpacked row is replaced LIVE rather than refused `still_enabled` — its `onDisable`
-   * runs, the previous module is left behind (it stays in memory until restart, a cost
-   * developer mode accepts), the new one is imported fresh, and `onEnable` fans out as for an
-   * enable — because a save is not a state anybody wants to be asked to disable for. An
-   * `AssemblyError` in the edit rolls back to the previous row and wakes it again.
+   * A failed candidate restores the old module or boot-unverified placeholder, reloading only
+   * a prior hardened child. Migrations and their ledger commit with the install row or roll
+   * back together. Lifecycle hooks retain their no-veto contract: failures are roster-visible.
    */
   async install(
+    request: PluginInstallRequest,
+    installedBy: string,
+    unpacked?: { readonly id: string },
+  ): Promise<ActionRefused | PluginInstallResult> {
+    return this.changeAssembly(async () => {
+      try {
+        return await this.installNext(request, installedBy, unpacked);
+      } finally {
+        this.replacing = null;
+      }
+    });
+  }
+
+  private async installNext(
     request: PluginInstallRequest,
     installedBy: string,
     unpacked?: { readonly id: string },
@@ -1533,6 +1562,8 @@ export class PluginHost {
     if (isolates === null) {
       return installRefused("artifact_unreadable", "this server admits no bundles");
     }
+    if (unpacked !== undefined && !this.store.developerMode())
+      return refused("developer_mode_off", [unpacked.id]);
     const sha256 = request.sha256.toLowerCase();
     let artifact: InstalledArtifact;
     try {
@@ -1563,10 +1594,6 @@ export class PluginHost {
               `"${id}" is installed at ${existing.row.sha256}; pass replace to upgrade it`,
             );
           }
-          const live = unpacked !== undefined && existing.row.mode === "unpacked";
-          if (this.assembled.enabled(id) && !live) {
-            return new InstallRefusal("still_enabled", `disable "${id}" before replacing it`);
-          }
           return null;
         },
       });
@@ -1596,56 +1623,137 @@ export class PluginHost {
     const wasEnabled = new Set(
       this.assembled.roster.filter((entry) => entry.enabled).map((entry) => entry.manifest.id),
     );
-    // A LIVE replace (unpacked over a running unpacked row): the old module is told first, and
-    // the row leaves the "was enabled" set so the new module's `onEnable` fans out below.
-    const live = previous !== undefined && wasEnabled.has(id);
-    if (live) {
-      this.jobs?.disablePlugin(id);
-      await this.hook(id, "onDisable", "disable_failed");
-      wasEnabled.delete(id);
-    }
-    // A replace retires the running child first: two children for one id is two doors.
-    if (previous?.row.hardened === true) await isolates.runner.unload(id);
-    this.installed.set(id, { row: consent, bundle, web, styles });
-    this.lifecycleStates.delete(id);
+    const live = previous !== undefined && previous.bundle !== null && wasEnabled.has(id);
+    const previousChild =
+      previous?.row.hardened === true && previous.bundle?.manifest.entry.server === true;
+    const previousLifecycle = this.lifecycleStates.get(id);
+    let retired = false;
+    let candidateChild = false;
+    let notified = false;
+    let row: PluginInstallRow;
+    this.replacing = id;
     try {
+      // Only a verified hardened module has a child to restore. A boot-unverified row keeps
+      // its fail-closed def on rollback; unreadable old bytes must not prevent its repair.
+      if (previousChild) {
+        const verdict = verifyInstalledBundle(previous.row);
+        if (!verdict.ok) throw new InstallRefusal(verdict.refusal, verdict.detail);
+      }
+      const env = await this.env();
+      // Manifest/dependency preflight needs no child. The module supplies the candidate's
+      // actions and migrations, which are checked separately after loading.
+      const dataState = new Map(env.dataState);
+      dataState.delete(id);
+      this.preflightInstall(
+        id, { manifest: bundle.manifest, actions: [], handlers: {} }, { ...env, dataState },
+      );
+      let candidate: ServerPluginDef;
+      if (consent.hardened !== true) {
+        candidate = await this.loadBundle(bundle, artifact.dir, false);
+        this.preflightInstall(id, candidate, await this.env());
+      } else {
+        // One child owns one id. A failed candidate reloads only an actual prior child.
+        if (live) {
+          await this.hook(id, "onDisable", "disable_failed");
+          notified = true;
+        }
+        if (previousChild) {
+          retired = true;
+          await isolates.runner.unload(id);
+        }
+        candidateChild = true;
+        candidate = await this.loadBundle(bundle, artifact.dir, true);
+      }
+      const prospective = this.preflightInstall(id, candidate, await this.env());
+      if (candidateChild && isolates.runner.state(id) === "crashed")
+        throw new IsolateLoadError("candidate child crashed during admission");
+      if (live && !notified) {
+        await this.hook(id, "onDisable", "disable_failed");
+        notified = true;
+      }
+      if (previousChild && !retired) {
+        retired = true;
+        await isolates.runner.unload(id);
+      }
+      row = {
+        ...consent,
+        actions: prospective.roster.find((entry) => entry.manifest.id === id)?.actions ?? [],
+      };
+      // PluginMigration permits awaiting synchronous storage calls, never I/O. Data and
+      // ledger share the new row's savepoint; no lifecycle hook or runner I/O runs inside it.
+      this.store.db.exec("SAVEPOINT plugin_install");
+      try {
+        if (prospective.enabled(id)) {
+          try {
+            await this.applyMigrations(
+              id, prospective.pendingMigrations.get(id) ?? [], bundle.manifest.dataVersion,
+            );
+          } catch (error) {
+            throw new InstallRefusal(
+              "artifact_invalid",
+              error instanceof Error ? error.message : "migration failed",
+            );
+          }
+          if (bundle.manifest.dataVersion !== undefined)
+            await this.storage(id).stampDataVersion(bundle.manifest.dataVersion);
+        }
+        this.store.putPluginInstall(row);
+        const types = bundle.manifest.contributes.elements.map((element) => element.type);
+        if (types.length > 0) this.store.claimElementTypes(id, types);
+        this.store.db.exec("RELEASE plugin_install");
+      } catch (error) {
+        this.store.db.exec("ROLLBACK TO plugin_install");
+        this.store.db.exec("RELEASE plugin_install");
+        throw error;
+      }
+      this.installed.set(id, { row, bundle, web, styles });
       this.installedDefs.set(
         id,
-        await this.loadBundle(bundle, artifact.dir, consent.hardened === true),
+        !prospective.enabled(id) && row.hardened !== true
+          ? this.dormantDef(row, bundle)
+          : candidate,
       );
+      this.lifecycleStates.delete(id);
       this.syncDefs();
-      this.assembled = await this.reassemble();
     } catch (error) {
-      await this.rollbackInstall(id, artifact, previous, previousDef);
-      // The previous row is still on and still serving: wake it again, as it was.
-      if (live) await this.hook(id, "onEnable", "enable_failed");
+      try {
+        await this.rollbackInstall(id, artifact, previous, previousDef, retired, candidateChild);
+        if (previousLifecycle === undefined) this.lifecycleStates.delete(id);
+        else this.lifecycleStates.set(id, previousLifecycle);
+        if (notified) await this.hook(id, "onEnable", "enable_failed");
+        this.assembled = await this.reassemble();
+        this.publish();
+      } catch (rollbackError) {
+        this.lifecycleStates.set(id, "enable_failed");
+        this.assembled = await this.reassemble();
+        this.publish();
+        throw new AggregateError([error, rollbackError], `replacement and rollback failed for ${id}`);
+      }
+      if (error instanceof InstallRefusal) return { refused: error.message };
+      if (error instanceof AssemblyError)
+        return installRefused("artifact_invalid", error.problems.join("; "));
       if (error instanceof IsolateLoadError)
         return installRefused("artifact_invalid", error.message);
-      if (error instanceof AssemblyError) {
-        return installRefused("artifact_invalid", error.problems.join("; "));
-      }
       throw error;
     }
-    const row: PluginInstallRow = {
-      ...consent,
-      actions: this.assembled.roster.find((entry) => entry.manifest.id === id)?.actions ?? [],
-    };
-    this.store.putPluginInstall(row);
-    this.installed.set(id, { row, bundle, web, styles });
+    this.assembled = await this.reassemble();
+    if (
+      previous !== undefined &&
+      (previous.bundle === null ||
+        canonicalJobJson(previous.bundle.manifest.machine ?? null) !==
+          canonicalJobJson(bundle.manifest.machine ?? null))
+    ) {
+      // No consent is copied or granted. The reviewed deployment door alone can admit
+      // the changed native declaration, artifact and resources.
+      this.jobs?.disablePlugin(id);
+    }
     if (previous !== undefined && previous.row.sha256 !== sha256) removeInstall(previous.row);
-    const types = bundle.manifest.contributes.elements.map((element) => element.type);
-    if (types.length > 0) this.store.claimElementTypes(id, types);
-    await this.stampDeclaredVersions();
+    if (previous !== undefined) wasEnabled.delete(id);
     const delta: AssemblyDelta = {
       enabled: this.assembled.enabled(id) && !wasEnabled.has(id) ? [id] : [],
       disabled: [],
     };
     if (delta.enabled.length > 0) await this.fanOut(delta, wasEnabled);
-    if (!this.assembled.enabled(id) && row.hardened !== true) {
-      this.installedDefs.set(id, this.dormantDef(row, bundle));
-      this.syncDefs();
-      this.assembled = await this.reassemble();
-    }
     this.publish();
     this.logger.info("plugin_installed", {
       plugin: id,
@@ -1665,6 +1773,26 @@ export class PluginHost {
       { plugin: id, version: bundle.manifest.version, sha256 },
     );
     return { id, version: bundle.manifest.version, grantedCaps: [...row.grantedCaps] };
+  }
+
+  /** Assemble a candidate without exposing its bundle or handlers to native resolvers. */
+  private preflightInstall(id: string, candidate: ServerPluginDef, env: AssemblyEnv): Assembly {
+    const defs = new Map(this.installedDefs);
+    defs.set(id, candidate);
+    const assembly = assembleRoster(
+      [...this.firstParty, ...defs.values()], this.store.disabledPlugins(), env,
+    );
+    for (const row of assembly.roster) {
+      if (!row.enabled) continue;
+      const pluginId = row.manifest.id;
+      const missing = assembly.unmet(pluginId);
+      const clashes = assembly.conflicts(pluginId);
+      if (missing.length > 0 || clashes.length > 0)
+        throw new AssemblyError([
+          `${pluginId}: ${missing.length > 0 ? "dependency_disabled" : "incompatible_dependency"}: ${[...missing, ...clashes].join(", ")}`,
+        ]);
+    }
+    return assembly;
   }
 
   /**
@@ -1705,6 +1833,13 @@ export class PluginHost {
    * `developer_mode_off` marks lift, and the next save or authoring call builds again.
    */
   async setDeveloperMode(on: boolean, changedBy: string): Promise<ActionRefused | { ok: true }> {
+    return this.changeAssembly(() => this.setDeveloperModeNow(on, changedBy));
+  }
+
+  private async setDeveloperModeNow(
+    on: boolean,
+    changedBy: string,
+  ): Promise<ActionRefused | { ok: true }> {
     if (this.authored === null) {
       return installRefused("artifact_unreadable", "this server admits no bundles");
     }
@@ -1712,7 +1847,7 @@ export class PluginHost {
     if (!on) {
       for (const [id, entry] of this.installed) {
         if (entry.row.mode !== "unpacked" || !this.assembled.enabled(id)) continue;
-        const outcome = await this.setEnabled(id, false, changedBy);
+        const outcome = await this.setEnabledNow(id, false, changedBy);
         if ("refused" in outcome) return outcome;
       }
     }
@@ -1741,29 +1876,16 @@ export class PluginHost {
     return this.authored.author(request, authoredBy);
   }
 
-  /**
-   * Undoes everything `install` did before the failure: the child, the files of THIS artifact
-   * (never a replaced install's, which are still the row of record), and the host's index —
-   * restored to the previous install when this was a replace, dropped when it was not. The
-   * store needs no undoing: the row lands only after the assembly has taken the def.
-   */
+  /** Retire only the candidate and restore the exact old installation, never native jobs. */
   private async rollbackInstall(
     id: string,
     artifact: InstalledArtifact,
     previous: InstalledPlugin | undefined,
     previousDef: ServerPluginDef | undefined,
+    retired: boolean,
+    candidateChild: boolean,
   ): Promise<void> {
-    if (this.isolates !== null && this.installed.get(id)?.row.hardened === true) {
-      try {
-        await this.isolates.runner.unload(id);
-      } catch (error) {
-        this.logger.error("plugin_lifecycle", {
-          plugin: id,
-          hook: "unload",
-          error: error instanceof Error ? error.message : "unload failed",
-        });
-      }
-    }
+    if (this.isolates !== null && candidateChild) await this.isolates.runner.unload(id);
     if (previous === undefined || previous.row.sha256 !== artifact.sha256) {
       removeInstall(artifact);
     }
@@ -1772,7 +1894,14 @@ export class PluginHost {
       this.installedDefs.delete(id);
     } else {
       this.installed.set(id, previous);
-      this.installedDefs.set(id, previousDef);
+      if (retired) {
+        const verdict = verifyInstalledBundle(previous.row);
+        if (!verdict.ok) throw new InstallRefusal(verdict.refusal, verdict.detail);
+        this.installedDefs.set(id, await this.loadBundle(verdict.bundle, verdict.dir, true));
+      } else {
+        // A boot-unverified placeholder never owned a child or trusted rollback bytes.
+        this.installedDefs.set(id, previousDef);
+      }
     }
     this.syncDefs();
   }
@@ -1799,6 +1928,14 @@ export class PluginHost {
     removedBy: string,
     purge: boolean,
   ): Promise<ActionRefused | { ok: true }> {
+    return this.changeAssembly(() => this.uninstallNow(id, removedBy, purge));
+  }
+
+  private async uninstallNow(
+    id: string,
+    removedBy: string,
+    purge: boolean,
+  ): Promise<ActionRefused | { ok: true }> {
     const entry = this.installed.get(id);
     if (entry === undefined || this.isolates === null) {
       return installRefused("not_installed", `"${id}" was not installed here`);
@@ -1807,7 +1944,7 @@ export class PluginHost {
       return installRefused("still_enabled", `disable "${id}" before uninstalling it`);
     }
     if (purge) {
-      const purged = await this.purge(id, removedBy);
+      const purged = await this.purgeNow(id, removedBy);
       if ("refused" in purged) return purged;
     } else {
       const retained = await this.storage(id).count();
@@ -2057,6 +2194,9 @@ export class PluginHost {
       // Cleanup actions (D12) outlive a disable: turning core.terminals off must refuse
       // creation and administration, never the ability to remove what already exists.
       return refuse("plugin_disabled", `plugin "${pluginId}" is disabled`);
+    }
+    if (this.replacing === pluginId) {
+      return refuse("unavailable", `plugin "${pluginId}" is being replaced`);
     }
     /*
       RUNG 3 — SCOPE. A token scoped to one container cannot authorize a WORKSPACE-grade

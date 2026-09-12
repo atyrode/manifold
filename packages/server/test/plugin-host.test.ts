@@ -1,8 +1,11 @@
 import "../src/shared-modules.ts";
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { generateKeyPairSync, sign } from "node:crypto";
+import { installBundle } from "@manifold/plugin-kit/install";
+import { canonicalJobJson, JOB_OWNER_PROTOCOL_VERSION, JobDeploymentReviewSchema } from "@manifold/protocol";
 import {
   ENGINE_AUTHOR_ACTION,
   ENGINE_INSTALL_ACTION,
@@ -20,6 +23,10 @@ import {
 import type {
   ActionOutcome,
   Cap,
+  JobCommand,
+  JobOwner,
+  MachineHalf,
+  ServicePolicy,
   PluginManifest,
   PluginRoster,
   TileLayout,
@@ -30,6 +37,7 @@ import { AuthService, type AuthContext } from "../src/auth.ts";
 import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../src/assembly.ts";
 import { authoredLayout } from "../src/authored.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
+import { JobService } from "../src/job-service.ts";
 import {
   IsolateDenial,
   IsolateLoadError,
@@ -2080,7 +2088,7 @@ describe("PluginHost install doors", () => {
     fixture.store.close();
   });
 
-  test("a second install of an id is already_installed; replace needs the row off, then upgrades", async () => {
+  test("a second install needs replace and an intentionally disabled replacement stays off", async () => {
     const fixture = await installFixture();
     const host = await customHost(fixture, [], { isolates: fixture.isolates });
     const first = fixture.drop();
@@ -2091,15 +2099,6 @@ describe("PluginHost install doors", () => {
     expect(
       denial(await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, second)).message,
     ).toMatch(/^already_installed: /);
-    expect(
-      denial(
-        await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
-          ...second,
-          replace: true,
-          hardened: true,
-        }),
-      ).message,
-    ).toMatch(/^still_enabled: /);
 
     expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
     expect(
@@ -2139,7 +2138,6 @@ describe("PluginHost install doors", () => {
     expect(denial(outcome).message).toMatch(/^artifact_invalid: duplicate plugin id/);
     expect(fixture.store.pluginInstalls()).toEqual([]);
     expect(existsSync(join(fixture.dataDir, "plugins", SAMPLE_ID))).toBe(false);
-    expect(fixture.runner.unloads).toEqual([SAMPLE_ID]);
     // The in-realm row is untouched: still one row under that id, still the first-party one.
     const rows = host.roster().filter((entry) => entry.manifest.id === SAMPLE_ID);
     expect(rows).toHaveLength(1);
@@ -2304,6 +2302,457 @@ describe("PluginHost install doors", () => {
     expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
     expect(host.webModule(SAMPLE_ID)).toBeNull();
     fixture.store.close();
+  });
+});
+
+/** Real install/dispatch/native services; only the native owner's transport is simulated. */
+async function retainedServiceFixture() {
+  const generations = new Map<string, number>();
+  const fixture: InstallFixture = await installFixture((ref) => {
+    const generation = (generations.get(ref.pluginId) ?? 0) + 1;
+    generations.set(ref.pluginId, generation);
+    if (ref.manifest.version === "9.0.0") throw new IsolateLoadError("candidate did not load");
+    const loaded = sampleLoad(ref, {
+      ping: async () => {
+        if (
+          generations.get(ref.pluginId) !== generation ||
+          fixture.runner.state(ref.pluginId) !== "running"
+        ) throw new IsolateDenial("unavailable", "retired child");
+        return { version: ref.manifest.version };
+      },
+    });
+    return ref.manifest.version === "8.0.0"
+      ? { ...loaded, def: { ...loaded.def, actions: [...loaded.def.actions, ...loaded.def.actions] } }
+      : loaded;
+  });
+  try {
+  const host = await customHost(fixture, [], { isolates: fixture.isolates });
+  const jobs = new JobService(fixture.store, fixture.auth, fixture.runtime);
+  host.setJobs(jobs);
+  const machineId = fixture.auth.enrollMachine("native-owner", fixture.owner).machine.id;
+  const operationId = `${SAMPLE_ID}.serve`;
+  const artifactSha256 = "a".repeat(64);
+  const machine: MachineHalf = {
+    artifacts: {
+      "linux-x64": {
+        url: "https://example.invalid/worker", sha256: artifactSha256,
+        entrySha256: artifactSha256, format: "raw", entry: ["worker"],
+        maxBytes: 4096, maxExpandedBytes: 4096, maxMembers: 1,
+      },
+    },
+    operations: {
+      [operationId]: {
+        argv: [], input: {}, runtimeTools: [], locations: [], outputs: [],
+        network: "none", providesService: true, stdin: false,
+        limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+      },
+    },
+    locations: {},
+  };
+  const manifest: PluginManifest = { ...SAMPLE_MANIFEST, machine };
+  const first = fixture.drop(manifest);
+  expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, first)).ok).toBe(true);
+  const commands: JobCommand[] = [];
+  const channel = {
+    machineId,
+    send: ({ command }: { type: "job_command"; command: JobCommand }) => {
+      commands.push(command);
+      return true;
+    },
+  };
+  const pair = generateKeyPairSync("ed25519");
+  const owner: JobOwner = {
+    protocolVersion: JOB_OWNER_PROTOCOL_VERSION, ownerId: "retained-owner", generation: 1,
+    platforms: ["linux-x64"], inventoryDigest: "b".repeat(64),
+    publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    resources: { tools: {}, services: {}, anchors: {}, serviceDefinitions: {} },
+  };
+  const proveOwner = () => {
+    jobs.online(channel, owner, "epoch");
+    const challenge = commands.at(-1);
+    if (challenge?.type !== "owner_challenge") throw new Error("missing native challenge");
+    const proof = { nonce: challenge.nonce, serverEpoch: challenge.serverEpoch, machineId, owner };
+    jobs.event(channel, {
+      type: "owner_proof", ...proof,
+      signature: sign(null, Buffer.from(canonicalJobJson(proof)), pair.privateKey).toString("base64"),
+    });
+  };
+  proveOwner();
+  const request = {
+    deploymentId: "retained-service", pluginId: SAMPLE_ID,
+    targets: [{ machineId }], operationIds: [operationId],
+  };
+  const reviewOutcome = await host.dispatch(fixture.owner, "engine.jobs.reviewDeployment", request);
+  if (!reviewOutcome.ok) throw new Error(reviewOutcome.denial.message);
+  const review = JobDeploymentReviewSchema.parse(reviewOutcome.result);
+  expect((await host.dispatch(fixture.owner, "engine.jobs.applyDeployment", {
+    request, reviewDigest: review.reviewDigest,
+  })).ok).toBe(true);
+  const install = commands.findLast((command) => command.type === "install");
+  if (install?.type !== "install") throw new Error("missing reviewed native installation");
+  jobs.event(channel, {
+    type: "installed", pluginId: SAMPLE_ID,
+    installationRevision: install.installationRevision, artifactSha256,
+  });
+  const policy: ServicePolicy = {
+    serviceId: `${SAMPLE_ID}.broker`, revision: "one", maxConcurrent: 1,
+    runtime: {
+      scope: "instance", pluginId: SAMPLE_ID, operationId,
+      installationRevision: install.installationRevision, artifactSha256,
+      resourceBindingDigest: sha256Hex(canonicalJobJson(null)), input: {},
+    },
+    operations: {
+      inspect: {
+        method: "GET", readable: true, path: "/inspect", input: {}, query: {}, body: [],
+        timeoutMs: 1000, maxRequestBytes: 1024, maxResponseBytes: 4096, maxResultBytes: 2048,
+        response: { kind: "projected-json", fields: [["state"]], maxArrayItems: 16 },
+      },
+    },
+  };
+  const configured = await jobs.configureInstanceService(fixture.owner, {
+    serviceId: policy.serviceId, expectedRevision: null, machineId, policy, enabled: true,
+  });
+  const start = commands.find((command) => command.type === "start");
+  if (!start || !start.request.service || !configured.configuration)
+    throw new Error("reviewed native service did not start");
+  const storedPolicy = jobs.readInstanceServiceConfiguration(fixture.owner, { serviceId: policy.serviceId }).policy;
+  if (!storedPolicy) throw new Error("missing service policy");
+  owner.resources = {
+    tools: {}, anchors: {}, services: { [policy.serviceId]: sha256Hex(canonicalJobJson(storedPolicy)) },
+    serviceDefinitions: { [policy.serviceId]: { revision: storedPolicy.revision, operationIds: ["inspect"] } },
+  };
+  proveOwner();
+  jobs.event(channel, {
+    type: "installed", pluginId: SAMPLE_ID,
+    installationRevision: install.installationRevision, artifactSha256,
+  });
+  jobs.event(channel, {
+    type: "state", jobId: start.request.jobId, requestDigest: start.request.requestDigest,
+    ownerId: owner.ownerId, ownerGeneration: owner.generation, state: "started",
+  });
+  jobs.event(channel, { type: "service_ready", jobId: start.request.jobId, service: start.request.service });
+  const readService = async () => {
+    const pending = host.dispatch(fixture.owner, "engine.services.readInstance", {
+      serviceId: policy.serviceId, expectedRevision: configured.configuration!.revision,
+      operationId: "inspect", input: {},
+    });
+    const command = commands.findLast((command) => command.type === "service_read");
+    if (command?.type !== "service_read") throw new Error("native read was not admitted");
+    jobs.event(channel, {
+      type: "service_authorize", subject: { kind: "read", requestId: command.requestId },
+      authorizationId: `authorize-${command.requestId}`,
+      serviceId: command.serviceId, revision: command.revision,
+      policySha256: command.policySha256, operationId: command.operationId,
+    });
+    jobs.event(channel, {
+      type: "service_read_result", requestId: command.requestId,
+      reply: { type: "service_result", requestId: command.requestId, ok: true, result: { state: "usable" } },
+    });
+    expect(await pending).toEqual({
+      ok: true,
+      result: { type: "service_result", requestId: command.requestId, ok: true, result: { state: "usable" } },
+    });
+  };
+  const http = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    async fetch(request) {
+      const auth = fixture.auth.authenticate(request.headers.get("authorization")?.slice(7) ?? "");
+      const path = new URL(request.url).pathname;
+      if (path === "/api/plugins") return Response.json({ plugins: host.roster(), developerMode: false });
+      if (path.startsWith("/api/actions/"))
+        return Response.json(await host.dispatch(auth, decodeURIComponent(path.slice("/api/actions/".length)), await request.json()));
+      return new Response("not found", { status: 404 });
+    },
+  });
+  return {
+    fixture, host, jobs, machineId, machine, manifest, operationId, policy, first, start, commands,
+    readService, hub: { url: http.url.origin, ownerKey: OWNER_KEY },
+    close: () => {
+      http.stop(true);
+      jobs.offline(channel);
+      fixture.store.close();
+      rmSync(fixture.dataDir, { recursive: true, force: true });
+    },
+  };
+  } catch (error) {
+    fixture.store.close();
+    rmSync(fixture.dataDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+describe("enabled bundle replacement retains native execution", () => {
+  test("the supported installer replaces a parent without changing its usable broker or enabled dependent", async () => {
+    const f = await retainedServiceFixture();
+    try {
+      const childId = `${SAMPLE_ID}.part`;
+      const child = f.fixture.drop({
+        ...SAMPLE_MANIFEST, id: childId, dependencies: { [SAMPLE_ID]: { type: "required" } },
+      });
+      expect((await f.host.dispatch(f.fixture.owner, ENGINE_INSTALL_ACTION, child)).ok).toBe(true);
+      await f.readService();
+      const before = f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID });
+      const native = f.jobs.jobs.installation(f.machineId, SAMPLE_ID);
+      const policy = f.jobs.readInstanceServiceConfiguration(f.fixture.owner, { serviceId: f.policy.serviceId }).policy;
+      const updated = f.fixture.drop({ ...f.manifest, version: "2.0.0" });
+      expect((await installBundle({ ...updated, hub: f.hub })).outcome).toBe("replaced");
+      expect((await installBundle({ ...updated, hub: f.hub })).outcome).toBe("unchanged");
+      expect(f.host.enabled(childId)).toBe(true);
+      expect(f.fixture.store.disabledPlugins().size).toBe(0);
+      expect(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+        ok: true, result: { version: "2.0.0" },
+      });
+      f.jobs.tick();
+      await f.readService();
+      expect(f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID })).toEqual(before);
+      expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toEqual(native);
+      expect(f.jobs.jobs.get(f.start.request.jobId)?.request).toEqual(f.start.request);
+      expect(f.jobs.jobs.cancellation(f.start.request.jobId)).toBeNull();
+      expect(f.jobs.jobs.instanceServiceJobs(f.policy.serviceId).map((job) => job.request.jobId)).toEqual([f.start.request.jobId]);
+      expect(f.jobs.readInstanceServiceConfiguration(f.fixture.owner, { serviceId: f.policy.serviceId }).policy).toEqual(policy);
+      expect(f.jobs.describeInstanceService(f.fixture.owner, { serviceId: f.policy.serviceId }).state).toBe("ready");
+    } finally { f.close(); }
+  });
+
+  test.each(["assembly", "child-load", "action-collision"] as const)(
+    "%s replacement failure restores a callable old module and the same usable native service",
+    async (failure) => {
+      const f = await retainedServiceFixture();
+      try {
+        const before = f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID });
+        const oldRow = f.fixture.store.pluginInstalls();
+        const candidate = f.fixture.drop({
+          ...f.manifest, version: failure === "child-load" ? "9.0.0" : failure === "action-collision" ? "8.0.0" : "2.0.0",
+          ...(failure === "assembly" ? { dependencies: { "vendor.absent": { type: "required" as const } } } : {}),
+          ...(failure === "child-load" ? {
+            machine: {
+              ...f.machine,
+              operations: { [f.operationId]: { ...f.machine.operations[f.operationId]!, network: "host" as const } },
+            },
+          } : {}),
+        });
+        await expect(installBundle({ ...candidate, hub: f.hub })).rejects.toThrow("artifact_invalid");
+        expect(f.fixture.store.pluginInstalls()).toEqual(oldRow);
+        expect(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+          ok: true, result: { version: SAMPLE_MANIFEST.version },
+        });
+        f.jobs.tick();
+        await f.readService();
+        expect(f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID })).toEqual(before);
+        expect(f.jobs.jobs.cancellation(f.start.request.jobId)).toBeNull();
+        expect(f.jobs.jobs.instanceServiceJobs(f.policy.serviceId).map((job) => job.request.jobId)).toEqual([f.start.request.jobId]);
+        const corrected = f.fixture.drop({ ...f.manifest, version: "2.0.1" });
+        expect((await installBundle({ ...corrected, hub: f.hub })).outcome).toBe("replaced");
+        await f.readService();
+      } finally { f.close(); }
+    },
+  );
+
+  test.each(["declaration", "artifact", "resources", "operator-disable"] as const)(
+    "%s never inherits execution through replacement or an assembly enable",
+    async (change) => {
+      const f = await retainedServiceFixture();
+      try {
+        const original = f.jobs.jobs.installation(f.machineId, SAMPLE_ID)!;
+        const machine = structuredClone(f.machine);
+        if (change === "operator-disable")
+          expect(await f.host.setEnabled(SAMPLE_ID, false, f.fixture.owner.principal.id)).toEqual({ ok: true });
+        else if (change === "declaration") machine.operations[f.operationId]!.network = "host";
+        else if (change === "artifact") {
+          machine.artifacts["linux-x64"]!.sha256 = "c".repeat(64);
+          machine.artifacts["linux-x64"]!.entrySha256 = "c".repeat(64);
+        } else machine.requiresResourceBindings = true;
+        const candidate = f.fixture.drop({ ...f.manifest, version: "2.0.0", machine });
+        expect((await installBundle({ ...candidate, hub: f.hub })).outcome).toBe("replaced");
+        expect(f.host.enabled(SAMPLE_ID)).toBe(change !== "operator-disable");
+        expect(await f.host.setEnabled(SAMPLE_ID, true, f.fixture.owner.principal.id)).toEqual({ ok: true });
+        f.jobs.tick();
+        const description = f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID });
+        expect(description.installation).toMatchObject({ revision: original.revision, artifactSha256: original.artifact, enabled: false, ready: false });
+        expect(description.consents.every((consent) => !consent.enabled)).toBe(true);
+        expect(f.jobs.describeInstanceService(f.fixture.owner, { serviceId: f.policy.serviceId }).state).toBe("stopping");
+        expect(() => f.jobs.execute(f.fixture.owner, SAMPLE_ID, "new-execution", {
+          jobId: "not-approved", machineId: f.machineId, operationId: f.operationId, input: {}, outputs: [],
+        })).toThrow("installation_changed");
+        // Restoring the old declaration is not a hidden re-grant either.
+        expect((await installBundle({ ...f.first, hub: f.hub })).outcome).toBe("replaced");
+        expect(f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID }).installation?.enabled).toBe(false);
+      } finally { f.close(); }
+    },
+  );
+
+  test.each([
+    { damage: "missing", disabled: false, failureVersion: "9.0.0" },
+    { damage: "tampered", disabled: true, failureVersion: "8.0.0" },
+  ] as const)(
+    "a $damage boot-unverified bundle repairs without purging data (disabled: $disabled)",
+    async ({ damage, disabled, failureVersion }) => {
+      const f = await retainedServiceFixture();
+      try {
+        const storage = f.fixture.store.pluginStorage(SAMPLE_ID);
+        await storage.set("value", "retained before restart");
+        const stored = f.fixture.store.pluginInstalls()[0];
+        if (stored === undefined) throw new Error("no installed bundle");
+        await f.fixture.runner.unload(SAMPLE_ID);
+        if (damage === "missing") rmSync(stored.bundlePath);
+        else writeFileSync(stored.bundlePath, "tampered bundle bytes");
+
+        const runner = new FakeRunner((ref): IsolateLoadResult => {
+          if (ref.manifest.version === "9.0.0")
+            throw new IsolateLoadError("candidate did not load");
+          const loaded = sampleLoad(ref);
+          let enabled = false;
+          return {
+            ...loaded,
+            lifecycle: {
+              onEnable: () => { enabled = true; },
+              onDisable: () => { enabled = false; },
+            },
+            def: {
+              ...loaded.def,
+              actions: ref.manifest.version === "8.0.0"
+                ? [...loaded.def.actions, ...loaded.def.actions]
+                : loaded.def.actions,
+              handlers: {
+                ...loaded.def.handlers,
+                ping: async (ctx) => {
+                  if (!enabled) throw new IsolateDenial("unavailable", "child was not enabled");
+                  return {
+                    version: ref.manifest.version,
+                    value: await ctx.storage.get("value"),
+                  };
+                },
+              },
+            },
+          };
+        });
+        const rebooted = await customHost(f.fixture, [], {
+          isolates: { runner, dataDir: f.fixture.dataDir },
+        });
+        rebooted.setJobs(f.jobs);
+        expect(installedRow(rebooted, SAMPLE_ID)).toMatchObject({
+          enabled: true,
+          lifecycle: "enable_failed",
+          manifest: { version: "unverified" },
+          install: {
+            sha256: stored.sha256,
+            refusal: damage === "missing" ? "artifact_unreadable" : "hash_mismatch",
+          },
+        });
+        expect(runner.loads).toEqual([]);
+        expect(denial(await rebooted.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).rule)
+          .toBe("unavailable");
+        if (disabled)
+          expect(await rebooted.setEnabled(SAMPLE_ID, false, f.fixture.owner.principal.id))
+            .toEqual({ ok: true });
+
+        const before = installedRow(rebooted, SAMPLE_ID);
+        const deniedBefore = await rebooted.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {});
+        // Fail both before a child is admitted and after its actions are loaded. Neither
+        // path may try to resurrect the unreadable old module or erase its boot refusal.
+        const failed = f.fixture.drop({ ...f.manifest, version: failureVersion });
+        expect(denial(await rebooted.dispatch(f.fixture.owner, ENGINE_INSTALL_ACTION, {
+          ...failed, replace: true,
+        })).message).toMatch(/^artifact_invalid:/);
+        expect(f.fixture.store.pluginInstalls()).toEqual([stored]);
+        expect(installedRow(rebooted, SAMPLE_ID)).toEqual(before);
+        expect(await rebooted.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {}))
+          .toEqual(deniedBefore);
+        expect(rebooted.webModule(SAMPLE_ID)).toBeNull();
+        expect(await storage.get("value")).toBe("retained before restart");
+        expect(runner.state(SAMPLE_ID)).toBe("stopped");
+
+        const repaired = f.fixture.drop({ ...f.manifest, version: "2.0.0" });
+        expect((await rebooted.dispatch(f.fixture.owner, ENGINE_INSTALL_ACTION, {
+          ...repaired, replace: true,
+        })).ok).toBe(true);
+        expect(installedRow(rebooted, SAMPLE_ID)).toMatchObject({
+          enabled: !disabled,
+          manifest: { version: "2.0.0" },
+          install: { sha256: repaired.sha256 },
+        });
+        expect(installedRow(rebooted, SAMPLE_ID).install?.refusal).toBeUndefined();
+        expect(f.fixture.store.disabledPlugins().has(SAMPLE_ID)).toBe(disabled);
+        if (disabled) {
+          expect(denial(await rebooted.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).rule)
+            .toBe("plugin_disabled");
+          expect(rebooted.webModule(SAMPLE_ID)).toBeNull();
+          expect(await rebooted.setEnabled(SAMPLE_ID, true, f.fixture.owner.principal.id))
+            .toEqual({ ok: true });
+        }
+        expect(await rebooted.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+          ok: true, result: { version: "2.0.0", value: "retained before restart" },
+        });
+        expect(rebooted.webModule(SAMPLE_ID)?.sha256).toBe(repaired.sha256);
+        // Even the same candidate machine declaration cannot inherit authority from an
+        // unknown old declaration. An assembly enable is not a new native review.
+        const native = f.jobs.describe(f.fixture.owner, {
+          machineId: f.machineId, pluginId: SAMPLE_ID,
+        });
+        expect(native.installation).toMatchObject({ enabled: false, ready: false });
+        expect(native.consents.every((consent) => !consent.enabled)).toBe(true);
+        expect(() => f.jobs.execute(f.fixture.owner, SAMPLE_ID, "unverified-repair", {
+          jobId: "unreviewed-repair", machineId: f.machineId,
+          operationId: f.operationId, input: {}, outputs: [],
+        })).toThrow("installation_changed");
+      } finally {
+        f.close();
+      }
+    },
+  );
+
+  test("in-realm migration failure rolls back data and ledger while the original native service stays usable", async () => {
+    const f = await retainedServiceFixture();
+    try {
+      const server = (migrate: boolean, fail: boolean) => `
+        import { z } from ${JSON.stringify(import.meta.resolve("zod"))};
+        const { defineAction } = globalThis[Symbol.for("manifold.shared")]["@manifold/plugin"];
+        export default {
+          actions: [defineAction({
+            name: "ping", title: "Read stored data", caps: ["containers:read"],
+            input: z.strictObject({}), result: z.unknown(),
+          })],
+          handlers: { async ping(ctx) {
+            return { value: await ctx.storage.get("value"), version: await ctx.storage.dataVersion(),
+              migrations: await ctx.storage.appliedMigrations() };
+          } },
+          migrations: ${migrate ? `[
+            { name: "first", to: { major: 2, minor: 0 }, async migrate(storage) {
+              await storage.set("value", "first");
+            } },
+            { name: "second", to: { major: 3, minor: 0 }, async migrate(storage) {
+              await storage.set("value", "second");
+              ${fail ? 'throw new Error("migration failed after writing");' : ""}
+            } }
+          ]` : "[]"},
+        };
+      `;
+      const first = f.fixture.drop({ ...f.manifest, dataVersion: { major: 1, minor: 0 } }, {
+        "server.js": server(false, false), "web.js": "export {};",
+      });
+      expect((await installBundle({ ...first, hardened: false, hub: f.hub })).outcome).toBe("replaced");
+      await f.fixture.store.pluginStorage(SAMPLE_ID).set("value", "original");
+      const old = f.fixture.store.pluginInstalls();
+      const before = f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID });
+      const next = { ...f.manifest, version: "3.0.0", dataVersion: { major: 3, minor: 0 } };
+      const failed = f.fixture.drop(next, { "server.js": server(true, true), "web.js": "export {};" });
+      await expect(installBundle({ ...failed, hardened: false, hub: f.hub })).rejects.toThrow("migration failed");
+      expect(f.fixture.store.pluginInstalls()).toEqual(old);
+      expect(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+        ok: true, result: { value: "original", version: { major: 1, minor: 0 }, migrations: [] },
+      });
+      await f.readService();
+      const corrected = f.fixture.drop(next, { "server.js": server(true, false), "web.js": "export {};" });
+      expect((await installBundle({ ...corrected, hardened: false, hub: f.hub })).outcome).toBe("replaced");
+      expect(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+        ok: true, result: { value: "second", version: { major: 3, minor: 0 }, migrations: ["first", "second"] },
+      });
+      await expect(installBundle({ ...first, hardened: false, hub: f.hub })).rejects.toThrow("major downgrade");
+      f.jobs.tick();
+      await f.readService();
+      expect(f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID })).toEqual(before);
+      expect(f.jobs.jobs.cancellation(f.start.request.jobId)).toBeNull();
+    } finally { f.close(); }
   });
 });
 
@@ -2500,7 +2949,7 @@ describe("PluginHost unpacked plugins", () => {
     expect(fixture.store.pluginInstalls().map((stored) => stored.sha256)).toEqual([
       authored.sha256,
     ]);
-    expect(hookLog()).toEqual(["enable:1.0.0", "disable:1.0.0", "enable:1.0.0"]);
+    expect(hookLog()).toEqual(["enable:1.0.0"]);
 
     // A build that fails (the manifest is not even JSON) is the same class, and the row stands.
     const unbuildable = await host.author(
