@@ -2,7 +2,7 @@
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BunPlugin } from "bun";
-import { open } from "node:fs/promises";
+import { open, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
 import { verifyBundledArtifacts } from "./artifacts.ts";
 import {
@@ -14,12 +14,26 @@ import {
   PluginManifestSchema,
   machineArtifacts,
   type PluginBundle,
+  type PluginManifest,
 } from "@manifold/protocol";
 
 /** Packing changes linkage, not trust: only the installer chooses `install.hardened`. */
 export interface PackOptions {
   /** Resolve browser floor imports through the host registry; server processes stay self-contained. */
   readonly shared?: boolean;
+}
+
+export interface CompileOptions extends PackOptions {
+  /** Replace root manifest imports and supply every declared bundled machine member in memory. */
+  readonly generated?: {
+    readonly manifest: PluginManifest;
+    readonly members: ReadonlyMap<string, Uint8Array>;
+  };
+}
+
+export interface CompiledPlugin {
+  readonly bytes: Uint8Array;
+  readonly sha256: string;
 }
 
 export interface PackResult {
@@ -117,7 +131,9 @@ async function build(
     entrypoints: [entrypoint],
     target,
     format: "esm",
-    minify: false,
+    // Bun's readable output embeds source-path comments relative to the process cwd. The bundle
+    // hash is a security pin, so remove those comments in the build rather than rewriting output.
+    minify: { whitespace: true },
     plugins,
     /*
       A bundle is a PRODUCTION artifact whatever the packing process's NODE_ENV: the shell it
@@ -146,14 +162,51 @@ async function webEntry(pluginDir: string): Promise<string> {
   return (await Bun.file(tsx).exists()) ? tsx : `${pluginDir}/web.ts`;
 }
 
-export async function packPlugin(
+/** Compile and verify a complete bundle without writing source files or an output artifact. */
+export async function compilePlugin(
   pluginDir: string,
-  outFile: string,
-  options: PackOptions = {},
-): Promise<PackResult> {
+  options: CompileOptions = {},
+): Promise<CompiledPlugin> {
+  // Own caller input before the first await; neither manifest edits nor byte/map mutations
+  // during compilation may change the identity being compiled and verified.
+  const shared = options.shared;
+  const generated = options.generated;
+  const generatedManifest =
+    generated === undefined ? undefined : PluginManifestSchema.parse(generated.manifest);
+  const members = generated === undefined ? undefined : new Map<string, string>();
+  if (generated !== undefined && generatedManifest !== undefined && members !== undefined) {
+    const limits = new Map<string, number>();
+    for (const artifact of machineArtifacts(generatedManifest.machine)) {
+      const name = artifact.bundleFile;
+      if (name !== undefined)
+        limits.set(name, Math.min(limits.get(name) ?? artifact.maxBytes, artifact.maxBytes));
+    }
+    let encodedBytes = 0;
+    for (const [name, bytes] of generated.members) {
+      const maxBytes = limits.get(name);
+      if (maxBytes === undefined) throw new Error(`unused generated machine member: ${name}`);
+      if (!(bytes instanceof Uint8Array) || bytes.byteLength <= 0 || bytes.byteLength > maxBytes)
+        throw new Error(`generated machine member exceeds its byte budget or is empty: ${name}`);
+      encodedBytes += 4 * Math.ceil(bytes.byteLength / 3);
+      if (encodedBytes > ISOLATE_MAX_ARTIFACT_BYTES)
+        throw new Error("bundle members exceed the artifact byte budget");
+      // Base64 owns the snapshot without retaining or first copying the caller's backing buffer.
+      members.set(
+        name,
+        Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"),
+      );
+    }
+  }
   pluginDir = resolve(pluginDir);
   const manifestFile = `${pluginDir}/manifest.json`;
-  const manifest = PluginManifestSchema.parse(await Bun.file(manifestFile).json());
+  const sourceManifest = PluginManifestSchema.parse(await Bun.file(manifestFile).json());
+  const manifest = generatedManifest ?? sourceManifest;
+  if (
+    generatedManifest !== undefined &&
+    (manifest.id !== sourceManifest.id ||
+      JSON.stringify(manifest.entry) !== JSON.stringify(sourceManifest.entry))
+  )
+    throw new Error(`${manifestFile}: generated manifest must preserve the source id and entry`);
   if (manifest.entry === undefined) {
     throw new Error(`${manifestFile}: manifest.entry must name the halves this bundle runs`);
   }
@@ -183,6 +236,12 @@ export async function packPlugin(
     )
       throw new Error(`machine member collides with a plugin entry: ${name}`);
     if (Object.hasOwn(files, name)) continue;
+    if (members !== undefined) {
+      const data = members.get(name);
+      if (data === undefined) throw new Error(`missing generated machine member: ${name}`);
+      files[name] = data;
+      continue;
+    }
     const file = await open(join(pluginDir, name), constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const stat = await file.stat();
@@ -206,14 +265,28 @@ export async function packPlugin(
       await file.close();
     }
   }
+  const manifestPlugins: BunPlugin[] = [];
+  if (generatedManifest !== undefined) {
+    const rootManifest = await realpath(manifestFile);
+    const contents = JSON.stringify(manifest);
+    manifestPlugins.push({
+      name: "manifold-generated-manifest",
+      setup(builder) {
+        builder.onLoad({ filter: /.*/, namespace: "file" }, ({ path }) => {
+          if (path === rootManifest) return { contents, loader: "json" };
+          return undefined;
+        });
+      },
+    });
+  }
   const builtAgainst: Record<string, string> = {};
   const plugins =
-    manifest.entry.web === undefined || options.shared === false
-      ? []
-      : [await sharedModules(pluginDir, builtAgainst)];
+    manifest.entry.web === undefined || shared === false
+      ? manifestPlugins
+      : [...manifestPlugins, await sharedModules(pluginDir, builtAgainst)];
   if (manifest.entry.server === true) {
     // A hardened server has no browser realm or shared-module registry.
-    const source = await build(`${pluginDir}/server.ts`, "bun", []);
+    const source = await build(`${pluginDir}/server.ts`, "bun", manifestPlugins);
     files[PLUGIN_BUNDLE_SERVER_FILE] = Buffer.from(source, "utf8").toString("base64");
   }
   if (manifest.entry.web !== undefined) {
@@ -224,14 +297,24 @@ export async function packPlugin(
     format: PLUGIN_BUNDLE_FORMAT,
     manifest,
     files,
-    ...(options.shared === false ? {} : { builtAgainst }),
+    ...(shared === false ? {} : { builtAgainst }),
   });
   await verifyBundledArtifacts(bundle);
   const bytes = new TextEncoder().encode(JSON.stringify(bundle));
   if (bytes.byteLength > ISOLATE_MAX_ARTIFACT_BYTES)
     throw new Error("plugin bundle exceeds the artifact byte budget");
-  await Bun.write(outFile, bytes);
   const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+  return { bytes, sha256 };
+}
+
+/** File-writing convenience over the same verified in-memory compilation. */
+export async function packPlugin(
+  pluginDir: string,
+  outFile: string,
+  options: PackOptions = {},
+): Promise<PackResult> {
+  const { bytes, sha256 } = await compilePlugin(pluginDir, options);
+  await Bun.write(outFile, bytes);
   return { file: outFile, sha256, bytes: bytes.byteLength };
 }
 

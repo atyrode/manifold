@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { dispatch, ownerAction, roster, type Hub } from "./hub.ts";
 import {
   BundleError,
+  BundleOrderError,
   exitWith,
   familyOrder,
   inspectBundle,
@@ -22,7 +23,7 @@ import {
  * the artifact the release will ship actually composes. It spawns this checkout's server the
  * way the testkit's `startServer` does — a temporary data dir, a fixed owner key, a free port,
  * `MANIFOLD_PLUGIN_DEV_PATHS=1` so the bundle installs from where it lies — installs the
- * bundles parents first, and for each one asserts three things: the roster row is on and its
+ * bundles dependencies and parents first, and for each one asserts three things: the roster row is on and its
  * lifecycle is not a failure, and every door the row publishes ANSWERS when knocked with `{}`
  * as the owner. Any answer but `unavailable` will do: `invalid_args` and `refused` come from
  * the plugin's own code in its own process, which is the fact being checked; `unavailable` is
@@ -57,8 +58,8 @@ export interface VerifyReport {
 export class VerifyFailure extends Error {
   readonly bundle: string;
 
-  constructor(bundle: string, detail: string) {
-    super(`${bundle}: ${detail}`);
+  constructor(bundle: string, detail: string, options?: ErrorOptions) {
+    super(`${bundle}: ${detail}`, options);
     this.name = "VerifyFailure";
     this.bundle = bundle;
   }
@@ -205,7 +206,7 @@ export async function verifyBundles(
   const inspected = await Promise.all(
     bundles.map(async (bundle) => {
       try {
-        return { bundle, facts: await inspectBundle(bundle) };
+        return { bundle, ...(await inspectBundle(bundle)) };
       } catch (error) {
         const detail =
           error instanceof BundleError
@@ -217,19 +218,27 @@ export async function verifyBundles(
       }
     }),
   );
-  const ordered = familyOrder(inspected.map((entry) => ({ id: entry.facts.id, ...entry })));
+  let ordered: typeof inspected;
+  try {
+    ordered = familyOrder(inspected);
+  } catch (error) {
+    if (!(error instanceof BundleOrderError)) throw error;
+    const at = inspected.find((entry) => entry.id === error.ids[0])?.bundle ?? bundles[0]!;
+    throw new VerifyFailure(at, error.message, { cause: error });
+  }
   const hub = await startServer();
   const reports: VerifyReport[] = [];
   const installed: typeof ordered = [];
   try {
     for (const entry of ordered) {
       installed.push(entry);
-      const report = await verifyOne(hub, entry.facts, entry.bundle, options.hardened === true);
+      const report = await verifyOne(hub, entry, entry.bundle, options.hardened === true);
       reports.push(report);
       onReport(report);
     }
-    // Reverse: a part must be gone before its parent may be switched off and removed.
-    for (const entry of [...installed].reverse()) {
+    // Reverse: every consumer must be gone before its required dependencies or parents.
+    for (let index = installed.length - 1; index >= 0; index--) {
+      const entry = installed[index]!;
       try {
         await ownerAction(hub, "engine.plugins.setEnabled", { id: entry.id, enabled: false });
         await ownerAction(hub, "engine.plugins.uninstall", { id: entry.id, purge: true });

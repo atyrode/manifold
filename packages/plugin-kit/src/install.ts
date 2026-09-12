@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { PluginBundleSchema } from "@manifold/protocol";
+import { PluginBundleSchema, type PluginManifest } from "@manifold/protocol";
 import { resolve } from "node:path";
 import { assertOwnerKey, ownerAction, parseHubUrl, roster, type Hub } from "./hub.ts";
 
@@ -49,9 +49,10 @@ export interface InstallReport {
   readonly outcome: InstallOutcome;
 }
 
-/** What a bundle IS before any hub sees it: its id, the pin over its exact bytes, and where. */
+/** A bundle's identity, required ids, pin over its exact bytes, and source before any hub sees it. */
 export interface BundleFacts {
   readonly id: string;
+  readonly requiredDependencies: readonly string[];
   readonly sha256: string;
   /** The absolute path, or the URL as given. */
   readonly source: string;
@@ -74,6 +75,15 @@ export class BundleError extends Error {
   }
 }
 
+/** Only required ids constrain delivery; optional/incompatible relationships stay hub decisions. */
+export function requiredDependencyIds(manifest: Pick<PluginManifest, "dependencies">): string[] {
+  const ids: string[] = [];
+  for (const [id, dependency] of Object.entries(manifest.dependencies ?? {})) {
+    if (dependency.type === "required") ids.push(id);
+  }
+  return ids;
+}
+
 function factsOf(bytes: Uint8Array, source: string): BundleFacts {
   let raw: unknown;
   try {
@@ -88,7 +98,12 @@ function factsOf(bytes: Uint8Array, source: string): BundleFacts {
     throw new BundleError(source, `not a plugin bundle${at}`);
   }
   const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
-  return { id: parsed.data.manifest.id, sha256, source };
+  return {
+    id: parsed.data.manifest.id,
+    requiredDependencies: requiredDependencyIds(parsed.data.manifest),
+    sha256,
+    source,
+  };
 }
 
 /**
@@ -109,15 +124,106 @@ export async function inspectBundle(source: string): Promise<BundleFacts> {
   return factsOf(new Uint8Array(await Bun.file(file).arrayBuffer()), file);
 }
 
+/** A whole-batch refusal, before any caller starts installation. */
+export class BundleOrderError extends Error {
+  constructor(
+    readonly reason: "duplicate" | "cycle",
+    readonly ids: readonly string[],
+  ) {
+    super(
+      reason === "duplicate"
+        ? `duplicate bundle ids: ${ids.join(", ")}`
+        : `dependency cycle blocks bundles: ${ids.join(", ")}`,
+    );
+    this.name = "BundleOrderError";
+  }
+}
+
 /**
- * Parents before parts (ADR 0023: `a.b` is a dependency of `a.b.c`), ties by id — the order
- * a set of bundles from one repository installs in, whatever order a shell glob handed them.
+ * Supplied required dependencies and namespace parents before their consumers. Among ready
+ * bundles, preserve the original depth-then-id order. Absent dependencies are not invented:
+ * only the hub decides whether an external prerequisite is available.
  */
-export function familyOrder<T extends { readonly id: string }>(bundles: readonly T[]): T[] {
-  return [...bundles].sort((a, b) => {
-    const depth = a.id.split(".").length - b.id.split(".").length;
-    return depth !== 0 ? depth : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+export function familyOrder<
+  T extends { readonly id: string; readonly requiredDependencies?: readonly string[] },
+>(bundles: readonly T[]): T[] {
+  const nodes = bundles.map((bundle) => ({
+    bundle,
+    depth: bundle.id.split(".").length,
+    blockers: 0,
+    dependents: [] as number[],
+  }));
+  nodes.sort((a, b) => {
+    const depth = a.depth - b.depth;
+    return depth !== 0 ? depth : a.bundle.id < b.bundle.id ? -1 : a.bundle.id > b.bundle.id ? 1 : 0;
   });
+  const byId = new Map<string, number>();
+  for (const [index, node] of nodes.entries()) {
+    if (byId.has(node.bundle.id)) throw new BundleOrderError("duplicate", [node.bundle.id]);
+    byId.set(node.bundle.id, index);
+  }
+  for (const [index, node] of nodes.entries()) {
+    const required = new Set(node.bundle.requiredDependencies);
+    for (
+      let dot = node.bundle.id.lastIndexOf(".");
+      dot > 0;
+      dot = node.bundle.id.lastIndexOf(".", dot - 1)
+    ) {
+      required.add(node.bundle.id.slice(0, dot));
+    }
+    for (const id of required) {
+      const dependency = byId.get(id);
+      if (dependency === undefined) continue;
+      nodes[dependency]!.dependents.push(index);
+      node.blockers++;
+    }
+  }
+
+  // Kahn's ready set is a min-heap of depth/id ranks: no rescans or quadratic array shifts.
+  const ready: number[] = [];
+  const enqueue = (index: number): void => {
+    let slot = ready.length;
+    ready.push(index);
+    while (slot > 0) {
+      const parent = (slot - 1) >> 1;
+      if (ready[parent]! < index) break;
+      ready[slot] = ready[parent]!;
+      slot = parent;
+    }
+    ready[slot] = index;
+  };
+  for (const [index, node] of nodes.entries()) {
+    if (node.blockers === 0) enqueue(index);
+  }
+  const ordered: T[] = [];
+  while (ready.length > 0) {
+    const index = ready[0]!;
+    const last = ready.pop()!;
+    if (ready.length > 0) {
+      let slot = 0;
+      for (;;) {
+        let child = slot * 2 + 1;
+        if (child >= ready.length) break;
+        if (child + 1 < ready.length && ready[child + 1]! < ready[child]!) child++;
+        if (last < ready[child]!) break;
+        ready[slot] = ready[child]!;
+        slot = child;
+      }
+      ready[slot] = last;
+    }
+    const node = nodes[index]!;
+    ordered.push(node.bundle);
+    for (const dependent of node.dependents) {
+      if (--nodes[dependent]!.blockers === 0) enqueue(dependent);
+    }
+  }
+  if (ordered.length !== nodes.length) {
+    throw new BundleOrderError(
+      "cycle",
+      nodes.filter((node) => node.blockers > 0).map((node) => node.bundle.id),
+    );
+  }
+  return ordered;
 }
 
 async function docker(args: readonly string[]): Promise<string> {

@@ -51,4 +51,4 @@ export type {
   WebGuestPort,
   WebPluginDef,
 } from "./web.ts";
-export type { PackResult } from "./pack.ts";
+export type { CompiledPlugin, CompileOptions, PackOptions, PackResult } from "./pack.ts";
