@@ -21,10 +21,11 @@ import { JobFollowUpdateSchema, SettledJobSchema, machineArtifacts } from "./job
  *
  * An INSTALLED plugin runs its server half in its own OS process and its web half in its own
  * dedicated Worker (ADR 0016 §1). Both boundaries are message boundaries, so what crosses them
- * is wire, and wire lives here (docs/CONTRACTS.md §Protocol and compatibility): the frames a supervisor and a child exchange over
- * `Bun.spawn` ipc, the frames a panel host and a Worker exchange over `postMessage`, the closed
- * component vocabulary an isolated web half renders with (§3), the artifact a plugin is
- * installed from (§8 stage 2), and the numbers that bound a runner's patience (§6).
+ * is wire, and wire lives here (docs/CONTRACTS.md §Protocol and compatibility): the bounded
+ * newline-delimited JSON frames a supervisor and a child exchange over a dedicated socket, the
+ * frames a panel host and a Worker exchange over `postMessage`, the closed component vocabulary
+ * an isolated web half renders with (§3), the artifact installed from (§8 stage 2), and the
+ * numbers that bound a runner's patience (§6).
  *
  * Nothing in this file names a plugin, a panel or a host class: the same three-way neutrality
  * the rest of the protocol keeps. First-party plugins never see any of it — the runner is
@@ -331,10 +332,12 @@ export const ISOLATE_IDLE_EVICT_MS = 600_000;
 
 /** The largest artifact an install door will read, from a path or over the network. */
 export const ISOLATE_MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
+/** Raw bytes in one server-isolate frame, capped before JSON parsing in either process. */
+export const ISOLATE_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 
-// ---------------------------------------------------------------------------- server IPC frames
+// ---------------------------------------------------------------------------- server process frames
 
-/** Correlates a request with its answer on either ipc direction; sender-chosen, opaque. */
+/** Correlates a request with its answer on either process direction; sender-chosen, opaque. */
 const frameId = z.string().min(1).max(64);
 
 /** Maximum failure prose carried by an isolate frame. */
@@ -493,7 +496,7 @@ export type IsolateReplyFrame = z.infer<typeof IsolateReplyFrameSchema>;
 const callArgs = z.array(z.unknown()).max(8);
 
 /**
- * HOST → CHILD over `Bun.spawn` ipc (`serialization: "json"`). `load` is the first frame and
+ * HOST → CHILD as receipt-bearing, bounded newline-delimited JSON. `load` is the first frame and
  * names the extracted bundle directory the child already runs from; `dispatch` is one action
  * with the caller's authority captured per id, so a `call` the child makes while handling it
  * is graded as THAT caller; `hook` is a lifecycle fan-out; `reply` answers a child's `call`;
@@ -545,20 +548,29 @@ export const IsolateHostFrameSchema = z.discriminatedUnion("t", [
 ]);
 export type IsolateHostFrame = z.infer<typeof IsolateHostFrameSchema>;
 
+/** Raw process transport envelope: the receipt proves the child consumed this host frame. */
+export const IsolateHostEnvelopeSchema = z.strictObject({
+  receipt: z.uuid(),
+  frame: IsolateHostFrameSchema,
+});
+export type IsolateHostEnvelope = z.infer<typeof IsolateHostEnvelopeSchema>;
+
 /** The largest action list a child may announce — the roster publishes every one of them. */
 export const MAX_ISOLATE_ACTIONS = 128;
 /** Emissions one dispatch may stage; in-realm handlers have no bound because they are trusted. */
 export const MAX_ISOLATE_EMITS = 256;
 
 /**
- * CHILD → HOST. `loaded` answers `load` with the actions the child serves — `input` and
- * `result` as JSON Schema (`z.toJSONSchema` of the child's own zod), which is what the roster
- * publishes for them — and which hooks it declared, so the host fans out only what exists.
- * `dispatched` carries the handler's outcome AND the emissions it staged: the host re-stages
- * them through its own `ctx.emit` so the ledger settles before any subscriber hears (A6).
- * `call` is the child reaching a served ctx slice.
+ * CHILD → HOST. `received` proves the child consumed one unpredictable host envelope.
+ * `loaded` answers `load` with the actions the child serves — `input` and `result` as JSON
+ * Schema (`z.toJSONSchema` of the child's own zod), which is what the roster publishes for
+ * them — and which hooks it declared, so the host fans out only what exists. `dispatched`
+ * carries the handler's outcome AND the emissions it staged: the host re-stages them through
+ * its own `ctx.emit` so the ledger settles before any subscriber hears (A6). `call` is the
+ * child reaching a served ctx slice.
  */
 export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
+  z.strictObject({ t: z.literal("received"), receipt: z.uuid() }),
   z.strictObject({
     t: z.literal("loaded"),
     actions: ActionSummarySchema.array().max(MAX_ISOLATE_ACTIONS),
@@ -859,6 +871,8 @@ export function isolateVocabulary(): Record<string, unknown> {
     migration: z.toJSONSchema(IsolateMigrationSchema),
     idleEvictMs: ISOLATE_IDLE_EVICT_MS,
     maxArtifactBytes: ISOLATE_MAX_ARTIFACT_BYTES,
+    maxFrameBytes: ISOLATE_MAX_FRAME_BYTES,
+    hostEnvelope: z.toJSONSchema(IsolateHostEnvelopeSchema),
     bundleFormat: PLUGIN_BUNDLE_FORMAT,
     bundleServerFile: PLUGIN_BUNDLE_SERVER_FILE,
     uiEvent: z.toJSONSchema(UiEventSchema),

@@ -1,2 +1,3 @@
 // A child that is alive and never answers `load`: the handshake deadline's one test subject.
-process.on("message", () => {});
+import { connect } from "node:net";
+connect({ fd: 3 }).resume();

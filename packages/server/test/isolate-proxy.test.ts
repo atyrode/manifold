@@ -2,11 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  JobSettledCtx,
-  LifecycleCtx,
-  PluginJobContext,
-  PluginStorage,
+import {
+  MAX_SQL_BATCH_STATEMENTS,
+  MAX_SQL_PARAMS,
+  MAX_SQL_PARAMS_BYTES,
+  type JobSettledCtx,
+  type LifecycleCtx,
+  type PluginDatabase,
+  type PluginJobContext,
+  type PluginStorage,
+  type SqlStatement,
 } from "@manifold/plugin";
 import { PluginDatabaseError } from "@manifold/plugin-kit";
 import { attachServerGuest } from "@manifold/plugin-kit/server";
@@ -322,6 +327,109 @@ describe("serveCtxCall", () => {
     }
   });
 
+  test("database bigint and blob values remain intact across the JSON guest boundary", async () => {
+    const store = testStore();
+    try {
+      const storage = store.pluginStorage(manifest.id);
+      const dbManifest = { ...manifest, database: {} };
+      const seen: (readonly unknown[] | undefined)[] = [];
+      const database = {
+        pluginId: manifest.id,
+        query: async (_sql: string, params?: readonly unknown[]) => {
+          seen.push(params);
+          return [{ integer: 9223372036854775807n, bytes: new Uint8Array([0, 127, 255]) }];
+        },
+        run: async (_sql: string, params?: readonly unknown[]) => {
+          seen.push(params);
+          return { changes: 1, lastInsertRowid: 1n };
+        },
+        batch: async (statements: readonly SqlStatement[]) => {
+          seen.push(...statements.map((statement) => statement.params));
+          return statements.map((statement) => [{ value: statement.params?.[0] ?? null }]);
+        },
+      } as PluginDatabase;
+      const served = {
+        kind: "hook" as const,
+        ctx: { pluginId: manifest.id, storage, database, now: () => 0, emit: () => {} },
+      };
+      let receive: (frame: unknown) => void = () => {};
+      const completed = Promise.withResolvers<Extract<IsolateChildFrame, { t: "hooked" }>>();
+      attachServerGuest(
+        {
+          manifest: dbManifest,
+          actions: [],
+          handlers: {},
+          lifecycle: {
+            async onEnable(ctx) {
+              const bytes = new Uint8Array([1, 2, 3]);
+              const inserted = await ctx.database!.run("INSERT INTO values VALUES (?, ?)", [
+                23n,
+                bytes,
+              ]);
+              if (inserted.lastInsertRowid !== 1n)
+                throw new Error("database rowid changed across the guest boundary");
+              const rows = await ctx.database!.query("SELECT integer, bytes FROM values", [
+                29n,
+                bytes,
+              ]);
+              if (
+                rows[0]?.integer !== 9223372036854775807n ||
+                !(rows[0]?.bytes instanceof Uint8Array) ||
+                rows[0].bytes[2] !== 255
+              )
+                throw new Error("database query values changed across the guest boundary");
+              const batch = await ctx.database!.batch([
+                { sql: "SELECT ?", params: [31n] },
+                { sql: "SELECT ?", params: [bytes] },
+              ]);
+              if (batch[0]?.[0]?.value !== 31n || !(batch[1]?.[0]?.value instanceof Uint8Array))
+                throw new Error("database batch values changed across the guest boundary");
+            },
+          },
+        },
+        {
+          onMessage: (listener) => {
+            receive = listener;
+          },
+          send: (frame) => {
+            // Production child-process IPC is JSON serialization; exercise that exact loss boundary.
+            const wire = JSON.parse(JSON.stringify(frame)) as IsolateChildFrame;
+            if (wire.t === "call") {
+              void serveCtxCall(wire.method, wire.args, served).then(
+                (result) =>
+                  receive(
+                    JSON.parse(JSON.stringify({ t: "reply", id: wire.id, ok: true, result })),
+                  ),
+                (error: unknown) =>
+                  receive({
+                    t: "reply",
+                    id: wire.id,
+                    ok: false,
+                    error: error instanceof Error ? error.message : String(error),
+                  }),
+              );
+            } else if (wire.t === "hooked") {
+              completed.resolve(wire);
+            }
+          },
+          warn: () => {},
+          exit: () => {},
+        },
+      );
+      receive({ t: "load", pluginId: manifest.id, manifest: dbManifest, dir: "/unused" });
+      receive({ t: "hook", id: "database", hook: "onEnable" });
+      expect(await completed.promise).toMatchObject({ ok: true });
+      expect(seen).toEqual([
+        [23n, new Uint8Array([1, 2, 3])],
+        [29n, new Uint8Array([1, 2, 3])],
+        [31n],
+        [new Uint8Array([1, 2, 3])],
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
   test("compare-and-set enforces namespace and operand validation for dispatches and hooks", async () => {
     const store = testStore();
     try {
@@ -468,9 +576,10 @@ describe("serveCtxCall", () => {
     const seen: unknown[] = [];
     let receive: (frame: unknown) => void = () => {};
     const completed = Promise.withResolvers<Extract<IsolateChildFrame, { t: "hooked" }>>();
+    const dbManifest = { ...manifest, database: { maxBytes: 4 * 1024 * 1024 } };
     attachServerGuest(
       {
-        manifest: { ...manifest, database: { maxBytes: 4 * 1024 * 1024 } },
+        manifest: dbManifest,
         actions: [],
         handlers: {},
         lifecycle: {
@@ -523,7 +632,7 @@ describe("serveCtxCall", () => {
       },
     );
     try {
-      receive({ t: "load", pluginId: manifest.id, manifest, dir: "/unused" });
+      receive({ t: "load", pluginId: manifest.id, manifest: dbManifest, dir: "/unused" });
       receive({ t: "hook", id: "rows", hook: "onEnable" });
       expect(await completed.promise).toMatchObject({ ok: true });
       expect(seen).toEqual([1, [{ body: "first" }], "PluginDatabaseError", [{ body: "first" }]]);
@@ -533,6 +642,61 @@ describe("serveCtxCall", () => {
     }
   });
 
+  test("database wire inputs are bounded before decoding or invoking the plugin database", async () => {
+    const store = testStore();
+    let calls = 0;
+    const unavailable = async (): Promise<never> => {
+      calls += 1;
+      throw new Error("database should not be called");
+    };
+    const served = {
+      kind: "hook" as const,
+      ctx: {
+        pluginId: manifest.id,
+        storage: store.pluginStorage(manifest.id),
+        database: {
+          pluginId: manifest.id,
+          query: unavailable,
+          run: unavailable,
+          batch: unavailable,
+        } as PluginDatabase,
+        now: () => 0,
+        emit: () => {},
+      },
+    };
+    try {
+      await expect(
+        serveCtxCall(
+          "database.query",
+          ["SELECT 1", new Array(MAX_SQL_PARAMS + 1).fill(null)],
+          served,
+        ),
+      ).rejects.toThrow(/too many SQL parameters/);
+      await expect(
+        serveCtxCall(
+          "database.batch",
+          [new Array(MAX_SQL_BATCH_STATEMENTS + 1).fill({ sql: "SELECT 1" })],
+          served,
+        ),
+      ).rejects.toThrow(/too many SQL statements/);
+      const half = "x".repeat(Math.floor(MAX_SQL_PARAMS_BYTES / 2));
+      await expect(
+        serveCtxCall(
+          "database.batch",
+          [
+            [
+              { sql: "SELECT ?", params: [half] },
+              { sql: "SELECT ?", params: [half] },
+            ],
+          ],
+          served,
+        ),
+      ).rejects.toThrow(/SQL input.*byte limit/);
+      expect(calls).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
   test("a plugin that declared no database has no slice on either side of the boundary", async () => {
     const storage = testStore().pluginStorage(manifest.id);
     const served = {

@@ -11,9 +11,11 @@ import {
   EventPayloadSchema,
   IsolateChildFrameSchema,
   IsolateHostFrameSchema,
+  IsolateHostEnvelopeSchema,
   GuestMigrationDeclarationsSchema,
   MAX_ISOLATE_ACTIONS,
   MAX_ISOLATE_EMITS,
+  ISOLATE_MAX_FRAME_BYTES,
   ManifoldRefSchema,
   ListJobRunsArgsSchema,
   ListJobRunsResultSchema,
@@ -69,15 +71,20 @@ import {
   type SettledJob,
   type JobEvent,
 } from "../../protocol/src/jobs.ts";
+import { connect, type Socket } from "node:net";
 import { z } from "zod";
+
 import { HostCallError, IsolateSliceUnavailable, PluginDatabaseError } from "./errors.ts";
+
+/** Bun accepts an inherited socketpair fd here; Node's ambient overload omits that form. */
+const connectDescriptor = connect as unknown as (options: { readonly fd: number }) => Socket;
 
 /**
  * THE SERVER GUEST RUNTIME (ADR 0016 §1, §2).
  *
  * An installed plugin's server half runs in its own Bun process, spawned by the engine's
- * supervisor with an ipc channel. This module is the child's end of that channel: it answers
- * the four host frames (`load`, `dispatch`, `hook`, `shutdown`) and serves the plugin a ctx
+ * supervisor with a bounded framed channel. This module is the child's end: it answers the
+ * four host frames (`load`, `dispatch`, `hook`, `shutdown`) and serves the plugin a ctx
  * whose every engine-touching member is a `call` frame the host answers. The author writes
  * handlers against {@link GuestCtx} exactly as an in-realm plugin writes them against the
  * engine's `ActionCtx`, minus the slices stage 1 does not serve — which are absent from the
@@ -158,6 +165,17 @@ export interface GuestStorage {
 }
 
 /**
+ * A named transformation of this plugin's retained data, committed by the native ledger.
+ * Storage only, deliberately: the host admits `storage.*` from a migrating guest and nothing
+ * else, so a guest that keeps rows makes its tables in `onEnable`, whose ctx carries the slice.
+ */
+export interface ServerMigration {
+  readonly name: string;
+  readonly to: PluginDataVersion;
+  migrate(storage: GuestStorage, database?: GuestDatabase): void | Promise<void>;
+}
+
+/**
  * A bound parameter and one statement, as the database takes them. The same shapes
  * `@manifold/plugin` declares; a blob is in-realm only in practice, because this boundary is
  * JSON and a `Uint8Array` does not survive it intact.
@@ -186,21 +204,9 @@ export interface GuestDatabase {
   run(
     sql: string,
     params?: readonly GuestSqlParam[],
-  ): Promise<{ readonly changes: number; readonly lastInsertRowid: number }>;
+  ): Promise<{ readonly changes: number; readonly lastInsertRowid: bigint }>;
   batch(statements: readonly GuestSqlStatement[]): Promise<readonly (readonly GuestSqlRow[])[]>;
 }
-
-/**
- * A named transformation of this plugin's retained data, committed by the native ledger.
- * Storage only, deliberately: the host admits `storage.*` from a migrating guest and nothing
- * else, so a guest that keeps rows makes its tables in `onEnable`, whose ctx carries the slice.
- */
-export interface ServerMigration {
-  readonly name: string;
-  readonly to: PluginDataVersion;
-  migrate(storage: GuestStorage): void | Promise<void>;
-}
-
 /** What the engine's placement executor answers, restated over protocol types. */
 export type GuestPlaceOutcome =
   | { readonly status: "placed"; readonly result: PlaceResponse }
@@ -391,9 +397,8 @@ export interface ServerPluginDef {
 // ---------------------------------------------------------------------------- the transport
 
 /**
- * The child's end of the ipc channel, as four verbs. Production binds them to `process`;
- * tests bind them to an in-memory pair, which is how a whole host↔guest conversation runs
- * inside one test without a second process.
+ * The child's end of the framed process channel, as four verbs. Production binds them to a
+ * dedicated bidirectional socket; tests bind them to an in-memory pair.
  */
 export interface ServerGuestTransport {
   send(frame: IsolateChildFrame): void;
@@ -402,20 +407,84 @@ export interface ServerGuestTransport {
   warn(line: string): void;
 }
 
-/**
- * `process`, when this module runs as a spawned ipc child; null when merely imported. The
- * verbs are called ON `process` — `on` is an EventEmitter method and refuses a detached
- * receiver.
- */
+const PLUGIN_PIPE_FD = 3;
+
+/** Reads bounded newline-delimited JSON without ever assembling an oversized frame. */
+function readProcessFrames(socket: Socket, listener: (frame: unknown) => void): void {
+  let parts: Uint8Array[] = [];
+  let bytes = 0;
+  let stopped = false;
+  const fail = (detail: string): void => {
+    if (stopped) return;
+    stopped = true;
+    process.stderr.write(`${detail}\n`);
+    socket.pause();
+    process.exit(1);
+  };
+  const append = (part: Uint8Array): boolean => {
+    if (bytes + part.byteLength > ISOLATE_MAX_FRAME_BYTES) {
+      fail(`isolate frame exceeds ${String(ISOLATE_MAX_FRAME_BYTES)} bytes`);
+      return false;
+    }
+    if (part.byteLength > 0) {
+      parts.push(part);
+      bytes += part.byteLength;
+    }
+    return true;
+  };
+  const emit = (): void => {
+    const payload = Buffer.concat(parts, bytes).toString("utf8");
+    parts = [];
+    bytes = 0;
+    try {
+      listener(JSON.parse(payload));
+    } catch {
+      fail("isolate received an invalid JSON frame");
+    }
+  };
+  socket.on("data", (chunk: Buffer) => {
+    if (stopped) return;
+    let start = 0;
+    for (let index = 0; index < chunk.byteLength; index += 1) {
+      if (chunk[index] !== 0x0a) continue;
+      if (!append(chunk.subarray(start, index))) return;
+      emit();
+      if (stopped) return;
+      start = index + 1;
+    }
+    append(chunk.subarray(start));
+  });
+  socket.on("end", () => {
+    if (!stopped && bytes > 0) fail("isolate received an unterminated JSON frame");
+  });
+  socket.on("error", () => fail("isolate frame channel failed"));
+}
+
+/** The dedicated frame socket exists only when this module is the spawned plugin entry. */
 function processTransport(): ServerGuestTransport | null {
-  if (typeof process.send !== "function") return null;
+  if (process.env.MANIFOLD_PLUGIN_PIPE_FD !== String(PLUGIN_PIPE_FD)) return null;
+  const socket = connectDescriptor({ fd: PLUGIN_PIPE_FD });
+  const send = (frame: IsolateChildFrame): void => {
+    const payload = JSON.stringify(frame);
+    if (Buffer.byteLength(payload) > ISOLATE_MAX_FRAME_BYTES) {
+      process.stderr.write(`isolate frame exceeds ${String(ISOLATE_MAX_FRAME_BYTES)} bytes\n`);
+      process.exit(1);
+    }
+    socket.write(`${payload}\n`);
+  };
   return {
-    send: (frame) => {
-      process.send?.(frame);
-    },
-    onMessage: (listener) => {
-      process.on("message", listener);
-    },
+    send,
+    onMessage: (listener) =>
+      readProcessFrames(socket, (message) => {
+        const envelope = IsolateHostEnvelopeSchema.safeParse(message);
+        if (!envelope.success) {
+          process.stderr.write("isolate received an invalid host envelope\n");
+          process.exit(1);
+          return;
+        }
+        send({ t: "received", receipt: envelope.data.receipt });
+        listener(envelope.data.frame);
+      }),
     exit: (code) => process.exit(code),
     warn: (line) => {
       process.stderr.write(`${line}\n`);
@@ -470,11 +539,18 @@ function assertStorageValue(key: string, value: string): void {
 const MAX_SQL_STATEMENT_BYTES = 64 * 1024;
 const MAX_SQL_PARAMS = 999;
 const MAX_SQL_BATCH_STATEMENTS = 256;
+const MAX_SQL_PARAMS_BYTES = 4 * 1024 * 1024;
 const REFUSED_LEADING_KEYWORDS: Record<string, true> = {
   ATTACH: true,
   DETACH: true,
   VACUUM: true,
   PRAGMA: true,
+  BEGIN: true,
+  COMMIT: true,
+  END: true,
+  RELEASE: true,
+  ROLLBACK: true,
+  SAVEPOINT: true,
 };
 const REFUSED_FUNCTIONS = /\bload_extension\s*\(/i;
 
@@ -505,13 +581,16 @@ function assertSqlStatement(sql: string): void {
   if (typeof sql !== "string" || sql.trim() === "") {
     throw new PluginDatabaseError("a statement must be a non-empty string");
   }
-  const bytes = new TextEncoder().encode(sql).byteLength;
+  const bytes = Buffer.byteLength(sql);
   if (bytes > MAX_SQL_STATEMENT_BYTES) {
     throw new PluginDatabaseError(
       `statement is ${String(bytes)} bytes, over the ${String(MAX_SQL_STATEMENT_BYTES)}-byte limit`,
     );
   }
   const keyword = leadingKeyword(sql);
+  if (keyword === "") {
+    throw new PluginDatabaseError("a statement must begin with an SQL keyword");
+  }
   if (REFUSED_LEADING_KEYWORDS[keyword] === true) {
     throw new PluginDatabaseError(
       `${keyword} is refused: a plugin's database is one file and the engine opened it`,
@@ -522,14 +601,51 @@ function assertSqlStatement(sql: string): void {
   }
 }
 
-function assertSqlParams(params: readonly GuestSqlParam[] | undefined): void {
-  if (params === undefined) return;
+function validateSqlParams(params: readonly GuestSqlParam[] | undefined): number {
+  if (params === undefined) return 0;
   if (!Array.isArray(params)) throw new PluginDatabaseError("parameters must be an array");
   if (params.length > MAX_SQL_PARAMS) {
     throw new PluginDatabaseError(
       `${String(params.length)} parameters, over the ${String(MAX_SQL_PARAMS)} SQLite allows`,
     );
   }
+  let bytes = 0;
+  for (const value of params) {
+    const kind = typeof value;
+    if (
+      value !== null &&
+      kind !== "string" &&
+      kind !== "number" &&
+      kind !== "bigint" &&
+      kind !== "boolean" &&
+      !(value instanceof Uint8Array)
+    ) {
+      throw new PluginDatabaseError(
+        `a parameter must be a string, number, bigint, boolean, null or Uint8Array, not ${kind}`,
+      );
+    }
+    if (typeof value === "number" && !Number.isFinite(value)) {
+      throw new PluginDatabaseError("a numeric parameter must be finite");
+    }
+    bytes +=
+      typeof value === "string"
+        ? Buffer.byteLength(value)
+        : typeof value === "bigint"
+          ? value.toString().length
+          : value instanceof Uint8Array
+            ? value.byteLength
+            : 8;
+    if (bytes > MAX_SQL_PARAMS_BYTES) {
+      throw new PluginDatabaseError(
+        `parameters are over the ${String(MAX_SQL_PARAMS_BYTES)}-byte limit`,
+      );
+    }
+  }
+  return bytes;
+}
+
+function assertSqlParams(params: readonly GuestSqlParam[] | undefined): void {
+  validateSqlParams(params);
 }
 
 function assertSqlBatch(statements: readonly GuestSqlStatement[]): void {
@@ -541,10 +657,85 @@ function assertSqlBatch(statements: readonly GuestSqlStatement[]): void {
       `a batch of ${String(statements.length)} statements is over the ${String(MAX_SQL_BATCH_STATEMENTS)}-statement limit`,
     );
   }
+  let bytes = 0;
   for (const statement of statements) {
     assertSqlStatement(statement.sql);
-    assertSqlParams(statement.params);
+    bytes += Buffer.byteLength(statement.sql) + validateSqlParams(statement.params);
+    if (bytes > MAX_SQL_PARAMS_BYTES) {
+      throw new PluginDatabaseError(
+        `the batch input is over the ${String(MAX_SQL_PARAMS_BYTES)}-byte limit`,
+      );
+    }
   }
+}
+
+const SQL_WIRE_TAG = "$manifold.sql";
+const MAX_SQL_BASE64_CHARS = Math.ceil(MAX_SQL_PARAMS_BYTES / 3) * 4;
+
+/** JSON-safe encoding for the two SQLite scalar types JSON itself cannot carry. */
+function sqlValueToWire(value: GuestSqlParam): unknown {
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new PluginDatabaseError("a numeric parameter must be finite");
+  }
+  if (typeof value === "bigint") return { [SQL_WIRE_TAG]: "bigint", value: value.toString() };
+  if (value instanceof Uint8Array) {
+    return {
+      [SQL_WIRE_TAG]: "bytes",
+      value: Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString("base64"),
+    };
+  }
+  return value;
+}
+
+function sqlValueFromWire(value: unknown): GuestSqlParam {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  )
+    return value;
+  if (typeof value !== "object" || Array.isArray(value))
+    throw new PluginDatabaseError("the host returned an invalid SQL value");
+  const tag = Reflect.get(value, SQL_WIRE_TAG);
+  const encoded = Reflect.get(value, "value");
+  if (tag === "bigint" && typeof encoded === "string" && /^-?\d{1,128}$/.test(encoded))
+    return BigInt(encoded);
+  if (tag === "bytes" && typeof encoded === "string" && encoded.length <= MAX_SQL_BASE64_CHARS) {
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.toString("base64") === encoded) return bytes;
+  }
+  throw new PluginDatabaseError("the host returned an invalid encoded SQL value");
+}
+
+function sqlRowsFromWire(value: unknown): readonly GuestSqlRow[] {
+  if (!Array.isArray(value)) throw new PluginDatabaseError("the host returned invalid SQL rows");
+  return value.map((row) => {
+    if (row === null || typeof row !== "object" || Array.isArray(row))
+      throw new PluginDatabaseError("the host returned an invalid SQL row");
+    return Object.fromEntries(
+      Object.entries(row).map(([column, cell]) => [column, sqlValueFromWire(cell)]),
+    );
+  });
+}
+
+function sqlRunResultFromWire(value: unknown): {
+  readonly changes: number;
+  readonly lastInsertRowid: bigint;
+} {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new PluginDatabaseError("the host returned an invalid SQL run result");
+  }
+  const changes = Reflect.get(value, "changes");
+  const lastInsertRowid = sqlValueFromWire(Reflect.get(value, "lastInsertRowid"));
+  if (!Number.isSafeInteger(changes) || changes < 0 || typeof lastInsertRowid !== "bigint") {
+    throw new PluginDatabaseError("the host returned an invalid SQL run result");
+  }
+  return { changes, lastInsertRowid };
+}
+
+function sqlParamsToWire(params: readonly GuestSqlParam[]): readonly unknown[] {
+  return params.map(sqlValueToWire);
 }
 
 // ---------------------------------------------------------------------------- the runtime
@@ -587,6 +778,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     (def.migrations ?? []).map((migration) => [migration.name, migration]),
   );
   let loaded = false;
+  let databaseDeclared = false;
   const producerClosures = new Map<string, () => void>();
   type JobNotification = Extract<IsolateHostFrame, { t: "job_update" }>;
   interface Observer {
@@ -718,7 +910,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
    * class, so a plugin writes one `try`/`catch` and never has to tell the sides apart.
    */
   const databaseFor = (call: Call): GuestDatabase | undefined => {
-    if (def.manifest.database === undefined) return undefined;
+    if (!databaseDeclared) return undefined;
     const ask = async (
       method: "database.query" | "database.run" | "database.batch",
       args: readonly unknown[],
@@ -740,24 +932,32 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       ) => {
         assertSqlStatement(sql);
         assertSqlParams(params);
-        // Omitted, not sent as a hole: the frame is JSON, which has no `undefined`, and the
-        // same reason `storage.keys` sends `[]` rather than `[undefined]` for no prefix.
-        return (await ask(
-          "database.query",
-          params === undefined ? [sql] : [sql, params],
-        )) as readonly Row[];
+        // Omitted, not sent as a hole: the frame is JSON, which has no `undefined`. Bigints
+        // and blobs use the database wire tags above rather than relying on JSON coercion.
+        return sqlRowsFromWire(
+          await ask(
+            "database.query",
+            params === undefined ? [sql] : [sql, sqlParamsToWire(params)],
+          ),
+        ) as readonly Row[];
       },
       run: async (sql, params) => {
         assertSqlStatement(sql);
         assertSqlParams(params);
-        return (await ask("database.run", params === undefined ? [sql] : [sql, params])) as {
-          changes: number;
-          lastInsertRowid: number;
-        };
+        return sqlRunResultFromWire(
+          await ask("database.run", params === undefined ? [sql] : [sql, sqlParamsToWire(params)]),
+        );
       },
       batch: async (statements) => {
         assertSqlBatch(statements);
-        return (await ask("database.batch", [statements])) as readonly (readonly GuestSqlRow[])[];
+        const wire = statements.map((statement) => ({
+          sql: statement.sql,
+          ...(statement.params === undefined ? {} : { params: sqlParamsToWire(statement.params) }),
+        }));
+        const result = await ask("database.batch", [wire]);
+        if (!Array.isArray(result))
+          throw new PluginDatabaseError("the host returned invalid SQL batch rows");
+        return result.map(sqlRowsFromWire);
       },
     };
   };
@@ -1032,6 +1232,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       post({ t: "load_failed", error: errorText(error) });
       return;
     }
+    // The pinned candidate manifest is authority, not a module's embedded declaration.
+    databaseDeclared = frame.manifest.database !== undefined;
     loaded = true;
     post({
       t: "loaded",
@@ -1152,7 +1354,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         throw new Error("unknown migration or target");
       }
       // No lifecycle context, caller authority, emissions or long-lived handles.
-      await migration.migrate(storageFor(requests.call));
+      await migration.migrate(storageFor(requests.call), databaseFor(requests.call));
       post({ t: "migrated", id: frame.id, name: migration.name, outcome: { ok: true } });
     } catch (error) {
       post({
@@ -1232,8 +1434,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
 
 /**
  * THE AUTHORING ENTRY POINT. Call it once at the top level of your `server.ts`. When the
- * module is the entry of a spawned isolate — `process.send` exists — it wires the ipc
- * channel and starts serving; imported anywhere else (a test, a tool, `pack`) it is inert.
+ * module is the entry of a spawned isolate — its dedicated pipe descriptor is declared — it
+ * starts serving; imported anywhere else (a test, a tool, `pack`) it is inert.
  */
 export function defineServerPlugin(def: ServerPluginDef): void {
   const transport = processTransport();

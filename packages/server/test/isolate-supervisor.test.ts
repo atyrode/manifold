@@ -170,10 +170,12 @@ describe("IsolateSupervisor", () => {
 
     expect(def.manifest).toBe(manifest);
     expect(def.actions.map((action) => action.name).sort()).toEqual([
+      "backpressure",
       "boom",
       "echo",
       "garble",
       "hang",
+      "oversize",
       "refuse",
       "slice",
     ]);
@@ -327,6 +329,33 @@ describe("IsolateSupervisor", () => {
     // The child is still serving: a frame out of shape is not a crash.
     expect(supervisor.state(PLUGIN_ID)).toBe("running");
     expect(await invoke(def, "echo", ctx, { text: "still" })).toEqual({ text: "still", count: 1 });
+  });
+
+  test("an oversized raw child frame is rejected before parsing and terminates the child", async () => {
+    const { supervisor, runtime, storage, logger } = fixture();
+    const { def } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });
+    const { ctx } = actionCtx(storage, runtime);
+
+    const failure = await invoke(def, "oversize", ctx, {}).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(IsolateDenial);
+    expect((failure as IsolateDenial).message).toContain("isolate exited");
+    await until(() => supervisor.state(PLUGIN_ID) === "stopped");
+    const malformed = logger.lines.find(
+      (line) => line.evt === "isolate_call_failed" && line.fields?.reason === "malformed frame",
+    );
+    expect(malformed?.fields?.detail).toContain("frame exceeds");
+  });
+  test("a child that stops reading host replies is killed before its write queue grows unbounded", async () => {
+    const { supervisor, runtime, storage, logger } = fixture({ dispatchDeadlineMs: 2_000 });
+    const { def } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });
+    const { ctx } = actionCtx(storage, runtime);
+    await storage.set("bulk", "x".repeat(64 * 1024));
+
+    const failure = await invoke(def, "backpressure", ctx, {}).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(IsolateDenial);
+    expect((failure as IsolateDenial).message).toContain("isolate exited");
+    await until(() => supervisor.state(PLUGIN_ID) === "stopped");
+    expect(logger.count("isolate_protocol_backpressure")).toBe(1);
   });
 
   test("a dispatch past the deadline is unavailable and the stuck child is killed", async () => {

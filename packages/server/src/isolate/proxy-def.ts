@@ -9,7 +9,14 @@ import type {
   PluginMigration,
   PluginStorage,
   SqlParam,
+  SqlRow,
   SqlStatement,
+} from "@manifold/plugin";
+import {
+  MAX_SQL_BATCH_STATEMENTS,
+  MAX_SQL_PARAMS,
+  MAX_SQL_PARAMS_BYTES,
+  MAX_SQL_STATEMENT_BYTES,
 } from "@manifold/plugin";
 import {
   AskableCapSchema,
@@ -53,7 +60,11 @@ export interface IsolateTransport {
   hook(hook: IsolateHook, ctx: LifecycleCtx, delta?: AssemblyDelta): Promise<void>;
   /** `onJobSettled` alone: its own ctx (the job slice rides it) and its own argument. */
   settled(ctx: JobSettledCtx, job: SettledJob): Promise<void>;
-  migrate(migration: Pick<PluginMigration, "name" | "to">, storage: PluginStorage): Promise<void>;
+  migrate(
+    migration: Pick<PluginMigration, "name" | "to">,
+    storage: PluginStorage,
+    database?: PluginDatabase,
+  ): Promise<void>;
 }
 
 /**
@@ -151,7 +162,7 @@ export function buildIsolateDef(
       lifecycle,
       migrations: migrations.map((migration) => ({
         ...migration,
-        migrate: (storage) => transport.migrate(migration, storage),
+        migrate: (storage, database) => transport.migrate(migration, storage, database),
       })),
     },
     lifecycle,
@@ -176,7 +187,10 @@ export type ServedCtx =
   | { readonly kind: "dispatch"; readonly ctx: ActionCtx }
   | { readonly kind: "settled"; readonly ctx: JobSettledCtx }
   | { readonly kind: "hook"; readonly ctx: LifecycleCtx }
-  | { readonly kind: "migration"; readonly ctx: { readonly storage: PluginStorage } };
+  | {
+      readonly kind: "migration";
+      readonly ctx: { readonly storage: PluginStorage; readonly database?: PluginDatabase };
+    };
 
 /** The positional argument at `index`, which the served method needs to be a string. */
 function stringArg(args: readonly unknown[], index: number, method: IsolateCtxMethod): string {
@@ -245,37 +259,113 @@ function serveJobsCall(
 /**
  * The plugin's own database, or the refusal that says it never asked for one. A manifest
  * without `database` has no slice on either side of the boundary (ADR 0034 §6), and the word
- * is the one the guest runtime already uses for a member stage 1 does not carry. A migration
- * is refused the same way, because its request carries storage and nothing else.
+ * is the one the guest runtime already uses for a member stage 1 does not carry.
  */
 function databaseOf(served: ServedCtx, method: IsolateCtxMethod): PluginDatabase {
-  const database = served.kind === "migration" ? undefined : served.ctx.database;
+  const database = served.ctx.database;
   if (database === undefined) throw new Error(`slice_unavailable: ${method}`);
   return database;
 }
 
+const SQL_WIRE_TAG = "$manifold.sql";
+const MAX_SQL_BASE64_CHARS = Math.ceil(MAX_SQL_PARAMS_BYTES / 3) * 4;
+
+interface SqlInputBudget {
+  bytes: number;
+}
+
+function claimSqlInput(budget: SqlInputBudget, bytes: number, method: IsolateCtxMethod): void {
+  budget.bytes += bytes;
+  if (budget.bytes > MAX_SQL_PARAMS_BYTES) {
+    throw new Error(`${method}: SQL input is over the ${String(MAX_SQL_PARAMS_BYTES)}-byte limit`);
+  }
+}
+
+/** Decodes only the two SQLite scalar types JSON cannot carry; the database validates the rest. */
+function sqlValueFromWire(
+  value: unknown,
+  method: IsolateCtxMethod,
+  budget: SqlInputBudget,
+): SqlParam {
+  if (value === null || typeof value === "boolean") {
+    claimSqlInput(budget, 8, method);
+    return value;
+  }
+  if (typeof value === "string") {
+    claimSqlInput(budget, Buffer.byteLength(value), method);
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value))
+      throw new Error(`${method}: numeric SQL parameters must be finite`);
+    claimSqlInput(budget, 8, method);
+    return value;
+  }
+  if (typeof value !== "object" || Array.isArray(value))
+    throw new Error(`${method}: invalid SQL parameter`);
+  const tag = Reflect.get(value, SQL_WIRE_TAG);
+  const encoded = Reflect.get(value, "value");
+  if (tag === "bigint" && typeof encoded === "string" && /^-?\d{1,128}$/.test(encoded)) {
+    claimSqlInput(budget, Buffer.byteLength(encoded), method);
+    return BigInt(encoded);
+  }
+  if (tag === "bytes" && typeof encoded === "string" && encoded.length <= MAX_SQL_BASE64_CHARS) {
+    const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+    const decodedBytes = Math.floor(encoded.length / 4) * 3 - padding;
+    claimSqlInput(budget, decodedBytes, method);
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.toString("base64") === encoded) return bytes;
+  }
+  throw new Error(`${method}: invalid encoded SQL parameter`);
+}
+
+function sqlValueToWire(value: SqlParam): unknown {
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new Error("database returned a non-finite SQL number");
+  }
+  if (typeof value === "bigint") return { [SQL_WIRE_TAG]: "bigint", value: value.toString() };
+  if (value instanceof Uint8Array) {
+    return {
+      [SQL_WIRE_TAG]: "bytes",
+      value: Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString("base64"),
+    };
+  }
+  return value;
+}
+
+function sqlRowsToWire(rows: readonly SqlRow[]): readonly Readonly<Record<string, unknown>>[] {
+  return rows.map((row) =>
+    Object.fromEntries(
+      Object.entries(row).map(([column, value]) => [column, sqlValueToWire(value as SqlParam)]),
+    ),
+  );
+}
+
 /**
  * The bound parameters of one served statement. The frame schema bounds how many ARGUMENTS a
- * call carries and nothing about their shape, so the list is narrowed here; every value in it
- * is judged by the contract's own `assertSqlParams` inside the promise the database returns,
- * which is where a refusal becomes a rejection the plugin can catch.
+ * call carries and nothing about their shape, so the list is narrowed and its JSON-safe SQL
+ * tags decoded here; the database applies the public type and byte bounds before execution.
  */
 function paramsArg(
   args: readonly unknown[],
   index: number,
   method: IsolateCtxMethod,
+  budget: SqlInputBudget = { bytes: 0 },
 ): readonly SqlParam[] | undefined {
   const value = args[index];
-  // `undefined` and `null` both mean "this statement binds nothing": the frame is JSON, which
-  // carries no `undefined`, so an omitted argument arrives as either depending on the sender.
   if (value === undefined || value === null) return undefined;
   if (!Array.isArray(value)) {
     throw new Error(`${method}: argument ${String(index)} must be an array of parameters`);
   }
-  return value as readonly SqlParam[];
+  if (value.length > MAX_SQL_PARAMS) {
+    throw new Error(`${method}: too many SQL parameters`);
+  }
+  const decoded: SqlParam[] = [];
+  for (const parameter of value) decoded.push(sqlValueFromWire(parameter, method, budget));
+  return decoded;
 }
 
-/** The statement list of a served `batch`, narrowed to the shape the contract takes. */
+/** The statement list of a served `batch`, decoded without trusting child-owned object shapes. */
 function statementsArg(
   args: readonly unknown[],
   method: IsolateCtxMethod,
@@ -284,12 +374,30 @@ function statementsArg(
   if (!Array.isArray(value)) {
     throw new Error(`${method}: argument 0 must be an array of statements`);
   }
-  for (const statement of value as readonly unknown[]) {
-    if (statement === null || typeof statement !== "object" || !("sql" in statement)) {
+  if (value.length > MAX_SQL_BATCH_STATEMENTS) {
+    throw new Error(`${method}: too many SQL statements`);
+  }
+  const budget = { bytes: 0 };
+  const decoded: SqlStatement[] = [];
+  for (const statement of value) {
+    if (statement === null || typeof statement !== "object" || Array.isArray(statement)) {
       throw new Error(`${method}: every statement must be an object with a sql string`);
     }
+    const sql = Reflect.get(statement, "sql");
+    const params = Reflect.get(statement, "params");
+    if (typeof sql !== "string")
+      throw new Error(`${method}: every statement must be an object with a sql string`);
+    const sqlBytes = Buffer.byteLength(sql);
+    if (sqlBytes > MAX_SQL_STATEMENT_BYTES)
+      throw new Error(`${method}: SQL statement is too large`);
+    claimSqlInput(budget, sqlBytes, method);
+    const statementParams = paramsArg([params], 0, method, budget);
+    decoded.push({
+      sql,
+      ...(statementParams === undefined ? {} : { params: statementParams }),
+    });
   }
-  return value as readonly SqlStatement[];
+  return decoded;
 }
 
 /**
@@ -330,14 +438,26 @@ export async function serveCtxCall(
         args[0] === undefined ? undefined : stringArg(args, 0, method),
       );
     case "database.query":
-      return databaseOf(served, method).query(
+      return sqlRowsToWire(
+        await databaseOf(served, method).query(
+          stringArg(args, 0, method),
+          paramsArg(args, 1, method),
+        ),
+      );
+    case "database.run": {
+      const result = await databaseOf(served, method).run(
         stringArg(args, 0, method),
         paramsArg(args, 1, method),
       );
-    case "database.run":
-      return databaseOf(served, method).run(stringArg(args, 0, method), paramsArg(args, 1, method));
+      return {
+        changes: result.changes,
+        lastInsertRowid: sqlValueToWire(result.lastInsertRowid),
+      };
+    }
     case "database.batch":
-      return databaseOf(served, method).batch(statementsArg(args, method));
+      return (await databaseOf(served, method).batch(statementsArg(args, method))).map(
+        sqlRowsToWire,
+      );
     case "jobs.describe":
     case "jobs.describeDeployment":
     case "jobs.execute":

@@ -856,27 +856,36 @@ export const serverDef = {
 };
 ```
 
-A migration receives only its plugin's bounded storage handle. The engine first refuses new
-dispatches for that plugin and drains admitted old calls; other plugins keep serving. It snapshots
-at most 4,096 rows and 16 MiB into a private draft, then runs at most 128 uniquely named migration
-callbacks, 65,536 storage operations and ten seconds for the chain. A hardened guest receives only
-the migration name and target version; its callback executes in the guest while storage calls use
-the same correlated proxy as ordinary plugin storage. No auth, services, jobs, terminal, lifecycle
-emission or another plugin's storage rides that request.
+A migration receives its plugin's bounded storage handle and, when the **candidate** manifest
+declares it, a private database image as the optional second argument. The engine first refuses
+new dispatches for that plugin and drains admitted old calls; other plugins keep serving. It
+snapshots at most 4,096 KV rows and 16 MiB into a private draft, then runs at most 128 uniquely
+named migration callbacks and ten seconds for the chain. KV and database staging each permit
+65,536 operations; a hardened request additionally bounds their combined proxy calls to 65,536.
+A hardened guest receives the migration name and target version; its callback executes in the
+guest while data calls use the correlated proxy. No auth, services, jobs, terminal, lifecycle
+emission or another plugin's data rides that request.
 
 The ten-second deadline can kill a hardened guest. An in-realm migration is trusted code in the
 server process: JavaScript cannot preempt a synchronous CPU loop, so its deadline bounds awaited
 work but cannot interrupt a callback that never yields. Install such code only under the same
 in-process trust decision as its ordinary server half.
 
-The transformed rows, applied-name ledger, declared version, install row and element claims publish
-in one synchronous native transaction after the callbacks finish. A throw, timeout, child crash,
-malformed or cross-call reply, late storage use, or conflicting writer publishes none of them and
-does not replace the old serving runtime. They run at boot for enabled plugins (awaited before the
-server binds its socket) and at replacement or enablement for the affected plugin — never for a
-disabled one, whose data is retained untouched and re-judged when someone turns it back on. Applied
-names are recorded in the ledger, so none ever runs twice. The rules the engine applies, adopted
-from Home Assistant's asymmetry:
+The transformed KV rows, applied-name ledger, declared version, install row and element claims
+publish in one synchronous native transaction after the callbacks finish. Database migrations
+close and retire the live admin before copying to fixed `data.db.stage` and `data.db.backup`
+paths. The engine streams image fingerprints, flushes files and directories, durably records a
+`prepared` journal in `manifold.db`, then activates the image while preserving its predecessor.
+The native publication transaction marks the journal `committed`. Boot recovers prepared state
+backward and committed state forward before loading plugins; unknown fingerprints refuse recovery
+rather than overwrite evidence. Unjournaled fixed staging artifacts are removed at boot.
+
+A throw, timeout, child crash, malformed or cross-call reply, late data use, or conflicting writer
+publishes none of the migration's changes and does not replace the old serving runtime. No SQLite
+transaction spans a callback's await. Request leases expire at settlement or timeout, and retiring
+an admin invalidates every outstanding database lease, so old callbacks cannot reopen the file.
+Migrations run at boot for enabled plugins (before the socket binds) and at replacement or
+enablement — never for a disabled plugin. Applied names are ledgered and never rerun. The rules:
 
 | Stored vs. manifest `dataVersion` | Outcome                                            |
 | --------------------------------- | -------------------------------------------------- |
@@ -913,7 +922,7 @@ interface PluginDatabase {
   run(
     sql: string,
     params?: readonly SqlParam[],
-  ): Promise<{ changes: number; lastInsertRowid: number }>;
+  ): Promise<{ changes: number; lastInsertRowid: bigint }>;
   batch(
     statements: readonly { sql: string; params?: readonly SqlParam[] }[],
   ): Promise<readonly (readonly SqlRow[])[]>;
@@ -945,26 +954,36 @@ if (inserted.length === 0) return { refused: "somebody else filed it first" };
 `PluginDatabaseError` — never a throw, exactly as storage rejects, so one `try`/`catch` around an
 `await` is your whole failure path in-realm and isolated alike:
 
-| Bound                    | Value                              |
-| ------------------------ | ---------------------------------- |
-| statement text           | ≤ 64 KiB                           |
-| parameters per statement | ≤ 999 (SQLite's own)               |
-| statements per `batch`   | ≤ 256                              |
-| rows returned per call   | ≤ 10,000 — page past it            |
-| result bytes per call    | ≤ 4 MiB                            |
-| one call's deadline      | 5 s; a `batch` past it rolls back  |
-| the file                 | `database.maxBytes`, ceiling 4 GiB |
+| Bound                    | Value                                             |
+| ------------------------ | ------------------------------------------------- |
+| statement text           | ≤ 64 KiB                                          |
+| parameters per statement | ≤ 999 (SQLite's own)                              |
+| parameter bytes          | ≤ 4 MiB per call                                  |
+| aggregate `batch` input  | ≤ 4 MiB across statement text and parameters      |
+| statements per `batch`   | ≤ 256                                             |
+| rows returned per call   | ≤ 10,000 across the whole batch — page past it    |
+| result bytes per call    | ≤ 4 MiB, including column names and batch results |
+| cooperative batch budget | 5 s, checked between statements and before commit |
+| the file                 | `database.maxBytes`, ceiling 4 GiB                |
 
-`ATTACH`, `DETACH`, `VACUUM`, `PRAGMA` and `load_extension` are refused by inspecting the first
-keyword before anything runs, and the file is opened with `trusted_schema` off. That is a guard
-against reaching outside your own file, not a sandbox. Your file is yours alone: the path comes
-from your manifest id, so two plugins cannot name each other's, and the engine never reads your
-tables for any purpose but purge and count. One caveat worth knowing before you store a blob: a
-hardened plugin's calls cross an ipc boundary that is **JSON**, so a `Uint8Array` parameter is
-in-realm only in practice; encode it if your plugin may be installed hardened.
+Bun's synchronous SQLite API has no progress-handler cancellation here. A single SQL statement
+can exceed the cooperative budget and block the host thread, including when requested by a
+hardened guest; neither the batch budget nor the guest's ten-second chain timer preempts it.
+
+`ATTACH`, `DETACH`, `VACUUM`, `PRAGMA`, transaction-control statements (`BEGIN`, `COMMIT`,
+`END`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`) and `load_extension` are refused before anything
+runs. The engine owns the file and every transaction boundary, and opens the file with
+`trusted_schema` off. That is a guard against reaching outside your own file, not a sandbox.
+Your file is yours alone: the path comes from your manifest id, so two plugins cannot name each
+other's, and the engine never reads your tables for any purpose but purge and count. SQLite
+`INTEGER` values and rowids are lossless `bigint`s; finite `REAL` values remain numbers.
+Hardened calls encode `bigint` and `Uint8Array` values into bounded JSON-safe database wire
+values and decode them on the other side; the public SQL value contract is the same in-realm
+and isolated. Non-finite numeric parameters or results are refused rather than changing to
+JSON `null`.
 
 **Your tables are made by a migration, or lazily by your own code.** `PluginMigration.migrate`
-takes the database as its second parameter, present for exactly the plugins that declared one:
+takes the database as its second parameter, using the candidate manifest's declaration and byte cap:
 
 ```ts
 migrations: [
@@ -972,27 +991,12 @@ migrations: [
     name: "2026-09-12-create-records",
     to: { major: 1, minor: 0 },
     migrate: async (storage, database) => {
-      await database?.run(
-        "CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, kind TEXT NOT NULL)",
-      );
+      await database?.run("CREATE TABLE records(id TEXT PRIMARY KEY, kind TEXT NOT NULL)");
       await storage.set("schema", "records");
     },
   },
 ];
 ```
-
-**Write DDL that can run twice.** §4's chain stages your keys, the applied-name ledger and the
-version stamp and publishes them in one transaction — but your file is not `manifold.db`, so its
-statements commit as they run. A chain that throws or times out publishes no ledger entry, which
-means the same migration is planned again on the next boot: `CREATE TABLE IF NOT EXISTS`, and a
-data statement guarded by its own `WHERE`, are what make the second attempt succeed.
-
-**A hardened guest's migration is storage-only.** §4's migration request carries the plugin's
-keys and nothing else — the engine admits `storage.*` calls from a migrating guest and refuses
-everything else — so `database` is `undefined` there and a `database.*` call is answered
-`slice_unavailable`. Make your tables in `onEnable` instead, the way the reference plugin does:
-the lifecycle context carries the slice, `CREATE TABLE IF NOT EXISTS` is idempotent, and it runs
-before your first dispatch either way.
 
 There is no schema DSL, because SQL is the schema DSL. And there is still **one** data version and
 **one** ledger: `dataVersion` and the `$migration:` rows live in your key-value namespace whether

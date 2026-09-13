@@ -29,15 +29,16 @@ import { compilePlugin, packPlugin, type CompileOptions, type PackResult } from 
 import * as React from "react";
 import * as Plugin from "@manifold/plugin";
 import * as UI from "@manifold/ui";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { connect } from "node:net";
 
 /**
  * `pack` TURNS THE SAMPLE INTO THE ARTIFACT THE INSTALL DOOR READS — and the artifact runs.
  * The command is driven exactly as an author drives it (`bun src/pack.ts <dir> --out <file>`,
  * a real second process reading the printed JSON line), and the packed `server.js` is then
- * spawned exactly as the engine's supervisor spawns it (`bun --smol <file>` over ipc) and
- * answers the protocol from a third process — the one thing an in-memory transport cannot
- * show. In-process `Bun.build` is not used here on purpose: under `bun test` launched from the
+ * spawned exactly as the engine's supervisor spawns it (`bun --smol <file>` over a dedicated
+ * socket) and answers the protocol from a third process — the one thing an in-memory transport
+ * cannot show. In-process `Bun.build` is not used here on purpose: under `bun test` launched from the
  * repository root it cannot resolve the isolated linker's per-package `node_modules`, while
  * the same call from the command line can.
  */
@@ -609,18 +610,32 @@ describe("the packed server half, as a real isolate", () => {
     const queue: IsolateChildFrame[] = [];
     const waiting: ((frame: IsolateChildFrame) => void)[] = [];
     const child = Bun.spawn(["bun", "--smol", serverFile], {
-      ipc: (message: IsolateChildFrame) => {
-        const waiter = waiting.shift();
-        if (waiter === undefined) queue.push(message);
-        else waiter(message);
+      stdio: ["ignore", "ignore", "pipe", "socket-fd"],
+      env: {
+        ...process.env,
+        MANIFOLD_PLUGIN_ID: "example.counter",
+        MANIFOLD_PLUGIN_PIPE_FD: "3",
       },
-      serialization: "json",
-      stderr: "pipe",
-      stdout: "ignore",
     });
-    const send = (frame: IsolateHostFrame): void => {
-      child.send(frame);
-    };
+    const descriptor = child.stdio[3];
+    if (descriptor === null || descriptor === undefined) throw new Error("missing isolate socket");
+    const connectDescriptor = connect as unknown as (options: {
+      readonly fd: number;
+    }) => ReturnType<typeof connect>;
+    const protocol = connectDescriptor({ fd: descriptor });
+    let carry = "";
+    protocol.on("data", (chunk: Buffer) => {
+      carry += chunk.toString("utf8");
+      let newline = carry.indexOf("\n");
+      while (newline !== -1) {
+        const frame = JSON.parse(carry.slice(0, newline)) as IsolateChildFrame;
+        carry = carry.slice(newline + 1);
+        const waiter = waiting.shift();
+        if (waiter === undefined) queue.push(frame);
+        else waiter(frame);
+        newline = carry.indexOf("\n");
+      }
+    });
     const next = (): Promise<IsolateChildFrame> => {
       const queued = queue.shift();
       if (queued !== undefined) return Promise.resolve(queued);
@@ -628,8 +643,13 @@ describe("the packed server half, as a real isolate", () => {
       waiting.push(resolve);
       return promise;
     };
+    const send = async (frame: IsolateHostFrame): Promise<void> => {
+      const receipt = randomUUID();
+      protocol.write(`${JSON.stringify({ receipt, frame })}\n`);
+      expect(await next()).toEqual({ t: "received", receipt });
+    };
     try {
-      send({ t: "load", pluginId: "example.counter", manifest: defaultBundle.manifest, dir });
+      await send({ t: "load", pluginId: "example.counter", manifest: defaultBundle.manifest, dir });
       const loaded = await next();
       expect(loaded).toMatchObject({
         t: "loaded",
@@ -637,7 +657,7 @@ describe("the packed server half, as a real isolate", () => {
         hooks: { onEnable: true, onDisable: false, onAssemblyChanged: false },
       });
 
-      send({
+      await send({
         t: "dispatch",
         id: "r1",
         action: "bump",
@@ -653,7 +673,7 @@ describe("the packed server half, as a real isolate", () => {
       });
       const read = await next();
       expect(read).toEqual({ t: "call", id: "r1:1", method: "storage.get", args: ["count"] });
-      send({ t: "reply", id: "r1:1", ok: true, result: "37" });
+      await send({ t: "reply", id: "r1:1", ok: true, result: "37" });
       const write = await next();
       expect(write).toEqual({
         t: "call",
@@ -661,7 +681,7 @@ describe("the packed server half, as a real isolate", () => {
         method: "storage.set",
         args: ["count", "42"],
       });
-      send({ t: "reply", id: "r1:2", ok: true, result: null });
+      await send({ t: "reply", id: "r1:2", ok: true, result: null });
       expect(await next()).toEqual({
         t: "dispatched",
         id: "r1",
@@ -678,9 +698,10 @@ describe("the packed server half, as a real isolate", () => {
         },
       });
 
-      send({ t: "shutdown" });
+      await send({ t: "shutdown" });
       expect(await child.exited).toBe(0);
     } finally {
+      protocol.destroy();
       child.kill();
     }
   });

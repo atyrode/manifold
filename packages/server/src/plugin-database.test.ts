@@ -1,9 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PluginDatabaseError } from "@manifold/plugin";
-import { openPluginDatabase, pluginDatabasePath } from "./plugin-database.ts";
+import { MAX_SQL_PARAMS_BYTES, PluginDatabaseError } from "@manifold/plugin";
+import {
+  openPluginDatabase,
+  pluginDatabasePath,
+  recoverPluginDatabases,
+  stagePluginDatabase,
+} from "./plugin-database.ts";
+import { openDatabase } from "./db.ts";
+import { ServerStore } from "./stores.ts";
 
 function scratch(): { dataDir: string; done: () => void } {
   const dataDir = mkdtempSync(join(tmpdir(), "manifold-plugin-db-"));
@@ -24,11 +31,11 @@ describe("a plugin's own tables", () => {
         3,
       ]);
       expect(written.changes).toBe(1);
-      const rows = await db.query<{ id: string; score: number }>(
+      const rows = await db.query<{ id: string; score: bigint }>(
         "SELECT id, score FROM records WHERE kind = ? ORDER BY score DESC",
         ["proposal"],
       );
-      expect(rows).toEqual([{ id: "rec_1", score: 3 }]);
+      expect(rows).toEqual([{ id: "rec_1", score: 3n }]);
       expect(existsSync(pluginDatabasePath(dataDir, "atyrode.example"))).toBe(true);
 
       const other = openPluginDatabase({ dataDir, pluginId: "atyrode.other" });
@@ -61,7 +68,7 @@ describe("a plugin's own tables", () => {
         { sql: "UPDATE t SET v = ? WHERE v = ?", params: ["b", "a"] },
         { sql: "SELECT v FROM t" },
       ]);
-      expect(results[0]).toEqual([{ id: 1 }]);
+      expect(results[0]).toEqual([{ id: 1n }]);
       expect(results[1]).toEqual([]);
       expect(results[2]).toEqual([{ v: "b" }]);
       db.close();
@@ -76,9 +83,16 @@ describe("a plugin's own tables", () => {
       const db = openPluginDatabase({ dataDir, pluginId: "atyrode.example" });
       for (const sql of [
         "ATTACH DATABASE '/etc/passwd' AS x",
+        "; ATTACH DATABASE '/etc/passwd' AS x",
         "  -- a comment first\n PRAGMA journal_mode = DELETE",
         "/* block */ VACUUM",
         "SELECT load_extension('evil')",
+        "BEGIN IMMEDIATE",
+        "COMMIT",
+        "END",
+        "ROLLBACK",
+        "SAVEPOINT plugin_owned",
+        "RELEASE plugin_owned",
         "",
       ]) {
         await expect(db.query(sql)).rejects.toBeInstanceOf(PluginDatabaseError);
@@ -87,6 +101,21 @@ describe("a plugin's own tables", () => {
       await db.run("CREATE TABLE pragmatic(attach TEXT)");
       await db.run("INSERT INTO pragmatic(attach) VALUES ('vacuum')");
       expect(await db.query("SELECT attach FROM pragmatic")).toEqual([{ attach: "vacuum" }]);
+      db.close();
+    } finally {
+      done();
+    }
+  });
+
+  test("SQLite integers and rowids remain lossless", async () => {
+    const { dataDir, done } = scratch();
+    try {
+      const db = openPluginDatabase({ dataDir, pluginId: "atyrode.example" });
+      await db.run("CREATE TABLE ids(id INTEGER PRIMARY KEY)");
+      const id = 9007199254740993n;
+      const inserted = await db.run("INSERT INTO ids(id) VALUES (?)", [id]);
+      expect(inserted).toEqual({ changes: 1, lastInsertRowid: id });
+      expect(await db.query("SELECT id FROM ids")).toEqual([{ id }]);
       db.close();
     } finally {
       done();
@@ -103,9 +132,34 @@ describe("a plugin's own tables", () => {
       );
       await expect(db.query("SELECT i FROM n")).rejects.toThrow(/10000-row limit/);
       expect((await db.query("SELECT i FROM n LIMIT 10000")).length).toBe(10000);
+      await expect(
+        db.batch([{ sql: "SELECT i FROM n LIMIT 5001" }, { sql: "SELECT i FROM n LIMIT 5001" }]),
+      ).rejects.toThrow(/10000-row limit/);
+      const alias = "a".repeat(60 * 1024);
+      await expect(db.query(`SELECT i AS "${alias}" FROM n LIMIT 100`)).rejects.toThrow(
+        /result.*byte limit/,
+      );
+      await expect(db.query("SELECT 1e999 AS value")).rejects.toThrow(/non-finite/);
+      await expect(db.query("SELECT ?", [Number.POSITIVE_INFINITY])).rejects.toThrow(/finite/);
       await expect(db.query("SELECT 1", new Array(1000).fill(1))).rejects.toThrow(/999/);
       await expect(db.batch([])).rejects.toBeInstanceOf(PluginDatabaseError);
       await expect(db.query("SELECT ?", [{} as never])).rejects.toBeInstanceOf(PluginDatabaseError);
+      await expect(db.query("SELECT ?", ["x".repeat(MAX_SQL_PARAMS_BYTES + 1)])).rejects.toThrow(
+        /parameter.*byte limit/,
+      );
+      const half = "x".repeat(Math.floor(MAX_SQL_PARAMS_BYTES / 2));
+      await expect(
+        db.batch([
+          { sql: "SELECT ?", params: [half] },
+          { sql: "SELECT ?", params: [half] },
+        ]),
+      ).rejects.toThrow(/batch input.*byte limit/);
+      await db.run("CREATE TABLE payloads(body BLOB)");
+      await db.run("INSERT INTO payloads VALUES (zeroblob(2097152))");
+      expect((await db.query("SELECT body FROM payloads")).length).toBe(1);
+      await expect(
+        db.batch([{ sql: "SELECT body FROM payloads" }, { sql: "SELECT body FROM payloads" }]),
+      ).rejects.toThrow(/result.*byte limit/);
       db.close();
     } finally {
       done();
@@ -173,6 +227,57 @@ describe("a plugin's own tables", () => {
       await expect(db.query("SELECT v FROM t")).rejects.toThrow(/no such table/);
       db.close();
     } finally {
+      done();
+    }
+  });
+
+  test("a changed live image refuses publication and preserves the competing writer", async () => {
+    const { dataDir, done } = scratch();
+    const store = new ServerStore(openDatabase(":memory:"));
+    const options = { dataDir, pluginId: "atyrode.example" };
+    const live = openPluginDatabase(options);
+    try {
+      await live.run("CREATE TABLE t(v TEXT)");
+      await live.run("INSERT INTO t VALUES ('old')");
+      live.close();
+      const staged = stagePluginDatabase(options, store);
+      await staged.database.run("UPDATE t SET v = 'candidate'");
+      await live.run("UPDATE t SET v = 'concurrent'");
+      live.close();
+      expect(() => staged.activate()).toThrow(/changed while migration was staged/);
+      staged.discard();
+      await expect(staged.database.run("DROP TABLE t")).rejects.toThrow(/closed/);
+      expect(await live.query("SELECT v FROM t")).toEqual([{ v: "concurrent" }]);
+      expect(store.pluginDatabaseJournals()).toEqual([]);
+      expect(existsSync(`${pluginDatabasePath(dataDir, options.pluginId)}.stage`)).toBe(false);
+    } finally {
+      live.close();
+      store.close();
+      done();
+    }
+  });
+
+  test("boot removes fixed unjournaled images and sidecars without touching retained data", async () => {
+    const { dataDir, done } = scratch();
+    const store = new ServerStore(openDatabase(":memory:"));
+    const options = { dataDir, pluginId: "atyrode.example" };
+    const live = openPluginDatabase(options);
+    try {
+      await live.run("CREATE TABLE t(v TEXT)");
+      await live.run("INSERT INTO t VALUES ('retained')");
+      live.close();
+      const path = pluginDatabasePath(dataDir, options.pluginId);
+      for (const image of [".stage", ".backup"])
+        for (const sidecar of ["", "-wal", "-shm", "-journal"])
+          writeFileSync(`${path}${image}${sidecar}`, "unfinished");
+      recoverPluginDatabases(dataDir, store);
+      expect(await live.query("SELECT v FROM t")).toEqual([{ v: "retained" }]);
+      for (const image of [".stage", ".backup"])
+        for (const sidecar of ["", "-wal", "-shm", "-journal"])
+          expect(existsSync(`${path}${image}${sidecar}`)).toBe(false);
+    } finally {
+      live.close();
+      store.close();
       done();
     }
   });

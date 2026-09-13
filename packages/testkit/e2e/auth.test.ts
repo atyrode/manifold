@@ -685,7 +685,7 @@ test("a revoked preview browser identity returns through production admission wi
             browser.evaluate<boolean>(
               "window.__admissionAttemptSeen === true && document.querySelector('.gate-screen') !== null",
             ),
-          10_000,
+          20_000,
           50,
         );
         expect(

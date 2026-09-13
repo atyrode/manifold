@@ -4,6 +4,7 @@ import type {
   LifecycleCtx,
   StreamProducer,
   JobFollow,
+  PluginDatabase,
   PluginMigration,
   PluginStorage,
 } from "@manifold/plugin";
@@ -11,6 +12,7 @@ import {
   ISOLATE_CRASH_BUDGET,
   ISOLATE_DISPATCH_DEADLINE_MS,
   ISOLATE_IDLE_EVICT_MS,
+  ISOLATE_MAX_FRAME_BYTES,
   ISOLATE_MIGRATION_DEADLINE_MS,
   MAX_MIGRATION_STORAGE_OPERATIONS,
   ManifoldRefSchema,
@@ -96,6 +98,9 @@ class Isolate {
   /** The child's first report; a respawn's is not consulted, the bundle is pinned by hash. */
   loaded: LoadedFrame | null = null;
   readonly pending = new Map<string, Pending>();
+  callTail: Promise<void> = Promise.resolve();
+  queuedCalls = 0;
+  queuedCallBytes = 0;
   migration: { readonly id: string; readonly calls: Set<string> } | null = null;
   readonly producers = new Map<string, StreamProducer>();
   readonly jobObservers = new Map<string, JobObserver>();
@@ -171,7 +176,8 @@ export class IsolateSupervisor implements IsolateRunner {
       dispatch: (action, args, ctx) => this.dispatch(pluginId, action, args, ctx),
       hook: (hook, ctx, delta) => this.hook(pluginId, hook, ctx, delta),
       settled: (ctx, job) => this.settled(pluginId, ctx, job),
-      migrate: (migration, storage) => this.migrate(isolate, migration, storage),
+      migrate: (migration, storage, database) =>
+        this.migrate(isolate, migration, storage, database),
     };
     try {
       return buildIsolateDef(ref.manifest, isolate.loaded, transport);
@@ -300,6 +306,7 @@ export class IsolateSupervisor implements IsolateRunner {
     isolate: Isolate,
     migration: Pick<PluginMigration, "name" | "to">,
     storage: PluginStorage,
+    database?: PluginDatabase,
   ): Promise<void> {
     if (this.isolates.get(isolate.ref.pluginId) !== isolate)
       throw new IsolateDenial("unavailable", "migration belongs to a retired plugin");
@@ -312,7 +319,7 @@ export class IsolateSupervisor implements IsolateRunner {
     const frame = await this.request(
       isolate.ref.pluginId,
       (id) => ({ t: "migrate", id, migration }),
-      { kind: "migration", ctx: { storage } },
+      { kind: "migration", ctx: { storage, ...(database === undefined ? {} : { database }) } },
     );
     if (frame.t !== "migrated" || frame.name !== migration.name)
       throw new IsolateDenial("unavailable", "migration answered out of protocol");
@@ -539,6 +546,15 @@ export class IsolateSupervisor implements IsolateRunner {
   private onFrame(isolate: Isolate, child: IsolateChild, frame: IsolateChildFrame): void {
     if (isolate.child !== child) return;
     switch (frame.t) {
+      case "received":
+        if (!child.received(frame.receipt)) {
+          this.logger.warn("isolate_call_failed", {
+            plugin: isolate.ref.pluginId,
+            reason: "invalid frame receipt",
+          });
+          child.kill();
+        }
+        return;
       case "loaded":
         if (isolate.handshake === null) {
           this.failMigration(isolate, "loaded frame outside the load handshake");
@@ -586,9 +602,38 @@ export class IsolateSupervisor implements IsolateRunner {
         isolate.pending.delete(frame.id);
         return;
       }
-      case "call":
-        void this.serve(isolate, child, frame);
+      case "call": {
+        const bytes = Buffer.byteLength(JSON.stringify(frame));
+        if (
+          isolate.queuedCalls >= 256 ||
+          isolate.queuedCallBytes + bytes > ISOLATE_MAX_FRAME_BYTES * 2
+        ) {
+          this.logger.warn("isolate_protocol_backpressure", {
+            plugin: isolate.ref.pluginId,
+            queuedCalls: isolate.queuedCalls,
+            queuedCallBytes: isolate.queuedCallBytes,
+          });
+          child.kill();
+          return;
+        }
+        const separator = frame.id.lastIndexOf(":");
+        const pending =
+          separator === -1 ? undefined : isolate.pending.get(frame.id.slice(0, separator));
+        if (pending !== undefined) pending.serving += 1;
+        isolate.queuedCalls += 1;
+        isolate.queuedCallBytes += bytes;
+        const serve = async (): Promise<void> => {
+          try {
+            if (isolate.child === child) await this.serve(isolate, child, frame, pending);
+          } finally {
+            if (pending !== undefined && pending.serving > 0) pending.serving -= 1;
+            isolate.queuedCalls -= 1;
+            isolate.queuedCallBytes -= bytes;
+          }
+        };
+        isolate.callTail = isolate.callTail.then(serve, serve);
         return;
+      }
       default: {
         const exhaustive: never = frame;
         throw new Error(`unhandled child frame ${String(exhaustive)}`);
@@ -640,26 +685,26 @@ export class IsolateSupervisor implements IsolateRunner {
     isolate: Isolate,
     child: IsolateChild,
     frame: Extract<IsolateChildFrame, { t: "call" }>,
+    pending: Pending | undefined,
   ): Promise<void> {
-    const separator = frame.id.lastIndexOf(":");
-    const pending =
-      separator === -1 ? undefined : isolate.pending.get(frame.id.slice(0, separator));
     let reply: IsolateHostFrame;
     const migration = isolate.migration;
     try {
       if (migration !== null) {
         if (
           pending?.served.kind !== "migration" ||
-          !frame.method.startsWith("storage.") ||
+          !(frame.method.startsWith("storage.") || frame.method.startsWith("database.")) ||
           migration.calls.has(frame.id) ||
           migration.calls.size >= MAX_MIGRATION_STORAGE_OPERATIONS
         ) {
-          this.failMigration(isolate, "invalid migration storage call");
-          throw new Error("migration may call only its own storage with fresh call ids");
+          this.failMigration(isolate, "invalid migration data call");
+          throw new Error(
+            "migration may call only its own storage and database with fresh call ids",
+          );
         }
         migration.calls.add(frame.id);
       }
-      if (pending !== undefined) pending.serving += 1;
+      // `pending.serving` was claimed synchronously when the frame entered the bounded queue.
       let result: unknown;
       if (frame.method === "jobs.ack" || frame.method === "jobs.unfollow") {
         const id = frame.args[0];
@@ -754,8 +799,6 @@ export class IsolateSupervisor implements IsolateRunner {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       reply = { t: "reply", id: frame.id, ok: false, error: message.slice(0, 2048) };
-    } finally {
-      if (pending !== undefined && pending.serving > 0) pending.serving -= 1;
     }
     if (isolate.child === child) child.send(reply);
   }

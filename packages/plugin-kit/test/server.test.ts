@@ -12,8 +12,10 @@ import {
   attachServerGuest,
   defineServerAction,
   type GuestCtx,
+  type GuestDatabase,
   type GuestStreamProducer,
   type ServerPluginDef,
+  type ServerMigration,
 } from "../src/server.ts";
 
 /**
@@ -701,12 +703,15 @@ describe("named storage migrations", () => {
       manifest: versioned,
       actions: [],
       handlers: {},
-      migrations: descriptors.map((descriptor) => ({
-        ...descriptor,
-        migrate: () => {
-          throw new Error("must not run during load");
-        },
-      })),
+      migrations: descriptors.map(
+        (descriptor) =>
+          ({
+            ...descriptor,
+            migrate: () => {
+              throw new Error("must not run during load");
+            },
+          }) as ServerMigration,
+      ),
     });
     fake.send({ t: "load", pluginId: manifest.id, manifest: versioned, dir: "/unused" });
     expect(await fake.next()).toMatchObject({ t: "load_failed" });
@@ -743,4 +748,51 @@ describe("named storage migrations", () => {
     }
     expect(invocations).toBe(0);
   });
+
+  test.each([false, true])(
+    "migration database authority follows the loaded candidate: %s",
+    async (declared) => {
+      let captured: GuestDatabase | undefined;
+      const versioned = { ...manifest, dataVersion: { major: 2, minor: 0 } };
+      const fake = host({
+        manifest: { ...versioned, ...(!declared ? { database: {} } : {}) },
+        actions: [],
+        handlers: {},
+        migrations: [
+          {
+            name: "rows",
+            to: { major: 2, minor: 0 },
+            migrate: async (_storage, database) => {
+              captured = database;
+              if (database !== undefined) await database.run("CREATE TABLE rows(value TEXT)");
+            },
+          },
+        ],
+      });
+      fake.send({
+        t: "load",
+        pluginId: manifest.id,
+        manifest: { ...versioned, ...(declared ? { database: {} } : {}) },
+        dir: "/unused",
+      });
+      await fake.next();
+      fake.send({
+        t: "migrate",
+        id: "migration",
+        migration: { name: "rows", to: { major: 2, minor: 0 } },
+      });
+      if (declared)
+        await serve(fake, {
+          changes: 0,
+          lastInsertRowid: { "$manifold.sql": "bigint", value: "0" },
+        });
+      expect(await fake.next()).toMatchObject({ t: "migrated", outcome: { ok: true } });
+      expect(captured !== undefined).toBe(declared);
+      if (captured !== undefined) {
+        const frames = fake.sent.length;
+        await expect(captured.run("DROP TABLE rows")).rejects.toThrow();
+        expect(fake.sent.length).toBe(frames);
+      }
+    },
+  );
 });

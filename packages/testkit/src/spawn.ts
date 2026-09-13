@@ -420,6 +420,7 @@ export function waitFor<T>(
 ): Promise<T> {
   const { promise, resolve, reject } = Promise.withResolvers<T>();
   const deadline = Date.now() + timeoutMs;
+  const timeoutError = new Error(`condition not met within ${timeoutMs}ms`);
 
   const check = async (): Promise<void> => {
     try {
@@ -429,7 +430,7 @@ export function waitFor<T>(
         return;
       }
       if (Date.now() >= deadline) {
-        reject(new Error(`condition not met within ${timeoutMs}ms`));
+        reject(timeoutError);
         return;
       }
       setTimeout(() => void check(), Math.min(intervalMs, Math.max(0, deadline - Date.now())));
