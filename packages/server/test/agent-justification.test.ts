@@ -151,28 +151,50 @@ describe("bound agent declarations", () => {
     const { actor } = await newRun(fix);
     await acknowledge(fix, actor);
     const created = CreateAgentRunResultSchema.parse(
-      result(await fix.host.dispatch(actor, "core.access.createAgentRun", childArgs, null, {
-        agentJustification: " \tDelegate\nread-only work.\u202e ",
-      })),
+      result(
+        await fix.host.dispatch(actor, "core.access.createAgentRun", childArgs, null, {
+          agentJustification: " \tDelegate\nread-only work.\u202e ",
+        }),
+      ),
     );
     expect(JSON.parse(latestTrace(fix).payload).agentDeclaration).toBe("Delegate read-only work.");
     expect(latestTrace(fix).principalId).toBe(actor.principal.id);
     const child = fix.auth.authenticate(created.credential.token);
     await acknowledge(fix, child);
-    const renewal = await fix.host.dispatch(actor, "core.access.renewAgentRun", {
-      runId: created.run.id,
-    }, null, { agentJustification: "Renew the child to finish its read-only task." });
+    const renewal = await fix.host.dispatch(
+      actor,
+      "core.access.renewAgentRun",
+      {
+        runId: created.run.id,
+      },
+      null,
+      { agentJustification: "Renew the child to finish its read-only task." },
+    );
     // The child already expires with its parent; a declaration cannot extend that ceiling.
     expect(renewal).toMatchObject({ ok: false, denial: { rule: "refused" } });
     expect(latestTrace(fix).outcome).toBe("refused");
     expect(JSON.parse(latestTrace(fix).payload).agentDeclaration).toBe(
       "Renew the child to finish its read-only task.",
     );
-    expect((await fix.host.dispatch(fix.auth.authenticate(created.credential.token), "core.machines.list", {})).ok).toBe(true);
-    const refused = await fix.host.dispatch(actor, "core.access.createAgentRun", {
-      ...childArgs,
-      caps: ["terminals:write"],
-    }, null, { agentJustification: "Request broader authority for terminal work." });
+    expect(
+      (
+        await fix.host.dispatch(
+          fix.auth.authenticate(created.credential.token),
+          "core.machines.list",
+          {},
+        )
+      ).ok,
+    ).toBe(true);
+    const refused = await fix.host.dispatch(
+      actor,
+      "core.access.createAgentRun",
+      {
+        ...childArgs,
+        caps: ["terminals:write"],
+      },
+      null,
+      { agentJustification: "Request broader authority for terminal work." },
+    );
     expect(refused).toMatchObject({ ok: false, denial: { rule: "refused" } });
     expect(JSON.parse(latestTrace(fix).payload).agentDeclaration).toBe(
       "Request broader authority for terminal work.",
@@ -186,13 +208,22 @@ describe("bound agent declarations", () => {
     const fix = await fixture();
     const { actor } = await newRun(fix, { caps: ["containers:read"] });
     const invalid = { agentJustification: "token=fixture-only-value" };
-    expect(await fix.host.dispatch(actor, "core.access.createAgentRun", {}, null, invalid))
-      .toMatchObject({ ok: false, denial: { rule: "policy_required" } });
+    expect(
+      await fix.host.dispatch(actor, "core.access.createAgentRun", {}, null, invalid),
+    ).toMatchObject({ ok: false, denial: { rule: "policy_required" } });
     await acknowledge(fix, actor);
-    expect(await fix.host.dispatch(actor, "core.index.createContainer", { name: "forbidden" }, null, invalid))
-      .toMatchObject({ ok: false, denial: { rule: "forbidden" } });
-    expect(await fix.host.dispatch(actor, "core.access.createAgentRun", {}, null, invalid))
-      .toMatchObject({ ok: false, denial: { rule: "invalid_args" } });
+    expect(
+      await fix.host.dispatch(
+        actor,
+        "core.index.createContainer",
+        { name: "forbidden" },
+        null,
+        invalid,
+      ),
+    ).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
+    expect(
+      await fix.host.dispatch(actor, "core.access.createAgentRun", {}, null, invalid),
+    ).toMatchObject({ ok: false, denial: { rule: "invalid_args" } });
     expect(JSON.parse(latestTrace(fix).payload)).toEqual({});
     expect(JSON.stringify(fix.logs)).not.toContain("fixture-only-value");
   });
@@ -201,13 +232,17 @@ describe("bound agent declarations", () => {
     const fix = await fixture();
     const { actor } = await newRun(fix);
     await acknowledge(fix, actor);
-    expect(await fix.host.dispatch(actor, "core.machines.list", {
-      agentDeclaration: "invented caller claim",
-    })).toMatchObject({ ok: false, denial: { rule: "invalid_args" } });
+    expect(
+      await fix.host.dispatch(actor, "core.machines.list", {
+        agentDeclaration: "invented caller claim",
+      }),
+    ).toMatchObject({ ok: false, denial: { rule: "invalid_args" } });
     expect(JSON.parse(latestTrace(fix).payload)).toEqual({});
-    expect(await fix.host.dispatch(fix.owner, "core.machines.list", {
-      agentDeclaration: "invented human claim",
-    })).toMatchObject({ ok: false, denial: { rule: "invalid_args" } });
+    expect(
+      await fix.host.dispatch(fix.owner, "core.machines.list", {
+        agentDeclaration: "invented human claim",
+      }),
+    ).toMatchObject({ ok: false, denial: { rule: "invalid_args" } });
     expect(JSON.parse(latestTrace(fix).payload)).toEqual({});
   });
 
@@ -249,35 +284,61 @@ describe("bound agent declarations", () => {
       caps: ["containers:read"],
     });
     const options = { agentJustification: "Inspect this suspended run." };
-    expect(await fix.host.dispatch(actor, "core.access.listCredentials", {}, null, options))
-      .toMatchObject({ ok: true });
+    expect(
+      await fix.host.dispatch(actor, "core.access.listAgentRuns", {}, null, options),
+    ).toMatchObject({
+      ok: true,
+      result: { runs: [{ id: created.run.id, state: "pending_policy" }] },
+    });
     expect(JSON.parse(latestTrace(fix).payload).agentDeclaration).toBeUndefined();
-    expect(await fix.host.dispatch(actor, "core.index.readContainer", { containerId }))
-      .toMatchObject({ ok: false, denial: { rule: "policy_required" } });
+    expect(
+      await fix.host.dispatch(actor, "core.index.readContainer", { containerId }),
+    ).toMatchObject({ ok: false, denial: { rule: "policy_required" } });
     await acknowledge(fix, actor);
-    expect(await fix.host.dispatch(actor, "engine.jobs.execute", {}))
-      .toMatchObject({ ok: false, denial: { rule: "forbidden" } });
+    expect(await fix.host.dispatch(actor, "engine.jobs.execute", {})).toMatchObject({
+      ok: false,
+      denial: { rule: "forbidden" },
+    });
     fix.store.updateAgentRunPolicy(created.run.id, "0".repeat(64), "policy_stale");
-    expect(await fix.host.dispatch(actor, "core.access.listCredentials", {}, null, options))
-      .toMatchObject({ ok: true });
+    expect(
+      await fix.host.dispatch(actor, "core.access.listAgentRuns", {}, null, options),
+    ).toMatchObject({
+      ok: true,
+      result: { runs: [{ id: created.run.id, state: "policy_stale" }] },
+    });
     expect(JSON.parse(latestTrace(fix).payload).agentDeclaration).toBeUndefined();
-    expect(await fix.host.dispatch(actor, "core.index.readContainer", { containerId }))
-      .toMatchObject({ ok: false, denial: { rule: "policy_stale" } });
+    expect(
+      await fix.host.dispatch(actor, "core.index.readContainer", { containerId }),
+    ).toMatchObject({ ok: false, denial: { rule: "policy_stale" } });
   });
 
   test("human and legacy agent credentials never acquire claims from supplied options", async () => {
     const fix = await fixture();
     const options = { agentJustification: "token=fixture-only-value" };
-    const created = await fix.host.dispatch(fix.owner, "core.access.createAgentRun", childArgs, null, options);
+    const created = await fix.host.dispatch(
+      fix.owner,
+      "core.access.createAgentRun",
+      childArgs,
+      null,
+      options,
+    );
     expect(created.ok).toBe(true);
     expect(JSON.parse(latestTrace(fix).payload).agentDeclaration).toBeUndefined();
     const containerId = fix.runtime.newId();
-    fix.store.createContainer({ id: containerId, name: "shared", createdAt: fix.runtime.now(), discipline: "canvas" });
-    const share = fix.auth.mintShare({
-      node: { kind: "container", containerId },
-      caps: ["containers:read"],
-      origin: "https://guest.example",
-    }, fix.owner);
+    fix.store.createContainer({
+      id: containerId,
+      name: "shared",
+      createdAt: fix.runtime.now(),
+      discipline: "canvas",
+    });
+    const share = fix.auth.mintShare(
+      {
+        node: { kind: "container", containerId },
+        caps: ["containers:read"],
+        origin: "https://guest.example",
+      },
+      fix.owner,
+    );
     const ticket = fix.auth.mintShareTicket(fix.auth.authenticateShare(share.token), {
       id: "legacy-agent",
       kind: "agent",
@@ -286,8 +347,9 @@ describe("bound agent declarations", () => {
     });
     const legacy = fix.auth.authenticate(ticket.token);
     expect(legacy.agentRunId).toBeUndefined();
-    expect(await fix.host.dispatch(legacy, "core.index.readContainer", { containerId }, null, options))
-      .toMatchObject({ ok: true });
+    expect(
+      await fix.host.dispatch(legacy, "core.index.readContainer", { containerId }, null, options),
+    ).toMatchObject({ ok: true });
     expect(JSON.parse(latestTrace(fix).payload).agentDeclaration).toBeUndefined();
   });
 });

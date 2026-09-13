@@ -1634,13 +1634,13 @@ lets any principal render the same badge.
 attenuation, the revocation fence) stays floor and unchanged. The three doors, plus the five
 cross-instance ones below:
 
-| Action                        | Caps          | Scope     | Args → Result                                                                |
-| ----------------------------- | ------------- | --------- | ---------------------------------------------------------------------------- |
-| `core.access.createPrincipal` | `*`           | workspace | `{ name, color?, kind? }` → `TokenGrant` (caps `["*"]`, `containerId: null`) |
-| `core.access.mint`            | `tokens:mint` | container | `{ principal \| principalId, caps, containerId? }` → `TokenGrant`            |
-| `core.access.revoke`          | `tokens:mint` | container | `{ principalId }` → `{ revoked: <count> }` — **`cleanup: true`**             |
-| `core.access.listCredentials` | `tokens:mint` | workspace | `{}` → `{ principals: PrincipalCredentials[] }` |
-| `core.access.listAgentRuns` | identity-relative | workspace / `runAccess: "inspect"` | `{}` → `AgentRunInventory` (at most 100 safe run summaries) |
+| Action                        | Caps              | Scope                              | Args → Result                                                                            |
+| ----------------------------- | ----------------- | ---------------------------------- | ---------------------------------------------------------------------------------------- |
+| `core.access.createPrincipal` | `*`               | workspace                          | `{ name, color?, kind? }` → `TokenGrant` (caps `["*"]`, `containerId: null`)             |
+| `core.access.mint`            | `tokens:mint`     | container                          | `{ principal \| principalId, caps, containerId? }` → `TokenGrant`                        |
+| `core.access.revoke`          | `tokens:mint`     | container                          | `{ principalId }` → `{ revoked: <count> }` — **`cleanup: true`**                         |
+| `core.access.listCredentials` | `tokens:mint`     | workspace                          | `{}` → `{ principals: PrincipalCredentials[] }`                                          |
+| `core.access.listAgentRuns`   | identity-relative | workspace / `runAccess: "inspect"` | `{}` → `AgentRunInventory` (at most 100 safe run summaries)                              |
 | `core.access.inspectAgentRun` | identity-relative | workspace / `runAccess: "inspect"` | `{ runId? \| principalId?, traceId?, beforeTraceId?, limit? }` → `InspectAgentRunResult` |
 
 `createPrincipal` demands `*` because `requireRoot` did; the other two demand `tokens:mint`

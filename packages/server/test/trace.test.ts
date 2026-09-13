@@ -525,25 +525,40 @@ describe("the trace ledger records every exercise of authority", () => {
     const policyRequired = await base.host.dispatch(pendingRun, "core.machines.list", {});
     expect(policyRequired.ok).toBeFalse();
     expect(newestTrace(base).outcome).toBe("policy_required");
-    const initialChallengeOutcome = await base.host.dispatch(pendingRun, "core.access.getAgentPolicy", {});
-    if (!initialChallengeOutcome.ok) throw new Error("fixture initial policy challenge was refused");
+    const initialChallengeOutcome = await base.host.dispatch(
+      pendingRun,
+      "core.access.getAgentPolicy",
+      {},
+    );
+    if (!initialChallengeOutcome.ok)
+      throw new Error("fixture initial policy challenge was refused");
     const initialChallenge = AgentPolicyChallengeSchema.parse(initialChallengeOutcome.result);
-    expect((await base.host.dispatch(pendingRun, "core.access.acknowledgeAgentPolicy", {
-      revision: initialChallenge.revision,
-      acknowledgements: initialChallenge.required.map(({ id, digest }) => ({ id, digest })),
-    })).ok).toBeTrue();
+    expect(
+      (
+        await base.host.dispatch(pendingRun, "core.access.acknowledgeAgentPolicy", {
+          revision: initialChallenge.revision,
+          acknowledgements: initialChallenge.required.map(({ id, digest }) => ({ id, digest })),
+        })
+      ).ok,
+    ).toBeTrue();
     writeFileSync(policyFile, "Trace policy revision two.\n");
-    expect((await base.host.dispatch(base.owner, "core.access.reloadAgentPolicy", {})).ok).toBeTrue();
+    expect(
+      (await base.host.dispatch(base.owner, "core.access.reloadAgentPolicy", {})).ok,
+    ).toBeTrue();
     const policyStale = await base.host.dispatch(pendingRun, "core.machines.list", {});
     expect(policyStale.ok).toBeFalse();
     expect(newestTrace(base).outcome).toBe("policy_stale");
     const challengeOutcome = await base.host.dispatch(pendingRun, "core.access.getAgentPolicy", {});
     if (!challengeOutcome.ok) throw new Error("fixture policy challenge was refused");
     const challenge = AgentPolicyChallengeSchema.parse(challengeOutcome.result);
-    const acknowledged = await base.host.dispatch(pendingRun, "core.access.acknowledgeAgentPolicy", {
-      revision: challenge.revision,
-      acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
-    });
+    const acknowledged = await base.host.dispatch(
+      pendingRun,
+      "core.access.acknowledgeAgentPolicy",
+      {
+        revision: challenge.revision,
+        acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
+      },
+    );
     expect(acknowledged.ok).toBeTrue();
     const childArgs = {
       name: "trace-declaration-rungs",

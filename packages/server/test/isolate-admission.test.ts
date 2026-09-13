@@ -35,8 +35,10 @@ test("an isolated process cannot write or claim success before host admission, e
     admitPrepared: () => {
       if (!allowed) throw declarationRefusal;
     },
-    emit: () => { throw new Error("fixture declares no emissions"); },
-  } as ActionCtx;
+    emit: () => {
+      throw new Error("fixture declares no emissions");
+    },
+  } as unknown as ActionCtx;
   try {
     const { def } = await supervisor.load({
       pluginId: manifest.id,
@@ -45,7 +47,9 @@ test("an isolated process cannot write or claim success before host admission, e
     });
     const invoke = def.handlers.write;
     if (invoke === undefined) throw new Error("fixture has no handler");
-    await expect(invoke(ctx, { key: "before-prepare", prepare: false } as never)).rejects.toBeInstanceOf(IsolateDenial);
+    await expect(
+      invoke(ctx, { key: "before-prepare", prepare: false } as never),
+    ).rejects.toBeInstanceOf(IsolateDenial);
     await expect(invoke(ctx, { key: "after-refusal" } as never)).rejects.toBe(declarationRefusal);
     allowed = true;
     await invoke(ctx, { key: "admitted" } as never);

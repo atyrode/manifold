@@ -1343,7 +1343,8 @@ export class AuthService {
         parent.principalId !== cursor.authorizedByPrincipalId ||
         parent.rootRunId !== cursor.rootRunId ||
         parent.depth + 1 !== cursor.depth
-      ) return { chain, complete: false };
+      )
+        return { chain, complete: false };
       chain.push(parent);
       seen.add(parent.id);
       cursor = parent;
@@ -1371,7 +1372,10 @@ export class AuthService {
     const observedAt = this.runtime.now();
     const runs: AgentRunInventory["runs"] = [];
     let truncated = false;
-    for (const run of this.store.agentRunInspectionCandidates(current.principal.id, current.isRoot)) {
+    for (const run of this.store.agentRunInspectionCandidates(
+      current.principal.id,
+      current.isRoot,
+    )) {
       if (!this.mayInspectAgentRun(current, run)) continue;
       if (runs.length === 100) {
         truncated = true;
@@ -1380,9 +1384,15 @@ export class AuthService {
       runs.push({
         id: run.id,
         principalId: run.principalId,
-        name: normalizeAgentDeclaration(this.store.getPrincipal(run.principalId)?.name ?? "Principal unavailable") ?? "[redacted]",
+        name:
+          normalizeAgentDeclaration(
+            this.store.getPrincipal(run.principalId)?.name ?? "Principal unavailable",
+          ) ?? "[redacted]",
         purpose: normalizeAgentDeclaration(run.purpose) ?? "[redacted]",
-        state: !TERMINAL_AGENT_RUN_STATES.has(run.state) && run.expiresAt <= observedAt ? "expired" : run.state,
+        state:
+          !TERMINAL_AGENT_RUN_STATES.has(run.state) && run.expiresAt <= observedAt
+            ? "expired"
+            : run.state,
         createdAt: run.createdAt,
         expiresAt: run.expiresAt,
       });
@@ -1397,12 +1407,17 @@ export class AuthService {
       throw new ServiceError("forbidden", "agent run inspection unavailable");
     };
     if (current === null) return unavailable();
-    const run = parsed.runId === undefined
-      ? this.store.getAgentRunByPrincipal(parsed.principalId!)
-      : this.store.getAgentRun(parsed.runId);
+    const run =
+      parsed.runId === undefined
+        ? this.store.getAgentRunByPrincipal(parsed.principalId!)
+        : this.store.getAgentRun(parsed.runId);
     if (run === null) {
-      const principal = parsed.principalId === undefined ? null : this.store.getPrincipal(parsed.principalId);
-      if (principal?.kind !== "agent" || (!current.isRoot && principal.id !== current.principal.id)) {
+      const principal =
+        parsed.principalId === undefined ? null : this.store.getPrincipal(parsed.principalId);
+      if (
+        principal?.kind !== "agent" ||
+        (!current.isRoot && principal.id !== current.principal.id)
+      ) {
         return unavailable();
       }
       return { availability: "origin_unavailable", principalId: principal.id };
@@ -1414,11 +1429,15 @@ export class AuthService {
       id: entry.id,
       principalId: entry.principalId,
       name: safeText(this.store.getPrincipal(entry.principalId)?.name ?? "Principal unavailable"),
-      state: !TERMINAL_AGENT_RUN_STATES.has(entry.state) && entry.expiresAt <= now ? "expired" : entry.state,
+      state:
+        !TERMINAL_AGENT_RUN_STATES.has(entry.state) && entry.expiresAt <= now
+          ? "expired"
+          : entry.state,
     });
     const ancestry = this.inspectionAncestors(run);
     // Filter every link independently: inspecting an ancestor must not reveal siblings.
-    const lineage = this.store.listAgentRunTree(run.rootRunId)
+    const lineage = this.store
+      .listAgentRunTree(run.rootRunId)
       .filter((entry) => this.mayInspectAgentRun(current, entry))
       .map(summarize);
     const policy = this.store.getAgentPolicySnapshot(run.id, run.policyRevision);
@@ -1450,12 +1469,22 @@ export class AuthService {
           revokedCredentials: run.cleanupRevokedCredentials,
           revokedGrants: run.cleanupRevokedGrants,
           finishedAt: run.finishedAt ?? null,
-          status: run.state === "cleanup_failed" ? "failed" : run.finishedAt === undefined ? "pending" : "finished",
+          status:
+            run.state === "cleanup_failed"
+              ? "failed"
+              : run.finishedAt === undefined
+                ? "pending"
+                : "finished",
         },
       },
       lineage,
       lineageComplete: ancestry.complete,
-      ...this.store.agentRunInspectionFacts(run.principalId, parsed, now, this.liveRunConnections(run.principalId)),
+      ...this.store.agentRunInspectionFacts(
+        run.principalId,
+        parsed,
+        now,
+        this.liveRunConnections(run.principalId),
+      ),
     });
   }
 
@@ -2159,14 +2188,17 @@ export class AuthService {
   listCredentials(actor: AuthContext): PrincipalCredentials[] {
     // HTTP authentication precedes the awaited body read; restore again at point of use.
     const current = this.restoreCredential(this.credentialReference(actor));
-    if (current === null) throw new ServiceError("forbidden", "credential inspection authority required");
+    if (current === null)
+      throw new ServiceError("forbidden", "credential inspection authority required");
     if (current.containerScope !== null || !this.allows(current, "tokens:mint")) {
       throw new ServiceError("forbidden", "tokens:mint capability required");
     }
     const now = this.runtime.now();
     const rows: PrincipalCredentials[] = [];
     for (const { principal, createdAt } of this.store.listPrincipalsWithCreation()) {
-      const mine = current.isRoot || principal.id === current.principal.id ||
+      const mine =
+        current.isRoot ||
+        principal.id === current.principal.id ||
         this.store.principalMintedBy(principal.id, current.principal.id);
       if (!mine) continue;
       const sessions = this.store

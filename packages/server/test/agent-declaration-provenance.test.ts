@@ -33,27 +33,33 @@ function fixture(path: string, runtime = new FakeRuntime()): Fixture {
 }
 
 function createRun(f: Fixture) {
-  const created = f.auth.createAgentRun(CreateAgentRunRequestSchema.parse({
-    name: "provenance reader",
-    purpose: "Inspect the approved workspace",
-    target: "manifold://",
-    reach: "subtree",
-    caps: ["containers:read"],
-    lifetimeMs: 60_000,
-  }), f.owner);
+  const created = f.auth.createAgentRun(
+    CreateAgentRunRequestSchema.parse({
+      name: "provenance reader",
+      purpose: "Inspect the approved workspace",
+      target: "manifold://",
+      reach: "subtree",
+      caps: ["containers:read"],
+      lifetimeMs: 60_000,
+    }),
+    f.owner,
+  );
   const actor = f.auth.authenticate(created.credential.token);
   const challenge = f.auth.agentPolicyChallenge(actor);
-  f.auth.acknowledgeAgentPolicy({
-    revision: challenge.revision,
-    acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
-  }, actor);
+  f.auth.acknowledgeAgentPolicy(
+    {
+      revision: challenge.revision,
+      acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
+    },
+    actor,
+  );
   return { created, actor };
 }
 
 function inspect(f: Fixture, runId: string, extra: Partial<InspectAgentRunRequest> = {}) {
-  return AgentRunInspectionSchema.parse(f.auth.inspectAgentRun(
-    InspectAgentRunRequestSchema.parse({ runId, ...extra }), f.owner,
-  ));
+  return AgentRunInspectionSchema.parse(
+    f.auth.inspectAgentRun(InspectAgentRunRequestSchema.parse({ runId, ...extra }), f.owner),
+  );
 }
 
 function restorePreCutoverSchema(f: Fixture): void {
@@ -68,13 +74,21 @@ function restorePreCutoverSchema(f: Fixture): void {
 function seedTrace(f: Fixture, actor: string, claim: string, id: string | null = null): string {
   // Historical/imported fixture bytes, not a replacement for the dispatcher. Return
   // decimal text so the precision tests do not round through lastInsertRowid.
-  const row = f.store.db.query<{ id: string }, [string | null, number, string, string]>(
-    `INSERT INTO events(id,ts,principal_id,type,payload,door,authority,targets,outcome,session)
+  const row = f.store.db
+    .query<{ id: string }, [string | null, number, string, string]>(
+      `INSERT INTO events(id,ts,principal_id,type,payload,door,authority,targets,outcome,session)
      VALUES(CAST(? AS INTEGER),?,?,'trace',?,'core.index.list','containers:read','[]','forbidden',NULL)
      RETURNING CAST(id AS TEXT) AS id`,
-  ).get(id, f.runtime.now(), actor, JSON.stringify({
-    agentDeclaration: claim, args: { privateInput: "fixture raw input" },
-  }));
+    )
+    .get(
+      id,
+      f.runtime.now(),
+      actor,
+      JSON.stringify({
+        agentDeclaration: claim,
+        args: { privateInput: "fixture raw input" },
+      }),
+    );
   if (row === null) throw new Error("trace fixture insert did not return its id");
   return row.id;
 }
@@ -87,28 +101,54 @@ describe("agent declaration provenance cutover", () => {
     try {
       const run = createRun(f);
       restorePreCutoverSchema(f);
-      const forged = seedTrace(f, run.actor.principal.id, "Forged approval from legacy arguments", "9");
+      const forged = seedTrace(
+        f,
+        run.actor.principal.id,
+        "Forged approval from legacy arguments",
+        "9",
+      );
       // The retained maximum must protect the boundary even if the sequence was lowered.
       f.store.db.exec("UPDATE sqlite_sequence SET seq=2 WHERE name='events'");
       f.store.close();
       f = fixture(path, f.runtime);
       expect(f.store.getMeta(CUTOVER)).toBe(forged);
-      expect(inspect(f, run.created.run.id, { traceId: forged }).traces[0])
-        .not.toHaveProperty("agentDeclaration");
+      expect(inspect(f, run.created.run.id, { traceId: forged }).traces[0]).not.toHaveProperty(
+        "agentDeclaration",
+      );
 
       const clock = new FakeClock(f.runtime);
       const rooms = new RoomManager(f.store, f.runtime, clock, silentLogger, testTileTrees);
-      const broker = new TerminalBroker(f.store, f.auth, rooms, f.runtime, clock, silentLogger,
-        () => "http://localhost:7777", testTileTrees);
+      const broker = new TerminalBroker(
+        f.store,
+        f.auth,
+        rooms,
+        f.runtime,
+        clock,
+        silentLogger,
+        () => "http://localhost:7777",
+        testTileTrees,
+      );
       const host = await testPluginHost(f.store, f.auth, rooms, broker, f.runtime);
-      const outcome = await host.dispatch(f.auth.authenticate(run.created.credential.token),
-        "core.index.list", {}, null, { agentJustification: "  Read\nonly the approved workspace.  " });
+      const actor = f.auth.authenticate(run.created.credential.token);
+      // Host composition selects the current policy vocabulary after reopening. Assent
+      // to that real snapshot before exercising an ordinary declared action.
+      const challenge = f.auth.agentPolicyChallenge(actor);
+      f.auth.acknowledgeAgentPolicy(
+        {
+          revision: challenge.revision,
+          acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
+        },
+        actor,
+      );
+      const outcome = await host.dispatch(actor, "core.index.list", {}, null, {
+        agentJustification: "  Read\nonly the approved workspace.  ",
+      });
       expect(outcome.ok).toBeTrue();
       const traces = inspect(f, run.created.run.id).traces;
-      expect(traces.map((trace) => trace.agentDeclaration)).toEqual([
-        "Read only the approved workspace.", undefined,
-      ]);
-      expect(traces[1]?.traceId).toBe(forged);
+      expect(traces[0]?.agentDeclaration).toBe("Read only the approved workspace.");
+      expect(traces.find((trace) => trace.traceId === forged)).not.toHaveProperty(
+        "agentDeclaration",
+      );
       const trusted = traces[0]?.traceId;
       if (trusted === undefined) throw new Error("declared dispatch left no trace");
       expect(JSON.stringify(traces)).not.toContain("fixture raw input");
@@ -117,10 +157,12 @@ describe("agent declaration provenance cutover", () => {
       f.store.close();
       f = fixture(path, f.runtime);
       expect(f.store.getMeta(CUTOVER)).toBe(forged);
-      expect(inspect(f, run.created.run.id, { traceId: forged }).traces[0])
-        .not.toHaveProperty("agentDeclaration");
-      expect(inspect(f, run.created.run.id, { traceId: trusted }).traces[0]?.agentDeclaration)
-        .toBe("Read only the approved workspace.");
+      expect(inspect(f, run.created.run.id, { traceId: forged }).traces[0]).not.toHaveProperty(
+        "agentDeclaration",
+      );
+      expect(inspect(f, run.created.run.id, { traceId: trusted }).traces[0]?.agentDeclaration).toBe(
+        "Read only the approved workspace.",
+      );
     } finally {
       f.store.close();
       rmSync(dir, { recursive: true, force: true });
@@ -134,29 +176,50 @@ describe("agent declaration provenance cutover", () => {
     try {
       const run = createRun(f);
       restorePreCutoverSchema(f);
-      const old = seedTrace(f, run.actor.principal.id, "Untrusted retained claim", "9007199254740993");
-      const pruned = seedTrace(f, run.actor.principal.id, "Untrusted pruned claim", "9007199254740995");
+      const old = seedTrace(
+        f,
+        run.actor.principal.id,
+        "Untrusted retained claim",
+        "9007199254740993",
+      );
+      const pruned = seedTrace(
+        f,
+        run.actor.principal.id,
+        "Untrusted pruned claim",
+        "9007199254740995",
+      );
       f.store.db.query("DELETE FROM events WHERE id=?").run(pruned);
       f.store.close();
       f = fixture(path, f.runtime);
       expect(f.store.getMeta(CUTOVER)).toBe(pruned);
       const first = seedTrace(f, run.actor.principal.id, "First post-cutover claim");
       const second = seedTrace(f, run.actor.principal.id, "Second post-cutover claim");
-      expect([first, second]).toEqual(["9007199254740996", "9007199254740997"]);
+      expect(BigInt(first)).toBeGreaterThan(BigInt(pruned));
+      expect(BigInt(second)).toBe(BigInt(first) + 1n);
       const page = inspect(f, run.created.run.id, { limit: 1 });
-      expect(page.traces[0]).toMatchObject({ traceId: second, agentDeclaration: "Second post-cutover claim" });
+      expect(page.traces[0]).toMatchObject({
+        traceId: second,
+        agentDeclaration: "Second post-cutover claim",
+      });
       expect(page.nextBeforeTraceId).toBe(second);
       const previous = inspect(f, run.created.run.id, { beforeTraceId: second, limit: 1 });
-      expect(previous.traces[0]).toMatchObject({ traceId: first, agentDeclaration: "First post-cutover claim" });
+      expect(previous.traces[0]).toMatchObject({
+        traceId: first,
+        agentDeclaration: "First post-cutover claim",
+      });
       expect(previous.nextBeforeTraceId).toBe(first);
-      expect(inspect(f, run.created.run.id, { traceId: old }).traces[0])
-        .not.toHaveProperty("agentDeclaration");
-      expect(inspect(f, run.created.run.id, { traceId: pruned }).requestedTrace).toBe("unavailable");
+      expect(inspect(f, run.created.run.id, { traceId: old }).traces[0]).not.toHaveProperty(
+        "agentDeclaration",
+      );
+      expect(inspect(f, run.created.run.id, { traceId: pruned }).requestedTrace).toBe(
+        "unavailable",
+      );
       f.store.close();
       f = fixture(path, f.runtime);
       expect(f.store.getMeta(CUTOVER)).toBe(pruned);
-      expect(inspect(f, run.created.run.id, { traceId: second }).traces[0]?.agentDeclaration)
-        .toBe("Second post-cutover claim");
+      expect(inspect(f, run.created.run.id, { traceId: second }).traces[0]?.agentDeclaration).toBe(
+        "Second post-cutover claim",
+      );
     } finally {
       f.store.close();
       rmSync(dir, { recursive: true, force: true });
@@ -166,17 +229,40 @@ describe("agent declaration provenance cutover", () => {
   test("an exhausted SQLite sequence cannot overflow into trusting its last historical row", () => {
     const dir = mkdtempSync(join(tmpdir(), "manifold-declaration-int64-"));
     const path = join(dir, "manifold.db");
-    let f = fixture(path);
+    const f = fixture(path);
     try {
       const run = createRun(f);
       restorePreCutoverSchema(f);
-      const last = seedTrace(f, run.actor.principal.id, "Untrusted final historical claim", "9223372036854775807");
-      f.store.close();
-      f = fixture(path, f.runtime);
+      const last = seedTrace(
+        f,
+        run.actor.principal.id,
+        "Untrusted final historical claim",
+        "9223372036854775807",
+      );
+      // Upgrade the same database without authenticating again: authentication owns an
+      // audit insert, which is itself impossible once the event sequence is exhausted.
+      const upgraded = openDatabase(path);
+      upgraded.close();
       expect(f.store.getMeta(CUTOVER)).toBe(last);
       const trace = inspect(f, run.created.run.id, { traceId: last }).traces[0];
       expect(trace?.traceId).toBe(last);
       expect(trace).not.toHaveProperty("agentDeclaration");
+      expect(() =>
+        f.store.appendTrace({
+          ts: f.runtime.now(),
+          actor: run.actor.principal.id,
+          authority: "containers:read",
+          door: "core.index.list",
+          containerId: null,
+          payload: { agentDeclaration: "Cannot be recorded" },
+          session: null,
+          outcome: "ok",
+          targets: [],
+        }),
+      ).toThrow();
+      expect(inspect(f, run.created.run.id, { traceId: last }).traces[0]).not.toHaveProperty(
+        "agentDeclaration",
+      );
     } finally {
       f.store.close();
       rmSync(dir, { recursive: true, force: true });
@@ -184,27 +270,32 @@ describe("agent declaration provenance cutover", () => {
   });
 
   test.each([null, "", "garbage", "-1", "01", "1.5", "1e0", "0\n", "9223372036854775808"])(
-    "missing or corrupt cutover %j stays fail-closed on read and reopen", (corrupt) => {
+    "missing or corrupt cutover %j stays fail-closed on read and reopen",
+    (corrupt) => {
       const dir = mkdtempSync(join(tmpdir(), "manifold-declaration-corrupt-"));
       const path = join(dir, "manifold.db");
       let f = fixture(path);
       try {
         const run = createRun(f);
         const traceId = seedTrace(f, run.actor.principal.id, "Current declared claim");
-        expect(inspect(f, run.created.run.id, { traceId }).traces[0]?.agentDeclaration)
-          .toBe("Current declared claim");
+        expect(inspect(f, run.created.run.id, { traceId }).traces[0]?.agentDeclaration).toBe(
+          "Current declared claim",
+        );
         if (corrupt === null) f.store.db.query("DELETE FROM meta WHERE key=?").run(CUTOVER);
         else f.store.setMeta(CUTOVER, corrupt);
-        expect(inspect(f, run.created.run.id, { traceId }).traces[0])
-          .not.toHaveProperty("agentDeclaration");
+        expect(inspect(f, run.created.run.id, { traceId }).traces[0]).not.toHaveProperty(
+          "agentDeclaration",
+        );
         f.store.close();
         f = fixture(path, f.runtime);
         expect(f.store.getMeta(CUTOVER)).toBe(corrupt);
-        expect(inspect(f, run.created.run.id, { traceId }).traces[0])
-          .not.toHaveProperty("agentDeclaration");
+        expect(inspect(f, run.created.run.id, { traceId }).traces[0]).not.toHaveProperty(
+          "agentDeclaration",
+        );
         const later = seedTrace(f, run.actor.principal.id, "Later declared claim");
-        expect(inspect(f, run.created.run.id, { traceId: later }).traces[0])
-          .not.toHaveProperty("agentDeclaration");
+        expect(inspect(f, run.created.run.id, { traceId: later }).traces[0]).not.toHaveProperty(
+          "agentDeclaration",
+        );
       } finally {
         f.store.close();
         rmSync(dir, { recursive: true, force: true });

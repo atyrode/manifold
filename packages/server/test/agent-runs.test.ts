@@ -114,22 +114,34 @@ describe("sponsor-bound agent runs", () => {
 
     const childCreated = CreateAgentRunResultSchema.parse(
       value(
-        await fix.host.dispatch(parent, "core.access.createAgentRun", {
-          name: "reader",
-          purpose: "Read the one sponsored container.",
-          target: formatManifoldUri({ kind: "container", containerId }),
-          reach: "subtree",
-          caps: ["containers:read"],
-        }, null, { agentJustification: "Delegate a bounded child for this run." }),
+        await fix.host.dispatch(
+          parent,
+          "core.access.createAgentRun",
+          {
+            name: "reader",
+            purpose: "Read the one sponsored container.",
+            target: formatManifoldUri({ kind: "container", containerId }),
+            reach: "subtree",
+            caps: ["containers:read"],
+          },
+          null,
+          { agentJustification: "Delegate a bounded child for this run." },
+        ),
       ),
     );
-    const widened = await fix.host.dispatch(parent, "core.access.createAgentRun", {
-      name: "wider",
-      purpose: "Attempt authority the sponsor did not grant.",
-      target: formatManifoldUri({ kind: "container", containerId }),
-      reach: "subtree",
-      caps: ["terminals:write"],
-    }, null, { agentJustification: "Delegate a bounded child for this run." });
+    const widened = await fix.host.dispatch(
+      parent,
+      "core.access.createAgentRun",
+      {
+        name: "wider",
+        purpose: "Attempt authority the sponsor did not grant.",
+        target: formatManifoldUri({ kind: "container", containerId }),
+        reach: "subtree",
+        caps: ["terminals:write"],
+      },
+      null,
+      { agentJustification: "Delegate a bounded child for this run." },
+    );
     expect(denial(widened).rule).toBe("refused");
     const child = fix.auth.authenticate(childCreated.credential.token);
     expect((await acknowledge(fix, child)).run.state).toBe("active");
@@ -184,13 +196,19 @@ describe("sponsor-bound agent runs", () => {
 
     const childCreated = CreateAgentRunResultSchema.parse(
       value(
-        await fix.host.dispatch(parent, "core.access.createAgentRun", {
-          name: "child",
-          purpose: "Remain inside the sponsor's exact authority waterfall.",
-          target: "manifold://",
-          reach: "subtree",
-          caps: ["containers:read"],
-        }, null, { agentJustification: "Delegate a bounded child for this run." }),
+        await fix.host.dispatch(
+          parent,
+          "core.access.createAgentRun",
+          {
+            name: "child",
+            purpose: "Remain inside the sponsor's exact authority waterfall.",
+            target: "manifold://",
+            reach: "subtree",
+            caps: ["containers:read"],
+          },
+          null,
+          { agentJustification: "Delegate a bounded child for this run." },
+        ),
       ),
     );
     const child = fix.auth.authenticate(childCreated.credential.token);
@@ -229,13 +247,19 @@ describe("sponsor-bound agent runs", () => {
     await acknowledge(fix, parent);
     const childCreated = CreateAgentRunResultSchema.parse(
       value(
-        await fix.host.dispatch(parent, "core.access.createAgentRun", {
-          name: "revoked-child",
-          purpose: "Be revoked with the parent.",
-          target: formatManifoldUri({ kind: "container", containerId: secondContainerId }),
-          reach: "subtree",
-          caps: ["containers:read"],
-        }, null, { agentJustification: "Delegate a bounded child for this run." }),
+        await fix.host.dispatch(
+          parent,
+          "core.access.createAgentRun",
+          {
+            name: "revoked-child",
+            purpose: "Be revoked with the parent.",
+            target: formatManifoldUri({ kind: "container", containerId: secondContainerId }),
+            reach: "subtree",
+            caps: ["containers:read"],
+          },
+          null,
+          { agentJustification: "Delegate a bounded child for this run." },
+        ),
       ),
     );
     expect(
@@ -298,14 +322,20 @@ describe("sponsor-bound agent runs", () => {
     await acknowledge(fix, parent);
     const childCreated = CreateAgentRunResultSchema.parse(
       value(
-        await fix.host.dispatch(parent, "core.access.createAgentRun", {
-          name: "expiring-child",
-          purpose: "Expire with the parent.",
-          target: "manifold://",
-          reach: "subtree",
-          caps: ["containers:read"],
-          lifetimeMs: 60_000,
-        }, null, { agentJustification: "Delegate a bounded child for this run." }),
+        await fix.host.dispatch(
+          parent,
+          "core.access.createAgentRun",
+          {
+            name: "expiring-child",
+            purpose: "Expire with the parent.",
+            target: "manifold://",
+            reach: "subtree",
+            caps: ["containers:read"],
+            lifetimeMs: 60_000,
+          },
+          null,
+          { agentJustification: "Delegate a bounded child for this run." },
+        ),
       ),
     );
     fix.runtime.time += 60_000;
@@ -376,27 +406,39 @@ describe("sponsor-bound agent runs", () => {
     await acknowledge(fix, root);
     const branchCreated = CreateAgentRunResultSchema.parse(
       value(
-        await fix.host.dispatch(root, "core.access.createAgentRun", {
-          name: "bounded-branch",
-          purpose: "Allow exactly one descendant in this branch.",
-          target: "manifold://",
-          reach: "subtree",
-          caps: ["agents:delegate", "containers:read"],
-          maxDescendants: 1,
-        }, null, { agentJustification: "Delegate a branch within this run envelope." }),
+        await fix.host.dispatch(
+          root,
+          "core.access.createAgentRun",
+          {
+            name: "bounded-branch",
+            purpose: "Allow exactly one descendant in this branch.",
+            target: "manifold://",
+            reach: "subtree",
+            caps: ["agents:delegate", "containers:read"],
+            maxDescendants: 1,
+          },
+          null,
+          { agentJustification: "Delegate a branch within this run envelope." },
+        ),
       ),
     );
     const branch = fix.auth.authenticate(branchCreated.credential.token);
     await acknowledge(fix, branch);
     const leafCreated = CreateAgentRunResultSchema.parse(
       value(
-        await fix.host.dispatch(branch, "core.access.createAgentRun", {
-          name: "bounded-leaf",
-          purpose: "Consume the branch descendant budget.",
-          target: "manifold://",
-          reach: "subtree",
-          caps: ["agents:delegate", "containers:read"],
-        }, null, { agentJustification: "Delegate the remaining bounded work." }),
+        await fix.host.dispatch(
+          branch,
+          "core.access.createAgentRun",
+          {
+            name: "bounded-leaf",
+            purpose: "Consume the branch descendant budget.",
+            target: "manifold://",
+            reach: "subtree",
+            caps: ["agents:delegate", "containers:read"],
+          },
+          null,
+          { agentJustification: "Delegate the remaining bounded work." },
+        ),
       ),
     );
     const leaf = fix.auth.authenticate(leafCreated.credential.token);
@@ -404,13 +446,19 @@ describe("sponsor-bound agent runs", () => {
 
     expect(
       denial(
-        await fix.host.dispatch(leaf, "core.access.createAgentRun", {
-          name: "too-deep-in-branch",
-          purpose: "Attempt to bypass the intermediate ancestor budget.",
-          target: "manifold://",
-          reach: "subtree",
-          caps: ["containers:read"],
-        }, null, { agentJustification: "Attempt a child within the ancestor budget." }),
+        await fix.host.dispatch(
+          leaf,
+          "core.access.createAgentRun",
+          {
+            name: "too-deep-in-branch",
+            purpose: "Attempt to bypass the intermediate ancestor budget.",
+            target: "manifold://",
+            reach: "subtree",
+            caps: ["containers:read"],
+          },
+          null,
+          { agentJustification: "Attempt a child within the ancestor budget." },
+        ),
       ).rule,
     ).toBe("refused");
     fix.store.close();
