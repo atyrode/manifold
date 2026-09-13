@@ -676,7 +676,13 @@ describe("a panel's argument and its openings", () => {
    * question is what a REGISTERED component receives through the outlet, and a component
    * registered for the assembly cannot be handed a spy.
    */
-  let seen: { readonly arg: unknown; readonly host: HostServices } | null = null;
+  interface PanelCapture {
+    readonly arg: unknown;
+    readonly host: HostServices;
+  }
+  let seen: PanelCapture | null = null;
+  /** Reads the slot through a call: React writes it mid-render, from outside this scope. */
+  const captured = (): PanelCapture | null => seen;
   const FeedHome = ({ host, arg }: PanelProps): ReactElement => {
     seen = { arg, host };
     return createElement("output", null, "home");
@@ -750,22 +756,21 @@ describe("a panel's argument and its openings", () => {
     const leaf = layout[leafId];
     seen = null;
     const markup = renderToStaticMarkup(
-      createElement(
-        ComposedAssemblyProvider,
-        { value: assembly },
-        createElement(
-          HostServicesProvider,
-          { value: host },
-          createElement(PanelOutlet, {
+      createElement(ComposedAssemblyProvider, {
+        value: assembly,
+        children: createElement(HostServicesProvider, {
+          value: host,
+          children: createElement(PanelOutlet, {
             panelId: leaf?.ref?.kind === "panel" ? leaf.ref.panelId : "",
             tileId: leafId,
             arg: leaf?.arg,
           }),
-        ),
-      ),
+        }),
+      }),
     );
-    if (seen === null) throw new Error("the outlet painted no panel");
-    return { markup, arg: seen.arg, host: seen.host, committed };
+    const painted = captured();
+    if (painted === null) throw new Error("the outlet painted no panel");
+    return { markup, arg: painted.arg, host: painted.host, committed };
   }
 
   test("the leaf's argument reaches the panel painted in it, and only that one", () => {
