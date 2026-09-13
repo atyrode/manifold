@@ -7,21 +7,24 @@
   frame that is not a frame), `refuse` (a handler's own domain refusal). `onEnable` reads
   storage through its hook id and answers ok.
  */
-import { writeSync } from "node:fs";
+import { connect } from "node:net";
+
+const protocol = connect({ fd: 3 });
 
 function send(frame) {
-  writeSync(3, JSON.stringify(frame));
-  writeSync(3, "\n");
+  protocol.write(`${JSON.stringify(frame)}\n`);
 }
 
 function onFrame(receive) {
   let carry = "";
-  process.stdin.setEncoding("utf8");
-  process.stdin.on("data", (chunk) => {
+  protocol.setEncoding("utf8");
+  protocol.on("data", (chunk) => {
     carry += chunk;
     let newline = carry.indexOf("\n");
     while (newline !== -1) {
-      receive(JSON.parse(carry.slice(0, newline)));
+      const envelope = JSON.parse(carry.slice(0, newline));
+      send({ t: "received", receipt: envelope.receipt });
+      receive(envelope.frame);
       carry = carry.slice(newline + 1);
       newline = carry.indexOf("\n");
     }
@@ -78,6 +81,13 @@ const handlers = {
   },
   oversize() {
     return { ok: true, result: { value: "x".repeat(9 * 1024 * 1024) }, emits: [] };
+  },
+  backpressure(id) {
+    protocol.removeAllListeners("data");
+    protocol.pause();
+    for (let index = 0; index < 256; index += 1) void call(id, "storage.get", ["bulk"]);
+    globalThis.setInterval(() => {}, 1_000);
+    return new Promise(() => {});
   },
   refuse() {
     return { ok: false, rule: "refused", message: "not today" };

@@ -12,6 +12,7 @@ import {
   ISOLATE_CRASH_BUDGET,
   ISOLATE_DISPATCH_DEADLINE_MS,
   ISOLATE_IDLE_EVICT_MS,
+  ISOLATE_MAX_FRAME_BYTES,
   ISOLATE_MIGRATION_DEADLINE_MS,
   MAX_MIGRATION_STORAGE_OPERATIONS,
   ManifoldRefSchema,
@@ -97,6 +98,9 @@ class Isolate {
   /** The child's first report; a respawn's is not consulted, the bundle is pinned by hash. */
   loaded: LoadedFrame | null = null;
   readonly pending = new Map<string, Pending>();
+  callTail: Promise<void> = Promise.resolve();
+  queuedCalls = 0;
+  queuedCallBytes = 0;
   migration: { readonly id: string; readonly calls: Set<string> } | null = null;
   readonly producers = new Map<string, StreamProducer>();
   readonly jobObservers = new Map<string, JobObserver>();
@@ -542,6 +546,15 @@ export class IsolateSupervisor implements IsolateRunner {
   private onFrame(isolate: Isolate, child: IsolateChild, frame: IsolateChildFrame): void {
     if (isolate.child !== child) return;
     switch (frame.t) {
+      case "received":
+        if (!child.received(frame.receipt)) {
+          this.logger.warn("isolate_call_failed", {
+            plugin: isolate.ref.pluginId,
+            reason: "invalid frame receipt",
+          });
+          child.kill();
+        }
+        return;
       case "loaded":
         if (isolate.handshake === null) {
           this.failMigration(isolate, "loaded frame outside the load handshake");
@@ -589,9 +602,38 @@ export class IsolateSupervisor implements IsolateRunner {
         isolate.pending.delete(frame.id);
         return;
       }
-      case "call":
-        void this.serve(isolate, child, frame);
+      case "call": {
+        const bytes = Buffer.byteLength(JSON.stringify(frame));
+        if (
+          isolate.queuedCalls >= 256 ||
+          isolate.queuedCallBytes + bytes > ISOLATE_MAX_FRAME_BYTES * 2
+        ) {
+          this.logger.warn("isolate_protocol_backpressure", {
+            plugin: isolate.ref.pluginId,
+            queuedCalls: isolate.queuedCalls,
+            queuedCallBytes: isolate.queuedCallBytes,
+          });
+          child.kill();
+          return;
+        }
+        const separator = frame.id.lastIndexOf(":");
+        const pending =
+          separator === -1 ? undefined : isolate.pending.get(frame.id.slice(0, separator));
+        if (pending !== undefined) pending.serving += 1;
+        isolate.queuedCalls += 1;
+        isolate.queuedCallBytes += bytes;
+        const serve = async (): Promise<void> => {
+          try {
+            if (isolate.child === child) await this.serve(isolate, child, frame, pending);
+          } finally {
+            if (pending !== undefined && pending.serving > 0) pending.serving -= 1;
+            isolate.queuedCalls -= 1;
+            isolate.queuedCallBytes -= bytes;
+          }
+        };
+        isolate.callTail = isolate.callTail.then(serve, serve);
         return;
+      }
       default: {
         const exhaustive: never = frame;
         throw new Error(`unhandled child frame ${String(exhaustive)}`);
@@ -643,10 +685,8 @@ export class IsolateSupervisor implements IsolateRunner {
     isolate: Isolate,
     child: IsolateChild,
     frame: Extract<IsolateChildFrame, { t: "call" }>,
+    pending: Pending | undefined,
   ): Promise<void> {
-    const separator = frame.id.lastIndexOf(":");
-    const pending =
-      separator === -1 ? undefined : isolate.pending.get(frame.id.slice(0, separator));
     let reply: IsolateHostFrame;
     const migration = isolate.migration;
     try {
@@ -664,7 +704,7 @@ export class IsolateSupervisor implements IsolateRunner {
         }
         migration.calls.add(frame.id);
       }
-      if (pending !== undefined) pending.serving += 1;
+      // `pending.serving` was claimed synchronously when the frame entered the bounded queue.
       let result: unknown;
       if (frame.method === "jobs.ack" || frame.method === "jobs.unfollow") {
         const id = frame.args[0];
@@ -759,8 +799,6 @@ export class IsolateSupervisor implements IsolateRunner {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       reply = { t: "reply", id: frame.id, ok: false, error: message.slice(0, 2048) };
-    } finally {
-      if (pending !== undefined && pending.serving > 0) pending.serving -= 1;
     }
     if (isolate.child === child) child.send(reply);
   }

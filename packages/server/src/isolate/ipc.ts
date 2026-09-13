@@ -3,15 +3,21 @@ import {
   ISOLATE_MAX_FRAME_BYTES,
   PLUGIN_BUNDLE_SERVER_FILE,
   type IsolateChildFrame,
+  type IsolateHostEnvelope,
   type IsolateHostFrame,
 } from "@manifold/protocol";
-import { closeSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { connect, type Socket } from "node:net";
+
 import type { Logger } from "../log.ts";
 import { IsolateLoadError } from "./contract.ts";
 
+/** Bun accepts an inherited socketpair fd here; Node's ambient overload omits that form. */
+const connectDescriptor = connect as unknown as (options: { readonly fd: number }) => Socket;
+
 /**
- * THE WIRE END of one isolate: a child process, the bounded JSON frames it speaks over
- * dedicated pipes, and its two output pipes. This module knows nothing about dispatches,
+ * THE WIRE END of one isolate: a child process, the bounded JSON frames it speaks over a
+ * dedicated socket, and its two output pipes. This module knows nothing about dispatches,
  * budgets or states — it spawns, bounds raw frames before parsing, validates every inbound
  * message against `IsolateChildFrameSchema`, forwards what parses, reports what does not, and
  * says when the process is gone. The supervisor is the only caller.
@@ -92,7 +98,7 @@ async function pumpLines(
 
 /** Splits a byte stream into bounded frame lines before any JSON representation is allocated. */
 async function pumpFrames(
-  stream: ReadableStream<Uint8Array>,
+  stream: AsyncIterable<Uint8Array>,
   onLine: (line: string) => void,
   onBroken: (detail: string) => void,
 ): Promise<void> {
@@ -132,21 +138,25 @@ function correlationOf(message: unknown): string | null {
 }
 
 export class IsolateChild {
-  private readonly process: Bun.Subprocess<"pipe", "pipe", "pipe">;
+  private readonly process: Bun.Subprocess<"ignore", "pipe", "pipe">;
+  private readonly protocol: Socket;
   private outputLines = 0;
+  private readonly unacknowledged: { readonly receipt: string; readonly bytes: number }[] = [];
+  private unacknowledgedBytes = 0;
   /** Resolves when the process has exited AND both output pipes are drained. */
   readonly closed: Promise<void>;
 
   private constructor(
     readonly pluginId: string,
-    process: Bun.Subprocess<"pipe", "pipe", "pipe">,
+    process: Bun.Subprocess<"ignore", "pipe", "pipe">,
     protocolFd: number,
     private readonly logger: Logger,
     events: IsolateChildEvents,
   ) {
     this.process = process;
+    this.protocol = connectDescriptor({ fd: protocolFd });
     const protocol = pumpFrames(
-      Bun.file(protocolFd).stream(),
+      this.protocol,
       (line) => {
         let message: unknown;
         try {
@@ -170,13 +180,16 @@ export class IsolateChild {
         events.malformed(this, detail, null);
         this.kill();
       },
-    ).finally(() => {
-      try {
-        closeSync(protocolFd);
-      } catch {
-        // The stream may have closed the transferred descriptor while the child was exiting.
-      }
-    });
+    )
+      .catch((error: unknown) => {
+        if (this.process.exitCode === null && this.process.signalCode === null) {
+          events.malformed(this, `frame channel failed: ${String(error)}`, null);
+          this.kill();
+        }
+      })
+      .finally(() => {
+        this.protocol.destroy();
+      });
     const pumps = Promise.all([
       protocol,
       pumpLines(process.stdout, (line) => this.output("stdout", line)),
@@ -192,8 +205,8 @@ export class IsolateChild {
    * THE LOADER, whole: the bundle is self-contained (the kit's `pack` inlines the guest
    * runtime), so the child is a bun — the server's own where the server is one — running
    * `server.js` from the extracted bundle directory with a small heap and the minimal
-   * environment above. A dedicated child-to-host descriptor and stdin carry bounded
-   * newline-delimited JSON; stdout and stderr remain plugin logs.
+   * environment above. A dedicated bidirectional socket carries bounded newline-delimited
+   * JSON; stdout and stderr remain plugin logs.
    */
   static spawn(
     pluginId: string,
@@ -206,7 +219,7 @@ export class IsolateChild {
       throw new IsolateLoadError("no bun on PATH to run isolates under this compiled server");
     }
     const spawned = Bun.spawn([interpreter, "--smol", `${dir}/${PLUGIN_BUNDLE_SERVER_FILE}`], {
-      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe", "socket-fd"],
       cwd: dir,
       env: childEnvironment(pluginId),
       maxBuffer: ISOLATE_MAX_FRAME_BYTES,
@@ -223,19 +236,63 @@ export class IsolateChild {
     return this.process.pid;
   }
 
-  /** False once the process has exited: a frame can no longer be delivered. */
+  /**
+   * Enqueues one bounded host frame. A random receipt remains charged until the child proves
+   * that it consumed the envelope, so neither socket buffering nor a peer that merely writes
+   * requests can hide an unread, unbounded reply backlog.
+   */
   send(frame: IsolateHostFrame): boolean {
-    if (this.process.exitCode !== null || this.process.signalCode !== null) return false;
+    if (
+      this.protocol.destroyed ||
+      this.process.exitCode !== null ||
+      this.process.signalCode !== null
+    )
+      return false;
+    const receipt = randomUUID();
+    let payload: string;
     try {
-      const payload = JSON.stringify(frame);
-      if (Buffer.byteLength(payload) > ISOLATE_MAX_FRAME_BYTES) return false;
-      this.process.stdin.write(payload);
-      this.process.stdin.write("\n");
-      this.process.stdin.flush();
-      return true;
+      const envelope: IsolateHostEnvelope = { receipt, frame };
+      payload = JSON.stringify(envelope);
     } catch {
       return false;
     }
+    const frameBytes = Buffer.byteLength(payload);
+    const chargedBytes = frameBytes + 1;
+    if (
+      frameBytes > ISOLATE_MAX_FRAME_BYTES ||
+      this.unacknowledged.length >= 256 ||
+      this.unacknowledgedBytes + chargedBytes > ISOLATE_MAX_FRAME_BYTES * 2
+    ) {
+      this.logger.warn("isolate_protocol_backpressure", {
+        plugin: this.pluginId,
+        unacknowledgedFrames: this.unacknowledged.length,
+        unacknowledgedBytes: this.unacknowledgedBytes,
+      });
+      this.kill();
+      return false;
+    }
+    this.unacknowledged.push({ receipt, bytes: chargedBytes });
+    this.unacknowledgedBytes += chargedBytes;
+    try {
+      this.protocol.write(`${payload}\n`, (error) => {
+        if (error) this.kill();
+      });
+      return true;
+    } catch {
+      const retained = this.unacknowledged.pop();
+      if (retained?.receipt === receipt) this.unacknowledgedBytes -= retained.bytes;
+      this.kill();
+      return false;
+    }
+  }
+
+  /** Accepts only the unpredictable, FIFO receipt at the head of the unread-frame ledger. */
+  received(receipt: string): boolean {
+    const expected = this.unacknowledged[0];
+    if (expected?.receipt !== receipt) return false;
+    this.unacknowledged.shift();
+    this.unacknowledgedBytes -= expected.bytes;
+    return true;
   }
 
   kill(): void {

@@ -1816,9 +1816,11 @@ later install of the same id is a fresh row, on by default and flipped by nobody
 first install.
 
 **Server isolate — supervisor ↔ child (`IsolateHostFrameSchema` / `IsolateChildFrameSchema`).**
-Newline-delimited JSON travels over stdin and a dedicated child descriptor, discriminated on
-`t`. Each raw frame is capped at `ISOLATE_MAX_FRAME_BYTES` (8 MiB) while bytes are still
-streaming, before either process assembles a string or calls `JSON.parse`:
+Newline-delimited JSON travels over a dedicated bidirectional socket, discriminated on `t`.
+Each raw frame is capped at `ISOLATE_MAX_FRAME_BYTES` (8 MiB) while bytes are still streaming,
+before either process assembles a string or calls `JSON.parse`. Every host envelope carries an
+unpredictable FIFO receipt; its frame count and bytes remain charged until the child returns that
+receipt, so merely writing more calls cannot hide an unread reply backlog:
 
 | Direction  | `t`           | Carries                                                                                                                                                                    |
 | ---------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1831,6 +1833,7 @@ streaming, before either process assembles a string or calls `JSON.parse`:
 | child→host | `load_failed` | `error`                                                                                                                                                                    |
 | child→host | `dispatched`  | `id`, `outcome: { ok: true, result, emits: { ref, kind, payload }[] } \| { ok: false, rule: "invalid_args" \| "refused", message }` — the only two rungs a child may grade |
 | child→host | `hooked`      | `id`, `ok`, `error?`                                                                                                                                                       |
+| child→host | `received`    | unpredictable receipt from one consumed host envelope; receipts are FIFO and cannot be guessed from outgoing calls                                                         |
 | child→host | `call`        | `id`, `method: IsolateCtxMethod`, `args: unknown[]`                                                                                                                        |
 
 The ctx slices served over `call` are exactly `ISOLATE_CTX_METHODS`: `storage.get` / `set` /

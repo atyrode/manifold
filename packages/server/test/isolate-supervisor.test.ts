@@ -170,6 +170,7 @@ describe("IsolateSupervisor", () => {
 
     expect(def.manifest).toBe(manifest);
     expect(def.actions.map((action) => action.name).sort()).toEqual([
+      "backpressure",
       "boom",
       "echo",
       "garble",
@@ -344,6 +345,19 @@ describe("IsolateSupervisor", () => {
     );
     expect(malformed?.fields?.detail).toContain("frame exceeds");
   });
+  test("a child that stops reading host replies is killed before its write queue grows unbounded", async () => {
+    const { supervisor, runtime, storage, logger } = fixture({ dispatchDeadlineMs: 2_000 });
+    const { def } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });
+    const { ctx } = actionCtx(storage, runtime);
+    await storage.set("bulk", "x".repeat(64 * 1024));
+
+    const failure = await invoke(def, "backpressure", ctx, {}).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(IsolateDenial);
+    expect((failure as IsolateDenial).message).toContain("isolate exited");
+    await until(() => supervisor.state(PLUGIN_ID) === "stopped");
+    expect(logger.count("isolate_protocol_backpressure")).toBe(1);
+  });
+
   test("a dispatch past the deadline is unavailable and the stuck child is killed", async () => {
     const { supervisor, runtime, storage, logger } = fixture({ dispatchDeadlineMs: 150 });
     const { def } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });

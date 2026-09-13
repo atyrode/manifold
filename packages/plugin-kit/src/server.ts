@@ -11,6 +11,7 @@ import {
   EventPayloadSchema,
   IsolateChildFrameSchema,
   IsolateHostFrameSchema,
+  IsolateHostEnvelopeSchema,
   GuestMigrationDeclarationsSchema,
   MAX_ISOLATE_ACTIONS,
   MAX_ISOLATE_EMITS,
@@ -70,9 +71,13 @@ import {
   type SettledJob,
   type JobEvent,
 } from "../../protocol/src/jobs.ts";
-import { writeSync } from "node:fs";
+import { connect, type Socket } from "node:net";
 import { z } from "zod";
+
 import { HostCallError, IsolateSliceUnavailable, PluginDatabaseError } from "./errors.ts";
+
+/** Bun accepts an inherited socketpair fd here; Node's ambient overload omits that form. */
+const connectDescriptor = connect as unknown as (options: { readonly fd: number }) => Socket;
 
 /**
  * THE SERVER GUEST RUNTIME (ADR 0016 §1, §2).
@@ -426,7 +431,7 @@ export interface ServerPluginDef {
 
 /**
  * The child's end of the framed process channel, as four verbs. Production binds them to a
- * dedicated descriptor and stdin; tests bind them to an in-memory pair.
+ * dedicated bidirectional socket; tests bind them to an in-memory pair.
  */
 export interface ServerGuestTransport {
   send(frame: IsolateChildFrame): void;
@@ -438,7 +443,7 @@ export interface ServerGuestTransport {
 const PLUGIN_PIPE_FD = 3;
 
 /** Reads bounded newline-delimited JSON without ever assembling an oversized frame. */
-function readProcessFrames(listener: (frame: unknown) => void): void {
+function readProcessFrames(socket: Socket, listener: (frame: unknown) => void): void {
   let parts: Uint8Array[] = [];
   let bytes = 0;
   let stopped = false;
@@ -446,7 +451,7 @@ function readProcessFrames(listener: (frame: unknown) => void): void {
     if (stopped) return;
     stopped = true;
     process.stderr.write(`${detail}\n`);
-    process.stdin.pause();
+    socket.pause();
     process.exit(1);
   };
   const append = (part: Uint8Array): boolean => {
@@ -470,7 +475,7 @@ function readProcessFrames(listener: (frame: unknown) => void): void {
       fail("isolate received an invalid JSON frame");
     }
   };
-  process.stdin.on("data", (chunk: Buffer) => {
+  socket.on("data", (chunk: Buffer) => {
     if (stopped) return;
     let start = 0;
     for (let index = 0; index < chunk.byteLength; index += 1) {
@@ -482,25 +487,37 @@ function readProcessFrames(listener: (frame: unknown) => void): void {
     }
     append(chunk.subarray(start));
   });
-  process.stdin.on("end", () => {
+  socket.on("end", () => {
     if (!stopped && bytes > 0) fail("isolate received an unterminated JSON frame");
   });
+  socket.on("error", () => fail("isolate frame channel failed"));
 }
 
-/** The dedicated frame pipes exist only when this module is the spawned plugin entry. */
+/** The dedicated frame socket exists only when this module is the spawned plugin entry. */
 function processTransport(): ServerGuestTransport | null {
   if (process.env.MANIFOLD_PLUGIN_PIPE_FD !== String(PLUGIN_PIPE_FD)) return null;
+  const socket = connectDescriptor({ fd: PLUGIN_PIPE_FD });
+  const send = (frame: IsolateChildFrame): void => {
+    const payload = JSON.stringify(frame);
+    if (Buffer.byteLength(payload) > ISOLATE_MAX_FRAME_BYTES) {
+      process.stderr.write(`isolate frame exceeds ${String(ISOLATE_MAX_FRAME_BYTES)} bytes\n`);
+      process.exit(1);
+    }
+    socket.write(`${payload}\n`);
+  };
   return {
-    send: (frame) => {
-      const payload = JSON.stringify(frame);
-      if (Buffer.byteLength(payload) > ISOLATE_MAX_FRAME_BYTES) {
-        process.stderr.write(`isolate frame exceeds ${String(ISOLATE_MAX_FRAME_BYTES)} bytes\n`);
-        process.exit(1);
-      }
-      writeSync(PLUGIN_PIPE_FD, payload);
-      writeSync(PLUGIN_PIPE_FD, "\n");
-    },
-    onMessage: readProcessFrames,
+    send,
+    onMessage: (listener) =>
+      readProcessFrames(socket, (message) => {
+        const envelope = IsolateHostEnvelopeSchema.safeParse(message);
+        if (!envelope.success) {
+          process.stderr.write("isolate received an invalid host envelope\n");
+          process.exit(1);
+          return;
+        }
+        send({ t: "received", receipt: envelope.data.receipt });
+        listener(envelope.data.frame);
+      }),
     exit: (code) => process.exit(code),
     warn: (line) => {
       process.stderr.write(`${line}\n`);
