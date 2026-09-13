@@ -42,6 +42,12 @@ export interface JobInferenceMetering {
   /** The job request's `limits.inference`; undefined leaves every metered call unbounded. */
   limits: JobInferenceLimits | undefined;
   usage(): JobInferenceUsage;
+  /** Serialize metered calls across all of a job's service proxies so concurrent requests cannot
+   * each pass the same pre-call ceiling snapshot. The caller must release in `finally`. */
+  enter(): Promise<() => void>;
+  /** An unreadable successful usage response latches the job's metered lane closed. */
+  valid(): boolean;
+  onInvalidUsage(): void;
   onInferenceCall(call: JobInferenceCallReport): void;
   onInferenceCeiling(refusal: JobInferenceCeilingReport): void;
 }
@@ -739,6 +745,7 @@ export async function createJobServiceProxy(
     let requestModel = "";
     let meteredStatus = 0;
     let startedAt = 0;
+    let releaseMetering: (() => void) | undefined;
     try {
       const authority = Object.freeze({
         serviceId: entry.policy.serviceId,
@@ -767,6 +774,9 @@ export async function createJobServiceProxy(
         );
         requestModel = parsed.model;
         forward = parsed.forward;
+        releaseMetering = await metering.enter();
+        controller.signal.throwIfAborted();
+        if (!metering.valid()) throw new ProxyFailure(502, "service_response_invalid");
         const reached = { ...metering.usage() };
         const ceiling = reachedCeiling(reached, metering.limits);
         if (ceiling) {
@@ -976,20 +986,26 @@ export async function createJobServiceProxy(
       active.delete(controller);
       entry.active--;
       // Reported last: a call that reached the provider is spent whatever became of its bytes.
-      if (metering && meteredStatus) {
-        const counted = meteredStatus >= 200 && meteredStatus < 300 ? meter?.usage : undefined;
-        const model = counted?.model ?? requestModel;
-        metering.onInferenceCall({
-          serviceId: entry.policy.serviceId,
-          operationId,
-          model,
-          inputTokens: counted?.inputTokens ?? 0,
-          outputTokens: counted?.outputTokens ?? 0,
-          cachedInputTokens: counted?.cachedInputTokens ?? 0,
-          costMicros: counted ? callCost(priceOf(entry.policy, model), counted) : 0,
-          elapsedMs: Date.now() - startedAt,
-          status: meteredStatus,
-        });
+      // Release even if reporting fails, otherwise every later metered call would deadlock.
+      try {
+        if (metering && meteredStatus) {
+          const counted = meteredStatus >= 200 && meteredStatus < 300 ? meter?.usage : undefined;
+          const model = counted?.model ?? requestModel;
+          if (!counted && meteredStatus >= 200 && meteredStatus < 300) metering.onInvalidUsage();
+          metering.onInferenceCall({
+            serviceId: entry.policy.serviceId,
+            operationId,
+            model,
+            inputTokens: counted?.inputTokens ?? 0,
+            outputTokens: counted?.outputTokens ?? 0,
+            cachedInputTokens: counted?.cachedInputTokens ?? 0,
+            costMicros: counted ? callCost(priceOf(entry.policy, model), counted) : 0,
+            elapsedMs: Date.now() - startedAt,
+            status: meteredStatus,
+          });
+        }
+      } finally {
+        releaseMetering?.();
       }
     }
   }

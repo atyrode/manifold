@@ -153,6 +153,12 @@ interface OwnedJob {
   /** Totals across the job's metered calls, or null when it bound no metered operation.
    * They belong to the job, not to a proxy, and settle with its result. */
   inferenceUsage: JobInferenceUsage | null;
+  /** False after a successful provider response omits valid usage; later calls stay refused
+   * rather than evading token and cost ceilings as zero-priced calls. */
+  inferenceValid: boolean;
+  /** Tail of the job-wide metered-call queue. Hard token and cost ceilings require one
+   * authoritative pre-call snapshot; independent service proxies share this queue. */
+  inferenceTail: Promise<void>;
 }
 
 interface RuntimeService {
@@ -1038,6 +1044,11 @@ export class MachineJobOwner {
               inference: {
                 limits: job.request.limits.inference,
                 usage: () => totals,
+                enter: () => this.enterInference(job),
+                valid: () => job.inferenceValid,
+                onInvalidUsage: () => {
+                  job.inferenceValid = false;
+                },
                 onInferenceCall: (call: JobInferenceCallReport) => this.meteredCall(job, call),
                 onInferenceCeiling: (refusal: JobInferenceCeilingReport) =>
                   this.meteredCeiling(job, refusal),
@@ -1047,6 +1058,14 @@ export class MachineJobOwner {
       });
       job.serviceProxies.set(serviceId, proxy);
     }
+  }
+
+  private async enterInference(job: OwnedJob): Promise<() => void> {
+    const turn = Promise.withResolvers<void>();
+    const previous = job.inferenceTail;
+    job.inferenceTail = turn.promise;
+    await previous;
+    return turn.resolve;
   }
 
   /** One metered call, added to the job's totals and told to the hub with the same owner
@@ -2613,6 +2632,8 @@ export class MachineJobOwner {
       runtimeServices: new Map(),
       serviceRuntime: undefined,
       inferenceUsage: null,
+      inferenceValid: true,
+      inferenceTail: Promise.resolve(),
     };
     return job;
   }

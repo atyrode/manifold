@@ -1807,20 +1807,24 @@ ceiling, and a request that names a higher one — or names some of a declared p
 rest — refuses `limit_exceeded`. A ceiling can be lowered, never dropped. An operation that
 declares none still accepts a caller's own.
 
-The machine owner enforces per call, before forwarding, and refuses with the provider's own wire
-shape so an OpenAI-compatible client sees an ordinary error:
+The machine owner serializes metered calls across every service proxy in the job, so concurrent
+requests cannot each pass the same ceiling snapshot. It enforces before forwarding and refuses with
+the provider's own wire shape so an OpenAI-compatible client sees an ordinary error:
 
 ```
 HTTP 429  {"error":{"code":"service_ceiling_exceeded","ceiling":"calls"|"inputTokens"|"outputTokens"|"costMicros"}}
 HTTP 422  {"error":{"code":"service_price_unknown","model":"<model id>"}}
+HTTP 502  {"error":"service_response_invalid"}
 ```
 
 There is no `Retry-After`: the ceiling is the job's, and waiting does not raise it. `429` is the
 answer when the job's totals have already reached a ceiling; `422` is the answer when a cost
 ceiling is set and the model a call names has no price (no `models[model]`, no `default`). With no
-cost ceiling and no price a call proceeds and costs zero. A refusal is not a call and does not
-count against `calls`. A stream is never cut mid-answer, so the overrun after the last permitted
-call is bounded by one response's `maxResponseBytes`.
+cost ceiling and no price a call proceeds and costs zero. An unreadable successful usage response
+terminates that response, counts as one call, and makes every later metered call in the job return
+`service_response_invalid`; it cannot become a sequence of zero-cost calls. A refusal is not a call
+and does not count against `calls`. A stream is never cut for crossing a budget, so the overrun
+after the last permitted call is bounded by one response's `maxResponseBytes`.
 
 Every metered call appends one journal frame,
 `inference_call { serviceId, operationId, model, inputTokens, outputTokens, cachedInputTokens,

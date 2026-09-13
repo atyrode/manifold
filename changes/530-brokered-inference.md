@@ -14,10 +14,13 @@ of the answer. The policy carries `prices` per model in integer micro-dollars, s
 the owner's number pinned by the policy's revision rather than an estimate; a job request carries
 `limits.inference` in calls, input tokens, output tokens or micro-dollars, and an operation that
 declares a ceiling keeps it when a caller names none and refuses a caller that tries to raise it.
-The owner enforces before forwarding — a call that would pass a ceiling is refused with HTTP 429 and
-`service_ceiling_exceeded` naming the ceiling, and a cost ceiling over a model with no price is
-refused with HTTP 422 and `service_price_unknown` — so a stream is never cut mid-answer and a
-truncated answer is never produced by a budget. Every metered call appends `inference_call` to the
+The owner serializes a job's metered calls so concurrent requests cannot pass the same ceiling
+snapshot, then enforces before forwarding — a call that would pass a ceiling is refused with HTTP
+429 and `service_ceiling_exceeded` naming the ceiling, and a cost ceiling over a model with no price
+is refused with HTTP 422 and `service_price_unknown`. Missing usage terminates that response and
+closes the job's metered lane rather than allowing zero-cost calls. A stream is never cut for
+crossing a budget, so a truncated answer is never produced by one. Every metered call appends
+`inference_call` to the
 job's journal with its model, tokens, cost, elapsed time and status, every refusal appends
 `inference_ceiling` with the ceiling that refused, and the settled job's `usage.inference` carries
 the totals, so what a run spent is a fact the hub recorded rather than a number the run reported

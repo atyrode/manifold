@@ -3092,13 +3092,16 @@ provider handling and postconditions belong to plugins, never the common floor.
   `meter: { kind: "openai-usage" }` is the only thing that reads a body, and it reads exactly the
   provider's own `usage` object and the `model` it names — from a JSON response or the final usage
   frame of a stream the owner amended with `stream_options.include_usage` — never a prompt, never a
-  byte of the answer; unreadable usage on a 2xx is `service_response_invalid`, not a free call.
+  byte of the answer; unreadable usage on a 2xx is `service_response_invalid`, counts as a call and
+  latches that job's metered lane closed so missing usage cannot evade token or cost ceilings.
   Prices are policy content in integer micro-dollars, pinned by the policy's `revision`; ceilings
   are the job's `limits.inference`, and an operation's declared ceiling can be lowered by a request
-  but never dropped (`limit_exceeded`). The owner enforces before a call and never mid-stream: a
-  call that would pass a ceiling is refused `service_ceiling_exceeded` (HTTP 429, no `Retry-After`)
-  and a cost ceiling over an unpriced model is refused `service_price_unknown` (HTTP 422), while a
-  call already in flight is relayed to its end. Refusals are not calls. Each call appends
+  but never dropped (`limit_exceeded`). The owner serializes metered calls across every service
+  proxy in one job so each pre-call check sees one authoritative total. It never cuts a call
+  mid-stream: a call that would pass a ceiling is refused `service_ceiling_exceeded` (HTTP 429, no
+  `Retry-After`) and a cost ceiling over an unpriced model is refused `service_price_unknown`
+  (HTTP 422), while a call already in flight is relayed to its end. Refusals are not calls. Each
+  call appends
   `inference_call` and each refusal `inference_ceiling` to the job's journal, admitted by the same
   owner facts as a `state` event and only while the job is `started`; the settled record's
   `usage.inference` carries the totals. Spend is read from those records, never from what the

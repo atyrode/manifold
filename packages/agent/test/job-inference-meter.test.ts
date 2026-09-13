@@ -146,9 +146,22 @@ function ledger(limits?: JobInferenceLimits) {
   };
   const calls: JobInferenceCallReport[] = [];
   const ceilings: JobInferenceCeilingReport[] = [];
+  let tail = Promise.resolve();
+  let valid = true;
   const metering: JobInferenceMetering = {
     limits,
     usage: () => usage,
+    async enter() {
+      const turn = Promise.withResolvers<void>();
+      const previous = tail;
+      tail = turn.promise;
+      await previous;
+      return turn.resolve;
+    },
+    valid: () => valid,
+    onInvalidUsage() {
+      valid = false;
+    },
     onInferenceCall(call) {
       calls.push(call);
       usage.calls++;
@@ -406,6 +419,43 @@ test("the call that reaches the calls ceiling is refused before the provider is 
   }
 });
 
+test("concurrent calls share one ceiling snapshot and only one reaches the provider", async () => {
+  const firstAtProvider = Promise.withResolvers<void>();
+  const releaseProvider = Promise.withResolvers<void>();
+  const source = await upstream(async (_request, response) => {
+    firstAtProvider.resolve();
+    await releaseProvider.promise;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"model":"m-1","usage":{"prompt_tokens":2,"completion_tokens":3}}');
+  });
+  const owner = ledger({ calls: 1 });
+  const originalEnter = owner.metering.enter.bind(owner.metering);
+  const secondAtGate = Promise.withResolvers<void>();
+  let entries = 0;
+  owner.metering.enter = async () => {
+    entries += 1;
+    if (entries === 2) secondAtGate.resolve();
+    return originalEnter();
+  };
+  const proxy = await proxyFor(source.origin, owner.metering);
+  try {
+    const first = send(proxy);
+    await firstAtProvider.promise;
+    const second = send(proxy);
+    await secondAtGate.promise;
+    releaseProvider.resolve();
+    const responses = await Promise.all([first, second]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 429]);
+    expect(source.calls).toBe(1);
+    expect(owner.calls).toHaveLength(1);
+    expect(owner.ceilings).toHaveLength(1);
+  } finally {
+    releaseProvider.resolve();
+    await proxy.close();
+    await source.close();
+  }
+});
+
 test("the call that crosses a cost ceiling completes in full, and it is the last one", async () => {
   const answer = '{"model":"m-1","usage":{"prompt_tokens":1000,"completion_tokens":1000}}';
   const source = await upstream((_request, response) => {
@@ -477,6 +527,11 @@ test("a 2xx whose usage cannot be read ends the caller's stream and is still a c
       costMicros: 0,
       status: 200,
     });
+    const refused = await send(proxy);
+    expect(refused.status).toBe(502);
+    expect(JSON.parse(refused.body)).toEqual({ error: "service_response_invalid" });
+    expect(source.calls).toBe(1);
+    expect(owner.calls).toHaveLength(1);
   } finally {
     await proxy.close();
     await source.close();
