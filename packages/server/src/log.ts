@@ -1,4 +1,8 @@
-import { AGENT_JUSTIFICATION_MAX_LENGTH, type LogEvent, type RuntimeDeps } from "@manifold/protocol";
+import {
+  AGENT_JUSTIFICATION_MAX_LENGTH,
+  type LogEvent,
+  type RuntimeDeps,
+} from "@manifold/protocol";
 
 /** Allowed severity labels for the server's JSONL operational stream. */
 export type LogLevel = "info" | "warn" | "error";
@@ -51,10 +55,15 @@ export function normalizeAgentDeclaration(value: string): string | null {
   if (normalized.length === 0 || normalized.length > AGENT_JUSTIFICATION_MAX_LENGTH) return null;
   // Detect on a skeleton, not the attributed output. Decomposing the NFKC text also
   // exposes combining marks that normalization composed into credential keywords.
-  const detection = normalized.normalize("NFKD").replace(/[\p{Default_Ignorable_Code_Point}\p{M}]/gu, "");
+  const detection = normalized
+    .normalize("NFKD")
+    .replace(/[\p{Default_Ignorable_Code_Point}\p{M}]/gu, "");
   // Canonical workspace ids are references, not bearer material. Only the entropy scan
   // ignores them; a credential assignment or Bearer prefix still rejects the whole claim.
-  const entropy = detection.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<id>");
+  const entropy = detection.replace(
+    /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+    "<id>",
+  );
   if (
     /\b[\w.-]*(?:token|key|password|passwd|passphrase|secret|credential|authorization|auth)[\w.-]*["']?\s*(?:[:=]|\bis\b)/i.test(
       detection,

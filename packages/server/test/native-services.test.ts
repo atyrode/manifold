@@ -832,8 +832,7 @@ async function orchestratorHost(f: {
             rejectDispatch(error);
             receive({ t: "admitted", id: frame.id, allowed: false } satisfies IsolateHostFrame);
           }
-        }
-        else if (frame.t === "call") {
+        } else if (frame.t === "call") {
           if (!active) throw new Error("host call outside dispatch");
           void serveCtxCall(frame.method, frame.args, { kind: "dispatch", ctx: active }).then(
             (result) =>

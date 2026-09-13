@@ -14,7 +14,11 @@ import {
 } from "@manifold/protocol";
 import { attachServerGuest, defineServerAction } from "@manifold/plugin-kit/server";
 import { z } from "zod";
-import { buildIsolateDef, serveCtxCall, type IsolateDispatchOutcome } from "../src/isolate/proxy-def.ts";
+import {
+  buildIsolateDef,
+  serveCtxCall,
+  type IsolateDispatchOutcome,
+} from "../src/isolate/proxy-def.ts";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { JobService } from "../src/job-service.ts";
 import { silentLogger } from "../src/log.ts";
@@ -55,6 +59,7 @@ const machine: MachineHalf = {
       outputs: [],
       network: "none",
       limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+      stdin: false,
     },
   },
   locations: {},
@@ -94,7 +99,14 @@ async function fixture(settingsPlugins: readonly ServerPluginDef[] = []) {
   const clock = new FakeClock(runtime);
   const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const broker = new TerminalBroker(
-    store, auth, rooms, runtime, clock, silentLogger, () => "http://localhost:7777", testTileTrees,
+    store,
+    auth,
+    rooms,
+    runtime,
+    clock,
+    silentLogger,
+    () => "http://localhost:7777",
+    testTileTrees,
   );
   const host = await testPluginHost(store, auth, rooms, broker, runtime, {
     settingsPlugins: [machinePlugin, ...settingsPlugins],
@@ -103,26 +115,41 @@ async function fixture(settingsPlugins: readonly ServerPluginDef[] = []) {
   host.setJobs(jobs);
   const machineId = auth.enrollMachine("admission machine", owner).machine.id;
   jobs.install(owner, {
-    machineId, pluginId, installationRevision: "one", artifactSha256: artifact, machine,
+    machineId,
+    pluginId,
+    installationRevision: "one",
+    artifactSha256: artifact,
+    machine,
   });
   const newRun = (sponsor: AuthContext = owner, overrides: Partial<CreateAgentRunRequest> = {}) => {
-    const created = auth.createAgentRun(CreateAgentRunRequestSchema.parse({
-      ...child,
-      caps: ["agents:delegate", "containers:read", "machines:run", "jobs:read"],
-      lifetimeMs: 600_000,
-      ...overrides,
-    }), sponsor);
+    const created = auth.createAgentRun(
+      CreateAgentRunRequestSchema.parse({
+        ...child,
+        caps: ["agents:delegate", "containers:read", "machines:run", "jobs:read"],
+        lifetimeMs: 600_000,
+        ...overrides,
+      }),
+      sponsor,
+    );
     const actor = auth.authenticate(created.credential.token);
     const challenge = auth.agentPolicyChallenge(actor);
-    auth.acknowledgeAgentPolicy({
-      revision: challenge.revision,
-      acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
-    }, actor);
+    auth.acknowledgeAgentPolicy(
+      {
+        revision: challenge.revision,
+        acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
+      },
+      actor,
+    );
     return { actor, created };
   };
   const { actor, created } = newRun();
   const request = {
-    jobId: "admission-job", machineId, pluginId, operationId, input: { value: "safe" }, outputs: [],
+    jobId: "admission-job",
+    machineId,
+    pluginId,
+    operationId,
+    input: { value: "safe" },
+    outputs: [],
   };
   const schedule = {
     ...request,
@@ -134,16 +161,36 @@ async function fixture(settingsPlugins: readonly ServerPluginDef[] = []) {
     expiresAt: 120_000,
     offlinePolicy: "skip",
   };
-  const consent = (cap: "machines:run" | "jobs:read", enabled = true) => jobs.consent(owner, {
-    machineId, pluginId, installationRevision: "one", artifactSha256: artifact,
-    node: formatManifoldUri({ kind: "operation", machineId, operationId }), cap, enabled,
-  });
+  const consent = (cap: "machines:run" | "jobs:read", enabled = true) =>
+    jobs.consent(owner, {
+      machineId,
+      pluginId,
+      installationRevision: "one",
+      artifactSha256: artifact,
+      node: formatManifoldUri({ kind: "operation", machineId, operationId }),
+      cap,
+      enabled,
+    });
   const trace = () => {
     const row = store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0];
     if (row === undefined) throw new Error("dispatch left no trace");
     return row;
   };
-  return { runtime, store, auth, owner, host, jobs, actor, created, newRun, request, schedule, consent, trace };
+  return {
+    runtime,
+    store,
+    auth,
+    owner,
+    host,
+    jobs,
+    actor,
+    created,
+    newRun,
+    request,
+    schedule,
+    consent,
+    trace,
+  };
 }
 
 describe("declarations follow real first-party admission", () => {
@@ -151,23 +198,37 @@ describe("declarations follow real first-party admission", () => {
     const f = await fixture();
     const scoped = f.newRun(f.owner, { target: "manifold://container/inside" });
     expect(await f.host.dispatch(scoped.actor, "core.access.createAgentRun", child)).toEqual({
-      ok: false, denial: { rule: "refused", message: "cannot widen container scope" },
+      ok: false,
+      denial: { rule: "refused", message: "cannot widen container scope" },
     });
-    expect(await f.host.dispatch(f.actor, "core.access.createAgentRun", {
-      ...child, caps: ["terminals:write"],
-    })).toEqual({
+    expect(
+      await f.host.dispatch(f.actor, "core.access.createAgentRun", {
+        ...child,
+        caps: ["terminals:write"],
+      }),
+    ).toEqual({
       ok: false,
       denial: { rule: "refused", message: "cannot delegate capability terminals:write at target" },
     });
-    expect(f.store.listAgentRunTree(f.created.run.id).map((run) => run.id)).toEqual([f.created.run.id]);
+    expect(f.store.listAgentRunTree(f.created.run.id).map((run) => run.id)).toEqual([
+      f.created.run.id,
+    ]);
   });
 
   test("renewal checks the actual sponsor before missing or invalid declarations", async () => {
     const f = await fixture();
     for (const options of [undefined, { agentJustification: " " }]) {
-      expect(await f.host.dispatch(f.actor, "core.access.renewAgentRun", {
-        runId: f.created.run.id,
-      }, null, options)).toEqual({
+      expect(
+        await f.host.dispatch(
+          f.actor,
+          "core.access.renewAgentRun",
+          {
+            runId: f.created.run.id,
+          },
+          null,
+          options,
+        ),
+      ).toEqual({
         ok: false,
         denial: { rule: "refused", message: "only the current direct sponsor may renew this run" },
       });
@@ -179,18 +240,26 @@ describe("declarations follow real first-party admission", () => {
   test("renewal rechecks the sponsor's authority at the existing run target", async () => {
     const f = await fixture();
     const sponsored = f.newRun(f.actor, {
-      target: "manifold://container/inside", caps: ["containers:read"], lifetimeMs: 60_000,
-    });
-    f.auth.grant({
-      principal: { kind: "principal", id: f.actor.principal.id },
-      node: sponsored.created.run.target,
+      target: "manifold://container/inside",
       caps: ["containers:read"],
-      effect: "deny",
-      reach: "subtree",
-    }, f.owner);
-    expect(await f.host.dispatch(f.actor, "core.access.renewAgentRun", {
-      runId: sponsored.created.run.id, lifetimeMs: 120_000,
-    })).toEqual({
+      lifetimeMs: 60_000,
+    });
+    f.auth.grant(
+      {
+        principal: { kind: "principal", id: f.actor.principal.id },
+        node: sponsored.created.run.target,
+        caps: ["containers:read"],
+        effect: "deny",
+        reach: "subtree",
+      },
+      f.owner,
+    );
+    expect(
+      await f.host.dispatch(f.actor, "core.access.renewAgentRun", {
+        runId: sponsored.created.run.id,
+        lifetimeMs: 120_000,
+      }),
+    ).toEqual({
       ok: false,
       denial: { rule: "refused", message: "sponsor no longer holds the run authority ceiling" },
     });
@@ -200,25 +269,46 @@ describe("declarations follow real first-party admission", () => {
   test("admitted create and renewal reject declarations before creating or replacing credentials", async () => {
     const f = await fixture();
     expect(await f.host.dispatch(f.actor, "core.access.createAgentRun", child)).toMatchObject({
-      ok: false, denial: { rule: "justification_required" },
+      ok: false,
+      denial: { rule: "justification_required" },
     });
     expect(f.trace().outcome).toBe("justification_required");
-    expect(f.store.listAgentRunTree(f.created.run.id).map((run) => run.id)).toEqual([f.created.run.id]);
+    expect(f.store.listAgentRunTree(f.created.run.id).map((run) => run.id)).toEqual([
+      f.created.run.id,
+    ]);
     const sponsored = f.newRun(f.actor, { caps: ["containers:read"], lifetimeMs: 60_000 });
     const before = f.store.getAgentRun(sponsored.created.run.id);
-    expect(await f.host.dispatch(f.actor, "core.access.renewAgentRun", {
-      runId: sponsored.created.run.id, lifetimeMs: 120_000,
-    }, null, { agentJustification: " " })).toMatchObject({
-      ok: false, denial: { rule: "invalid_justification" },
+    expect(
+      await f.host.dispatch(
+        f.actor,
+        "core.access.renewAgentRun",
+        {
+          runId: sponsored.created.run.id,
+          lifetimeMs: 120_000,
+        },
+        null,
+        { agentJustification: " " },
+      ),
+    ).toMatchObject({
+      ok: false,
+      denial: { rule: "invalid_justification" },
     });
     expect(f.trace().outcome).toBe("invalid_justification");
     expect(f.store.getAgentRun(sponsored.created.run.id)).toEqual(before);
-    expect(f.auth.authenticate(sponsored.created.credential.token).principal.id).toBe(sponsored.actor.principal.id);
-    const renewed = RenewAgentRunResultSchema.parse(value(await f.host.dispatch(
-      f.actor, "core.access.renewAgentRun",
-      { runId: sponsored.created.run.id, lifetimeMs: 120_000 }, null,
-      { agentJustification: "Renew the bounded reading task." },
-    )));
+    expect(f.auth.authenticate(sponsored.created.credential.token).principal.id).toBe(
+      sponsored.actor.principal.id,
+    );
+    const renewed = RenewAgentRunResultSchema.parse(
+      value(
+        await f.host.dispatch(
+          f.actor,
+          "core.access.renewAgentRun",
+          { runId: sponsored.created.run.id, lifetimeMs: 120_000 },
+          null,
+          { agentJustification: "Renew the bounded reading task." },
+        ),
+      ),
+    );
     expect(renewed.run.renewals).toBe(1);
     expect(renewed.run.expiresAt).toBe(120_000);
   });
@@ -230,7 +320,8 @@ describe("declarations follow real first-party admission", () => {
       { ...f.request, input: { value: 42 } },
     ]) {
       expect(await f.host.dispatch(f.actor, "engine.jobs.execute", args)).toEqual({
-        ok: false, denial: { rule: "refused", message: "forbidden: job request refused" },
+        ok: false,
+        denial: { rule: "refused", message: "forbidden: job request refused" },
       });
       expect(f.trace().outcome).toBe("refused");
     }
@@ -239,13 +330,14 @@ describe("declarations follow real first-party admission", () => {
 
   test("native actual admission denial is not replaced by a declaration refusal", async () => {
     const f = await fixture();
-    const refused = PublicJobSchema.parse(value(await f.host.dispatch(
-      f.actor, "engine.jobs.execute", f.request,
-    )));
+    const refused = PublicJobSchema.parse(
+      value(await f.host.dispatch(f.actor, "engine.jobs.execute", f.request)),
+    );
     expect(refused.state).toBe("refused");
     expect(f.jobs.jobs.get(f.request.jobId)?.state).toBe("refused");
     expect(await f.host.dispatch(f.actor, "engine.jobs.schedule", f.schedule)).toEqual({
-      ok: false, denial: { rule: "refused", message: "forbidden: job request refused" },
+      ok: false,
+      denial: { rule: "refused", message: "forbidden: job request refused" },
     });
     expect(f.jobs.schedules(f.owner)).toEqual([]);
   });
@@ -253,47 +345,69 @@ describe("declarations follow real first-party admission", () => {
   test("admitted native effects reject claims before jobs, decisions or schedules are written", async () => {
     const f = await fixture();
     f.consent("machines:run");
-    const decisions = f.store.db.query<{ count: number }, []>(
-      "SELECT COUNT(*) AS count FROM machine_job_decisions",
-    ).get()?.count;
-    const revisions = f.store.db.query<{ count: number }, []>(
-      "SELECT COUNT(*) AS count FROM machine_job_revisions",
-    ).get()?.count;
+    const decisions = f.store.db
+      .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM machine_job_decisions")
+      .get()?.count;
+    const revisions = f.store.db
+      .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM machine_job_revisions")
+      .get()?.count;
     for (const [door, args] of [
-      ["engine.jobs.execute", f.request], ["engine.jobs.schedule", f.schedule],
+      ["engine.jobs.execute", f.request],
+      ["engine.jobs.schedule", f.schedule],
     ] as const) {
       expect(await f.host.dispatch(f.actor, door, args)).toMatchObject({
-        ok: false, denial: { rule: "justification_required" },
+        ok: false,
+        denial: { rule: "justification_required" },
       });
       expect(f.trace()).toMatchObject({ door, outcome: "justification_required" });
-      expect(await f.host.dispatch(f.actor, door, args, null, { agentJustification: " " })).toMatchObject({
-        ok: false, denial: { rule: "invalid_justification" },
+      expect(
+        await f.host.dispatch(f.actor, door, args, null, { agentJustification: " " }),
+      ).toMatchObject({
+        ok: false,
+        denial: { rule: "invalid_justification" },
       });
     }
     expect(f.jobs.jobs.get(f.request.jobId)).toBeNull();
     expect(f.jobs.schedules(f.owner)).toEqual([]);
-    expect(f.store.db.query<{ count: number }, []>(
-      "SELECT COUNT(*) AS count FROM machine_job_decisions",
-    ).get()?.count).toBe(decisions);
-    expect(f.store.db.query<{ count: number }, []>(
-      "SELECT COUNT(*) AS count FROM machine_job_revisions",
-    ).get()?.count).toBe(revisions);
+    expect(
+      f.store.db
+        .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM machine_job_decisions")
+        .get()?.count,
+    ).toBe(decisions);
+    expect(
+      f.store.db
+        .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM machine_job_revisions")
+        .get()?.count,
+    ).toBe(revisions);
   });
 
   test("schedule expiry and immutable revision refusers still precede declaration enforcement", async () => {
     const f = await fixture();
     f.consent("machines:run");
-    await expect(f.host.dispatch(f.actor, "engine.jobs.schedule", {
-      ...f.schedule, firstNominalAt: f.schedule.expiresAt,
-    })).rejects.toThrow("schedule-expiry-ceiling");
+    f.consent("jobs:read");
+    await expect(
+      f.host.dispatch(f.actor, "engine.jobs.schedule", {
+        ...f.schedule,
+        firstNominalAt: f.schedule.expiresAt,
+      }),
+    ).rejects.toThrow("schedule-expiry-ceiling");
     expect(f.trace().outcome).toBe("failed");
-    value(await f.host.dispatch(f.actor, "engine.jobs.schedule", f.schedule, null, {
-      agentJustification: "Schedule bounded task work.",
-    }));
-    await expect(f.host.dispatch(f.actor, "engine.jobs.schedule", {
-      ...f.schedule, intervalMs: 90_000,
-    })).rejects.toThrow("schedule-revision-conflict");
-    expect(f.jobs.schedules(f.owner)[0]?.intervalMs).toBe(60_000);
+    value(
+      await f.host.dispatch(f.actor, "engine.jobs.schedule", f.schedule, null, {
+        agentJustification: "Schedule bounded task work.",
+      }),
+    );
+    expect(f.jobs.schedules(f.actor)[0]).toMatchObject({
+      scheduleId: f.schedule.scheduleId,
+      intervalMs: 60_000,
+    });
+    await expect(
+      f.host.dispatch(f.actor, "engine.jobs.schedule", {
+        ...f.schedule,
+        intervalMs: 90_000,
+      }),
+    ).rejects.toThrow("schedule-revision-conflict");
+    expect(f.jobs.schedules(f.actor)[0]?.intervalMs).toBe(60_000);
   });
 
   test("an authorized existing native job still requires the selected action declaration", async () => {
@@ -301,7 +415,8 @@ describe("declarations follow real first-party admission", () => {
     value(await f.host.dispatch(f.actor, "engine.jobs.execute", f.request));
     f.consent("jobs:read");
     expect(await f.host.dispatch(f.actor, "engine.jobs.execute", f.request)).toMatchObject({
-      ok: false, denial: { rule: "justification_required" },
+      ok: false,
+      denial: { rule: "justification_required" },
     });
     expect(f.jobs.jobs.get(f.request.jobId)?.state).toBe("refused");
   });
@@ -325,84 +440,127 @@ async function transformingGuest() {
     requirements: [{ cap: "containers:read", target: ["node"] }],
     agentJustification: "required",
     input: z.strictObject({
-      value: z.string().refine((text) => {
-        counts.refinements++;
-        return /^\d+$/.test(text);
-      }).transform((text) => {
-        counts.transforms++;
-        return BigInt(text) + 1n;
-      }),
+      value: z
+        .string()
+        .refine((text) => {
+          counts.refinements++;
+          return /^\d+$/.test(text);
+        })
+        .transform((text) => {
+          counts.transforms++;
+          return BigInt(text) + 1n;
+        }),
       node: z.string().transform((containerId) => ({ kind: "container" as const, containerId })),
     }),
     result: z.strictObject({ value: z.string() }),
   });
-  let receive: (frame: unknown) => void = () => { throw new Error("guest not attached"); };
+  let receive: (frame: unknown) => void = () => {
+    throw new Error("guest not attached");
+  };
   const loaded = Promise.withResolvers<Extract<IsolateChildFrame, { t: "loaded" }>>();
-  const pending = new Map<string, {
-    ctx: ActionCtx;
-    admitted: boolean;
-    resolve(value: IsolateDispatchOutcome): void;
-    reject(error: unknown): void;
-  }>();
-  attachServerGuest({
-    manifest,
-    actions: [action],
-    handlers: {
-      write: async (ctx, args: z.output<typeof action.input>) => {
-        counts.effects++;
-        await ctx.storage.set("last", String(args.value));
-        return { value: String(args.value) };
+  const pending = new Map<
+    string,
+    {
+      ctx: ActionCtx;
+      admitted: boolean;
+      resolve(value: IsolateDispatchOutcome): void;
+      reject(error: unknown): void;
+    }
+  >();
+  attachServerGuest(
+    {
+      manifest,
+      actions: [action],
+      handlers: {
+        write: async (ctx, args: z.output<typeof action.input>) => {
+          counts.effects++;
+          await ctx.storage.set("last", String(args.value));
+          return { value: String(args.value) };
+        },
       },
     },
-  }, {
-    onMessage: (listener) => { receive = listener; },
-    exit: () => { throw new Error("unexpected guest exit"); },
-    warn: () => { throw new Error("unexpected guest warning"); },
-    send: (frame) => {
-      if (frame.t === "loaded") loaded.resolve(frame);
-      else if (frame.t === "load_failed") loaded.reject(new Error(frame.error));
-      else if (frame.t === "prepared") {
-        const dispatch = pending.get(frame.id);
-        if (dispatch === undefined) throw new Error("no prepared dispatch");
-        try {
-          if (dispatch.ctx.admitPrepared === undefined) throw new Error("no admission continuation");
-          dispatch.ctx.admitPrepared(frame.targets);
-          dispatch.admitted = true;
-          receive({ t: "admitted", id: frame.id, allowed: true } satisfies IsolateHostFrame);
-        } catch (error) {
-          dispatch.reject(error);
-          receive({ t: "admitted", id: frame.id, allowed: false } satisfies IsolateHostFrame);
+    {
+      onMessage: (listener) => {
+        receive = listener;
+      },
+      exit: () => {
+        throw new Error("unexpected guest exit");
+      },
+      warn: () => {
+        throw new Error("unexpected guest warning");
+      },
+      send: (frame) => {
+        if (frame.t === "loaded") loaded.resolve(frame);
+        else if (frame.t === "load_failed") loaded.reject(new Error(frame.error));
+        else if (frame.t === "prepared") {
+          const dispatch = pending.get(frame.id);
+          if (dispatch === undefined) throw new Error("no prepared dispatch");
+          try {
+            if (dispatch.ctx.admitPrepared === undefined)
+              throw new Error("no admission continuation");
+            dispatch.ctx.admitPrepared(frame.targets);
+            dispatch.admitted = true;
+            receive({ t: "admitted", id: frame.id, allowed: true } satisfies IsolateHostFrame);
+          } catch (error) {
+            dispatch.reject(error);
+            receive({ t: "admitted", id: frame.id, allowed: false } satisfies IsolateHostFrame);
+          }
+        } else if (frame.t === "dispatched") {
+          pending.get(frame.id)?.resolve(frame.outcome);
+        } else if (frame.t === "call") {
+          const dispatch = pending.get(frame.id.slice(0, frame.id.lastIndexOf(":")));
+          if (dispatch?.admitted !== true) throw new Error("effect attempted before admission");
+          void serveCtxCall(frame.method, frame.args, { kind: "dispatch", ctx: dispatch.ctx }).then(
+            (result) => receive({ t: "reply", id: frame.id, ok: true, result }),
+            (error: unknown) => dispatch.reject(error),
+          );
         }
-      } else if (frame.t === "dispatched") {
-        pending.get(frame.id)?.resolve(frame.outcome);
-      } else if (frame.t === "call") {
-        const dispatch = pending.get(frame.id.slice(0, frame.id.lastIndexOf(":")));
-        if (dispatch?.admitted !== true) throw new Error("effect attempted before admission");
-        void serveCtxCall(frame.method, frame.args, { kind: "dispatch", ctx: dispatch.ctx }).then(
-          (result) => receive({ t: "reply", id: frame.id, ok: true, result }),
-          (error: unknown) => dispatch.reject(error),
-        );
-      }
+      },
     },
-  });
-  receive({ t: "load", pluginId: manifest.id, manifest, dir: "/unused" } satisfies IsolateHostFrame);
+  );
+  receive({
+    t: "load",
+    pluginId: manifest.id,
+    manifest,
+    dir: "/unused",
+  } satisfies IsolateHostFrame);
   const { def } = buildIsolateDef(manifest, await loaded.promise, {
     dispatch: (name, args, ctx) => {
       const completion = Promise.withResolvers<IsolateDispatchOutcome>();
       const id = String(ctx.traceId);
-      pending.set(id, { ctx, admitted: false, resolve: completion.resolve, reject: completion.reject });
+      pending.set(id, {
+        ctx,
+        admitted: false,
+        resolve: completion.resolve,
+        reject: completion.reject,
+      });
       receive({
-        t: "dispatch", id, action: name, args,
+        t: "dispatch",
+        id,
+        action: name,
+        args,
         ctx: {
-          traceId: ctx.traceId, principal: ctx.principal, caps: [...ctx.auth.caps],
-          isRoot: ctx.auth.isRoot, containerScope: ctx.containerScope, now: ctx.now(),
+          traceId: ctx.traceId,
+          principal: ctx.principal,
+          caps: [...ctx.auth.caps],
+          isRoot: ctx.auth.isRoot,
+          containerScope: ctx.containerScope,
+          now: ctx.now(),
         },
       } satisfies IsolateHostFrame);
-      return completion.promise.finally(() => { pending.delete(id); });
+      return completion.promise.finally(() => {
+        pending.delete(id);
+      });
     },
-    hook: async () => { throw new Error("no guest lifecycle hook"); },
-    settled: async () => { throw new Error("no guest settled hook"); },
-    migrate: async () => { throw new Error("no guest migration"); },
+    hook: async () => {
+      throw new Error("no guest lifecycle hook");
+    },
+    settled: async () => {
+      throw new Error("no guest settled hook");
+    },
+    migrate: async () => {
+      throw new Error("no guest migration");
+    },
   });
   return { def, counts };
 }
@@ -411,20 +569,36 @@ describe("guest parsing before declarations", () => {
   test("real refinements reject before a missing claim, and transformed values stay in the guest exactly once", async () => {
     const guest = await transformingGuest();
     const f = await fixture([guest.def]);
-    expect(await f.host.dispatch(f.actor, "test.prepared.write", {
-      value: "not-a-number", node: "inside",
-    })).toMatchObject({ ok: false, denial: { rule: "invalid_args" } });
+    expect(
+      await f.host.dispatch(f.actor, "test.prepared.write", {
+        value: "not-a-number",
+        node: "inside",
+      }),
+    ).toMatchObject({ ok: false, denial: { rule: "invalid_args" } });
     expect(f.trace().outcome).toBe("invalid_args");
     expect(guest.counts).toEqual({ refinements: 1, transforms: 0, effects: 0 });
-    expect(await f.host.dispatch(f.actor, "test.prepared.write", {
-      value: "4", node: "inside",
-    })).toMatchObject({ ok: false, denial: { rule: "justification_required" } });
+    expect(
+      await f.host.dispatch(f.actor, "test.prepared.write", {
+        value: "4",
+        node: "inside",
+      }),
+    ).toMatchObject({ ok: false, denial: { rule: "justification_required" } });
     expect(guest.counts).toEqual({ refinements: 2, transforms: 1, effects: 0 });
     expect(await f.store.pluginStorage("test.prepared").get("last")).toBeNull();
-    expect(await f.host.dispatch(f.actor, "test.prepared.write", {
-      value: "4", node: "inside",
-    }, null, { agentJustification: "Write the bounded result." })).toEqual({
-      ok: true, result: { value: "5" },
+    expect(
+      await f.host.dispatch(
+        f.actor,
+        "test.prepared.write",
+        {
+          value: "4",
+          node: "inside",
+        },
+        null,
+        { agentJustification: "Write the bounded result." },
+      ),
+    ).toEqual({
+      ok: true,
+      result: { value: "5" },
     });
     expect(guest.counts).toEqual({ refinements: 3, transforms: 2, effects: 1 });
     expect(await f.store.pluginStorage("test.prepared").get("last")).toBe("5");
@@ -435,10 +609,20 @@ describe("guest parsing before declarations", () => {
     const guest = await transformingGuest();
     const f = await fixture([guest.def]);
     const scoped = f.newRun(f.owner, { target: "manifold://container/inside" });
-    expect(await f.host.dispatch(scoped.actor, "test.prepared.write", {
-      value: "4", node: "outside",
-    }, null, { agentJustification: " " })).toEqual({
-      ok: false, denial: { rule: "forbidden", message: "containers:read capability required at target" },
+    expect(
+      await f.host.dispatch(
+        scoped.actor,
+        "test.prepared.write",
+        {
+          value: "4",
+          node: "outside",
+        },
+        null,
+        { agentJustification: " " },
+      ),
+    ).toEqual({
+      ok: false,
+      denial: { rule: "forbidden", message: "containers:read capability required at target" },
     });
     expect(guest.counts).toEqual({ refinements: 1, transforms: 1, effects: 0 });
     expect(await f.store.pluginStorage("test.prepared").get("last")).toBeNull();

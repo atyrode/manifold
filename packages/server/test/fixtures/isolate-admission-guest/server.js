@@ -18,10 +18,17 @@ function receive(frame) {
   if (frame.t === "load") {
     send({
       t: "loaded",
-      actions: [{
-        name: "test.admissionguest.write", title: "Write", caps: [], scope: "workspace",
-        agentJustification: "required", input: { type: "object" }, result: { type: "object" },
-      }],
+      actions: [
+        {
+          name: "test.admissionguest.write",
+          title: "Write",
+          caps: [],
+          scope: "workspace",
+          agentJustification: "required",
+          input: { type: "object" },
+          result: { type: "object" },
+        },
+      ],
       hooks: { onEnable: false, onDisable: false, onAssemblyChanged: false, onJobSettled: false },
     });
   } else if (frame.t === "dispatch") {

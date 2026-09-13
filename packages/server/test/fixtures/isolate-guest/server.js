@@ -116,7 +116,9 @@ onFrame(async (frame) => {
     case "dispatch": {
       if (
         frame.action === "echo" &&
-        (typeof frame.args !== "object" || frame.args === null || typeof frame.args.text !== "string")
+        (typeof frame.args !== "object" ||
+          frame.args === null ||
+          typeof frame.args.text !== "string")
       ) {
         send({
           t: "dispatched",

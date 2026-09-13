@@ -8,21 +8,27 @@ import { TraceOutcomeSchema } from "./trace.ts";
 export const AGENT_JUSTIFICATION_MAX_LENGTH = 512;
 const id = z.string().min(1).max(256);
 const at = z.number().int().nonnegative();
-const traceId = z.string().regex(/^[1-9][0-9]*$/).max(20);
+const traceId = z
+  .string()
+  .regex(/^[1-9][0-9]*$/)
+  .max(20);
 const text = z.string().max(512);
 
 /** No credential references or open-ended payloads belong in this projection. */
-export const InspectAgentRunRequestSchema = z.strictObject({
-  runId: id.optional(),
-  principalId: id.optional(),
-  beforeTraceId: traceId.optional(),
-  traceId: traceId.optional(),
-  limit: z.number().int().min(1).max(100).default(50),
-}).refine((input) => (input.runId === undefined) !== (input.principalId === undefined), {
-  message: "name exactly one run or principal",
-}).refine((input) => input.beforeTraceId === undefined || input.traceId === undefined, {
-  message: "name a trace or page cursor, not both",
-});
+export const InspectAgentRunRequestSchema = z
+  .strictObject({
+    runId: id.optional(),
+    principalId: id.optional(),
+    beforeTraceId: traceId.optional(),
+    traceId: traceId.optional(),
+    limit: z.number().int().min(1).max(100).default(50),
+  })
+  .refine((input) => (input.runId === undefined) !== (input.principalId === undefined), {
+    message: "name exactly one run or principal",
+  })
+  .refine((input) => input.beforeTraceId === undefined || input.traceId === undefined, {
+    message: "name a trace or page cursor, not both",
+  });
 export type InspectAgentRunRequest = z.infer<typeof InspectAgentRunRequestSchema>;
 
 const runSummary = z.strictObject({
@@ -35,11 +41,15 @@ const runSummary = z.strictObject({
 /** A run discovery surface, never the credential administrator's token inventory. */
 export const AgentRunInventorySchema = z.strictObject({
   observedAt: at,
-  runs: z.array(runSummary.extend({
-    purpose: text,
-    createdAt: at,
-    expiresAt: at,
-  })).max(100),
+  runs: z
+    .array(
+      runSummary.extend({
+        purpose: text,
+        createdAt: at,
+        expiresAt: at,
+      }),
+    )
+    .max(100),
   truncated: z.boolean(),
 });
 export type AgentRunInventory = z.infer<typeof AgentRunInventorySchema>;
@@ -91,56 +101,74 @@ export const AgentRunInspectionSchema = z.strictObject({
   }),
   lineage: z.array(runSummary).max(33),
   lineageComplete: z.boolean(),
-  credentials: z.array(z.strictObject({
-    createdAt: at,
-    expiresAt: at.nullable(),
-    revokedAt: at.nullable(),
-    state: z.enum(["live", "expired", "revoked"]),
-    grant: z.strictObject({
-      node: z.string().max(1024),
-      caps: z.array(AuthoredCapSchema).max(128),
-      reach: GrantReachSchema,
-      effect: z.enum(["allow", "deny"]),
-    }).nullable(),
-  })).max(100),
-  connections: z.array(z.strictObject({
-    connectionId: id,
-    state: z.enum(["live", "closed_or_unavailable"]),
-    firstObservedAt: at.nullable(),
-    lastObservedAt: at.nullable(),
-  })).max(100),
+  credentials: z
+    .array(
+      z.strictObject({
+        createdAt: at,
+        expiresAt: at.nullable(),
+        revokedAt: at.nullable(),
+        state: z.enum(["live", "expired", "revoked"]),
+        grant: z
+          .strictObject({
+            node: z.string().max(1024),
+            caps: z.array(AuthoredCapSchema).max(128),
+            reach: GrantReachSchema,
+            effect: z.enum(["allow", "deny"]),
+          })
+          .nullable(),
+      }),
+    )
+    .max(100),
+  connections: z
+    .array(
+      z.strictObject({
+        connectionId: id,
+        state: z.enum(["live", "closed_or_unavailable"]),
+        firstObservedAt: at.nullable(),
+        lastObservedAt: at.nullable(),
+      }),
+    )
+    .max(100),
   traces: z.array(AgentRunTraceSummarySchema).max(100),
   nextBeforeTraceId: traceId.nullable(),
   requestedTrace: z.enum(["not_requested", "available", "unavailable"]),
   history: z.literal("retained_only"),
-  jobs: z.array(z.strictObject({
-    jobId: id,
-    machineId: id,
-    pluginId: id,
-    operationId: id,
-    installationRevision: id,
-    artifactSha256: z.string().regex(/^[a-f0-9]{64}$/),
-    state: z.union([JobStateSchema, z.enum(["pending", "skipped", "enqueued"])]),
-    createdAt: at,
-    startedAt: at.nullable(),
-    finishedAt: at.nullable(),
-    exitCode: z.number().int().nullable(),
-    traceId: id,
-    origin: z.enum(["retained", "unavailable"]),
-    parentJobId: id.nullable(),
-    terminalId: id.nullable(),
-    ownerState: z.enum(["closed", "unconfirmed"]),
-  })).max(100),
-  terminals: z.array(z.strictObject({
-    terminalId: id,
-    machineId: id,
-    containerId: id,
-    createdAt: at,
-    state: z.enum(["running", "exited"]),
-    exitCode: z.number().int().nullable(),
-    traceId: traceId.nullable(),
-    retention: z.literal("retained"),
-  })).max(100),
+  jobs: z
+    .array(
+      z.strictObject({
+        jobId: id,
+        machineId: id,
+        pluginId: id,
+        operationId: id,
+        installationRevision: id,
+        artifactSha256: z.string().regex(/^[a-f0-9]{64}$/),
+        state: z.union([JobStateSchema, z.enum(["pending", "skipped", "enqueued"])]),
+        createdAt: at,
+        startedAt: at.nullable(),
+        finishedAt: at.nullable(),
+        exitCode: z.number().int().nullable(),
+        traceId: id,
+        origin: z.enum(["retained", "unavailable"]),
+        parentJobId: id.nullable(),
+        terminalId: id.nullable(),
+        ownerState: z.enum(["closed", "unconfirmed"]),
+      }),
+    )
+    .max(100),
+  terminals: z
+    .array(
+      z.strictObject({
+        terminalId: id,
+        machineId: id,
+        containerId: id,
+        createdAt: at,
+        state: z.enum(["running", "exited"]),
+        exitCode: z.number().int().nullable(),
+        traceId: traceId.nullable(),
+        retention: z.literal("retained"),
+      }),
+    )
+    .max(100),
   nativeTruncated: z.boolean(),
 });
 export type AgentRunInspection = z.infer<typeof AgentRunInspectionSchema>;

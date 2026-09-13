@@ -1998,19 +1998,21 @@ export class ServerStore {
 
   /** Candidate roots narrow scanning only; AuthService still authorizes every returned run. */
   *agentRunInspectionCandidates(principalId: string, root: boolean): Iterable<AgentRunRecord> {
-    const rows = this.db.query<AgentRunRow, [number, string, string]>(
-      `SELECT id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
+    const rows = this.db
+      .query<AgentRunRow, [number, string]>(
+        `SELECT id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
               authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
               authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
               created_at,expires_at,renewals,max_depth,max_descendants,depth,
               cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
               cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure
        FROM agent_runs
-       WHERE ?=1 OR root_run_id IN (
-         SELECT root_run_id FROM agent_runs WHERE principal_id=? OR authorized_by_principal_id=?
+       WHERE ?1=1 OR root_run_id IN (
+         SELECT root_run_id FROM agent_runs WHERE principal_id=?2 OR authorized_by_principal_id=?2
        )
        ORDER BY created_at DESC,id DESC`,
-    ).iterate(root ? 1 : 0, principalId, principalId);
+      )
+      .iterate(root ? 1 : 0, principalId);
     for (const row of rows) yield toAgentRun(row);
   }
 
@@ -2835,9 +2837,17 @@ export class ServerStore {
     input: InspectAgentRunRequest,
     now: number,
     liveConnectionIds: readonly string[],
-  ): Pick<AgentRunInspection,
-    "credentials" | "connections" | "traces" | "nextBeforeTraceId" | "requestedTrace" |
-    "history" | "jobs" | "terminals" | "nativeTruncated"
+  ): Pick<
+    AgentRunInspection,
+    | "credentials"
+    | "connections"
+    | "traces"
+    | "nextBeforeTraceId"
+    | "requestedTrace"
+    | "history"
+    | "jobs"
+    | "terminals"
+    | "nativeTruncated"
   > {
     const safeText = (value: string): string => normalizeAgentDeclaration(value) ?? "[redacted]";
     // This known native-id form is safe only as a selected job reference, never free text.
@@ -2846,11 +2856,21 @@ export class ServerStore {
     // Migration 36 is the only initializer. Never infer trust from retained rows or
     // repair an absent/corrupt boundary on read or reopen. SQLite's decimal round-trip
     // rejects noncanonical or out-of-INT64-range metadata without JS number coercion.
-    const traceRows = this.db.query<{
-      id: string; ts: number; door: string; authority: string; targets: string;
-      outcome: TraceOutcome | null; session: string | null; declaration: unknown;
-    }, [string, string | null, string | null, string | null, string | null, number]>(
-      `WITH declaration_cutover AS (
+    const traceRows = this.db
+      .query<
+        {
+          id: string;
+          ts: number;
+          door: string;
+          authority: string;
+          targets: string;
+          outcome: TraceOutcome | null;
+          session: string | null;
+          declaration: unknown;
+        },
+        [string, string | null, string | null, string | null, string | null, number]
+      >(
+        `WITH declaration_cutover AS (
         SELECT CAST(value AS INTEGER) AS id FROM meta
          WHERE key='agent-runs:declarations-after-event-id'
           AND value=CAST(CAST(value AS INTEGER) AS TEXT) AND CAST(value AS INTEGER)>=0
@@ -2861,11 +2881,20 @@ export class ServerStore {
        FROM events WHERE type='trace' AND principal_id=?
         AND (? IS NULL OR id=?) AND (? IS NULL OR id<?)
        ORDER BY events.id DESC LIMIT ?`,
-    ).all(principalId, input.traceId ?? null, input.traceId ?? null,
-      input.beforeTraceId ?? null, input.beforeTraceId ?? null, input.limit + 1);
+      )
+      .all(
+        principalId,
+        input.traceId ?? null,
+        input.traceId ?? null,
+        input.beforeTraceId ?? null,
+        input.beforeTraceId ?? null,
+        input.limit + 1,
+      );
     const traces = traceRows.slice(0, input.limit).map((row) => {
-      const declaration = row.outcome === "invalid_args" || typeof row.declaration !== "string"
-        ? null : normalizeAgentDeclaration(row.declaration);
+      const declaration =
+        row.outcome === "invalid_args" || typeof row.declaration !== "string"
+          ? null
+          : normalizeAgentDeclaration(row.declaration);
       return AgentRunTraceSummarySchema.parse({
         traceId: row.id,
         at: row.ts,
@@ -2880,49 +2909,98 @@ export class ServerStore {
         ...(declaration === null ? {} : { agentDeclaration: declaration }),
       });
     });
-    const credentials = this.db.query<{
-      createdAt: number; expiresAt: number | null; revokedAt: number | null;
-      node: string | null; caps: string | null; reach: GrantReach | null; effect: "allow" | "deny" | null;
-    }, [string]>(
-      `SELECT t.created_at AS createdAt,t.expires_at AS expiresAt,t.revoked_at AS revokedAt,
+    const credentials = this.db
+      .query<
+        {
+          createdAt: number;
+          expiresAt: number | null;
+          revokedAt: number | null;
+          node: string | null;
+          caps: string | null;
+          reach: GrantReach | null;
+          effect: "allow" | "deny" | null;
+        },
+        [string]
+      >(
+        `SELECT t.created_at AS createdAt,t.expires_at AS expiresAt,t.revoked_at AS revokedAt,
         g.node,g.caps,g.reach,g.effect FROM tokens t LEFT JOIN grants g ON g.id=t.grant_id
        WHERE t.principal_id=? ORDER BY t.created_at DESC,t.id DESC LIMIT 100`,
-    ).all(principalId).map((row): AgentRunInspection["credentials"][number] => ({
-      createdAt: row.createdAt,
-      expiresAt: row.expiresAt,
-      revokedAt: row.revokedAt,
-      state: row.revokedAt !== null ? "revoked" : row.expiresAt !== null && row.expiresAt <= now ? "expired" : "live",
-      grant: row.node === null || row.caps === null || row.reach === null || row.effect === null ? null : {
-        node: safeText(row.node),
-        caps: AuthoredCapSchema.array().parse(JSON.parse(row.caps)),
-        reach: row.reach,
-        effect: row.effect,
-      },
-    }));
-    const observed = this.db.query<{
-      connectionId: string; firstObservedAt: number; lastObservedAt: number;
-    }, [string]>(
-      `SELECT session AS connectionId,MIN(ts) AS firstObservedAt,MAX(ts) AS lastObservedAt
+      )
+      .all(principalId)
+      .map((row): AgentRunInspection["credentials"][number] => ({
+        createdAt: row.createdAt,
+        expiresAt: row.expiresAt,
+        revokedAt: row.revokedAt,
+        state:
+          row.revokedAt !== null
+            ? "revoked"
+            : row.expiresAt !== null && row.expiresAt <= now
+              ? "expired"
+              : "live",
+        grant:
+          row.node === null || row.caps === null || row.reach === null || row.effect === null
+            ? null
+            : {
+                node: safeText(row.node),
+                caps: AuthoredCapSchema.array().parse(JSON.parse(row.caps)),
+                reach: row.reach,
+                effect: row.effect,
+              },
+      }));
+    const observed = this.db
+      .query<
+        {
+          connectionId: string;
+          firstObservedAt: number;
+          lastObservedAt: number;
+        },
+        [string]
+      >(
+        `SELECT session AS connectionId,MIN(ts) AS firstObservedAt,MAX(ts) AS lastObservedAt
        FROM events WHERE type='trace' AND principal_id=? AND session IS NOT NULL
        GROUP BY session ORDER BY MAX(ts) DESC,session LIMIT 100`,
-    ).all(principalId);
+      )
+      .all(principalId);
     const live = new Set(liveConnectionIds);
-    const connections: AgentRunInspection["connections"] = liveConnectionIds.slice(0, 100).map((connectionId) => {
-      const row = observed.find((entry) => entry.connectionId === connectionId);
-      return { connectionId, state: "live", firstObservedAt: row?.firstObservedAt ?? null, lastObservedAt: row?.lastObservedAt ?? null };
-    });
+    const connections: AgentRunInspection["connections"] = liveConnectionIds
+      .slice(0, 100)
+      .map((connectionId) => {
+        const row = observed.find((entry) => entry.connectionId === connectionId);
+        return {
+          connectionId,
+          state: "live",
+          firstObservedAt: row?.firstObservedAt ?? null,
+          lastObservedAt: row?.lastObservedAt ?? null,
+        };
+      });
     for (const row of observed) {
       if (!live.has(row.connectionId) && connections.length < 100) {
         connections.push({ ...row, state: "closed_or_unavailable" });
       }
     }
-    const jobRows = this.db.query<{
-      jobId: string; machineId: string; pluginId: string; operationId: string;
-      installationRevision: string; artifactSha256: string; state: AgentRunInspection["jobs"][number]["state"];
-      createdAt: number; startedAt: number | null; finishedAt: number | null; exitCode: number | null;
-      traceId: string; retained: number; parentJobId: string | null; terminalId: string | null; ownerClosed: number;
-    }, [string, string]>(
-      `WITH candidates AS (
+    const jobRows = this.db
+      .query<
+        {
+          jobId: string;
+          machineId: string;
+          pluginId: string;
+          operationId: string;
+          installationRevision: string;
+          artifactSha256: string;
+          state: AgentRunInspection["jobs"][number]["state"];
+          createdAt: number;
+          startedAt: number | null;
+          finishedAt: number | null;
+          exitCode: number | null;
+          traceId: string;
+          retained: number;
+          parentJobId: string | null;
+          terminalId: string | null;
+          ownerClosed: number;
+        },
+        [string, string]
+      >(
+        `WITH candidates AS (
         SELECT job_id,machine_id,plugin_id,request,state,created_at,result,owner_closed
           FROM machine_jobs WHERE json_extract(request,'$.credential.principalId')=?
         UNION ALL
@@ -2944,7 +3022,8 @@ export class ServerStore {
         json_extract(j.request,'$.terminal.terminalId') AS terminalId,j.owner_closed AS ownerClosed
        FROM candidates j
        ORDER BY j.created_at DESC,j.job_id DESC LIMIT 101`,
-    ).all(principalId, principalId);
+      )
+      .all(principalId, principalId);
     const jobs: AgentRunInspection["jobs"] = jobRows.slice(0, 100).map((row) => ({
       jobId: safeJobId(row.jobId),
       machineId: safeText(row.machineId),
@@ -2963,11 +3042,20 @@ export class ServerStore {
       terminalId: row.terminalId === null ? null : safeText(row.terminalId),
       ownerState: row.ownerClosed === 1 ? "closed" : "unconfirmed",
     }));
-    const terminalRows = this.db.query<{
-      terminalId: string; machineId: string; containerId: string; createdAt: number;
-      state: "running" | "exited"; exitCode: number | null; traceId: string | null;
-    }, [string]>(
-      `SELECT t.id AS terminalId,t.machine_id AS machineId,t.container_id AS containerId,
+    const terminalRows = this.db
+      .query<
+        {
+          terminalId: string;
+          machineId: string;
+          containerId: string;
+          createdAt: number;
+          state: "running" | "exited";
+          exitCode: number | null;
+          traceId: string | null;
+        },
+        [string]
+      >(
+        `SELECT t.id AS terminalId,t.machine_id AS machineId,t.container_id AS containerId,
         t.created_at AS createdAt,t.status AS state,t.exit_code AS exitCode,
         (SELECT CAST(e.id AS TEXT) FROM machine_jobs j JOIN events e ON e.id=json_extract(j.request,'$.traceId')
           WHERE e.type='trace' AND e.principal_id=t.created_by
@@ -2975,7 +3063,8 @@ export class ServerStore {
             AND json_extract(j.request,'$.terminal.terminalId')=t.id
           ORDER BY e.id DESC LIMIT 1) AS traceId
        FROM terminals t WHERE t.created_by=? ORDER BY t.created_at DESC,t.id DESC LIMIT 101`,
-    ).all(principalId);
+      )
+      .all(principalId);
     const terminals: AgentRunInspection["terminals"] = terminalRows.slice(0, 100).map((row) => ({
       terminalId: safeText(row.terminalId),
       machineId: safeText(row.machineId),
@@ -2987,9 +3076,18 @@ export class ServerStore {
       retention: "retained",
     }));
     return {
-      credentials, connections, traces, jobs, terminals,
-      nextBeforeTraceId: traceRows.length > input.limit ? traces.at(-1)?.traceId ?? null : null,
-      requestedTrace: input.traceId === undefined ? "not_requested" : traces.length === 0 ? "unavailable" : "available",
+      credentials,
+      connections,
+      traces,
+      jobs,
+      terminals,
+      nextBeforeTraceId: traceRows.length > input.limit ? (traces.at(-1)?.traceId ?? null) : null,
+      requestedTrace:
+        input.traceId === undefined
+          ? "not_requested"
+          : traces.length === 0
+            ? "unavailable"
+            : "available",
       history: "retained_only",
       nativeTruncated: jobRows.length > 100 || terminalRows.length > 100,
     };

@@ -2950,7 +2950,10 @@ export class PluginHost {
         if (!ref.success)
           return new ActionAdmissionDenial("invalid_args", "invalid authority target");
         if (!this.authService.allowsRef(auth, declared.cap, ref.data))
-          return new ActionAdmissionDenial("forbidden", `${declared.cap} capability required at target`);
+          return new ActionAdmissionDenial(
+            "forbidden",
+            `${declared.cap} capability required at target`,
+          );
         // Only engine capabilities have native revision-bound admission evidence.
         if (isEngineCap(declared.cap)) requirements.push({ cap: declared.cap, ref: ref.data });
       }
@@ -3117,7 +3120,8 @@ export class PluginHost {
         mintToken: (input) => identityCall(() => this.authService.mintToken(input, auth)),
         createAgentRun: (input) =>
           identityCall(() => this.authService.createAgentRun(input, auth, enforceDeclaration)),
-        inspectAgentRun: (input) => identityCall(() => this.authService.inspectAgentRun(input, auth)),
+        inspectAgentRun: (input) =>
+          identityCall(() => this.authService.inspectAgentRun(input, auth)),
         agentPolicyChallenge: () => identityCall(() => this.authService.agentPolicyChallenge(auth)),
         acknowledgeAgentPolicy: (input) =>
           identityCall(() => this.authService.acknowledgeAgentPolicy(input, auth)),

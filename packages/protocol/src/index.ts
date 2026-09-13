@@ -318,11 +318,13 @@ export {
 } from "./capabilities.ts";
 export {
   AGENT_JUSTIFICATION_MAX_LENGTH,
+  AgentRunInventorySchema,
   AgentRunInspectionSchema,
   AgentRunTraceSummarySchema,
   InspectAgentRunRequestSchema,
   InspectAgentRunResultSchema,
   type AgentRunInspection,
+  type AgentRunInventory,
   type AgentRunTraceSummary,
   type InspectAgentRunRequest,
   type InspectAgentRunResult,
