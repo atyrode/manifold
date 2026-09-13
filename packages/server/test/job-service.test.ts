@@ -741,6 +741,111 @@ test("polling a queued job cannot interrupt its later admitted start", () => {
   }
 });
 
+const bounded: MachineHalf = {
+  ...machine,
+  operations: {
+    [operationId]: {
+      ...machine.operations[operationId]!,
+      limits: { ...limits, concurrentJobs: 2 },
+    },
+  },
+};
+
+test("a declared concurrency refuses the execute over an operation's ceiling until a job settles", () => {
+  const f = fixture(":memory:", bounded);
+  try {
+    consent(f, "machines:run");
+    prove(f);
+    const first = execute(f, "one");
+    const second = execute(f, "two");
+    expect([first.state, second.state]).toEqual(["start-committed", "start-committed"]);
+    const refused = execute(f, "three");
+    expect(refused.state).toBe("refused");
+    expect(f.service.jobs.authority(refused).decision?.refusal).toBe("concurrency_limit");
+    expect(
+      f.commands.some((command) => command.type === "start" && command.request.jobId === "three"),
+    ).toBe(false);
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        jobId: first.request.jobId,
+        requestDigest: first.request.requestDigest,
+        ownerId: f.owner.ownerId,
+        ownerGeneration: f.owner.generation,
+        state: "exited",
+        exitCode: 0,
+        reason: null,
+        startedAt: f.runtime.now(),
+        finishedAt: f.runtime.now(),
+        usage: null,
+        limits: first.request.limits,
+        outputs: [],
+      },
+    });
+    const fourth = execute(f, "four");
+    expect(fourth.state).toBe("start-committed");
+    expect(
+      f.commands.some((command) => command.type === "start" && command.request.jobId === "four"),
+    ).toBe(true);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("an operation that declares no concurrency admits every job its caller posts", () => {
+  const f = fixture();
+  try {
+    consent(f, "machines:run");
+    prove(f);
+    for (const jobId of ["one", "two", "three"]) {
+      expect(execute(f, jobId).state).toBe("start-committed");
+    }
+    expect(f.commands.filter((command) => command.type === "start").length).toBe(3);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("a schedule occurrence at the ceiling is refused, not started beside the jobs holding it", () => {
+  const f = fixture(":memory:", bounded);
+  try {
+    for (const cap of ["machines:run", "jobs:read"] as const) consent(f, cap);
+    prove(f);
+    expect([execute(f, "one").state, execute(f, "two").state]).toEqual([
+      "start-committed",
+      "start-committed",
+    ]);
+    f.service.schedule(f.root, pluginId, "trace-1", {
+      jobId: "template",
+      machineId: f.machineId,
+      operationId,
+      input: { value: "safe" },
+      outputs: [],
+      scheduleId: "beat",
+      revision: "r1",
+      firstNominalAt: f.runtime.now(),
+      intervalMs: 100,
+      deadlineMs: 50,
+      expiresAt: f.runtime.now() + 1000,
+      offlinePolicy: "skip",
+    });
+    f.service.tick();
+    const occurrence = f.service
+      .listRuns(f.root, pluginId, { machineId: f.machineId })
+      .runs.find((row) => row.occurrence)!.occurrence!;
+    const scheduled = f.service.jobs.get(occurrence.jobId)!;
+    expect(scheduled.state).toBe("refused");
+    expect(f.service.jobs.authority(scheduled).decision?.refusal).toBe("concurrency_limit");
+    expect(
+      f.commands.some(
+        (command) => command.type === "start" && command.request.jobId === occurrence.jobId,
+      ),
+    ).toBe(false);
+  } finally {
+    f.store.close();
+  }
+});
+
 test("uncertain service completion holds its lifetime until a fenced empty-tree proof arrives", () => {
   const f = fixture();
   try {

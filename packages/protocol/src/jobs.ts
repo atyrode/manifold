@@ -12,7 +12,7 @@ import { ServiceTunnelFrameSchema } from "./services.ts";
 import { JobResourceBindingsSchema, JobResourceInventorySchema } from "./job-resources.ts";
 
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = 31;
+export const JOB_OWNER_PROTOCOL_VERSION = 32;
 
 const id = z.string().min(1).max(128);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -31,6 +31,25 @@ export const JobLimitsSchema = z.strictObject({
   processes: z.number().int().positive().max(4096),
   outputBytes: z.number().int().positive().max(1073741824),
 });
+export type JobLimits = z.infer<typeof JobLimitsSchema>;
+/**
+ * An operation declares more than one job carries: `concurrentJobs` bounds how many of this
+ * operation's jobs one machine runs at once. The operation's author bounds that fan, never the
+ * caller, so the ceiling belongs to the manifest and never to a request or an edge aggregate.
+ */
+export const MachineOperationLimitsSchema = JobLimitsSchema.extend({
+  concurrentJobs: z.number().int().positive().max(4096).optional(),
+});
+export type MachineOperationLimits = z.infer<typeof MachineOperationLimitsSchema>;
+/** The per-job half of a declaration: what a request carries and an invocation edge aggregates. */
+export function jobLimits(limits: MachineOperationLimits): JobLimits {
+  return {
+    timeoutMs: limits.timeoutMs,
+    memoryBytes: limits.memoryBytes,
+    processes: limits.processes,
+    outputBytes: limits.outputBytes,
+  };
+}
 /** Zero is reserved for native instance-service admission, never ordinary execution. */
 const executionLimits = JobLimitsSchema.extend({
   timeoutMs: JobLimitsSchema.shape.timeoutMs.or(z.literal(0)),
@@ -185,7 +204,7 @@ export const MachineOperationSchema = z
       .max(32),
     outputs: z.array(boundOutputName).max(32),
     network: z.enum(["none", "host"]),
-    limits: JobLimitsSchema,
+    limits: MachineOperationLimitsSchema,
     stdin: z.boolean(),
   })
   .refine(

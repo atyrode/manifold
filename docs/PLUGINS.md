@@ -1580,10 +1580,15 @@ artifacts with real archive/executable SHA256, bounded extraction and optional s
 hashed bundled tool files; namespaced revisioned locations; and namespaced operations.
 Operations use fixed argv literals/typed input slots, bounded input, at most eight named
 `runtimeTools`, exact location read/write/create rights, output names, stdin, network mode
-and timeout/memory/process/output limits. A runtime tool is a reviewed closure or declared
-bundled file, not an arbitrary executable or a request to search host PATH. Do not invent
-packaging hashes, inherit caller environment, provide host paths/cwd, or install packages
-at execution time. The trusted owner acquires and verifies the real artifact privately.
+and timeout/memory/process/output limits. An operation may also declare
+`limits.concurrentJobs`: while that many of its jobs on one machine are still unsettled, a
+further one is refused `concurrency_limit` instead of queueing behind them - an `execute`, a
+schedule occurrence and a nested invocation alike - so a fan-out controller is bounded by the
+operation's author rather than by its own arithmetic.
+A runtime tool is a reviewed closure or declared bundled file, not an arbitrary executable
+or a request to search host PATH. Do not invent packaging hashes, inherit caller
+environment, provide host paths/cwd, or install packages at execution time. The trusted
+owner acquires and verifies the real artifact privately.
 Linux x64/arm64 enforces held-FD mounts, seccomp and owner-controlled cgroup-v2 containment;
 unavailable enforcement or unsupported backends refuse execution, never fall back to an
 unrestricted process. Terminal transports remain usable independently of job availability.

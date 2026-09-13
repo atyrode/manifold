@@ -182,6 +182,8 @@ export {
 } from "./job-resources.ts";
 export {
   JobLimitsSchema,
+  MachineOperationLimitsSchema,
+  jobLimits,
   MachineArtifactSchema,
   MachineLocationSchema,
   MachineInputFieldSchema,

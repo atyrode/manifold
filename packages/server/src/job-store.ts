@@ -174,6 +174,26 @@ export class JobStore {
             .all(machineId);
     return rows.map((r) => this.get(r.job_id)!);
   }
+  /**
+   * How many of one operation's jobs this machine still owes an outcome, counted from the hub's
+   * own rows rather than an owner's report, so admission never trusts the fan it is bounding.
+   */
+  activeOperationJobs(
+    machineId: string,
+    pluginId: string,
+    operationId: string,
+    exceptJobId: string,
+  ): number {
+    return (
+      this.store.db
+        .query<{ count: number }, [string, string, string, string]>(
+          `SELECT COUNT(*) AS count FROM machine_jobs
+       WHERE machine_id=? AND plugin_id=? AND json_extract(request,'$.operationId')=?
+         AND job_id!=? AND state IN ('queued','admitted','start-committed','started')`,
+        )
+        .get(machineId, pluginId, operationId, exceptJobId)?.count ?? 0
+    );
+  }
   /** A sent permit without a confirmed outcome still owns its service lifetime. */
   instanceServiceJobs(serviceId: string): JobRecord[] {
     const rows = this.store.db

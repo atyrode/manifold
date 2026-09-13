@@ -7,6 +7,7 @@ import {
   JobRequestSchema,
   MachineHalfSchema,
   JobOutputBindingSchema,
+  jobLimits,
   ListJobRunsArgsSchema,
   ListJobRunsResultSchema,
   PublicJobRunSchema,
@@ -155,6 +156,35 @@ test("owner-retained stdout and stderr cannot be caller-declared or rebound as f
       }).success,
     ).toBe(false);
   }
+});
+
+test("an operation's author declares its concurrency ceiling and no request may carry one", () => {
+  const perJob = { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 };
+  const operation = {
+    argv: [],
+    input: {},
+    runtimeTools: [],
+    locations: [],
+    outputs: [],
+    network: "none",
+    limits: perJob,
+    stdin: false,
+  };
+  expect(MachineOperationSchema.parse(operation).limits.concurrentJobs).toBeUndefined();
+  expect(
+    MachineOperationSchema.parse({ ...operation, limits: { ...perJob, concurrentJobs: 1 } }).limits
+      .concurrentJobs,
+  ).toBe(1);
+  for (const concurrentJobs of [0, -1, 1.5, 4097]) {
+    expect(
+      MachineOperationSchema.safeParse({ ...operation, limits: { ...perJob, concurrentJobs } })
+        .success,
+    ).toBe(false);
+  }
+  expect(JobRequestSchema.shape.limits.safeParse({ ...perJob, concurrentJobs: 2 }).success).toBe(
+    false,
+  );
+  expect(jobLimits({ ...perJob, concurrentJobs: 2 })).toEqual(perJob);
 });
 
 test("managed executables require an explicit runtime dependency and readonly inputs require string declarations", () => {

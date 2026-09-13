@@ -2716,9 +2716,11 @@ read a retained IPC-1 owner and resume its existing terminals. Without an explic
 declaration it cannot create new ambient shells. Governed requests still require their
 separate native owner proof and admitted resource/runtime bindings.
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 31. That version covers
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 32. That version covers
 durable instance-owned services, cooperative retirement, proved readiness, bounded
-cross-owner service channels and the workload's own reported progress.
+cross-owner service channels, an operation's declared `limits.concurrentJobs`, which an
+`install` command carries in the manifest to a strict owner parser, and the workload's own
+reported progress.
 It is not the hub/session `PROTOCOL_VERSION`: an unchanged native RPC remains compatible
 through a transport or browser upgrade. A native RPC change requires its own coordinated,
 drained owner upgrade. Compatibility alone never proves current execution consent or
@@ -2783,6 +2785,11 @@ provider handling and postconditions belong to plugins, never the common floor.
   platform artifacts, namespaced operations and revisioned locations. An operation fixes
   typed argv slots, bounded inputs, named `runtimeTools` (at most eight), location rights,
   output names, `network: "none" | "host"`, stdin and timeout/memory/process/output limits.
+  An operation may also declare `limits.concurrentJobs`, the ceiling on how many of its own
+  jobs one machine has yet to settle. The hub counts them from its own job rows inside each
+  admission transaction and refuses the job past the ceiling with `concurrency_limit`,
+  whether a plugin executed it or the hub posted it from a schedule or an invocation; the
+  ceiling is the operation author's, so no request or invocation aggregate carries it.
   Requests cannot supply an executable, shell, cwd or environment. Installation binds
   authenticated machine identity, plugin, installation revision and artifact digest.
   Canonical operation/location nodes belong under that machine, jobs under their admitted
