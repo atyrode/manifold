@@ -68,6 +68,78 @@ export function pluginDatabasePath(dataDir: string, pluginId: string): string {
   return join(pluginDatabaseDir(dataDir, pluginId), "data.db");
 }
 
+interface SqlResultBudget {
+  rows: number;
+  bytes: number;
+}
+
+/** Counts a string's JSON wire form without allocating that second representation. */
+function jsonStringBytes(value: string): number {
+  let bytes = 2;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (
+      code === 0x22 ||
+      code === 0x5c ||
+      code === 0x08 ||
+      code === 0x09 ||
+      code === 0x0a ||
+      code === 0x0c ||
+      code === 0x0d
+    ) {
+      bytes += 2;
+    } else if (code <= 0x1f) {
+      bytes += 6;
+    } else if (code <= 0x7f) {
+      bytes += 1;
+    } else if (code <= 0x7ff) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 6;
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      bytes += 6;
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+/** Measures the JSON-safe representation the isolate boundary uses for one SQLite value. */
+function sqlValueWireBytes(value: unknown): number {
+  if (value === null) return 4;
+  if (typeof value === "string") return jsonStringBytes(value);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new PluginDatabaseError("database returned a non-finite number");
+    }
+    return String(value).length;
+  }
+  if (typeof value === "bigint") {
+    return 42 + value.toString().length;
+  }
+  if (typeof value === "boolean") return value ? 4 : 5;
+  if (value instanceof Uint8Array) {
+    return 39 + Math.ceil(value.byteLength / 3) * 4;
+  }
+  throw new PluginDatabaseError("database returned an unsupported SQL value");
+}
+
+function claimResultBytes(budget: SqlResultBudget, bytes: number): void {
+  budget.bytes += bytes;
+  if (budget.bytes > MAX_SQL_RESULT_BYTES) {
+    throw new PluginDatabaseError(
+      `the result is over the ${String(MAX_SQL_RESULT_BYTES)}-byte limit; page it`,
+    );
+  }
+}
+
 export function openPluginDatabase(options: PluginDatabaseOptions): PluginDatabaseAdmin {
   const { dataDir, pluginId } = options;
   return openDatabaseImage(options, pluginDatabasePath(dataDir, pluginId));
@@ -86,7 +158,7 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
   const open = (): Database => {
     if (handle !== null) return handle;
     mkdirSync(pluginDatabaseDir(options.dataDir, pluginId), { recursive: true });
-    const db = new Database(path, { create: true, strict: true });
+    const db = new Database(path, { create: true, strict: true, safeIntegers: true });
     try {
       db.exec(`PRAGMA page_size = ${String(DATABASE_PAGE_BYTES)}`);
       db.exec("PRAGMA journal_mode = WAL");
@@ -97,9 +169,12 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
       db.exec("PRAGMA mmap_size = 0");
       db.exec("PRAGMA journal_size_limit = 0");
       db.exec("PRAGMA wal_autocheckpoint = 256");
-      const size = db.query<{ page_size: number }, []>("PRAGMA page_size").get();
-      const pages = db.query<{ page_count: number }, []>("PRAGMA page_count").get();
-      if (size?.page_size !== DATABASE_PAGE_BYTES || (pages?.page_count ?? 0) > maxPages)
+      const size = db.query<{ page_size: bigint }, []>("PRAGMA page_size").get();
+      const pages = db.query<{ page_count: bigint }, []>("PRAGMA page_count").get();
+      if (
+        size?.page_size !== BigInt(DATABASE_PAGE_BYTES) ||
+        (pages?.page_count ?? 0n) > BigInt(maxPages)
+      )
         throw new PluginDatabaseError("database exceeds the candidate manifest page budget");
       db.exec(`PRAGMA max_page_count = ${String(maxPages)}`);
     } catch (error) {
@@ -111,34 +186,31 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
     return db;
   };
 
-  /** Runs one validated statement and returns its rows, bounded. */
+  /** Runs one validated statement and charges every returned row to the call's wire budget. */
   const rows = (
     db: Database,
     sql: string,
     params: readonly SqlParam[] | undefined,
+    budget: SqlResultBudget,
   ): readonly SqlRow[] => {
     const statement = db.query<SqlRow, SqlParam[]>(sql);
     try {
       const result: SqlRow[] = [];
-      let bytes = 0;
+      claimResultBytes(budget, 2);
       for (const row of statement.iterate(...((params ?? []) as SqlParam[]))) {
-        if (result.length >= MAX_SQL_ROWS)
+        budget.rows += 1;
+        if (budget.rows > MAX_SQL_ROWS)
           throw new PluginDatabaseError(
-            `the statement exceeded the ${String(MAX_SQL_ROWS)}-row limit; page it`,
+            `the call exceeded the ${String(MAX_SQL_ROWS)}-row limit; page it`,
           );
-        for (const value of Object.values(row)) {
-          bytes +=
-            typeof value === "string"
-              ? Buffer.byteLength(value)
-              : value instanceof Uint8Array
-                ? value.byteLength
-                : 8;
-          if (bytes > MAX_SQL_RESULT_BYTES) {
-            throw new PluginDatabaseError(
-              `the result is over the ${String(MAX_SQL_RESULT_BYTES)}-byte limit; page it`,
-            );
-          }
+        let rowBytes = 3;
+        let columns = 0;
+        for (const [column, value] of Object.entries(row)) {
+          rowBytes +=
+            (columns === 0 ? 0 : 1) + jsonStringBytes(column) + 1 + sqlValueWireBytes(value);
+          columns += 1;
         }
+        claimResultBytes(budget, rowBytes);
         result.push(row);
       }
       return result;
@@ -157,7 +229,7 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
       const result = statement.run(...((params ?? []) as SqlParam[]));
       return {
         changes: Number(result.changes),
-        lastInsertRowid: Number(result.lastInsertRowid),
+        lastInsertRowid: BigInt(result.lastInsertRowid),
       };
     } finally {
       statement.finalize();
@@ -180,7 +252,7 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
     query: async <Row extends SqlRow = SqlRow>(sql: string, params?: readonly SqlParam[]) => {
       assertSqlStatement(sql);
       assertSqlParams(params);
-      return attempt(() => rows(open(), sql, params) as readonly Row[]);
+      return attempt(() => rows(open(), sql, params, { rows: 0, bytes: 0 }) as readonly Row[]);
     },
     run: async (sql, params) => {
       assertSqlStatement(sql);
@@ -192,6 +264,7 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
       return attempt(() => {
         const db = open();
         const started = now();
+        const budget = { rows: 0, bytes: 2 };
         db.exec("BEGIN IMMEDIATE");
         try {
           const results: (readonly SqlRow[])[] = [];
@@ -201,7 +274,7 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
                 `the batch ran past its ${String(SQL_DEADLINE_MS)} ms deadline and was rolled back`,
               );
             }
-            results.push(rows(db, statement.sql, statement.params));
+            results.push(rows(db, statement.sql, statement.params, budget));
           }
           if (now() - started > SQL_DEADLINE_MS)
             throw new PluginDatabaseError("the batch exceeded its deadline and was rolled back");
@@ -220,8 +293,8 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
     pageCount: async () => {
       if (!existsSync(path)) return 0;
       const db = open();
-      const row = db.query<{ page_count: number }, []>("PRAGMA page_count").get();
-      return row?.page_count ?? 0;
+      const row = db.query<{ page_count: bigint }, []>("PRAGMA page_count").get();
+      return Number(row?.page_count ?? 0n);
     },
     sizeBytes: async () => {
       let total = 0;
@@ -246,12 +319,16 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
     },
     close: () => {
       if (handle !== null) {
-        const checkpoint = handle
-          .query<{ busy: number }, []>("PRAGMA wal_checkpoint(TRUNCATE)")
-          .get();
-        if (checkpoint?.busy !== 0) throw new PluginDatabaseError("database checkpoint is busy");
-        handle.close();
+        const closing = handle;
         handle = null;
+        try {
+          const checkpoint = closing
+            .query<{ busy: bigint }, []>("PRAGMA wal_checkpoint(TRUNCATE)")
+            .get();
+          if (checkpoint?.busy !== 0n) throw new PluginDatabaseError("database checkpoint is busy");
+        } finally {
+          closing.close();
+        }
       }
     },
   };

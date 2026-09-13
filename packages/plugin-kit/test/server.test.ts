@@ -781,7 +781,11 @@ describe("named storage migrations", () => {
         id: "migration",
         migration: { name: "rows", to: { major: 2, minor: 0 } },
       });
-      if (declared) await serve(fake, { changes: 0, lastInsertRowid: 0 });
+      if (declared)
+        await serve(fake, {
+          changes: 0,
+          lastInsertRowid: { "$manifold.sql": "bigint", value: "0" },
+        });
       expect(await fake.next()).toMatchObject({ t: "migrated", outcome: { ok: true } });
       expect(captured !== undefined).toBe(declared);
       if (captured !== undefined) {

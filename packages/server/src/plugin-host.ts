@@ -1715,7 +1715,8 @@ export class PluginHost {
         await this.drainDispatches(id);
         return await this.setEnabledNow(id, enabled, changedBy);
       } catch (error) {
-        if (error instanceof InstallRefusal) return { refused: error.message };
+        if (error instanceof InstallRefusal || error instanceof PluginDatabaseError)
+          return { refused: error.message };
         throw error;
       } finally {
         this.replacing = null;
@@ -1789,9 +1790,13 @@ export class PluginHost {
         }
         return { refused: `${plan.reason}: ${plan.detail}` };
       }
-      // `migrate` stamps the declared version itself, once its chain has actually run.
-      if (plan.kind === "migrate") await this.applyMigrations(id, plan.run);
-      else if (plan.stamp !== null) await storage.stampDataVersion(plan.stamp);
+      // The staged no-op path still checks a retained file against the candidate page budget.
+      if (plan.kind === "migrate") {
+        await this.applyMigrations(id, plan.run);
+      } else {
+        const staged = await this.prepareMigrations(id, [], entry.manifest);
+        staged.commit();
+      }
     }
 
     const wasEnabled = new Set(

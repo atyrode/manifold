@@ -2483,6 +2483,42 @@ describe("installed guest data migrations", () => {
       rmSync(f.dataDir, { recursive: true, force: true });
     }
   });
+
+  test("enabling a disabled replacement enforces its retained database quota", async () => {
+    const f = await installFixture();
+    const runner = new IsolateSupervisor({ logger: silentLogger, runtime: f.runtime });
+    let host: PluginHost | undefined;
+    try {
+      host = await customHost(f, [], { isolates: { ...f.isolates, runner } });
+      const first = await migrationBundle(f, 1, "none");
+      expect((await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, first)).ok).toBe(true);
+      await f.store
+        .pluginStorage(SAMPLE_ID)
+        .set("row", JSON.stringify({ schema: 2, revision: 7, model: "retained" }));
+      expect((await host.dispatch(f.owner, `${SAMPLE_ID}.seed`, {})).ok).toBe(true);
+      expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+
+      const smaller = await migrationBundle(f, 1, "throw", { maxBytes: 4096 });
+      expect(
+        (
+          await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, {
+            ...smaller,
+            replace: true,
+          })
+        ).ok,
+      ).toBe(true);
+      const enabled = await host.setEnabled(SAMPLE_ID, true, "admin");
+      expect("refused" in enabled ? enabled.refused : "").toContain(
+        "candidate manifest page budget",
+      );
+      expect(installedRow(host, SAMPLE_ID).enabled).toBe(false);
+    } finally {
+      host?.close();
+      await runner.close();
+      f.store.close();
+      rmSync(f.dataDir, { recursive: true, force: true });
+    }
+  });
 });
 
 function installedRow(host: PluginHost, id: string): PluginRoster[number] {

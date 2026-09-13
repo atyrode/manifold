@@ -171,23 +171,9 @@ export class IsolateSupervisor implements IsolateRunner {
     const transport: IsolateTransport = {
       dispatch: (action, args, ctx) => this.dispatch(pluginId, action, args, ctx),
       hook: (hook, ctx, delta) => this.hook(pluginId, hook, ctx, delta),
-43:       settled: (ctx, job) => this.settled(pluginId, ctx, job),
+      settled: (ctx, job) => this.settled(pluginId, ctx, job),
       migrate: (migration, storage, database) =>
         this.migrate(isolate, migration, storage, database),
-44: import type {
-  JobSettledCtx,
-  LifecycleCtx,
-  PluginDatabase,
-  PluginStorage,
-  SqlStatement,
-} from "@manifold/plugin";
-45:   /** `onJobSettled` alone: its own ctx (the job slice rides it) and its own argument. */
-  settled(ctx: JobSettledCtx, job: SettledJob): Promise<void>;
-  migrate(
-    migration: Pick<PluginMigration, "name" | "to">,
-    storage: PluginStorage,
-    database?: PluginDatabase,
-  ): Promise<void>;
     };
     try {
       return buildIsolateDef(ref.manifest, isolate.loaded, transport);

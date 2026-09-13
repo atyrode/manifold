@@ -60,11 +60,11 @@ data without knowing its shape. What is missing is one thing: a place a plugin m
        sql: string,
        params?: readonly SqlParam[],
      ): Promise<readonly Row[]>;
-     /** One statement, bound parameters, its change count and last rowid back. */
+     /** One statement, bound parameters, its change count and lossless last rowid back. */
      run(
        sql: string,
        params?: readonly SqlParam[],
-     ): Promise<{ changes: number; lastInsertRowid: number }>;
+     ): Promise<{ changes: number; lastInsertRowid: bigint }>;
      /** Several statements in one IMMEDIATE transaction, all or none; the results in order. */
      batch(
        statements: readonly { sql: string; params?: readonly SqlParam[] }[],
@@ -105,19 +105,22 @@ data without knowing its shape. What is missing is one thing: a place a plugin m
    - statement text ≤ 64 KiB; parameters ≤ 999 per statement (SQLite's own bound) and ≤ 4 MiB
      per call; aggregate statement-plus-parameter input ≤ 4 MiB across a `batch`; a `batch` ≤
      256 statements;
-   - rows returned per call ≤ 10,000 and result bytes ≤ 4 MiB — a plugin pages, the engine does
-     not buffer a table into a promise;
+   - rows returned per call ≤ 10,000 across the whole batch and result bytes ≤ 4 MiB, including
+     column names and every batch result — a plugin pages, the engine does not buffer a table
+     into a promise;
    - a `batch` has a cooperative 5-second budget, checked between statements and before commit;
      Bun's synchronous SQLite API exposes no progress-handler cancellation here. A single SQL
      statement can exceed that budget and block the host thread, even for a hardened guest;
    - the file is capped: `PRAGMA max_page_count` from the manifest's `database.maxBytes`
      (default 256 MiB, ceiling 4 GiB — the engine's ceiling, not the plugin's word), so a runaway
      plugin fills its own file and nothing else;
-   - `ATTACH`, `DETACH`, `VACUUM`, `PRAGMA` and `load_extension` are refused lexically before
-     execution, and the file is opened with `trusted_schema` off. This is a guard against the
-     plugin reaching outside its file, not a sandbox: an in-realm plugin already runs in the
-     engine's process (ADR 0025), and a hardened one reaches the database only through the
-     proxy, which is the boundary.
+   - `ATTACH`, `DETACH`, `VACUUM`, `PRAGMA`, transaction-control statements and
+     `load_extension` are refused before execution, and the file is opened with
+     `trusted_schema` off. SQLite integers and rowids remain lossless `bigint`s; non-finite
+     numbers are refused rather than becoming JSON `null`. These are guards against the plugin
+     reaching outside its file, not a sandbox: an in-realm plugin already runs in the engine's
+     process (ADR 0025), and a hardened one reaches the database only through the proxy, which
+     is the boundary.
 
 5. **Lifecycle follows storage's, to the letter.** Disable retains the file; uninstall without
    purge retains it; purge closes and deletes `data.db`, `data.db-wal` and `data.db-shm` and reports

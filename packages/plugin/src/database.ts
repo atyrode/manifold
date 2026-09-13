@@ -42,7 +42,7 @@ export interface PluginDatabase {
     sql: string,
     params?: readonly SqlParam[],
   ): Promise<readonly Row[]>;
-  /** One statement, bound parameters, its change count and the last inserted rowid back. */
+  /** One statement and its result; SQLite rowids are lossless bigints. */
   run(sql: string, params?: readonly SqlParam[]): Promise<SqlRunResult>;
   /**
    * Several statements in ONE immediate transaction: all commit or none do, and the results
@@ -56,7 +56,7 @@ export interface PluginDatabase {
 
 export interface SqlRunResult {
   readonly changes: number;
-  readonly lastInsertRowid: number;
+  readonly lastInsertRowid: bigint;
 }
 
 /**
@@ -117,6 +117,12 @@ const REFUSED_LEADING_KEYWORDS: Record<string, true> = {
   DETACH: true,
   VACUUM: true,
   PRAGMA: true,
+  BEGIN: true,
+  COMMIT: true,
+  END: true,
+  RELEASE: true,
+  ROLLBACK: true,
+  SAVEPOINT: true,
 };
 /** Function names refused anywhere in the text; `load_extension` is the one that matters. */
 const REFUSED_FUNCTIONS = /\bload_extension\s*\(/i;
@@ -156,6 +162,9 @@ export function assertSqlStatement(sql: string): void {
     );
   }
   const keyword = leadingKeyword(sql);
+  if (keyword === "") {
+    throw new PluginDatabaseError("a statement must begin with an SQL keyword");
+  }
   if (REFUSED_LEADING_KEYWORDS[keyword] === true) {
     throw new PluginDatabaseError(
       `${keyword} is refused: a plugin's database is one file and the engine opened it`,
@@ -191,6 +200,9 @@ function validateSqlParams(params: readonly SqlParam[] | undefined): number {
       throw new PluginDatabaseError(
         `a parameter must be a string, number, bigint, boolean, null or Uint8Array, not ${kind}`,
       );
+    }
+    if (typeof value === "number" && !Number.isFinite(value)) {
+      throw new PluginDatabaseError("a numeric parameter must be finite");
     }
     bytes +=
       typeof value === "string"

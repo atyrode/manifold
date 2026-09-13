@@ -31,11 +31,11 @@ describe("a plugin's own tables", () => {
         3,
       ]);
       expect(written.changes).toBe(1);
-      const rows = await db.query<{ id: string; score: number }>(
+      const rows = await db.query<{ id: string; score: bigint }>(
         "SELECT id, score FROM records WHERE kind = ? ORDER BY score DESC",
         ["proposal"],
       );
-      expect(rows).toEqual([{ id: "rec_1", score: 3 }]);
+      expect(rows).toEqual([{ id: "rec_1", score: 3n }]);
       expect(existsSync(pluginDatabasePath(dataDir, "atyrode.example"))).toBe(true);
 
       const other = openPluginDatabase({ dataDir, pluginId: "atyrode.other" });
@@ -68,7 +68,7 @@ describe("a plugin's own tables", () => {
         { sql: "UPDATE t SET v = ? WHERE v = ?", params: ["b", "a"] },
         { sql: "SELECT v FROM t" },
       ]);
-      expect(results[0]).toEqual([{ id: 1 }]);
+      expect(results[0]).toEqual([{ id: 1n }]);
       expect(results[1]).toEqual([]);
       expect(results[2]).toEqual([{ v: "b" }]);
       db.close();
@@ -83,9 +83,16 @@ describe("a plugin's own tables", () => {
       const db = openPluginDatabase({ dataDir, pluginId: "atyrode.example" });
       for (const sql of [
         "ATTACH DATABASE '/etc/passwd' AS x",
+        "; ATTACH DATABASE '/etc/passwd' AS x",
         "  -- a comment first\n PRAGMA journal_mode = DELETE",
         "/* block */ VACUUM",
         "SELECT load_extension('evil')",
+        "BEGIN IMMEDIATE",
+        "COMMIT",
+        "END",
+        "ROLLBACK",
+        "SAVEPOINT plugin_owned",
+        "RELEASE plugin_owned",
         "",
       ]) {
         await expect(db.query(sql)).rejects.toBeInstanceOf(PluginDatabaseError);
@@ -94,6 +101,21 @@ describe("a plugin's own tables", () => {
       await db.run("CREATE TABLE pragmatic(attach TEXT)");
       await db.run("INSERT INTO pragmatic(attach) VALUES ('vacuum')");
       expect(await db.query("SELECT attach FROM pragmatic")).toEqual([{ attach: "vacuum" }]);
+      db.close();
+    } finally {
+      done();
+    }
+  });
+
+  test("SQLite integers and rowids remain lossless", async () => {
+    const { dataDir, done } = scratch();
+    try {
+      const db = openPluginDatabase({ dataDir, pluginId: "atyrode.example" });
+      await db.run("CREATE TABLE ids(id INTEGER PRIMARY KEY)");
+      const id = 9007199254740993n;
+      const inserted = await db.run("INSERT INTO ids(id) VALUES (?)", [id]);
+      expect(inserted).toEqual({ changes: 1, lastInsertRowid: id });
+      expect(await db.query("SELECT id FROM ids")).toEqual([{ id }]);
       db.close();
     } finally {
       done();
@@ -110,6 +132,15 @@ describe("a plugin's own tables", () => {
       );
       await expect(db.query("SELECT i FROM n")).rejects.toThrow(/10000-row limit/);
       expect((await db.query("SELECT i FROM n LIMIT 10000")).length).toBe(10000);
+      await expect(
+        db.batch([{ sql: "SELECT i FROM n LIMIT 5001" }, { sql: "SELECT i FROM n LIMIT 5001" }]),
+      ).rejects.toThrow(/10000-row limit/);
+      const alias = "a".repeat(60 * 1024);
+      await expect(db.query(`SELECT i AS "${alias}" FROM n LIMIT 100`)).rejects.toThrow(
+        /result.*byte limit/,
+      );
+      await expect(db.query("SELECT 1e999 AS value")).rejects.toThrow(/non-finite/);
+      await expect(db.query("SELECT ?", [Number.POSITIVE_INFINITY])).rejects.toThrow(/finite/);
       await expect(db.query("SELECT 1", new Array(1000).fill(1))).rejects.toThrow(/999/);
       await expect(db.batch([])).rejects.toBeInstanceOf(PluginDatabaseError);
       await expect(db.query("SELECT ?", [{} as never])).rejects.toBeInstanceOf(PluginDatabaseError);
@@ -123,6 +154,12 @@ describe("a plugin's own tables", () => {
           { sql: "SELECT ?", params: [half] },
         ]),
       ).rejects.toThrow(/batch input.*byte limit/);
+      await db.run("CREATE TABLE payloads(body BLOB)");
+      await db.run("INSERT INTO payloads VALUES (zeroblob(2097152))");
+      expect((await db.query("SELECT body FROM payloads")).length).toBe(1);
+      await expect(
+        db.batch([{ sql: "SELECT body FROM payloads" }, { sql: "SELECT body FROM payloads" }]),
+      ).rejects.toThrow(/result.*byte limit/);
       db.close();
     } finally {
       done();

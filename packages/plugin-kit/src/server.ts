@@ -230,7 +230,7 @@ export interface GuestDatabase {
   run(
     sql: string,
     params?: readonly GuestSqlParam[],
-  ): Promise<{ readonly changes: number; readonly lastInsertRowid: number }>;
+  ): Promise<{ readonly changes: number; readonly lastInsertRowid: bigint }>;
   batch(statements: readonly GuestSqlStatement[]): Promise<readonly (readonly GuestSqlRow[])[]>;
 }
 /** What the engine's placement executor answers, restated over protocol types. */
@@ -508,6 +508,12 @@ const REFUSED_LEADING_KEYWORDS: Record<string, true> = {
   DETACH: true,
   VACUUM: true,
   PRAGMA: true,
+  BEGIN: true,
+  COMMIT: true,
+  END: true,
+  RELEASE: true,
+  ROLLBACK: true,
+  SAVEPOINT: true,
 };
 const REFUSED_FUNCTIONS = /\bload_extension\s*\(/i;
 
@@ -545,6 +551,9 @@ function assertSqlStatement(sql: string): void {
     );
   }
   const keyword = leadingKeyword(sql);
+  if (keyword === "") {
+    throw new PluginDatabaseError("a statement must begin with an SQL keyword");
+  }
   if (REFUSED_LEADING_KEYWORDS[keyword] === true) {
     throw new PluginDatabaseError(
       `${keyword} is refused: a plugin's database is one file and the engine opened it`,
@@ -577,6 +586,9 @@ function validateSqlParams(params: readonly GuestSqlParam[] | undefined): number
       throw new PluginDatabaseError(
         `a parameter must be a string, number, bigint, boolean, null or Uint8Array, not ${kind}`,
       );
+    }
+    if (typeof value === "number" && !Number.isFinite(value)) {
+      throw new PluginDatabaseError("a numeric parameter must be finite");
     }
     bytes +=
       typeof value === "string"
@@ -625,6 +637,9 @@ const MAX_SQL_BASE64_CHARS = Math.ceil(MAX_SQL_PARAMS_BYTES / 3) * 4;
 
 /** JSON-safe encoding for the two SQLite scalar types JSON itself cannot carry. */
 function sqlValueToWire(value: GuestSqlParam): unknown {
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new PluginDatabaseError("a numeric parameter must be finite");
+  }
   if (typeof value === "bigint") return { [SQL_WIRE_TAG]: "bigint", value: value.toString() };
   if (value instanceof Uint8Array) {
     return {
@@ -639,8 +654,8 @@ function sqlValueFromWire(value: unknown): GuestSqlParam {
   if (
     value === null ||
     typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
   )
     return value;
   if (typeof value !== "object" || Array.isArray(value))
@@ -665,6 +680,21 @@ function sqlRowsFromWire(value: unknown): readonly GuestSqlRow[] {
       Object.entries(row).map(([column, cell]) => [column, sqlValueFromWire(cell)]),
     );
   });
+}
+
+function sqlRunResultFromWire(value: unknown): {
+  readonly changes: number;
+  readonly lastInsertRowid: bigint;
+} {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new PluginDatabaseError("the host returned an invalid SQL run result");
+  }
+  const changes = Reflect.get(value, "changes");
+  const lastInsertRowid = sqlValueFromWire(Reflect.get(value, "lastInsertRowid"));
+  if (!Number.isSafeInteger(changes) || changes < 0 || typeof lastInsertRowid !== "bigint") {
+    throw new PluginDatabaseError("the host returned an invalid SQL run result");
+  }
+  return { changes, lastInsertRowid };
 }
 
 function sqlParamsToWire(params: readonly GuestSqlParam[]): readonly unknown[] {
@@ -877,13 +907,9 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       run: async (sql, params) => {
         assertSqlStatement(sql);
         assertSqlParams(params);
-        return (await ask(
-          "database.run",
-          params === undefined ? [sql] : [sql, sqlParamsToWire(params)],
-        )) as {
-          changes: number;
-          lastInsertRowid: number;
-        };
+        return sqlRunResultFromWire(
+          await ask("database.run", params === undefined ? [sql] : [sql, sqlParamsToWire(params)]),
+        );
       },
       batch: async (statements) => {
         assertSqlBatch(statements);

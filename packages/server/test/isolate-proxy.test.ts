@@ -2,13 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  JobSettledCtx,
-  LifecycleCtx,
-  PluginDatabase,
-  PluginJobContext,
-  PluginStorage,
-  SqlStatement,
+import {
+  MAX_SQL_BATCH_STATEMENTS,
+  MAX_SQL_PARAMS,
+  MAX_SQL_PARAMS_BYTES,
+  type JobSettledCtx,
+  type LifecycleCtx,
+  type PluginDatabase,
+  type PluginJobContext,
+  type PluginStorage,
+  type SqlStatement,
 } from "@manifold/plugin";
 import { PluginDatabaseError } from "@manifold/plugin-kit";
 import { attachServerGuest } from "@manifold/plugin-kit/server";
@@ -338,7 +341,7 @@ describe("serveCtxCall", () => {
         },
         run: async (_sql: string, params?: readonly unknown[]) => {
           seen.push(params);
-          return { changes: 1, lastInsertRowid: 1 };
+          return { changes: 1, lastInsertRowid: 1n };
         },
         batch: async (statements: readonly SqlStatement[]) => {
           seen.push(...statements.map((statement) => statement.params));
@@ -359,7 +362,12 @@ describe("serveCtxCall", () => {
           lifecycle: {
             async onEnable(ctx) {
               const bytes = new Uint8Array([1, 2, 3]);
-              await ctx.database!.run("INSERT INTO values VALUES (?, ?)", [23n, bytes]);
+              const inserted = await ctx.database!.run("INSERT INTO values VALUES (?, ?)", [
+                23n,
+                bytes,
+              ]);
+              if (inserted.lastInsertRowid !== 1n)
+                throw new Error("database rowid changed across the guest boundary");
               const rows = await ctx.database!.query("SELECT integer, bytes FROM values", [
                 29n,
                 bytes,
@@ -634,6 +642,61 @@ describe("serveCtxCall", () => {
     }
   });
 
+  test("database wire inputs are bounded before decoding or invoking the plugin database", async () => {
+    const store = testStore();
+    let calls = 0;
+    const unavailable = async (): Promise<never> => {
+      calls += 1;
+      throw new Error("database should not be called");
+    };
+    const served = {
+      kind: "hook" as const,
+      ctx: {
+        pluginId: manifest.id,
+        storage: store.pluginStorage(manifest.id),
+        database: {
+          pluginId: manifest.id,
+          query: unavailable,
+          run: unavailable,
+          batch: unavailable,
+        } as PluginDatabase,
+        now: () => 0,
+        emit: () => {},
+      },
+    };
+    try {
+      await expect(
+        serveCtxCall(
+          "database.query",
+          ["SELECT 1", new Array(MAX_SQL_PARAMS + 1).fill(null)],
+          served,
+        ),
+      ).rejects.toThrow(/too many SQL parameters/);
+      await expect(
+        serveCtxCall(
+          "database.batch",
+          [new Array(MAX_SQL_BATCH_STATEMENTS + 1).fill({ sql: "SELECT 1" })],
+          served,
+        ),
+      ).rejects.toThrow(/too many SQL statements/);
+      const half = "x".repeat(Math.floor(MAX_SQL_PARAMS_BYTES / 2));
+      await expect(
+        serveCtxCall(
+          "database.batch",
+          [
+            [
+              { sql: "SELECT ?", params: [half] },
+              { sql: "SELECT ?", params: [half] },
+            ],
+          ],
+          served,
+        ),
+      ).rejects.toThrow(/SQL input.*byte limit/);
+      expect(calls).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
   test("a plugin that declared no database has no slice on either side of the boundary", async () => {
     const storage = testStore().pluginStorage(manifest.id);
     const served = {

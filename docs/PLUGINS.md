@@ -922,7 +922,7 @@ interface PluginDatabase {
   run(
     sql: string,
     params?: readonly SqlParam[],
-  ): Promise<{ changes: number; lastInsertRowid: number }>;
+  ): Promise<{ changes: number; lastInsertRowid: bigint }>;
   batch(
     statements: readonly { sql: string; params?: readonly SqlParam[] }[],
   ): Promise<readonly (readonly SqlRow[])[]>;
@@ -961,8 +961,8 @@ if (inserted.length === 0) return { refused: "somebody else filed it first" };
 | parameter bytes          | ≤ 4 MiB per call                                  |
 | aggregate `batch` input  | ≤ 4 MiB across statement text and parameters      |
 | statements per `batch`   | ≤ 256                                             |
-| rows returned per call   | ≤ 10,000 — page past it                           |
-| result bytes per call    | ≤ 4 MiB                                           |
+| rows returned per call   | ≤ 10,000 across the whole batch — page past it    |
+| result bytes per call    | ≤ 4 MiB, including column names and batch results |
 | cooperative batch budget | 5 s, checked between statements and before commit |
 | the file                 | `database.maxBytes`, ceiling 4 GiB                |
 
@@ -970,13 +970,17 @@ Bun's synchronous SQLite API has no progress-handler cancellation here. A single
 can exceed the cooperative budget and block the host thread, including when requested by a
 hardened guest; neither the batch budget nor the guest's ten-second chain timer preempts it.
 
-`ATTACH`, `DETACH`, `VACUUM`, `PRAGMA` and `load_extension` are refused by inspecting the first
-keyword before anything runs, and the file is opened with `trusted_schema` off. That is a guard
-against reaching outside your own file, not a sandbox. Your file is yours alone: the path comes
-from your manifest id, so two plugins cannot name each other's, and the engine never reads your
-tables for any purpose but purge and count. Hardened calls encode `bigint` and `Uint8Array`
-values into bounded JSON-safe database wire values and decode them on the other side; the public
-SQL value contract is the same in-realm and isolated.
+`ATTACH`, `DETACH`, `VACUUM`, `PRAGMA`, transaction-control statements (`BEGIN`, `COMMIT`,
+`END`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`) and `load_extension` are refused before anything
+runs. The engine owns the file and every transaction boundary, and opens the file with
+`trusted_schema` off. That is a guard against reaching outside your own file, not a sandbox.
+Your file is yours alone: the path comes from your manifest id, so two plugins cannot name each
+other's, and the engine never reads your tables for any purpose but purge and count. SQLite
+`INTEGER` values and rowids are lossless `bigint`s; finite `REAL` values remain numbers.
+Hardened calls encode `bigint` and `Uint8Array` values into bounded JSON-safe database wire
+values and decode them on the other side; the public SQL value contract is the same in-realm
+and isolated. Non-finite numeric parameters or results are refused rather than changing to
+JSON `null`.
 
 **Your tables are made by a migration, or lazily by your own code.** `PluginMigration.migrate`
 takes the database as its second parameter, using the candidate manifest's declaration and byte cap:
