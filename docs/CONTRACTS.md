@@ -2716,10 +2716,11 @@ read a retained IPC-1 owner and resume its existing terminals. Without an explic
 declaration it cannot create new ambient shells. Governed requests still require their
 separate native owner proof and admitted resource/runtime bindings.
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 32. Version 31 added an
-operation's declared `limits.concurrentJobs`; version 32 adds metered service policies and a job's
-inference limits, usage and journal events. Both cross the strict owner parser in install, start,
-event and result frames, so older owners are fenced before receiving either shape.
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 33. Version 31 added an
+operation's declared `limits.concurrentJobs`; version 32 added metered service policies and a job's
+inference limits, usage and journal events; version 33 adds the workload's own reported progress as
+a job event of its own. All of them cross the strict owner parser, in install, start, event and
+result frames, so older owners are fenced before receiving any of those shapes.
 It is not the hub/session `PROTOCOL_VERSION`: an unchanged native RPC remains compatible
 through a transport or browser upgrade. A native RPC change requires its own coordinated,
 drained owner upgrade. Compatibility alone never proves current execution consent or
@@ -3141,6 +3142,25 @@ provider handling and postconditions belong to plugins, never the common floor.
     session, `parentTrace`, `originTraceAvailable`, phase, state, exact target pins and result
     exit code. They do not expose credential values, inputs, environment or raw output;
     absence of originating trace metadata is represented, not invented.
+- **Reported progress.** A workload says where it is by writing a newline-delimited
+  `{"type": "progress", "stage", "message"?, "fraction"?}` frame to its private owner channel
+  (`MANIFOLD_JOB_CONTEXT_FD`; `WorkerContext.reportProgress` in the SDK). It is a frame on that
+  channel rather than a host file the owner tails, because every job already has the channel,
+  it is bounded on both sides, and a workload-writable host file would have to join the output
+  store's writer retention. The owner takes a stage off that channel WITHOUT the ordering every
+  other frame keeps, because the request it would queue behind is a service call — the model
+  call itself in the brokered lane — and a line announcing that call must not arrive after it,
+  be stamped at release, or spend the channel's input budget. A malformed stage is still a
+  protocol failure on that channel and cancels the job, which is why `reportProgress` validates
+  before writing and refuses `worker_progress_invalid` instead. The owner folds accepted lines
+  to at most one `job_progress` event per `JOB_PROGRESS_INTERVAL_MS` per job with the NEWEST
+  winning, carries the same owner facts every other job event carries plus the owner's own
+  observation time `at`, and flushes whatever it still holds before the job's terminal event.
+  The hub admits it only for a job it has already seen start and drops it otherwise, exactly
+  like any other event for a job that is not running; admitted, it journals and follows like
+  every lifecycle frame and is subject to the same retention. A stage is the workload's own
+  word, never a hub assertion that the work is progressing, and nothing waits on one: a job
+  that reports none is not unhealthy, and no valid stage can fail one.
 - **Follow and retention.** The public `PluginJobContext` exported from `@manifold/plugin`
   types `ctx.jobs`; `ctx.jobs.follow(node, receive)` returns a watermark snapshot and a
   close handle. `GuestJobs.follow` supplies the asynchronous contract across isolation.

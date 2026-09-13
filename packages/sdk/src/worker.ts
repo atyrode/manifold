@@ -11,8 +11,10 @@ import {
   ServiceReadySchema,
   ServiceReadyResultSchema,
   WorkerContextSchema,
+  WorkerProgressSchema,
   type ServiceCall,
   type WorkerLocation,
+  type WorkerProgress,
 } from "@manifold/protocol";
 import { JsonFrameReader, WorkerError, type WorkerErrorCode } from "./worker-input.ts";
 
@@ -22,13 +24,23 @@ export type {
   WorkerErrorCode,
   WorkerInputOptions,
 } from "./worker-input.ts";
-export type { WorkerLocation } from "@manifold/protocol";
+export type { WorkerLocation, WorkerProgress } from "@manifold/protocol";
 
 export interface WorkerContextOptions {
   /** Defaults to MANIFOLD_JOB_CONTEXT_FD. Ownership transfers on successful adoption. */
   fd?: number | string;
   signal?: AbortSignal;
 }
+
+/**
+ * How many bytes of unflushed stages the socket may hold, independent of the reply queue.
+ *
+ * Its own number because the two have opposite failure modes: a full reply queue ends the
+ * context, while a stage that does not fit is dropped. Deliberately small — the owner keeps
+ * only the newest line per window, so anything queued behind a few hundred bytes is already
+ * destined to be discarded.
+ */
+const PROGRESS_QUEUE_BYTES = 8 * 1024;
 
 export interface WorkerContext {
   /** Owner-resolved locations, available only after the strict initial context frame. */
@@ -39,6 +51,20 @@ export interface WorkerContext {
   callService(request: Pick<ServiceCall, "serviceId" | "operationId" | "input">): Promise<unknown>;
   /** Resolves only after the owner accepts this child's runtime-service readiness. One attempt. */
   announceServiceReady(port: number): Promise<void>;
+  /**
+   * Says where this workload is. Fire and forget: the owner answers nothing, coalesces to at
+   * most one event every five seconds per job, and the newest line always wins — so reporting
+   * often is cheap and reporting a stale phase is the only mistake available.
+   *
+   * Throws `worker_progress_invalid` for a stage that is not 1–64 characters of lowercase
+   * `[a-z0-9 ._-]` without a leading or trailing space, a `message` over 256 characters or
+   * carrying a control character, or a `fraction` outside 0..1 — validated HERE so a bad
+   * stage costs a caught error rather than the run. A workload that writes the same frame
+   * to `MANIFOLD_JOB_CONTEXT_FD` by hand gets no such grace: the owner fails that channel
+   * with `context_protocol_error` and cancels the job. A valid stage is never fatal; one
+   * that does not fit the outbound budget is silently dropped.
+   */
+  reportProgress(progress: Omit<WorkerProgress, "type">): void;
   close(): void;
 }
 
@@ -82,6 +108,7 @@ class NativeWorkerContext implements WorkerContext {
   #queuedBytes = 0;
   #receivedContext = false;
   #announced = false;
+  #progressBytes = 0;
   #failure: WorkerError | undefined;
 
   constructor(
@@ -128,6 +155,28 @@ class NativeWorkerContext implements WorkerContext {
     if (!request.success) throw new WorkerError("service_invalid_request");
     this.#announced = true;
     await this.#request(request.data.requestId, "service_ready", request.data);
+  }
+
+  reportProgress(progress: Omit<WorkerProgress, "type">): void {
+    if (this.#failure) return;
+    const frame = WorkerProgressSchema.safeParse({ ...progress, type: "progress" });
+    if (!frame.success) throw new WorkerError("worker_progress_invalid");
+    const bytes = Buffer.from(`${JSON.stringify(frame.data)}\n`);
+    // Stages get their own budget, never the reply queue's. `#send` finishes the whole
+    // context when that queue is full, so bytes a disposable stage put on the wire must not
+    // be able to reject a call the application is awaiting — and a stage that does not fit
+    // is simply dropped, which is what coalescing does to it upstream anyway.
+    if (this.#progressBytes + bytes.length > PROGRESS_QUEUE_BYTES) return;
+    this.#progressBytes += bytes.length;
+    try {
+      this.socket.write(bytes, (error) => {
+        this.#progressBytes -= bytes.length;
+        if (error) this.#finish("worker_disconnected");
+      });
+    } catch {
+      this.#progressBytes -= bytes.length;
+      this.#finish("worker_disconnected");
+    }
   }
 
   #request(requestId: string, kind: PendingRequest["kind"], value: unknown): Promise<unknown> {

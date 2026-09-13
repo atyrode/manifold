@@ -44,6 +44,7 @@ import {
 import type { JobJournal } from "./job-journal.ts";
 import { jobDigest } from "./job-journal.ts";
 import { JobContext } from "./job-context.ts";
+import { JobProgressCoalescer, type ObservedProgress } from "./job-progress.ts";
 import type { JobOutputStore } from "./job-outputs.ts";
 import { type JobOutputLease, type JobOutputByteStream } from "./job-outputs.ts";
 import {
@@ -150,6 +151,7 @@ interface OwnedJob {
   serviceProxies: Map<string, JobServiceProxy>;
   runtimeServices: Map<string, RuntimeService>;
   serviceRuntime: RuntimeService | undefined;
+  progress: JobProgressCoalescer;
   /** Totals across the job's metered calls, or null when it bound no metered operation.
    * They belong to the job, not to a proxy, and settle with its result. */
   inferenceUsage: JobInferenceUsage | null;
@@ -2182,6 +2184,7 @@ export class MachineJobOwner {
         command: (next) => this.execute(next, request.jobId),
         service: (call, signal) => this.jobServiceCall(job, call, signal),
         serviceReady: (port) => this.announceServiceReady(job, port),
+        progress: (frame) => job.progress.report(frame),
         failure: (reason) => {
           const pending = [...(job.context?.invocations.values() ?? [])].some(
             (invocation) =>
@@ -2357,6 +2360,7 @@ export class MachineJobOwner {
           job.resolveFinalized();
         }
         this.closeInputFiles(job);
+        job.progress.close();
       }
       throw error;
     }
@@ -2371,6 +2375,9 @@ export class MachineJobOwner {
     this.closeInputFiles(job);
     for (const release of job.releaseWriters) release();
     job.releaseWriters = [];
+    // The last stage reported must reach the hub while the job is still started: after the
+    // terminal event the hub refuses it, and it is exactly the word an operator reads after.
+    job.progress.flush();
     const result: JobResult = {
       ...job.result,
       state: observed.reason === "cancelled" ? "cancelled" : "exited",
@@ -2469,6 +2476,7 @@ export class MachineJobOwner {
     handle?.release();
     job.handle = null;
     job.context?.close();
+    job.progress.close();
     for (const location of job.locations.values()) location.close();
     job.locations.clear();
   }
@@ -2490,6 +2498,7 @@ export class MachineJobOwner {
         /* No output sealing without empty proof. */
       }
     }
+    job.progress.flush();
     job.result = {
       ...job.result,
       state: "interrupted",
@@ -2501,6 +2510,7 @@ export class MachineJobOwner {
     this.options.journal.append({ kind: "result", result: job.result });
     this.emit({ type: "result", result: job.result }, job);
     job.resolveFinalized();
+    job.progress.close();
   }
 
   private async retire(job: OwnedJob): Promise<void> {
@@ -2631,6 +2641,7 @@ export class MachineJobOwner {
       serviceProxies: new Map(),
       runtimeServices: new Map(),
       serviceRuntime: undefined,
+      progress: new JobProgressCoalescer((progress) => this.emitProgress(job, progress)),
       inferenceUsage: null,
       inferenceValid: true,
       inferenceTail: Promise.resolve(),
@@ -2641,6 +2652,25 @@ export class MachineJobOwner {
     const job = this.jobs.get(jobId);
     if (!job) throw new Error("unknown_job");
     return job;
+  }
+  /**
+   * The hub admits a stage only for a job it has seen start, so neither does the owner report
+   * one before its own `started` event or after its terminal one: a phase without a running
+   * workload behind it is a claim, not an observation.
+   */
+  private emitProgress(job: OwnedJob, progress: ObservedProgress): void {
+    if (this.jobs.get(job.request.jobId) !== job || job.result.state !== "started") return;
+    this.emit(
+      {
+        type: "job_progress",
+        jobId: job.request.jobId,
+        requestDigest: job.request.requestDigest,
+        ownerId: job.result.ownerId,
+        ownerGeneration: job.result.ownerGeneration,
+        ...progress,
+      },
+      job,
+    );
   }
   private emitEmpty(job: OwnedJob): void {
     if (!job.emptyObserved || this.jobs.get(job.request.jobId) !== job) return;

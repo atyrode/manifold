@@ -2613,6 +2613,7 @@ export class JobService {
       event.type !== "result" &&
       event.type !== "output" &&
       event.type !== "refusal" &&
+      event.type !== "job_progress" &&
       event.type !== "inference_call" &&
       event.type !== "inference_ceiling"
     )
@@ -4326,6 +4327,13 @@ export class JobService {
       fact.ownerGeneration > live.owner.generation
     )
       return;
+    // A stage is only meaningful for a workload that is actually running: before `started`
+    // there is no process to be anywhere, so it is dropped the way every other event for a
+    // job the hub has not seen start is dropped.
+    if (event.type === "job_progress") {
+      if (job.state === "started") this.publishJobEvent(job.request.jobId, event);
+      return;
+    }
     if (event.type === "workload_empty") {
       const closed = this.store.transaction(() => {
         if (!this.jobs.confirmEmpty(job.request.jobId)) return false;

@@ -12,7 +12,7 @@ import { ServiceTunnelFrameSchema } from "./services.ts";
 import { JobResourceBindingsSchema, JobResourceInventorySchema } from "./job-resources.ts";
 
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = 32;
+export const JOB_OWNER_PROTOCOL_VERSION = 33;
 
 const id = z.string().min(1).max(128);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -836,6 +836,39 @@ export const JobInstallationResourcesSchema = z.strictObject({
 });
 export type JobInstallationResources = z.infer<typeof JobInstallationResourcesSchema>;
 /**
+ * Where a running workload says it is.
+ *
+ * Between `started` and a terminal state the record carries only what the hub and the owner
+ * know, which is nothing about the work itself: a job ten minutes into preparing its own input
+ * and a job wedged with nothing behind it are the same journal. A stage is the WORKLOAD's word
+ * for its current phase, reported through its owner rather than claimed on the wire, so it
+ * carries the same owner facts every other job event does and is admitted only for a job the
+ * hub has already seen start. The owner coalesces it: a chatty run cannot buy sequence numbers,
+ * the newest line always wins, and `at` is when the OWNER observed that line rather than when
+ * the hub received the event it was folded into.
+ */
+export const JobProgressEventSchema = z.strictObject({
+  type: z.literal("job_progress"),
+  jobId: id,
+  requestDigest: hash,
+  ownerId: id,
+  ownerGeneration: count,
+  /** A short lowercase phase an operator reads in a row: `preparing`, `at the model`. */
+  stage: z.string().regex(/^[a-z0-9](?:[a-z0-9 ._-]{0,62}[a-z0-9])?$/),
+  /** One line of detail without control characters: it is read in a row, never replayed to a tty. */
+  message: z
+    .string()
+    .max(256)
+    .regex(/^\P{Cc}*$/u)
+    .optional(),
+  fraction: z.number().min(0).max(1).optional(),
+  /** Owner clock in milliseconds, when the reported line was observed. */
+  at: count,
+});
+export type JobProgressEvent = z.infer<typeof JobProgressEventSchema>;
+/** An owner forwards at most one `job_progress` per job per this many milliseconds. */
+export const JOB_PROGRESS_INTERVAL_MS = 5000;
+/**
  * One metered inference call, as the owner's proxy read it from the provider's usage object:
  * the model, the tokens, the price applied, never a prompt or a byte of the answer. Carries the
  * same owner facts a state event does, so the hub admits it by the same rule.
@@ -992,6 +1025,7 @@ export const JobEventSchema = z.discriminatedUnion("type", [
       .nullable(),
   }),
   z.strictObject({ type: z.literal("service_tunnel_frame"), frame: ServiceTunnelFrameSchema }),
+  JobProgressEventSchema,
   JobInferenceCallEventSchema,
   JobInferenceCeilingEventSchema,
 ]);
@@ -1001,6 +1035,7 @@ export const JobFollowEventSchema = z.union([
   JobEventSchema.options[3],
   JobEventSchema.options[4],
   JobEventSchema.options[5],
+  JobProgressEventSchema,
   JobInferenceCallEventSchema,
   JobInferenceCeilingEventSchema,
 ]);
@@ -1041,6 +1076,7 @@ export const JobLifecycleEventSchema = z.union([
   JobEventSchema.options[2],
   JobEventSchema.options[4],
   JobEventSchema.options[5],
+  JobProgressEventSchema,
   JobInferenceCallEventSchema,
   JobInferenceCeilingEventSchema,
 ]);

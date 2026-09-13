@@ -1762,7 +1762,22 @@ remain visible and revocable, but cannot authorize a replacement installation.
 Machine workers import `openWorkerContext` and `attachWorkerInput` from
 `@manifold/sdk/worker`. `ready` supplies owner-resolved locations; `callService` uses
 only declared scoped services; a provider calls `announceServiceReady` once after binding
-its listener. The native framed channel handles correlation, bounds, backpressure and
+its listener; `reportProgress({ stage, message?, fraction? })` says where the run is and is
+answered by nothing — the owner folds it to at most one journaled `job_progress` event every
+five seconds per job and the newest line wins, so reporting often is cheap and reporting a
+stale phase is the only mistake available. A stage is not ordered against replies: the owner
+takes it off the queue a service call sits in, so a run reports `at the model` while the model
+call it announces is still open. A worker that is not a TypeScript program writes the same
+`{"type":"progress",…}` line to `MANIFOLD_JOB_CONTEXT_FD` directly — and owes the schema in
+full on that path, because the owner validates every frame on that channel and a malformed one
+is a protocol failure: an uppercase or over-64-character `stage`, a character outside
+`[a-z0-9 ._-]`, a leading or trailing space, a `message` past 256 characters or holding a
+control character, or a `fraction` outside 0..1 fails the channel with
+`context_protocol_error`, and the owner then CANCELS the job. `reportProgress` validates
+before writing and throws `worker_progress_invalid` instead, so the SDK path costs a caught
+error rather than a run; neither path ever fails a job over a valid stage, and a valid stage
+that does not fit the outbound budget is dropped rather than queued.
+The native framed channel handles correlation, bounds, backpressure and
 disconnect cancellation. Do not reimplement that ABI or open a product-owned control socket.
 Readiness does not authenticate a port forever. Before sending a scoped HTTP request,
 the native owner opens a credential-free connection and proves that its established peer

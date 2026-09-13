@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MachineOperationSchema } from "./jobs.ts";
+import { JobProgressEventSchema, MachineOperationSchema } from "./jobs.ts";
 import { SERVICE_FRAME_BYTES, ServiceCallSchema } from "./services.ts";
 
 export const WORKER_CONTEXT_FD_ENV = "MANIFOLD_JOB_CONTEXT_FD";
@@ -34,6 +34,22 @@ export const WorkerContextSchema = z
     (value) => new TextEncoder().encode(JSON.stringify(value)).length + 1 <= WORKER_FRAME_BYTES,
   );
 
+/**
+ * A fire-and-forget line saying where the workload is, answered by nothing.
+ *
+ * It is a frame on the private owner channel rather than a file the owner tails: every job
+ * already has that channel on `MANIFOLD_JOB_CONTEXT_FD` as newline-delimited JSON, it is
+ * bounded on both sides, and its identity comes from the owning process. A host file the
+ * workload could append to would instead have to join the output store's writer retention,
+ * which exists so that no descriptor a workload wrote through outlives its empty proof.
+ */
+export const WorkerProgressSchema = z.strictObject({
+  type: z.literal("progress"),
+  stage: JobProgressEventSchema.shape.stage,
+  message: JobProgressEventSchema.shape.message,
+  fraction: JobProgressEventSchema.shape.fraction,
+});
+
 /** Readiness is a request to the owner, never a worker's grant of authority. */
 export const ServiceReadySchema = z.strictObject({
   type: z.literal("service_ready"),
@@ -64,3 +80,4 @@ export type WorkerContextFrame = z.infer<typeof WorkerContextSchema>;
 export type ServiceReady = z.infer<typeof ServiceReadySchema>;
 export type ServiceReadyResult = z.infer<typeof ServiceReadyResultSchema>;
 export type ServiceReadyRefusal = z.infer<typeof ServiceReadyRefusalSchema>;
+export type WorkerProgress = z.infer<typeof WorkerProgressSchema>;
