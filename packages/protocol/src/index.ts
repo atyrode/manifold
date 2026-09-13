@@ -233,6 +233,12 @@ export {
   JobFollowUpdateSchema,
   MAX_JOB_FOLLOW_EVENTS,
   MAX_JOB_FOLLOW_BYTES,
+  JobLifecycleEventSchema,
+  JobJournalPageSchema,
+  JobOutputPageSchema,
+  MAX_JOB_JOURNAL_EVENTS,
+  MAX_JOB_OUTPUT_PAGE_BYTES,
+  SettledJobSchema,
   canonicalJobJson,
   type MachineHalf,
   type MachineArtifact,
@@ -247,6 +253,10 @@ export {
   type JobFollowEvent,
   type JobFollowSnapshot,
   type JobFollowUpdate,
+  type JobLifecycleEvent,
+  type JobJournalPage,
+  type JobOutputPage,
+  type SettledJob,
 } from "./jobs.ts";
 export {
   DIAL_LIVENESS_TIMEOUT_MS,

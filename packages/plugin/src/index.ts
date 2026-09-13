@@ -108,6 +108,8 @@ export {
   type AssemblyChangedHook,
   type AssemblyDelta,
   type HookOutcome,
+  type JobSettledCtx,
+  type JobSettledHook,
   type LifecycleCtx,
   type LifecycleHook,
   type PluginLifecycle,

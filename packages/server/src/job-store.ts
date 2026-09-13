@@ -6,11 +6,15 @@ import {
 import type { AuthorityEvidence } from "./auth.ts";
 import {
   canonicalJobJson,
+  JobLifecycleEventSchema,
   JobRequestSchema,
   JobResultSchema,
   MachineHalfSchema,
+  MAX_JOB_JOURNAL_EVENTS,
   type JobRequest,
   type JobResult,
+  type JobJournalPage,
+  type JobLifecycleEvent,
   type JobPermit,
   type MachineHalf,
   type JobOwner,
@@ -471,6 +475,60 @@ export class JobStore {
         this.lifecycle(job, result.state);
       this.lifecycle(job, "result");
     });
+  }
+  /**
+   * The durable half of the follow sequence, and only its LIFECYCLE frames: a byte channel is
+   * live-only, because a durable public record carries lifecycle and digest facts rather than a
+   * transcript (ADR 0033 §Lifecycle and durability). The newest `MAX_JOB_JOURNAL_EVENTS` per job
+   * survive, so a job that transitions forever trims its own prefix instead of growing without
+   * end — and `journal` reports the surviving floor as `firstSeq` rather than implying it began
+   * there.
+   */
+  appendJournal(jobId: string, seq: number, at: number, event: JobLifecycleEvent): void {
+    this.store.transaction(() => {
+      this.store.db
+        .query(
+          "INSERT INTO machine_job_journal(job_id,seq,at,event) VALUES(?,?,?,?) ON CONFLICT(job_id,seq) DO NOTHING",
+        )
+        .run(jobId, seq, at, canonicalJobJson(event));
+      this.store.db
+        .query(
+          `DELETE FROM machine_job_journal WHERE job_id=? AND seq<=COALESCE(
+           (SELECT seq FROM machine_job_journal WHERE job_id=? ORDER BY seq DESC LIMIT 1 OFFSET ?),-1)`,
+        )
+        .run(jobId, jobId, MAX_JOB_JOURNAL_EVENTS);
+    });
+  }
+  journal(jobId: string, after: number, limit: number): JobJournalPage {
+    const rows = this.store.db
+      .query<{ seq: number; at: number; event: string }, [string, number, number]>(
+        "SELECT seq,at,event FROM machine_job_journal WHERE job_id=? AND seq>? ORDER BY seq LIMIT ?",
+      )
+      .all(jobId, after, limit);
+    const retained = this.store.db
+      .query<{ seq: number | null }, [string]>(
+        "SELECT MIN(seq) AS seq FROM machine_job_journal WHERE job_id=?",
+      )
+      .get(jobId);
+    const events = rows.map((row) => ({
+      seq: row.seq,
+      at: row.at,
+      event: JobLifecycleEventSchema.parse(JSON.parse(row.event)),
+    }));
+    return {
+      jobId,
+      events,
+      firstSeq: retained?.seq ?? null,
+      nextAfter: events.length === limit ? (events.at(-1)?.seq ?? null) : null,
+    };
+  }
+  /** Purge destroys a plugin's retained job metadata with the rest of its bounded state. */
+  purgeJournal(pluginId: string): void {
+    this.store.db
+      .query(
+        "DELETE FROM machine_job_journal WHERE job_id IN (SELECT job_id FROM machine_jobs WHERE plugin_id=?)",
+      )
+      .run(pluginId);
   }
   installation(machineId: string, pluginId: string, revision?: string): JobInstallation | null {
     const r = this.store.db

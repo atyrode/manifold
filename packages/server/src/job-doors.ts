@@ -13,6 +13,10 @@ import {
   type ListJobRunsArgs,
   type ListJobRunsResult,
   JobEventSchema,
+  JobJournalPageSchema,
+  JobOutputPageSchema,
+  MAX_JOB_JOURNAL_EVENTS,
+  MAX_JOB_OUTPUT_PAGE_BYTES,
   JobRequestSchema,
   PublicJobSchema,
   JobDescriptionSchema,
@@ -89,6 +93,18 @@ export const jobDoorSchemas = {
     offset: z.number().int().nonnegative(),
     maxBytes: z.number().int().positive().max(65536),
   }),
+  /** A finished job's own output, by declared name: the reader never learns an output ID. */
+  outputs: z.strictObject({
+    node: jobNode,
+    name: JobOutputPageSchema.shape.name,
+    offset: z.number().int().nonnegative(),
+    limit: z.number().int().positive().max(MAX_JOB_OUTPUT_PAGE_BYTES),
+  }),
+  journal: z.strictObject({
+    node: jobNode,
+    after: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    limit: z.number().int().positive().max(MAX_JOB_JOURNAL_EVENTS).optional(),
+  }),
   install: z.strictObject({
     machineId: id,
     pluginId: id,
@@ -119,7 +135,7 @@ export function jobContext(
   service: () => JobService,
   auth: AuthContext,
   pluginId: string,
-  traceId: number,
+  traceId: number | string,
 ): JobContext {
   const callee = (requested?: string): string =>
     pluginId === "engine.jobs" ? id.parse(requested) : pluginId;
@@ -189,6 +205,20 @@ export function jobContext(
     output: (args: z.infer<typeof schemas.output>) => {
       const a = schemas.output.parse(args);
       return service().output(auth, a.node, a.offset, a.maxBytes, pluginId);
+    },
+    outputs: (args: z.infer<typeof schemas.outputs>) => {
+      const a = schemas.outputs.parse(args);
+      return service().outputs(auth, a.node, a.name, a.offset, a.limit, pluginId);
+    },
+    journal: (args: z.infer<typeof schemas.journal>) => {
+      const a = schemas.journal.parse(args);
+      return service().journal(
+        auth,
+        a.node,
+        a.after ?? 0,
+        a.limit ?? MAX_JOB_JOURNAL_EVENTS,
+        pluginId,
+      );
     },
     install: (args: z.infer<typeof schemas.install>) => {
       administrator();
@@ -271,6 +301,27 @@ async function call(run: () => unknown) {
 }
 const empty = z.strictObject({});
 const accepted = z.strictObject({ accepted: z.literal(true) });
+/** What each door answers with; everything absent here answers the empty object. */
+const results: Record<string, z.ZodType<unknown>> = {
+  reviewDeployment: JobDeploymentReviewSchema,
+  applyDeployment: JobDeploymentSchema,
+  readDeployment: JobDeploymentSchema,
+  cancelDeployment: JobDeploymentSchema,
+  listDeployments: JobDeploymentListResultSchema,
+  describeDeployment: JobDeploymentDescriptionSchema,
+  inspectInvocations: InspectJobInvocationsResultSchema,
+  describe: JobDescriptionSchema,
+  execute: publicJob,
+  status: publicJob,
+  listRuns: ListJobRunsResultSchema,
+  output: JobEventSchema,
+  outputs: JobOutputPageSchema,
+  journal: JobJournalPageSchema,
+  schedules: z.array(publicSchedule),
+  install: accepted,
+  input: accepted,
+  cancel: accepted,
+} satisfies Partial<Record<keyof typeof schemas, z.ZodType<unknown>>>;
 export const jobDoors: ServerPluginDef = {
   manifest: {
     id: "engine.jobs",
@@ -308,30 +359,7 @@ export const jobDoors: ServerPluginDef = {
           : [],
       trace: "opaque",
       input,
-      result:
-        name === "reviewDeployment"
-          ? JobDeploymentReviewSchema
-          : name === "applyDeployment" || name === "readDeployment" || name === "cancelDeployment"
-            ? JobDeploymentSchema
-            : name === "listDeployments"
-              ? JobDeploymentListResultSchema
-              : name === "describeDeployment"
-                ? JobDeploymentDescriptionSchema
-                : name === "inspectInvocations"
-                  ? InspectJobInvocationsResultSchema
-                  : name === "describe"
-                    ? JobDescriptionSchema
-                    : name === "execute" || name === "status"
-                      ? publicJob
-                      : name === "listRuns"
-                        ? ListJobRunsResultSchema
-                        : name === "output"
-                          ? JobEventSchema
-                          : name === "schedules"
-                            ? z.array(publicSchedule)
-                            : name === "install" || name === "input" || name === "cancel"
-                              ? accepted
-                              : empty,
+      result: results[name] ?? empty,
     }),
   ),
   handlers: {
@@ -361,6 +389,10 @@ export const jobDoors: ServerPluginDef = {
       call(() => ctx.jobs.cancel(args.node)),
     output: (ctx: ActionCtx, args: z.infer<typeof schemas.output>) =>
       call(() => ctx.jobs.output(args)),
+    outputs: (ctx: ActionCtx, args: z.infer<typeof schemas.outputs>) =>
+      call(() => ctx.jobs.outputs(args)),
+    journal: (ctx: ActionCtx, args: z.infer<typeof schemas.journal>) =>
+      call(() => ctx.jobs.journal(args)),
     install: (ctx: ActionCtx, args: z.infer<typeof schemas.install>) =>
       call(() => ctx.jobs.install(args)),
     consent: (ctx: ActionCtx, args: z.infer<typeof schemas.consent>) =>
