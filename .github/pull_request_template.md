@@ -21,3 +21,8 @@ Closes #N
 ## Acceptance
 
 - [ ] Copy every acceptance criterion from the issue and attach its evidence.
+
+## Fragment
+
+- [ ] `changes/<issue>-<slug>.md` added
+- [ ] not user-visible: none
