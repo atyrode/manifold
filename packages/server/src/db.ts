@@ -1,12 +1,14 @@
+import { createHash } from "node:crypto";
 import { renameSync, rmSync } from "node:fs";
 import { Database } from "bun:sqlite";
+import { canonicalJobJson, type JobDeploymentReview } from "@manifold/protocol";
 import { migrateToGrantRows } from "./migrate-grants.ts";
 import { migrateToCanonLexicon, migrateToElementRefs } from "./migrate-lexicon.ts";
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 33;
+export const SCHEMA_VERSION = 34;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -742,6 +744,60 @@ CREATE TABLE plugin_database_journal(
 );
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','33');
 `,
+  34: {
+    backup: false,
+    apply(db) {
+      db.exec(`
+ALTER TABLE job_invocation_edges ADD COLUMN revision TEXT NOT NULL DEFAULT '';
+UPDATE job_invocation_edges SET revision=lower(hex(randomblob(16)));
+`);
+      const emptyEdges = createHash("sha256").update(canonicalJobJson([])).digest("hex");
+      const emptyScope = createHash("sha256")
+        .update(canonicalJobJson({ evidence: [], unavailable: [] }))
+        .digest("hex");
+      const emptyApprovals = createHash("sha256").update(canonicalJobJson([[], []])).digest("hex");
+      for (const row of db
+        .query<{ deployment_id: string; approval: string }, []>(
+          "SELECT deployment_id,approval FROM machine_job_deployments WHERE approval<>''",
+        )
+        .all()) {
+        const approval = JSON.parse(row.approval) as {
+          review: JobDeploymentReview;
+          evidence?: Record<string, unknown>[];
+        };
+        // The old declaration can prove absence of edges, not the historical runtime
+        // scope of a service binding. Never infer that scope from today's configuration.
+        const edgeFree =
+          Array.isArray(approval.review.request?.operationIds) &&
+          Array.isArray(approval.evidence) &&
+          approval.evidence.length === approval.review.targets.length &&
+          approval.review.request.operationIds.every((operationId) => {
+            const operation = approval.review.machine?.operations[operationId];
+            return operation && !operation.services?.length;
+          });
+        for (const target of approval.review.targets) target.invocationEdges = [];
+        if (edgeFree) {
+          // These are consequences of the exact reviewed declaration, not new approvals.
+          for (const evidence of approval.evidence!) {
+            evidence.invocations = emptyScope;
+            evidence.invocationApprovals = emptyApprovals;
+          }
+          db.query(
+            "UPDATE machine_job_deployment_targets SET receipt=json_object('consents',receipt,'invocationEdges',?) WHERE deployment_id=? AND receipt IS NOT NULL",
+          ).run(emptyEdges, row.deployment_id);
+        } else {
+          db.query(
+            "UPDATE machine_job_deployment_targets SET phase='needs_review',reason='deployment_review_stale' WHERE deployment_id=? AND phase<>'cancelled'",
+          ).run(row.deployment_id);
+        }
+        db.query("UPDATE machine_job_deployments SET approval=? WHERE deployment_id=?").run(
+          canonicalJobJson(approval),
+          row.deployment_id,
+        );
+      }
+      db.exec("INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','34');");
+    },
+  },
 };
 
 interface TableRow {

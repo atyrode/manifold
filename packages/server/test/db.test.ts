@@ -19,6 +19,13 @@ import { migrateToGrantRows } from "../src/migrate-grants.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
 
+const LEGACY_JOB_INVOCATION_EDGES = `
+CREATE TABLE job_invocation_edges(
+ caller TEXT NOT NULL, operation_id TEXT NOT NULL, edge TEXT NOT NULL, enabled INTEGER NOT NULL,
+ PRIMARY KEY(caller,operation_id)
+);
+`;
+
 test("an event write survives a competing SQLite write lock", async () => {
   const dir = mkdtempSync(join(tmpdir(), "manifold-db-busy-"));
   const path = join(dir, "manifold.db");
@@ -2099,7 +2106,7 @@ INSERT INTO job_schedules(schedule_id, revision, spec, next_nominal)
 VALUES ('schedule-1', '1', '{}', 100);
 INSERT INTO job_schedule_occurrences VALUES ('schedule-1', '1', 100, 'job-1', '{}', 200, 'admitted', NULL);
 INSERT INTO job_invocation_reservations VALUES ('parent', 'invocation', 'job-1', 'root', 1, '{}', '{}', 1);
-INSERT INTO job_invocation_edges VALUES ('vendor.worker', 'run', '{}', 1);
+INSERT INTO job_invocation_edges VALUES ('vendor.worker', 'run', '{}', 1, 'edge-1');
 UPDATE tokens SET revoked_at = 7 WHERE id = 'finite';
 DELETE FROM grants WHERE id = 'finite-grant';
 `);
@@ -2173,6 +2180,7 @@ CREATE TABLE machine_job_installations(machine_id TEXT NOT NULL, plugin_id TEXT 
 CREATE TABLE machine_job_inputs(job_id TEXT NOT NULL, request_id TEXT NOT NULL, seq INTEGER NOT NULL, actor TEXT NOT NULL, trace_id TEXT NOT NULL, decision_id TEXT, state TEXT NOT NULL, reason TEXT, PRIMARY KEY(job_id,request_id));
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, digest TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, permit TEXT, result TEXT, created_at INTEGER NOT NULL, audit_origin TEXT, decision_id TEXT, cancel_reason TEXT, event_seq INTEGER NOT NULL DEFAULT 0, output_seq INTEGER, next_input_seq INTEGER, stdin_closed INTEGER NOT NULL DEFAULT 0);
 ${LEGACY_PLUGIN_INSTALLS}
+${LEGACY_JOB_INVOCATION_EDGES}
 INSERT INTO machine_job_installs VALUES ('machine', 'vendor.worker', 'install-2', 'artifact-2', '{}', 1, 1, 0);
 INSERT INTO machine_job_installations VALUES
   ('machine', 'vendor.worker', 'install-1', 'artifact-1', '{}'),
@@ -2264,6 +2272,7 @@ CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 INSERT INTO meta VALUES ('schema_version', '28');
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, cancel_reason TEXT);
 ${LEGACY_PLUGIN_INSTALLS}
+${LEGACY_JOB_INVOCATION_EDGES}
 INSERT INTO machine_jobs VALUES
   ('legacy', 'instance_service_configuration_changed'),
   ('active', NULL);
@@ -2283,6 +2292,50 @@ INSERT INTO machine_jobs VALUES
     expect(db.query("SELECT cancel_mode FROM machine_jobs WHERE job_id='legacy'").get()).toEqual({
       cancel_mode: "cancel",
     });
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("migration 34 preserves edge authority and retires reviews that never displayed it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "manifold-db-deployment-edges-upgrade-"));
+  const path = join(dir, "manifold.db");
+  let db = openDatabase(path);
+  try {
+    db.exec(`
+ALTER TABLE job_invocation_edges DROP COLUMN revision;
+INSERT INTO job_invocation_edges VALUES ('caller-a','callee','{"maxDepth":1}',1);
+INSERT INTO job_invocation_edges VALUES ('caller-b','callee','{"maxDepth":2}',0);
+INSERT INTO machine_job_deployments VALUES
+ ('old-review','plugin',1,1,0,'{"review":{"reviewDigest":"old-digest","targets":[{"machineId":"machine"}]}}'),
+ ('retired-id','plugin',1,1,0,'');
+INSERT INTO machine_job_deployment_targets(deployment_id,machine_id,plugin_id,phase)
+ VALUES ('old-review','machine','plugin','pending');
+UPDATE meta SET value='33' WHERE key='schema_version';
+`);
+    const authority = db.query("SELECT caller,operation_id,edge,enabled FROM job_invocation_edges ORDER BY caller").all();
+    db.close();
+    db = openDatabase(path);
+    expect(db.query("SELECT caller,operation_id,edge,enabled FROM job_invocation_edges ORDER BY caller").all()).toEqual(authority);
+    const revisions = db.query<{ revision: string }, []>("SELECT revision FROM job_invocation_edges ORDER BY caller").all();
+    expect(revisions[0]!.revision).toMatch(/^[a-f0-9]{32}$/);
+    expect(revisions[1]!.revision).not.toBe(revisions[0]!.revision);
+    expect(db.query("SELECT phase,reason FROM machine_job_deployment_targets").get()).toEqual({
+      phase: "needs_review",
+      reason: "deployment_review_stale",
+    });
+    const retained = db.query<{ approval: string }, []>("SELECT approval FROM machine_job_deployments WHERE deployment_id='old-review'").get()!;
+    expect(JSON.parse(retained.approval)).toEqual({
+      review: {
+        reviewDigest: "old-digest",
+        targets: [{ machineId: "machine", invocationEdges: [] }],
+      },
+    });
+    expect(db.query("SELECT approval FROM machine_job_deployments WHERE deployment_id='retired-id'").get()).toEqual({ approval: "" });
+    db.close();
+    db = openDatabase(path);
+    expect(db.query("SELECT revision FROM job_invocation_edges ORDER BY caller").all()).toEqual(revisions);
   } finally {
     db.close();
     rmSync(dir, { recursive: true, force: true });

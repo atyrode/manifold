@@ -18,6 +18,8 @@ import {
   type JobDeploymentTargetStatus,
   type JobDeploymentDescription,
   type JobResourceBindings,
+  type JobInvocationEdge,
+  type JobDeploymentInvocationEdge,
   type JobOwner,
   type MachineHalf,
   type Cap,
@@ -46,6 +48,12 @@ interface TargetEvidence {
   consents: string;
   authority: string;
   resources: string;
+  invocations: string;
+  invocationApprovals: string;
+}
+interface TargetReceipt {
+  consents: string;
+  invocationEdges: string;
 }
 interface Approval {
   review: JobDeploymentReview;
@@ -71,7 +79,16 @@ interface TargetRecord {
 interface NativeDeploymentHost {
   owner(machineId: string): JobOwner | null;
   artifactAvailable(install: JobInstallation, platform: keyof MachineHalf["artifacts"]): boolean;
-  resourceRefusal(install: JobInstallation, operationId: string): string | null;
+  resourceRefusal(
+    install: JobInstallation,
+    operationId: string,
+    invocationEdges: readonly JobInvocationEdge[],
+  ): string | null;
+  invocations(
+    auth: AuthContext,
+    install: JobInstallation,
+    operationIds: readonly string[],
+  ): { edges: JobDeploymentInvocationEdge[]; digest: string; refusal: string | null };
   servicePolicies(
     machineId: string,
     machine: MachineHalf,
@@ -255,6 +272,57 @@ export class JobDeployments {
       throw new ServiceError("forbidden", "deployment_authority_refused");
     return digest(evidence);
   }
+  private invocationEdges(target: JobDeploymentTargetReview): JobDeploymentInvocationEdge[] {
+    return target.invocationEdges.map(({ edge }) => {
+      const row = this.service.store.db
+        .query<{ edge: string; enabled: number; revision: string }, [string, string]>(
+          "SELECT edge,enabled,revision FROM job_invocation_edges WHERE caller=? AND operation_id=?",
+        )
+        .get(canonicalJobJson(edge.caller), edge.callee.operationId);
+      return {
+        edge,
+        approved: row?.enabled === 1 && row.edge === canonicalJobJson(edge),
+        revision: row?.revision ?? null,
+      };
+    });
+  }
+  private previousInvocationEdges(
+    request: JobDeploymentRequest,
+    current: JobInstallation | null,
+  ) {
+    if (!current) return [];
+    return request.operationIds.map((operationId) =>
+      this.service.store.db
+        .query<{ edge: string; enabled: number; revision: string }, [string]>(
+          "SELECT edge,enabled,revision FROM job_invocation_edges WHERE caller=? ORDER BY operation_id",
+        )
+        .all(
+          canonicalJobJson({
+            machineId: current.machineId,
+            pluginId: current.pluginId,
+            operationId,
+            installationRevision: current.revision,
+            artifactSha256: current.artifact,
+          }),
+        ),
+    );
+  }
+  private receipt(
+    request: JobDeploymentRequest,
+    target: JobDeploymentTargetReview,
+  ): TargetReceipt {
+    return {
+      consents: digest(
+        this.consents(
+          request,
+          target.machineId,
+          target.installationRevision,
+          target.artifactSha256,
+        ),
+      ),
+      invocationEdges: digest(this.invocationEdges(target)),
+    };
+  }
   private evidence(
     auth: AuthContext,
     request: JobDeploymentRequest,
@@ -284,6 +352,18 @@ export class JobDeployments {
         this.service.declaredMachine(request.pluginId)!,
         target.resourceBindings,
       ).digest,
+      invocations:
+        target.installationRevision && target.artifactSha256
+          ? this.host.invocations(
+              auth,
+              this.proposedInstallation(request, target, this.service.declaredMachine(request.pluginId)!),
+              request.operationIds,
+            ).digest
+          : digest(null),
+      invocationApprovals: digest([
+        this.invocationEdges(target),
+        this.previousInvocationEdges(request, target.invocationEdges.length ? current : null),
+      ]),
     };
   }
   private snapshot(auth: AuthContext, request: JobDeploymentRequest) {
@@ -370,14 +450,22 @@ export class JobDeployments {
                 purgeRequested: false,
               }
             : null;
+        let invocationEdges: JobDeploymentInvocationEdge[] = [];
         if (proposed && platform) {
           try {
+            const invocations = this.host.invocations(auth, proposed, request.operationIds);
+            invocationEdges = invocations.edges;
+            reason ??= invocations.refusal;
             reason ??= this.host.servicePolicies(machineId, machine, resourceBindings).refusal;
             if (!this.host.artifactAvailable(proposed, platform))
               reason ??= "artifact_bundle_unavailable";
             if (owner)
-              for (const operationId of Object.keys(machine.operations))
-                reason ??= this.host.resourceRefusal(proposed, operationId);
+              for (const operationId of request.operationIds)
+                reason ??= this.host.resourceRefusal(
+                  proposed,
+                  operationId,
+                  invocationEdges.map(({ edge }) => edge),
+                );
           } catch (error) {
             if (!(error instanceof ServiceError)) throw error;
             reason ??= error.message;
@@ -395,6 +483,7 @@ export class JobDeployments {
           resourceBindings,
           resources,
           consents: this.consents(request, machineId, installationRevision, artifactSha256),
+          invocationEdges,
           approvable: reason === null,
           reason:
             reason ?? (busy ? "active_installation" : owner === null ? "owner_offline" : null),
@@ -505,6 +594,7 @@ export class JobDeployments {
     const auth = this.service.auth.restoreCredential(approval.credential);
     if (!auth?.isRoot) return "credential_revoked_or_expired";
     const request = approval.review.request;
+    if (!approval.evidence[index]?.invocations) return "deployment_review_stale";
     if (
       digest(this.service.declaredMachine(request.pluginId)) !== approval.review.declarationSha256
     )
@@ -529,6 +619,10 @@ export class JobDeployments {
       )
         return "deployment_scope_changed";
       const install = this.proposed(approval, target);
+      const invocations = this.host.invocations(auth, install, request.operationIds);
+      if (invocations.refusal) return invocations.refusal;
+      if (invocations.digest !== approval.evidence[index]!.invocations)
+        return "invocation_scope_changed";
       const policies = this.host.servicePolicies(
         target.machineId,
         install.machine,
@@ -546,8 +640,12 @@ export class JobDeployments {
           for (const group of groups)
             for (const [name, hash] of Object.entries(target.resourceBindings[group]))
               if (owner.resources?.[group][name] !== hash) return "resource_revision_changed";
-        for (const operationId of Object.keys(install.machine.operations)) {
-          const refusal = this.host.resourceRefusal(install, operationId);
+        for (const operationId of request.operationIds) {
+          const refusal = this.host.resourceRefusal(
+            install,
+            operationId,
+            applied ? [] : target.invocationEdges.map(({ edge }) => edge),
+          );
           if (refusal) return refusal;
         }
       }
@@ -558,13 +656,20 @@ export class JobDeployments {
     return null;
   }
   private proposed(approval: Approval, target: JobDeploymentTargetReview): JobInstallation {
+    return this.proposedInstallation(approval.review.request, target, approval.review.machine);
+  }
+  private proposedInstallation(
+    request: JobDeploymentRequest,
+    target: JobDeploymentTargetReview,
+    machine: MachineHalf,
+  ): JobInstallation {
     if (!target.installationRevision || !target.artifactSha256) conflict("deployment_unapprovable");
     return {
       machineId: target.machineId,
-      pluginId: approval.review.request.pluginId,
+      pluginId: request.pluginId,
       revision: target.installationRevision,
       artifact: target.artifactSha256,
-      machine: approval.review.machine,
+      machine,
       ...(target.resourceBindings ? { resourceBindings: target.resourceBindings } : {}),
       enabled: true,
       ready: false,
@@ -714,6 +819,8 @@ export class JobDeployments {
                   machine: proposed.machine,
                   resourceBindings: proposed.resourceBindings,
                 });
+              for (const { edge, approved } of target.invocationEdges)
+                if (!approved) this.service.setInvocationEdge(auth, { edge, enabled: true });
               for (const consent of target.consents)
                 if (!consent.approved)
                   this.service.consent(auth, {
@@ -726,14 +833,7 @@ export class JobDeployments {
                     enabled: true,
                   });
               // Native rows and this receipt commit together, before any install command is sent.
-              const receipt = digest(
-                this.consents(
-                  approval.review.request,
-                  target.machineId,
-                  proposed.revision,
-                  proposed.artifact,
-                ),
-              );
+              const receipt = canonicalJobJson(this.receipt(approval.review.request, target));
               this.service.store.db
                 .query(
                   "UPDATE machine_job_deployment_targets SET receipt=? WHERE deployment_id=? AND machine_id=? AND phase='applying' AND attempt=?",
@@ -794,17 +894,13 @@ export class JobDeployments {
       const desired = this.proposed(approval, target);
       if (this.installation(current) !== this.installation(desired))
         return result("needs_review", "installation_changed");
-      if (
-        record.receipt !==
-        digest(
-          this.consents(
-            request,
-            target.machineId,
-            target.installationRevision,
-            target.artifactSha256,
-          ),
-        )
-      )
+      const receipt = record.receipt
+        ? (JSON.parse(record.receipt) as TargetReceipt)
+        : null;
+      const currentReceipt = this.receipt(request, target);
+      if (receipt?.invocationEdges !== currentReceipt.invocationEdges)
+        return result("needs_review", "invocation_edge_changed");
+      if (receipt?.consents !== currentReceipt.consents)
         return result("needs_review", "consent_changed");
       if (!connected) return result("installing", "owner_offline");
       const auth = this.service.auth.restoreCredential(approval.credential)!;
