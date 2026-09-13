@@ -274,6 +274,8 @@ function openDatabaseImage(options: PluginDatabaseOptions, path: string): Plugin
                 `the batch ran past its ${String(SQL_DEADLINE_MS)} ms deadline and was rolled back`,
               );
             }
+            // Charge a separator for every result array; the first is a one-byte safety margin.
+            claimResultBytes(budget, 1);
             results.push(rows(db, statement.sql, statement.params, budget));
           }
           if (now() - started > SQL_DEADLINE_MS)

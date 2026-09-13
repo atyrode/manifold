@@ -469,9 +469,10 @@ not the in-realm loader #256 is to supply.
   reach its panels, not the server roster. These are concrete benefits a replacement must retain,
   not a claim of a browser memory quota or an implemented browser execution deadline.
 - **Server:** `packages/server/src/isolate/ipc.ts` starts one Bun child process per installed
-  server half with a minimal environment and JSON IPC. `supervisor.ts` supplies bounded round
-  trips, a kill path, a crash budget and idle eviction; `proxy-def.ts` serves the request's ctx
-  calls. A separate process is not an OS permission sandbox: the spawn shown here installs no
+  server half with a minimal environment and bounded newline-delimited JSON over dedicated
+  pipes. Each raw frame is capped at 8 MiB before JSON parsing. `supervisor.ts` supplies bounded
+  round trips, a kill path, a crash budget and idle eviction; `proxy-def.ts` serves the request's
+  ctx calls. A separate process is not an OS permission sandbox: the spawn shown here installs no
   filesystem/network restriction or per-plugin memory ceiling. `--smol` is not such a ceiling.
 - **Loading:** `packages/plugin-kit/src/pack.ts` bundles each half with `Bun.build`, inlining the
   kit and dependencies into self-contained files. The installed artifact is hash-pinned and

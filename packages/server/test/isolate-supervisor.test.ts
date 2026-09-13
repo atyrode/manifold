@@ -174,6 +174,7 @@ describe("IsolateSupervisor", () => {
       "echo",
       "garble",
       "hang",
+      "oversize",
       "refuse",
       "slice",
     ]);
@@ -329,6 +330,20 @@ describe("IsolateSupervisor", () => {
     expect(await invoke(def, "echo", ctx, { text: "still" })).toEqual({ text: "still", count: 1 });
   });
 
+  test("an oversized raw child frame is rejected before parsing and terminates the child", async () => {
+    const { supervisor, runtime, storage, logger } = fixture();
+    const { def } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });
+    const { ctx } = actionCtx(storage, runtime);
+
+    const failure = await invoke(def, "oversize", ctx, {}).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(IsolateDenial);
+    expect((failure as IsolateDenial).message).toContain("isolate exited");
+    await until(() => supervisor.state(PLUGIN_ID) === "stopped");
+    const malformed = logger.lines.find(
+      (line) => line.evt === "isolate_call_failed" && line.fields?.reason === "malformed frame",
+    );
+    expect(malformed?.fields?.detail).toContain("frame exceeds");
+  });
   test("a dispatch past the deadline is unavailable and the stuck child is killed", async () => {
     const { supervisor, runtime, storage, logger } = fixture({ dispatchDeadlineMs: 150 });
     const { def } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });

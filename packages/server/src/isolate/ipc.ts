@@ -1,19 +1,20 @@
 import {
   IsolateChildFrameSchema,
+  ISOLATE_MAX_FRAME_BYTES,
   PLUGIN_BUNDLE_SERVER_FILE,
   type IsolateChildFrame,
   type IsolateHostFrame,
 } from "@manifold/protocol";
+import { closeSync } from "node:fs";
 import type { Logger } from "../log.ts";
 import { IsolateLoadError } from "./contract.ts";
 
 /**
- * THE WIRE END of one isolate: a child process, the JSON frames it speaks over `Bun.spawn`
- * ipc, and its two output pipes. This module knows nothing about dispatches, budgets or
- * states — it spawns, validates every inbound message against `IsolateChildFrameSchema`
- * (a stranger's process is an untrusted peer exactly as a machine socket is), forwards what
- * parses, reports what does not, and says when the process is gone. The supervisor is the
- * only caller.
+ * THE WIRE END of one isolate: a child process, the bounded JSON frames it speaks over
+ * dedicated pipes, and its two output pipes. This module knows nothing about dispatches,
+ * budgets or states — it spawns, bounds raw frames before parsing, validates every inbound
+ * message against `IsolateChildFrameSchema`, forwards what parses, reports what does not, and
+ * says when the process is gone. The supervisor is the only caller.
  */
 
 /** One line of the child's own output as the log keeps it; longer is truncated with a mark. */
@@ -59,6 +60,7 @@ function childEnvironment(pluginId: string): Record<string, string> {
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? "",
     MANIFOLD_PLUGIN_ID: pluginId,
+    MANIFOLD_PLUGIN_PIPE_FD: "3",
   };
   if (process.env.HOME !== undefined) env.HOME = process.env.HOME;
   return env;
@@ -88,6 +90,40 @@ async function pumpLines(
   if (carry.length > 0) onLine(carry);
 }
 
+/** Splits a byte stream into bounded frame lines before any JSON representation is allocated. */
+async function pumpFrames(
+  stream: ReadableStream<Uint8Array>,
+  onLine: (line: string) => void,
+  onBroken: (detail: string) => void,
+): Promise<void> {
+  let parts: Uint8Array[] = [];
+  let bytes = 0;
+  const append = (part: Uint8Array): boolean => {
+    if (bytes + part.byteLength > ISOLATE_MAX_FRAME_BYTES) {
+      onBroken(`frame exceeds ${String(ISOLATE_MAX_FRAME_BYTES)} bytes`);
+      return false;
+    }
+    if (part.byteLength > 0) {
+      parts.push(part);
+      bytes += part.byteLength;
+    }
+    return true;
+  };
+  for await (const chunk of stream) {
+    let start = 0;
+    for (let index = 0; index < chunk.byteLength; index += 1) {
+      if (chunk[index] !== 0x0a) continue;
+      if (!append(chunk.subarray(start, index))) return;
+      onLine(Buffer.concat(parts, bytes).toString("utf8"));
+      parts = [];
+      bytes = 0;
+      start = index + 1;
+    }
+    if (!append(chunk.subarray(start))) return;
+  }
+  if (bytes > 0) onBroken("unterminated frame");
+}
+
 /** The sender's `id`, when a message that failed the schema still carried a string one. */
 function correlationOf(message: unknown): string | null {
   if (message === null || typeof message !== "object") return null;
@@ -96,19 +132,53 @@ function correlationOf(message: unknown): string | null {
 }
 
 export class IsolateChild {
-  private readonly process: Bun.Subprocess<"ignore", "pipe", "pipe">;
+  private readonly process: Bun.Subprocess<"pipe", "pipe", "pipe">;
   private outputLines = 0;
   /** Resolves when the process has exited AND both output pipes are drained. */
   readonly closed: Promise<void>;
 
   private constructor(
     readonly pluginId: string,
-    process: Bun.Subprocess<"ignore", "pipe", "pipe">,
+    process: Bun.Subprocess<"pipe", "pipe", "pipe">,
+    protocolFd: number,
     private readonly logger: Logger,
     events: IsolateChildEvents,
   ) {
     this.process = process;
+    const protocol = pumpFrames(
+      Bun.file(protocolFd).stream(),
+      (line) => {
+        let message: unknown;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          events.malformed(this, "invalid JSON frame", null);
+          this.kill();
+          return;
+        }
+        const parsed = IsolateChildFrameSchema.safeParse(message);
+        if (parsed.success) {
+          events.frame(this, parsed.data);
+          return;
+        }
+        const detail = parsed.error.issues
+          .map((issue) => `${issue.path.join(".")} ${issue.message}`)
+          .join("; ");
+        events.malformed(this, detail, correlationOf(message));
+      },
+      (detail) => {
+        events.malformed(this, detail, null);
+        this.kill();
+      },
+    ).finally(() => {
+      try {
+        closeSync(protocolFd);
+      } catch {
+        // The stream may have closed the transferred descriptor while the child was exiting.
+      }
+    });
     const pumps = Promise.all([
+      protocol,
       pumpLines(process.stdout, (line) => this.output("stdout", line)),
       pumpLines(process.stderr, (line) => this.output("stderr", line)),
     ]);
@@ -122,8 +192,8 @@ export class IsolateChild {
    * THE LOADER, whole: the bundle is self-contained (the kit's `pack` inlines the guest
    * runtime), so the child is a bun — the server's own where the server is one — running
    * `server.js` from the extracted bundle directory with a small heap and the minimal
-   * environment above. `serialization: "json"` is what makes every frame plain data on both
-   * ends, which is what the schemas assume.
+   * environment above. A dedicated child-to-host descriptor and stdin carry bounded
+   * newline-delimited JSON; stdout and stderr remain plugin logs.
    */
   static spawn(
     pluginId: string,
@@ -135,30 +205,18 @@ export class IsolateChild {
     if (interpreter === null) {
       throw new IsolateLoadError("no bun on PATH to run isolates under this compiled server");
     }
-    // Assigned before the first message can arrive: ipc delivery is never synchronous.
-    let child: IsolateChild | null = null;
     const spawned = Bun.spawn([interpreter, "--smol", `${dir}/${PLUGIN_BUNDLE_SERVER_FILE}`], {
-      ipc: (message: unknown) => {
-        if (child === null) return;
-        const parsed = IsolateChildFrameSchema.safeParse(message);
-        if (parsed.success) {
-          events.frame(child, parsed.data);
-          return;
-        }
-        const detail = parsed.error.issues
-          .map((issue) => `${issue.path.join(".")} ${issue.message}`)
-          .join("; ");
-        events.malformed(child, detail, correlationOf(message));
-      },
-      serialization: "json",
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
       cwd: dir,
       env: childEnvironment(pluginId),
+      maxBuffer: ISOLATE_MAX_FRAME_BYTES,
     });
-    child = new IsolateChild(pluginId, spawned, logger, events);
-    return child;
+    const protocolFd = spawned.stdio[3];
+    if (protocolFd === null || protocolFd === undefined) {
+      spawned.kill();
+      throw new IsolateLoadError("isolate frame pipe was not created");
+    }
+    return new IsolateChild(pluginId, spawned, protocolFd, logger, events);
   }
 
   get pid(): number {
@@ -169,7 +227,11 @@ export class IsolateChild {
   send(frame: IsolateHostFrame): boolean {
     if (this.process.exitCode !== null || this.process.signalCode !== null) return false;
     try {
-      this.process.send(frame);
+      const payload = JSON.stringify(frame);
+      if (Buffer.byteLength(payload) > ISOLATE_MAX_FRAME_BYTES) return false;
+      this.process.stdin.write(payload);
+      this.process.stdin.write("\n");
+      this.process.stdin.flush();
       return true;
     } catch {
       return false;

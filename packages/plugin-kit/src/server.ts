@@ -14,6 +14,7 @@ import {
   GuestMigrationDeclarationsSchema,
   MAX_ISOLATE_ACTIONS,
   MAX_ISOLATE_EMITS,
+  ISOLATE_MAX_FRAME_BYTES,
   ManifoldRefSchema,
   ListJobRunsArgsSchema,
   ListJobRunsResultSchema,
@@ -69,6 +70,7 @@ import {
   type SettledJob,
   type JobEvent,
 } from "../../protocol/src/jobs.ts";
+import { writeSync } from "node:fs";
 import { z } from "zod";
 import { HostCallError, IsolateSliceUnavailable, PluginDatabaseError } from "./errors.ts";
 
@@ -76,8 +78,8 @@ import { HostCallError, IsolateSliceUnavailable, PluginDatabaseError } from "./e
  * THE SERVER GUEST RUNTIME (ADR 0016 §1, §2).
  *
  * An installed plugin's server half runs in its own Bun process, spawned by the engine's
- * supervisor with an ipc channel. This module is the child's end of that channel: it answers
- * the four host frames (`load`, `dispatch`, `hook`, `shutdown`) and serves the plugin a ctx
+ * supervisor with a bounded framed channel. This module is the child's end: it answers the
+ * four host frames (`load`, `dispatch`, `hook`, `shutdown`) and serves the plugin a ctx
  * whose every engine-touching member is a `call` frame the host answers. The author writes
  * handlers against {@link GuestCtx} exactly as an in-realm plugin writes them against the
  * engine's `ActionCtx`, minus the slices stage 1 does not serve — which are absent from the
@@ -423,9 +425,8 @@ export interface ServerPluginDef {
 // ---------------------------------------------------------------------------- the transport
 
 /**
- * The child's end of the ipc channel, as four verbs. Production binds them to `process`;
- * tests bind them to an in-memory pair, which is how a whole host↔guest conversation runs
- * inside one test without a second process.
+ * The child's end of the framed process channel, as four verbs. Production binds them to a
+ * dedicated descriptor and stdin; tests bind them to an in-memory pair.
  */
 export interface ServerGuestTransport {
   send(frame: IsolateChildFrame): void;
@@ -434,20 +435,72 @@ export interface ServerGuestTransport {
   warn(line: string): void;
 }
 
-/**
- * `process`, when this module runs as a spawned ipc child; null when merely imported. The
- * verbs are called ON `process` — `on` is an EventEmitter method and refuses a detached
- * receiver.
- */
+const PLUGIN_PIPE_FD = 3;
+
+/** Reads bounded newline-delimited JSON without ever assembling an oversized frame. */
+function readProcessFrames(listener: (frame: unknown) => void): void {
+  let parts: Uint8Array[] = [];
+  let bytes = 0;
+  let stopped = false;
+  const fail = (detail: string): void => {
+    if (stopped) return;
+    stopped = true;
+    process.stderr.write(`${detail}\n`);
+    process.stdin.pause();
+    process.exit(1);
+  };
+  const append = (part: Uint8Array): boolean => {
+    if (bytes + part.byteLength > ISOLATE_MAX_FRAME_BYTES) {
+      fail(`isolate frame exceeds ${String(ISOLATE_MAX_FRAME_BYTES)} bytes`);
+      return false;
+    }
+    if (part.byteLength > 0) {
+      parts.push(part);
+      bytes += part.byteLength;
+    }
+    return true;
+  };
+  const emit = (): void => {
+    const payload = Buffer.concat(parts, bytes).toString("utf8");
+    parts = [];
+    bytes = 0;
+    try {
+      listener(JSON.parse(payload));
+    } catch {
+      fail("isolate received an invalid JSON frame");
+    }
+  };
+  process.stdin.on("data", (chunk: Buffer) => {
+    if (stopped) return;
+    let start = 0;
+    for (let index = 0; index < chunk.byteLength; index += 1) {
+      if (chunk[index] !== 0x0a) continue;
+      if (!append(chunk.subarray(start, index))) return;
+      emit();
+      if (stopped) return;
+      start = index + 1;
+    }
+    append(chunk.subarray(start));
+  });
+  process.stdin.on("end", () => {
+    if (!stopped && bytes > 0) fail("isolate received an unterminated JSON frame");
+  });
+}
+
+/** The dedicated frame pipes exist only when this module is the spawned plugin entry. */
 function processTransport(): ServerGuestTransport | null {
-  if (typeof process.send !== "function") return null;
+  if (process.env.MANIFOLD_PLUGIN_PIPE_FD !== String(PLUGIN_PIPE_FD)) return null;
   return {
     send: (frame) => {
-      process.send?.(frame);
+      const payload = JSON.stringify(frame);
+      if (Buffer.byteLength(payload) > ISOLATE_MAX_FRAME_BYTES) {
+        process.stderr.write(`isolate frame exceeds ${String(ISOLATE_MAX_FRAME_BYTES)} bytes\n`);
+        process.exit(1);
+      }
+      writeSync(PLUGIN_PIPE_FD, payload);
+      writeSync(PLUGIN_PIPE_FD, "\n");
     },
-    onMessage: (listener) => {
-      process.on("message", listener);
-    },
+    onMessage: readProcessFrames,
     exit: (code) => process.exit(code),
     warn: (line) => {
       process.stderr.write(`${line}\n`);
@@ -1397,8 +1450,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
 
 /**
  * THE AUTHORING ENTRY POINT. Call it once at the top level of your `server.ts`. When the
- * module is the entry of a spawned isolate — `process.send` exists — it wires the ipc
- * channel and starts serving; imported anywhere else (a test, a tool, `pack`) it is inert.
+ * module is the entry of a spawned isolate — its dedicated pipe descriptor is declared — it
+ * starts serving; imported anywhere else (a test, a tool, `pack`) it is inert.
  */
 export function defineServerPlugin(def: ServerPluginDef): void {
   const transport = processTransport();

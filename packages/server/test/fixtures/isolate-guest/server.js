@@ -7,6 +7,27 @@
   frame that is not a frame), `refuse` (a handler's own domain refusal). `onEnable` reads
   storage through its hook id and answers ok.
  */
+import { writeSync } from "node:fs";
+
+function send(frame) {
+  writeSync(3, JSON.stringify(frame));
+  writeSync(3, "\n");
+}
+
+function onFrame(receive) {
+  let carry = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    carry += chunk;
+    let newline = carry.indexOf("\n");
+    while (newline !== -1) {
+      receive(JSON.parse(carry.slice(0, newline)));
+      carry = carry.slice(newline + 1);
+      newline = carry.indexOf("\n");
+    }
+  });
+}
+
 let calls = 0;
 const waiting = new Map();
 
@@ -15,7 +36,7 @@ function call(requestId, method, args) {
   const id = `${requestId}:${String(calls)}`;
   return new Promise((resolve, reject) => {
     waiting.set(id, { resolve, reject });
-    process.send({ t: "call", id, method, args });
+    send({ t: "call", id, method, args });
   });
 }
 
@@ -52,8 +73,11 @@ const handlers = {
     return new Promise(() => {});
   },
   garble(id) {
-    process.send({ t: "dispatched", id, outcome: { ok: "yes" } });
+    send({ t: "dispatched", id, outcome: { ok: "yes" } });
     return null;
+  },
+  oversize() {
+    return { ok: true, result: { value: "x".repeat(9 * 1024 * 1024) }, emits: [] };
   },
   refuse() {
     return { ok: false, rule: "refused", message: "not today" };
@@ -67,10 +91,10 @@ const handlers = {
   },
 };
 
-process.on("message", async (frame) => {
+onFrame(async (frame) => {
   switch (frame.t) {
     case "load":
-      process.send({
+      send({
         t: "loaded",
         actions: Object.keys(handlers).map((name) => action(name)),
         hooks: {
@@ -83,12 +107,12 @@ process.on("message", async (frame) => {
       return;
     case "dispatch": {
       const outcome = await handlers[frame.action](frame.id, frame.args);
-      if (outcome !== null) process.send({ t: "dispatched", id: frame.id, outcome });
+      if (outcome !== null) send({ t: "dispatched", id: frame.id, outcome });
       return;
     }
     case "hook": {
       const marker = await call(frame.id, "storage.get", ["enabled"]);
-      process.send({ t: "hooked", id: frame.id, ok: marker === null || marker === "yes" });
+      send({ t: "hooked", id: frame.id, ok: marker === null || marker === "yes" });
       return;
     }
     case "reply": {

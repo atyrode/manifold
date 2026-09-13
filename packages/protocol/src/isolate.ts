@@ -21,10 +21,11 @@ import { JobFollowUpdateSchema, SettledJobSchema, machineArtifacts } from "./job
  *
  * An INSTALLED plugin runs its server half in its own OS process and its web half in its own
  * dedicated Worker (ADR 0016 §1). Both boundaries are message boundaries, so what crosses them
- * is wire, and wire lives here (docs/CONTRACTS.md §Protocol and compatibility): the frames a supervisor and a child exchange over
- * `Bun.spawn` ipc, the frames a panel host and a Worker exchange over `postMessage`, the closed
- * component vocabulary an isolated web half renders with (§3), the artifact a plugin is
- * installed from (§8 stage 2), and the numbers that bound a runner's patience (§6).
+ * is wire, and wire lives here (docs/CONTRACTS.md §Protocol and compatibility): the bounded
+ * newline-delimited JSON frames a supervisor and a child exchange over dedicated pipes, the
+ * frames a panel host and a Worker exchange over `postMessage`, the closed component vocabulary
+ * an isolated web half renders with (§3), the artifact installed from (§8 stage 2), and the
+ * numbers that bound a runner's patience (§6).
  *
  * Nothing in this file names a plugin, a panel or a host class: the same three-way neutrality
  * the rest of the protocol keeps. First-party plugins never see any of it — the runner is
@@ -331,10 +332,12 @@ export const ISOLATE_IDLE_EVICT_MS = 600_000;
 
 /** The largest artifact an install door will read, from a path or over the network. */
 export const ISOLATE_MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
+/** Raw bytes in one server-isolate frame, capped before JSON parsing in either process. */
+export const ISOLATE_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 
-// ---------------------------------------------------------------------------- server IPC frames
+// ---------------------------------------------------------------------------- server process frames
 
-/** Correlates a request with its answer on either ipc direction; sender-chosen, opaque. */
+/** Correlates a request with its answer on either process direction; sender-chosen, opaque. */
 const frameId = z.string().min(1).max(64);
 
 /** Maximum failure prose carried by an isolate frame. */
@@ -493,7 +496,7 @@ export type IsolateReplyFrame = z.infer<typeof IsolateReplyFrameSchema>;
 const callArgs = z.array(z.unknown()).max(8);
 
 /**
- * HOST → CHILD over `Bun.spawn` ipc (`serialization: "json"`). `load` is the first frame and
+ * HOST → CHILD as bounded newline-delimited JSON. `load` is the first frame and
  * names the extracted bundle directory the child already runs from; `dispatch` is one action
  * with the caller's authority captured per id, so a `call` the child makes while handling it
  * is graded as THAT caller; `hook` is a lifecycle fan-out; `reply` answers a child's `call`;
@@ -859,6 +862,7 @@ export function isolateVocabulary(): Record<string, unknown> {
     migration: z.toJSONSchema(IsolateMigrationSchema),
     idleEvictMs: ISOLATE_IDLE_EVICT_MS,
     maxArtifactBytes: ISOLATE_MAX_ARTIFACT_BYTES,
+    maxFrameBytes: ISOLATE_MAX_FRAME_BYTES,
     bundleFormat: PLUGIN_BUNDLE_FORMAT,
     bundleServerFile: PLUGIN_BUNDLE_SERVER_FILE,
     uiEvent: z.toJSONSchema(UiEventSchema),

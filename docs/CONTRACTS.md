@@ -1816,7 +1816,9 @@ later install of the same id is a fresh row, on by default and flipped by nobody
 first install.
 
 **Server isolate — supervisor ↔ child (`IsolateHostFrameSchema` / `IsolateChildFrameSchema`).**
-JSON frames over `Bun.spawn` ipc, discriminated on `t`:
+Newline-delimited JSON travels over stdin and a dedicated child descriptor, discriminated on
+`t`. Each raw frame is capped at `ISOLATE_MAX_FRAME_BYTES` (8 MiB) while bytes are still
+streaming, before either process assembles a string or calls `JSON.parse`:
 
 | Direction  | `t`           | Carries                                                                                                                                                                    |
 | ---------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
