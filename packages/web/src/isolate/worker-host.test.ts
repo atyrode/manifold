@@ -6,6 +6,7 @@ import type {
   UiNode,
   WebIsolateHostFrame,
 } from "@manifold/protocol";
+import { WebIsolateHostFrameSchema } from "@manifold/protocol";
 import {
   WORKER_GRACE_MS,
   WorkerHost,
@@ -25,13 +26,14 @@ import {
 class FakeWorker implements WorkerLike {
   readonly sent: unknown[] = [];
   terminated = false;
+  cloneFailure = "DataCloneError";
   private readonly messageListeners: ((event: { readonly data: unknown }) => void)[] = [];
   private readonly errorListeners: ((event: { readonly message: string }) => void)[] = [];
 
   postMessage(message: unknown): void {
     if (typeof message === "object" && message !== null && "result" in message) {
       // The structured clone's own refusal, for a reply carrying something that is not data.
-      if (typeof message.result === "function") throw new Error("DataCloneError");
+      if (typeof message.result === "function") throw new Error(this.cloneFailure);
     }
     this.sent.push(message);
   }
@@ -369,6 +371,31 @@ describe("WorkerHost frames", () => {
     });
   });
 
+  test("oversized host errors yield one valid reply and later calls continue", async () => {
+    const client = fakeClient([]);
+    client.terminalsByContainer = () => Promise.reject(new Error("x".repeat(4_096)));
+    const { worker } = bench(client);
+    worker.emit({ t: "ready", panels: ["main"] });
+    const before = worker.frames().length;
+    worker.emit({ t: "call", id: "oversized", method: "terminalsByContainer", args: [] });
+    await flush();
+    const replies = worker
+      .frames()
+      .slice(before)
+      .filter((frame) => frame.t === "reply" && frame.id === "oversized");
+    expect(replies).toHaveLength(1);
+    expect(WebIsolateHostFrameSchema.safeParse(replies[0]).success).toBe(true);
+
+    worker.emit({ t: "call", id: "later", method: "selfCaps", args: [] });
+    await flush();
+    expect(worker.frames().at(-1)).toEqual({
+      t: "reply",
+      id: "later",
+      ok: true,
+      result: ["containers:read"],
+    });
+  });
+
   test("a call is served from the NEWEST bound host ref", async () => {
     const { worker, host } = bench();
     const later: string[] = [];
@@ -505,19 +532,26 @@ describe("WorkerHost frames", () => {
     ]);
   });
 
-  test("a result the worker cannot receive is a refusal naming it", async () => {
+  test("an unclonable result gets exactly one schema-valid refusal", async () => {
     const client = fakeClient([]);
     client.machines = () => Promise.resolve(() => "a function is not data");
     const { worker } = bench(client);
+    worker.cloneFailure = "x".repeat(4_096);
     worker.emit({ t: "ready", panels: ["main"] });
+    const before = worker.frames().length;
     worker.emit({ t: "call", id: "1", method: "machines", args: [] });
     await flush();
-    expect(worker.frames().at(-1)).toEqual({
-      t: "reply",
-      id: "1",
-      ok: false,
-      error: "result not serialisable: DataCloneError",
-    });
+    const replies = worker
+      .frames()
+      .slice(before)
+      .filter((frame) => frame.t === "reply" && frame.id === "1");
+    expect(replies).toHaveLength(1);
+    const parsed = WebIsolateHostFrameSchema.safeParse(replies[0]);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success || parsed.data.t !== "reply" || parsed.data.ok) {
+      throw new Error("expected a valid refusal reply");
+    }
+    expect(parsed.data.error).toStartWith("result not serialisable: ");
   });
 });
 
