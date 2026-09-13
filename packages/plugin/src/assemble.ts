@@ -6,6 +6,7 @@ import {
   DEFAULT_SECTION_PRESENTATION,
   ENGINE_NAMESPACE_PREFIX,
   LocalNameSchema,
+  hasCap,
   PluginManifestSchema,
   type ActionSummary,
   type DisciplineDeclaration,
@@ -597,9 +598,15 @@ export function assembleRoster(
       const name = `${manifest.id}.${local.data}`;
       claim(actionNames, name, manifest.id);
       for (const cap of [...action.caps, ...(action.delegates ?? [])]) {
+        /*
+          The ceiling, through the one helper that spells the wildcard's reach (`hasCap`): `*`
+          covers the engine's capabilities and stops there, so an action asking for a plugin
+          capability needs its manifest to have DECLARED that capability — a wildcard ceiling
+          does not stand in for a plugin's own namespaced name (ADR 0035). `*` itself is not an
+          askable capability, so it is the one member asked by identity.
+        */
         const covered =
-          manifest.capabilities.includes(cap) ||
-          (cap !== "*" && manifest.capabilities.includes("*"));
+          cap === "*" ? manifest.capabilities.includes("*") : hasCap(manifest.capabilities, cap);
         if (covered) continue;
         problems.push(
           `action "${name}" requires cap "${cap}" outside its manifest capabilities [${manifest.capabilities.join(", ")}]`,

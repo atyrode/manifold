@@ -1,6 +1,7 @@
 import {
+  AuthoredCapSchema,
   CAPS,
-  CapSchema,
+  MAX_MANIFEST_CAPABILITIES,
   ENGINE_NAMESPACE_PREFIX,
   LocalNameSchema,
   MAX_PLUGIN_BUNDLE_FILES,
@@ -82,8 +83,15 @@ export const PluginInstallRequestSchema = z.strictObject({
   /** An `https://` URL, or an absolute path the server permits (docs/CONTRACTS.md). */
   source: z.string().min(1).max(2048),
   sha256: z.string().regex(/^[0-9a-fA-F]{64}$/),
-  /** Widens the default grant; every member must be within the manifest's declared caps. */
-  grant: CapSchema.array().max(CAPS.length).optional(),
+  /**
+   * Widens the default grant; every member must be within the manifest's declared caps — which
+   * since ADR 0035 may include the plugin's OWN namespaced capabilities, so an installer can
+   * widen or withhold those exactly as it does the engine's. The bound is the engine's cap
+   * count plus a manifest's ceiling, because a grant can never exceed a declaration.
+   */
+  grant: AuthoredCapSchema.array()
+    .max(CAPS.length + MAX_MANIFEST_CAPABILITIES)
+    .optional(),
   /** Consent to upgrade an id already installed at a different hash; it must be disabled. */
   replace: z.boolean().optional(),
   /** Optional process/Worker isolation; absent means the full in-realm engine API. */
@@ -94,7 +102,7 @@ export type PluginInstallRequest = z.infer<typeof PluginInstallRequestSchema>;
 export const PluginInstallResultSchema = z.strictObject({
   id: PluginIdSchema,
   version: z.string(),
-  grantedCaps: CapSchema.array(),
+  grantedCaps: AuthoredCapSchema.array(),
 });
 export type PluginInstallResult = z.infer<typeof PluginInstallResultSchema>;
 

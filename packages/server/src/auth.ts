@@ -11,8 +11,11 @@ import {
   MintTokenRequestSchema,
   containmentPath,
   formatManifoldUri,
+  hasCap,
+  isEngineCap,
   normalizeInstanceOrigin,
   type BootstrapPrincipalRequest,
+  type AskableCap,
   type Cap,
   type CreateGrantRequest,
   type Grant,
@@ -42,7 +45,13 @@ import { sha256Hex } from "./stores.ts";
 const OWNER_PRINCIPAL_META = "owner_principal_id";
 const COLORS = ["#2563eb", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#db2777"] as const;
 
-/** Every capability a grant's `*` stands for: the wildcard, expanded once. */
+/**
+ * Every capability a grant's `*` stands for: the wildcard, expanded once — and the engine's
+ * own capabilities are all of it. A plugin's namespaced capability (ADR 0035) is never part of
+ * a wildcard's expansion, because the open half has no enumeration that does not depend on
+ * which plugins happen to be installed, and an authority answer that moved with the roster
+ * would be a denial that depends on bookkeeping.
+ */
 const CONCRETE_CAPS: readonly Exclude<Cap, "*">[] = CAPS.filter(
   (cap): cap is Exclude<Cap, "*"> => cap !== "*",
 );
@@ -137,6 +146,16 @@ export type CredentialReference = Readonly<
     principalId: string;
   }
 >;
+/**
+ * One authority question the GOVERNED runtime carries: a capability and the canonical node it
+ * is discharged at, persisted with a job and re-asked at every deferred effect (ADR 0033).
+ *
+ * The engine's own vocabulary, deliberately (ADR 0035). Governed admission binds a capability
+ * to an artifact or resource REVISION the engine acquired and pinned, and a plugin's own
+ * namespaced capability has no revision to bind: it is discharged at the action door, against
+ * the rows at its target node, and never enters a job's admission evidence. An action may hold
+ * both kinds — the door asks each at its own target — and only the engine's reach this type.
+ */
 export interface AuthorityRequirement {
   readonly cap: Exclude<Cap, "*">;
   readonly ref: ManifoldRef;
@@ -333,13 +352,21 @@ interface RankedGrant {
  * The wildcard is expanded rather than carried, because a set containing `*` cannot express "all
  * of them except the one denied here" — and that sentence is precisely what a deny row at depth
  * beneath a root `*` allow has to mean.
+ *
+ * WHAT IS CONTESTED is the engine's closed set plus every plugin capability some applicable row
+ * NAMES (ADR 0035). The open half cannot be enumerated — there is no list of every capability
+ * every installable plugin might declare — but it does not need to be: a capability no row on
+ * this path mentions is one nobody granted or denied here, so contesting it could only ever
+ * produce the empty answer it already has. The consequence worth stating is that `*` does not
+ * reach a plugin capability: a wildcard row mentions every ENGINE cap and nothing else, so a
+ * root credential holds a plugin's own capability only where a row names it.
  */
 function effectiveCapsFrom(
   rows: readonly Grant[],
   path: readonly string[],
   principal: Principal,
-  evidence?: Map<Exclude<Cap, "*">, Grant>,
-): ReadonlySet<Exclude<Cap, "*">> {
+  evidence?: Map<AskableCap, Grant>,
+): ReadonlySet<AskableCap> {
   const target = path[path.length - 1];
   const applicable: RankedGrant[] = [];
   for (const row of rows) {
@@ -349,12 +376,17 @@ function effectiveCapsFrom(
     if (row.reach === "node" && row.node !== target) continue;
     applicable.push({ row, depth });
   }
-  const granted = new Set<Exclude<Cap, "*">>();
+  const granted = new Set<AskableCap>();
   if (applicable.length === 0) return granted;
-  for (const cap of CONCRETE_CAPS) {
+  const contested = new Set<AskableCap>(CONCRETE_CAPS);
+  for (const { row } of applicable) {
+    for (const cap of row.caps) if (!isEngineCap(cap)) contested.add(cap);
+  }
+  for (const cap of contested) {
     let best: RankedGrant | null = null;
     for (const candidate of applicable) {
-      const mentions = candidate.row.caps.includes("*") || candidate.row.caps.includes(cap);
+      const mentions =
+        candidate.row.caps.includes(cap) || (isEngineCap(cap) && candidate.row.caps.includes("*"));
       if (!mentions) continue;
       if (best === null || outranks(candidate, best)) best = candidate;
     }
@@ -367,7 +399,7 @@ function effectiveCapsFrom(
 /** One credential's memoized verdicts, valid while the grant table has not moved under it. */
 interface ContextAuthority {
   readonly epoch: number;
-  readonly byNode: Map<string, ReadonlySet<Exclude<Cap, "*">>>;
+  readonly byNode: Map<string, ReadonlySet<AskableCap>>;
 }
 
 /** Owns owner bootstrap, bearer hashing, attenuation, enrollment, and revocation fanout. */
@@ -541,7 +573,7 @@ export class AuthService {
    * The plugin engine's declared-capability intersection (ADR 0010) is unchanged and sits on top
    * of the evaluated set, not beside it.
    */
-  allows(context: AuthContext, cap: Exclude<Cap, "*">, containerId?: string): boolean {
+  allows(context: AuthContext, cap: AskableCap, containerId?: string): boolean {
     const scope = containerId ?? context.containerScope;
     const node =
       scope === null
@@ -560,7 +592,7 @@ export class AuthService {
    * safe answer; refusing loudly would turn a malformed address into a 500 at a door whose job
    * is to answer yes or no.
    */
-  effectiveCaps(context: AuthContext, node: string): ReadonlySet<Exclude<Cap, "*">> {
+  effectiveCaps(context: AuthContext, node: string): ReadonlySet<AskableCap> {
     if (context.expiresAt !== undefined && context.expiresAt <= this.runtime.now())
       return new Set();
     const cached = this.authorityFor(context);
@@ -569,14 +601,23 @@ export class AuthService {
     const path = containmentPath(node);
     const answer =
       path === null
-        ? new Set<Exclude<Cap, "*">>()
+        ? new Set<AskableCap>()
         : effectiveCapsFrom(this.applicableRows(context, path), path, context.principal);
     cached.byNode.set(node, answer);
     return answer;
   }
 
-  /** Structured node check through the same waterfall, with the immutable container ceiling. */
-  allowsRef(context: AuthContext, cap: Exclude<Cap, "*">, ref: ManifoldRef): boolean {
+  /**
+   * Structured node check through the same waterfall, with the immutable container ceiling.
+   *
+   * THE CALL SITE A MACHINE-SCOPED GRANT REACHES (ADR 0035). `allows` asks at a container or at
+   * the credential's anchor, so a row at `manifold://machine/<id>` can only ever be seen by a
+   * question that NAMES the node — and this is that question, the one the action door asks for
+   * every declared requirement. A plugin whose authority is per machine declares
+   * `{ cap: "<its>:<name>", target: [...] }` and the ref in its arguments decides which
+   * machine's rows answer.
+   */
+  allowsRef(context: AuthContext, cap: AskableCap, ref: ManifoldRef): boolean {
     if (!ManifoldRefSchema.safeParse(ref).success) return false;
     const node = formatManifoldUri(ref);
     if (
@@ -748,7 +789,7 @@ export class AuthService {
     if (!ManifoldRefSchema.safeParse(requirement.ref).success)
       return { requirement, winner: null, allowed: false };
     const path = containmentPath(formatManifoldUri(requirement.ref));
-    const winners = new Map<Exclude<Cap, "*">, Grant>();
+    const winners = new Map<AskableCap, Grant>();
     if (path !== null)
       effectiveCapsFrom(this.applicableRows(context, path), path, context.principal, winners);
     return {
@@ -775,8 +816,7 @@ export class AuthService {
       )
         return { allowed: false };
     } else if (context.principal.id !== this.ownerPrincipal.id) return { allowed: false };
-    if (requirements.some(({ cap }) => !context.caps.includes("*") && !context.caps.includes(cap)))
-      return { allowed: false };
+    if (requirements.some(({ cap }) => !hasCap(context.caps, cap))) return { allowed: false };
     if (
       requirements.length === 0 ||
       !requirements.some((requirement) => GOVERNED_CAPS.includes(requirement.cap))
