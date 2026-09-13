@@ -389,6 +389,11 @@ export const ServiceProxyOperationPolicySchema = z
   })
   .refine((operation) => operation.method !== "GET" || operation.request.kind === "none")
   .superRefine((operation, ctx) => {
+    if (operation.meter !== undefined && operation.request.kind !== "json")
+      ctx.addIssue({
+        code: "custom",
+        message: "A metered proxy operation requires a JSON request",
+      });
     const parameters = operation.path
       .split("/")
       .filter((part) => part.startsWith("{"))
