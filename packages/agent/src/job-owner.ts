@@ -600,7 +600,13 @@ export class MachineJobOwner {
       configuration.revision !== jobDigest(configuration.policies)
     )
       throw new Error("service_configuration_digest_mismatch");
-    if (jobDigest(configuration) === jobDigest(this.serviceConfiguration)) return;
+    if (jobDigest(configuration) === jobDigest(this.serviceConfiguration)) {
+      // Hub readiness is transport-local, so its unchanged reconnect snapshot asks the
+      // retained owner to re-prove live listeners rather than to mutate service policy.
+      for (const instance of this.instanceRuntimeServices.values())
+        this.publishInstanceReady(instance);
+      return;
+    }
     this.configurationController.abort();
     this.configurationController = new AbortController();
     this.serviceRunner.close();

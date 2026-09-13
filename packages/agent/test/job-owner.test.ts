@@ -2208,6 +2208,22 @@ test
             );
           }),
         ]);
+        // A hub restart loses its readiness cache and resends the unchanged configuration.
+        // The retained owner must re-prove the live listener without restarting the worker.
+        events.length = 0;
+        await owner.execute({
+          type: "configure_services",
+          configuration: { revision: jobDigest([policy]), policies: [policy] },
+        });
+        expect(events).toContainEqual({
+          type: "service_ready",
+          jobId: "retiring",
+          service: {
+            serviceId: policy.serviceId,
+            revision: "r1",
+            policySha256: jobDigest(policy),
+          },
+        });
       }
       const retire = {
         type: "retire",
