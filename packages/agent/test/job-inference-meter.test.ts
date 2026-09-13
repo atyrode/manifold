@@ -270,7 +270,7 @@ test("cached input is charged at the cached price when the policy states one", a
   }
 });
 
-test("a streamed call is made to report usage, and every frame reaches the caller unchanged", async () => {
+test("a streamed chat completion is made to report usage, and every frame reaches the caller unchanged", async () => {
   const frames = [
     'data: {"model":"m-1","choices":[{"delta":{"content":"he"}}],"usage":null}\n\n',
     'data: {"model":"m-1","choices":[{"delta":{"content":"llo"}}],"usage":null}\n\n',
@@ -290,13 +290,14 @@ test("a streamed call is made to report usage, and every frame reaches the calle
   const owner = ledger();
   const proxy = await proxyFor(source.origin, owner.metering);
   try {
-    const response = await send(proxy, {
-      body: '{"model":"m-1","stream":true,"stream_options":{"include_usage":false}}',
-    });
+    const asked =
+      '{"model":"m-1","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":false}}';
+    const response = await send(proxy, { body: asked });
     expect(response.status).toBe(200);
     expect(response.body).toBe(frames.join(""));
     expect(JSON.parse(source.bodies[0]!)).toEqual({
       model: "m-1",
+      messages: [{ role: "user", content: "hi" }],
       stream: true,
       stream_options: { include_usage: true },
     });
@@ -342,10 +343,11 @@ test("the responses API is metered under its own spelling, whole or streamed", a
   const proxy = await proxyFor(source.origin, owner.metering);
   try {
     expect((await send(proxy, { path: "/v1/responses" })).status).toBe(200);
-    const streamed = await send(proxy, {
-      path: "/v1/responses",
-      body: '{"model":"m-1","stream":true}',
-    });
+    // A responses body carries no `messages` and takes no `stream_options`: it is forwarded
+    // byte for byte, and its usage arrives in `response.completed` regardless.
+    const asked = '{"model":"m-1","input":"hi","stream":true}';
+    const streamed = await send(proxy, { path: "/v1/responses", body: asked });
+    expect(source.bodies[1]).toBe(asked);
     expect(streamed.status).toBe(200);
     expect(streamed.body).toContain(completed);
     expect(
