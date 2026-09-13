@@ -1,5 +1,5 @@
 /** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 30;
+export const PROTOCOL_VERSION = 31;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -309,8 +309,24 @@ export const PROTOCOL_VERSION = 30;
  * Native owner RPC is independently versioned at 29; unchanged native RPC must not
  * become incompatible merely because the hub or transport wire changes.
  * Federation frames and resource vocabularies are unchanged.
+ *
+ * v30 -> v31: MACHINE REPOSITORY FACTS (issue #529). The machine wire adds the
+ * `repository_query`/`repository_fact` pair: one bounded absolute path in, one observation
+ * out. A protocol-30 agent never receives the query — the hub checks the hello's version
+ * and refuses `engine.machines.repository` by name for an older transport rather than
+ * waiting out a timeout — so the v30 wire is byte-identical and machine acceptance ADDS 31
+ * instead of resetting. The instance wire mentions no machine and is unchanged, so it adds
+ * 31 too. No agent is restarted to gain the answer; a fleet upgrades when its operator says
+ * so, and until then the door answers that the transport cannot be asked.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([30]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([30, 31]);
+
+/**
+ * The first machine protocol that carries `repository_query`/`repository_fact` (issue #529).
+ * A transport below it is asked NOTHING: it would ignore the frame as an unknown type, and
+ * an unanswerable question must be refused by name rather than waited out.
+ */
+export const MACHINE_REPOSITORY_PROTOCOL_VERSION = 31;
 
 /**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
@@ -344,9 +360,9 @@ export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([30
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v30 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v31 leave that wire unchanged.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([27, 28, 29, 30]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([27, 28, 29, 30, 31]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the
