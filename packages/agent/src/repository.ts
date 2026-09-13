@@ -230,6 +230,9 @@ export function spawnProbe(): RepositoryProbe {
   };
 }
 
+/** `"/"` as a code unit, so the slash trim below compares without allocating a substring. */
+const SLASH = "/".charCodeAt(0);
+
 /**
  * States a git remote URL as `host/owner/repo`, and answers null for one it cannot read that
  * way.
@@ -262,7 +265,15 @@ export function normalizeRemote(url: string): string | null {
   // Credentials in a URL that had a scheme: user[:password]@host.
   const at = remote.indexOf("@");
   if (at >= 0) remote = remote.slice(at + 1);
-  remote = remote.replace(/^\/+|\/+$/gu, "");
+  // Surrounding slashes, trimmed by index rather than by `/^\/+|\/+$/`. That pattern's second
+  // alternative is unanchored at its start, so a remote of many slashes makes the engine
+  // retry `\/+$` from every position — quadratic work on a string this host was HANDED
+  // (CodeQL js/polynomial-redos). Two scans of a string are linear and allocate nothing.
+  let from = 0;
+  let until = remote.length;
+  while (from < until && remote.charCodeAt(from) === SLASH) from += 1;
+  while (until > from && remote.charCodeAt(until - 1) === SLASH) until -= 1;
+  remote = remote.slice(from, until);
   if (remote === "" || remote.startsWith(".")) return null;
   const parts: string[] = [];
   for (const part of remote.split("/")) {

@@ -235,6 +235,7 @@ describe("one repository, however its remote is spelled", () => {
     ["../sibling", "a relative path"],
     ["origin", "a bare word"],
     ["https://github.com/", "a host with no repository"],
+    ["///", "nothing but separators"],
   ])("%s normalizes to nothing: it is %s", (url) => {
     expect(normalizeRemote(url)).toBeNull();
   });
