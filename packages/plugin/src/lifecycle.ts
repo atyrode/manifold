@@ -1,5 +1,6 @@
 import type { PluginId, SettledJob } from "@manifold/protocol";
 import type { EmitEvent } from "./emit.ts";
+import type { PluginDatabase } from "./database.ts";
 import type { PluginStorage } from "./storage.ts";
 import type { PluginJobContext } from "./runtime.ts";
 
@@ -22,12 +23,12 @@ import type { PluginJobContext } from "./runtime.ts";
 export const LIFECYCLE_TIMEOUT_MS = 2_000;
 
 /**
- * What a hook is handed: its own identity, its own storage, the server's clock, the one
- * emission call, and — when the row's installer still has restorable authority — the job
- * slice. Nothing else — deliberately. A lifecycle hook exists to put a plugin's OWN durable
- * state in order; anything that touches the workspace is a mutation, and every mutation goes
- * through an action door where it can be authorized, validated, logged and observed
- * (AXIOMS.md §The plane rule).
+ * What a hook is handed: its own identity, its own storage, its own tables when it declared
+ * any, the server's clock, the one emission call, and — when the row's installer still has
+ * restorable authority — the job slice. Nothing else — deliberately. A lifecycle hook exists
+ * to put a plugin's OWN durable state in order; anything that touches the workspace is a
+ * mutation, and every mutation goes through an action door where it can be authorized,
+ * validated, logged and observed (AXIOMS.md §The plane rule).
  *
  * `emit` is not an exception to that rule, it is the shape of it: an event NOTIFIES and never
  * mutates, so handing a hook the ability to say "I am serving now" costs nothing a door would
@@ -51,6 +52,13 @@ export const LIFECYCLE_TIMEOUT_MS = 2_000;
 export interface LifecycleCtx {
   readonly pluginId: string;
   readonly storage: PluginStorage;
+  /**
+   * This plugin's own tables (ADR 0034), present exactly when its manifest declares
+   * `database`. A plugin that declared none has no slice here — the member is absent, not an
+   * empty handle — which is why a hook that uses it declares it and every hook written before
+   * the file existed keeps type-checking unchanged.
+   */
+  readonly database?: PluginDatabase;
   readonly emit: EmitEvent;
   readonly jobs?: PluginJobContext | undefined;
   now(): number;

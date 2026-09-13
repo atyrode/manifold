@@ -6,7 +6,7 @@ import { migrateToSoloCompositions } from "./migrate-solo.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 31;
+export const SCHEMA_VERSION = 32;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -696,11 +696,29 @@ ALTER TABLE machine_jobs ADD COLUMN cancel_mode TEXT NOT NULL DEFAULT 'cancel' C
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','29');
 `,
   30: `
+CREATE TABLE machine_job_deployments(
+ deployment_id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, revision INTEGER NOT NULL,
+ approved_at INTEGER NOT NULL, cancelled INTEGER NOT NULL DEFAULT 0 CHECK(cancelled IN (0,1)),
+ approval TEXT NOT NULL
+);
+CREATE INDEX machine_job_deployments_plugin ON machine_job_deployments(plugin_id);
+CREATE TABLE machine_job_deployment_targets(
+ deployment_id TEXT NOT NULL REFERENCES machine_job_deployments(deployment_id),
+ machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL,
+ phase TEXT NOT NULL CHECK(phase IN ('pending','applying','applied','needs_review','cancelled')),
+ attempt TEXT, reason TEXT, receipt TEXT,
+ PRIMARY KEY(deployment_id,machine_id)
+);
+CREATE UNIQUE INDEX machine_job_deployment_pending
+ ON machine_job_deployment_targets(machine_id,plugin_id) WHERE phase IN ('pending','applying');
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','30');
+`,
+  31: `
 CREATE TABLE machine_job_journal(
  job_id TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL, event TEXT NOT NULL,
  PRIMARY KEY(job_id,seq)
 );
-INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','30');
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','31');
 `,
   /**
    * The installer's CREDENTIAL beside the installer's name (#514). `installed_by` is a
@@ -711,9 +729,9 @@ INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','30');
    * before this migration and every row the rebuild loop writes on nobody's behalf, and it
    * reads as "no jobs slice", which is exactly what those rows could do before.
    */
-  31: `
+  32: `
 ALTER TABLE plugin_installs ADD COLUMN installer_credential TEXT;
-INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','31');
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','32');
 `,
 };
 

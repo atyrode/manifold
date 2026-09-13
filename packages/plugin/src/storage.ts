@@ -1,4 +1,5 @@
 import type { PluginDataVersion } from "@manifold/protocol";
+import type { PluginDatabase } from "./database.ts";
 
 /**
  * PER-PLUGIN STORAGE — the one place a plugin may keep durable data of its own.
@@ -156,17 +157,25 @@ export function compareDataVersion(left: PluginDataVersion, right: PluginDataVer
  * running anything, and `assembleRoster` can refuse a migration claiming to reach past the
  * version its own code declares.
  *
- * Promise-returning, because the storage it is handed is (ADR 0016 §4). All-or-nothing
- * survives the change on one condition, which the in-realm implementation meets: a storage
- * call resolves immediately — synchronous SQLite inside, no queue — so a chain of awaited
- * storage calls runs to completion in one turn of the event loop, and a dispatch, which
- * arrives as I/O, cannot interleave with it. A migration that awaits anything ELSE (a timer,
- * a file, the network) opens exactly the window this rule closes, and must not.
+ * Promise-returning because storage may cross the guest IPC boundary (ADR 0016 §4).
+ * The host drains this plugin's admitted dispatches and refuses new ones during an update,
+ * runs the bounded chain on private storage, then commits data, ledger and version together.
+ * No SQLite transaction spans a callback await. Failure discards the whole chain, and the
+ * callback's storage handle expires: late work cannot mutate retained or committed data.
  */
 export interface PluginMigration {
   readonly name: string;
   readonly to: PluginDataVersion;
-  migrate(storage: PluginStorage): void | Promise<void>;
+  /**
+   * `database` is present exactly when this plugin's manifest declares `database` (ADR 0034
+   * §3): the ledger and the version stamp stay in `plugin_kv`, so a plugin has ONE data
+   * version and ONE ledger whether its data is keys, rows or both, and a migration creates
+   * its tables with ordinary `CREATE TABLE` statements through `database.run`. The parameter
+   * is optional so every migration written before the file existed keeps compiling and keeps
+   * meaning what it meant; a migration that reaches for it without declaring the file in its
+   * manifest gets `undefined`, which is the honest answer.
+   */
+  migrate(storage: PluginStorage, database?: PluginDatabase): void | Promise<void>;
 }
 
 /**

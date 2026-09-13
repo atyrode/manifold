@@ -1,0 +1,10 @@
+{
+  "id": "example.counter.part",
+  "version": "1.0.0",
+  "title": "Counter availability",
+  "description": "A counter part that records the version of its enabled parent.",
+  "capabilities": [],
+  "contributes": {},
+  "dependencies": { "example.counter": { "type": "required" } },
+  "entry": { "server": true }
+}

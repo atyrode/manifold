@@ -1,0 +1,13 @@
+{
+  "id": "example.client",
+  "version": "1.0.0",
+  "title": "Counter client",
+  "description": "A separate family consuming the counter root and its availability part.",
+  "capabilities": [],
+  "contributes": {},
+  "dependencies": {
+    "example.counter": { "type": "required" },
+    "example.counter.part": { "type": "required" }
+  },
+  "entry": { "server": true }
+}

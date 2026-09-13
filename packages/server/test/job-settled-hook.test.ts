@@ -8,7 +8,7 @@ import {
   type MachineHalf,
   type SettledJob,
 } from "../../protocol/src/jobs.ts";
-import type { JobSettledCtx } from "@manifold/plugin";
+import type { JobSettledCtx, PluginStorage } from "@manifold/plugin";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { JobService } from "../src/job-service.ts";
 import { silentLogger } from "../src/log.ts";
@@ -272,6 +272,44 @@ test("a half that declared no hook is left alone, and the settle after it still 
     await arrived.promise;
     expect(woken).toEqual([{ plugin: "sample.alpha", jobId: "job-alpha" }]);
     expect(f.service.jobs.get("job-quiet")?.result?.state).toBe("exited");
+  } finally {
+    f.store.close();
+  }
+});
+
+test("the wake carries the plugin's own storage, and that authority ends with the call", async () => {
+  const wakes = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const seen: PluginStorage[] = [];
+  const read: (string | null)[] = [];
+  let woke = 0;
+  const f = await fixture([
+    def("sample.alpha", async (ctx) => {
+      const index = woke++;
+      seen.push(ctx.storage);
+      if (index === 0) {
+        await ctx.storage.set("last-settled", "job-alpha");
+        read.push(await ctx.storage.get("last-settled"));
+      }
+      wakes[index]?.resolve();
+    }),
+  ]);
+  try {
+    run(f, "sample.alpha", "job-alpha");
+    await wakes[0]?.promise;
+    // The hook's own durable state, written and read back inside the wake rather than
+    // through a door it would have to dispatch to itself.
+    expect(read).toEqual(["job-alpha"]);
+    expect(await f.store.pluginStorage("sample.alpha").get("last-settled")).toBe("job-alpha");
+
+    run(f, "sample.alpha", "job-beta");
+    await wakes[1]?.promise;
+    // One turn boundary, not a timed wait: the engine closes the lease in the continuation
+    // after the hook's promise settles, so draining the pending microtasks is enough.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const retained = seen[0];
+    if (retained === undefined) throw new Error("the hook never ran");
+    expect(seen[1]).not.toBe(retained);
+    await expect(retained.get("last-settled")).rejects.toThrow("plugin storage request is closed");
   } finally {
     f.store.close();
   }

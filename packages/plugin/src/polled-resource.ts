@@ -6,8 +6,8 @@
  * NODES its answer is news about (`topics`), subscribes to them on the session channel, and
  * re-reads only when a matching event says the world moved. A subscription is not a payload —
  * it says "something happened", and catch-up is reading state through the same door a fresh
- * client uses — so a feed still owns exactly one fetch function, and the call sites changed
- * their OPTIONS and nothing else.
+ * client uses. A feed chooses its fetch and equality policy from a current subscriber;
+ * a reader that changes resources cannot redirect requests still owed to the old one.
  *
  * What is left of the timer is the honest fallback and only that: while the socket is DOWN
  * (or a feed has no topics at all, which is the workspace root before any room exists) the
@@ -194,6 +194,9 @@ function digest(value: unknown): string {
 
 interface Subscriber {
   readonly intervalMs: number;
+  /** Reading and comparison follow a live reader, never a departed first attachment. */
+  readonly fetchFn: () => Promise<unknown>;
+  readonly equal: PolledEquality<never> | undefined;
   readonly hold: () => boolean | undefined;
   readonly onError: (reason: unknown) => void;
   readonly onSuccess: (() => void) | undefined;
@@ -206,8 +209,6 @@ interface Feed {
   /** Digest of `value`, so an unchanged answer costs one string compare and no re-render. */
   stamp: string;
   seeded: boolean;
-  fetchFn: () => Promise<unknown>;
-  equal: PolledEquality<never> | undefined;
   /** The FALLBACK cadence's handle. Non-null only while no live subscription is standing. */
   timer: number | null;
   /** Bumped when the feed is torn down, so a late response cannot revive a dead route. */
@@ -224,8 +225,8 @@ interface Feed {
   /** Whether the channel was up at the last transition this feed heard. */
   live: boolean;
   /**
-   * Whether the last read was ISSUED while live. False means the answer predates the
-   * subscription that now stands, which is precisely the gap a catch-up read closes.
+   * Whether the last read was ISSUED through the current live binding. False means its
+   * answer predates that subscription; an in-flight read owes catch-up when it settles.
    */
   lastReadLive: boolean;
   /** The pending coalesced read; the burst rule lives in this one slot. */
@@ -316,7 +317,8 @@ function scheduleRead(feed: Feed, reason: ReadReason, delayMs = EVENT_SETTLE_MS)
 }
 
 function publish(feed: Feed, incoming: unknown): void {
-  const equal = feed.equal as PolledEquality<unknown> | undefined;
+  const equal = feed.subscribers.values().next().value?.equal as
+    PolledEquality<unknown> | undefined;
   if (
     feed.seeded &&
     (equal === undefined ? digest(incoming) === feed.stamp : equal(feed.value, incoming))
@@ -330,7 +332,8 @@ function publish(feed: Feed, incoming: unknown): void {
 }
 
 function fetchOnce(feed: Feed, reason: ReadReason): void {
-  if (feed.subscribers.size === 0) return;
+  const reader = feed.subscribers.values().next().value;
+  if (reader === undefined) return;
   if (feed.inFlight) {
     /*
       A read already on the wire may have left before the commit this reason knows about, and
@@ -344,7 +347,7 @@ function fetchOnce(feed: Feed, reason: ReadReason): void {
   feed.reads[reason] += 1;
   feed.lastReadLive = subscriptionBacked(feed);
   const issued = feed.generation;
-  void feed
+  void reader
     .fetchFn()
     .then((incoming) => {
       if (issued !== feed.generation) return;
@@ -360,7 +363,14 @@ function fetchOnce(feed: Feed, reason: ReadReason): void {
       for (const subscriber of [...feed.subscribers]) subscriber.onError(reason_);
     })
     .finally(() => {
+      if (issued !== feed.generation) return;
       feed.inFlight = false;
+      // A new live binding can stand after this request took its snapshot. Drain that gap
+      // on settlement, unless an already-owed event/held read will cover it. Same-binding
+      // joins leave lastReadLive alone and therefore do not buy a second initial read.
+      if (!feed.lastReadLive && subscriptionBacked(feed) && feed.settle === null) {
+        fetchOnce(feed, "resume");
+      }
     });
 }
 
@@ -389,8 +399,8 @@ function bindEvents(
   feed.live = false;
   /*
     Whatever this feed holds was read through a channel that is no longer the one delivering
-    its news, so the answer is owed a catch-up read: either the initial one its first
-    subscriber is about to pay, or — if it is already seeded — the one below.
+    its news. The first request after binding covers that gap; a request already on the wire
+    does not, and its settlement must pay the catch-up before the feed can fall quiet.
    */
   feed.lastReadLive = false;
   if (events === null || topics.length === 0) {
@@ -407,7 +417,7 @@ function bindEvents(
   // already-open channel is not mistaken for a transition and charged a second read.
   feed.live = events.status === "open";
   arm(feed);
-  if (feed.live && feed.seeded) fetchOnce(feed, "resume");
+  if (feed.live && feed.seeded && !feed.inFlight) fetchOnce(feed, "resume");
 }
 
 /**
@@ -427,7 +437,7 @@ function observeStatus(feed: Feed, status: SessionStatus): void {
     feed.lastReadLive = false;
     return;
   }
-  if (!feed.lastReadLive) fetchOnce(feed, "resume");
+  if (!feed.lastReadLive && !feed.inFlight) fetchOnce(feed, "resume");
 }
 
 function detach(feed: Feed): void {
@@ -538,15 +548,13 @@ export interface FeedAttachment {
   readonly topics?: readonly ManifoldRef[] | undefined;
 }
 
-function ensureFeed(attachment: FeedAttachment): Feed {
+function ensureFeed(attachment: Pick<FeedAttachment, "feedId" | "initial">): Feed {
   let feed = FEEDS.get(attachment.feedId);
   if (feed === undefined) {
     feed = {
       value: attachment.initial,
       stamp: "\u0000unseeded",
       seeded: false,
-      fetchFn: attachment.fetchFn,
-      equal: attachment.equal,
       timer: null,
       generation: 0,
       inFlight: false,
@@ -578,6 +586,10 @@ export function attachFeed(attachment: FeedAttachment): () => void {
   const feed = ensureFeed(attachment);
   const subscriber: Subscriber = {
     intervalMs: attachment.intervalMs,
+    fetchFn: attachment.fetchFn,
+    get equal() {
+      return attachment.equal;
+    },
     hold: () => attachment.hold?.(),
     onError: (reason) => attachment.onError?.(reason),
     onSuccess: attachment.onSuccess,
@@ -588,7 +600,7 @@ export function attachFeed(attachment: FeedAttachment): () => void {
   bindEvents(feed, attachment.events ?? null, topics, topics.map(formatManifoldUri).join(" "));
   arm(feed);
   // A joining subscriber inherits the published answer; only the FIRST one pays a request.
-  if (!feed.seeded) fetchOnce(feed, "initial");
+  if (!feed.seeded && !feed.inFlight) fetchOnce(feed, "initial");
   return () => {
     feed.subscribers.delete(subscriber);
     if (feed.subscribers.size > 0) {
@@ -644,44 +656,53 @@ export function usePolledResource<T>(
   const topicKey = topics.map(formatManifoldUri).join(" ");
 
   /**
-   * Read late, so a policy written inline per render never churns the shared feed — and the
-   * same for the event door and its topics, which the store's `subscribe` must reach without
-   * naming them as dependencies: one changed identity there and React would tear the feed
-   * down and rebuild it on every parent render.
+   * A subscription captures this committed policy OBJECT, not the ref that points at it.
+   * Same-key commits update it in place for fresh inline callbacks; a new key replaces it,
+   * leaving the departing subscription bound to its own key until React releases it.
+   * Updating only in an effect also keeps abandoned renders out of live reads.
    */
-  const policy = useRef({ fetchFn, hold, equal, onError, onSuccess, initial });
-  const wiring = useRef({ events, topics, topicKey });
+  const policy = useRef({
+    feedId,
+    fetchFn,
+    hold,
+    equal,
+    onError,
+    onSuccess,
+    initial,
+    events,
+    topics,
+  });
   useEffect(() => {
-    policy.current = { fetchFn, hold, equal, onError, onSuccess, initial };
-    wiring.current = { events, topics, topicKey };
+    const next = { feedId, fetchFn, hold, equal, onError, onSuccess, initial, events, topics };
+    if (policy.current.feedId === feedId) Object.assign(policy.current, next);
+    else policy.current = next;
   });
 
   const ensure = useCallback(
     (): Feed =>
       ensureFeed({
         feedId,
-        intervalMs,
         initial: policy.current.initial,
-        fetchFn: () => policy.current.fetchFn(),
-        equal: policy.current.equal as PolledEquality<never> | undefined,
-        notify: () => undefined,
       }),
-    [feedId, intervalMs],
+    [feedId],
   );
 
   const subscribe = useCallback(
     (notify: () => void): (() => void) => {
       if (!enabled) return () => undefined;
-      const { events: door, topics: nodes } = wiring.current;
+      const current = policy.current;
+      const { events: door, topics: nodes } = current;
       return attachFeed({
         feedId,
         intervalMs,
-        initial: policy.current.initial,
-        fetchFn: () => policy.current.fetchFn(),
-        equal: policy.current.equal as PolledEquality<never> | undefined,
-        hold: () => policy.current.hold?.(),
-        onError: (reason) => policy.current.onError?.(reason),
-        onSuccess: () => policy.current.onSuccess?.(),
+        initial: current.initial,
+        fetchFn: () => current.fetchFn(),
+        get equal() {
+          return current.equal as PolledEquality<never> | undefined;
+        },
+        hold: () => current.hold?.(),
+        onError: (reason) => current.onError?.(reason),
+        onSuccess: () => current.onSuccess?.(),
         notify,
         events: door,
         topics: nodes,
@@ -697,13 +718,13 @@ export function usePolledResource<T>(
    */
   useEffect(() => {
     if (!enabled) return;
-    rebindFeed(feedId, events ?? null, wiring.current.topics, topicKey);
+    rebindFeed(feedId, events ?? null, policy.current.topics, topicKey);
   }, [enabled, events, feedId, topicKey]);
 
   const snapshot = useCallback((): T => {
     const feed = FEEDS.get(feedId);
-    return feed === undefined || !feed.seeded ? policy.current.initial : (feed.value as T);
-  }, [feedId]);
+    return feed === undefined || !feed.seeded ? initial : (feed.value as T);
+  }, [feedId, initial]);
 
   const value = useSyncExternalStore(subscribe, snapshot, snapshot);
   useDebugValue(feedId);

@@ -1174,7 +1174,7 @@ describe("pre-migration snapshot retention", () => {
 /**
  * `plugin_installs` as every database from schema 22 on already carries it (migrations 17, 18,
  * 21 and 22). A post-v22 fixture creates only the tables its own migration reads, so this is
- * stated once for the ones a LATER migration alters — 31 adds the installer's credential to it,
+ * stated once for the ones a LATER migration alters — 32 adds the installer's credential to it,
  * and a fixture claiming to be a v22 database has to have the v22 table.
  */
 const LEGACY_PLUGIN_INSTALLS = `
