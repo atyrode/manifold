@@ -82,7 +82,7 @@ import type {
   MachineEnrollment,
   ServiceErrorCode,
 } from "./auth.ts";
-import { AuthoredPlugins, type AuthoredPack } from "./authored.ts";
+import { AuthoredPlugins, type AuthoredPack, type UnpackedRow } from "./authored.ts";
 import type { EventHub } from "./event-hub.ts";
 import type { InstanceDialer } from "./instance-dialer.ts";
 import {
@@ -365,6 +365,15 @@ function stylesheetOf(bundle: PluginBundle): Uint8Array<ArrayBuffer> | null {
  */
 export const OUTSIDE_SCOPE_REFUSAL = "outside this token's container";
 
+/**
+ * The origin a job started from a LIFECYCLE hook carries, where a dispatched one carries its
+ * ledger row's id. A hook is not a door: nobody called it, there is no traced row to descend
+ * from, and inventing one would put a writer nobody exercised into the ledger. The sentinel
+ * reads on the job exactly as `native-services` and `native-input` already do for the other
+ * two effects the engine performs on nobody's behalf.
+ */
+const LIFECYCLE_TRACE = "plugin-lifecycle";
+
 /** Assembly administration, as the engine's own builtin doors drive it. */
 export interface HostControl {
   setEnabled(
@@ -373,15 +382,23 @@ export interface HostControl {
     changedBy: string,
   ): Promise<ActionRefused | { ok: true }>;
   purge(id: string, purgedBy: string): Promise<ActionRefused | PluginPurgeResult>;
+  /**
+   * `installer` is the credential the ROW will act under at a lifecycle hook (#514), kept
+   * beside the principal id the roster publishes because a principal alone can never
+   * reconstruct delayed authority. Null only where the writer has none to lend: the rebuild
+   * loop's own watch.
+   */
   install(
     request: PluginInstallRequest,
     installedBy: string,
+    installer: CredentialReference | null,
   ): Promise<ActionRefused | PluginInstallResult>;
   uninstall(id: string, removedBy: string, purge: boolean): Promise<ActionRefused | { ok: true }>;
   setDeveloperMode(on: boolean, changedBy: string): Promise<ActionRefused | { ok: true }>;
   author(
     request: PluginAuthorRequest,
     authoredBy: string,
+    credential: CredentialReference,
   ): Promise<ActionRefused | PluginAuthorResult>;
   roster(): PluginRoster;
   enabled(id: string): boolean;
@@ -572,12 +589,13 @@ export type ServerPluginDef = PluginDef & {
 };
 
 /**
- * The slice the engine's own doors touch: identity, the assembly they administer, and — for
- * the one door that writes the CALLER rather than the workspace — the principal-keyed store its
- * value lands in.
+ * The slice the engine's own doors touch: identity, the credential the two admitting doors
+ * record on the row they write, the assembly they administer, and — for the one door that
+ * writes the CALLER rather than the workspace — the principal-keyed store its value lands in.
  */
 interface EngineDoorCtx {
   readonly principal: Principal;
+  readonly credential: CredentialReference;
   readonly host: HostControl;
   readonly store: Pick<
     ServerStore,
@@ -628,7 +646,7 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
         ctx: EngineDoorCtx,
         args: PluginInstallRequest,
       ): Promise<ActionRefused | PluginInstallResult> {
-        return ctx.host.install(args, ctx.principal.id);
+        return ctx.host.install(args, ctx.principal.id, ctx.credential);
       },
       async uninstall(
         ctx: EngineDoorCtx,
@@ -655,7 +673,7 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
         ctx: EngineDoorCtx,
         args: PluginAuthorRequest,
       ): Promise<ActionRefused | PluginAuthorResult> {
-        return ctx.host.author(args, ctx.principal.id);
+        return ctx.host.author(args, ctx.principal.id, ctx.credential);
       },
       /** The single settings door: declaration, authority, value, then durable write. */
       async setSetting(
@@ -922,8 +940,8 @@ export class PluginHost {
         : new AuthoredPlugins(
             this.isolates.dataDir,
             {
-              installUnpacked: (id, source, sha256, installedBy) =>
-                this.installUnpacked(id, source, sha256, installedBy),
+              installUnpacked: (id, source, sha256, installedBy, installer) =>
+                this.installUnpacked(id, source, sha256, installedBy, installer),
               unpackedRow: (id) => this.unpackedRow(id),
               developerMode: () => this.store.developerMode(),
             },
@@ -1531,6 +1549,7 @@ export class PluginHost {
   async install(
     request: PluginInstallRequest,
     installedBy: string,
+    installer: CredentialReference | null,
     unpacked?: { readonly id: string },
   ): Promise<ActionRefused | PluginInstallResult> {
     const isolates = this.isolates;
@@ -1594,6 +1613,7 @@ export class PluginHost {
       hardened: request.hardened === true,
       ...(bundle.builtAgainst === undefined ? {} : { builtAgainst: bundle.builtAgainst }),
       ...(unpacked === undefined ? {} : { mode: "unpacked" as const }),
+      ...(installer === null ? {} : { installer }),
     };
     const web = webModuleOf(bundle);
     const styles = stylesheetOf(bundle);
@@ -1681,14 +1701,17 @@ export class PluginHost {
     source: string,
     sha256: string,
     installedBy: string,
+    installer: CredentialReference | null,
   ): Promise<ActionRefused | PluginAuthorResult> {
-    const outcome = await this.install({ source, sha256, replace: true }, installedBy, { id });
+    const outcome = await this.install({ source, sha256, replace: true }, installedBy, installer, {
+      id,
+    });
     if ("refused" in outcome) return outcome;
     return { ...outcome, sha256 };
   }
 
   /** The unpacked row of record for `id` as the loop reads it, or null for anything else. */
-  private unpackedRow(id: string): (PluginAuthorResult & { readonly installedBy: string }) | null {
+  private unpackedRow(id: string): UnpackedRow | null {
     const entry = this.installed.get(id);
     if (entry === undefined || entry.row.mode !== "unpacked" || entry.bundle === null) return null;
     return {
@@ -1697,6 +1720,7 @@ export class PluginHost {
       grantedCaps: [...entry.row.grantedCaps],
       sha256: entry.row.sha256,
       installedBy: entry.row.installedBy,
+      installer: entry.row.installer ?? null,
     };
   }
 
@@ -1738,11 +1762,12 @@ export class PluginHost {
   async author(
     request: PluginAuthorRequest,
     authoredBy: string,
+    credential: CredentialReference,
   ): Promise<ActionRefused | PluginAuthorResult> {
     if (this.authored === null) {
       return installRefused("artifact_unreadable", "this server admits no bundles");
     }
-    return this.authored.author(request, authoredBy);
+    return this.authored.author(request, authoredBy, credential);
   }
 
   /**
@@ -1875,7 +1900,23 @@ export class PluginHost {
     return { sha256: entry.row.sha256, bytes: entry.styles };
   }
 
+  /**
+   * THE HOOK'S CTX, and the one piece of it that is not the plugin's own: `jobs`.
+   *
+   * A plugin that owns a cadence has to be able to register it when it is turned ON (#514) —
+   * the first dispatch or settlement may never come for a half nobody opens. The authority is
+   * the INSTALLER's, restored from the row's stored lineage at every fan-out rather than kept
+   * live, so a revoked or expired installer simply stops lending it: the slice is ABSENT, the
+   * hook still runs, and a guest's `jobs.*` call is refused by name (`proxy-def.ts`). It is
+   * never the enabling administrator's and never ambient, which is what keeps "a plugin can do
+   * what its installer consented to" true at a hook as it already is at a door.
+   *
+   * A first-party row nobody installed, and a row written before schema 31, have no lineage to
+   * restore and so have no slice — exactly what they could do before.
+   */
   private lifecycleCtx(pluginId: string): LifecycleCtx {
+    const installer = this.installed.get(pluginId)?.row.installer;
+    const auth = installer === undefined ? null : this.authService.restoreCredential(installer);
     return {
       pluginId,
       storage: this.storage(pluginId),
@@ -1890,6 +1931,20 @@ export class PluginHost {
       emit: (ref, kind, payload) => {
         this.events.emit(pluginId, ref, kind, null, payload ?? {});
       },
+      ...(auth === null
+        ? {}
+        : {
+            jobs: jobContext(
+              () => {
+                if (this.jobs === null)
+                  throw new ServiceError("forbidden", "job service unavailable");
+                return this.jobs;
+              },
+              auth,
+              pluginId,
+              LIFECYCLE_TRACE,
+            ),
+          }),
     };
   }
 

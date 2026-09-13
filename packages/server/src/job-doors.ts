@@ -46,7 +46,8 @@ export const JobExecuteArgsSchema = JobRequestSchema.pick({
   resourceBindings: JobResourceBindingsSchema.optional(),
 });
 const execute = JobExecuteArgsSchema;
-const schedule = execute.extend({
+/** The schedule request WITHOUT a callee: what a plugin handle — in realm or isolated — sends. */
+export const JobScheduleArgsSchema = execute.extend({
   scheduleId: id,
   revision: id,
   firstNominalAt: z.number().int().nonnegative(),
@@ -55,6 +56,7 @@ const schedule = execute.extend({
   expiresAt: z.number().int().nonnegative(),
   offlinePolicy: z.enum(["skip", "coalesce-one"]),
 });
+const schedule = JobScheduleArgsSchema;
 const publicJob = PublicJobSchema;
 const publicSchedule = schedule
   .omit({ jobId: true, input: true, outputs: true, limits: true })

@@ -6,7 +6,7 @@ import { migrateToSoloCompositions } from "./migrate-solo.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 31;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -701,6 +701,19 @@ CREATE TABLE machine_job_journal(
  PRIMARY KEY(job_id,seq)
 );
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','30');
+`,
+  /**
+   * The installer's CREDENTIAL beside the installer's name (#514). `installed_by` is a
+   * principal id and a principal alone can never reconstruct delayed authority — the rule
+   * `AuthService.restoreCredential` exists to enforce — so a lifecycle hook had nothing to act
+   * under and an enabled plugin could not register its own cadence. One nullable column
+   * carrying the same non-secret lineage a job already persists; NULL is every row installed
+   * before this migration and every row the rebuild loop writes on nobody's behalf, and it
+   * reads as "no jobs slice", which is exactly what those rows could do before.
+   */
+  31: `
+ALTER TABLE plugin_installs ADD COLUMN installer_credential TEXT;
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','31');
 `,
 };
 

@@ -22,16 +22,26 @@ import type { PluginJobContext } from "./runtime.ts";
 export const LIFECYCLE_TIMEOUT_MS = 2_000;
 
 /**
- * What a hook is handed: its own identity, its own storage, the server's clock, and the one
- * emission call. Nothing else — deliberately. A lifecycle hook exists to put a plugin's OWN
- * durable state in order; anything that touches the workspace is a mutation, and every
- * mutation goes through an action door where it can be authorized, validated, logged and
- * observed (AXIOMS.md §The plane rule).
+ * What a hook is handed: its own identity, its own storage, the server's clock, the one
+ * emission call, and — when the row's installer still has restorable authority — the job
+ * slice. Nothing else — deliberately. A lifecycle hook exists to put a plugin's OWN durable
+ * state in order; anything that touches the workspace is a mutation, and every mutation goes
+ * through an action door where it can be authorized, validated, logged and observed
+ * (AXIOMS.md §The plane rule).
  *
  * `emit` is not an exception to that rule, it is the shape of it: an event NOTIFIES and never
  * mutates, so handing a hook the ability to say "I am serving now" costs nothing a door would
  * have had to guard. What a hook still cannot do is change anything — including refusing or
  * delaying the transition that fired it.
+ *
+ * `jobs` is the same admission as `onJobSettled`'s, one step earlier: a plugin that OWNS a
+ * cadence has to be able to register it when it is turned on, rather than waiting for a
+ * dispatch or a settlement that may never arrive for a half nobody opens (#514). It is bound
+ * to the INSTALLER's credential — the authority that consented to the row — restored and
+ * rechecked at every fan-out, so it is neither ambient plugin authority nor the enabling
+ * administrator's. It is OPTIONAL because that restore can fail: a revoked or expired
+ * installer, or a first-party row nobody installed, leaves the slice absent rather than
+ * silently downgraded, and a plugin that needs it says so by checking.
  *
  * The parameter is contravariant, so a plugin may declare the minimal slice it actually uses
  * (`(ctx: { storage: PluginStorage }) => void`) and still satisfy the hook type. That is the
@@ -42,6 +52,7 @@ export interface LifecycleCtx {
   readonly pluginId: string;
   readonly storage: PluginStorage;
   readonly emit: EmitEvent;
+  readonly jobs?: PluginJobContext | undefined;
   now(): number;
 }
 
@@ -59,9 +70,10 @@ export type LifecycleHook = (ctx: LifecycleCtx) => void | Promise<void>;
 export type AssemblyChangedHook = (ctx: LifecycleCtx, delta: AssemblyDelta) => void | Promise<void>;
 /**
  * What `onJobSettled` is handed beyond an ordinary hook ctx: the job slice, bound to the
- * CREDENTIAL THE JOB RAN UNDER, restored and rechecked at delivery. It is not ambient plugin
- * authority and it is not the enabling administrator's — a revoked or expired credential
- * simply has no wake to deliver, and every read through it still discharges consent and
+ * CREDENTIAL THE JOB RAN UNDER, restored and rechecked at delivery. It is REQUIRED here where
+ * it is optional above, and it is the job's rather than the installer's — a revoked or expired
+ * credential simply has no wake to deliver, so a settled hook that runs at all has the
+ * authority its own job ran under, and every read through it still discharges consent and
  * grants the way a door-dispatched one does (ADR 0033 §Execution and authority).
  */
 export interface JobSettledCtx extends LifecycleCtx {

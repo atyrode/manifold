@@ -1172,6 +1172,20 @@ describe("pre-migration snapshot retention", () => {
 });
 
 /**
+ * `plugin_installs` as every database from schema 22 on already carries it (migrations 17, 18,
+ * 21 and 22). A post-v22 fixture creates only the tables its own migration reads, so this is
+ * stated once for the ones a LATER migration alters — 31 adds the installer's credential to it,
+ * and a fixture claiming to be a v22 database has to have the v22 table.
+ */
+const LEGACY_PLUGIN_INSTALLS = `
+CREATE TABLE plugin_installs(
+  plugin_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, source TEXT NOT NULL,
+  granted_caps TEXT NOT NULL, installed_by TEXT NOT NULL, installed_at INTEGER NOT NULL,
+  bundle_path TEXT NOT NULL, actions TEXT NOT NULL DEFAULT '[]',
+  hardened INTEGER NOT NULL DEFAULT 0, built_against TEXT, mode TEXT NOT NULL DEFAULT 'bundle'
+) WITHOUT ROWID;`;
+
+/**
  * Complete the authority schema shared by these post-v16 fixtures. Use migration 13 for
  * grant rows and credential references rather than duplicating their schema; migration 15
  * adds expiry, and migration 16 has nothing to retire in these empty authority tables.
@@ -1706,6 +1720,7 @@ CREATE TABLE machines(id TEXT PRIMARY KEY, token_id TEXT);
 CREATE TABLE terminals(agent_principal_id TEXT, status TEXT);
 CREATE TABLE plugin_kv(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
   PRIMARY KEY (plugin_id, key)) WITHOUT ROWID;
+${LEGACY_PLUGIN_INSTALLS}
 INSERT INTO meta VALUES ('schema_version', '22');
 INSERT INTO meta VALUES ('plugins:disabled', '["core.draw","vendor.other"]');
 INSERT INTO meta VALUES ('plugins:attribution',
@@ -2157,6 +2172,7 @@ CREATE TABLE machine_job_installs(machine_id TEXT NOT NULL, plugin_id TEXT NOT N
 CREATE TABLE machine_job_installations(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, PRIMARY KEY(machine_id,plugin_id,revision));
 CREATE TABLE machine_job_inputs(job_id TEXT NOT NULL, request_id TEXT NOT NULL, seq INTEGER NOT NULL, actor TEXT NOT NULL, trace_id TEXT NOT NULL, decision_id TEXT, state TEXT NOT NULL, reason TEXT, PRIMARY KEY(job_id,request_id));
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, digest TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, permit TEXT, result TEXT, created_at INTEGER NOT NULL, audit_origin TEXT, decision_id TEXT, cancel_reason TEXT, event_seq INTEGER NOT NULL DEFAULT 0, output_seq INTEGER, next_input_seq INTEGER, stdin_closed INTEGER NOT NULL DEFAULT 0);
+${LEGACY_PLUGIN_INSTALLS}
 INSERT INTO machine_job_installs VALUES ('machine', 'vendor.worker', 'install-2', 'artifact-2', '{}', 1, 1, 0);
 INSERT INTO machine_job_installations VALUES
   ('machine', 'vendor.worker', 'install-1', 'artifact-1', '{}'),
@@ -2247,6 +2263,7 @@ test("migration 29 preserves legacy forced stops independently of their reason t
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 INSERT INTO meta VALUES ('schema_version', '28');
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, cancel_reason TEXT);
+${LEGACY_PLUGIN_INSTALLS}
 INSERT INTO machine_jobs VALUES
   ('legacy', 'instance_service_configuration_changed'),
   ('active', NULL);

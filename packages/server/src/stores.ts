@@ -18,6 +18,7 @@ import {
   ContainerDisciplineSchema,
   ContainerSchema,
   GrantSchema,
+  JobCredentialSchema,
   IndexEntrySchema,
   PluginSettingValuesSchema,
   PrincipalSchema,
@@ -37,6 +38,7 @@ import {
 } from "@manifold/protocol";
 import { Y } from "@manifold/scene";
 import { z } from "zod";
+import type { CredentialReference } from "./auth.ts";
 
 export const EVENTS_RETENTION_DAYS = 30;
 export const EVENTS_MAX_PER_CONTAINER = 10_000;
@@ -199,6 +201,7 @@ interface PluginInstallDbRow {
   hardened: number;
   built_against: string | null;
   mode: string;
+  installer_credential: string | null;
 }
 
 interface MachineAuthRow extends MachineRow {
@@ -361,6 +364,14 @@ export interface PluginInstallRow {
   readonly builtAgainst?: Readonly<Record<string, string>>;
   /** Who packed the bytes; absent is `bundle` (ADR 0025 §4). */
   readonly mode?: PluginInstallMode;
+  /**
+   * The installer's non-secret lineage, kept so a lifecycle hook can act under the authority
+   * that consented to this row (#514) — the same thing a job keeps about its own requester,
+   * and never published: `PluginInstall` on the roster carries `installedBy` and no more.
+   * Absent for a row installed before schema 31 and for one the rebuild loop wrote on nobody's
+   * behalf; the hook then simply has no job slice.
+   */
+  readonly installer?: CredentialReference;
 }
 
 /**
@@ -669,11 +680,15 @@ function toPluginInstall(row: PluginInstallDbRow): PluginInstallRow {
       ? {}
       : { builtAgainst: z.record(z.string(), z.string()).parse(JSON.parse(row.built_against)) }),
     ...(row.mode === "unpacked" ? { mode: "unpacked" as const } : {}),
+    ...(row.installer_credential === null
+      ? {}
+      : { installer: JobCredentialSchema.parse(JSON.parse(row.installer_credential)) }),
   };
 }
 
 const PLUGIN_INSTALL_SELECT = `SELECT plugin_id, sha256, source, granted_caps, installed_by,
-   installed_at, bundle_path, actions, hardened, built_against, mode FROM plugin_installs`;
+   installed_at, bundle_path, actions, hardened, built_against, mode, installer_credential
+   FROM plugin_installs`;
 
 /**
  * A container row is the whole object: `discipline` names which renderer it asks for.
@@ -1038,12 +1053,13 @@ export class ServerStore {
           number,
           string | null,
           string,
+          string | null,
         ]
       >(
         `INSERT OR REPLACE INTO plugin_installs(
            plugin_id, sha256, source, granted_caps, installed_by, installed_at, bundle_path,
-           actions, hardened, built_against, mode
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           actions, hardened, built_against, mode, installer_credential
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.pluginId,
@@ -1057,6 +1073,7 @@ export class ServerStore {
         row.hardened === true ? 1 : 0,
         row.builtAgainst === undefined ? null : JSON.stringify(row.builtAgainst),
         row.mode ?? "bundle",
+        row.installer === undefined ? null : JSON.stringify(row.installer),
       );
   }
 

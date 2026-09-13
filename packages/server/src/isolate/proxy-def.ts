@@ -22,7 +22,7 @@ import {
 import { z } from "zod";
 import type { ActionCtx, ActionHandler } from "../plugin-host.ts";
 import { IsolateDenial, IsolateLoadError, type IsolateLoadResult } from "./contract.ts";
-import { JobExecuteArgsSchema, jobDoorSchemas } from "../job-doors.ts";
+import { JobExecuteArgsSchema, JobScheduleArgsSchema, jobDoorSchemas } from "../job-doors.ts";
 import { serviceDoorSchemas } from "../service-doors.ts";
 
 /**
@@ -133,12 +133,13 @@ export function buildIsolateDef(
 }
 
 /**
- * The request a child's `call` belongs to. A dispatch serves the whole `ISOLATE_CTX_METHODS`
+ * The request a child's `call` belongs to. A dispatch serves the whole {@link IsolateCtxMethod}
  * list from the caller's `ActionCtx`; a lifecycle hook has only its `LifecycleCtx`, so it
  * serves storage and answers `slice_unavailable` for the rest — the same word the guest
- * runtime uses for a slice stage 1 does not carry. `onJobSettled` sits between them: it is a
- * hook, and it carries the job slice bound to the settled job's own credential, so it serves
- * storage and `jobs.*` and nothing else.
+ * runtime uses for a slice stage 1 does not carry — EXCEPT for `jobs.*`, which it serves when
+ * and only when that ctx carries the slice (the installer's restored credential, #514).
+ * `onJobSettled` is the same shape with the job's own credential instead, and it is a separate
+ * kind because its slice is guaranteed: the host does not deliver the wake without one.
  */
 export type ServedCtx =
   | { readonly kind: "dispatch"; readonly ctx: ActionCtx }
@@ -154,7 +155,7 @@ function stringArg(args: readonly unknown[], index: number, method: IsolateCtxMe
   return value;
 }
 
-/** The `jobs.*` slice, which a dispatch and a settled hook serve from their own ctx. */
+/** The `jobs.*` slice, which a dispatch and any hook holding a credential serve from its ctx. */
 const JOB_METHODS = [
   "jobs.describe",
   "jobs.execute",
@@ -165,6 +166,9 @@ const JOB_METHODS = [
   "jobs.output",
   "jobs.outputs",
   "jobs.journal",
+  "jobs.schedule",
+  "jobs.schedules",
+  "jobs.disableSchedule",
 ] as const;
 type JobsCtxMethod = (typeof JOB_METHODS)[number];
 function jobsMethod(method: IsolateCtxMethod): method is JobsCtxMethod {
@@ -194,6 +198,12 @@ function serveJobsCall(
       return jobs.outputs(jobDoorSchemas.outputs.parse(args[0]));
     case "jobs.journal":
       return jobs.journal(jobDoorSchemas.journal.parse(args[0]));
+    case "jobs.schedule":
+      return jobs.schedule(JobScheduleArgsSchema.parse(args[0]));
+    case "jobs.schedules":
+      return jobs.schedules();
+    case "jobs.disableSchedule":
+      return jobs.disableSchedule(jobDoorSchemas.disableSchedule.parse(args[0]));
   }
 }
 
@@ -243,6 +253,9 @@ export async function serveCtxCall(
     case "jobs.output":
     case "jobs.outputs":
     case "jobs.journal":
+    case "jobs.schedule":
+    case "jobs.schedules":
+    case "jobs.disableSchedule":
     case "services.describe":
     case "services.readConfiguration":
     case "services.configureConfiguration":
@@ -264,11 +277,22 @@ export async function serveCtxCall(
     case "host.enabled":
       break;
   }
+  /*
+    A hook serves `jobs.*` only when its ctx carries the slice, and the ctx carries it only
+    when the installer's credential restored (`plugin-host.ts` `lifecycleCtx`). The absence is
+    therefore a REFUSAL by the same name every unserved slice uses, never a downgrade to some
+    other authority: a cadence a revoked installer can no longer authorize does not quietly
+    register under the engine's.
+   */
+  if (served.kind === "hook") {
+    const { jobs } = served.ctx;
+    if (jobs === undefined || !jobsMethod(method)) throw new Error(`slice_unavailable: ${method}`);
+    return serveJobsCall(method, args, jobs);
+  }
   if (served.kind === "settled") {
     if (!jobsMethod(method)) throw new Error(`slice_unavailable: ${method}`);
     return serveJobsCall(method, args, served.ctx.jobs);
   }
-  if (served.kind !== "dispatch") throw new Error(`slice_unavailable: ${method}`);
   const ctx = served.ctx;
   switch (method) {
     case "jobs.describe":
@@ -280,6 +304,9 @@ export async function serveCtxCall(
     case "jobs.output":
     case "jobs.outputs":
     case "jobs.journal":
+    case "jobs.schedule":
+    case "jobs.schedules":
+    case "jobs.disableSchedule":
       return serveJobsCall(method, args, ctx.jobs);
     case "services.describe":
       return ctx.services.describe(serviceDoorSchemas.describe.parse(args[0]));

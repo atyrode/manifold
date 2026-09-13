@@ -2403,6 +2403,7 @@ describe("PluginHost unpacked plugins", () => {
         },
       },
       fixture.owner.principal.id,
+      fixture.auth.credentialReference(fixture.owner),
     );
     if ("refused" in authored) throw new Error(authored.refused);
     const { bundle } = authoredLayout(fixture.dataDir, UNPACKED_ID);
@@ -2429,6 +2430,7 @@ describe("PluginHost unpacked plugins", () => {
       await host.author(
         { id: UNPACKED_ID, files: { "web.tsx": "export const web = 1;" } },
         "someone-else",
+        fixture.auth.credentialReference(fixture.owner),
       ),
     ).toEqual(authored);
     expect(published).toHaveLength(publishes);
@@ -2446,6 +2448,7 @@ describe("PluginHost unpacked plugins", () => {
         },
       },
       "someone-else",
+      fixture.auth.credentialReference(fixture.owner),
     );
     if ("refused" in edited) throw new Error(edited.refused);
     expect(edited.version).toBe("2.0.0");
@@ -2474,6 +2477,7 @@ describe("PluginHost unpacked plugins", () => {
         },
       },
       "admin",
+      fixture.auth.credentialReference(fixture.owner),
     );
     if ("refused" in authored) throw new Error(authored.refused);
 
@@ -2489,6 +2493,7 @@ describe("PluginHost unpacked plugins", () => {
         },
       },
       "admin",
+      fixture.auth.credentialReference(fixture.owner),
     );
     expect(broken).toEqual({
       refused: `artifact_invalid: plugin "${UNPACKED_ID}" requires plugin "vendor.absent", which is not composed`,
@@ -2506,6 +2511,7 @@ describe("PluginHost unpacked plugins", () => {
     const unbuildable = await host.author(
       { id: UNPACKED_ID, files: { "manifest.json": "{ not json" } },
       "admin",
+      fixture.auth.credentialReference(fixture.owner),
     );
     expect("refused" in unbuildable && unbuildable.refused.startsWith("artifact_invalid: ")).toBe(
       true,
@@ -2516,6 +2522,7 @@ describe("PluginHost unpacked plugins", () => {
     const impostor = await host.author(
       { id: UNPACKED_ID, files: { "manifest.json": unpackedManifest({ id: "vendor.other" }) } },
       "admin",
+      fixture.auth.credentialReference(fixture.owner),
     );
     expect(impostor).toEqual({
       refused: `artifact_invalid: manifest id "vendor.other" is not the directory it was authored in, "${UNPACKED_ID}"`,
@@ -2536,6 +2543,7 @@ describe("PluginHost unpacked plugins", () => {
         },
       },
       "admin",
+      fixture.auth.credentialReference(fixture.owner),
     );
     if ("refused" in authored) throw new Error(authored.refused);
 
@@ -2553,6 +2561,7 @@ describe("PluginHost unpacked plugins", () => {
           },
         },
         "admin",
+        fixture.auth.credentialReference(fixture.owner),
       ),
     ).toEqual({
       refused:
@@ -2562,7 +2571,11 @@ describe("PluginHost unpacked plugins", () => {
     expect(host.stylesheet(UNPACKED_ID)).toBeNull();
 
     const sheet = ".plugin-vendor_unpacked { color: red }";
-    const rooted = await host.author({ id: UNPACKED_ID, files: { "styles.css": sheet } }, "admin");
+    const rooted = await host.author(
+      { id: UNPACKED_ID, files: { "styles.css": sheet } },
+      "admin",
+      fixture.auth.credentialReference(fixture.owner),
+    );
     if ("refused" in rooted) throw new Error(rooted.refused);
     expect(rooted.sha256).not.toBe(authored.sha256);
     expect(host.stylesheet(UNPACKED_ID)).toEqual({
@@ -2579,6 +2592,7 @@ describe("PluginHost unpacked plugins", () => {
       await host.author(
         { id: UNPACKED_ID, files: { "manifest.json": unpackedManifest() } },
         "admin",
+        fixture.auth.credentialReference(fixture.owner),
       ),
     ).toEqual({ refused: `developer_mode_off: ${UNPACKED_ID}` });
     expect(existsSync(authoredLayout(fixture.dataDir, UNPACKED_ID).dir)).toBe(false);
@@ -2594,6 +2608,7 @@ describe("PluginHost unpacked plugins", () => {
         },
       },
       "admin",
+      fixture.auth.credentialReference(fixture.owner),
     );
     if ("refused" in authored) throw new Error(authored.refused);
     expect(installedRow(host, UNPACKED_ID).enabled).toBe(true);
@@ -2620,6 +2635,7 @@ describe("PluginHost unpacked plugins", () => {
       await host.author(
         { id: UNPACKED_ID, files: { "web.tsx": "export const web = 2;" } },
         "admin",
+        fixture.auth.credentialReference(fixture.owner),
       ),
     ).toEqual({ refused: `developer_mode_off: ${UNPACKED_ID}` });
     expect(installedRow(host, UNPACKED_ID).install?.sha256).toBe(authored.sha256);

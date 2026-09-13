@@ -252,6 +252,8 @@ export class IsolateSupervisor implements IsolateRunner {
         ...(delta === undefined
           ? {}
           : { delta: { enabled: [...delta.enabled], disabled: [...delta.disabled] } }),
+        // The child's ctx mirrors the host's: a slice the host cannot serve is not announced.
+        ...(ctx.jobs === undefined ? {} : { jobs: true }),
       }),
       { kind: "hook", ctx },
     );
