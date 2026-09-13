@@ -1,10 +1,22 @@
 import { describe, expect, test } from "bun:test";
+import type { ComposedPanel, HostServices, PanelProps, TileGeometryHandle } from "@manifold/plugin";
 import { AssemblyError } from "@manifold/plugin";
-import type { PluginManifest, PluginRoster, PluginRosterEntry } from "@manifold/protocol";
+import { ROOT_TILE_ID, validateTileLayout } from "@manifold/protocol";
+import type {
+  PluginManifest,
+  PluginRoster,
+  PluginRosterEntry,
+  TileLayout,
+} from "@manifold/protocol";
+import { createElement, type ReactElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { WEB_PLUGIN_DEFS } from "./assembly.ts";
 import {
   buildBrowserAssembly,
+  ComposedAssemblyProvider,
+  HostServicesProvider,
   mountPluginStylesheet,
+  PanelOutlet,
   pluginStylesheetPath,
   type StyleNode,
   type WebPluginDef,
@@ -630,5 +642,190 @@ describe("mountPluginStylesheet", () => {
   test("the sheet is fetched beside the module, the id escaped the same way", () => {
     expect(pluginStylesheetPath("acme.counter")).toBe("/api/plugins/acme.counter/styles.css");
     expect(pluginStylesheetPath("acme/x")).toBe("/api/plugins/acme%2Fx/styles.css");
+  });
+});
+
+/**
+ * WHAT A PANEL IS HANDED, AND WHAT IT MAY OPEN (issue #516).
+ *
+ * Two halves of one contract, exercised through the outlet that implements both: a panel
+ * receives its own leaf's argument as a prop, and the host it receives opens its OWN plugin's
+ * panels beside its OWN seat — committing through the floor's `applyLayout` (the debounced
+ * `core.space.setLayout`) and never through a door of its own.
+ *
+ * Rendered with `renderToStaticMarkup`: the outlet's job is resolving an occupant and handing
+ * it props, both of which a static render performs in full. The host the panel receives is
+ * captured as it renders, which is the only way to ask what a panel could have called.
+ */
+describe("a panel's argument and its openings", () => {
+  const FEED = {
+    id: "acme.feed",
+    title: "Feed",
+    contributes: {
+      panels: [
+        { id: "home", title: "Home" },
+        { id: "record", title: "Record" },
+      ],
+    },
+  } as const satisfies ManifestFields;
+  const RECORD = "acme.feed.record";
+  const R1 = { kind: "record", id: "r-1" };
+
+  /**
+   * What the last painted panel was handed. A module slot rather than a prop, because the
+   * question is what a REGISTERED component receives through the outlet, and a component
+   * registered for the assembly cannot be handed a spy.
+   */
+  let seen: { readonly arg: unknown; readonly host: HostServices } | null = null;
+  const FeedHome = ({ host, arg }: PanelProps): ReactElement => {
+    seen = { arg, host };
+    return createElement("output", null, "home");
+  };
+  const FeedRecord = ({ host, arg }: PanelProps): ReactElement => {
+    seen = { arg, host };
+    return createElement("output", null, String((arg as { id?: string } | undefined)?.id));
+  };
+
+  /** The workspace as the shell paints it: the feed's home beside the record it opened. */
+  const reading = (): TileLayout => ({
+    [ROOT_TILE_ID]: {
+      id: ROOT_TILE_ID,
+      dir: "row",
+      ratios: [0.5, 0.5],
+      children: ["ws-home", "ws-record"],
+      ref: null,
+    },
+    "ws-home": {
+      id: "ws-home",
+      dir: null,
+      ratios: [],
+      children: [],
+      ref: { kind: "panel", panelId: "acme.feed.home" },
+    },
+    "ws-record": {
+      id: "ws-record",
+      dir: null,
+      ratios: [],
+      children: [],
+      ref: { kind: "panel", panelId: RECORD },
+      arg: R1,
+    },
+  });
+
+  interface Painted {
+    readonly markup: string;
+    readonly arg: unknown;
+    readonly host: HostServices;
+    readonly committed: readonly TileLayout[];
+  }
+
+  /**
+   * Paints one panel leaf through the real outlet and reports what the panel got. The host
+   * carries exactly the members an opening reaches — the composed panel table and the
+   * workspace tree handle — which is what the cast records; the rest of `HostServices` is
+   * chrome no branch below touches.
+   */
+  function paint(leafId: string, layout: TileLayout = reading()): Painted {
+    const assembly = buildBrowserAssembly([entry(FEED), entry(SHELL)], 1, [
+      { id: "acme.feed", panels: { home: FeedHome, record: FeedRecord } },
+      { id: "core.shell", panels: { sidebar: Sidebar, "container-view": ContainerView } },
+    ]);
+    const panels = new Map<string, ComposedPanel>(
+      [...assembly.panels].map(([id, panel]) => [
+        id,
+        { plugin: panel.plugin, title: panel.title, enabled: panel.enabled },
+      ]),
+    );
+    const committed: TileLayout[] = [];
+    const tileGeometry: TileGeometryHandle = {
+      layout,
+      getTreeElement: () => null,
+      applyLayout: (next) => committed.push(next),
+    };
+    const host = {
+      assembly: { panels },
+      tileGeometry,
+      openPanel: () => ({ ok: false, refused: "no_tile" }),
+    } as unknown as HostServices;
+    const leaf = layout[leafId];
+    seen = null;
+    const markup = renderToStaticMarkup(
+      createElement(
+        ComposedAssemblyProvider,
+        { value: assembly },
+        createElement(
+          HostServicesProvider,
+          { value: host },
+          createElement(PanelOutlet, {
+            panelId: leaf?.ref?.kind === "panel" ? leaf.ref.panelId : "",
+            tileId: leafId,
+            arg: leaf?.arg,
+          }),
+        ),
+      ),
+    );
+    if (seen === null) throw new Error("the outlet painted no panel");
+    return { markup, arg: seen.arg, host: seen.host, committed };
+  }
+
+  test("the leaf's argument reaches the panel painted in it, and only that one", () => {
+    const record = paint("ws-record");
+    expect(record.arg).toEqual(R1);
+    // Opaque all the way through: what the leaf stored is what the component rendered.
+    expect(record.markup).toContain("r-1");
+    // A seat opened with none gets none — absent, not an empty record to be mistaken for one.
+    expect(paint("ws-home").arg).toBeUndefined();
+  });
+
+  test("an opening places the panel beside the caller and commits through applyLayout", () => {
+    const { host, committed } = paint("ws-home");
+    const outcome = host.openPanel({ panelId: RECORD, arg: { kind: "record", id: "r-2" } });
+    expect(outcome.ok).toBe(true);
+    expect(outcome).toMatchObject({ ok: true, placed: true });
+    expect(committed).toHaveLength(1);
+    const next = committed[0] ?? {};
+    const tileId = outcome.ok ? outcome.tileId : "";
+    // Beside the CALLER (`ws-home`), in the row it sits in, carrying the argument.
+    expect(next[ROOT_TILE_ID]?.children).toEqual(["ws-home", tileId, "ws-record"]);
+    expect(next[tileId]?.ref).toEqual({ kind: "panel", panelId: RECORD });
+    expect(next[tileId]?.arg).toEqual({ kind: "record", id: "r-2" });
+    // The commit is a tree the workspace door accepts, which is what makes this ONE door.
+    expect(validateTileLayout(next)).toBe(true);
+  });
+
+  test("a seat already showing the same thing is focused, not duplicated", () => {
+    const { host, committed } = paint("ws-home");
+    expect(host.openPanel({ panelId: RECORD, arg: R1 })).toEqual({
+      ok: true,
+      tileId: "ws-record",
+      placed: false,
+    });
+    // NOTHING was written: a reader clicking the same record twice keeps one tile.
+    expect(committed).toEqual([]);
+  });
+
+  test("every refusal is named, and none of them writes", () => {
+    const { host, committed } = paint("ws-home");
+    // ANOTHER PLUGIN's panel: the workspace tree has an owner — the principal, through
+    // arrange mode — and one plugin arranging another's presence in it is not an opening.
+    expect(host.openPanel({ panelId: "core.shell.sidebar" })).toEqual({
+      ok: false,
+      refused: "other_plugin",
+    });
+    // A panel id the assembly declares nowhere, and the plugin's own id, which is not one.
+    expect(host.openPanel({ panelId: "acme.feed.ghost" })).toEqual({
+      ok: false,
+      refused: "unknown_panel",
+    });
+    expect(host.openPanel({ panelId: "acme.feed" })).toEqual({
+      ok: false,
+      refused: "unknown_panel",
+    });
+    // An argument the store could not hand back unchanged.
+    expect(host.openPanel({ panelId: RECORD, arg: { at: new Date(0) } })).toEqual({
+      ok: false,
+      refused: "invalid_arg",
+    });
+    expect(committed).toEqual([]);
   });
 });

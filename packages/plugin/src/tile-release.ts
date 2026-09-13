@@ -29,21 +29,42 @@ export type TileRelease =
   | { readonly kind: "structure"; readonly structure: Structure };
 
 /**
- * A LEAF'S OWN SECTION ARRANGEMENT TRAVELS WITH THE PANEL, never with the seat: a reader
- * who arranged the sidebar's rows and then moved the sidebar keeps that arrangement.
+ * WHAT A PANEL LEAF HOLDS BESIDE ITS REF: this reader's section arrangement, and the
+ * argument the panel is showing something for (`arg`, issue #516).
+ *
+ * One type because both fields answer "what is this panel doing here", and both are
+ * governed by the same rule: they are legal on a panel leaf and nowhere else (protocol
+ * `validateTileLayout`).
  */
-function withLeafSections(
+export type PanelLeafState = Pick<Tile, "sections" | "arg">;
+
+/**
+ * A PANEL LEAF'S OWN STATE TRAVELS WITH THE PANEL, never with the seat: a reader who
+ * arranged the sidebar's rows and then moved the sidebar keeps that arrangement, and a
+ * reader who opened a record and then moved the tile keeps the record.
+ *
+ * Exported because the two writers of a panel leaf need the same rule — a release, here,
+ * and an opening (`openedPanel`) — and an absent field is DELETED rather than stored as
+ * `undefined`: the tree is persisted as JSON, where those two are the same state and only
+ * one of them has a spelling.
+ */
+export function withPanelLeafState(
   layout: TileLayout,
   tileId: string,
-  sections: Tile["sections"],
+  state: PanelLeafState,
 ): TileLayout | null {
   const tile = layout[tileId];
   if (tile === undefined) return null;
   const seat = { ...tile };
   delete seat.sections;
+  delete seat.arg;
   return {
     ...layout,
-    [tileId]: sections === undefined ? seat : { ...seat, sections: [...sections] },
+    [tileId]: {
+      ...seat,
+      ...(state.sections === undefined ? {} : { sections: [...state.sections] }),
+      ...(state.arg === undefined ? {} : { arg: { ...state.arg } }),
+    },
   };
 }
 
@@ -51,18 +72,26 @@ function withLeafSections(
  * TWO SEATS TRADE OCCUPANTS — the ONE exchange, whether a pointer released on a leaf's
  * exact spot, an arrow key named the sibling, or a row was dropped on another row. Ids,
  * splits and ratios are untouched by `withTilesSwapped`, so each occupant adopts the
- * other's share, and the arrangements travel with the refs rather than staying behind.
+ * other's share, and each panel's own state travels with its ref rather than staying behind.
  */
 export function tradedSeats(
   layout: TileLayout,
   aTileId: string,
   bTileId: string,
 ): TileLayout | null {
-  const aSections = layout[aTileId]?.sections;
-  const bSections = layout[bTileId]?.sections;
+  const a = panelLeafState(layout[aTileId]);
+  const b = panelLeafState(layout[bTileId]);
   const swapped = withTilesSwapped(layout, aTileId, bTileId);
-  const seated = swapped === null ? null : withLeafSections(swapped, bTileId, aSections);
-  return seated === null ? null : withLeafSections(seated, aTileId, bSections);
+  const seated = swapped === null ? null : withPanelLeafState(swapped, bTileId, a);
+  return seated === null ? null : withPanelLeafState(seated, aTileId, b);
+}
+
+/** The state a tile carries for its panel; an absent tile carries none. */
+function panelLeafState(tile: Tile | undefined): PanelLeafState {
+  return {
+    ...(tile?.sections === undefined ? {} : { sections: tile.sections }),
+    ...(tile?.arg === undefined ? {} : { arg: tile.arg }),
+  };
 }
 
 /**
@@ -115,6 +144,6 @@ export function releasedTileLayout(
 
   const inserted = withTileLeaf(layout, ref, aim.tileId, aim.edge, aim.between === true);
   if (inserted === null) return null;
-  const seated = withLeafSections(inserted.layout, inserted.tileId, moved.sections);
+  const seated = withPanelLeafState(inserted.layout, inserted.tileId, panelLeafState(moved));
   return seated === null ? null : withoutTileLeaf(seated, release.tileId);
 }

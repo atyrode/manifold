@@ -164,17 +164,25 @@ export {
   UNPAINTED_EXTENT,
   arrangedSections,
   clusteredSections,
+  openedPanel,
   panelSections,
   projectSectionArrangement,
   releasedSectionArrangement,
   removedSectionStructure,
   sectionArrangementOf,
   withPanelSections,
+  type PanelOpening,
   type SectionCluster,
   type SectionProjection,
   type SectionRelease,
 } from "./layout.ts";
-export { releasedTileLayout, tradedSeats, type TileRelease } from "./tile-release.ts";
+export {
+  releasedTileLayout,
+  tradedSeats,
+  withPanelLeafState,
+  type PanelLeafState,
+  type TileRelease,
+} from "./tile-release.ts";
 export {
   buildIndexTree,
   projectIndexMove,
@@ -198,6 +206,9 @@ export {
   type AuthoringHandle,
   type TileGeometryHandle,
   type ViewportHandle,
+  type OpenPanelOutcome,
+  type OpenPanelRefusal,
+  type OpenPanelRequest,
   type PanelProps,
   type PlaceOutcome,
   type SectionProps,
