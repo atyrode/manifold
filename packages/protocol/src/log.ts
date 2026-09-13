@@ -61,8 +61,9 @@ export const LOG_EVENTS = [
   "local_agent_spawned",
   "local_agent_prepared",
 
-  // Server: machine transport — enrolment, version negotiation, supersession, liveness, and
-  // (#278) admission: a claimant refused for unproven continuity, and the drain round trip.
+  // Server: machine transport — enrolment, version negotiation, supersession, liveness,
+  // (#278) admission: a claimant refused for unproven continuity, and the drain round trip,
+  // and (#529) the repository round trip: an answer nobody waited for, and one that never came.
   "machine_admission_refused",
   "machine_drain_status",
   "machine_drain_timeout",
@@ -71,6 +72,8 @@ export const LOG_EVENTS = [
   "machine_liveness_timeout",
   "machine_malformed_frame",
   "machine_rejected",
+  "machine_repository_timeout",
+  "machine_repository_unmatched",
   "machine_superseded",
   "machine_supersession_damped",
   "machine_unknown_frame",
@@ -151,6 +154,9 @@ export const LOG_EVENTS = [
   // Agent: inbound frame classification.
   "malformed_frame",
   "ignored_unknown_frame",
+
+  // Agent: the one question this process answers itself (#529) — what repository a folder is.
+  "repository_probe_failed",
 
   // Agent: PTY ownership. `created`, `create_error` and `exited` are spelled to match the
   // machine-frame `type` they accompany, so a log line and the wire frame it reports read the

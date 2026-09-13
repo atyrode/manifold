@@ -17,6 +17,13 @@ export const CAPS = [
   "terminals:write",
   "tokens:mint",
   "machines:mint",
+  /**
+   * READ A MACHINE'S OWN FACTS: what the enrolled agent can say about the host it runs on,
+   * asked at `manifold://machine/<id>` rather than in the abstract. Separate from
+   * `machines:run` because reading what a folder IS is not authority to execute anything
+   * there, and separate from `machines:mint` because a reader must never imply an enroller.
+   */
+  "machines:read",
   "machines:run",
   "jobs:read",
   "jobs:input",

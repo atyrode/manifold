@@ -359,6 +359,7 @@ export const ISOLATE_CTX_METHODS = [
   "newId",
   "machines.isOnline",
   "machines.getTerminalExecution",
+  "machines.repository",
   "placement.place",
   "host.roster",
   "host.enabled",
