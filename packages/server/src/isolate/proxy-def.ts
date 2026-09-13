@@ -162,6 +162,7 @@ export function buildIsolateDef(
   return {
     def: {
       manifest,
+      inputValidation: "guest",
       actions,
       handlers,
       lifecycle,

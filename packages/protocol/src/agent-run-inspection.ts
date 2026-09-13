@@ -31,6 +31,19 @@ const runSummary = z.strictObject({
   name: text,
   state: AgentRunStateSchema,
 });
+
+/** A run discovery surface, never the credential administrator's token inventory. */
+export const AgentRunInventorySchema = z.strictObject({
+  observedAt: at,
+  runs: z.array(runSummary.extend({
+    purpose: text,
+    createdAt: at,
+    expiresAt: at,
+  })).max(100),
+  truncated: z.boolean(),
+});
+export type AgentRunInventory = z.infer<typeof AgentRunInventorySchema>;
+
 export const AgentRunTraceSummarySchema = z.strictObject({
   traceId,
   at,

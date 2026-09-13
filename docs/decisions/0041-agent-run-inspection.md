@@ -28,8 +28,8 @@ is introduced. An agent row is an accessible button; ordinary human rows retain 
 
 The existing `events` table remains the one journal and the dispatcher remains its trace writer.
 `core.events.list` remains its root-only workspace-wide read door. The inspector is a purpose-built,
-payload-free projection over authorized identities, not a second general journal reader. It adds
-no migration, audit table, output reader or retention policy.
+payload-free projection over authorized identities, not a second general journal reader. Metadata-only
+migration 36 records the declaration provenance cutover; no audit table, output reader or retention policy is added.
 
 ### Identity-relative authorization
 
@@ -44,9 +44,12 @@ or foreign trace returns the same unavailable selection. No workspace trace coun
 credential reference or foreign result accompanies that answer. Expired or revoked credentials are
 not viewers. Pending/stale policy runs may inspect without regaining ordinary effect authority.
 
-The Sessions inventory keeps its former root/revocable-identity view and adds only the exact
-inspectable run-chain rows. Non-sponsors with neither relation nor credential-administration
-permission remain refused.
+`core.access.listCredentials` keeps its former root/revocable-identity fields and audience, including
+credential references for those administrators only. `core.access.listAgentRuns` is a separate bounded
+discovery projection: the newest 100 authorized run summaries, sanitized names/purposes, and a
+truncation flag, with no credential ids or raw principal text. Both reads restore current credentials
+at point of use. Unrelated viewers discover no runs. Sessions uses these summaries for chain-only
+viewers; the ordinary administrator credential view and human revocation controls remain unchanged.
 
 ### Safe facts, honest incompleteness
 
@@ -68,6 +71,10 @@ closed-or-unavailable, with trace observation times rather than invented connect
 A legacy principal has an unavailable run origin; pruned native origins remain unavailable.
 Expired authority may coexist with pending cleanup. A retained terminal, failed cleanup and a
 closed native owner are separate facts, never collapsed into a successful run outcome.
+Native job ids, including deterministic scheduled-job ids, are mechanical correlation facts, not
+declarations. Jobs and other non-place references render as text rather than broken navigation;
+retained trace references expand through the inspector and navigable terminal/place references use
+the existing navigation door.
 
 ### Declarations are claims only
 
@@ -77,16 +84,23 @@ Actions publish `agentJustification: "required"`. The smallest initial set cover
 and authorizing deferred execution. Reads and cleanup remain unmarked.
 
 An active accountable run may supply `x-manifold-agent-justification` through the shared action
-transport. Existing policy/scope/capability/argument checks retain precedence. Both raw and
-normalized text are bounded to 512 characters; normalization makes a safe single line and rejects
-credential-like material without echoing or persisting the rejected bytes. Missing required text
-is a traced `justification_required`; malformed text is traced `invalid_justification`.
+transport. Existing policy/scope/capability/argument checks retain precedence, including real
+target-relative delegation/renewal and full native admission. A reusable host continuation runs
+immediately before the effect; isolated actions perform their real Zod parse exactly once before
+the host admits execution. Both raw and normalized text are bounded to 512 characters. Detection
+uses a Unicode skeleton to recognize obfuscated credential keywords and Basic/Bearer syntax;
+the attributed normalized text is otherwise preserved. Credential-like bytes are never echoed or
+persisted. Missing required text is traced `justification_required`; malformed text is traced
+`invalid_justification`.
 
-Only the dispatcher can populate the reserved trace payload field `agentDeclaration`. The
-inspector selects and revalidates that field, never returns the containing payload, and visibly
-labels the text as an agent declaration. Human and native-lifecycle identities retain identical
-mechanical traces with no fabricated reasoning. A declaration grants no capability, bypasses no
-grant/consent requirement and proves neither intention nor compliance.
+Only the dispatcher can populate the reserved trace payload field `agentDeclaration`. Migration 36
+atomically records the last pre-cutover event id in existing metadata, accounting for pruned rows
+and SQLite's sequence without JavaScript number rounding. The inspector trusts only later rows
+and revalidates the selected declaration. Old/unknown provenance and missing/corrupt metadata
+withhold declarations; reopening never repairs or moves the boundary. No containing payload is
+returned. Human and native-lifecycle identities retain identical mechanical traces with no
+fabricated reasoning. A declaration grants no capability, bypasses no grant/consent requirement
+and proves neither intention nor compliance.
 
 ## Alternatives declined
 
@@ -105,6 +119,8 @@ grant/consent requirement and proves neither intention nor compliance.
 Focused deterministic regressions cover self/sponsor/root authorization, sibling and missing-id
 indistinguishability, declaration bounds/redaction and authority precedence, trace paging/exact
 selection, native origin pruning, live versus unavailable connections and incomplete cleanup.
-Browser cases cover opening an agent row, trace/lineage navigation and stale result isolation.
+Browser cases cover opening an agent row, trace/lineage navigation, safe chain inventory and client/
+viewer replacement. Privileged rows and snapshots clear synchronously, and late prior-client
+responses cannot revive them.
 These cases are authored with this change; execution and visual verification are deliberately
 reserved to the integration owner after #553 and #557 are combined. No unrun check is claimed green.

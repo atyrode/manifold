@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:te
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { AgentRunInspection, CredentialsResponse } from "@manifold/protocol";
+import { formatManifoldUri, type AgentRunInspection, type CredentialsResponse } from "@manifold/protocol";
 import { Browser } from "../../../scripts/cdp.ts";
 import { until } from "../../../scripts/gate-lib.ts";
 
@@ -14,6 +14,10 @@ let server: Bun.Server<undefined> | undefined;
 const at = 1_700_000_000_000;
 const traceId = "9007199254740993";
 const nativeTraceId = "9007199254740997";
+const scheduledJobId = `schedule-${"a".repeat(64)}`;
+const scheduledJobUri = formatManifoldUri({
+  kind: "job", jobId: scheduledJobId, machineId: "machine-one", operationId: "check",
+});
 const credentials: CredentialsResponse = {
   principals: [
     {
@@ -90,7 +94,7 @@ const inspection: AgentRunInspection = {
       actor: "agent-one",
       action: "core.space.list",
       authority: "space:read",
-      targets: ["manifold://container/review"],
+      targets: ["manifold://container/review", scheduledJobUri],
       outcome: null,
       settlement: "pending_or_crashed",
       connectionId: "connection-one",
@@ -103,7 +107,7 @@ const inspection: AgentRunInspection = {
   history: "retained_only",
   jobs: [
     {
-      jobId: "job-one",
+      jobId: scheduledJobId,
       machineId: "machine-one",
       pluginId: "native.review",
       operationId: "check",
@@ -136,28 +140,35 @@ beforeAll(async () => {
     `
     import { createElement } from ${JSON.stringify(Bun.resolveSync("react", plugin))};
     import { createRoot } from ${JSON.stringify(Bun.resolveSync("react-dom/client", plugin))};
+    import { flushSync } from ${JSON.stringify(Bun.resolveSync("react-dom", plugin))};
     import { SessionsSection } from ${JSON.stringify(resolve(import.meta.dir, "../../plugins/access/src/web.tsx"))};
     const requests = [];
     const pending = new Map();
     const navigations = [];
     const root = createRoot(document.getElementById("root"));
-    const host = {
-      principal: { id: "viewer", kind: "human", name: "Viewer", color: "#74c0fc" },
-      client: {
-        selfCaps: () => ["*"],
-        action: (action, args) => {
-          const { promise, resolve } = Promise.withResolvers();
-          const id = requests.length;
-          requests.push({ id, action, args });
-          pending.set(id, resolve);
-          return promise;
-        },
+    const makeClient = caps => ({
+      selfCaps: () => caps,
+      action: (action, args) => {
+        const { promise, resolve } = Promise.withResolvers();
+        const id = requests.length;
+        requests.push({ id, action, args });
+        pending.set(id, resolve);
+        return promise;
       },
+    });
+    let host = {
+      principal: { id: "viewer", kind: "human", name: "Viewer", color: "#74c0fc" },
+      client: makeClient(["*"]),
       navigate: uri => navigations.push(uri),
     };
+    const render = () => root.render(createElement(SessionsSection, { host }));
     window.inspectorFixture = {
       requests,
       navigations,
+      replaceViewer: (id, caps) => {
+        host = { ...host, principal: { ...host.principal, id }, client: makeClient(caps) };
+        flushSync(render);
+      },
       answer: (id, outcome) => {
         const resolve = pending.get(id);
         if (!resolve) throw new Error("No pending action " + id);
@@ -165,7 +176,7 @@ beforeAll(async () => {
         resolve(outcome);
       },
     };
-    root.render(createElement(SessionsSection, { host }));
+    render();
   `,
   );
   const build = Bun.spawn(["bun", "build", entry, "--target=browser", "--outdir", output], {
@@ -205,14 +216,14 @@ async function requests(count: number): Promise<readonly { action: string; args:
     5_000,
     `${String(count)} action requests`,
   );
-  return browser.evaluate("window.inspectorFixture.requests");
+  return browser.evaluate<readonly { action: string; args: unknown }[]>("window.inspectorFixture.requests");
 }
 
 async function answer(id: number, result: unknown): Promise<void> {
-  await browser.evaluate(
+  await browser.evaluate<void>(
     `window.inspectorFixture.answer(${String(id)}, ${JSON.stringify({ ok: true, result })})`,
   );
-  await browser.evaluate(`(() => {
+  await browser.evaluate<void>(`(() => {
     const frame = Promise.withResolvers();
     requestAnimationFrame(() => requestAnimationFrame(() => frame.resolve()));
     return frame.promise;
@@ -259,7 +270,7 @@ afterAll(async () => {
 });
 
 test("an agent name opens the safe run snapshot and expandable native trace references", async () => {
-  await browser.evaluate(
+  await browser.evaluate<void>(
     "document.querySelector('[aria-label=\"Inspect agent run for Review agent\"]').focus()",
   );
   await browser.send("Input.dispatchKeyEvent", {
@@ -292,7 +303,7 @@ test("an agent name opens the safe run snapshot and expandable native trace refe
   await visibleText(`Trace ${traceId}`);
   await visibleText("pending_or_crashed");
   expect(
-    await browser.evaluate(`(() => {
+    await browser.evaluate<boolean>(`(() => {
     const button = document.querySelector('[aria-label="Inspect agent run for Review agent"]');
     return button.getAttribute("aria-expanded") === "true" &&
       document.getElementById(button.getAttribute("aria-controls"))?.getAttribute("aria-label") === "Agent run inspection";
@@ -310,6 +321,10 @@ test("an agent name opens the safe run snapshot and expandable native trace refe
 
   await clickButton("Jobs · 1");
   await visibleText("unconfirmed");
+  await visibleText(scheduledJobId);
+  expect(await browser.evaluate<boolean>(`[...document.querySelectorAll("button,a")].some(node =>
+    node.getAttribute("aria-label") === ${JSON.stringify(`Open ${scheduledJobUri}`)} ||
+    node.textContent.includes(${JSON.stringify(scheduledJobId)}))`)).toBe(false);
   await clickButton(`Trace ${nativeTraceId}`);
   expect((await requests(4))[3]).toMatchObject({
     action: "core.access.inspectAgentRun",
@@ -318,7 +333,7 @@ test("an agent name opens the safe run snapshot and expandable native trace refe
   await answer(3, { ...inspection, traces: [], requestedTrace: "unavailable" });
   await visibleText(`Trace ${nativeTraceId} is unavailable in retained history`);
   await clickButton("Open manifold://terminal/terminal-one");
-  expect(await browser.evaluate("window.inspectorFixture.navigations")).toEqual([
+  expect(await browser.evaluate<string[]>("window.inspectorFixture.navigations")).toEqual([
     "manifold://terminal/terminal-one",
   ]);
 
@@ -331,7 +346,7 @@ test("an agent name opens the safe run snapshot and expandable native trace refe
   await answer(4, { availability: "origin_unavailable", principalId: "root-agent" });
   await visibleText("Origin unavailable");
   expect(
-    await browser.evaluate(
+    await browser.evaluate<boolean>(
       'document.body.innerText.includes("Review the retained lifecycle facts")',
     ),
   ).toBe(false);
@@ -339,14 +354,14 @@ test("an agent name opens the safe run snapshot and expandable native trace refe
 
 test("human names remain inert and their existing two-press withdrawal is unchanged", async () => {
   expect(
-    await browser.evaluate(`(() => {
+    await browser.evaluate<boolean>(`(() => {
     const name = document.querySelector('[data-principal="human-one"] .credential-name strong');
     name.click();
     return name.closest("button") === null;
   })()`),
   ).toBe(true);
-  expect(await browser.evaluate('document.querySelector(".credential-inspection")')).toBeNull();
-  expect(await browser.evaluate("window.inspectorFixture.requests.length")).toBe(1);
+  expect(await browser.evaluate<boolean>('document.querySelector(".credential-inspection") === null')).toBe(true);
+  expect(await browser.evaluate<number>("window.inspectorFixture.requests.length")).toBe(1);
   await clickButton("Withdraw every credential of Human reader");
   await until(
     () =>
@@ -356,7 +371,7 @@ test("human names remain inert and their existing two-press withdrawal is unchan
     5_000,
     "human withdrawal confirmation",
   );
-  expect(await browser.evaluate("window.inspectorFixture.requests.length")).toBe(1);
+  expect(await browser.evaluate<number>("window.inspectorFixture.requests.length")).toBe(1);
   await clickButton("Confirm withdrawing every credential of Human reader");
   expect((await requests(2))[1]).toMatchObject({
     action: "core.access.revoke",
@@ -374,8 +389,55 @@ test("changing the inspected identity discards a late response from the previous
   await visibleText("Origin unavailable");
   await answer(1, inspection);
   expect(
-    await browser.evaluate(
+    await browser.evaluate<boolean>(
       'document.body.innerText.includes("Review the retained lifecycle facts")',
     ),
   ).toBe(false);
+}, 60_000);
+
+test("replacing the viewer clears privileged rows before denial and rejects a late root trace", async () => {
+  await clickButton("Inspect agent run for Review agent");
+  await requests(2);
+  await answer(1, inspection);
+  await visibleText("Review the retained lifecycle facts");
+  await clickButton(`Trace ${traceId}`);
+  await requests(3);
+  expect(await browser.evaluate<boolean>(`(() => {
+    window.inspectorFixture.replaceViewer("unrelated", ["containers:read"]);
+    return !document.body.innerText.includes("Review the retained lifecycle facts") &&
+      document.querySelector('[data-principal="agent-one"]') === null;
+  })()`)).toBe(true);
+  expect((await requests(4))[3]).toMatchObject({ action: "core.access.listAgentRuns", args: {} });
+  await browser.evaluate<void>(`window.inspectorFixture.answer(3, {
+    ok: false, denial: { rule: "refused", message: "agent run inspection unavailable" }
+  })`);
+  await visibleText("agent run inspection unavailable");
+  await answer(2, inspection);
+  expect(await browser.evaluate<boolean>(
+    'document.body.innerText.includes("Review the retained lifecycle facts")',
+  )).toBe(false);
+}, 60_000);
+
+test("scoped minters open safe run summaries after the administrator read is refused", async () => {
+  await browser.evaluate<void>('window.inspectorFixture.replaceViewer("sponsor-one", ["agents:delegate", "tokens:mint"])');
+  expect((await requests(2))[1]).toMatchObject({ action: "core.access.listCredentials", args: {} });
+  await browser.evaluate<void>(`window.inspectorFixture.answer(1, {
+    ok: false, denial: { rule: "forbidden", message: "scoped tokens cannot invoke workspace actions" }
+  })`);
+  expect((await requests(3))[2]).toMatchObject({ action: "core.access.listAgentRuns", args: {} });
+  await answer(2, {
+    observedAt: at, truncated: false,
+    runs: [{ id: "run-one", principalId: "agent-one", name: "[redacted]", state: "active",
+      purpose: "[redacted]", createdAt: at, expiresAt: at + 60_000 }],
+  });
+  await visibleText("[redacted]");
+  expect(await browser.evaluate<boolean>(
+    'document.querySelector("[aria-label^=\\"Withdraw every credential\\"]") === null',
+  )).toBe(true);
+  await clickButton("Inspect agent run for [redacted]");
+  expect((await requests(4))[3]).toMatchObject({
+    action: "core.access.inspectAgentRun", args: { principalId: "agent-one" },
+  });
+  await answer(3, inspection);
+  await visibleText("Review the retained lifecycle facts");
 }, 60_000);

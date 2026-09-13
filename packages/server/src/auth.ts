@@ -10,6 +10,7 @@ import {
   type InspectAgentRunRequest,
   type InspectAgentRunResult,
   type AgentRunInspection,
+  type AgentRunInventory,
   AGENT_RUN_MAX_RENEWALS,
   BootstrapPrincipalRequestSchema,
   CAPS,
@@ -1363,6 +1364,32 @@ export class AuthService {
     );
   }
 
+  /** Bounded discovery through the inspection authority, not credential administration. */
+  listAgentRuns(actor: AuthContext): AgentRunInventory {
+    const current = this.restoreCredential(this.credentialReference(actor));
+    if (current === null) throw new ServiceError("forbidden", "agent run inspection unavailable");
+    const observedAt = this.runtime.now();
+    const runs: AgentRunInventory["runs"] = [];
+    let truncated = false;
+    for (const run of this.store.agentRunInspectionCandidates(current.principal.id, current.isRoot)) {
+      if (!this.mayInspectAgentRun(current, run)) continue;
+      if (runs.length === 100) {
+        truncated = true;
+        break;
+      }
+      runs.push({
+        id: run.id,
+        principalId: run.principalId,
+        name: normalizeAgentDeclaration(this.store.getPrincipal(run.principalId)?.name ?? "Principal unavailable") ?? "[redacted]",
+        purpose: normalizeAgentDeclaration(run.purpose) ?? "[redacted]",
+        state: !TERMINAL_AGENT_RUN_STATES.has(run.state) && run.expiresAt <= observedAt ? "expired" : run.state,
+        createdAt: run.createdAt,
+        expiresAt: run.expiresAt,
+      });
+    }
+    return { observedAt, runs, truncated };
+  }
+
   inspectAgentRun(input: InspectAgentRunRequest, actor: AuthContext): InspectAgentRunResult {
     const parsed = InspectAgentRunRequestSchema.parse(input);
     const current = this.restoreCredential(this.credentialReference(actor));
@@ -1432,7 +1459,11 @@ export class AuthService {
     });
   }
 
-  createAgentRun(input: CreateAgentRunRequest, actor: AuthContext): CreateAgentRunResult {
+  createAgentRun(
+    input: CreateAgentRunRequest,
+    actor: AuthContext,
+    beforeEffect?: () => void,
+  ): CreateAgentRunResult {
     const parsed = CreateAgentRunRequestSchema.parse(input);
     if (containmentPath(parsed.target) === null) {
       throw new ServiceError("not_found", "agent run target is not addressable");
@@ -1501,6 +1532,8 @@ export class AuthService {
       throw new ServiceError("conflict", "sponsor authority has less than one minute remaining");
     }
 
+    // Admission above is effect-free; the dispatch's declaration is enforced at this boundary.
+    beforeEffect?.();
     const createdAt = this.runtime.now();
     const runId = this.runtime.newId();
     const principalId = this.runtime.newId();
@@ -1646,7 +1679,11 @@ export class AuthService {
     return { run: this.presentAgentRun(acknowledged) };
   }
 
-  renewAgentRun(input: RenewAgentRunRequest, actor: AuthContext): RenewAgentRunResult {
+  renewAgentRun(
+    input: RenewAgentRunRequest,
+    actor: AuthContext,
+    beforeEffect?: () => void,
+  ): RenewAgentRunResult {
     const parsed = RenewAgentRunRequestSchema.parse(input);
     const initial = this.store.getAgentRun(parsed.runId);
     if (initial === null) throw new ServiceError("not_found", "agent run not found");
@@ -1703,6 +1740,7 @@ export class AuthService {
       ) {
         throw new ServiceError("conflict", "agent run changed before renewal");
       }
+      beforeEffect?.();
       const revoked = this.store.revokeTokensByPrincipal(current.principalId, at);
       if (
         !this.store.renewAgentRun(current.id, expiresAt, {
@@ -2114,21 +2152,22 @@ export class AuthService {
   }
 
   /**
-   * Sessions inventory: root sees every identity; an unscoped credential administrator
-   * keeps its existing revocable-principal view. ADR 0041 additionally permits the exact
-   * inspectable run chain, including while that run is awaiting policy acknowledgement.
-   * This list never grants revocation authority and never widens the root-only journal.
+   * Legacy credential-administrator inventory: root sees every identity; an unscoped
+   * minter sees only its revocable principals. Inspection-only viewers use listAgentRuns,
+   * whose bounded summaries contain no credential references or raw principal labels.
    */
   listCredentials(actor: AuthContext): PrincipalCredentials[] {
-    const mayListRevocable = actor.containerScope === null && this.allows(actor, "tokens:mint");
+    // HTTP authentication precedes the awaited body read; restore again at point of use.
+    const current = this.restoreCredential(this.credentialReference(actor));
+    if (current === null) throw new ServiceError("forbidden", "credential inspection authority required");
+    if (current.containerScope !== null || !this.allows(current, "tokens:mint")) {
+      throw new ServiceError("forbidden", "tokens:mint capability required");
+    }
     const now = this.runtime.now();
     const rows: PrincipalCredentials[] = [];
     for (const { principal, createdAt } of this.store.listPrincipalsWithCreation()) {
-      const run = principal.kind === "agent" ? this.store.getAgentRunByPrincipal(principal.id) : null;
-      const mine = actor.isRoot ||
-        (mayListRevocable && (principal.id === actor.principal.id ||
-          this.store.principalMintedBy(principal.id, actor.principal.id))) ||
-        (run !== null && this.mayInspectAgentRun(actor, run));
+      const mine = current.isRoot || principal.id === current.principal.id ||
+        this.store.principalMintedBy(principal.id, current.principal.id);
       if (!mine) continue;
       const sessions = this.store
         .listTokensByPrincipal(principal.id)
@@ -2148,9 +2187,6 @@ export class AuthService {
           ...(token.expiresAt === null ? {} : { expiresAt: token.expiresAt }),
         }));
       rows.push({ principal, createdAt, sessions });
-    }
-    if (!actor.isRoot && !mayListRevocable && rows.length === 0) {
-      throw new ServiceError("forbidden", "credential inspection authority required");
     }
     return rows;
   }

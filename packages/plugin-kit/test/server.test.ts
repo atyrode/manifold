@@ -79,6 +79,10 @@ function host(def: ServerPluginDef): FakeHost {
   let exited: number | null = null;
   attachServerGuest(def, {
     send: (frame) => {
+      if (frame.t === "prepared") {
+        listener({ t: "admitted", id: frame.id, allowed: true });
+        return;
+      }
       sent.push(frame);
       const waiter = waiting.shift();
       if (waiter === undefined) queue.push(frame);

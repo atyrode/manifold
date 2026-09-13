@@ -8,7 +8,7 @@ import { migrateToSoloCompositions } from "./migrate-solo.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 35;
+export const SCHEMA_VERSION = 36;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -847,6 +847,24 @@ CREATE TABLE agent_run_policy_snapshots(
   PRIMARY KEY(run_id,revision)
 );
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','35');
+`,
+  /**
+   * Only dispatcher-reserved declarations are claims (#557). Older refusal payloads may
+   * contain caller-authored agentDeclaration fields, so record the last untrusted event
+   * before this database can reach a new dispatcher. AUTOINCREMENT's high-water mark
+   * survives pruning; the retained maximum also protects against a lowered sequence.
+   * Keep the exclusive boundary as decimal text: neither JS rounding nor INT64 + 1
+   * overflow may make a historical row trusted. This migration is its only writer;
+   * missing/corrupt metadata on an already-upgraded database must remain fail-closed.
+   */
+  36: `
+INSERT OR REPLACE INTO meta(key,value)
+SELECT 'agent-runs:declarations-after-event-id',
+  CAST(MAX(0,
+    COALESCE((SELECT MAX(id) FROM events),0),
+    COALESCE((SELECT MAX(seq) FROM sqlite_sequence WHERE name='events'),0)
+  ) AS TEXT);
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','36');
 `,
 };
 

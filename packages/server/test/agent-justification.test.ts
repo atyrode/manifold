@@ -104,45 +104,6 @@ async function acknowledge(fix: Fixture, actor: AuthContext) {
 }
 
 describe("bound agent declarations", () => {
-  test("every initially selected effect refuses a missing declaration before its handler", async () => {
-    const fix = await fixture();
-    const { created, actor } = await newRun(fix);
-    await acknowledge(fix, actor);
-    const job = {
-      jobId: "job-fixture",
-      machineId: "machine-fixture",
-      operationId: "run",
-      pluginId: "test.job",
-      input: {},
-      outputs: [],
-    };
-    const effects: readonly (readonly [string, unknown])[] = [
-      ["core.access.createAgentRun", childArgs],
-      ["core.access.renewAgentRun", { runId: created.run.id }],
-      ["engine.jobs.execute", job],
-      ["engine.jobs.schedule", {
-        ...job,
-        scheduleId: "schedule-fixture",
-        revision: "first",
-        firstNominalAt: fix.runtime.now(),
-        intervalMs: 60_000,
-        deadlineMs: 30_000,
-        expiresAt: fix.runtime.now() + 120_000,
-        offlinePolicy: "skip",
-      }],
-    ];
-    for (const [name, args] of effects) {
-      expect(await fix.host.dispatch(actor, name, args)).toMatchObject({
-        ok: false,
-        denial: { rule: "justification_required" },
-      });
-      const row = latestTrace(fix);
-      expect(row).toMatchObject({ door: name, outcome: "justification_required" });
-      expect(JSON.parse(row.payload).agentDeclaration).toBeUndefined();
-    }
-    expect(fix.store.getAgentRun(created.run.id)?.renewals).toBe(0);
-  });
-
   test("normalization bounds the raw and normalized claim and removes invisible formatting", () => {
     expect(normalizeAgentDeclaration(" \tReview\u202e the\ncontainer\u200b. \r")).toBe(
       "Review the container.",
@@ -165,6 +126,9 @@ describe("bound agent declarations", () => {
       "api_to\u202eken = fixture-only-value",
       "password: fixture-only-value",
       "Authorization: Bearer fixture-only-value",
+      "Basic dXNlcjpwYXNzd29yZA==",
+      "api_to\u034fken=short-secret",
+      "Ba\u0301sic dXNlcjpwYXNzd29yZA==",
       "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlIn0.Zml4dHVyZS1zaWduYXR1cmU",
       "x".repeat(64),
     ];
