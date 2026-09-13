@@ -33,7 +33,7 @@ test("presence is principal-stamped, drop-tolerant, merged, and connection-count
       containerId: container.id,
     });
     const bob = await mintToken(server, {
-      principal: { kind: "agent", name: "Bob Presence", color: "#3274d9" },
+      principal: { kind: "human", name: "Bob Presence", color: "#3274d9" },
       caps: ["containers:read", "scenes:write"],
       containerId: container.id,
     });

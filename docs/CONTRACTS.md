@@ -119,23 +119,38 @@ prose roster, owns which plugins exist.
 
 ### Automation credential lifecycle
 
-On a persistent instance, automation uses dedicated, clearly named, run-owned `kind: "agent"`
-principals with minimal capabilities and scope. Never impersonate an operator or mint test
-credentials into an existing human or fleet principal. A test deliberately exercising the
-human sign-in form uses a unique verification name instead.
+On a persistent instance, every generic autonomous task enters through
+`core.access.createAgentRun`: one fresh, clearly named, run-owned `kind: "agent"` principal,
+one sponsor, one purpose, one optional task reference, and one bounded capability/target/reach
+ceiling. `core.access.createPrincipal` and `core.access.mint` are human-only admission; they
+cannot create or reissue an agent identity. Machine, native-service, federated-ticket and
+terminal-lifecycle identities retain their separately named internal paths.
 
-Track the principal IDs and resources created by the run. On success and failure, revoke every
-run-owned credential through `core.access.revoke`, verify no live credentials remain, close test
-PTYs and remove test containers; removing a canvas need not destroy its referenced terminals.
-One cleanup failure must not skip the other cleanup. Supplied operator credentials and unrelated
-principals are never cleanup targets. A cleanup failure is a failed run: report the instance,
-non-secret resource IDs and failed operation, never call it clean.
+A run authenticates immediately but begins `pending_policy`. Until it fetches
+`core.access.getAgentPolicy` and sends every exact bundle id and digest to
+`core.access.acknowledgeAgentPolicy`, the dispatch ladder permits only policy and teardown
+doors. The required bytes are the built-in action-plane contract plus the optional operator
+file selected by `MANIFOLD_AGENT_POLICY_FILE`. A changed revision moves active runs to
+`policy_stale`; startup and the root-only `core.access.reloadAgentPolicy` apply the same
+reconciliation, and only exact re-acknowledgement restores ordinary actions.
 
-Expiry is a backstop, not teardown. Ordinary lifetimes and internal exceptions remain owned by
-[Identity, tokens, capabilities](#identity-tokens-capabilities). Long-running automation obtains
-a fresh authorized credential, not an unbounded one; tests cannot claim internal lifecycle
-exceptions to avoid cleanup. Tests whose entire throwaway server and data directory are
-destroyed need no additional credential revocation.
+Effective authority is always the live permission waterfall intersected with the run's caps,
+target/reach, expiry and policy state. The authorizing credential is retained as non-secret
+lineage, and each child action is also intersected with every sponsor run's live authority at
+the actual node: a node-only grant or a deeper deny cannot be laundered through a fresh
+principal. An active run may create a child only with `agents:delegate`, strict
+cap/target/reach/expiry attenuation, maximum depth four and at most 32 descendants under one
+root. A direct sponsor may renew an active policy-current run at most 24 times; renewal binds
+the current sponsor credential, each replacement lasts at most one hour and never outlives its
+parent.
+
+On success and failure, call `core.access.finishAgentRun` with the truthful outcome. It revokes
+every live credential and token-bound grant in that subtree and records cleanup counts.
+Expiry performs the same transitive withdrawal as a backstop, never as successful teardown.
+Supplied operator credentials and unrelated principals are never cleanup targets. A cleanup
+failure is a failed run: report the instance, non-secret resource IDs and failed operation,
+never call it clean. Tests whose entire throwaway server and data directory are destroyed
+need no additional credential revocation.
 
 ## Topology
 
@@ -182,6 +197,10 @@ viewer uses. There is no relay and no second sync path (ADR 0014).
 | agent transport | `bun packages/agent/src/main.ts`                 | `MANIFOLD_TERMINAL_HOST_SOCKET` (required), `MANIFOLD_SERVER_URL` (required), exactly one of `MANIFOLD_MACHINE_TOKEN` or `MANIFOLD_MACHINE_TOKEN_FILE` (file mode 0600; contents trimmed; the file form keeps the token out of unit files and process environment listings), `MANIFOLD_MACHINE_NAME` (hostname)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | terminal host   | `bun packages/agent/src/main.ts --terminal-host` | `MANIFOLD_TERMINAL_HOST_SOCKET` (required; same private Unix socket path as the transport); no hub URL or machine credential required                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | web dev         | `bun run --cwd packages/web dev`                 | vite :5173 (CLI `--port` overrides), proxies `/api` + `/ws` → `MANIFOLD_PORT` (7777); `MANIFOLD_DEV_HOST` (unset: Vite defaults; set: allows that hostname and uses `wss` HMR on that host's port 443 behind a TLS router)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+
+The server also accepts `MANIFOLD_AGENT_POLICY_FILE`: unset uses only the built-in action-plane
+policy; an absolute or cwd-relative path selects a trusted operator policy that is loaded
+strictly and snapshotted for exact acknowledgement.
 
 Preview identity adds two opt-in server variables: `MANIFOLD_PREVIEW_DOMAIN` enables this
 instance as an issuer for integrated and numbered hosts below that DNS name, while
@@ -289,10 +308,12 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   single-operator path MUST work offline, in one command, without an external service,
   DNS record or OAuth app registration. Any additional identity layer sits above that path,
   never replaces it.
-- Agent credentials MUST remain non-interactive: machine enrollment tokens and agents'
-  per-principal bearer tokens MUST NOT require a human login flow. Owner-key rotation is a
-  file swap followed by interactive-browser re-bootstrap; it MUST NOT disturb enrolled
-  machines, whose credentials are independent (procedure: `docs/SELF-HOST.md`).
+- Agent-run credentials remain non-interactive: their sponsor receives a one-time bearer from
+  `core.access.createAgentRun`, and the run acknowledges server-selected policy through the
+  action plane rather than a human login flow. Machine enrollment and terminal-lifecycle
+  credentials retain their internal non-interactive paths. Owner-key rotation is a file swap
+  followed by interactive-browser re-bootstrap; it MUST NOT disturb enrolled machines, whose
+  credentials are independent (procedure: `docs/SELF-HOST.md`).
 - Principal and device inventory with credential revocation is a standing requirement, not
   deferred to multi-human identity. The existing doors are `core.access.listCredentials`,
   `core.access.revoke`, `core.machines.list` and `core.machines.revoke`; their admission,
@@ -311,42 +332,51 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   bearer token; a connection carries one credential's channels, because the SDK pools by
   token.
 - **Owner key** = hex-64 secret; acts as a token with cap `*`. Generated on first boot.
-- Caps: `*`, `containers:read`, `containers:write`, `scenes:write`, `terminals:spawn`,
-  `terminals:write`, `tokens:mint`, `machines:mint`, `machines:read`, `plugins:manage`. Reads of scene and
-  presence come with `containers:read`. `terminals:write` covers input+resize+kill+take on
-  terminals in scope. `plugins:manage` authorizes plugin administration only — the engine
-  doors `engine.plugins.setEnabled` and `engine.plugins.purge`. Installing a plugin is NOT
-  administration of the shipped set but admission of a stranger's code, so
-  `engine.plugins.install` / `uninstall` are root only (`*`; §Hardened plugins).
+- Caps include `*`, `agents:delegate`, `containers:read`, `containers:write`, `scenes:write`,
+  `terminals:spawn`, `terminals:write`, `tokens:mint`, `machines:mint`, `machines:read` and
+  `plugins:manage`. Reads of scene and presence come with `containers:read`.
+  `terminals:write` covers input+resize+kill+take on terminals in scope. `agents:delegate`
+  authorizes target-relative child-run creation and sponsor renewal; admission checks the
+  requested target, and the retained credential lineage keeps the sponsor waterfall as a live
+  ceiling at every descendant node. `plugins:manage` authorizes plugin
+  administration only — the engine doors `engine.plugins.setEnabled` and
+  `engine.plugins.purge`. Installing a plugin is NOT administration of the shipped set but
+  admission of a stranger's code, so `engine.plugins.install` / `uninstall` are root only
+  (`*`; §Hardened plugins).
 - Token scope: optional `containerId` restricts everything to one container. It is a subtree
   grant at `manifold://container/<id>`, which is what it always meant; the field did not move.
 - Revocation: durable; server closes live sockets of revoked tokens with code 4403 and
   message `revoked`.
-- Automation principal isolation and teardown are specified in
-  [Automation credential lifecycle](#automation-credential-lifecycle).
-- **Expiry** (ADR 0019 §2, amended by operator request #326). A token row carries `expires_at`;
-  NULL is reserved for the explicit internal lifecycle exceptions below. Ordinary human credentials,
-  including preview browser credentials, expire after **14 days**; ordinary agent credentials expire
-  after **1 hour**. The ordinary bootstrap, mint and federated-ticket paths apply
-  these rules; choosing `kind: "agent"` or root capabilities cannot select non-expiry.
-  `authenticate` refuses expired credentials after the revocation rung with `forbidden` / `expired`;
-  `TokenGrant.expiresAt?` publishes the bound at issuance.
+- Automation principal isolation, policy, delegation and teardown are specified in
+  [Automation credential lifecycle](#automation-credential-lifecycle) and recorded by
+  [ADR 0039](decisions/0039-accountable-agent-runs.md).
+- **Expiry** (ADR 0019 §2, amended by #326 and ADR 0039). A token row carries `expires_at`;
+  NULL is reserved for the explicit internal lifecycle exceptions below. Ordinary human
+  credentials, including preview browser credentials, expire after **14 days**. Agent-run and
+  federated agent credentials expire after at most **1 hour**. Generic bootstrap and token
+  minting accept humans only; a run renewal replaces and revokes its prior credential rather
+  than extending one bearer. `authenticate` refuses expired credentials after the revocation
+  rung with `forbidden` / `expired`; `TokenGrant.expiresAt?` and
+  `AgentRunCredential.expiresAt` publish the bound at issuance.
 - **Legacy unbounded credentials receive one grace period** (schema 24, #326). On migration,
-  unrevoked ordinary human credentials receive fourteen days and ordinary agent credentials one
-  hour from migration time. Existing finite deadlines and revocations are untouched; restarting
-  does not extend grace. The migration backs up the database before rewriting deadlines and
-  excludes machine credentials and principals bound to currently running managed terminals.
+  unrevoked ordinary human credentials receive fourteen days and historical agent credentials
+  one hour from migration time. Existing finite deadlines and revocations are untouched;
+  restarting does not extend grace. The migration backs up the database before rewriting
+  deadlines and excludes machine credentials and principals bound to currently running
+  managed terminals. Historical agent credentials remain valid until their existing expiry or
+  revocation but cannot be reissued through the generic mint door.
 - **The two named credential refusals** are the closed set `AUTH_REFUSALS`
   (`revoked`, `expired`), published under `identity.authRefusals` in `GET /api/protocol`. They
   travel verbatim: as the 4403 close reason on `/ws/session`, and as the `forbidden` message
   on the HTTP door. The browser's authenticated HTTP boundary returns either refusal to
   `IdentityGate` for admission; it never retries with the rejected credential. Any other
-  `forbidden` from `authenticate` closes with the generic `forbidden`.
+  `forbidden` from `authenticate` closes with the generic `forbidden`. Action-policy refusals
+  are separate traced door outcomes: `policy_required` and `policy_stale`.
 - **Internal lifecycle exceptions are explicit, not a blanket agent exemption.** Machine
   enrollment credentials remain on their separate machine-authentication path. Credentials
   injected into a terminal are revoked automatically when that terminal exits or is removed,
-  rather than expiring while its process still needs them. Ordinary minting for the same agent
-  principal still receives the one-hour bound. Neither exception is an option on a public mint
+  rather than expiring while its process still needs them. The generic token door cannot mint
+  another credential for that terminal principal. Neither exception is an option on a public
   request.
 - **The owner key does not expire and is not revocable by a grant.** It is the separate bootstrap
   and recovery secret (ADR 0019 §1), not a privilege silently awarded to the first human account.

@@ -335,7 +335,7 @@ test("an installer whose credential no longer restores lends no slice, and the t
   try {
     // A delegate installs it, under a real minted credential rather than the owner key.
     const minted = f.auth.mintToken(
-      { principal: { name: "installer", kind: "agent" }, caps: ["jobs:read"] },
+      { principal: { name: "installer", kind: "human" }, caps: ["jobs:read"] },
       f.root,
     );
     const installer = f.auth.authenticate(minted.token);

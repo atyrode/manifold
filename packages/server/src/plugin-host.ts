@@ -57,9 +57,14 @@ import type {
   ActionDenialRule,
   ActionOutcome,
   BootstrapPrincipalRequest,
+  AcknowledgeAgentPolicyRequest,
+  AcknowledgeAgentPolicyResult,
+  AgentPolicyChallenge,
   AskableCap,
   AuthoredCap,
   Cap,
+  CreateAgentRunRequest,
+  CreateAgentRunResult,
   CreateGrantRequest,
   Dial,
   DialShareRequest,
@@ -68,6 +73,8 @@ import type {
   EventPayload,
   Grant,
   ListGrantsRequest,
+  FinishAgentRunRequest,
+  FinishAgentRunResult,
   ManifoldRef,
   MintShareRequest,
   MintTokenRequest,
@@ -77,6 +84,9 @@ import type {
   PluginLifecycleState,
   PluginPurgeResult,
   PluginRefusalReason,
+  ReloadAgentPolicyResult,
+  RenewAgentRunRequest,
+  RenewAgentRunResult,
   PluginRoster,
   Principal,
   PrincipalCredentials,
@@ -182,6 +192,20 @@ export interface IdentityDoor {
   createPrincipal(input: BootstrapPrincipalRequest): IdentityResult<TokenGrant>;
   /** Mints authority no broader than the caller's own, within the caller's container scope. */
   mintToken(input: MintTokenRequest): IdentityResult<TokenGrant>;
+  /** Creates a fresh sponsor-bound autonomous identity in pending-policy state. */
+  createAgentRun(input: CreateAgentRunRequest): IdentityResult<CreateAgentRunResult>;
+  /** Returns the exact server-selected policy bytes this run must acknowledge. */
+  agentPolicyChallenge(): IdentityResult<AgentPolicyChallenge>;
+  /** Activates this run only after every exact policy digest is acknowledged. */
+  acknowledgeAgentPolicy(
+    input: AcknowledgeAgentPolicyRequest,
+  ): IdentityResult<AcknowledgeAgentPolicyResult>;
+  /** Replaces a sponsored run credential within its lifetime and renewal ceilings. */
+  renewAgentRun(input: RenewAgentRunRequest): IdentityResult<RenewAgentRunResult>;
+  /** Settles a run and transitively revokes every descendant credential. */
+  finishAgentRun(input: FinishAgentRunRequest): IdentityResult<FinishAgentRunResult>;
+  /** Reloads trusted policy sources and suspends runs whose acknowledgement is stale. */
+  reloadAgentPolicy(): IdentityResult<ReloadAgentPolicyResult>;
   /** Revokes a principal's tokens the caller is entitled to revoke; answers the count. */
   revokePrincipal(principalId: string): IdentityResult<number>;
   /** Enrolls a machine, refusing a scoped or `machines:mint`-less caller. */
@@ -2760,6 +2784,17 @@ export class PluginHost {
       return { ok: false, denial: { rule, message } };
     };
     const pluginId = entry.plugin.id;
+    const runAccess = pluginId === "core.access" ? entry.def.runAccess : undefined;
+    const runPolicyState = this.authService.agentRunPolicyState(auth);
+    if (runPolicyState === "expired") {
+      return refuse("forbidden", "agent run expired");
+    }
+    if (runPolicyState === "pending_policy" && runAccess !== "policy" && runAccess !== "teardown") {
+      return refuse("policy_required", "agent policy acknowledgement required");
+    }
+    if (runPolicyState === "policy_stale" && runAccess !== "policy" && runAccess !== "teardown") {
+      return refuse("policy_stale", "agent policy changed; acknowledgement required");
+    }
     if (!this.assembled.enabled(pluginId) && entry.def.cleanup !== true) {
       // Cleanup actions (D12) outlive a disable: turning core.terminals off must refuse
       // creation and administration, never the ability to remove what already exists.
@@ -2784,7 +2819,7 @@ export class PluginHost {
       handler's contractual obligation.
     */
     const scope = entry.def.scope ?? "workspace";
-    if (auth.containerScope !== null && scope !== "container") {
+    if (auth.containerScope !== null && scope !== "container" && runAccess === undefined) {
       return refuse("forbidden", "scoped tokens cannot invoke workspace actions");
     }
     /*
@@ -2805,6 +2840,11 @@ export class PluginHost {
     }
     if (entry.def.requirements === undefined) {
       for (const cap of entry.def.caps) {
+        if (
+          cap === "agents:delegate" &&
+          (fullName === "core.access.createAgentRun" || fullName === "core.access.renewAgentRun")
+        )
+          continue;
         if (GOVERNED_CAPS.includes(cap))
           return refuse(
             "forbidden",
@@ -2988,6 +3028,13 @@ export class PluginHost {
         createPrincipal: (input) =>
           identityCall(() => this.authService.bootstrapPrincipal(input, auth)),
         mintToken: (input) => identityCall(() => this.authService.mintToken(input, auth)),
+        createAgentRun: (input) => identityCall(() => this.authService.createAgentRun(input, auth)),
+        agentPolicyChallenge: () => identityCall(() => this.authService.agentPolicyChallenge(auth)),
+        acknowledgeAgentPolicy: (input) =>
+          identityCall(() => this.authService.acknowledgeAgentPolicy(input, auth)),
+        renewAgentRun: (input) => identityCall(() => this.authService.renewAgentRun(input, auth)),
+        finishAgentRun: (input) => identityCall(() => this.authService.finishAgentRun(input, auth)),
+        reloadAgentPolicy: () => identityCall(() => this.authService.reloadAgentPolicy(auth)),
         revokePrincipal: (principalId) =>
           identityCall(() => this.authService.revokePrincipal(principalId, auth)),
         enrollMachine: (name) => identityCall(() => this.authService.enrollMachine(name, auth)),

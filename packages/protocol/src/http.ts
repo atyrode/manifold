@@ -66,13 +66,14 @@ export const MoveIndexEntryRequestSchema = z.strictObject({
   index: z.number().int().nonnegative(),
 });
 
+/** Legacy principal admission is human-only; autonomous identities use CreateAgentRunRequest. */
 export const BootstrapPrincipalRequestSchema = z.strictObject({
   name: z.string().min(1).max(64),
   color: z
     .string()
     .regex(/^#[0-9a-f]{6}$/i)
     .optional(),
-  kind: z.enum(["human", "agent"]).default("human"),
+  kind: z.literal("human").default("human"),
 });
 export type BootstrapPrincipalRequest = z.infer<typeof BootstrapPrincipalRequestSchema>;
 

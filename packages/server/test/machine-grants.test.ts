@@ -109,7 +109,7 @@ const machineUri = (machineId: string): string => formatManifoldUri({ kind: "mac
 /** An ordinary unscoped delegate: everything below is authority it did NOT get at the mint. */
 function delegate(target: Fixture, caps: readonly ["containers:read"] = ["containers:read"]) {
   const grant = target.auth.mintToken(
-    { principal: { name: "agent", kind: "agent" }, caps: [...caps] },
+    { principal: { name: "human", kind: "human" }, caps: [...caps] },
     target.owner,
   );
   return target.auth.authenticate(grant.token);
@@ -472,7 +472,7 @@ describe("a plugin's own capability", () => {
     */
     expect(() =>
       target.auth.mintToken(
-        { principal: { name: "agent", kind: "agent" }, caps: [ARCHIVE] } as never,
+        { principal: { name: "human", kind: "human" }, caps: [ARCHIVE] } as never,
         target.owner,
       ),
     ).toThrow(/caps/);

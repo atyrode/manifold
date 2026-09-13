@@ -146,6 +146,24 @@ function recorder(options: {
           calls.push({ kind: "create", payload: input });
           return answer(options.create, grant);
         },
+        createAgentRun: () => {
+          throw new Error("unused agent run fixture");
+        },
+        agentPolicyChallenge: () => {
+          throw new Error("unused agent policy fixture");
+        },
+        acknowledgeAgentPolicy: () => {
+          throw new Error("unused agent policy fixture");
+        },
+        renewAgentRun: () => {
+          throw new Error("unused agent run fixture");
+        },
+        finishAgentRun: () => {
+          throw new Error("unused agent run fixture");
+        },
+        reloadAgentPolicy: () => {
+          throw new Error("unused agent policy fixture");
+        },
         mintToken: (input) => {
           calls.push({ kind: "mint", payload: input });
           return answer(options.mint, grant);
@@ -233,7 +251,7 @@ describe("core.access handlers", () => {
   test("the caller's request reaches the mechanism unedited", async () => {
     const host = recorder({});
     const request = {
-      principal: { name: "sub agent", kind: "agent" as const },
+      principal: { name: "delegate", kind: "human" as const },
       caps: ["scenes:write" as const],
       containerId: "container-7",
     };

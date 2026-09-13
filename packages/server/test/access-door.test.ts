@@ -155,7 +155,7 @@ describe("core.access ladder", () => {
       name: "blocked",
     });
     const minted = await host.dispatch(fix.owner, "core.access.mint", {
-      principal: { name: "blocked", kind: "agent" },
+      principal: { name: "blocked", kind: "human" },
       caps: ["containers:read"],
     });
     const revoked = await host.dispatch(fix.owner, "core.access.revoke", {
@@ -180,7 +180,7 @@ describe("core.access ladder", () => {
       name: "escalated",
     });
     const minted = await fix.host.dispatch(scoped, "core.access.mint", {
-      principal: { name: "sub agent", kind: "agent" },
+      principal: { name: "sub agent", kind: "human" },
       caps: ["scenes:write"],
     });
 
@@ -208,7 +208,7 @@ describe("core.access ladder", () => {
     const scoped = context(fix, ["tokens:mint", "scenes:write"], home);
 
     const outcome = await fix.host.dispatch(scoped, "core.access.mint", {
-      principal: { name: "trespasser", kind: "agent" },
+      principal: { name: "trespasser", kind: "human" },
       caps: ["scenes:write"],
       containerId: elsewhere,
     });
@@ -229,7 +229,7 @@ describe("core.access ladder", () => {
       name: "not root",
     });
     const mintByBystander = await fix.host.dispatch(bystander, "core.access.mint", {
-      principal: { name: "nope", kind: "agent" },
+      principal: { name: "nope", kind: "human" },
       caps: ["containers:read"],
     });
     const revokeByBystander = await fix.host.dispatch(bystander, "core.access.revoke", {
@@ -270,7 +270,7 @@ describe("core.access ladder", () => {
     });
     const bothPrincipals = await fix.host.dispatch(fix.owner, "core.access.mint", {
       principalId: fix.owner.principal.id,
-      principal: { name: "two ways", kind: "agent" },
+      principal: { name: "two ways", kind: "human" },
       caps: ["containers:read"],
     });
     const noCaps = await fix.host.dispatch(fix.owner, "core.access.mint", {
@@ -289,7 +289,7 @@ describe("core.access ladder", () => {
     const minter = context(fix, ["tokens:mint", "scenes:write"]);
 
     const tooWide = await fix.host.dispatch(minter, "core.access.mint", {
-      principal: { name: "escalated", kind: "agent" },
+      principal: { name: "escalated", kind: "human" },
       caps: ["terminals:write"],
     });
     const wildcard = await fix.host.dispatch(minter, "core.access.mint", {
@@ -368,7 +368,7 @@ describe("core.access ladder", () => {
     const fix = await fixture({ info: capture, warn: capture, error: capture });
 
     const outcome = await fix.host.dispatch(fix.owner, "core.access.mint", {
-      principal: { name: "logged", kind: "agent" },
+      principal: { name: "logged", kind: "human" },
       caps: ["containers:read"],
     });
 
@@ -1139,7 +1139,7 @@ describe("core.access revocation retires a token's grant row", () => {
     const scoped = TokenGrantSchema.parse(
       result(
         await fix.host.dispatch(minter, "core.access.mint", {
-          principal: { name: "twice", kind: "agent" },
+          principal: { name: "twice", kind: "human" },
           caps: ["containers:read"],
         }),
       ),

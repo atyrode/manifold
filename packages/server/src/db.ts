@@ -8,7 +8,7 @@ import { migrateToSoloCompositions } from "./migrate-solo.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 34;
+export const SCHEMA_VERSION = 35;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -800,6 +800,54 @@ UPDATE job_invocation_edges SET revision=lower(hex(randomblob(16)));
       db.exec("INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','34');");
     },
   },
+  35: `
+CREATE TABLE agent_runs(
+  id TEXT PRIMARY KEY,
+  principal_id TEXT NOT NULL UNIQUE,
+  root_run_id TEXT NOT NULL,
+  parent_run_id TEXT,
+  authorized_by_principal_id TEXT NOT NULL,
+  authorization_path TEXT NOT NULL CHECK(authorization_path IN ('owner_key','principal')),
+  authorizer_token_id TEXT,
+  authorizer_grant_id TEXT,
+  authorizer_caps TEXT NOT NULL,
+  authorizer_container_scope TEXT,
+  authorizer_expires_at INTEGER,
+  purpose TEXT NOT NULL,
+  task_ref TEXT,
+  target TEXT NOT NULL,
+  reach TEXT NOT NULL CHECK(reach IN ('node','subtree')),
+  caps TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  renewals INTEGER NOT NULL,
+  max_depth INTEGER NOT NULL,
+  max_descendants INTEGER NOT NULL,
+  depth INTEGER NOT NULL,
+  cleanup_owner_principal_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN (
+    'pending_policy','active','policy_stale','completed','failed','cancelled','abandoned',
+    'expired','revoked','cleanup_failed'
+  )),
+  policy_revision TEXT NOT NULL,
+  acknowledged_policy_revision TEXT,
+  cleanup_revoked_credentials INTEGER NOT NULL DEFAULT 0,
+  cleanup_revoked_grants INTEGER NOT NULL DEFAULT 0,
+  finished_at INTEGER,
+  cleanup_failure TEXT
+);
+CREATE INDEX agent_runs_root_depth ON agent_runs(root_run_id,depth,id);
+CREATE INDEX agent_runs_parent ON agent_runs(parent_run_id,id);
+CREATE TABLE agent_run_policy_snapshots(
+  run_id TEXT NOT NULL,
+  revision TEXT NOT NULL,
+  bundles TEXT NOT NULL,
+  issued_at INTEGER NOT NULL,
+  acknowledged_at INTEGER,
+  PRIMARY KEY(run_id,revision)
+);
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','35');
+`,
 };
 
 interface TableRow {

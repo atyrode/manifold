@@ -1,4 +1,10 @@
-import type { ActionRequirement, ActionScope, AuthoredCap, Cap } from "@manifold/protocol";
+import type {
+  ActionRequirement,
+  ActionRunAccess,
+  ActionScope,
+  AuthoredCap,
+  Cap,
+} from "@manifold/protocol";
 import type { z } from "zod";
 
 /**
@@ -46,6 +52,13 @@ export interface ActionDef<In = unknown, Out = unknown> {
    * dispatcher skips only the `plugin_disabled` rung for it; caps and schemas still apply.
    */
   readonly cleanup?: boolean;
+  /**
+   * A reserved core identity action's autonomous-run lifecycle exception. Policy
+   * acknowledgement and teardown stay reachable while ordinary authority is suspended;
+   * delegation is graded at the requested child target by the identity mechanism. Assembly
+   * refuses this metadata outside `core.access`.
+   */
+  readonly runAccess?: ActionRunAccess;
   /**
    * The authority grade this door is written for; absent ≡ `"workspace"`.
    *

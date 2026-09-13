@@ -54,7 +54,7 @@ describe("AuthService attenuation", () => {
     const fixture = authFixture();
     const delegatedGrant = fixture.auth.mintToken(
       {
-        principal: { name: "delegate", kind: "agent" },
+        principal: { name: "delegate", kind: "human" },
         caps: ["tokens:mint", "scenes:write"],
         containerId: fixture.container.id,
       },
@@ -64,7 +64,7 @@ describe("AuthService attenuation", () => {
 
     const child = fixture.auth.mintToken(
       {
-        principal: { name: "child", kind: "agent" },
+        principal: { name: "child", kind: "human" },
         caps: ["scenes:write"],
       },
       delegated,
@@ -74,7 +74,7 @@ describe("AuthService attenuation", () => {
 
     expectForbidden(() =>
       fixture.auth.mintToken(
-        { principal: { name: "wider", kind: "agent" }, caps: ["terminals:write"] },
+        { principal: { name: "wider", kind: "human" }, caps: ["terminals:write"] },
         delegated,
       ),
     );
@@ -101,7 +101,7 @@ describe("AuthService attenuation", () => {
     const fixture = authFixture();
     const ordinaryGrant = fixture.auth.mintToken(
       {
-        principal: { name: "ordinary", kind: "agent" },
+        principal: { name: "ordinary", kind: "human" },
         caps: ["scenes:write", "terminals:write"],
       },
       fixture.root,
@@ -219,7 +219,7 @@ describe("AuthService principal ownership", () => {
     const fixture = authFixture();
     const delegatedGrant = fixture.auth.mintToken(
       {
-        principal: { name: "scoped minter", kind: "agent" },
+        principal: { name: "scoped minter", kind: "human" },
         caps: ["tokens:mint", "scenes:write"],
         containerId: fixture.container.id,
       },
@@ -245,7 +245,7 @@ describe("AuthService principal ownership", () => {
     const fixture = authFixture();
     const delegatedGrant = fixture.auth.mintToken(
       {
-        principal: { name: "delegate", kind: "agent" },
+        principal: { name: "delegate", kind: "human" },
         caps: ["tokens:mint", "scenes:write"],
         containerId: fixture.container.id,
       },
@@ -269,7 +269,7 @@ describe("AuthService principal ownership", () => {
     const fixture = authFixture();
     const delegatedGrant = fixture.auth.mintToken(
       {
-        principal: { name: "delegate", kind: "agent" },
+        principal: { name: "delegate", kind: "human" },
         caps: ["tokens:mint", "scenes:write"],
         containerId: fixture.container.id,
       },
@@ -278,7 +278,7 @@ describe("AuthService principal ownership", () => {
     const delegated = fixture.auth.authenticate(delegatedGrant.token);
     const child = fixture.auth.mintToken(
       {
-        principal: { name: "child", kind: "agent" },
+        principal: { name: "child", kind: "human" },
         caps: ["scenes:write"],
       },
       delegated,

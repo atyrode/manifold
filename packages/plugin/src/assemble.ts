@@ -618,6 +618,9 @@ export function assembleRoster(
       ) {
         problems.push(`action "${name}" has invalid delegated capabilities`);
       }
+      if (action.runAccess !== undefined && manifest.id !== "core.access") {
+        problems.push(`action "${name}" declares reserved agent-run lifecycle access`);
+      }
       if (action.requirements !== undefined) {
         const requirements = ActionRequirementsSchema.safeParse(action.requirements);
         if (
@@ -636,6 +639,7 @@ export function assembleRoster(
         caps: [...action.caps],
         ...(action.delegates === undefined ? {} : { delegates: [...action.delegates] }),
         ...(action.cleanup === true ? { cleanup: true } : {}),
+        ...(action.runAccess === undefined ? {} : { runAccess: action.runAccess }),
         // Always published, never inferred by the reader: the default is applied HERE so a
         // client answering "may my container-scoped token call this?" reads a value rather than an
         // absence it would have to know the rule for.

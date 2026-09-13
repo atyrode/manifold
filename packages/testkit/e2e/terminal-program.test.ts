@@ -100,7 +100,7 @@ test("a program named at open is judged at the door, then runs first under the o
     });
     agents.push(agent);
     const grant = await mintToken(server, {
-      principal: { kind: "agent", name: "Launcher", color: "#3a7d44" },
+      principal: { kind: "human", name: "Launcher", color: "#3a7d44" },
       caps: ["containers:read", "terminals:spawn", "terminals:write"],
     });
     const canvas = await connect(server, {
@@ -183,7 +183,7 @@ test("a program the door refuses never reaches a machine, and the refusal names 
     // A reader: `containers:read` joins the room, and `terminals:spawn` is exactly what the
     // door demands and this token lacks.
     const grant = await mintToken(server, {
-      principal: { kind: "agent", name: "Reader", color: "#44703a" },
+      principal: { kind: "human", name: "Reader", color: "#44703a" },
       caps: ["containers:read"],
     });
     const client = await connect(server, {
@@ -245,7 +245,7 @@ test("a program the machine cannot exec is a named create_error, and the opener 
     });
     agents.push(agent);
     const grant = await mintToken(server, {
-      principal: { kind: "agent", name: "Launcher", color: "#7d3a44" },
+      principal: { kind: "human", name: "Launcher", color: "#7d3a44" },
       caps: ["containers:read", "terminals:spawn", "terminals:write"],
     });
     const client = await connect(server, {

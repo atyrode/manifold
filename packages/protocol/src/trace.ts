@@ -34,6 +34,8 @@ export const TRACE_OUTCOMES = [
   "ok",
   "failed",
   "plugin_disabled",
+  "policy_required",
+  "policy_stale",
   "forbidden",
   "invalid_args",
   "refused",

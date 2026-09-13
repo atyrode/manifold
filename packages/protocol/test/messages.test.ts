@@ -630,6 +630,18 @@ describe("http schemas", () => {
     expect(
       MintTokenRequestSchema.safeParse({
         caps: ["scenes:write"],
+        principal: { name: "person", kind: "human" },
+      }).success,
+    ).toBe(true);
+    expect(
+      MintTokenRequestSchema.safeParse({
+        caps: ["scenes:write"],
+        principal: { name: "automation", kind: "agent" },
+      }).success,
+    ).toBe(false);
+    expect(
+      MintTokenRequestSchema.safeParse({
+        caps: ["scenes:write"],
         principalId: "p",
         principal: { name: "x", kind: "agent" },
       }).success,

@@ -107,7 +107,7 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     expect(await openAttempt).toBe("rejected");
 
     const sceneOnly = await mintToken(server, {
-      principal: { kind: "agent", name: "Scene Only Delegate", color: "#5f769f" },
+      principal: { kind: "human", name: "Scene Only Delegate", color: "#5f769f" },
       caps: ["scenes:write"],
       containerId: containerX.id,
     });
@@ -140,7 +140,7 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     // `scope: "container"` honest: a container-scoped agent MAY mint inside its own container, so the
     // door lets it through to the mechanism instead of refusing it for its scope.
     const attenuatedMinter = await mintToken(server, {
-      principal: { kind: "agent", name: "Attenuated Minter", color: "#a46b2b" },
+      principal: { kind: "human", name: "Attenuated Minter", color: "#a46b2b" },
       caps: ["tokens:mint", "scenes:write"],
       containerId: containerX.id,
     });
@@ -162,7 +162,7 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
       attenuatedMinter.token,
       "core.access.mint",
       MintTokenRequestSchema.parse({
-        principal: { kind: "agent", name: "Sub Agent", color: "#6b8fa4" },
+        principal: { kind: "human", name: "Sub Agent", color: "#6b8fa4" },
         caps: ["scenes:write"],
       }),
     );
@@ -180,7 +180,7 @@ test("auth closes invalid joins and enforces scope, capabilities, attenuation, a
     expect(deniedMachine.denial.rule).toBe("forbidden");
 
     const machineMinter = await mintToken(server, {
-      principal: { kind: "agent", name: "Machine Minter", color: "#2c8262" },
+      principal: { kind: "human", name: "Machine Minter", color: "#2c8262" },
       caps: ["machines:mint"],
     });
     const allowedMachine = await callAction(server, machineMinter.token, "core.machines.enroll", {

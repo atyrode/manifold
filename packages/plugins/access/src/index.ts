@@ -1,19 +1,29 @@
 import { defineAction } from "@manifold/plugin";
 import {
+  AcknowledgeAgentPolicyRequestSchema,
+  AcknowledgeAgentPolicyResultSchema,
+  AgentPolicyChallengeSchema,
   BootstrapPrincipalRequestSchema,
   CreateGrantRequestSchema,
+  CreateAgentRunRequestSchema,
+  CreateAgentRunResultSchema,
   CredentialsResponseSchema,
   DialSchema,
   DialShareRequestSchema,
   DialTicketSchema,
   GrantSchema,
   GrantsSchema,
+  FinishAgentRunRequestSchema,
+  FinishAgentRunResultSchema,
   ListGrantsRequestSchema,
   MintShareRequestSchema,
   MintTokenRequestSchema,
   OpenDialRequestSchema,
   RevokeGrantRequestSchema,
   RevokeRequestSchema,
+  ReloadAgentPolicyResultSchema,
+  RenewAgentRunRequestSchema,
+  RenewAgentRunResultSchema,
   RevokeResultSchema,
   RevokeShareRequestSchema,
   ShareGrantSchema,
@@ -24,8 +34,9 @@ import {
 import { z } from "zod";
 
 /**
- * Access administration, as a plugin: the three verbs that hand authority out and take it
- * back. They were `POST /api/principals`, `POST /api/tokens` and `POST /api/tokens/revoke`.
+ * Access administration as one plugin: human credential admission, sponsor-bound autonomous
+ * runs, grants, shares and revocation. Its first three doors replaced
+ * `POST /api/principals`, `POST /api/tokens` and `POST /api/tokens/revoke`.
  *
  * The MECHANISM stays floor and is untouched — hashing, timing-safe comparison, bearer
  * authentication, attenuation, the revocation fence that closes live sockets. What moved is
@@ -93,23 +104,23 @@ import { z } from "zod";
  */
 export const accessManifest: PluginManifest = {
   id: "core.access",
-  version: "1.3.0",
+  version: "1.4.0",
   title: "Access",
   description:
-    "Creates principals, mints delegated tokens, grants and denies capabilities at any node, shares nodes with other instances, revokes them, and lists who holds a live credential — share UI: deferred, door-only; grant UI: deferred, door-only",
+    "Creates principals and sponsor-bound agent runs, enforces exact agent policy acknowledgement, mints delegated tokens, grants and denies capabilities at any node, shares nodes with other instances, revokes them, and lists who holds a live credential — agent run inspector: deferred, door-only; share UI: deferred, door-only; grant UI: deferred, door-only",
   /*
     `*` is here because `createPrincipal` demands root and a manifest is a readable ceiling
     on a plugin's authority: a reader must be able to see, without opening the code, that
     one of these doors is root-only. The share doors add no capability — a share IS a token
     bound to a node (A5), so the cap that already means "hands authority out" is the one they
     declare, and `containers:read`/`containers:write` are what accepting and using a foreign
-    node costs on the guest side. The grant doors add none either, and the ceiling is
-    UNCHANGED by ADR 0011 for a reason worth stating: a manifest bounds what a plugin's actions
-    may DECLARE, and the waterfall changed the other side of the intersection — what the CALLER
-    is evaluated to hold. A ceiling that had to grow because authority became node-relative
-    would have meant the two were never orthogonal.
+    node costs on the guest side. The grant doors add none either. `agents:delegate` is the
+    one new ceiling from ADR 0039: it names target-relative child-run creation and renewal, and
+    the identity mechanism discharges it against the requested run target. A manifest still
+    bounds only what the plugin's actions may DECLARE; the waterfall and run ceiling decide
+    what the CALLER holds.
   */
-  capabilities: ["*", "tokens:mint", "containers:read", "containers:write"],
+  capabilities: ["*", "agents:delegate", "tokens:mint", "containers:read", "containers:write"],
   essential: true,
   contributes: {
     panels: [],
@@ -172,13 +183,14 @@ export const ACCESS_REVOKE_ACTION = `${accessManifest.id}.revoke`;
  *   itself; declaring it moves that check to the rung where every other cap is checked, and
  *   the mechanism's own check stays as the belt to the door's braces.
  *
- * Both are `scope: "container"`, and that is a preservation rather than a widening. The routes
- * authenticated ANY token: a container-scoped agent holding `tokens:mint` could mint a further
- * attenuated token inside its own container and revoke what it had minted there, which is
- * how a terminal agent delegates to a sub-agent. Refusing scoped callers at the door would
- * have deleted that as unreachable — `packages/testkit/e2e/auth.test.ts` exists precisely to
- * prove attenuation rather than a route guard. The confinement obligation `scope: "container"`
- * places on the handler is discharged by the mechanism, on the real caller: a mint may not
+ * Both legacy token doors are `scope: "container"`, and that is a preservation rather than a
+ * widening. The deleted routes authenticated ANY token: a container-scoped human holding
+ * `tokens:mint` could mint a further attenuated human credential inside its own container and
+ * revoke what it had minted there. Autonomous delegation no longer uses this door: the
+ * `createAgentRun` action below publishes its target-relative `agents:delegate` requirement and
+ * the mechanism enforces strict child attenuation.
+ * The confinement obligation `scope: "container"` places on the legacy handlers is discharged
+ * by the mechanism, on the real caller: a mint may not
  * widen its minter's container scope, and a scoped revocation reaches only that container's tokens.
  * Re-checking it here would be a second implementation of one rule (docs/CONTRACTS.md §One authoritative implementation), so it is
  * proved by test instead.
@@ -198,6 +210,53 @@ export const accessActions = [
     scope: "container",
     input: MintTokenRequestSchema,
     result: TokenGrantSchema,
+  }),
+  defineAction({
+    name: "createAgentRun",
+    title: "Create a sponsor-bound agent run",
+    caps: ["agents:delegate"],
+    runAccess: "delegate",
+    input: CreateAgentRunRequestSchema,
+    result: CreateAgentRunResultSchema,
+  }),
+  defineAction({
+    name: "getAgentPolicy",
+    title: "Get the exact policy for this agent run",
+    caps: [],
+    runAccess: "policy",
+    input: z.strictObject({}),
+    result: AgentPolicyChallengeSchema,
+  }),
+  defineAction({
+    name: "acknowledgeAgentPolicy",
+    title: "Acknowledge the exact policy for this agent run",
+    caps: [],
+    runAccess: "policy",
+    input: AcknowledgeAgentPolicyRequestSchema,
+    result: AcknowledgeAgentPolicyResultSchema,
+  }),
+  defineAction({
+    name: "renewAgentRun",
+    title: "Renew a sponsored agent run",
+    caps: ["agents:delegate"],
+    runAccess: "delegate",
+    input: RenewAgentRunRequestSchema,
+    result: RenewAgentRunResultSchema,
+  }),
+  defineAction({
+    name: "finishAgentRun",
+    title: "Finish an agent run and its descendants",
+    caps: [],
+    runAccess: "teardown",
+    input: FinishAgentRunRequestSchema,
+    result: FinishAgentRunResultSchema,
+  }),
+  defineAction({
+    name: "reloadAgentPolicy",
+    title: "Reload trusted agent policy sources",
+    caps: ["*"],
+    input: z.strictObject({}),
+    result: ReloadAgentPolicyResultSchema,
   }),
   defineAction({
     /*

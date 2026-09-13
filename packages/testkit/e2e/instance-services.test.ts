@@ -404,7 +404,7 @@ test.skipIf(!realBackend)(
       await consent(sink.machineId, CONSUMER, "network:host", readerOperation);
       await consent(sink.machineId, CONSUMER, "jobs:read", readerOperation);
       const caller = await mintToken(hub(), {
-        principal: { name: "scoped consumer", kind: "agent" },
+        principal: { name: "scoped consumer", kind: "human" },
         caps: ["machines:run", "network:host", "services:invoke", "jobs:read"],
       });
       const execute = async (jobId: string) => {
@@ -464,7 +464,7 @@ test.skipIf(!realBackend)(
       // An unrelated authority change while the transport is absent is not evidence
       // that this retained owner's resources or its scoped service authority changed.
       await mintToken(hub(), {
-        principal: { name: "unrelated observer", kind: "agent" },
+        principal: { name: "unrelated observer", kind: "human" },
         caps: ["containers:read"],
       });
       await source.agent.restartTransport("SIGKILL");
