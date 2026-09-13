@@ -2783,6 +2783,10 @@ provider handling and postconditions belong to plugins, never the common floor.
   platform artifacts, namespaced operations and revisioned locations. An operation fixes
   typed argv slots, bounded inputs, named `runtimeTools` (at most eight), location rights,
   output names, `network: "none" | "host"`, stdin and timeout/memory/process/output limits.
+  An operation may also declare `limits.concurrentJobs`, the ceiling on how many of its own
+  jobs one machine has yet to settle. The hub counts them from its own job rows inside the
+  admission transaction and refuses the execute past the ceiling with `concurrency_limit`;
+  the ceiling is the operation author's, so no request or invocation aggregate carries it.
   Requests cannot supply an executable, shell, cwd or environment. Installation binds
   authenticated machine identity, plugin, installation revision and artifact digest.
   Canonical operation/location nodes belong under that machine, jobs under their admitted

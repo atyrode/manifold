@@ -34,6 +34,7 @@ import {
   JobRequestSchema,
   JobCommandSchema,
   MachineHalfSchema,
+  jobLimits,
   MAX_JOB_FOLLOW_EVENTS,
   MAX_JOB_FOLLOW_BYTES,
   MAX_JOB_JOURNAL_EVENTS,
@@ -1170,6 +1171,24 @@ export class JobService {
       ? null
       : "operation_resources_unreported";
   }
+  /**
+   * An operation's declared `concurrentJobs` bounds its own fan on one machine. Every job of it
+   * that has not settled occupies a slot, whoever posted it, and the count is read inside the
+   * admission transaction so two simultaneous executes cannot both see the last free slot.
+   */
+  private concurrencyRefusal(request: JobRequest): string | null {
+    const limit = this.jobs.installation(request.machineId, request.pluginId)?.machine.operations[
+      request.operationId
+    ]?.limits.concurrentJobs;
+    if (limit === undefined) return null;
+    const running = this.jobs.activeOperationJobs(
+      request.machineId,
+      request.pluginId,
+      request.operationId,
+      request.jobId,
+    );
+    return running >= limit ? "concurrency_limit" : null;
+  }
   private runtimeInstallation(policy: ServicePolicy, machineId: string): JobInstallation | null {
     const runtime = policy.runtime;
     if (!runtime) return null;
@@ -2085,8 +2104,8 @@ export class JobService {
             ...resource,
             revision: callee.machine.locations[resource.locationId]!.revision,
           })),
-          callerLimits: operation.limits,
-          calleeLimits: calleeOperation.limits,
+          callerLimits: jobLimits(operation.limits),
+          calleeLimits: jobLimits(calleeOperation.limits),
           locations: Object.fromEntries(
             calleeOperation.locations.map((resource) => [
               resource.locationId,
@@ -3340,10 +3359,11 @@ export class JobService {
         fail("invalid_input");
     }
     if (Object.keys(args.input).some((k) => !Object.hasOwn(op.input, k))) fail("invalid_input");
-    const limits = args.limits ?? op.limits;
+    const ceiling = jobLimits(op.limits);
+    const limits = args.limits ?? ceiling;
     if (limits.timeoutMs <= 0) fail("invalid_limits");
-    for (const key of Object.keys(op.limits) as (keyof typeof limits)[])
-      if (limits[key] > op.limits[key]) fail("limit_exceeded");
+    for (const key of Object.keys(ceiling) as (keyof typeof ceiling)[])
+      if (limits[key] > ceiling[key]) fail("limit_exceeded");
     const outputInstall = outputParent
       ? this.jobs.installation(outputParent.machineId, outputParent.pluginId)
       : install;
@@ -3412,14 +3432,17 @@ export class JobService {
           "jobs:read",
           pluginId,
         );
-      const decision = this.decide({
-        credential: request.credential,
-        pluginId,
-        action: reserved.auditOrigin?.door ?? "engine.jobs.execute",
-        evidence: this.requirements(request).map((requirement) =>
-          this.auth.explain(context, requirement),
-        ),
-      });
+      const decision = this.decide(
+        {
+          credential: request.credential,
+          pluginId,
+          action: reserved.auditOrigin?.door ?? "engine.jobs.execute",
+          evidence: this.requirements(request).map((requirement) =>
+            this.auth.explain(context, requirement),
+          ),
+        },
+        this.concurrencyRefusal(request),
+      );
       this.jobs.decision(request.jobId, decision.decisionId);
       const allowed = decision.allowed;
       if (!allowed) {
