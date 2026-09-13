@@ -139,6 +139,21 @@ function ctxWith(
       isOnline: (machineId) => machineId === "m-online",
       getTerminalExecution: () => null,
       drain: () => Promise.resolve({ ok: false, reason: "fixture has no terminal owner" }),
+      repository: (machineId, path) =>
+        Promise.resolve(
+          machineId === "m-online"
+            ? {
+                ok: true,
+                fact: {
+                  path,
+                  identity: `${path}/.git`,
+                  remote: "github.com/atyrode/manifold",
+                  reason: "repository",
+                  observedAt: 1,
+                },
+              }
+            : { ok: false, reason: "fixture has no machine agent" },
+        ),
     },
   };
   return { ctx: slice as ActionCtx, emitted, allowed };
@@ -376,6 +391,14 @@ describe("serveCtxCall", () => {
     expect(await serveCtxCall("outsideScope", [null], served)).toEqual({ refused: "outside" });
     expect(await serveCtxCall("newId", [], served)).toBe("id-1");
     expect(await serveCtxCall("machines.isOnline", ["m-online"], served)).toBe(true);
+    // An isolated plugin reaches the same fleet read an in-realm one does, one query in.
+    expect(
+      await serveCtxCall(
+        "machines.repository",
+        [{ machineId: "m-online", path: "/srv/work" }],
+        served,
+      ),
+    ).toMatchObject({ ok: true, fact: { path: "/srv/work", reason: "repository" } });
   });
 
   test("root's wildcard and a wrong argument shape are errors the child hears, never grants", async () => {
@@ -393,6 +416,9 @@ describe("serveCtxCall", () => {
     await expect(serveCtxCall("placement.place", [{ nonsense: true }], served)).rejects.toThrow(
       "placement.place: argument 0 is not a placement request",
     );
+    await expect(
+      serveCtxCall("machines.repository", [{ machineId: "m-online", path: "relative" }], served),
+    ).rejects.toThrow("machines.repository: argument 0 is not a repository query");
     expect(allowed).toEqual([]);
   });
 

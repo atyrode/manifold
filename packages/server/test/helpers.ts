@@ -397,6 +397,8 @@ export async function testPluginHost(
       getTerminalExecution: () => null,
       drain: () =>
         Promise.resolve({ ok: false, reason: "machine is offline: its terminals are unknown" }),
+      repository: () =>
+        Promise.resolve({ ok: false, reason: "machine is offline: it cannot be asked" }),
     },
     options.dialer ??
       new InstanceDialer(store, runtime, options.logger ?? silentLogger, () => TEST_ORIGIN),

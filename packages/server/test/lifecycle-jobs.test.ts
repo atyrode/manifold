@@ -184,6 +184,8 @@ async function fixture(onEnable: (ctx: LifecycleCtx) => void | Promise<void>) {
         isOnline: () => false,
         getTerminalExecution: () => null,
         drain: () => Promise.resolve({ ok: false, reason: "machine is offline" }),
+        repository: () =>
+          Promise.resolve({ ok: false, reason: "machine is offline: it cannot be asked" }),
       },
       new InstanceDialer(store, runtime, silentLogger, () => "http://localhost:7777"),
       runtime,

@@ -70,6 +70,7 @@ async function fixture(options: { readonly online?: ReadonlySet<string> } = {}):
         isOnline: (machineId) => online.has(machineId),
         getTerminalExecution: () => null,
         drain: () => Promise.resolve({ ok: false, reason: "fixture has no terminal owner" }),
+        repository: () => Promise.resolve({ ok: false, reason: "fixture has no machine agent" }),
       },
     }),
     runtime,

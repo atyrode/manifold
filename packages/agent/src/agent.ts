@@ -16,6 +16,7 @@ import {
 import type { AgentLogRecord, AgentLogSink } from "./log.ts";
 import type { TerminalHostDialer, TerminalHostLink } from "./terminal-host-link.ts";
 import type { JobOwnerDialer, JobOwnerLink } from "./job-owner-link.ts";
+import { RepositoryObserver } from "./repository.ts";
 import type { JobEvent } from "@manifold/protocol";
 
 /**
@@ -67,6 +68,8 @@ export interface AgentOptions {
   readonly livenessTimeoutMs?: number;
   /** Socket factory; DI seam (mirrors the server's RawSocket) so unit tests inject fakes. */
   readonly createSocket?: (url: string) => WebSocket;
+  /** The host's repository observer; injected so a test can answer without spawning git. */
+  readonly repositories?: RepositoryObserver;
 }
 
 /** Frame classification outcome (mirrors the SDK's terminal-channel classifier). */
@@ -155,6 +158,12 @@ export class Agent {
   private stopped = false;
   private welcomeWaiters: Array<() => void> = [];
   private advertisedDeadTerminalIds: string[] = [];
+  /**
+   * The host's repository observer, one per process and shared by every query: its cache is
+   * what keeps a hub cataloguing the same handful of checkouts from spawning a pair of git
+   * probes per question (issue #529).
+   */
+  private readonly repositories: RepositoryObserver;
 
   constructor(opts: AgentOptions) {
     this.machineToken = opts.machineToken;
@@ -168,6 +177,7 @@ export class Agent {
     this.dialTerminalHost = opts.dialTerminalHost;
     this.dialJobOwner = opts.dialJobOwner;
     this.createSocket = opts.createSocket ?? ((url: string) => new WebSocket(url));
+    this.repositories = opts.repositories ?? new RepositoryObserver({ runtime: this.runtime });
   }
 
   /** Machine id learned from `welcome` (null until the first successful handshake). */
@@ -530,6 +540,37 @@ export class Agent {
         return;
       case "ping":
         this.send(socket, { type: "pong" });
+        return;
+      /*
+        THE ONE QUESTION THIS PROCESS ANSWERS ITSELF (issue #529). Every other frame is
+        relayed to the terminal host, because the PTYs are its and only it can act on them.
+        A repository fact is about the HOST FILESYSTEM, which this process is already
+        standing on, so relaying it would buy nothing but a second hop and a second owner
+        for an answer neither of them holds state about. A probe that throws still answers:
+        the hub is waiting on this request id, and silence would cost it a deadline.
+      */
+      case "repository_query":
+        void this.repositories
+          .observe(msg.path)
+          .then((fact) => {
+            this.send(socket, { type: "repository_fact", requestId: msg.requestId, fact });
+          })
+          .catch((error: unknown) => {
+            this.log("warn", "repository_probe_failed", {
+              error: error instanceof Error ? error.message : "unknown failure",
+            });
+            this.send(socket, {
+              type: "repository_fact",
+              requestId: msg.requestId,
+              fact: {
+                path: msg.path,
+                identity: null,
+                remote: null,
+                reason: "unreadable",
+                observedAt: this.runtime.now(),
+              },
+            });
+          });
         return;
       case "create":
       case "input":

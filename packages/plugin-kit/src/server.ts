@@ -52,6 +52,8 @@ import {
   type InstanceServiceDescription,
   type InstanceServicesDescription,
   type TerminalExecution,
+  type MachineRepositoryFact,
+  type MachineRepositoryQuery,
   type InstanceServiceConfigurationRead,
   type InstanceServiceReadArgs,
 } from "@manifold/protocol";
@@ -205,6 +207,16 @@ export type GuestPlaceOutcome =
   | { readonly status: "denied"; readonly denial: PlacementDenial }
   | { readonly status: "failed"; readonly failure: "not_found" | "conflict" };
 
+/**
+ * What the machine registry answers about one folder, restated over protocol types. The
+ * refusal half is a state of the FLEET — offline, a transport too old to be asked, silence
+ * past the deadline — and is deliberately not expressible as a `MachineRepositoryReason`: a
+ * reason is something a host observed, and none of these was.
+ */
+export type GuestRepositoryOutcome =
+  | { readonly ok: true; readonly fact: MachineRepositoryFact }
+  | { readonly ok: false; readonly reason: string };
+
 export type GuestEmit = (ref: ManifoldRef, kind: EventKind, payload?: EventPayload) => void;
 
 /**
@@ -318,6 +330,12 @@ export interface GuestCtx {
   readonly machines: {
     isOnline(machineId: string): Promise<boolean>;
     getTerminalExecution(machineId: string): Promise<TerminalExecution | null>;
+    /**
+     * What one absolute path on that machine's host is: the resolved git common directory
+     * and the normalized `origin`, or the reason there is neither. `ok: false` is the hub
+     * saying nobody could be asked — offline, too old a transport, or silent — never a fact.
+     */
+    repository(query: MachineRepositoryQuery): Promise<GuestRepositoryOutcome>;
   };
   readonly placement: { place(request: PlaceRequest): Promise<GuestPlaceOutcome> };
   readonly host: { roster(): Promise<PluginRoster>; enabled(id: string): Promise<boolean> };
@@ -922,6 +940,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         isOnline: async (machineId) => (await call("machines.isOnline", [machineId])) as boolean,
         getTerminalExecution: async (machineId) =>
           (await call("machines.getTerminalExecution", [machineId])) as TerminalExecution | null,
+        repository: async (query) =>
+          (await call("machines.repository", [query])) as GuestRepositoryOutcome,
       },
       placement: {
         place: async (request) => (await call("placement.place", [request])) as GuestPlaceOutcome,

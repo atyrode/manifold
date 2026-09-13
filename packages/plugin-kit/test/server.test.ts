@@ -274,8 +274,15 @@ describe("dispatch", () => {
             containerId: "c1",
           });
           const online = await ctx.machines.isOnline("m1");
+          // The fleet read reaches the SAME door an in-realm handler opens (#529): one
+          // query object out, the host's outcome back — never a fact the guest invented.
+          const repository = await ctx.machines.repository({ machineId: "m1", path: "/srv/w" });
           ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, "thing_happened", { id });
-          return { text: `${previous ?? "-"}:${args.text}:${String(may)}:${String(online)}` };
+          return {
+            text: `${previous ?? "-"}:${args.text}:${String(may)}:${String(online)}:${
+              repository.ok ? repository.fact.reason : repository.reason
+            }`,
+          };
         },
       },
     });
@@ -299,12 +306,17 @@ describe("dispatch", () => {
       args: ["containers:write", { kind: "container", containerId: "c1" }],
     });
     expect(await serve(fake, false)).toMatchObject({ id: "r7:5", method: "machines.isOnline" });
+    expect(await serve(fake, { ok: false, reason: "machine is offline" })).toMatchObject({
+      id: "r7:6",
+      method: "machines.repository",
+      args: [{ machineId: "m1", path: "/srv/w" }],
+    });
     expect(await fake.next()).toEqual({
       t: "dispatched",
       id: "r7",
       outcome: {
         ok: true,
-        result: { text: "old:hi:true:false" },
+        result: { text: "old:hi:true:false:machine is offline" },
         emits: [
           {
             ref: { kind: "plugin", pluginId: "example.thing" },

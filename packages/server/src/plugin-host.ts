@@ -123,11 +123,13 @@ import type {
   TraceAttribution,
 } from "./stores.ts";
 import type { DrainOutcome, TerminalBroker } from "./terminal-broker.ts";
+import type { MachineRepositoryOutcome } from "./machine-ws.ts";
 import { StreamService } from "./stream-service.ts";
 import type { StreamProducer, PluginStreamContext, PluginServiceContext } from "@manifold/plugin";
 import { jobContext, jobDoors, type JobContext } from "./job-doors.ts";
 import type { JobService, SettledJobDelivery } from "./job-service.ts";
 import { serviceContext, serviceDoors } from "./service-doors.ts";
+import { machineDoors } from "./machine-doors.ts";
 
 /**
  * The caller's authority as a handler sees it: identity, what the token carries, and the
@@ -469,18 +471,26 @@ interface InstalledPlugin {
 }
 
 /**
- * The two questions the assembly asks the machine socket registry — is this machine
- * connected right now, and close or reopen its terminal admission and hear what its owner
- * holds (#278) — and nothing else. The other services on `ActionCtx` are the real classes
- * because plugins need their breadth; handing over the gateway that authenticates machines,
- * fences superseded sockets and relays PTY frames in order to answer two questions would be
- * authority nobody asked for. `MachineGateway` satisfies this structurally, which is also
- * what lets a test drive liveness and drain without a socket.
+ * The questions the assembly asks the machine socket registry — is this machine connected
+ * right now, what its PTY owner holds, close or reopen its terminal admission and hear what
+ * it holds (#278), and what repository one of its folders is (#529) — and nothing else. The
+ * other services on `ActionCtx` are the real classes because plugins need their breadth;
+ * handing over the gateway that authenticates machines, fences superseded sockets and relays
+ * PTY frames in order to answer four questions would be authority nobody asked for.
+ * `MachineGateway` satisfies this structurally, which is also what lets a test drive
+ * liveness, drain and repository facts without a socket.
  */
 export interface MachineAdmission {
   isOnline(machineId: string): boolean;
   getTerminalExecution(machineId: string): TerminalExecution | null;
   drain(machineId: string, draining: boolean): Promise<DrainOutcome>;
+  /**
+   * What the enrolled agent says one absolute path on its host is: the resolved git common
+   * directory and the normalized `origin`, or the reason there is neither. Bounded, cached
+   * on the host, and never a guess made here — a hub that cannot reach the machine answers
+   * `ok: false` with the state that stopped it rather than a fact nobody observed.
+   */
+  repository(machineId: string, path: string): Promise<MachineRepositoryOutcome>;
 }
 
 /**
@@ -665,6 +675,7 @@ interface EngineDoorCtx {
 const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
   jobDoors,
   serviceDoors,
+  machineDoors,
   {
     manifest: enginePluginsManifest,
     actions: enginePluginsActions,

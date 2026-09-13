@@ -105,6 +105,7 @@ import {
 import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../packages/server/src/assembly.ts";
 import { jobDoors } from "../packages/server/src/job-doors.ts";
 import { serviceDoors } from "../packages/server/src/service-doors.ts";
+import { machineDoors } from "../packages/server/src/machine-doors.ts";
 import { SessionClient } from "../packages/sdk/src/index.ts";
 import { resolveWebDist } from "./gate-dist.ts";
 import { Browser, type DragPayload } from "./cdp.ts";
@@ -431,6 +432,7 @@ try {
     { manifest: enginePluginsManifest, actions: enginePluginsActions },
     jobDoors,
     serviceDoors,
+    machineDoors,
   ];
   assembly = assembleRoster([...SERVER_PLUGIN_DEFS, ...builtins], new Set(), {
     builtins: new Set(builtins.map((def) => def.manifest.id)),

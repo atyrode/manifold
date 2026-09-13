@@ -44,6 +44,75 @@ export type TerminalProgram = z.infer<typeof TerminalProgramSchema>;
 export const TerminalExecutionSchema = z.enum(["unconfined", "governed"]);
 export type TerminalExecution = z.infer<typeof TerminalExecutionSchema>;
 
+/**
+ * THE MACHINE PATH a repository fact is asked about (issue #529). Absolute because a
+ * relative path names nothing without a working directory the asker cannot see, and the
+ * agent has no cwd worth inheriting; bounded at Linux's own `PATH_MAX` because a path
+ * longer than the kernel will open is not a path this machine has; NUL-free because a
+ * string with an embedded NUL is two different paths to a JS string and to `execve`, and
+ * the one the agent probes must be the one the caller named.
+ */
+export const MAX_MACHINE_PATH_CHARS = 4096;
+export const MachinePathSchema = z
+  .string()
+  .min(1)
+  .max(MAX_MACHINE_PATH_CHARS)
+  .refine((path) => path.startsWith("/") && !path.includes("\0"), {
+    message: "path must be absolute and contain no NUL",
+  });
+
+/** A normalized `host/owner/repo`; bounded well under a path because it is three names. */
+export const MAX_MACHINE_REMOTE_CHARS = 512;
+
+/**
+ * WHAT THE OBSERVATION FOUND, and it is one closed word rather than an absence to interpret.
+ * `repository` is the only success; every other reason names a state of the MACHINE — not a
+ * fault of the asker — so a caller can tell "this folder is not a checkout" from "this host
+ * has no git" and from "the probe ran out of its second" without parsing prose.
+ */
+export const MACHINE_REPOSITORY_REASONS = [
+  "repository",
+  "not_a_repository",
+  "absent",
+  "unreadable",
+  "git_unavailable",
+  "timed_out",
+] as const;
+export const MachineRepositoryReasonSchema = z.enum(MACHINE_REPOSITORY_REASONS);
+export type MachineRepositoryReason = z.infer<typeof MachineRepositoryReasonSchema>;
+
+/** One folder on one enrolled machine: what `engine.machines.repository` is asked. */
+export const MachineRepositoryQuerySchema = z.strictObject({
+  machineId: z.string().min(1).max(128),
+  path: MachinePathSchema,
+});
+export type MachineRepositoryQuery = z.infer<typeof MachineRepositoryQuerySchema>;
+
+/**
+ * WHAT A FOLDER IS, as the host answered it.
+ *
+ * `identity` is the resolved git COMMON directory rather than the path asked about, because
+ * every worktree of one repository shares exactly one common directory: two paths that
+ * answer with the same identity are two views of one project, and a generated worktree name
+ * is a directory rather than a subject. `remote` is `origin` normalized to
+ * `host/owner/repo` — no scheme, no credentials, no `.git`, no trailing slash — which is
+ * what makes the same repository cloned onto two machines recognisable as one, and it is
+ * null both for a checkout that declares no origin and for one whose origin names a local
+ * directory: a repository nobody published is still one repository.
+ *
+ * Both are null unless `reason` is `repository`. `observedAt` is the AGENT's clock at the
+ * probe, not the hub's: it stamps when the disk was in this state, which is the only clock
+ * that can say so.
+ */
+export const MachineRepositoryFactSchema = z.strictObject({
+  path: MachinePathSchema,
+  identity: z.string().min(1).max(MAX_MACHINE_PATH_CHARS).nullable(),
+  remote: z.string().min(1).max(MAX_MACHINE_REMOTE_CHARS).nullable(),
+  reason: MachineRepositoryReasonSchema,
+  observedAt: z.number().int().nonnegative(),
+});
+export type MachineRepositoryFact = z.infer<typeof MachineRepositoryFactSchema>;
+
 export const AdvertisedTerminalSchema = z.strictObject({
   terminalId,
   ...geometry,
@@ -116,6 +185,16 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
     draining: z.boolean(),
     terminalIds: z.array(terminalId),
   }),
+  /**
+   * The agent's answer to ONE `repository_query`, echoing its `requestId` (issue #529). One
+   * question, one answer, no stream: the hub correlates by id and drops an answer nobody is
+   * waiting for, so a late reply after a timeout costs a log line rather than a stale fact.
+   */
+  z.strictObject({
+    type: z.literal("repository_fact"),
+    requestId: z.string().min(1),
+    fact: MachineRepositoryFactSchema,
+  }),
   z.strictObject({ type: z.literal("job_event"), event: JobEventSchema }),
 ]);
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
@@ -167,6 +246,18 @@ export const ServerToAgentMessageSchema = z.discriminatedUnion("type", [
     requestId: z.string().min(1),
     draining: z.boolean(),
   }),
+  /**
+   * v31+, and sent ONLY to an agent whose hello named protocol 31 or later (issue #529): a
+   * v30 agent IGNORES an unknown frame type, so asking one would buy silence and a timeout
+   * instead of an answer. The hub checks the version and refuses by name rather than
+   * fabricating a fact, which is why the older wire stays byte-identical and the version is
+   * ADDED to the compat set. Answered by exactly one `repository_fact` per request.
+   */
+  z.strictObject({
+    type: z.literal("repository_query"),
+    requestId: z.string().min(1),
+    path: MachinePathSchema,
+  }),
   z.strictObject({ type: z.literal("job_command"), command: JobCommandSchema }),
 ]);
 export type ServerToAgentMessage = z.infer<typeof ServerToAgentMessageSchema>;
@@ -187,6 +278,7 @@ export const AGENT_MESSAGE_TYPES = [
   "exited",
   "pong",
   "drain_status",
+  "repository_fact",
   "job_event",
 ] as const satisfies readonly AgentMessage["type"][];
 
@@ -199,6 +291,7 @@ export const SERVER_TO_AGENT_MESSAGE_TYPES = [
   "snapshot_request",
   "ping",
   "drain",
+  "repository_query",
   "job_command",
 ] as const satisfies readonly ServerToAgentMessage["type"][];
 
