@@ -1,6 +1,8 @@
 import {
   GOVERNED_CAPS,
   PLUGIN_INSTALL_REFUSALS,
+  isEngineCap,
+  type AuthoredCap,
   type Cap,
   type PluginInstall,
   type PluginInstallRefusal,
@@ -306,9 +308,21 @@ export const CAP_MEANINGS: Readonly<Record<Cap, string>> = {
   "plugins:manage": "Turn plugins on and off for everyone",
 };
 
+/**
+ * What a PLUGIN'S OWN capability lets a holder do, in the only words the engine honestly has
+ * (ADR 0035). `CAP_MEANINGS` above is keyed by the engine's closed set and a tenth engine cap
+ * still cannot ship without a sentence there; a namespaced name is the PLUGIN's word, declared
+ * in its manifest, and the engine knows nothing about it beyond whose it is. So the card says
+ * what is true of every one of them — the authority is the plugin's own, and it is held at a
+ * node rather than carried by a credential — instead of inventing a description of somebody
+ * else's vocabulary.
+ */
+export const PLUGIN_CAP_MEANING =
+  "This plugin's own capability: authority over its doors, granted per node";
+
 /** One capability as the permissions card shows it: the cap, its meaning, and whether it holds. */
 export interface Permission {
-  readonly cap: Cap;
+  readonly cap: AuthoredCap;
   readonly meaning: string;
   /** False only on an installed row whose installer withheld this declared cap. */
   readonly granted: boolean;
@@ -326,10 +340,10 @@ export interface Permission {
  */
 export function pluginPermissions(entry: PluginRosterEntry): readonly Permission[] {
   const install = entry.install;
-  const granted = install === undefined ? null : new Set<Cap>(install.grantedCaps);
+  const granted = install === undefined ? null : new Set<AuthoredCap>(install.grantedCaps);
   return entry.manifest.capabilities.map((cap) => ({
     cap,
-    meaning: CAP_MEANINGS[cap],
+    meaning: isEngineCap(cap) ? CAP_MEANINGS[cap] : PLUGIN_CAP_MEANING,
     granted: !GOVERNED_CAPS.includes(cap) && (granted === null || granted.has(cap)),
   }));
 }
