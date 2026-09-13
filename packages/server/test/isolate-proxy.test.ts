@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { JobSettledCtx, LifecycleCtx, PluginStorage } from "@manifold/plugin";
+import type {
+  JobSettledCtx,
+  LifecycleCtx,
+  PluginJobContext,
+  PluginStorage,
+} from "@manifold/plugin";
 import { PluginDatabaseError } from "@manifold/plugin-kit";
 import { attachServerGuest } from "@manifold/plugin-kit/server";
 import { openPluginDatabase } from "../src/plugin-database.ts";
@@ -405,6 +410,9 @@ describe("serveCtxCall", () => {
     );
     for (const method of [
       "jobs.describe",
+      "jobs.schedule",
+      "jobs.schedules",
+      "jobs.disableSchedule",
       "services.describe",
       "services.readConfiguration",
       "services.configureConfiguration",
@@ -511,6 +519,125 @@ describe("serveCtxCall", () => {
       await expect(serveCtxCall(method, ["SELECT 1"], served)).rejects.toThrow(
         `slice_unavailable: ${method}`,
       );
+    }
+  });
+
+  test("a hardened guest registers, lists and disables its own cadence through the hook's slice", async () => {
+    const store = testStore();
+    try {
+      const calls: { method: string; args: unknown }[] = [];
+      const listed = [
+        {
+          scheduleId: "beat-1",
+          revision: "r1",
+          firstNominalAt: 1,
+          intervalMs: 60_000,
+          deadlineMs: 30_000,
+          expiresAt: 9_000,
+          offlinePolicy: "skip" as const,
+          machineId: "m-1",
+          pluginId: manifest.id,
+          operationId: "test.proxy.run",
+        },
+      ];
+      /*
+        The host's OWN job slice, as a hook holds it: the three verbs are forwarded to the same
+        object an in-realm hook would call, with the arguments parsed by the host's schemas —
+        which is the whole of #513, since the guest may not name another plugin's callee.
+      */
+      const jobs = {
+        schedule: (args: unknown) => {
+          calls.push({ method: "schedule", args });
+          return {};
+        },
+        schedules: () => {
+          calls.push({ method: "schedules", args: undefined });
+          return listed;
+        },
+        disableSchedule: (args: unknown) => {
+          calls.push({ method: "disableSchedule", args });
+          return {};
+        },
+      } as unknown as PluginJobContext;
+      const served = {
+        kind: "hook" as const,
+        ctx: {
+          pluginId: manifest.id,
+          storage: store.pluginStorage(manifest.id),
+          now: () => 0,
+          emit: () => {},
+          jobs,
+        },
+      };
+      const seen: string[] = [];
+      let receive: (frame: unknown) => void = () => {};
+      const completed = Promise.withResolvers<Extract<IsolateChildFrame, { t: "hooked" }>>();
+      attachServerGuest(
+        {
+          manifest,
+          actions: [],
+          handlers: {},
+          lifecycle: {
+            async onEnable(ctx) {
+              if (ctx.jobs === undefined) throw new Error("the enable hook was given no slice");
+              await ctx.jobs.schedule({
+                jobId: "job-1",
+                machineId: "m-1",
+                operationId: "test.proxy.run",
+                input: { value: "scan" },
+                outputs: [],
+                scheduleId: "beat-1",
+                revision: "r1",
+                firstNominalAt: 1,
+                intervalMs: 60_000,
+                deadlineMs: 30_000,
+                expiresAt: 9_000,
+                offlinePolicy: "skip",
+              });
+              for (const spec of await ctx.jobs.schedules()) seen.push(spec.scheduleId);
+              await ctx.jobs.disableSchedule({ scheduleId: "beat-1", revision: "r1" });
+            },
+          },
+        },
+        {
+          onMessage: (listener) => {
+            receive = listener;
+          },
+          send: (frame) => {
+            if (frame.t === "call") {
+              void serveCtxCall(frame.method, frame.args, served).then(
+                (result) => receive({ t: "reply", id: frame.id, ok: true, result }),
+                (error: unknown) =>
+                  receive({
+                    t: "reply",
+                    id: frame.id,
+                    ok: false,
+                    error: error instanceof Error ? error.message : String(error),
+                  }),
+              );
+            } else if (frame.t === "hooked") {
+              completed.resolve(frame);
+            }
+          },
+          warn: () => {},
+          exit: () => {},
+        },
+      );
+      receive({ t: "load", pluginId: manifest.id, manifest, dir: "/unused" });
+      // `jobs: true` is the host saying it restored a credential for THIS hook; without it the
+      // guest's ctx has no slice at all and the frame is the only thing that says so.
+      receive({ t: "hook", id: "enable", hook: "onEnable", jobs: true });
+      expect(await completed.promise).toMatchObject({ ok: true });
+      expect(seen).toEqual(["beat-1"]);
+      expect(calls.map((call) => call.method)).toEqual([
+        "schedule",
+        "schedules",
+        "disableSchedule",
+      ]);
+      expect(calls[0]?.args).toMatchObject({ scheduleId: "beat-1", operationId: "test.proxy.run" });
+      expect(calls[2]?.args).toEqual({ scheduleId: "beat-1", revision: "r1" });
+    } finally {
+      store.close();
     }
   });
 });

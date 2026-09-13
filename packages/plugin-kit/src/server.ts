@@ -1,6 +1,8 @@
 import type {
   ConfigureServiceConfigurationArgs,
   JobExecution,
+  JobScheduleTiming,
+  PublicJobSchedule,
   ServiceConfigurationRead,
   ServiceDescription,
 } from "@manifold/plugin";
@@ -267,10 +269,14 @@ export interface GuestJobs {
     limit: number;
   }): Promise<JobOutputPage>;
   journal(args: { node: GuestJobNode; after?: number; limit?: number }): Promise<JobJournalPage>;
+  /** Registers or replaces one cadence of this plugin's own; `revision` is its optimistic pin. */
+  schedule(args: GuestJobRequest & JobScheduleTiming): Promise<Record<string, never>>;
+  schedules(): Promise<PublicJobSchedule[]>;
+  disableSchedule(args: { scheduleId: string; revision: string }): Promise<Record<string, never>>;
   follow(node: GuestJobNode, receive: (update: JobFollowUpdate) => void): Promise<GuestJobFollow>;
 }
-/** What a settled-job hook may reach: every job verb except the live subscription. */
-export type GuestSettledJobs = Omit<GuestJobs, "follow">;
+/** What a lifecycle hook may reach: every job verb except the live subscription. */
+export type GuestHookJobs = Omit<GuestJobs, "follow">;
 
 /** The native service contract with asynchronous host calls across the isolate boundary. */
 export interface GuestServices {
@@ -323,17 +329,22 @@ export interface GuestCtx {
  * `emit` is NOT: the `hooked` frame has no carrier for emissions, so a hook that emits raises
  * {@link IsolateSliceUnavailable} and the hook fails by name rather than publishing into the
  * void.
+ *
+ * `jobs` is present only when the `hook` frame said the host serves it — the installer's
+ * credential restored (#514) — so an enable that owns a cadence registers it here, and one
+ * whose installer is gone sees `undefined` rather than a handle whose every call refuses.
  */
 export interface GuestLifecycleCtx {
   readonly pluginId: string;
   readonly storage: GuestStorage;
   readonly database?: GuestDatabase;
   readonly emit: GuestEmit;
+  readonly jobs?: GuestHookJobs | undefined;
   now(): number;
 }
-/** The settled hook's ctx: an ordinary hook ctx plus the settled job's own job authority. */
+/** The settled hook's ctx: an ordinary hook ctx whose job authority is the settled job's own. */
 export interface GuestJobSettledCtx extends GuestLifecycleCtx {
-  readonly jobs: GuestSettledJobs;
+  readonly jobs: GuestHookJobs;
 }
 
 export interface GuestLifecycle {
@@ -734,7 +745,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
   };
 
   /** Every job verb but `follow`: a live subscription belongs to a dispatch, not to a hook. */
-  const jobsFor = (call: Call): GuestSettledJobs => ({
+  const jobsFor = (call: Call): GuestHookJobs => ({
     describe: async (args) => (await call("jobs.describe", [args])) as JobDescription,
     describeDeployment: async (args) =>
       JobDeploymentDescriptionSchema.parse(
@@ -754,6 +765,10 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       (await call("jobs.output", [args])) as Extract<JobEvent, { type: "output" }>,
     outputs: async (args) => JobOutputPageSchema.parse(await call("jobs.outputs", [args])),
     journal: async (args) => JobJournalPageSchema.parse(await call("jobs.journal", [args])),
+    schedule: async (args) => (await call("jobs.schedule", [args])) as Record<string, never>,
+    schedules: async () => (await call("jobs.schedules", [])) as PublicJobSchedule[],
+    disableSchedule: async (args) =>
+      (await call("jobs.disableSchedule", [args])) as Record<string, never>,
   });
 
   const dispatchCtx = (call: Call, carried: IsolateDispatchCtx, staged: Emission[]): GuestCtx => {
@@ -927,7 +942,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     return ctx;
   };
 
-  const hookCtx = (call: Call): GuestLifecycleCtx => {
+  /** `jobs` mirrors the frame: announced means served, so the type and the wire agree. */
+  const hookCtx = (call: Call, jobs: boolean): GuestLifecycleCtx => {
     const database = databaseFor(call);
     return {
       pluginId: def.manifest.id,
@@ -936,6 +952,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       emit: () => {
         throw new IsolateSliceUnavailable("emit");
       },
+      ...(jobs ? { jobs: jobsFor(call) } : {}),
       now: () => Date.now(),
     };
   };
@@ -1063,7 +1080,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
 
   const onHook = async (frame: Extract<IsolateHostFrame, { t: "hook" }>): Promise<void> => {
     const requests = callsFor(frame.id);
-    const ctx = hookCtx(requests.call);
+    const ctx = hookCtx(requests.call, frame.jobs === true);
     try {
       const lifecycle = def.lifecycle ?? {};
       switch (frame.hook) {

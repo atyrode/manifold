@@ -1836,7 +1836,21 @@ Schedules use `engine.jobs.schedule`, `.schedules` and `.disableSchedule`, with 
 nominal first occurrence, interval, deadline, expiry and `skip`/`coalesce-one` offline
 policy. They retain the original credential ceiling, reauthorize before start and never
 silently retarget replacement artifacts/machines. Do not create a plugin polling timer
-as an alternate scheduler or make a user's expiring authority permanent.
+as an alternate scheduler or make a user's expiring authority permanent. A hardened half
+reaches the same three verbs on `GuestJobs` as promises (`schedule`, `schedules`,
+`disableSchedule`): the bridge serves them with the identical schemas and the identical
+authority, and a guest still cannot name another plugin's callee.
+
+**Start your own cadence when you are enabled.** `onEnable` and `onDisable` carry `ctx.jobs`,
+bound to the INSTALLER's credential and restored at every fan-out, so a background half can
+register the beat it owns instead of waiting for a dispatch or a settlement that may never
+come. It is OPTIONAL — `ctx.jobs?` — and absent when that credential no longer restores (a
+revoked or expired installer) or when nothing installed the row; check it rather than assuming
+it, because the transition still happens and your hook still runs. On the hardened side the
+`hook` frame says whether the host serves the slice and `GuestLifecycleCtx.jobs` mirrors it, so
+a call into an absent slice is a named refusal and never a silent downgrade to some other
+authority. Registering a schedule is idempotent by `scheduleId` and `revision`, which is what
+makes reconciling on every enable the right shape.
 
 **Follow privately; publish deliberately.** `ctx.jobs.follow(node, receive)` supplies a
 snapshot (`state`, `result`, `seq`, `firstSeq`, bounded `events`, `unavailable`) and close
@@ -2824,7 +2838,9 @@ publishes both as JSON Schema from the `loaded` frame, generated from the zod yo
 
 A hook (`onEnable`, `onDisable`, `onAssemblyChanged`) gets storage and the clock. It does NOT get
 `emit`: the `hooked` frame has no carrier for emissions, so a hook that emits fails by name instead
-of publishing into the void.
+of publishing into the void. `onEnable` and `onDisable` also get `ctx.jobs` — the installer's job
+authority — whenever the host could restore it; it is `undefined` otherwise, so branch on it.
+`onJobSettled` always has one, bound to its own job's credential instead.
 
 ### The web half: `web.ts`
 

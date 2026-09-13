@@ -380,6 +380,9 @@ export const ISOLATE_CTX_METHODS = [
   "jobs.output",
   "jobs.outputs",
   "jobs.journal",
+  "jobs.schedule",
+  "jobs.schedules",
+  "jobs.disableSchedule",
   "jobs.follow",
   "jobs.ack",
   "jobs.unfollow",
@@ -516,6 +519,13 @@ export const IsolateHostFrameSchema = z.discriminatedUnion("t", [
     hook: IsolateHookSchema,
     delta: AssemblyDeltaSchema.optional(),
     job: SettledJobSchema.optional(),
+    /**
+     * Whether the host serves `jobs.*` for THIS hook: true when a credential was restored for
+     * it, absent when none could be. `onJobSettled` never carries it — its slice rides the
+     * settled job's own credential and is implied by the hook's name — so the flag says
+     * exactly one thing: an ordinary lifecycle hook has an installer's authority behind it.
+     */
+    jobs: z.boolean().optional(),
   }),
   z.strictObject({
     t: z.literal("migrate"),
