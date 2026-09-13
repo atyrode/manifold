@@ -2613,11 +2613,11 @@ export class PluginHost {
       });
       return;
     }
-    // The settled hook is a lifecycle hook, so its storage authority ends with the call —
+    // The settled hook is a lifecycle hook, so its data authority ends with the call —
     // the same lease `runLifecycle` takes, closed whether the hook returned or overran.
-    const lease = this.storageLease(id);
+    const lease = this.dataLease(id);
     const ctx: JobSettledCtx = {
-      ...this.lifecycleCtx(id, lease.storage),
+      ...this.lifecycleCtx(id, lease.storage, lease.database),
       jobs: jobContext(
         () => {
           if (this.jobs === null) throw new ServiceError("forbidden", "job service unavailable");

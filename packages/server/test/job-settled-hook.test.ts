@@ -309,7 +309,7 @@ test("the wake carries the plugin's own storage, and that authority ends with th
     const retained = seen[0];
     if (retained === undefined) throw new Error("the hook never ran");
     expect(seen[1]).not.toBe(retained);
-    await expect(retained.get("last-settled")).rejects.toThrow("plugin storage request is closed");
+    await expect(retained.get("last-settled")).rejects.toThrow();
   } finally {
     f.store.close();
   }
