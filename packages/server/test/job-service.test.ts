@@ -4234,7 +4234,7 @@ describe("reviewed native deployment approvals", () => {
         delete evidence.invocations;
         delete evidence.invocationApprovals;
       }
-      const { reviewDigest: _digest, ...body } = legacy.review;
+      const body = { ...legacy.review, reviewDigest: undefined };
       const reviewDigest = createHash("sha256")
         .update(
           canonicalJobJson({ ...body, evidence: legacy.evidence, credential: legacy.credential }),

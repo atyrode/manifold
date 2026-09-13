@@ -2126,7 +2126,7 @@ export class JobService {
       const policy = policies.find((policy) => policy.serviceId === candidate.serviceId)!;
       if (policy.runtime?.scope === "instance") continue;
       const callee = this.jobs.installation(candidate.callee.machineId, candidate.callee.pluginId)!;
-      const { ready: _ready, ...installation } = callee;
+      const installation = { ...callee, ready: undefined };
       const requirements: AuthorityRequirement[] = [
         {
           cap: "operations:invoke",
