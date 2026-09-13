@@ -11,6 +11,7 @@ import type { FSWatcher } from "node:fs";
 import { join, resolve } from "node:path";
 import { packPlugin } from "@manifold/plugin-kit/pack";
 import type { PluginAuthorRequest, PluginAuthorResult } from "@manifold/plugin";
+import type { CredentialReference } from "./auth.ts";
 import type { Logger } from "./log.ts";
 import { AUTHORED_BUILD_DIR, AUTHORED_DIR, PLUGIN_BUNDLE_SUFFIX } from "./plugin-installs.ts";
 
@@ -41,6 +42,17 @@ export interface AuthorRefused {
 /** The builder, injectable so a unit test packs without the kit's `Bun.build` under `bun test`. */
 export type AuthoredPack = (pluginDir: string, outFile: string) => Promise<{ sha256: string }>;
 
+/**
+ * The unpacked row of record, as the loop reads it: the install result, the principal the row
+ * is attributed to, and the credential that row acts under at a lifecycle hook (#514). A
+ * rebuild REPLACES the bytes and nothing else, so both travel back into the next install
+ * unchanged — the installer on the row stays whoever first admitted it.
+ */
+export type UnpackedRow = PluginAuthorResult & {
+  readonly installedBy: string;
+  readonly installer: CredentialReference | null;
+};
+
 /** What the host lends the loop: the one install path, the row of record, and the switch. */
 export interface AuthoredHost {
   /** The ONE install path, asked for an unpacked replace of `source` pinned at `sha256`. */
@@ -49,9 +61,10 @@ export interface AuthoredHost {
     source: string,
     sha256: string,
     installedBy: string,
+    installer: CredentialReference | null,
   ): Promise<AuthorRefused | PluginAuthorResult>;
   /** The unpacked row of record for `id`, or null when none is installed. */
-  unpackedRow(id: string): (PluginAuthorResult & { readonly installedBy: string }) | null;
+  unpackedRow(id: string): UnpackedRow | null;
   developerMode(): boolean;
 }
 
@@ -95,6 +108,7 @@ export class AuthoredPlugins {
   async author(
     request: PluginAuthorRequest,
     authoredBy: string,
+    credential: CredentialReference,
   ): Promise<AuthorRefused | PluginAuthorResult> {
     if (!this.host.developerMode()) {
       return { refused: `developer_mode_off: ${request.id}` };
@@ -110,7 +124,7 @@ export class AuthoredPlugins {
       principal: authoredBy,
       files: Object.keys(request.files).length,
     });
-    return this.rebuild(request.id, authoredBy);
+    return this.rebuild(request.id, authoredBy, credential);
   }
 
   /**
@@ -121,9 +135,13 @@ export class AuthoredPlugins {
    * naming the problem, and the row of record stands: an edit is never able to take a working
    * plugin off the roster by being wrong.
    */
-  rebuild(id: string, by: string): Promise<AuthorRefused | PluginAuthorResult> {
+  rebuild(
+    id: string,
+    by: string,
+    credential: CredentialReference | null,
+  ): Promise<AuthorRefused | PluginAuthorResult> {
     const previous = this.building.get(id) ?? Promise.resolve(null);
-    const next = previous.then(() => this.build(id, by));
+    const next = previous.then(() => this.build(id, by, credential));
     this.building.set(id, next);
     void next.finally(() => {
       if (this.building.get(id) === next) this.building.delete(id);
@@ -131,7 +149,11 @@ export class AuthoredPlugins {
     return next;
   }
 
-  private async build(id: string, by: string): Promise<AuthorRefused | PluginAuthorResult> {
+  private async build(
+    id: string,
+    by: string,
+    credential: CredentialReference | null,
+  ): Promise<AuthorRefused | PluginAuthorResult> {
     if (!this.host.developerMode()) return { refused: `developer_mode_off: ${id}` };
     const { dir, bundle } = authoredLayout(this.dataDir, id);
     if (!existsSync(join(dir, "manifest.json"))) {
@@ -154,7 +176,18 @@ export class AuthoredPlugins {
         sha256: current.sha256,
       };
     }
-    const outcome = await this.host.installUnpacked(id, bundle, sha256, current?.installedBy ?? by);
+    /*
+      The row of record keeps BOTH attributions across a rebuild: a save replaces bytes, never
+      the consent behind them. A directory nobody has installed yet takes the caller's, and the
+      watch — which has no caller — installs with none at all.
+     */
+    const outcome = await this.host.installUnpacked(
+      id,
+      bundle,
+      sha256,
+      current?.installedBy ?? by,
+      current?.installer ?? credential,
+    );
     if ("refused" in outcome) {
       this.logger.warn("plugin_authored_build_failed", { plugin: id, error: outcome.refused });
     }
@@ -217,7 +250,7 @@ export class AuthoredPlugins {
     const timer = setTimeout(() => {
       this.pending.delete(id);
       if (!this.host.developerMode()) return;
-      void this.rebuild(id, "engine.plugins").catch((error: unknown) => {
+      void this.rebuild(id, "engine.plugins", null).catch((error: unknown) => {
         this.logger.error("plugin_authored_build_failed", {
           plugin: id,
           error: error instanceof Error ? error.message : "rebuild failed",
