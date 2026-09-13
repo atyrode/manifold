@@ -19,12 +19,12 @@ const credentials: CredentialsResponse = {
     {
       principal: { id: "agent-one", kind: "agent", name: "Review agent", color: "#91a7ff" },
       createdAt: at,
-      sessions: [{ id: "agent-session", createdAt: at, caps: ["space:read"] }],
+      sessions: [{ id: "agent-session", createdAt: at, caps: ["containers:read"] }],
     },
     {
       principal: { id: "human-one", kind: "human", name: "Human reader", color: "#74c0fc" },
       createdAt: at,
-      sessions: [{ id: "human-session", createdAt: at, caps: ["space:read"] }],
+      sessions: [{ id: "human-session", createdAt: at, caps: ["containers:read"] }],
     },
     {
       principal: { id: "legacy-agent", kind: "agent", name: "Legacy agent", color: "#91a7ff" },
@@ -49,7 +49,7 @@ const inspection: AgentRunInspection = {
     taskRef: "issue:557",
     target: "manifold://container/review",
     reach: "subtree",
-    caps: ["space:read"],
+    caps: ["containers:read"],
     createdAt: at,
     expiresAt: at + 1_000,
     renewals: 0,
@@ -72,42 +72,55 @@ const inspection: AgentRunInspection = {
     { id: "run-one", principalId: "agent-one", name: "Review agent", state: "cleanup_failed" },
   ],
   lineageComplete: false,
-  credentials: [{ createdAt: at, expiresAt: at + 1_000, revokedAt: at + 500, state: "revoked", grant: null }],
-  connections: [{ connectionId: "connection-one", state: "closed_or_unavailable", firstObservedAt: at, lastObservedAt: null }],
-  traces: [{
-    traceId,
-    at,
-    actor: "agent-one",
-    action: "core.space.list",
-    authority: "space:read",
-    targets: ["manifold://container/review"],
-    outcome: null,
-    settlement: "pending_or_crashed",
-    connectionId: "connection-one",
-    origin: "connection",
-    agentDeclaration: "Checking the retained workspace facts",
-  }],
+  credentials: [
+    { createdAt: at, expiresAt: at + 1_000, revokedAt: at + 500, state: "revoked", grant: null },
+  ],
+  connections: [
+    {
+      connectionId: "connection-one",
+      state: "closed_or_unavailable",
+      firstObservedAt: at,
+      lastObservedAt: null,
+    },
+  ],
+  traces: [
+    {
+      traceId,
+      at,
+      actor: "agent-one",
+      action: "core.space.list",
+      authority: "space:read",
+      targets: ["manifold://container/review"],
+      outcome: null,
+      settlement: "pending_or_crashed",
+      connectionId: "connection-one",
+      origin: "connection",
+      agentDeclaration: "Checking the retained workspace facts",
+    },
+  ],
   nextBeforeTraceId: "9007199254740991",
   requestedTrace: "not_requested",
   history: "retained_only",
-  jobs: [{
-    jobId: "job-one",
-    machineId: "machine-one",
-    pluginId: "native.review",
-    operationId: "check",
-    installationRevision: "installation-one",
-    artifactSha256: "0".repeat(64),
-    state: "exited",
-    createdAt: at,
-    startedAt: at + 100,
-    finishedAt: at + 200,
-    exitCode: 1,
-    traceId: nativeTraceId,
-    origin: "retained",
-    parentJobId: null,
-    terminalId: "terminal-one",
-    ownerState: "unconfirmed",
-  }],
+  jobs: [
+    {
+      jobId: "job-one",
+      machineId: "machine-one",
+      pluginId: "native.review",
+      operationId: "check",
+      installationRevision: "installation-one",
+      artifactSha256: "0".repeat(64),
+      state: "exited",
+      createdAt: at,
+      startedAt: at + 100,
+      finishedAt: at + 200,
+      exitCode: 1,
+      traceId: nativeTraceId,
+      origin: "retained",
+      parentJobId: null,
+      terminalId: "terminal-one",
+      ownerState: "unconfirmed",
+    },
+  ],
   terminals: [],
   nativeTruncated: true,
 };
@@ -118,7 +131,9 @@ beforeAll(async () => {
   const entry = join(scratch, "fixture.js");
   const output = join(scratch, "dist");
   // Resolve the already-declared React peers of the existing browser-fixture owner.
-  await Bun.write(entry, `
+  await Bun.write(
+    entry,
+    `
     import { createElement } from ${JSON.stringify(Bun.resolveSync("react", plugin))};
     import { createRoot } from ${JSON.stringify(Bun.resolveSync("react-dom/client", plugin))};
     import { SessionsSection } from ${JSON.stringify(resolve(import.meta.dir, "../../plugins/access/src/web.tsx"))};
@@ -151,7 +166,8 @@ beforeAll(async () => {
       },
     };
     root.render(createElement(SessionsSection, { host }));
-  `);
+  `,
+  );
   const build = Bun.spawn(["bun", "build", entry, "--target=browser", "--outdir", output], {
     cwd: plugin,
     stdout: "pipe",
@@ -184,7 +200,8 @@ beforeAll(async () => {
 
 async function requests(count: number): Promise<readonly { action: string; args: unknown }[]> {
   await until(
-    () => browser.evaluate<boolean>(`window.inspectorFixture?.requests.length === ${String(count)}`),
+    () =>
+      browser.evaluate<boolean>(`window.inspectorFixture?.requests.length === ${String(count)}`),
     5_000,
     `${String(count)} action requests`,
   );
@@ -192,7 +209,9 @@ async function requests(count: number): Promise<readonly { action: string; args:
 }
 
 async function answer(id: number, result: unknown): Promise<void> {
-  await browser.evaluate(`window.inspectorFixture.answer(${String(id)}, ${JSON.stringify({ ok: true, result })})`);
+  await browser.evaluate(
+    `window.inspectorFixture.answer(${String(id)}, ${JSON.stringify({ ok: true, result })})`,
+  );
   await browser.evaluate(`(() => {
     const frame = Promise.withResolvers();
     requestAnimationFrame(() => requestAnimationFrame(() => frame.resolve()));
@@ -202,7 +221,8 @@ async function answer(id: number, result: unknown): Promise<void> {
 
 async function visibleText(expected: string): Promise<void> {
   await until(
-    () => browser.evaluate<boolean>(`document.body.innerText.includes(${JSON.stringify(expected)})`),
+    () =>
+      browser.evaluate<boolean>(`document.body.innerText.includes(${JSON.stringify(expected)})`),
     5_000,
     `visible ${expected}`,
   );
@@ -226,7 +246,7 @@ beforeEach(async () => {
   await requests(1);
   await answer(0, credentials);
   await visibleText("Human reader");
-});
+}, 60_000);
 
 afterEach(() => {
   expect(browser.drainMessages().filter((message) => message.level === "error")).toEqual([]);
@@ -239,9 +259,22 @@ afterAll(async () => {
 });
 
 test("an agent name opens the safe run snapshot and expandable native trace references", async () => {
-  await browser.evaluate('document.querySelector(\'[aria-label="Inspect agent run for Review agent"]\').focus()');
-  await browser.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
-  await browser.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await browser.evaluate(
+    "document.querySelector('[aria-label=\"Inspect agent run for Review agent\"]').focus()",
+  );
+  await browser.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+    text: "\r",
+  });
+  await browser.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+  });
   expect((await requests(2))[1]).toMatchObject({
     action: "core.access.inspectAgentRun",
     args: { principalId: "agent-one" },
@@ -258,11 +291,13 @@ test("an agent name opens the safe run snapshot and expandable native trace refe
   await visibleText("Retained-only history");
   await visibleText(`Trace ${traceId}`);
   await visibleText("pending_or_crashed");
-  expect(await browser.evaluate(`(() => {
+  expect(
+    await browser.evaluate(`(() => {
     const button = document.querySelector('[aria-label="Inspect agent run for Review agent"]');
     return button.getAttribute("aria-expanded") === "true" &&
       document.getElementById(button.getAttribute("aria-controls"))?.getAttribute("aria-label") === "Agent run inspection";
-  })()`)).toBe(true);
+  })()`),
+  ).toBe(true);
 
   await clickButton(`Trace ${traceId}`);
   expect((await requests(3))[2]).toMatchObject({
@@ -283,7 +318,9 @@ test("an agent name opens the safe run snapshot and expandable native trace refe
   await answer(3, { ...inspection, traces: [], requestedTrace: "unavailable" });
   await visibleText(`Trace ${nativeTraceId} is unavailable in retained history`);
   await clickButton("Open manifold://terminal/terminal-one");
-  expect(await browser.evaluate("window.inspectorFixture.navigations")).toEqual(["manifold://terminal/terminal-one"]);
+  expect(await browser.evaluate("window.inspectorFixture.navigations")).toEqual([
+    "manifold://terminal/terminal-one",
+  ]);
 
   await clickButton("Run lineage · 2");
   await clickButton("Inspect run Parent run");
@@ -293,20 +330,29 @@ test("an agent name opens the safe run snapshot and expandable native trace refe
   });
   await answer(4, { availability: "origin_unavailable", principalId: "root-agent" });
   await visibleText("Origin unavailable");
-  expect(await browser.evaluate('document.body.innerText.includes("Review the retained lifecycle facts")')).toBe(false);
+  expect(
+    await browser.evaluate(
+      'document.body.innerText.includes("Review the retained lifecycle facts")',
+    ),
+  ).toBe(false);
 }, 60_000);
 
 test("human names remain inert and their existing two-press withdrawal is unchanged", async () => {
-  expect(await browser.evaluate(`(() => {
+  expect(
+    await browser.evaluate(`(() => {
     const name = document.querySelector('[data-principal="human-one"] .credential-name strong');
     name.click();
     return name.closest("button") === null;
-  })()`)).toBe(true);
+  })()`),
+  ).toBe(true);
   expect(await browser.evaluate('document.querySelector(".credential-inspection")')).toBeNull();
   expect(await browser.evaluate("window.inspectorFixture.requests.length")).toBe(1);
   await clickButton("Withdraw every credential of Human reader");
   await until(
-    () => browser.evaluate<boolean>('document.querySelector(\'[aria-label="Confirm withdrawing every credential of Human reader"]\') !== null'),
+    () =>
+      browser.evaluate<boolean>(
+        "document.querySelector('[aria-label=\"Confirm withdrawing every credential of Human reader\"]') !== null",
+      ),
     5_000,
     "human withdrawal confirmation",
   );
@@ -327,5 +373,9 @@ test("changing the inspected identity discards a late response from the previous
   await answer(2, { availability: "origin_unavailable", principalId: "legacy-agent" });
   await visibleText("Origin unavailable");
   await answer(1, inspection);
-  expect(await browser.evaluate('document.body.innerText.includes("Review the retained lifecycle facts")')).toBe(false);
+  expect(
+    await browser.evaluate(
+      'document.body.innerText.includes("Review the retained lifecycle facts")',
+    ),
+  ).toBe(false);
 }, 60_000);
