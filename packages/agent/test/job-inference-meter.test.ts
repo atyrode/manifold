@@ -250,6 +250,28 @@ test("a chat completion is metered and priced from the provider's own usage, byt
   }
 });
 
+test("the owner prices the requested model when the provider reports an alias", async () => {
+  const source = await upstream((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      '{"model":"provider-alias","usage":{"prompt_tokens":1000000,"completion_tokens":0}}',
+    );
+  });
+  const owner = ledger({ costMicros: 4_000_000 });
+  const proxy = await proxyFor(source.origin, owner.metering);
+  try {
+    const response = await send(proxy, { body: '{"model":"m-1"}' });
+    expect(response.status).toBe(200);
+    expect(owner.calls[0]).toMatchObject({
+      model: "provider-alias",
+      costMicros: 3_000_000,
+    });
+  } finally {
+    await proxy.close();
+    await source.close();
+  }
+});
+
 test("cached input is charged at the cached price when the policy states one", async () => {
   const source = await upstream((_request, response) => {
     response.writeHead(200, { "content-type": "application/json" });

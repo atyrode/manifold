@@ -999,7 +999,7 @@ export async function createJobServiceProxy(
             inputTokens: counted?.inputTokens ?? 0,
             outputTokens: counted?.outputTokens ?? 0,
             cachedInputTokens: counted?.cachedInputTokens ?? 0,
-            costMicros: counted ? callCost(priceOf(entry.policy, model), counted) : 0,
+            costMicros: counted ? callCost(priceOf(entry.policy, requestModel), counted) : 0,
             elapsedMs: Date.now() - startedAt,
             status: meteredStatus,
           });
