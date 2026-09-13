@@ -819,4 +819,58 @@ describe("the trace ledger records every exercise of authority", () => {
       base.store.close();
     }
   });
+
+  test("deployment administration uses root dispatch and opaque traces; destination inspection is a checked read", async () => {
+    const base = await fixture();
+    try {
+      base.host.setJobs(new JobService(base.store, base.auth, base.runtime));
+      const machineId = base.auth.enrollMachine("deployment-destination", base.owner).machine.id;
+      const request = {
+        deploymentId: "approved",
+        pluginId: "absent.worker",
+        targets: [{ machineId }],
+        operationIds: [],
+      };
+      const samples = {
+        reviewDeployment: request,
+        applyDeployment: { request, reviewDigest: "a".repeat(64) },
+        readDeployment: { deploymentId: request.deploymentId },
+        listDeployments: { pluginId: request.pluginId },
+        cancelDeployment: { deploymentId: request.deploymentId, expectedRevision: 1 },
+      };
+      const inspector = tokenContext(base, ["machines:run"]);
+      for (const [method, args] of Object.entries(samples)) {
+        const door = `engine.jobs.${method}`;
+        expect((await base.host.dispatch(inspector, door, args)).ok).toBe(false);
+        expect(newestTrace(base)).toMatchObject({ door, outcome: "forbidden", payload: "{}" });
+      }
+      expect(
+        await base.host.dispatch(inspector, "engine.jobs.describeDeployment", {
+          machineId,
+          pluginId: request.pluginId,
+        }),
+      ).toMatchObject({
+        ok: true,
+        result: { deployment: null, installation: null },
+      });
+      expect(newestTrace(base)).toMatchObject({
+        door: "engine.jobs.describeDeployment",
+        outcome: "ok",
+        payload: "{}",
+      });
+      const weak = tokenContext(base, ["containers:read"]);
+      expect(
+        (
+          await base.host.dispatch(weak, "engine.jobs.describeDeployment", {
+            machineId,
+            pluginId: request.pluginId,
+          })
+        ).ok,
+      ).toBe(false);
+      expect(base.store.db.query("SELECT * FROM machine_job_consents").all()).toEqual([]);
+      expect(base.store.db.query("SELECT * FROM machine_job_installs").all()).toEqual([]);
+    } finally {
+      base.store.close();
+    }
+  });
 });

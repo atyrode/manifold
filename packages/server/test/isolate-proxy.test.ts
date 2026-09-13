@@ -74,6 +74,9 @@ function scripted(outcome: IsolateDispatchOutcome): IsolateTransport & {
     hook: async (hook, _ctx, delta) => {
       hooks.push({ hook, delta });
     },
+    migrate: async () => {
+      throw new Error("no migration declared by this scripted transport");
+    },
   };
 }
 

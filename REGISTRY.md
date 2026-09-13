@@ -114,6 +114,7 @@ must never be taught one.
         "packages/server/src/job-service.ts",
         "packages/server/src/job-store.ts",
         "packages/server/src/job-schedules.ts",
+        "packages/server/src/job-deployments.ts",
         "packages/server/src/job-doors.ts",
         "packages/server/src/instance-ws.ts",
         "packages/server/src/instance-dialer.ts",
@@ -294,6 +295,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/server/src/job-schedules.ts",
       "why": "ADR 0033 original-credential schedules and host-bound nested invocation reservations with durable aggregate ceilings"
+    },
+    {
+      "glob": "packages/server/src/job-deployments.ts",
+      "why": "ADR 0035 reviewed native deployment coordination in the transport pillar: bootstrap because an unavailable machine half cannot authorize or deliver its own installation; neutral because only declarations, explicit machine identities, pinned resources and existing native rights are interpreted; arbitration because only the host can fence competing approvals against current credentials, installation/consent state and proved owner evidence. It composes the existing installer; destination choice and rendering stay in plugins"
     },
     {
       "glob": "packages/server/src/job-doors.ts",
@@ -804,6 +809,12 @@ applied to vocabulary: one door onto "what do we call this kind".
     {
       "term": "output",
       "means": "a canonical authority node beneath a job, not possession-based authority or evidence that output bytes are sealed",
+      "banned": [],
+      "allow": []
+    },
+    {
+      "term": "deployment",
+      "means": "a reviewed native installation approval for an explicit bounded set of machine destinations, with immutable scope and projected progress; not an installation acknowledgement, execution, automatic fleet membership or update policy",
       "banned": [],
       "allow": []
     },

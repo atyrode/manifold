@@ -1115,7 +1115,236 @@ a.plugin-manager-chip[data-tone="publisher"]:focus-visible {
   cursor: not-allowed;
 }
 
-.plugin-manager-runtime :is(button, input, select):focus-visible {
+.plugin-manager-runtime :is(button, input, select, summary, [tabindex]):focus-visible {
   outline: 2px solid #8ea4e8;
   outline-offset: 2px;
+}
+
+/* Preparation remains in the existing detail sheet; cards wrap without a wide table. */
+.plugin-manager-runtime
+  :is(
+    .plugin-manager-runtime-preparation,
+    .plugin-manager-runtime-history,
+    .plugin-manager-runtime-saved,
+    .plugin-manager-runtime-review,
+    .plugin-manager-runtime-review-focus
+  ) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-runtime-preparation {
+  margin-bottom: 0.8rem;
+  border-bottom: 1px solid #495057;
+  padding-bottom: 0.8rem;
+}
+
+.plugin-manager-runtime-preparation fieldset {
+  display: grid;
+  min-width: 0;
+  gap: 0.65rem;
+  margin: 0;
+  border: 1px solid #495057;
+  border-radius: 0.45rem;
+  padding: 0.65rem;
+}
+
+.plugin-manager-runtime-preparation legend {
+  max-width: 100%;
+  padding: 0 0.25rem;
+  color: #dee2e6;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.plugin-manager-runtime-destinations {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 0.65rem;
+  max-height: 24rem;
+  overflow-y: auto;
+  padding: 0.2rem;
+}
+
+.plugin-manager-runtime-destination,
+.plugin-manager-runtime-review-focus {
+  display: grid;
+  min-width: 0;
+  gap: 0.65rem;
+  border: 1px solid #343a40;
+  border-radius: 0.45rem;
+  padding: 0.65rem;
+}
+
+/* Keep orientation and the effectful action outside the independently scrollable evidence. */
+.plugin-manager-runtime-review-focus,
+.plugin-manager-runtime-saved {
+  display: grid;
+  max-height: min(38rem, calc(100dvh - 9rem));
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
+  background: #1a1d21;
+  scroll-margin-block: 0.5rem;
+}
+
+.plugin-manager-runtime-review-heading {
+  display: grid;
+  min-width: 0;
+  gap: 0.45rem;
+  border-bottom: 1px solid #495057;
+  padding: 0.75rem;
+}
+
+.plugin-manager-runtime-review-heading h5 {
+  color: #e9ecef;
+  font-size: 0.85rem;
+}
+
+.plugin-manager-runtime-review-body,
+.plugin-manager-runtime-saved-body {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0.75rem;
+  scrollbar-gutter: stable;
+}
+
+.plugin-manager-runtime-preparation .plugin-manager-filter {
+  border-color: #495057;
+  border-radius: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  color: #dee2e6;
+  background: #22262c;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.plugin-manager-runtime-preparation .plugin-manager-runtime-primary {
+  border-color: #748ffc;
+  color: #e9ecef;
+  background: #4263eb;
+  font-weight: 600;
+}
+
+.plugin-manager-runtime-preparation .plugin-manager-filter:hover:not(:disabled) {
+  border-color: #748ffc;
+  color: #e9ecef;
+}
+
+.plugin-manager-runtime-preparation :is(button, input, select):disabled {
+  cursor: not-allowed;
+}
+
+.plugin-manager-runtime-evidence {
+  min-width: 0;
+  border-top: 1px solid #343a40;
+}
+
+.plugin-manager-runtime-evidence[open] > .plugin-manager-runtime-identity {
+  padding-top: 0.4rem;
+}
+
+.plugin-manager-runtime-saved {
+  border: 1px solid #495057;
+  border-radius: 0.45rem;
+  min-height: 0;
+}
+
+/* Short and zoomed viewports retain ordinary document scrolling rather than clipping controls. */
+@media (max-height: 32rem) {
+  .plugin-manager-runtime-review-focus,
+  .plugin-manager-runtime-saved {
+    max-height: none;
+    grid-template-rows: auto auto;
+  }
+
+  .plugin-manager-runtime-review-body,
+  .plugin-manager-runtime-saved-body {
+    overflow: visible;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plugin-manager-runtime-preparation,
+  .plugin-manager-runtime-preparation * {
+    scroll-behavior: auto;
+    transition: none;
+    animation: none;
+  }
+}
+
+.plugin-manager-runtime-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.25rem 0;
+  color: #dee2e6;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.plugin-manager-runtime-choice input {
+  flex: 0 0 auto;
+  margin: 0.15rem 0 0;
+  accent-color: #748ffc;
+}
+
+.plugin-manager-runtime-choice > span {
+  display: grid;
+  min-width: 0;
+  gap: 0.3rem;
+}
+
+.plugin-manager-runtime-preparation :is(button, select) {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-runtime :is(ul, pre) {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+}
+
+.plugin-manager-runtime-preparation ul {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin-manager-runtime pre {
+  max-height: 24rem;
+  overflow: auto;
+  border: 1px solid #343a40;
+  border-radius: 0.35rem;
+  padding: 0.5rem;
+  color: #dee2e6;
+  background: #1d2025;
+  font-size: 0.68rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.plugin-manager-runtime summary {
+  padding: 0.35rem 0;
+  color: #dee2e6;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.plugin-manager-runtime-preparation [data-state="ready"] {
+  border-color: #2f6f4f;
+}
+
+.plugin-manager-runtime-preparation
+  :is([data-state="pending"], [data-state="installing"], [data-state="needs_review"]) {
+  border-color: #ffd43b;
+}
+
+.plugin-manager-runtime-preparation :is([data-state="refused"], [data-state="superseded"]) {
+  border-color: #c92a2a;
 }

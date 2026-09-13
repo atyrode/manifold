@@ -664,3 +664,66 @@ test("guest job discovery cannot hide a host authority refusal", async () => {
   fake.send({ t: "reply", id: frame.id, ok: false, error: "governed_authority_refused" });
   expect(await fake.next()).toMatchObject({ t: "dispatched", outcome: { ok: false } });
 });
+
+describe("named storage migrations", () => {
+  // Mixed-arity rows: without the row type, `descriptors` widens to a union whose narrowest
+  // branch has neither `name` nor `to`, and the spread below stops being a `ServerMigration`.
+  test.each<{ name: string; to: { major: number; minor: number } }[]>([
+    [{ name: "", to: { major: 2, minor: 0 } }],
+    [{ name: "bad name", to: { major: 2, minor: 0 } }],
+    [{ name: "invalid", to: { major: -1, minor: 0 } }],
+    [{ name: "fractional", to: { major: 1, minor: 0.5 } }],
+    [{ name: "future", to: { major: 3, minor: 0 } }],
+    [
+      { name: "duplicate", to: { major: 1, minor: 0 } },
+      { name: "duplicate", to: { major: 2, minor: 0 } },
+    ],
+  ])("refuses malformed or ambiguous migration metadata: %j", async (...descriptors) => {
+    const versioned = { ...manifest, dataVersion: { major: 2, minor: 0 } };
+    const fake = host({
+      manifest: versioned,
+      actions: [],
+      handlers: {},
+      migrations: descriptors.map((descriptor) => ({
+        ...descriptor,
+        migrate: () => {
+          throw new Error("must not run during load");
+        },
+      })),
+    });
+    fake.send({ t: "load", pluginId: manifest.id, manifest: versioned, dir: "/unused" });
+    expect(await fake.next()).toMatchObject({ t: "load_failed" });
+  });
+
+  test("requires a declared data version and refuses unknown names or mismatched targets", async () => {
+    let invocations = 0;
+    const migration = {
+      name: "widen",
+      to: { major: 2, minor: 0 },
+      migrate: () => {
+        invocations += 1;
+      },
+    };
+    const missing = host({ manifest, actions: [], handlers: {}, migrations: [migration] });
+    load(missing);
+    expect(await missing.next()).toMatchObject({ t: "load_failed" });
+    const versioned = { ...manifest, dataVersion: { major: 2, minor: 0 } };
+    const fake = host({ manifest: versioned, actions: [], handlers: {}, migrations: [migration] });
+    fake.send({ t: "load", pluginId: manifest.id, manifest: versioned, dir: "/unused" });
+    expect(await fake.next()).toMatchObject({
+      t: "loaded",
+      migrations: [{ name: "widen", to: { major: 2, minor: 0 } }],
+    });
+    for (const descriptor of [
+      { name: "unknown", to: { major: 2, minor: 0 } },
+      { name: "widen", to: { major: 1, minor: 0 } },
+    ]) {
+      fake.send({ t: "migrate", id: descriptor.name, migration: descriptor });
+      expect(await fake.next()).toMatchObject({
+        t: "migrated",
+        outcome: { ok: false },
+      });
+    }
+    expect(invocations).toBe(0);
+  });
+});

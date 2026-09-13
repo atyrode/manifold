@@ -85,10 +85,21 @@ data without knowing its shape. What is missing is one thing: a place a plugin m
    parameter, `database` — `migrate(storage, database)` — additive, so every migration in the
    tree keeps compiling and keeps meaning what it meant. The ledger stays where it is: named
    entries under `$migration:` in `plugin_kv`, the version stamp in `$version`, so a plugin has
-   ONE data version and ONE ledger whether its data is keys, rows or both, and `applyMigrations`
-   (`plugin-host.ts:1237`) runs the chain exactly as today. A migration creates its tables with
-   ordinary `CREATE TABLE` statements through `database.run`; there is no schema DSL, because
-   SQL is the schema DSL and a second one would be the second convention CONTRACTS forbids.
+   ONE data version and ONE ledger whether its data is keys, rows or both, and `prepareMigrations`
+   runs the chain exactly as it does for keys. Keys, ledger and stamp are staged and published in
+   one native transaction (issue #523's real guest migrations); the plugin's own file is not
+   `manifold.db` and cannot join that transaction, so its statements commit as they run and a
+   discarded chain is replanned — a migration's DDL must therefore be written to run twice
+   (`CREATE TABLE IF NOT EXISTS`). A migration creates its tables with ordinary `CREATE TABLE`
+   statements through `database.run`; there is no schema DSL, because SQL is the schema DSL and
+   a second one would be the second convention CONTRACTS forbids.
+
+   The parameter is IN-REALM only. A hardened guest's migration request carries its keys and
+   nothing else — the supervisor admits `storage.*` from a migrating guest and refuses the rest,
+   which is the bound issue #523 established and this decision does not widen — so `database` is
+   `undefined` there and a `database.*` call is answered `slice_unavailable`. A hardened plugin
+   makes its tables in `onEnable`, whose context does carry the slice; the reference plugin in
+   `packages/plugin-kit/test/fixtures/rows` does exactly that.
 
 4. **Bounds are stated numbers, checked by the engine, refused as `PluginDatabaseError`
    rejections** (the same failure path storage uses — a rejection, never a throw):

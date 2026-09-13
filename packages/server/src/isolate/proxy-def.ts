@@ -4,11 +4,14 @@ import type {
   LifecycleCtx,
   PluginDatabase,
   PluginLifecycle,
+  PluginMigration,
+  PluginStorage,
   SqlParam,
   SqlStatement,
 } from "@manifold/plugin";
 import {
   CapSchema,
+  GuestMigrationDeclarationsSchema,
   ManifoldRefSchema,
   LocalNameSchema,
   PlaceRequestSchema,
@@ -44,6 +47,7 @@ export type IsolateDispatchOutcome = Extract<IsolateChildFrame, { t: "dispatched
 export interface IsolateTransport {
   dispatch(action: string, args: unknown, ctx: ActionCtx): Promise<IsolateDispatchOutcome>;
   hook(hook: IsolateHook, ctx: LifecycleCtx, delta?: AssemblyDelta): Promise<void>;
+  migrate(migration: Pick<PluginMigration, "name" | "to">, storage: PluginStorage): Promise<void>;
 }
 
 /**
@@ -93,6 +97,12 @@ export function buildIsolateDef(
   loaded: LoadedFrame,
   transport: IsolateTransport,
 ): IsolateLoadResult {
+  const declarations = GuestMigrationDeclarationsSchema.safeParse({
+    dataVersion: manifest.dataVersion,
+    migrations: loaded.migrations ?? [],
+  });
+  if (!declarations.success) throw new IsolateLoadError(declarations.error.message);
+  const { migrations } = declarations.data;
   const actions: AnyActionDef[] = [];
   const handlers: Record<string, ActionHandler> = {};
   for (const summary of loaded.actions) {
@@ -124,7 +134,19 @@ export function buildIsolateDef(
       ? { onAssemblyChanged: (ctx, delta) => transport.hook("onAssemblyChanged", ctx, delta) }
       : {}),
   };
-  return { def: { manifest, actions, handlers, lifecycle }, lifecycle };
+  return {
+    def: {
+      manifest,
+      actions,
+      handlers,
+      lifecycle,
+      migrations: migrations.map((migration) => ({
+        ...migration,
+        migrate: (storage) => transport.migrate(migration, storage),
+      })),
+    },
+    lifecycle,
+  };
 }
 
 /**
@@ -132,11 +154,14 @@ export function buildIsolateDef(
  * list from the caller's `ActionCtx`; a lifecycle hook has only its `LifecycleCtx`, so it
  * serves storage and the plugin's own database — a hook orders its OWN durable state, and
  * rows are as much of that as keys — and answers `slice_unavailable` for the rest, the same
- * word the guest runtime uses for a slice stage 1 does not carry.
+ * word the guest runtime uses for a slice stage 1 does not carry. A MIGRATION carries storage
+ * alone: the supervisor admits only `storage.*` from a migrating guest, so a guest's tables
+ * are made where the reference plugin makes them — in `onEnable`, which does carry the slice.
  */
 export type ServedCtx =
   | { readonly kind: "dispatch"; readonly ctx: ActionCtx }
-  | { readonly kind: "hook"; readonly ctx: LifecycleCtx };
+  | { readonly kind: "hook"; readonly ctx: LifecycleCtx }
+  | { readonly kind: "migration"; readonly ctx: { readonly storage: PluginStorage } };
 
 /** The positional argument at `index`, which the served method needs to be a string. */
 function stringArg(args: readonly unknown[], index: number, method: IsolateCtxMethod): string {
@@ -150,10 +175,11 @@ function stringArg(args: readonly unknown[], index: number, method: IsolateCtxMe
 /**
  * The plugin's own database, or the refusal that says it never asked for one. A manifest
  * without `database` has no slice on either side of the boundary (ADR 0034 §6), and the word
- * is the one the guest runtime already uses for a member stage 1 does not carry.
+ * is the one the guest runtime already uses for a member stage 1 does not carry. A migration
+ * is refused the same way, because its request carries storage and nothing else.
  */
 function databaseOf(served: ServedCtx, method: IsolateCtxMethod): PluginDatabase {
-  const database = served.ctx.database;
+  const database = served.kind === "migration" ? undefined : served.ctx.database;
   if (database === undefined) throw new Error(`slice_unavailable: ${method}`);
   return database;
 }
@@ -243,6 +269,7 @@ export async function serveCtxCall(
     case "database.batch":
       return databaseOf(served, method).batch(statementsArg(args, method));
     case "jobs.describe":
+    case "jobs.describeDeployment":
     case "jobs.execute":
     case "jobs.status":
     case "jobs.listRuns":
@@ -275,6 +302,8 @@ export async function serveCtxCall(
   switch (method) {
     case "jobs.describe":
       return ctx.jobs.describe(jobDoorSchemas.describe.parse(args[0]));
+    case "jobs.describeDeployment":
+      return ctx.jobs.describeDeployment(jobDoorSchemas.describeDeployment.parse(args[0]));
     case "jobs.execute":
       return ctx.jobs.execute(JobExecuteArgsSchema.parse(args[0]));
     case "jobs.status":

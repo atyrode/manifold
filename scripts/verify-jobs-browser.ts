@@ -7,6 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import {
+  JobDeploymentApplyArgsSchema,
+  JobDeploymentDescriptionSchema,
+  JobDeploymentListResultSchema,
+  JobDeploymentRequestSchema,
+  JobDeploymentSchema,
   JobDescriptionSchema,
   JobEventSchema,
   JobRequestSchema,
@@ -50,8 +55,8 @@ Optional MANIFOLD_RUNTIME_PROOF_DIR retains synthetic screenshots and the final 
 The launcher moves only processes in its exact named disposable unit to a supervisor child,
 then delegates a private workloads child. Never run in the caller's ordinary cgroup.
 Example inside that unit: bun run verify:jobs:browser
-Includes native Plugins machine installation, explicit consent, declared-input jobs and screenshots,
-then the complete installed-worker job and 1200-frame stream acceptance.
+Includes native Plugins install-only and exact-operation deployment review/apply, stale evidence,
+offline pending and refused evidence, saved progress, declared-input jobs and 1200 frames.
 Missing prerequisites or any unexercised core acceptance FAIL with nonzero exit; no skips.
 All identities, artifacts, workspace data, agents, browser storage and hub are run-owned.
 No production endpoint, external executable download, provider or private transcript is used.`;
@@ -197,11 +202,14 @@ async function nativeClick(browser: Browser, selector: string) {
   );
 }
 async function nativeSelect(browser: Browser, label: string, value: string) {
+  await nativeSelectControl(browser, `select[aria-label=${JSON.stringify(label)}]`, value);
+}
+async function nativeSelectControl(browser: Browser, selector: string, value: string) {
   await waitFor(
     () =>
       browser.evaluate<boolean>(`(() => {
-        const element = document.querySelector('select[aria-label=' + ${JSON.stringify(JSON.stringify(label))} + ']');
-        if (!(element instanceof HTMLSelectElement) || element.disabled ||
+        const element = document.querySelector(${JSON.stringify(selector)});
+        if (!(element instanceof HTMLSelectElement) || element.matches(':disabled') ||
             ![...element.options].some(option => option.value === ${JSON.stringify(value)} && !option.disabled)) return false;
         element.scrollIntoView({ block: 'center' });
         element.value = ${JSON.stringify(value)};
@@ -242,12 +250,150 @@ async function historyContains(
   })()`);
 }
 
+async function nativeDeploymentReady(browser: Browser, deploymentId: string, machineId: string) {
+  const saved = `${nativeRuntime} [data-deployment=${JSON.stringify(deploymentId)}]`;
+  const destination = `${saved} [aria-label="Current destination progress"] [data-machine=${JSON.stringify(machineId)}]`;
+  return browser.evaluate<boolean>(`(() => {
+    const row = document.querySelector(${JSON.stringify(destination)});
+    const progress = row?.querySelector('[role="status"]');
+    return row?.getAttribute('data-state') === 'ready' && !!progress?.textContent?.trim();
+  })()`);
+}
+
+async function nativeDeploymentState(
+  browser: Browser,
+  deploymentId: string,
+  machineId: string,
+  state: z.infer<typeof JobDeploymentSchema>["targets"][number]["state"],
+  reason: string,
+) {
+  const row = `${nativeRuntime} [data-deployment=${JSON.stringify(deploymentId)}] [aria-label="Current destination progress"] [data-machine=${JSON.stringify(machineId)}]`;
+  await waitFor(
+    () =>
+      browser.evaluate<boolean>(`(() => {
+      const row = document.querySelector(${JSON.stringify(row)});
+      return row?.getAttribute('data-state') === ${JSON.stringify(state)} &&
+        row?.getAttribute('data-reason') === ${JSON.stringify(reason)} &&
+        !!row.querySelector('[role="status"]')?.textContent?.trim();
+    })()`),
+    10_000,
+    20,
+  );
+  return row;
+}
+
+async function nativePreparationHierarchy(
+  browser: Browser,
+  name: string,
+  panel = `${nativeRuntime} [aria-label="Server-reviewed preparation"]`,
+  evidenceSelector: string | null = null,
+) {
+  assert(
+    await browser.evaluate<boolean>(`(() => {
+    const panel = document.querySelector(${JSON.stringify(panel)});
+    const body = panel?.querySelector('.plugin-manager-runtime-review-body, .plugin-manager-runtime-saved-body');
+    if (!(panel instanceof HTMLElement) || !(body instanceof HTMLElement)) return false;
+    panel.scrollIntoView({ block: 'nearest' });
+    const controls = [
+      panel.querySelector('.plugin-manager-runtime-review-heading h5'),
+      panel.querySelector('.plugin-manager-runtime-review-heading [role="status"]'),
+      panel.querySelector('.plugin-manager-runtime-review-heading [data-action]'),
+    ];
+    const visible = element => {
+      if (!(element instanceof HTMLElement)) return false;
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0 || rect.top < 0 || rect.bottom > innerHeight ||
+          rect.left < 0 || rect.right > innerWidth || element.scrollWidth > element.clientWidth + 1) return false;
+      for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent), clip = parent.getBoundingClientRect();
+        if (/(auto|scroll|hidden|clip)/.test(style.overflowY) &&
+            (rect.top < clip.top - 1 || rect.bottom > clip.bottom + 1)) return false;
+        if (/(auto|scroll|hidden|clip)/.test(style.overflowX) &&
+            (rect.left < clip.left - 1 || rect.right > clip.right + 1)) return false;
+      }
+      return true;
+    };
+    const top = controls.map(element => element?.getBoundingClientRect().top);
+    body.scrollTop = body.scrollHeight;
+    const stable = controls.every((element, index) => visible(element) &&
+      element.getBoundingClientRect().top === top[index]);
+    body.scrollTop = 0;
+    const evidence = ${JSON.stringify(evidenceSelector)} === null ? null : body.querySelector(${JSON.stringify(evidenceSelector)});
+    if (${JSON.stringify(evidenceSelector)} !== null && !(evidence instanceof HTMLElement)) return false;
+    if (evidence) body.scrollTop = evidence.getBoundingClientRect().top - body.getBoundingClientRect().top;
+    return stable && panel.scrollWidth <= panel.clientWidth + 1;
+  })()`),
+    "preparation heading, status or primary action clipped or moved while evidence scrolled",
+  );
+  await screenshot(browser, name);
+}
+
+async function nativeUnprovedDeployment(browser: Browser, hub: TestServer, machineId: string) {
+  const before = JobDeploymentListResultSchema.parse(
+    await ownerAction(hub, "engine.jobs.listDeployments", { pluginId: PLUGIN, limit: 100 }),
+  );
+  const url = await browser.evaluate<string>("location.href");
+  await openNativeHistory(browser, machineId);
+  await nativeClick(browser, `${nativeRuntime} input[data-machine=${JSON.stringify(machineId)}]`);
+  await nativeSelectControl(
+    browser,
+    `${nativeRuntime} select[data-machine=${JSON.stringify(machineId)}]`,
+    `linux-${process.arch}`,
+  );
+  await nativeClick(browser, `${nativeRuntime} [data-action="engine.jobs.reviewDeployment"]`);
+  const refused = `${nativeRuntime} [aria-label="Server-reviewed preparation"] [data-machine=${JSON.stringify(machineId)}][data-approvable="false"]`;
+  await waitFor(
+    () =>
+      browser.evaluate<boolean>(`document.querySelector(${JSON.stringify(refused)})?.querySelector('[data-reason="owner_identity_unproved"]') != null &&
+      document.querySelector(${JSON.stringify(`${nativeRuntime} [data-action="engine.jobs.applyDeployment"]`)})?.disabled === true`),
+    10_000,
+    20,
+  );
+  await nativePreparationHierarchy(browser, "native-unsupported-deployment-review");
+  assert.deepEqual(
+    JobDeploymentListResultSchema.parse(
+      await ownerAction(hub, "engine.jobs.listDeployments", { pluginId: PLUGIN, limit: 100 }),
+    ),
+    before,
+    "unproved transport review saved a deployment",
+  );
+  await browser.goto(url);
+  await field(browser, "Target machine", machineId);
+  return { machineId, approvable: false, reason: "owner_identity_unproved" };
+}
+
 async function nativeProof(
   browser: Browser,
   observer: Browser,
   hub: TestServer,
   runtime: RuntimeFixture,
+  setConnected: (connected: boolean) => Promise<void>,
 ) {
+  const initialJournal = new Database(join(hub.dataDir, "manifold.db"), { readonly: true });
+  let initialJobs: { job_id: string }[];
+  try {
+    initialJobs = initialJournal
+      .query<{ job_id: string }, []>("SELECT job_id FROM machine_jobs ORDER BY job_id")
+      .all();
+  } finally {
+    initialJournal.close();
+  }
+  // Observe real public requests without replacing the browser's transport or responses.
+  const deploymentCalls: { action: string; body: string | undefined }[] = [];
+  const executionCalls: string[] = [];
+  browser.on("Network.requestWillBeSent", (params) => {
+    const request = params["request"] as { url: string; method: string; postData?: string };
+    const action = new URL(request.url).pathname;
+    if (request.method === "POST" && action === "/api/actions/engine.jobs.execute")
+      executionCalls.push(action);
+    if (
+      request.method === "POST" &&
+      (action === "/api/actions/engine.jobs.reviewDeployment" ||
+        action === "/api/actions/engine.jobs.applyDeployment")
+    )
+      deploymentCalls.push({ action, body: request.postData });
+  });
+  await browser.send("Network.enable", {});
   const describe = async () =>
     JobDescriptionSchema.parse(
       await ownerAction(hub, "engine.jobs.describe", {
@@ -262,13 +408,207 @@ async function nativeProof(
   await browser.clickTestId("plugin-manager-open");
   await nativeClick(browser, `[data-plugin="${PLUGIN}"] [data-testid="plugin-manager-row-open"]`);
   await nativeSelect(browser, "Machine for plugin operations", runtime.machineId);
-  await nativeSelect(browser, "Declared artifact target", target);
+  const destination = `${nativeRuntime} input[type="checkbox"][data-machine=${JSON.stringify(runtime.machineId)}]`;
+  const operationChoices = `${nativeRuntime} input[type="checkbox"][data-operation]`;
+  await waitFor(
+    () =>
+      browser.evaluate<boolean>(`document.querySelector(${JSON.stringify(destination)}) !== null`),
+    10_000,
+    20,
+  );
+  assert.deepEqual(
+    await browser.evaluate<string[]>(
+      `[...document.querySelectorAll(${JSON.stringify(`${nativeRuntime} input[type="checkbox"][data-machine]:checked`)})].map(input => input.dataset.machine)`,
+    ),
+    [],
+    "opening machine inspection selected a deployment destination",
+  );
+  assert.deepEqual(
+    await browser.evaluate<string[]>(
+      `[...document.querySelectorAll(${JSON.stringify(operationChoices)})].filter(input => input.checked).map(input => input.dataset.operation)`,
+    ),
+    [],
+    "opening preparation implicitly selected operation consent",
+  );
+  assert(
+    await browser.evaluate<boolean>(
+      `[...document.querySelectorAll(${JSON.stringify(operationChoices)})].some(input => input.dataset.operation === ${JSON.stringify(OPERATION)} && !input.matches(':disabled'))`,
+    ),
+    "declared operation is not independently selectable for consent",
+  );
+  await nativeClick(browser, destination);
+  await nativeSelectControl(
+    browser,
+    `${nativeRuntime} select[data-machine=${JSON.stringify(runtime.machineId)}]`,
+    target,
+  );
+  const reviewButton = `${nativeRuntime} [data-action="engine.jobs.reviewDeployment"]`;
+  const applyButton = `${nativeRuntime} [data-action="engine.jobs.applyDeployment"]`;
+  const reviewedRenderer = `${nativeRuntime} [aria-label="Server-reviewed preparation"]`;
+  const reviewDraft = async (approvable = true) => {
+    const index = deploymentCalls.length;
+    const previousDigest = await browser.evaluate<string | null>(
+      `document.querySelector(${JSON.stringify(reviewedRenderer)})?.dataset.reviewDigest ?? null`,
+    );
+    await nativeClick(browser, reviewButton);
+    await waitFor(
+      () =>
+        browser.evaluate<boolean>(`document.querySelector(${JSON.stringify(reviewedRenderer)}) != null &&
+        document.querySelector(${JSON.stringify(reviewedRenderer)}).dataset.reviewDigest !== ${JSON.stringify(previousDigest)} &&
+        document.querySelector(${JSON.stringify(applyButton)})?.disabled === ${!approvable}`),
+      10_000,
+      20,
+    );
+    await waitFor(
+      () =>
+        browser.evaluate<boolean>(
+          `document.activeElement === document.querySelector(${JSON.stringify(reviewedRenderer)})`,
+        ),
+      5000,
+      20,
+    );
+    assert.equal(
+      deploymentCalls.length,
+      index + 1,
+      "review implicitly applied or retried preparation",
+    );
+    assert.equal(deploymentCalls[index]!.action, "/api/actions/engine.jobs.reviewDeployment");
+    return JobDeploymentRequestSchema.parse(JSON.parse(deploymentCalls[index]!.body!));
+  };
+  const readDeployment = async (deploymentId: string) =>
+    JobDeploymentSchema.parse(
+      await ownerAction(hub, "engine.jobs.readDeployment", { deploymentId }),
+    );
+  const listDeployments = async () =>
+    JobDeploymentListResultSchema.parse(
+      await ownerAction(hub, "engine.jobs.listDeployments", { pluginId: PLUGIN, limit: 100 }),
+    );
+  const displayedDigest = async () => {
+    const digest = await browser.evaluate<string>(
+      `document.querySelector(${JSON.stringify(reviewedRenderer)}).dataset.reviewDigest`,
+    );
+    assert.match(digest, /^[a-f0-9]{64}$/);
+    return digest;
+  };
+  const displayedRights = () =>
+    browser.evaluate<{ node: string; cap: string; approved: boolean; revision: string | null }[]>(
+      `[...document.querySelectorAll(${JSON.stringify(`${reviewedRenderer} [data-cap][data-node]`)})].map(row => ({
+      node: row.dataset.node, cap: row.dataset.cap, approved: row.dataset.approved === 'true', revision: row.dataset.revision || null
+    }))`,
+    );
+  const applyReview = async (request: z.infer<typeof JobDeploymentRequestSchema>) => {
+    const index = deploymentCalls.length;
+    const digest = await displayedDigest();
+    await nativeClick(browser, applyButton);
+    await waitFor(() => deploymentCalls.length === index + 1, 10_000, 20);
+    assert.equal(deploymentCalls[index]!.action, "/api/actions/engine.jobs.applyDeployment");
+    const approval = JobDeploymentApplyArgsSchema.parse(JSON.parse(deploymentCalls[index]!.body!));
+    assert.deepEqual(
+      approval,
+      { request, reviewDigest: digest },
+      "apply widened the reviewed scope or changed its digest",
+    );
+    return approval;
+  };
+  // Bootstrap installation has no promoted resource bindings. Offline transport cannot
+  // turn that absence into approval of future native resources.
+  await setConnected(false);
+  const missingRequest = await reviewDraft(false);
+  const refusedTarget = `${reviewedRenderer} [data-machine=${JSON.stringify(runtime.machineId)}][data-approvable="false"]`;
+  assert(
+    await browser.evaluate<boolean>(
+      `document.querySelector(${JSON.stringify(refusedTarget)})?.querySelector('[data-reason="resource_evidence_unknown"]') != null`,
+    ),
+    "missing native resource evidence did not refuse the actual reviewed destination",
+  );
+  assert(
+    !(await listDeployments()).deployments.some(
+      (row) => row.deploymentId === missingRequest.deploymentId,
+    ),
+  );
+  assert.deepEqual((await describe()).consents, before.consents);
+  await nativePreparationHierarchy(browser, "native-missing-resource-review");
+  await setConnected(true);
+  const reviewRequest = await reviewDraft();
+  assert.equal(reviewRequest.pluginId, PLUGIN);
+  assert.deepEqual(reviewRequest.targets, [{ machineId: runtime.machineId, platform: target }]);
+  assert.deepEqual(
+    reviewRequest.operationIds,
+    [],
+    "install-only review requested execution consent",
+  );
+  const reviewedText = await browser.evaluate<string>(
+    `document.querySelector(${JSON.stringify(reviewedRenderer)}).textContent`,
+  );
+  for (const value of [
+    reviewRequest.deploymentId,
+    runtime.machineId,
+    target,
+    runtime.artifactSha256,
+  ])
+    assert(
+      reviewedText.includes(value),
+      `native review omitted exact destination evidence ${value}`,
+    );
+  const afterReview = await describe();
+  assert.deepEqual(
+    afterReview.installation,
+    before.installation,
+    "review changed the installation",
+  );
+  assert.deepEqual(afterReview.consents, before.consents, "review changed consent");
+  const reviewedDeployments = JobDeploymentListResultSchema.parse(
+    await ownerAction(hub, "engine.jobs.listDeployments", { pluginId: PLUGIN, limit: 100 }),
+  );
+  assert(
+    !reviewedDeployments.deployments.some((row) => row.deploymentId === reviewRequest.deploymentId),
+    "review saved approval without the separate apply gesture",
+  );
+  assert.deepEqual(runtime.starts(), [], "review started an operation");
+  await nativePreparationHierarchy(browser, "native-machine-review");
   await nativeScreenshot(
     browser,
-    `${nativeRuntime} [data-action="engine.jobs.install"]`,
+    `${reviewedRenderer} .plugin-manager-runtime-review-heading`,
     "native-machine-install",
   );
-  await nativeClick(browser, `${nativeRuntime} [data-action="engine.jobs.install"]`);
+  const approval = await applyReview(reviewRequest);
+  assert(
+    reviewedText.includes(approval.reviewDigest),
+    "apply used a digest not inspectable in review",
+  );
+  const saved = await waitFor(
+    async () => {
+      const result = JobDeploymentListResultSchema.parse(
+        await ownerAction(hub, "engine.jobs.listDeployments", { pluginId: PLUGIN, limit: 100 }),
+      );
+      return (
+        result.deployments.find((row) => row.deploymentId === reviewRequest.deploymentId) ?? false
+      );
+    },
+    10_000,
+    20,
+  );
+  assert.equal(saved.pluginId, PLUGIN);
+  assert.deepEqual(saved.review.request, reviewRequest);
+  assert.equal(saved.review.reviewDigest, approval.reviewDigest);
+  assert(saved.review.approvable);
+  assert.equal(saved.review.targets.length, 1);
+  const reviewedTarget = saved.review.targets[0]!;
+  assert.equal(reviewedTarget.machineId, runtime.machineId);
+  assert.equal(reviewedTarget.platform, target);
+  assert.equal(reviewedTarget.artifactSha256, runtime.artifactSha256);
+  assert.equal(reviewedTarget.expectedInstallationRevision, before.installation?.revision);
+  assert.deepEqual(reviewedTarget.consents, [], "install-only approval granted native rights");
+  // The bootstrap fixture has no resource pins; this approval must replace it with reviewed pins.
+  assert.notEqual(reviewedTarget.installationRevision, before.installation?.revision);
+  for (const value of [
+    saved.review.declarationSha256,
+    reviewedTarget.installationRevision,
+    ...reviewedTarget.resources.map((resource) => resource.sha256),
+  ]) {
+    assert(value, "approvable native review omitted a declaration, installation or resource pin");
+    assert(reviewedText.includes(value), `native review omitted approved pin ${value}`);
+  }
   const installed = await waitFor(
     async () => {
       const observed = await describe();
@@ -277,7 +617,7 @@ async function nativeProof(
         installation?.ready &&
         installation.enabled &&
         !installation.purgeRequested &&
-        installation.revision !== before.installation?.revision
+        installation.revision === reviewedTarget.installationRevision
         ? observed
         : false;
     },
@@ -287,6 +627,31 @@ async function nativeProof(
   const installation = installed.installation;
   assert(installation);
   assert.equal(installation.artifactSha256, runtime.artifactSha256);
+  assert.deepEqual(installation.resourceBindings ?? null, reviewedTarget.resourceBindings);
+  const deployment = await waitFor(
+    async () => {
+      const observed = JobDeploymentSchema.parse(
+        await ownerAction(hub, "engine.jobs.readDeployment", { deploymentId: saved.deploymentId }),
+      );
+      return observed.targets.length === 1 &&
+        observed.targets[0]?.machineId === runtime.machineId &&
+        observed.targets[0].connected &&
+        observed.targets[0].state === "ready"
+        ? observed
+        : false;
+    },
+    20_000,
+    20,
+  );
+  const savedRenderer = `${nativeRuntime} [data-deployment=${JSON.stringify(deployment.deploymentId)}]`;
+  await nativeClick(browser, `${savedRenderer} [data-action="engine.jobs.readDeployment"]`);
+  await waitFor(
+    () => nativeDeploymentReady(browser, deployment.deploymentId, runtime.machineId),
+    5000,
+    20,
+  );
+  await nativePreparationHierarchy(browser, "native-saved-deployment", savedRenderer);
+  assert.deepEqual(runtime.starts(), [], "install-only preparation started an operation");
   const operationNode = formatManifoldUri({
     kind: "operation",
     machineId: runtime.machineId,
@@ -305,6 +670,52 @@ async function nativeProof(
   ] as const;
   assert(!installed.consents.some((row) => row.enabled), "reinstallation inherited stale consent");
   await nativeClick(browser, `${nativeRuntime} [data-action="engine.jobs.describe"]`);
+  const approveRun = `${nativeRuntime} button[aria-label=${JSON.stringify(`Approve machines:run on ${operationNode}`)}]`;
+  await waitFor(
+    () =>
+      browser.evaluate<boolean>(`(() => {
+      const button = document.querySelector(${JSON.stringify(approveRun)});
+      return button instanceof HTMLButtonElement && !button.matches(':disabled');
+    })()`),
+    5000,
+    20,
+  );
+  const retainedDescription = JobDeploymentDescriptionSchema.parse(
+    await ownerAction(hub, "engine.jobs.describeDeployment", {
+      machineId: runtime.machineId,
+      pluginId: PLUGIN,
+    }),
+  );
+  assert.deepEqual(retainedDescription.installation, {
+    revision: installation.revision,
+    artifactSha256: installation.artifactSha256,
+    machine: deployment.review.machine,
+  });
+  assert.equal(retainedDescription.deployment?.deploymentId, deployment.deploymentId);
+  assert.equal(retainedDescription.deployment?.state, "ready");
+  const retainedDeclaration = await waitFor(
+    () =>
+      browser.evaluate<string | false>(`(() => {
+      for (const pre of document.querySelectorAll(${JSON.stringify(`${nativeRuntime} details pre`)})) {
+        const value = JSON.parse(pre.textContent);
+        if (!value.machine || !Object.hasOwn(value, 'resourceBindings')) continue;
+        const details = pre.closest('details');
+        if (!details.open) details.querySelector('summary').click();
+        return pre.textContent;
+      }
+      return false;
+    })()`),
+    5000,
+    20,
+  );
+  assert.deepEqual(
+    JSON.parse(retainedDeclaration),
+    {
+      machine: deployment.review.machine,
+      resourceBindings: installation.resourceBindings ?? null,
+    },
+    "machine inspector did not retain the approved declaration and resource pins",
+  );
   const run = `${nativeRuntime} button[data-action="engine.jobs.execute"][data-operation="${OPERATION}"]`;
   await waitFor(
     () =>
@@ -314,24 +725,267 @@ async function nativeProof(
     5000,
     20,
   );
-  for (const right of rights) {
-    await nativeClick(
+  // Review exactly one operation while offline: a saved pending deployment is not
+  // installation acknowledgement, a consent grant, or a queued execution.
+  await setConnected(false);
+  await nativeClick(browser, `${nativeRuntime} input[data-operation=${JSON.stringify(OPERATION)}]`);
+  const offlineBefore = await describe();
+  const pendingRequest = await reviewDraft();
+  assert.deepEqual(pendingRequest.operationIds, [OPERATION]);
+  assert.deepEqual(pendingRequest.targets, reviewRequest.targets);
+  const pendingRights = await displayedRights();
+  await applyReview(pendingRequest);
+  const pendingDeployment = await waitFor(
+    async () => {
+      const row = (await listDeployments()).deployments.find(
+        (row) => row.deploymentId === pendingRequest.deploymentId,
+      );
+      return row?.targets[0]?.state === "pending" ? row : false;
+    },
+    10_000,
+    20,
+  );
+  assert.equal(pendingDeployment.targets[0]!.reason, "owner_offline");
+  assert.equal(pendingDeployment.targets[0]!.connected, false);
+  assert.deepEqual(
+    pendingDeployment.review.targets[0]!.consents,
+    pendingRights,
+    "offline saved approval changed the displayed permission revisions",
+  );
+  assert.deepEqual(
+    (await describe()).consents,
+    offlineBefore.consents,
+    "offline approval granted consent",
+  );
+  await nativeDeploymentState(
+    browser,
+    pendingRequest.deploymentId,
+    runtime.machineId,
+    "pending",
+    "owner_offline",
+  );
+  const pendingRenderer = `${nativeRuntime} [data-deployment=${JSON.stringify(pendingRequest.deploymentId)}]`;
+  await nativePreparationHierarchy(browser, "native-offline-pending-deployment", pendingRenderer);
+  const callsBeforeReconnect = deploymentCalls.length;
+  await runtime.consent("machines:run", false);
+  const fencedConsents = (await describe()).consents;
+  const needsReview = await waitFor(
+    async () => {
+      const row = await readDeployment(pendingRequest.deploymentId);
+      return row.targets[0]?.state === "needs_review" ? row : false;
+    },
+    10_000,
+    20,
+  );
+  await setConnected(true);
+  for (let refresh = 0; refresh < 2; refresh++) {
+    await nativeClick(browser, `${pendingRenderer} [data-action="engine.jobs.readDeployment"]`);
+    await nativeDeploymentState(
       browser,
-      `${nativeRuntime} button[aria-label=${JSON.stringify(`Approve ${right.cap} on ${right.node}`)}]`,
+      pendingRequest.deploymentId,
+      runtime.machineId,
+      "needs_review",
+      needsReview.targets[0]!.reason!,
     );
-    await waitFor(
-      async () =>
-        (await describe()).consents.some(
-          (row) => row.node === right.node && row.cap === right.cap && row.enabled,
-        ),
-      5000,
-      20,
+    assert.equal(
+      (await readDeployment(pendingRequest.deploymentId)).targets[0]!.state,
+      "needs_review",
     );
+    assert.deepEqual(
+      (await describe()).consents,
+      fencedConsents,
+      "reconnect or refresh repaired fenced consent",
+    );
+  }
+  assert.equal(
+    deploymentCalls.length,
+    callsBeforeReconnect,
+    "refused evidence triggered an implicit review/apply retry",
+  );
+  await nativePreparationHierarchy(browser, "native-needs-review-deployment", pendingRenderer);
+  assert.deepEqual(runtime.starts(), [], "pending preparation started an operation");
+
+  const staleRequest = await reviewDraft();
+  assert.deepEqual(staleRequest.operationIds, [OPERATION]);
+  const staleDigest = await displayedDigest();
+  const staleRights = await displayedRights();
+  const expectedRights = [...rights, { node: operationNode, cap: "operations:invoke" }].sort(
+    (a, b) => a.node.localeCompare(b.node) || a.cap.localeCompare(b.cap),
+  );
+  assert.deepEqual(
+    staleRights.map(({ node, cap }) => ({ node, cap })),
+    expectedRights,
+  );
+  assert.equal(deployment.review.machine.operations[OPERATION]!.network, "none");
+  assert(
+    !staleRights.some((right) => right.cap === "network:host"),
+    "network:none requested host networking",
+  );
+  assert(
+    !staleRights.some((right) => right.cap === "jobs:input"),
+    "closed stdin requested input permission",
+  );
+  await nativePreparationHierarchy(browser, "native-exact-operation-review");
+  await runtime.consent("machines:run", false);
+  const changedEvidence = await describe();
+  const changedRun = changedEvidence.consents.find(
+    (row) => row.node === operationNode && row.cap === "machines:run",
+  );
+  assert(changedRun && !changedRun.enabled);
+  assert.notEqual(
+    changedRun.revision,
+    staleRights.find((row) => row.cap === "machines:run")!.revision,
+  );
+  const beforeStaleApply = await listDeployments();
+  await applyReview(staleRequest);
+  await waitFor(
+    () =>
+      browser.evaluate<boolean>(
+        `document.querySelector(${JSON.stringify(`${nativeRuntime} .plugin-manager-runtime-preparation > [role="alert"]`)}) !== null`,
+      ),
+    10_000,
+    20,
+  );
+  assert.deepEqual(
+    await listDeployments(),
+    beforeStaleApply,
+    "stale apply saved or altered deployment approval",
+  );
+  const afterStaleApply = await describe();
+  assert.deepEqual(
+    afterStaleApply.installation,
+    changedEvidence.installation,
+    "stale apply changed installation",
+  );
+  assert.deepEqual(
+    afterStaleApply.consents,
+    changedEvidence.consents,
+    "stale apply changed consent",
+  );
+  assert.deepEqual(
+    await browser.evaluate<string[]>(
+      `[...document.querySelectorAll(${JSON.stringify(`${nativeRuntime} input[data-machine]:checked`)})].map(input => input.dataset.machine)`,
+    ),
+    [runtime.machineId],
+    "stale apply lost the destination draft",
+  );
+  assert.equal(
+    await browser.evaluate<string>(
+      `document.querySelector(${JSON.stringify(`${nativeRuntime} select[data-machine=${JSON.stringify(runtime.machineId)}]`)}).value`,
+    ),
+    target,
+    "stale apply lost the typed platform selection",
+  );
+  assert.deepEqual(
+    await browser.evaluate<string[]>(
+      `[...document.querySelectorAll(${JSON.stringify(`${nativeRuntime} input[data-operation]:checked`)})].map(input => input.dataset.operation)`,
+    ),
+    [OPERATION],
+    "stale apply lost or widened the operation draft",
+  );
+  assert(
+    await browser.evaluate<boolean>(
+      `document.querySelector(${JSON.stringify(applyButton)}).disabled`,
+    ),
+  );
+  await nativePreparationHierarchy(browser, "native-stale-review-preserved");
+  const freshRequest = await reviewDraft();
+  assert.deepEqual(freshRequest.targets, staleRequest.targets);
+  assert.deepEqual(freshRequest.operationIds, staleRequest.operationIds);
+  const freshDigest = await displayedDigest();
+  assert.notEqual(freshDigest, staleDigest, "rereview reused a stale digest");
+  const freshRights = await displayedRights();
+  assert.deepEqual(
+    freshRights.map(({ node, cap }) => ({ node, cap })),
+    expectedRights,
+  );
+  assert.equal(
+    freshRights.find((row) => row.cap === "machines:run")!.revision,
+    changedRun.revision,
+    "rereview did not pin the changed native consent revision",
+  );
+  await nativeClick(browser, `${reviewedRenderer} [data-machine] details:not([open]) summary`);
+  await nativePreparationHierarchy(
+    browser,
+    "native-rereview-current-pins",
+    reviewedRenderer,
+    "[data-machine] details[open]",
+  );
+  await applyReview(freshRequest);
+  const operationDeployment = await waitFor(
+    async () => {
+      const row = (await listDeployments()).deployments.find(
+        (row) => row.deploymentId === freshRequest.deploymentId,
+      );
+      return row?.targets[0]?.state === "ready" ? row : false;
+    },
+    20_000,
+    20,
+  );
+  assert.deepEqual(operationDeployment.review.request, freshRequest);
+  assert.equal(operationDeployment.review.reviewDigest, freshDigest);
+  assert.deepEqual(
+    operationDeployment.review.targets[0]!.consents,
+    freshRights,
+    "saved operation approval changed the reviewed rights or revisions",
+  );
+  assert.equal(
+    operationDeployment.review.targets[0]!.expectedInstallationRevision,
+    installation.revision,
+  );
+  assert.equal(operationDeployment.review.targets[0]!.installationRevision, installation.revision);
+  const scoped = await describe();
+  assert.deepEqual(
+    scoped.consents
+      .filter((row) => row.enabled)
+      .map(({ node, cap }) => ({ node, cap }))
+      .sort((a, b) => a.node.localeCompare(b.node) || a.cap.localeCompare(b.cap)),
+    expectedRights,
+    "operation approval granted anything beyond the exact expanded permissions",
+  );
+  assert.equal(scoped.installation?.revision, installation.revision);
+  assert.equal(scoped.installation?.artifactSha256, installation.artifactSha256);
+  for (const right of freshRights) {
+    const consent = scoped.consents.find((row) => row.node === right.node && row.cap === right.cap);
+    assert(consent?.enabled, `reviewed permission not applied: ${right.cap} on ${right.node}`);
+    if (right.approved)
+      assert.equal(consent.revision, right.revision, "current consent was needlessly replaced");
+    else
+      assert.notEqual(
+        consent.revision,
+        right.revision,
+        "new approval retained the old consent revision",
+      );
+  }
+  await nativeDeploymentState(browser, freshRequest.deploymentId, runtime.machineId, "ready", "");
+  await nativePreparationHierarchy(
+    browser,
+    "native-exact-operation-prepared",
+    `${nativeRuntime} [data-deployment=${JSON.stringify(freshRequest.deploymentId)}]`,
+  );
+  assert.deepEqual(
+    runtime.starts(),
+    [],
+    "operation consent approval executed without a run gesture",
+  );
+  assert.deepEqual(executionCalls, [], "deployment review/apply submitted an execution");
+  const preparedJournal = new Database(join(hub.dataDir, "manifold.db"), { readonly: true });
+  try {
+    assert.deepEqual(
+      preparedJournal
+        .query<{ job_id: string }, []>("SELECT job_id FROM machine_jobs ORDER BY job_id")
+        .all(),
+      initialJobs,
+      "deployment preparation persisted a job without an execution gesture",
+    );
+  } finally {
+    preparedJournal.close();
   }
   const approved = await describe();
   const requester = await browser.evaluate<string>(
     "JSON.parse(localStorage.getItem('manifold.identity')).principal.id",
   );
+  assert.equal(deployment.approvedBy, requester, "saved approval lost the browser operator");
   const jobs: z.infer<typeof PublicJobSchema>[] = [];
   for (const label of nativeStarts) {
     const input = `${nativeRuntime} input[aria-label="${OPERATION} label"]`;
@@ -476,6 +1130,26 @@ async function nativeProof(
   const pageUrl = await browser.evaluate<string>("location.href");
   await browser.goto(pageUrl);
   await openNativeHistory(browser, runtime.machineId);
+  await nativeClick(browser, `${nativeRuntime} [data-action="engine.jobs.listDeployments"]`);
+  await nativeSelectControl(
+    browser,
+    `${nativeRuntime} .plugin-manager-runtime-history select`,
+    deployment.deploymentId,
+  );
+  await waitFor(
+    () => nativeDeploymentReady(browser, deployment.deploymentId, runtime.machineId),
+    5000,
+    20,
+  );
+  const recoveredDeployment = JobDeploymentSchema.parse(
+    await ownerAction(hub, "engine.jobs.readDeployment", { deploymentId: deployment.deploymentId }),
+  );
+  assert.deepEqual(
+    recoveredDeployment.review,
+    deployment.review,
+    "reload lost the saved reviewed scope",
+  );
+  await nativePreparationHierarchy(browser, "native-recovered-deployment", savedRenderer);
   await waitFor(() => historyContains(browser, jobs), 5000, 20);
   const retained = jobs[0]!;
   await nativeSelect(browser, "Operation run", retained.jobId);
@@ -490,7 +1164,6 @@ async function nativeProof(
   );
   await nativeScreenshot(browser, statusSelector, "native-recovered-history");
   await nativeScreenshot(observer, '[aria-label="Operation run history"]', "native-shared-history");
-  await nativeSelect(browser, "Declared artifact target", target);
   await nativeClick(
     browser,
     `${nativeRuntime} button[aria-label=${JSON.stringify(`Revoke jobs:read on ${operationNode}`)}]`,
@@ -512,9 +1185,24 @@ async function nativeProof(
   await waitFor(() => historyContains(browser, jobs), 5000, 20);
   assert.deepEqual(runtime.starts(), nativeStarts, "native controls started unexpected executions");
   console.log(
-    "PASS native Plugins UI: proved target, exact installation, explicit consent, declared input, persisted result/authority, cancellation, reload recovery, shared history, consent invalidation",
+    "PASS native Plugins UI: refused missing evidence, install-only approval, offline pending deployment, durable needs-review, stale apply saved nothing and retained draft, fresh exact-operation consent revisions without execution, retained declaration, persisted result/authority, cancellation, reload recovery, shared history",
   );
-  return { target, installation, jobs };
+  return {
+    target,
+    installation,
+    deployment,
+    operationDeployment,
+    pendingDeployment,
+    needsReview,
+    missingRequest,
+    staleRequest,
+    freshRequest,
+    staleDigest,
+    freshDigest,
+    staleRights,
+    freshRights,
+    jobs,
+  };
 }
 
 function delegatedRoot(): string {
@@ -647,6 +1335,7 @@ async function main() {
     // An online machine transport without a job owner is explicitly NOT a supported backend.
     agent = await runtime.startAgent();
     assert.equal((await describe()).connected, false);
+    const unsupportedDeployment = await nativeUnprovedDeployment(browser, hub, runtime.machineId);
     assert.equal((await browserJob(browser, "unsupported")).state, "queued");
     await click(browser, "Cancel job");
     await waitFor(async () => (await status("unsupported")).state === "cancelled", 5000, 20);
@@ -678,7 +1367,25 @@ async function main() {
     );
     await observer.goto(`${hub.httpUrl}/p/${container.id}`);
     await openNativeHistory(observer, runtime.machineId);
-    const native = await nativeProof(browser, observer, hub, runtime);
+    const native = await nativeProof(browser, observer, hub, runtime, async (connected) => {
+      if (connected) {
+        assert.equal(agent, undefined, "native reconnect already has a transport");
+        agent = await runtime.startAgent();
+        await waitFor(
+          async () => {
+            const state = await describe();
+            return state.connected && state.installation?.ready;
+          },
+          20_000,
+          20,
+        );
+      } else {
+        assert(agent, "native disconnect has no transport");
+        await agent.stop();
+        agent = undefined;
+        await waitFor(async () => !(await describe()).connected, 10_000, 20);
+      }
+    });
     await browser.goto(`${origin}/p/${container.id}`);
     await waitFor(
       () => browser.evaluate<boolean>("document.body.innerText.includes('Runtime proof ')"),
@@ -1029,7 +1736,7 @@ async function main() {
               exitCode: result.exitCode,
               pty: false,
             },
-            native,
+            native: { ...native, unsupportedDeployment },
             continuous,
             recovery: recovered,
             frameJournalRows: 0,

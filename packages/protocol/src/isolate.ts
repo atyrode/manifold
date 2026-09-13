@@ -7,6 +7,7 @@ import {
   PluginEntrySchema,
   PluginIdSchema,
   PluginManifestSchema,
+  PluginDataVersionSchema,
   type ActionDenialRule,
 } from "./plugin.ts";
 import { PrincipalSchema } from "./principal.ts";
@@ -369,6 +370,7 @@ export const ISOLATE_CTX_METHODS = [
   "streams.publish",
   "streams.close",
   "jobs.describe",
+  "jobs.describeDeployment",
   "jobs.execute",
   "jobs.status",
   "jobs.listRuns",
@@ -397,6 +399,36 @@ export type IsolateCtxMethod = (typeof ISOLATE_CTX_METHODS)[number];
 export const ISOLATE_HOOKS = ["onEnable", "onDisable", "onAssemblyChanged"] as const;
 export const IsolateHookSchema = z.enum(ISOLATE_HOOKS);
 export type IsolateHook = (typeof ISOLATE_HOOKS)[number];
+
+/** Named guest transformations: only metadata crosses the handshake, never callbacks. */
+export const MAX_ISOLATE_MIGRATIONS = 128;
+export const ISOLATE_MIGRATION_DEADLINE_MS = 10_000;
+export const MAX_MIGRATION_STORAGE_OPERATIONS = 65_536;
+export const IsolateMigrationSchema = z.strictObject({
+  // Strict end of input: `$` alone would also accept a trailing line terminator.
+  name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(?![\s\S])/),
+  to: PluginDataVersionSchema,
+});
+export const IsolateMigrationsSchema = IsolateMigrationSchema.array()
+  .max(MAX_ISOLATE_MIGRATIONS)
+  .refine((migrations) => new Set(migrations.map(({ name }) => name)).size === migrations.length, {
+    message: "duplicate migration name",
+  });
+export const GuestMigrationDeclarationsSchema = z
+  .strictObject({
+    dataVersion: PluginDataVersionSchema.optional(),
+    migrations: IsolateMigrationsSchema,
+  })
+  .refine(
+    ({ dataVersion, migrations }) =>
+      migrations.every(
+        ({ to }) =>
+          dataVersion !== undefined &&
+          (to.major < dataVersion.major ||
+            (to.major === dataVersion.major && to.minor <= dataVersion.minor)),
+      ),
+    { message: "migration target requires a dataVersion at or above its target" },
+  );
 
 /**
  * The two rungs a CHILD may answer: it parses arguments against the action's own zod input
@@ -477,6 +509,11 @@ export const IsolateHostFrameSchema = z.discriminatedUnion("t", [
     delta: AssemblyDeltaSchema.optional(),
   }),
   z.strictObject({
+    t: z.literal("migrate"),
+    id: frameId,
+    migration: IsolateMigrationSchema,
+  }),
+  z.strictObject({
     t: z.literal("job_update"),
     id: frameId,
     delivery: z.number().int().positive(),
@@ -510,6 +547,7 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
       onDisable: z.boolean(),
       onAssemblyChanged: z.boolean(),
     }),
+    migrations: IsolateMigrationsSchema.optional(),
   }),
   z.strictObject({ t: z.literal("load_failed"), error: errorText }),
   z.strictObject({
@@ -541,6 +579,15 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
     id: frameId,
     ok: z.boolean(),
     error: errorText.optional(),
+  }),
+  z.strictObject({
+    t: z.literal("migrated"),
+    id: frameId,
+    name: IsolateMigrationSchema.shape.name,
+    outcome: z.discriminatedUnion("ok", [
+      z.strictObject({ ok: z.literal(true) }),
+      z.strictObject({ ok: z.literal(false), error: errorText }),
+    ]),
   }),
   z.strictObject({
     t: z.literal("call"),
@@ -778,6 +825,10 @@ export function isolateVocabulary(): Record<string, unknown> {
     hostMethods: WEB_HOST_METHODS,
     crashBudget: ISOLATE_CRASH_BUDGET,
     dispatchDeadlineMs: ISOLATE_DISPATCH_DEADLINE_MS,
+    migrationDeadlineMs: ISOLATE_MIGRATION_DEADLINE_MS,
+    maxMigrations: MAX_ISOLATE_MIGRATIONS,
+    maxMigrationStorageOperations: MAX_MIGRATION_STORAGE_OPERATIONS,
+    migration: z.toJSONSchema(IsolateMigrationSchema),
     idleEvictMs: ISOLATE_IDLE_EVICT_MS,
     maxArtifactBytes: ISOLATE_MAX_ARTIFACT_BYTES,
     bundleFormat: PLUGIN_BUNDLE_FORMAT,
