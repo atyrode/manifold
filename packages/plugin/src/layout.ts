@@ -2,15 +2,17 @@ import {
   MAX_PANEL_SECTIONS,
   ROOT_TILE_ID,
   sectionArrangementIds,
+  validPanelArg,
   validSectionArrangement,
+  type PanelArg,
   type SectionNode,
   type Structure,
   type Tile,
   type TileLayout,
 } from "@manifold/protocol";
-import { withoutTileStructure } from "@manifold/scene";
+import { tileParentId, withTileLeaf, withoutTileStructure } from "@manifold/scene";
 import type { TileAim } from "./tile-geometry.ts";
-import { releasedTileLayout } from "./tile-release.ts";
+import { releasedTileLayout, withPanelLeafState } from "./tile-release.ts";
 
 /**
  * ── The section arrangement policy ───────────────────────────────────────────────────
@@ -324,4 +326,99 @@ export function withPanelSections(
   });
   const next: Tile = arrangement.length === 0 ? rest : { ...rest, sections: copied };
   return { ...layout, [leaf.id]: next };
+}
+
+/**
+ * ── OPENING A PANEL WITH AN ARGUMENT ─────────────────────────────────────────────────
+ *
+ * The tree `host.openPanel` means (issue #516), as a pure function: one more seat for a
+ * panel of the caller's own plugin, holding the argument it is being opened for — or the
+ * seat that already shows exactly that, because a reader who asks twice for one record
+ * wants the tile they already have rather than a second copy of it.
+ *
+ * WHY HERE. It is tile-tree arithmetic over protocol types, with no DOM, no authority and
+ * no notion of who asked — the same shape `releasedTileLayout` has, and for the same
+ * reason: the browser host that commits it (`plugin-host.tsx`) decides WHETHER a caller may
+ * ask, and this decides WHAT the tree then looks like. It commits through the one door a
+ * workspace tree has ever been written by (`core.space.setLayout`, via
+ * {@link TileGeometryHandle}'s `applyLayout`), so authority and tracing are exactly a
+ * grip release's.
+ */
+
+/** What an opening produced: the tree to commit, and the tile that shows the panel. */
+export interface PanelOpening {
+  /** The tree to commit. The INPUT tree, unchanged, when a seat already answered. */
+  readonly layout: TileLayout;
+  /** The tile showing that panel with that argument — the new one, or the one already there. */
+  readonly tileId: string;
+  /** False when an existing seat answered: there is nothing to commit, only a tile to reveal. */
+  readonly placed: boolean;
+}
+
+/**
+ * Whether two panel arguments name the SAME thing. A deep comparison rather than a string
+ * one, because key order is an artifact of how a caller built the record and not part of
+ * what it names — `{ kind, id }` and `{ id, kind }` are one subject, and a reader must not
+ * get a second tile for having spelled the same argument in the other order.
+ *
+ * Total over the values a panel argument may hold, which {@link validPanelArg} has already
+ * narrowed to JSON data.
+ */
+function sameArg(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((member, index) => sameArg(member, b[index]));
+  }
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every(
+    (key) =>
+      Object.hasOwn(b, key) &&
+      sameArg((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]),
+  );
+}
+
+/** The leaf showing `panelId` with exactly `arg`, in key order; null when none does. */
+function argLeaf(layout: TileLayout, panelId: string, arg: PanelArg | undefined): Tile | null {
+  for (const tile of Object.values(layout)) {
+    if (tile.ref === null || tile.ref.kind !== "panel" || tile.ref.panelId !== panelId) continue;
+    if (
+      arg === undefined ? tile.arg === undefined : tile.arg !== undefined && sameArg(tile.arg, arg)
+    ) {
+      return tile;
+    }
+  }
+  return null;
+}
+
+/**
+ * THE COMMIT SHAPE for one opening, or null when the tree refuses it: `besideTileId` names
+ * no tile, or the argument is not something a leaf may carry ({@link validPanelArg} — the
+ * rule `validateTileLayout` would refuse the write by, refused before it reaches the wire).
+ *
+ * WHERE IT LANDS: after the caller's own seat, along the axis its parent already splits on
+ * — a row of panels grows one more panel to the right, a column grows one more below, and
+ * only a lone root leaf (which splits on nothing yet) is split into a row. So an opening
+ * joins the arrangement a reader has rather than nesting a split inside it, which is the
+ * same tree a palette drop at that edge would produce (`withTileLeaf`).
+ */
+export function openedPanel(
+  layout: TileLayout,
+  panelId: string,
+  arg: PanelArg | undefined,
+  besideTileId: string,
+): PanelOpening | null {
+  if (arg !== undefined && !validPanelArg(arg)) return null;
+  if (layout[besideTileId] === undefined) return null;
+  const shown = argLeaf(layout, panelId, arg);
+  if (shown !== null) return { layout, tileId: shown.id, placed: false };
+  const parent = tileParentId(layout, besideTileId);
+  const edge = layout[parent ?? ""]?.dir === "column" ? "bottom" : "right";
+  const inserted = withTileLeaf(layout, { kind: "panel", panelId }, besideTileId, edge);
+  if (inserted === null) return null;
+  if (arg === undefined) return { layout: inserted.layout, tileId: inserted.tileId, placed: true };
+  const seated = withPanelLeafState(inserted.layout, inserted.tileId, { arg });
+  return seated === null ? null : { layout: seated, tileId: inserted.tileId, placed: true };
 }

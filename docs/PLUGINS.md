@@ -229,6 +229,7 @@ export const manifest: PluginManifest = {
   capabilities: ["scenes:write"], // the union of everything this plugin's actions may need
   // essential: true,              // optional; seven shipped seats claim it
   dataVersion: { major: 1, minor: 0 }, // the shape of the data you store
+  // database: { maxBytes: 268435456 }, // optional; ask for your own SQLite file (§4)
   dependencies: {
     "core.canvas": {
       type: "required",
@@ -348,6 +349,9 @@ Rules worth knowing before you write one:
 - **`dataVersion` governs your stored rows** (§4). Bump `minor` freely; bumping `major` without a
   migration refuses to assemble your plugin, and data written by a newer `major` than your code
   refuses too — the engine never guesses at your schema.
+- **`database` asks for tables of your own** (§4). Absent ≡ no file and no `ctx.database`;
+  declaring it opens `<data>/plugins/<your.id>/data.db` on first use, and `maxBytes` is a request
+  the engine grants up to its 4 GiB ceiling.
 - **`links` says where you come from**: `repository`, `homepage` and `changelog`, each an
   `https://` URL, all optional. The plugin manager shows `repository`; the update flow (#238)
   reads `changelog` to say what a newer version changes. Absent ≡ you said nothing.
@@ -852,15 +856,27 @@ export const serverDef = {
 };
 ```
 
-A migration is **all-or-nothing on one condition: it awaits nothing but its storage handle.** Every
-storage call settles before it returns, so a chain of awaited storage calls runs to completion in one
-turn of the event loop and no dispatch — which arrives as I/O — can interleave with half a
-conversion. A migration that awaits a timer, a file or the network opens exactly that window, and
-must not. They run at boot for enabled plugins (awaited before the server binds its socket) and at
-the enablement door for a plugin being switched on — never for a disabled one, whose data is
-retained untouched and re-judged when someone turns it back on. Applied names are recorded in the
-ledger, so none ever runs twice. The rules the engine applies, adopted from Home Assistant's
-asymmetry:
+A migration receives only its plugin's bounded storage handle. The engine first refuses new
+dispatches for that plugin and drains admitted old calls; other plugins keep serving. It snapshots
+at most 4,096 rows and 16 MiB into a private draft, then runs at most 128 uniquely named migration
+callbacks, 65,536 storage operations and ten seconds for the chain. A hardened guest receives only
+the migration name and target version; its callback executes in the guest while storage calls use
+the same correlated proxy as ordinary plugin storage. No auth, services, jobs, terminal, lifecycle
+emission or another plugin's storage rides that request.
+
+The ten-second deadline can kill a hardened guest. An in-realm migration is trusted code in the
+server process: JavaScript cannot preempt a synchronous CPU loop, so its deadline bounds awaited
+work but cannot interrupt a callback that never yields. Install such code only under the same
+in-process trust decision as its ordinary server half.
+
+The transformed rows, applied-name ledger, declared version, install row and element claims publish
+in one synchronous native transaction after the callbacks finish. A throw, timeout, child crash,
+malformed or cross-call reply, late storage use, or conflicting writer publishes none of them and
+does not replace the old serving runtime. They run at boot for enabled plugins (awaited before the
+server binds its socket) and at replacement or enablement for the affected plugin — never for a
+disabled one, whose data is retained untouched and re-judged when someone turns it back on. Applied
+names are recorded in the ledger, so none ever runs twice. The rules the engine applies, adopted
+from Home Assistant's asymmetry:
 
 | Stored vs. manifest `dataVersion` | Outcome                                            |
 | --------------------------------- | -------------------------------------------------- |
@@ -872,6 +888,129 @@ asymmetry:
 
 A refusal here is per plugin and named on the roster; it never takes the workspace down, and it never
 stops the server booting because of a plugin that is switched off.
+
+### Your tables: `ctx.database`
+
+`ctx.storage` is where a plugin keeps **keys**. `ctx.database` is where it keeps **rows** — one
+SQLite file of your own, opened and owned by the engine at `<data>/plugins/<your.id>/data.db`, for
+plugins whose data is a graph read by query rather than a setting read by name. You get it by
+asking for it in the manifest, and only then:
+
+```jsonc
+// manifest.json
+"database": { "maxBytes": 268435456 } // optional request; default 256 MiB, ceiling 4 GiB
+```
+
+A plugin that declares nothing has no `ctx.database` at all — the member is **absent**, not empty,
+and an isolated one that reaches for it anyway is refused `slice_unavailable`. This is the same
+rule on both sides of the boundary, and it is why the file exists only for plugins that asked.
+
+```ts
+type SqlParam = string | number | bigint | boolean | null | Uint8Array;
+interface PluginDatabase {
+  readonly pluginId: string;
+  query<Row>(sql: string, params?: readonly SqlParam[]): Promise<readonly Row[]>; // SELECT and RETURNING; [] otherwise
+  run(
+    sql: string,
+    params?: readonly SqlParam[],
+  ): Promise<{ changes: number; lastInsertRowid: number }>;
+  batch(
+    statements: readonly { sql: string; params?: readonly SqlParam[] }[],
+  ): Promise<readonly (readonly SqlRow[])[]>;
+}
+```
+
+**`batch` IS the transaction, and there is no open handle.** A transaction that spanned your
+`await`s would hold a write lock across dispatch turns in-realm and across RPC round trips
+isolated, and its deadline and rollback would be a second consistency model beside
+`compareAndSet`'s — so the contract does not offer one. `batch` runs `BEGIN IMMEDIATE`, executes
+your statements in order, and commits all of them or none; the results come back one array per
+statement, in order. Read-then-decide-then-write is the same shape it is for storage: read,
+decide, then a `batch` whose first statements are your own guards (`UPDATE … WHERE revision = ?`
+with a `RETURNING`), and read what changed.
+
+```ts
+await ctx.database.run("INSERT INTO records(id, kind) VALUES (?, ?)", [id, "proposal"]);
+const [inserted, counted] = await ctx.database.batch([
+  {
+    sql: "UPDATE records SET kind = ? WHERE id = ? AND kind = ? RETURNING id",
+    params: ["filed", id, "proposal"],
+  },
+  { sql: "SELECT count(*) AS n FROM records WHERE kind = 'filed'" },
+]);
+if (inserted.length === 0) return { refused: "somebody else filed it first" };
+```
+
+**The bounds are numbers, checked by the engine, and every refusal is a rejection** with
+`PluginDatabaseError` — never a throw, exactly as storage rejects, so one `try`/`catch` around an
+`await` is your whole failure path in-realm and isolated alike:
+
+| Bound                    | Value                              |
+| ------------------------ | ---------------------------------- |
+| statement text           | ≤ 64 KiB                           |
+| parameters per statement | ≤ 999 (SQLite's own)               |
+| statements per `batch`   | ≤ 256                              |
+| rows returned per call   | ≤ 10,000 — page past it            |
+| result bytes per call    | ≤ 4 MiB                            |
+| one call's deadline      | 5 s; a `batch` past it rolls back  |
+| the file                 | `database.maxBytes`, ceiling 4 GiB |
+
+`ATTACH`, `DETACH`, `VACUUM`, `PRAGMA` and `load_extension` are refused by inspecting the first
+keyword before anything runs, and the file is opened with `trusted_schema` off. That is a guard
+against reaching outside your own file, not a sandbox. Your file is yours alone: the path comes
+from your manifest id, so two plugins cannot name each other's, and the engine never reads your
+tables for any purpose but purge and count. One caveat worth knowing before you store a blob: a
+hardened plugin's calls cross an ipc boundary that is **JSON**, so a `Uint8Array` parameter is
+in-realm only in practice; encode it if your plugin may be installed hardened.
+
+**Your tables are made by a migration, or lazily by your own code.** `PluginMigration.migrate`
+takes the database as its second parameter, present for exactly the plugins that declared one:
+
+```ts
+migrations: [
+  {
+    name: "2026-09-12-create-records",
+    to: { major: 1, minor: 0 },
+    migrate: async (storage, database) => {
+      await database?.run(
+        "CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, kind TEXT NOT NULL)",
+      );
+      await storage.set("schema", "records");
+    },
+  },
+];
+```
+
+**Write DDL that can run twice.** §4's chain stages your keys, the applied-name ledger and the
+version stamp and publishes them in one transaction — but your file is not `manifold.db`, so its
+statements commit as they run. A chain that throws or times out publishes no ledger entry, which
+means the same migration is planned again on the next boot: `CREATE TABLE IF NOT EXISTS`, and a
+data statement guarded by its own `WHERE`, are what make the second attempt succeed.
+
+**A hardened guest's migration is storage-only.** §4's migration request carries the plugin's
+keys and nothing else — the engine admits `storage.*` calls from a migrating guest and refuses
+everything else — so `database` is `undefined` there and a `database.*` call is answered
+`slice_unavailable`. Make your tables in `onEnable` instead, the way the reference plugin does:
+the lifecycle context carries the slice, `CREATE TABLE IF NOT EXISTS` is idempotent, and it runs
+before your first dispatch either way.
+
+There is no schema DSL, because SQL is the schema DSL. And there is still **one** data version and
+**one** ledger: `dataVersion` and the `$migration:` rows live in your key-value namespace whether
+your data is keys, rows or both, so §4's migration table above governs all of it unchanged.
+
+**Lifecycle follows storage's, to the letter.** A disable retains the file (the engine closes its
+handle; re-enabling opens the same file in place). An uninstall retains it — and refuses
+`storage_retained` naming both your key count and your page count, so a plugin whose data is rows
+can no more be uninstalled in silence than one whose data is keys. A purge closes the handle and
+deletes `data.db` with its `-wal` and `-shm`, and its record says how many bytes went:
+`{ id, removed: { storage, elements, ownership }, databaseBytes }`. The engine's backup of
+`<data>/` includes `plugins/`; your tables are **not** in `manifold.db`, and nothing should assume
+they are.
+
+It is not a document plane (§5 is still where large blobs and collaborative text belong), not a
+shared database (no plugin reads another's rows — cross-plugin data travels through actions and
+events), not a query API over the engine's own tables, and not a replacement for `ctx.storage`: a
+preference is still a key. The reasoning is `docs/decisions/0034-plugin-database.md`.
 
 ### Element types are reserved while you are away
 
@@ -1010,6 +1149,9 @@ their work invisible without deleting it, which is the one outcome worse than a 
   composition of panels (`core.shell.sidebar` and `core.shell.container-view` by default),
   rendered
   by the same `TileTree` component that renders a composition. One tree vocabulary everywhere.
+  A leaf may also carry **`arg`**, an opaque record of YOUR OWN naming what that tile is
+  showing it for; the panel reads it off `PanelProps.arg` and opens more of its own tiles with
+  `host.openPanel` (below). Absent ≡ no argument, which is every panel that takes none.
 - **`seats`** say where your panels ask to SIT in a workspace nobody has arranged yet. The
   engine composes that default from the enabled roster's seats — one row of leaves in `order`,
   `ratio` weighting each against its siblings — so there is no default-layout constant to edit
@@ -1087,11 +1229,12 @@ title: "Deep links" }` is `core.uri` saying it answers on `/uri/<rest>`. There i
 
 ### Host services
 
-A panel or section component receives exactly one prop:
+A section component receives exactly one prop, and a panel one more — its own leaf's argument:
 
 ```ts
 interface PanelProps {
   host: HostServices;
+  readonly arg?: PanelArg | undefined; // what THIS tile is showing it for; absent ≡ none
 }
 interface SectionProps {
   host: HostServices;
@@ -1113,6 +1256,7 @@ interface HostServices {
   readonly viewport: ViewportHandle | null; // null until a container renderer is mounted
   readonly authoring: AuthoringHandle | null; // null when nothing can be authored into
   readonly assembly: AssemblyFacet; // read the composition: see below
+  openPanel(request: OpenPanelRequest): OpenPanelOutcome; // open one of YOUR panels: see below
 }
 
 interface AssemblyFacet {
@@ -1127,7 +1271,45 @@ interface ViewportHandle {
   centerOn(uri: string): void;
   viewport(): { x: number; y: number; zoom: number } | null;
 }
+
+/** A panel argument: an opaque record of your own, ≤ 4 KiB of JSON, JSON data only. */
+type PanelArg = Record<string, unknown>;
+
+interface OpenPanelRequest {
+  readonly panelId: string; // FULL id (`acme.notes.record`), of YOUR OWN plugin
+  readonly arg?: PanelArg | undefined; // what you are opening it for
+  readonly beside?: "self" | undefined; // the placement rule; absent ≡ "self"
+}
+
+type OpenPanelOutcome =
+  | { readonly ok: true; readonly tileId: string; readonly placed: boolean }
+  | {
+      readonly ok: false;
+      readonly refused: "unknown_panel" | "other_plugin" | "invalid_arg" | "no_tile";
+    };
 ```
+
+**A panel is opened FOR something** (ADR 0037, issue #516). `arg` is yours: an opaque record
+naming the subject of that tile — `{ kind: "record", id }` — stored on the leaf with the panel
+id, kept across reloads and rearrangements, and handed back byte for byte. The engine never
+reads inside it. What it does enforce is that it survives the round trip the store promises: no
+larger than 4 KiB of JSON, and JSON DATA all the way down (an `undefined` member, `NaN`, a
+`Date`, a `Map` or a cycle is refused rather than silently rewritten into something you did not
+write). Render FROM the prop rather than copying it into state; a leaf that changes is a prop
+that changes, not a remount.
+
+`host.openPanel({ panelId, arg })` is how a second tile happens: it places a panel OF YOUR OWN
+PLUGIN after the caller's own seat, along the axis that seat's parent already splits on — a row
+of panels grows one to the right, a column one below. If a tile of that panel already shows an
+argument naming the same thing it is FOCUSED instead (`placed: false`, nothing written), so a
+reader clicking one record twice keeps one tile while a different record is genuinely a second
+one. It commits through the same debounced `core.space.setLayout` a grip release does, so an
+opening carries your caller's authority and appears in the trace like any other arrangement —
+there is no new door and no way to write a tree you could not already write. Four named
+refusals, and none of them writes anything: `unknown_panel` (no such panel), `other_plugin`
+(not yours — the tile tree's arranger is the principal, not a stranger's plugin), `invalid_arg`
+(see above) and `no_tile` (the caller holds no seat: a SECTION, an overlay or a route gets this,
+because an opening lands beside a tile and they have none).
 
 `assembly` is READ-ONLY and it is the same surface for everybody — the plugin manager listing the
 roster and the shell's own sidebar panel drawing the section stack open the identical door. There
@@ -1384,10 +1566,10 @@ The in-realm handle types are public imports, not server-internal APIs:
 import type { PluginJobContext, PluginStreamContext } from "@manifold/plugin";
 ```
 
-`PluginJobContext` supplies `describe`, `execute`, `status`, `follow`, `input`, `cancel`,
-`output`, `schedule`, `schedules` and `disableSchedule`. `PluginStreamContext` supplies
-`open`; the exported `JobFollow` and `StreamProducer` type their handles. Hardened
-`GuestJobs`/stream handles use their asynchronous bridge counterparts.
+`PluginJobContext` supplies `describe`, `describeDeployment`, `execute`, `status`, `listRuns`,
+`follow`, `input`, `cancel`, `output`, `schedule`, `schedules` and `disableSchedule`.
+`PluginStreamContext` supplies `open`; the exported `JobFollow` and `StreamProducer` type
+their handles. Hardened `GuestJobs`/stream handles use their asynchronous bridge counterparts.
 
 **Declare before executing.** The optional machine half declares per-platform HTTPS
 artifacts with real archive/executable SHA256, bounded extraction and optional separately
@@ -1453,6 +1635,83 @@ Operations independently report readiness and their `resourceBindingDigest`; a p
 configured installation does not make unrelated operations unavailable. An explicit
 `workingDirectory` selects one declared location. Managed companions retain their own
 artifact/member hashes; no source executable or host-PATH fallback is permitted.
+
+**Review installation through the same native authority.** The existing per-machine
+runtime inspector already installs artifacts and reviews revision-bound resource/operation
+consent. [ADR 0036](decisions/0036-reviewed-native-deployment.md) extends that review path
+to an explicit set of destinations and retained pending approval; it does not replace the
+installer or introduce a product-owned reconnect worker. The six public actions, bounds
+and lifecycle rules are in
+[CONTRACTS §Governed machine jobs](CONTRACTS.md#governed-machine-jobs). They are ordinary
+typed action doors, available headlessly through the same dispatcher used by Native Plugins.
+
+A root client submits `engine.jobs.reviewDeployment` with
+`{ deploymentId, pluginId, targets: [{ machineId, platform? }], operationIds }`.
+Use 1–64 distinct exact destinations and at most 128 distinct declared operations.
+An empty `operationIds` array selects installation only, not every operation and not a
+revocation of existing consent. Selected operations expand to their concrete operation,
+stdin, location and host-network rights; the review lists exact node/capability pairs
+and existing consent revisions. This is operation selection, not an independently editable
+permission list or implicit service/invocation-edge configuration. Rendering a machine
+checkbox, displaying a declaration or receiving a review grants nothing.
+
+Validate requests and parse responses with the public `JobDeploymentRequestSchema`,
+`JobDeploymentReviewSchema`, `JobDeploymentApplyArgsSchema`, `JobDeploymentSchema` and
+the corresponding read/list/cancel/describe schemas from `@manifold/protocol`; do not copy
+the wire shapes into a product.
+Present the server's immutable declaration, selected artifacts, existing/proposed installation
+pins, concrete resources, consent changes and per-target reasons. Submit only that review's
+unchanged `{ request, reviewDigest }` to `engine.jobs.applyDeployment`. Changes to the
+selection, declaration, actor or current installation/resource/consent evidence require
+another review. The server recomputes the digest against current state; browser-local
+confirmation alone is not approval.
+
+Known offline destinations can remain pending, using only already-promoted native resource
+pins and proved identity. Missing evidence blocks approval rather than granting authority
+over whatever appears on reconnect. Every pending effect rechecks the original current
+authority and reviewed scope before the existing install/consent functions run. A durable
+`pending` → `applying` fence precedes effects; interrupted application without a committed
+receipt becomes `needs_review`, never permission to replay. Approval or `installing` is not
+readiness: `ready` requires the current owner's exact installed acknowledgement and current
+readiness of selected operations. An install-only approval grants no execution consent even
+when ready. Applying does not execute operations.
+
+After apply, recover authoritative progress with `engine.jobs.readDeployment({ deploymentId })`
+or `engine.jobs.listDeployments({ pluginId, limit? })`, not the local draft. List returns
+`{ deployments }`, newest first, at most 100 (default 20). An uncertain action response
+does not prove that nothing committed: read the same ID before deciding what happened.
+An exact duplicate apply recovers that approval under current root authority; it does not
+regrant revoked consent or update a changed installation. Use
+`engine.jobs.cancelDeployment({ deploymentId, expectedRevision })` with the latest retained
+revision to stop unapplied targets. Cancellation is not uninstall, purge or revocation of
+already committed effects; those remain observable. These five administrative doors are
+native/root-only and absent from product and hardened guest execution handles.
+
+At most 256 reviewed approval payloads are retained. Admission transactionally retires
+the oldest completed or cancelled payloads when needed; pending, applying, installing
+and uncertain approvals are never reclaimed. Retired IDs disappear from progress reads
+but remain compact replay fences, so reusing an old ID cannot recreate its authority.
+If all retained approvals are still active or uncertain, new admission refuses
+`deployment_capacity` until an existing approval becomes terminal.
+
+Products instead use `ctx.jobs.describeDeployment({ machineId, pluginId })`, also exposed as
+`engine.jobs.describeDeployment` and the asynchronous `GuestJobs.describeDeployment`.
+It rechecks current machine `machines:run` authority and the handle's own plugin ID, including
+absence; neither an ID nor a cached response grants access. `JobDeploymentDescriptionSchema`
+parses `{ deployment, installation }`. The nullable `deployment` contains only the latest
+target's ID, machine/plugin IDs, revision, state and reason, not operator attribution,
+the complete review or other destinations. Independently, nullable `installation` is
+`{ revision, artifactSha256, machine }` from the actual current native installation's retained
+declaration, not from the newest manifest or proposed approval. Render that declaration when
+showing installed operations/resources; use `describe` for readiness, consent and historical
+revision selection. This separate read does not change the existing strict `JobDescription`.
+
+Subscribe shared reads to the existing `engine.jobs` topic's `job_access_changed` invalidation
+and machine connectivity events, and reread after reconnect. Events are not progress records
+or an authority cache. Action and deferred lifecycle attribution use the existing journal;
+do not store an operator credential, invent a product deployment queue or claim native
+preparation proves product readiness. Contextual permission requests and an initial
+independently selectable permission checklist are not provided by this extension.
 
 **Coordinate effects without acquiring authority.** An action may declare `delegates` for
 native job/resource/service capabilities it uses through `ctx.jobs` or `ctx.services`.
@@ -1587,6 +1846,36 @@ ranges and `gap` closure; the 128-event/256-KiB job replay is not a durable tran
 Consume the snapshot and subsequent watermarks without duplicate effects or hidden loss.
 Release the follow when its consumer ends, rather than repeatedly polling `status`.
 
+**Read what a finished job left behind.** `ctx.jobs.outputs({ node, name, offset, limit })`
+reads ONE output of your own FINISHED job by the name its operation declared, in pages of at
+most 64 KiB, and answers `{ jobId, outputId, name, sha256, files, total, offset, data, eof }`.
+`total` is the sealed length, so paging is arithmetic against it rather than a guess, and the
+owner-minted output ID is disclosed rather than demanded — a plugin addresses its own job node
+and a name. An unfinished job refuses `job_unfinished` (a result is the only evidence anything
+was sealed), a name the result never sealed refuses, and another plugin's job refuses exactly
+as `status` does. `ctx.jobs.journal({ node, after?, limit? })` reads that finished job's
+retained LIFECYCLE frames — `{ jobId, events: [{ seq, at, event }], firstSeq, nextAfter }`, at
+most 128 per job — through the same authority walk. Byte frames are never journaled, so holes
+in `seq` are stdout/stderr passing and never loss; `firstSeq` is the oldest sequence retention
+kept and `nextAfter` continues the page. Browser halves dispatch `engine.jobs.outputs` and
+`engine.jobs.journal` with the same arguments. Neither is a substitute for `follow`: they
+answer after the fact, and following a running job is still the live plane.
+
+**Be woken when your own job ends.** A server half declares `lifecycle.onJobSettled(ctx, job)`
+and is handed, once per settled job IT started,
+`{ jobId, machineId, operationId, pluginId, state, exitCode, reason, finishedAt, scheduleId?, revision?, outputs }`
+— the job's own terminal state (`exited`, `interrupted`, `cancelled`, `refused`) with the
+owner's `reason`, and the sealed output descriptors, never bytes. It is the one wake a
+background half has: a door needs a caller and a panel needs a reader. The payload names the
+NODE, so `ctx.jobs` — bound to the CREDENTIAL THE JOB RAN UNDER, restored and rechecked at
+delivery — reads `outputs`, `journal` or `status` and may start the next job; a revoked or
+expired credential simply has no wake to deliver. `follow` is not on that slice: a live
+subscription belongs to a dispatch. Same bound and same no-veto rule as the other hooks
+(`LIFECYCLE_TIMEOUT_MS`): nothing waits for it, a throw is logged and never retried, delivery
+is at-least-once so the consumer stays idempotent, and a disabled plugin is not woken because
+its jobs were cancelled rather than delivered. Exit 0 is process success and not your
+postcondition. Do not poll `status` or keep a refresh timer in place of declaring the hook.
+
 Raw follow/output bytes can contain secrets. Publish only your product's safe metadata
 onto its public stream; keep raw inputs, stdout/stderr, prompts and private output bodies
 out of events, errors and traces. Generic job doors are `trace: "opaque"` before validation
@@ -1720,6 +2009,11 @@ const born = await host.client.openTerminal({
 });
 host.client.sendTerminalInput(born.id, "code launch --selection ...\n");
 ```
+
+A plugin-supplied `runtime` is a reviewed native descriptor, not a portable operation recipe. It
+includes the destination `machineId`; `openTerminal` must name that same machine, and native
+admission refuses a mismatch before reserving a job or creating a terminal. Matching installation
+and resource pins on another machine do not make the descriptor transferable.
 
 The opener holds the controller lease, so the input is forwarded; anyone else's lands as an
 `error` frame with code `not_controller` and `ref` naming the terminal. A CONTAINER RENDERER is
@@ -2119,8 +2413,11 @@ engine.plugins.uninstall { id, purge? }                                   → {}
   installer names them. The grant is published on the row (`install.grantedCaps`) and enforced at
   rung 4 BEFORE the caller's own caps: a door needing a cap the installer withheld is `forbidden`
   with `<cap> not granted to plugin <id>`, whoever asked.
-- **`replace: true`** upgrades an id already installed at another hash; like `uninstall`, it needs
-  the row switched OFF first (`still_enabled`).
+- **`replace: true`** upgrades an installed id without changing its or its dependents'
+  enablement. The engine preflights the replacement and restores the old serving module
+  on failed admission. An intentionally disabled row stays disabled. An unchanged
+  verified machine declaration retains native installations, consent and service jobs;
+  changed or unverifiable native scope disables execution until a fresh native review.
 - **`hardened: true`** runs the row on ADR 0016's runner — its own Bun process and its own
   `Worker`, against §9's narrower interface — instead of in-realm. Absent or false is in-realm.
   The installer chooses it, never the manifest; the row publishes it as `install.hardened` and
@@ -2640,16 +2937,22 @@ Packing is the artifact; the loop is `dev` (issue #319), and it exists because t
 a hardened plugin change is on a running hub — the child respawned, the web half re-served
 `no-store`, a browser reload. `dev` walks a directory for every `manifest.json` (a part inside its
 parent's directory, ADR 0023; `node_modules` and `dist` are never entered), packs each into a
-temporary directory, installs parents before parts, then watches the directory and repeats on
-change, debounced, installing only the bundles whose sha moved. One JSON line per cycle. The same
-loop without `--hardened` is the in-realm author's loop, walked through in §10.
+temporary directory, orders the complete batch with `familyOrder`, then watches the directory and
+repeats on change, debounced, installing only bundles whose sha moved. Supplied required
+dependencies and namespace parents precede consumers; independent ready bundles retain
+depth-then-id order. Duplicate ids and dependency cycles refuse the batch before installation.
+Dependencies absent from the batch are not created, enabled or installed; the hub still decides
+their availability. One JSON line is reported per cycle. The same loop without `--hardened` is the
+in-realm author's loop, walked through in §10.
 
 Repositories with generated worker artifacts can call the exported `devLoop` with a
-`build(packDir)` callback. It returns the complete family in parent-before-part order as
-`{ id, file, sha256, bytes }` entries produced by the kit's packer. The callback finishes
-every bundle before installation begins; a failed build leaves installed bundles alone.
-The native loop still owns watching, change coalescing, hash checks, delivery and temporary
-output cleanup. Keep source staging outside the watched root.
+`build(packDir)` callback. It returns the complete batch as `{ file, sha256, bytes }` results from
+the kit's packer. The callback finishes every bundle before installation begins; a failed build
+leaves installed bundles alone. The native loop rereads identity and required dependencies from
+those finished bundle bytes, rejects a post-compilation hash change, orders the complete result
+with `familyOrder`, and owns watching, change coalescing, delivery and temporary output cleanup.
+Discovery metadata and a custom builder's summary are never installation authority. Keep source
+staging outside the watched root.
 
 ```sh
 # from a manifold checkout, pointing at your plugins directory
@@ -2660,15 +2963,13 @@ bun run dev -- --hub http://127.0.0.1:7912 --deliver docker:manifold-dev-manifol
 
 Every cycle is `install`, the one-shot command underneath, and `install` is idempotent over the
 hub's roster: it reads `GET /api/plugins` first, and the same id at the same sha and hardening is
-`unchanged` (nothing asked of the hub); another sha or runner choice is `replaced` — `setEnabled false`,
-`engine.plugins.install { replace: true }`, `setEnabled true`, the three steps §7 demands; an
-absent id is `installed`. A replace is FAMILY-aware: the engine refuses to switch off a row an
-enabled row declares `required` (`missing_dependency`), so replacing `atyrode.code` while
-`atyrode.code.generator` is on switches the dependents off first, deepest first (transitively,
-read from the roster's manifests), then the target, and after the install switches the target
-and then the dependents back on in reverse. If the replace is refused, the old bundle stays and
-everything goes back on in that same order. It answers one line, `{ id, sha256, hub, outcome }`,
-and a refusal exits non-zero with the class and detail (`hash_mismatch: …`) on stderr.
+`unchanged` (nothing asked of the hub); another sha or runner choice is `replaced` through
+`engine.plugins.install { replace: true }`; an absent id is `installed`. Replacement uses
+the engine's live assembly path without disable/re-enable calls. The target and its required
+dependents retain their enablement, and failed admission restores the old serving module.
+Explicit disable remains a separate authority-changing action, never an installation step.
+It answers one line, `{ id, sha256, hub, outcome }`, and a refusal exits non-zero with the
+class and detail (`hash_mismatch: …`) on stderr.
 
 ```sh
 bun run --cwd packages/plugin-kit install:bundle <bundle | https://…> --hub <url> \
@@ -2708,13 +3009,15 @@ bun run --cwd packages/plugin-kit verify <bundle>... --hardened
 ```
 
 It spawns this checkout's server (a temporary data dir, a fixed throwaway owner key, a free port,
-`MANIFOLD_PLUGIN_DEV_PATHS=1`), installs the bundles parents first whatever order the shell glob
-handed them, and for each asserts that its roster row is enabled and its `lifecycle` is neither
-`enable_failed` nor `isolate_crashed`, then dispatches every door the row publishes with `{}` as
-the owner and requires any answer but `unavailable` — `invalid_args` and `refused` come from your
-code in your process, which is the fact being checked; `unavailable` is the runner saying that
-process is gone or mute. Then it uninstalls with `purge` in reverse. The first failure exits
-non-zero naming the bundle, the row or the door.
+`MANIFOLD_PLUGIN_DEV_PATHS=1`) and inspects and orders every supplied bundle before starting it.
+Required dependencies and namespace parents install before consumers regardless of shell-glob
+order; duplicate ids or dependency cycles refuse the complete batch before installation. For each
+bundle, verification asserts that its roster row is enabled and its `lifecycle` is neither
+`enable_failed` nor `isolate_crashed`, then dispatches every published door with `{}` as the owner
+and requires any answer but `unavailable` — `invalid_args` and `refused` come from your code in your
+process, which is the fact being checked; `unavailable` is the runner saying that process is gone or
+mute. Then it uninstalls with `purge` in the exact reverse order. The first failure exits non-zero
+naming the bundle, the row or the door.
 
 In CI, the reusable workflow `.github/workflows/plugins.yml` (`workflow_call`, input
 `plugins-dir`, default `plugins`) does the whole sequence: it checks the caller out at `caller/`,
@@ -2730,6 +3033,13 @@ jobs:
     with:
       plugins-dir: plugins
 ```
+
+Callers that require an explicit verified dependency tree or disposable test inputs may
+set `prepare-command`. It runs after their frozen install and before typechecking and
+unit tests; the default does nothing. Preparation remains the caller's responsibility
+and does not grant production or fleet authority. `pack-verify-command` replaces only
+the later pack/verify pair and suppresses artifact upload, so disposable source-artifact
+proofs do not accidentally publish their fixture bundles.
 
 `plugins/MANIFOLD_REV` and that `@<rev>` are bumped together, so the workflow and the kit it runs
 are one commit of this repository. The author repository's `plugins/package.json` wraps the kit:
@@ -2782,6 +3092,11 @@ runner, paid only by a row whose installer chose it:
   a worker serves. This is ADR 0016's T3 stated plainly: element renderers are a two-class
   contribution, and WHICH interfaces a stranger's agent can author against depends on whether
   the installer hardened the row. `core.notes` is the worked example of what stays in-realm.
+- **No panel argument, and no `openPanel`.** A worker's panel is mounted by instance id and
+  receives no leaf state, so `PanelProps.arg` and `host.openPanel` (ADR 0037) are in-realm only:
+  both would have to cross the boundary as frames the stage-1 surface does not carry
+  (`WEB_HOST_METHODS`, `mount`). A hardened reading surface therefore still shows one subject
+  per panel.
 - **No engine object.** `ctx.store`, `ctx.rooms`, `ctx.broker`, `ctx.identity`, `ctx.dials` and
   the storage ledger verbs (`dataVersion`, `appliedMigrations`) are not served in stage 1. They are
   absent from `GuestCtx`'s type, and reaching one at runtime anyway raises
@@ -3002,8 +3317,21 @@ bun run --cwd packages/plugin-kit pack <plugin-dir> --out <id>.manifold-plugin.j
 
 One JSON document (`PluginBundleSchema`): `format: 1`, your manifest, `builtAgainst`, and the
 built halves as base64 members. The printed `sha256` is over the file's exact bytes and is the
-pin the door demands; the bytes depend on the build inputs, so pack from the same working
-directory when you mean to reproduce a pin. `--self-contained` is §9's flag and not yours.
+pin the door demands; identical source and dependencies produce identical bytes regardless of
+the source's absolute location or the pack process's working directory. `--self-contained` is
+§9's flag and not yours.
+
+Build integrations that generate machine artifacts use `compilePlugin(pluginDir, options)`
+from `@manifold/plugin-kit/pack`. It returns verified `{ bytes, sha256 }` without writing
+source or output files. `options.generated` supplies a schema-validated manifest and a
+`ReadonlyMap<string, Uint8Array>` containing every declared bundled machine member; absent,
+unused, colliding, oversized or incorrectly hashed members are refused without disk fallback.
+The supplied manifest must keep the source plugin's identity and entry declaration. The
+compiler snapshots generated inputs before awaiting and substitutes that exact root manifest
+in both compiled halves and bundle metadata, leaving unrelated JSON imports alone.
+`packPlugin` remains the file-writing convenience over the same compiler. Source and installed
+dependencies are trusted build inputs and must stay stable; compilation grants no installation
+or execution authority.
 
 ### Install with the door
 

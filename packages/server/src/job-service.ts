@@ -35,6 +35,7 @@ import {
   MachineHalfSchema,
   MAX_JOB_FOLLOW_EVENTS,
   MAX_JOB_FOLLOW_BYTES,
+  MAX_JOB_JOURNAL_EVENTS,
   ListJobRunsArgsSchema,
   ListJobRunsResultSchema,
   PublicScheduleOccurrenceSchema,
@@ -51,6 +52,10 @@ import {
   type JobRequest,
   type MachineHalf,
   type JobFollowEvent,
+  type JobJournalPage,
+  type JobOutputPage,
+  type JobAuthority,
+  type SettledJob,
   type JobFollowUpdate,
   type TerminalRuntime,
 } from "../../protocol/src/jobs.ts";
@@ -94,6 +99,7 @@ import {
 } from "./job-store.ts";
 import type { ServerStore, TraceRecord } from "./stores.ts";
 import { JobSchedules, type JobScheduleSpec } from "./job-schedules.ts";
+import { JobDeployments } from "./job-deployments.ts";
 import { InstanceServiceStore, type InstanceServiceRecord } from "./instance-service-store.ts";
 export type { JobRecord } from "./job-store.ts";
 import { deliveredArtifact } from "@manifold/plugin-kit/artifacts";
@@ -150,6 +156,14 @@ const runCursorSchema = z.strictObject({
 interface JobChanges {
   run(node: Extract<ManifoldRef, { kind: "job" }>, actor: string): void;
   access(): void;
+}
+/** One settled job on its way to the half that started it, with the authority to act on it. */
+export interface SettledJobDelivery {
+  readonly settled: SettledJob;
+  /** The job's own credential, restored at delivery; null once it is revoked or expired. */
+  readonly auth: AuthContext | null;
+  /** The trace the job was started under, so a hook's own effects keep that lineage. */
+  readonly traceId: string;
 }
 
 export class JobService {
@@ -1533,6 +1547,65 @@ export class JobService {
   private lifecycleRecorder: ((record: TraceRecord) => void) | null = null;
   setLifecycleRecorder(record: (record: TraceRecord) => void): void {
     this.lifecycleRecorder = record;
+    this.deployments.recover();
+  }
+  private settledListener: ((delivery: SettledJobDelivery) => void) | null = null;
+  /** The host's fan-out to the owning plugin's server half; absent where nothing consumes it. */
+  setSettledListener(notify: (delivery: SettledJobDelivery) => void): void {
+    this.settledListener = notify;
+  }
+  /**
+   * What the owning plugin is told, and under whose authority it may act on it.
+   *
+   * The state is the job's own terminal state, unreduced — a settled job is a fact, not a
+   * verdict, and exit 0 is process success rather than a product postcondition (ADR 0033
+   * §Lifecycle and durability). The credential is the job's original one, restored NOW: a
+   * revoked or expired credential restores to null and its holder is told nothing, because
+   * a wake it cannot act on is an invitation to act on stale authority.
+   */
+  private settledDelivery(job: JobRecord, authority: JobAuthority): SettledJobDelivery | null {
+    const result = job.result;
+    if (result === null) return null;
+    const state = result.state;
+    if (
+      state === "queued" ||
+      state === "admitted" ||
+      state === "start-committed" ||
+      state === "started"
+    )
+      return null;
+    const origin = authority.origin;
+    return {
+      settled: {
+        jobId: job.request.jobId,
+        machineId: job.request.machineId,
+        operationId: job.request.operationId,
+        pluginId: job.request.pluginId,
+        state,
+        exitCode: result.exitCode,
+        reason: result.reason,
+        finishedAt: result.finishedAt,
+        ...(origin.kind === "schedule"
+          ? { scheduleId: origin.scheduleId, revision: origin.revision }
+          : {}),
+        outputs: result.outputs,
+      },
+      auth: this.auth.restoreCredential(job.request.credential),
+      traceId: job.request.traceId,
+    };
+  }
+  /**
+   * The wake, published where the result frame is — after the row and its journal entry are
+   * durable, never inside the transaction that wrote them. A hook told about a result that a
+   * rollback then withdrew would act on a job that never settled.
+   */
+  private wakeOwner(jobId: string): void {
+    if (this.settledListener === null) return;
+    const job = this.jobs.get(jobId);
+    if (job === null) return;
+    const delivery = this.settledDelivery(job, this.jobs.authority(job));
+    if (delivery === null) return;
+    this.store.afterCommit(() => this.settledListener?.(delivery));
   }
   private lifecycle(job: JobRecord, phase: string): void {
     if (!this.lifecycleRecorder) throw new Error("job_lifecycle_recorder_required");
@@ -1886,6 +1959,7 @@ export class JobService {
     for (const follower of [...this.followers])
       if (!this.canReadGoverned(follower.auth, follower.node, follower.callerPluginId))
         this.closeFollower(follower, "authority_revoked");
+    this.deployments.reconcile();
   }
 
   inspectInvocations(
@@ -2230,6 +2304,7 @@ export class JobService {
   private bundleResolver: ((pluginId: string) => PluginBundle | null) | null = null;
   setBundleResolver(resolver: (pluginId: string) => PluginBundle | null): void {
     this.bundleResolver = resolver;
+    if (this.lifecycleRecorder && this.manifestResolver) this.deployments.reconcile();
   }
   private artifactDelivery(
     pluginId: string,
@@ -2403,6 +2478,8 @@ export class JobService {
       .query("UPDATE machine_jobs SET event_seq=?,output_seq=? WHERE job_id=?")
       .run(seq, event.type === "output" ? event.seq : previous.output_seq, jobId);
     this.retainJobEvent(jobId, seq, event, reason !== null);
+    if (event.type !== "output") this.jobs.appendJournal(jobId, seq, this.runtime.now(), event);
+    if (event.type === "result") this.wakeOwner(jobId);
     if (this.followQueue.length >= 64) {
       for (const follower of [...this.followers]) this.closeFollower(follower, "limit");
       this.followQueue.length = 0;
@@ -2448,6 +2525,7 @@ export class JobService {
     }
   }
   readonly jobs: JobStore;
+  private readonly deployments: JobDeployments;
   readonly admissionPublicKey: string;
   private readonly signingKey: string;
   private readonly channels = new Map<
@@ -2476,6 +2554,49 @@ export class JobService {
   ) {
     this.jobs = new JobStore(store, (job, phase) => this.lifecycle(job, phase));
     this.instanceServices = new InstanceServiceStore(store, auth, runtime, serviceOwnerMachineId);
+    this.deployments = new JobDeployments(this, {
+      owner: (machineId) => {
+        const live = this.channels.get(machineId);
+        return live?.proved ? live.owner : null;
+      },
+      artifactAvailable: (install, platform) =>
+        install.machine.artifacts[platform]?.sha256 === install.artifact &&
+        this.artifactDelivery(
+          install.pluginId,
+          install.machine,
+          install.artifact,
+          this.channels.get(install.machineId)?.owner.platforms,
+        ) !== null,
+      resourceRefusal: (install, operationId) => this.resourceRefusal(install, operationId),
+      servicePolicies: (machineId, machine, bindings) => {
+        const policies = this.effectiveConfiguration(machineId).policies;
+        const required = Object.values(machine.operations).flatMap(
+          (operation) => operation.services ?? [],
+        );
+        const selected = required.map(
+          (binding) => policies.find((policy) => policy.serviceId === binding.serviceId) ?? null,
+        );
+        return {
+          digest: digest(selected),
+          refusal: required.some((binding, index) => {
+            const policy = selected[index];
+            return (
+              !policy ||
+              policy.revision !== binding.revision ||
+              bindings?.services[binding.serviceId] !== digest(policy) ||
+              binding.operationIds.some((id) => !Object.hasOwn(policy.operations, id))
+            );
+          })
+            ? "service_definition_changed"
+            : null,
+        };
+      },
+      record: (record) => {
+        if (!this.lifecycleRecorder) throw new Error("job_lifecycle_recorder_required");
+        this.lifecycleRecorder(record);
+      },
+      changed: () => this.accessChanged(),
+    });
     store.db
       .query(
         "UPDATE machine_job_inputs SET state='unknown',reason='job_input_delivery_unknown' WHERE state='pending'",
@@ -2518,6 +2639,7 @@ export class JobService {
         if (machine && this.store.getToken(machine.tokenId)?.principalId === principalId)
           this.cancelRecord(job, "executor_revoked");
       }
+      this.deployments.reconcile();
     });
   }
   private retainedRequest(jobId: string): JobRequest | null {
@@ -2735,6 +2857,24 @@ export class JobService {
         : { allowed: false, decisionId, policyRevision };
     });
   }
+  reviewDeployment(...args: Parameters<JobDeployments["review"]>) {
+    return this.deployments.review(...args);
+  }
+  applyDeployment(...args: Parameters<JobDeployments["apply"]>) {
+    return this.deployments.apply(...args);
+  }
+  readDeployment(...args: Parameters<JobDeployments["read"]>) {
+    return this.deployments.read(...args);
+  }
+  listDeployments(...args: Parameters<JobDeployments["list"]>) {
+    return this.deployments.list(...args);
+  }
+  cancelDeployment(...args: Parameters<JobDeployments["cancel"]>) {
+    return this.deployments.cancel(...args);
+  }
+  describeDeployment(...args: Parameters<JobDeployments["describe"]>) {
+    return this.deployments.describe(...args);
+  }
   install(
     auth: AuthContext,
     args: {
@@ -2846,8 +2986,10 @@ export class JobService {
           resourceBindings === undefined ? null : canonicalJobJson(resourceBindings),
         );
     });
-    this.sendInstall(this.jobs.installation(args.machineId, args.pluginId)!);
-    this.reconcileAuthority();
+    this.store.afterCommit(() => {
+      this.sendInstall(this.jobs.installation(args.machineId, args.pluginId)!);
+      this.reconcileAuthority();
+    });
     this.accessChanged();
   }
   consent(
@@ -2906,7 +3048,7 @@ export class JobService {
         randomUUID(),
         args.enabled ? 1 : 0,
       );
-    this.reconcileAuthority();
+    this.store.afterCommit(() => this.reconcileAuthority());
     this.accessChanged();
   }
   private requirements(request: JobRequest, retiring = false): AuthorityRequirement[] {
@@ -3175,6 +3317,7 @@ export class JobService {
     terminal: NonNullable<JobRequest["terminal"]>,
     traceId: number,
   ): Extract<JobCommand, { type: "start" }> {
+    if (runtime.machineId !== machineId) fail("terminal_runtime_destination_changed");
     const live = this.channels.get(machineId);
     const install = this.jobs.installation(machineId, runtime.pluginId);
     if (
@@ -3344,6 +3487,7 @@ export class JobService {
         .query("UPDATE machine_job_installs SET ready=0 WHERE machine_id=?")
         .run(channel.machineId);
     }
+    this.accessChanged();
   }
   private serviceTunnelCurrent(tunnel: HubServiceTunnel): boolean {
     const job = this.jobs.get(tunnel.request.jobId);
@@ -3928,6 +4072,7 @@ export class JobService {
         .query("UPDATE machine_job_installs SET ready=1 WHERE machine_id=? AND plugin_id=?")
         .run(channel.machineId, event.pluginId);
       this.reconcileAuthority();
+      this.accessChanged();
       for (const job of this.jobs.active(channel.machineId))
         if (job.state === "queued") this.start(job);
       return;
@@ -4326,6 +4471,86 @@ export class JobService {
     }
     return promise;
   }
+  /**
+   * One declared output of a FINISHED job, named the way the operation named it, in bounded
+   * pages beside the length its owner sealed.
+   *
+   * A plugin knows `name`; only the owner knows the output ID it minted, so the resolution
+   * happens HERE, out of the durable result rather than out of the caller's memory, and the
+   * page itself is the ordinary authorized `output` read — a consent revoked mid-paging
+   * refuses the next page exactly as it does for a node the caller resolved itself.
+   *
+   * An unfinished job is refused rather than answered with what has accumulated: process exit
+   * is not closure proof and only publication seals bytes (ADR 0033 §Lifecycle and durability),
+   * so a result is the one evidence that there is anything immutable to read.
+   */
+  async outputs(
+    auth: AuthContext,
+    node: ManifoldRef,
+    name: string,
+    offset: number,
+    limit: number,
+    callerPluginId = "engine.jobs",
+  ): Promise<JobOutputPage> {
+    const job = this.authorizedJob(auth, node, "jobs:read", callerPluginId);
+    if (node.kind !== "job") fail("outputs_requires_job");
+    const result = job.result;
+    if (result === null) fail("job_unfinished");
+    const output = result.outputs.find((candidate) => candidate.name === name);
+    if (!output) fail("unknown_job_output");
+    const page = await this.output(
+      auth,
+      {
+        kind: "output",
+        machineId: node.machineId,
+        operationId: node.operationId,
+        jobId: node.jobId,
+        outputId: output.outputId,
+      },
+      offset,
+      limit,
+      callerPluginId,
+    );
+    return {
+      jobId: job.request.jobId,
+      outputId: output.outputId,
+      name: output.name,
+      sha256: output.sha256,
+      files: output.files,
+      total: output.bytes,
+      offset,
+      data: page.data,
+      eof: page.eof,
+    };
+  }
+  /**
+   * The finished job's retained lifecycle frames, oldest first, in bounded pages.
+   *
+   * The same authority walk `status` takes, and the same sequence `follow` publishes — so the
+   * holes where byte frames passed are the journal's contract, and `firstSeq` names the prefix
+   * retention dropped. This is retrieval, not observation: a job still running is refused,
+   * because watching one is what `follow` is for.
+   */
+  journal(
+    auth: AuthContext,
+    node: ManifoldRef,
+    after: number,
+    limit: number,
+    callerPluginId = "engine.jobs",
+  ): JobJournalPage {
+    const job = this.authorizedJob(auth, node, "jobs:read", callerPluginId);
+    if (node.kind !== "job") fail("journal_requires_job");
+    if (job.result === null) fail("job_unfinished");
+    if (
+      !Number.isSafeInteger(after) ||
+      after < 0 ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > MAX_JOB_JOURNAL_EVENTS
+    )
+      fail("invalid_journal_read");
+    return this.jobs.journal(job.request.jobId, after, limit);
+  }
   disablePlugin(pluginId: string): void {
     this.store.db
       .query("UPDATE machine_job_installs SET enabled=0 WHERE plugin_id=?")
@@ -4337,6 +4562,7 @@ export class JobService {
     for (const follower of this.followers)
       if (this.jobs.get(follower.node.jobId)?.request.pluginId === pluginId)
         this.closeFollower(follower, "authority_revoked");
+    this.deployments.reconcile();
     this.accessChanged();
   }
   purgePlugin(pluginId: string): void {
@@ -4365,6 +4591,7 @@ export class JobService {
         this.replay.delete(jobId);
         this.replayBytes -= ring.bytes;
       }
+    this.jobs.purgeJournal(pluginId);
     for (const install of installs)
       this.channels.get(install.machineId)!.channel.send({
         type: "job_command",

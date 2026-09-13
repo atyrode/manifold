@@ -7,12 +7,13 @@ import {
   PluginEntrySchema,
   PluginIdSchema,
   PluginManifestSchema,
+  PluginDataVersionSchema,
   type ActionDenialRule,
 } from "./plugin.ts";
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
 import { StreamServerMessageSchema } from "./stream.ts";
-import { JobFollowUpdateSchema, machineArtifacts } from "./jobs.ts";
+import { JobFollowUpdateSchema, SettledJobSchema, machineArtifacts } from "./jobs.ts";
 
 /**
  * THE ISOLATION VOCABULARY (ADR 0016): everything that crosses the boundary between the engine
@@ -336,16 +337,18 @@ export const ISOLATE_MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 /** Correlates a request with its answer on either ipc direction; sender-chosen, opaque. */
 const frameId = z.string().min(1).max(64);
 
-/** Prose about a failure, bounded because the child writes it and the host logs it. */
-const errorText = z.string().max(2048);
+/** Maximum failure prose carried by an isolate frame. */
+export const ISOLATE_ERROR_TEXT_MAX = 2_048;
+const errorText = z.string().max(ISOLATE_ERROR_TEXT_MAX);
 
 /**
  * The ctx slices a child may CALL BACK into (ADR 0016 §2), each one an RPC the host serves on
- * the plugin's behalf: storage namespaced by plugin id, the dispatching caller's authority,
- * and the two host services a first-party slice already reaches by method name. Everything
- * else in `ActionCtx` is NOT served in stage 1 — the guest runtime raises
- * `IsolateSliceUnavailable(method)` and maps it to `{ ok: false, rule: "refused" }`, so the
- * absence is a named refusal at the door rather than a hang or a throw.
+ * the plugin's behalf: storage namespaced by plugin id, the plugin's own database when its
+ * manifest declared one, the dispatching caller's authority, and the two host services a
+ * first-party slice already reaches by method name. Everything else in `ActionCtx` is NOT
+ * served in stage 1 — the guest runtime raises `IsolateSliceUnavailable(method)` and maps it
+ * to `{ ok: false, rule: "refused" }`, so the absence is a named refusal at the door rather
+ * than a hang or a throw.
  */
 export const ISOLATE_CTX_METHODS = [
   "storage.get",
@@ -353,6 +356,9 @@ export const ISOLATE_CTX_METHODS = [
   "storage.compareAndSet",
   "storage.delete",
   "storage.keys",
+  "database.query",
+  "database.run",
+  "database.batch",
   "auth.allows",
   "outsideScope",
   "newId",
@@ -365,12 +371,15 @@ export const ISOLATE_CTX_METHODS = [
   "streams.publish",
   "streams.close",
   "jobs.describe",
+  "jobs.describeDeployment",
   "jobs.execute",
   "jobs.status",
   "jobs.listRuns",
   "jobs.input",
   "jobs.cancel",
   "jobs.output",
+  "jobs.outputs",
+  "jobs.journal",
   "jobs.follow",
   "jobs.ack",
   "jobs.unfollow",
@@ -389,10 +398,45 @@ export const ISOLATE_CTX_METHODS = [
 export const IsolateCtxMethodSchema = z.enum(ISOLATE_CTX_METHODS);
 export type IsolateCtxMethod = (typeof ISOLATE_CTX_METHODS)[number];
 
-/** The three lifecycle hooks a server half may declare; `purge` never crosses (it is the host's). */
-export const ISOLATE_HOOKS = ["onEnable", "onDisable", "onAssemblyChanged"] as const;
+/** The four lifecycle hooks a server half may declare; `purge` never crosses (it is the host's). */
+export const ISOLATE_HOOKS = [
+  "onEnable",
+  "onDisable",
+  "onAssemblyChanged",
+  "onJobSettled",
+] as const;
 export const IsolateHookSchema = z.enum(ISOLATE_HOOKS);
 export type IsolateHook = (typeof ISOLATE_HOOKS)[number];
+
+/** Named guest transformations: only metadata crosses the handshake, never callbacks. */
+export const MAX_ISOLATE_MIGRATIONS = 128;
+export const ISOLATE_MIGRATION_DEADLINE_MS = 10_000;
+export const MAX_MIGRATION_STORAGE_OPERATIONS = 65_536;
+export const IsolateMigrationSchema = z.strictObject({
+  // Strict end of input: `$` alone would also accept a trailing line terminator.
+  name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(?![\s\S])/),
+  to: PluginDataVersionSchema,
+});
+export const IsolateMigrationsSchema = IsolateMigrationSchema.array()
+  .max(MAX_ISOLATE_MIGRATIONS)
+  .refine((migrations) => new Set(migrations.map(({ name }) => name)).size === migrations.length, {
+    message: "duplicate migration name",
+  });
+export const GuestMigrationDeclarationsSchema = z
+  .strictObject({
+    dataVersion: PluginDataVersionSchema.optional(),
+    migrations: IsolateMigrationsSchema,
+  })
+  .refine(
+    ({ dataVersion, migrations }) =>
+      migrations.every(
+        ({ to }) =>
+          dataVersion !== undefined &&
+          (to.major < dataVersion.major ||
+            (to.major === dataVersion.major && to.minor <= dataVersion.minor)),
+      ),
+    { message: "migration target requires a dataVersion at or above its target" },
+  );
 
 /**
  * The two rungs a CHILD may answer: it parses arguments against the action's own zod input
@@ -471,6 +515,12 @@ export const IsolateHostFrameSchema = z.discriminatedUnion("t", [
     id: frameId,
     hook: IsolateHookSchema,
     delta: AssemblyDeltaSchema.optional(),
+    job: SettledJobSchema.optional(),
+  }),
+  z.strictObject({
+    t: z.literal("migrate"),
+    id: frameId,
+    migration: IsolateMigrationSchema,
   }),
   z.strictObject({
     t: z.literal("job_update"),
@@ -505,7 +555,9 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
       onEnable: z.boolean(),
       onDisable: z.boolean(),
       onAssemblyChanged: z.boolean(),
+      onJobSettled: z.boolean(),
     }),
+    migrations: IsolateMigrationsSchema.optional(),
   }),
   z.strictObject({ t: z.literal("load_failed"), error: errorText }),
   z.strictObject({
@@ -537,6 +589,15 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
     id: frameId,
     ok: z.boolean(),
     error: errorText.optional(),
+  }),
+  z.strictObject({
+    t: z.literal("migrated"),
+    id: frameId,
+    name: IsolateMigrationSchema.shape.name,
+    outcome: z.discriminatedUnion("ok", [
+      z.strictObject({ ok: z.literal(true) }),
+      z.strictObject({ ok: z.literal(false), error: errorText }),
+    ]),
   }),
   z.strictObject({
     t: z.literal("call"),
@@ -781,6 +842,10 @@ export function isolateVocabulary(): Record<string, unknown> {
     hostMethods: WEB_HOST_METHODS,
     crashBudget: ISOLATE_CRASH_BUDGET,
     dispatchDeadlineMs: ISOLATE_DISPATCH_DEADLINE_MS,
+    migrationDeadlineMs: ISOLATE_MIGRATION_DEADLINE_MS,
+    maxMigrations: MAX_ISOLATE_MIGRATIONS,
+    maxMigrationStorageOperations: MAX_MIGRATION_STORAGE_OPERATIONS,
+    migration: z.toJSONSchema(IsolateMigrationSchema),
     idleEvictMs: ISOLATE_IDLE_EVICT_MS,
     maxArtifactBytes: ISOLATE_MAX_ARTIFACT_BYTES,
     bundleFormat: PLUGIN_BUNDLE_FORMAT,

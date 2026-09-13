@@ -1219,7 +1219,13 @@ tokens), and
 its validation is STRUCTURAL ONLY: `validateTileLayout` plus "every leaf ref is a panel".
 Unknown or disabled panel ids are ACCEPTED — a disabled plugin must never brick layout writes —
 and those leaves render placeholders whose chrome offers a remove control that commits the pruned
-tree through the same action. Divider drags obey the plane rule: local optimistic ratios per
+tree through the same action. A panel leaf may also carry `arg`, the opaque
+`Record<string, unknown>` naming what that tile is showing it for (ADR 0037): legal on a panel
+leaf and nowhere else, refused past `MAX_PANEL_ARG_BYTES` (4 KiB of JSON) or when it is not JSON
+data, absent ≡ none, delivered to the panel as `PanelProps.arg`, travelling with the panel when a
+seat moves, and written by the same one door — `host.openPanel` computes the tree and commits it
+through it, so an opening is an ordinary arrangement write.
+Divider drags obey the plane rule: local optimistic ratios per
 frame, ONE `core.space.setLayout` on pointerup or pointercancel after movement, never during a
 held pause or per frame. A press without movement writes nothing.
 
@@ -1780,8 +1786,7 @@ client switches on the prefix): `artifact_unreadable`, `artifact_invalid` (wrong
 manifest that fails the schema, or an assembly refusal such as a duplicate id caught at install
 time and rolled back rather than raised at boot), `hash_mismatch`, `already_installed` (same id,
 different hash, no `replace: true`), `not_installed`, `namespace_reserved` (`engine.` / `core.`),
-`still_enabled` (uninstall and replace both require the row disabled first — except the hub's own
-unpacked replace, §Unpacked plugins), `storage_retained`,
+`still_enabled` (uninstall requires the row disabled first), `storage_retained`,
 `no_entry`, `stylesheet_unscoped` (the sheet reaches past the plugin's root class — S13 at load,
 above; the detail names `styles.css:<line>` and the selector). **Uninstall** (`{ id, purge? }`) removes the row and the files and never destroys
 plugin storage on its own: while the plugin's namespace holds rows — reserved ones included, the
@@ -1929,10 +1934,13 @@ removes; unnamed files stay), logs `plugin_authored` (count of files, never cont
 and answers `PluginAuthorResult` — the install result plus `sha256`, the pin the roster now shows.
 While off it refuses `developer_mode_off: <id>` before writing.
 
-**The one admission difference.** A running unpacked row replaced by the hub's own rebuild is
-replaced LIVE rather than refused `still_enabled`: the old module hears `onDisable`, the row is
-re-imported fresh, `onEnable` fans out, the installer on the row stays whoever first admitted it,
-and the previous artifact leaves the disk. Same bytes (same hash) replace nothing and publish
+**Live replacement.** An unpacked rebuild and `engine.plugins.install { replace: true }`
+share the live replacement path: the old module hears `onDisable`, the row is re-imported
+fresh, and `onEnable` fans out without changing durable target/dependent enablement. The
+unpacked installer remains whoever first admitted it, and the previous artifact leaves the disk.
+An unchanged verified machine declaration preserves native installation, consent and service
+identity; changed or unverifiable scope disables native execution until separately reviewed.
+Same bytes (same hash) replace nothing and publish
 nothing. A build error, a manifest the schema refuses, an `AssemblyError` in the edit or a
 manifest whose `id` is not the directory's answers `artifact_invalid: <detail>`, logs
 `plugin_authored_build_failed`, rolls back to the previous row and wakes it again (`onEnable`).
@@ -2739,7 +2747,8 @@ Agent→server: `created { terminalId }` | `create_error { terminalId, message }
 
 The generic runtime is defined by [`jobs.ts`](../packages/protocol/src/jobs.ts),
 [`job-service.ts`](../packages/server/src/job-service.ts),
-[`job-schedules.ts`](../packages/server/src/job-schedules.ts) and
+[`job-schedules.ts`](../packages/server/src/job-schedules.ts),
+[`job-deployments.ts`](../packages/server/src/job-deployments.ts) and
 [`job-doors.ts`](../packages/server/src/job-doors.ts). Product protocols, custody formats,
 provider handling and postconditions belong to plugins, never the common floor.
 
@@ -2777,7 +2786,7 @@ provider handling and postconditions belong to plugins, never the common floor.
   fail closed when their backend or required enforcement is unavailable, without a PTY
   or unrestricted-process fallback.
 - **Explicit administration.** The root-only `engine.jobs.install` takes
-  `{ machineId, pluginId, installationRevision, artifactSha256, machine }`.
+  `{ machineId, pluginId, installationRevision, artifactSha256, machine, resourceBindings? }`.
   `engine.jobs.consent` takes
   `{ machineId, pluginId, installationRevision, artifactSha256, node, cap, enabled }`.
   The pin and manifest must agree with the declared machine half. Each machine/plugin
@@ -2791,6 +2800,130 @@ provider handling and postconditions belong to plugins, never the common floor.
   Installation is not approval. Deliberately reinstalling an exact historical declaration
   is permitted; conflicting reuse of its revision is refused, and reinstall never
   resubmits a retained job.
+- **Reviewed native deployment.** [ADR 0036](decisions/0036-reviewed-native-deployment.md)
+  extends the existing per-machine native installer and runtime inspector's review/approval
+  path; artifact installation, revision-bound consent and replay to proved owners already
+  existed. The extension retains an exactly reviewed set of destinations, not a second
+  installer, runtime registry, scheduler or automatic fleet/update policy. The public
+  contracts are exported from `@manifold/protocol` through
+  [`job-deployments.ts`](../packages/protocol/src/job-deployments.ts). All six actions use
+  the ordinary typed action dispatcher; headless agents and the plugin-manager client
+  share their schemas and authority path.
+
+  | Action                           | Arguments                                           | Result and authority                                                                            |
+  | -------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+  | `engine.jobs.reviewDeployment`   | `{ deploymentId, pluginId, targets, operationIds }` | `JobDeploymentReview`; current root only; observes without installing or granting consent       |
+  | `engine.jobs.applyDeployment`    | `{ request, reviewDigest }`                         | `JobDeployment`; current root only; saves the exact approval and attempts eligible targets      |
+  | `engine.jobs.readDeployment`     | `{ deploymentId }`                                  | `JobDeployment`; current root only; retained review and projected progress                      |
+  | `engine.jobs.listDeployments`    | `{ pluginId, limit? }`                              | `{ deployments }`; current root only; newest first, default 20, maximum 100                     |
+  | `engine.jobs.cancelDeployment`   | `{ deploymentId, expectedRevision }`                | `JobDeployment`; current root only; compare-and-set cancellation of unapplied effects           |
+  | `engine.jobs.describeDeployment` | `{ machineId, pluginId }`                           | `JobDeploymentDescription`; current `machines:run` authority at the machine, not administration |
+
+  The five administrative actions are native `engine.jobs` context doors, not methods on
+  an ordinary product's `ctx.jobs`, even when that product's caller is root. The bounded
+  `ctx.jobs.describeDeployment` read is also available across the hardened guest bridge,
+  bound to that plugin's own ID. It uses the same current credential, capability ceiling
+  and target checks as `describe`, including when no installation or approval exists.
+
+- **Exact review and consent selection.** A request names one plugin, 1–64 distinct
+  `{ machineId, platform? }` destinations and at most 128 distinct declared `operationIds`.
+  There is no machine-label, wildcard, implicit future destination or latest-version
+  selection. `operationIds: []` is install-only: it adds no execution, invocation,
+  location or host-network consent and does not revoke existing consent.
+  Selecting an operation requests its exact operation-node `machines:run`, `jobs:read`,
+  `jobs:cancel` and `operations:invoke` rights, plus `jobs:input` if stdin is declared,
+  `network:host` for host networking, and each declared location's exact access capability.
+  Shared node/capability pairs are deduplicated. Service invocation authority is checked
+  separately; this selection does not create invocation edges or service configuration.
+  The review exposes every requested `{ node, cap, approved, revision }` consent against
+  the proposed installation pin, distinguishing existing approval from changes to apply.
+
+  The immutable review contains the request, full declared machine half, declaration
+  digest, selected platform/artifact, expected current and proposed installation revisions,
+  concrete tool/service/anchor hashes and consent evidence for every destination.
+  Its `reviewDigest` also binds the approving credential reference, evaluated authority,
+  enrollment/owner identity, current installation and relevant current/proposed consent
+  revisions and service policies. Reusing an unchanged declaration, artifact and resource
+  binding preserves the current installation revision; otherwise the proposed revision is
+  deterministically bound to this deployment, destination and those exact pins.
+  Apply recomputes the review against current state in a transaction: changed request,
+  actor, declaration, destination, installation, resource or consent evidence requires
+  another review, not a client-edited digest or automatic approval of the replacement.
+
+- **Bounded offline evidence.** A disconnected destination is approvable only with known
+  enrolled identity and a previously proved native owner, a selected available declaration
+  artifact, and every required resource pin. Online review reads the proved owner's
+  inventory; disconnected review can reuse only the current native installation's already
+  promoted immutable resource bindings, never a guessed future inventory. Omitted platform
+  selection resolves from the connected owner's supported declaration artifacts or the
+  current installation's matching artifact; otherwise an explicit platform is required.
+  Required resources cover the entire installation declaration, not only operations selected
+  for consent. Missing resource hashes, unproved/revoked executors, unavailable artifacts
+  or changed service definitions block approval. Known offline or active destinations can
+  be approved but remain pending; enrollment or a later connection does not prove readiness.
+  A new or re-enrolled machine never joins an approved set.
+- **Apply, fencing and cancellation.** The host retains at most 256 approvals, with bounded
+  reviewed payloads, the existing credential reference and originating trace attribution;
+  it retains no credential value or owner key. Applying a new ID requires the whole review
+  to remain current and approvable. An exact duplicate ID, request, digest and credential
+  recovers the retained record under current root authority; conflicting reuse refuses.
+  At most one pending/applying approval may own a machine/plugin pair. Approval persistence
+  is atomic across the explicit destination set, but installation effects are committed per
+  destination, not an all-or-nothing fleet transaction.
+
+  Every pending application restores the original credential and rechecks current root
+  authority, enrollment/owner identity, plugin enablement, declaration, installation,
+  resources, policies and consent. It waits for a proved owner, no active or not-yet-closed
+  installation workload and an undrained machine. Invalid evidence becomes `needs_review`;
+  it cannot silently retarget. A durable compare-and-set `pending` → `applying` transition
+  and attempt ID fence the effect. A second transaction verifies that same uncancelled
+  attempt and current evidence before invoking the existing `install` and `consent`
+  functions. Native rows, a consent-evidence receipt and the `applied` phase commit together
+  before installation commands are sent. A post-commit transport error cannot erase that
+  receipt. Recovery of an interrupted `applying` phase reports `needs_review` with
+  `deployment_application_uncertain` instead of replaying authority-changing effects.
+
+  Cancellation requires the current deployment `revision`; stale revisions refuse before
+  mutation. It marks the approval cancelled and fences remaining `pending`/`applying`
+  targets, not effects already committed as `applied`. It is not uninstall, purge, job
+  cancellation, consent revocation or distributed rollback. A new review is required to
+  replace cancelled or invalidated work. After effects commit, reconnect or duplicate apply
+  never repairs revoked consent: a changed consent receipt reports `needs_review`, and the
+  old approval cannot grant it again.
+
+- **Progress is native observation.** `JobDeployment` returns approval attribution, a
+  lifecycle/CAS `revision`, the immutable review, a cancellation flag and per-target
+  `{ machineId, connected, state, reason }`. That revision tracks retained lifecycle
+  transitions, not every change in projected connectivity/readiness. `pending` means no
+  effects have committed; `installing` means committed native installation/consent state
+  still lacks live readiness, including while the owner is offline. `ready` requires the
+  current proved owner's matching revision/artifact `installed` acknowledgement, enabled
+  installation/plugin, no purge, unchanged reviewed evidence/consent and current readiness
+  of every selected operation. An install-only deployment may be ready with no execution
+  consent. No deployment action executes an operation, and readiness guarantees no future
+  job admission or product postcondition. Replacement of an applied installation revision
+  projects `superseded`; invalidated scope or uncertain application projects `needs_review`;
+  cancelled unapplied targets project `cancelled`. The public state schema also admits
+  `refused`; review/apply refusal does not itself create an applied target.
+
+  `JobDeploymentDescription` returns only `{ deployment, installation }` for the authorized
+  machine/plugin. `deployment` is null or the newest retained target's
+  `{ deploymentId, machineId, pluginId, revision, state, reason }`, without the operator's
+  review, approval identity or other destinations. `installation` is independently null or
+  `{ revision, artifactSha256, machine }` from the actual current native installation's
+  retained declaration, even when no deployment exists. It is not the newest manifest or
+  proposed review and is not an acknowledgement/readiness claim. Use ordinary `describe`
+  for readiness, consent and explicit retained-revision inspection. The separate description
+  schema leaves the old strict `JobDescription` shape unchanged.
+
+  All six doors retain opaque action traces. Deferred transitions append safe phase,
+  destination/pin, digest and reason metadata with original actor/authority/door and parent
+  trace attribution to the existing journal, not a second audit log. Existing empty-payload
+  `job_access_changed` notifications on the `engine.jobs` topic prompt readers to reread
+  authorized state; they carry no approval payload or queue semantics. This extends native
+  installation authority without changing the machine-owner wire version or granting
+  release, production promotion, fleet installation or operational acceptance.
+
 - **Retained discovery.** `engine.jobs.listRuns({ machineId, pluginId, operationId?, limit?, cursor? })`
   and the plugin-scoped `ctx.jobs.listRuns` recover jobs and scheduled occurrences without
   execution. Results are `{ runs, nextCursor }`; each run has nullable `job` and `occurrence`,
@@ -2963,6 +3096,29 @@ provider handling and postconditions belong to plugins, never the common floor.
   same `consent` action, without authorizing new starts or replaying old jobs. Output
   availability still depends on the proved owner and retained bytes; purged/released
   output references do not become readable again on re-enable or reinstall.
+- **Reading a finished job.** `engine.jobs.outputs` / `ctx.jobs.outputs({ node, name, offset,
+limit })` reads one declared output of a FINISHED job of the calling plugin, addressed by
+  the operation's output name rather than by an owner-minted output ID, in pages of at most
+  64 KiB. It answers `{ jobId, outputId, name, sha256, files, total, offset, data, eof }`,
+  where `total` is the sealed length. An unfinished job refuses `job_unfinished`, an unsealed
+  name refuses `unknown_job_output`, and another plugin's job refuses like every other job
+  door; the page itself is the same authorized private read as `output`, so a consent revoked
+  between pages refuses the next one. `engine.jobs.journal` / `ctx.jobs.journal({ node,
+after?, limit? })` reads that finished job's durable LIFECYCLE frames — `{ jobId, events:
+[{ seq, at, event }], firstSeq, nextAfter }`, at most 128 retained per job, oldest dropped
+  first and dropped entirely on purge. Byte-channel frames are never journaled, so gaps in
+  `seq` are stdout/stderr and never loss, and `firstSeq` discloses what retention dropped.
+  Neither door starts, resumes or re-executes anything, and neither replaces `follow`.
+- **Settled-job wake.** A server half may declare `onJobSettled(ctx, job)`; the host calls it
+  once per settled job of THAT plugin with `{ jobId, machineId, operationId, pluginId, state,
+exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's own terminal
+  state and sealed output descriptors, never bytes. It is published after the result and its
+  journal frame are durable, delivery is at-least-once, and consumers must be idempotent.
+  `ctx.jobs` on that hook is bound to the job's ORIGINAL credential, restored and rechecked
+  at delivery: a revoked or expired credential is not woken at all, and every read still
+  discharges caps, grants and that revision's consent. `follow` is not served there. The hook
+  obeys the lifecycle bound and the no-veto rule: nothing waits for it, a throw or overrun is
+  logged and never retried, no lifecycle state is recorded, and a disabled plugin is skipped.
 - **Schedules.** The same admission path consumes durable schedule revision, nominal
   occurrence, interval, deadline, expiry and `skip`/`coalesce-one` offline policy. Occurrence
   identity is committed before enqueue. Original credential lineage/ceiling persists;
@@ -3217,7 +3373,7 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- layout:<principalId>
 ```
 
-Schema version 25 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
+Schema version 31 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
 — `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
 `grants` substrate; 14 is the trace ledger — five nullable columns on `events`; 15 is credential
 expiry — `tokens.expires_at`; 16 retires the grant rows of already-revoked tokens, the same rule
@@ -3229,7 +3385,20 @@ new table and nothing rewritten; 18 adds `plugin_installs.actions`, defaulted to
 22 records plugin install mode, defaulting to `bundle`;
 23 moves the drawing plugin's durable identity to `core.canvas.draw`;
 24 bounds legacy human and ordinary-agent credentials with a one-time grace period;
-25 adds governed machine jobs, consent, decisions, outputs, schedules and authority revisions).
+25 adds governed machine jobs, consent, decisions, outputs, schedules and authority revisions;
+26 records owner-confirmed stdin sequencing and input decisions;
+27 adds installation resource bindings and native service configurations;
+28 records owner workload closure and instance-service ownership;
+29 distinguishes cancellation from cooperative retirement;
+30 adds reviewed native deployment approvals and their fenced per-destination phases;
+31 retains a finished job's lifecycle frames).
+Migration 30 adds `machine_job_deployments` and `machine_job_deployment_targets`, including
+the partial unique index that permits only one pending/applying approval per machine/plugin.
+It does not rewrite existing installation or consent rows. Those rows remain the authority
+for committed effects; deployment rows retain reviewed scope, lifecycle and effect receipts.
+Migration 31 adds `machine_job_journal`, keyed by job and sequence. It rewrites nothing:
+a job that finished before the upgrade simply has no frames to read, which is what an empty
+page already means.
 Migrations 12, 14, 15, 17, 18 and 20 are plain SQL for the same reason: none touches a stored
 document and existing rows need no backfill, since absence already means the right thing — a
 NULL origin means "this instance", a NULL `door` means "this row is an event, not a trace", a

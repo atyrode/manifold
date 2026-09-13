@@ -14,6 +14,39 @@ import {
   type PublicJob,
   type PublicScheduleOccurrence,
 } from "../src/jobs.ts";
+import { JobDeploymentRequestSchema } from "../src/job-deployments.ts";
+
+test("deployment scope requires explicit operations and bounded unique destinations", () => {
+  const request = {
+    deploymentId: "reviewed",
+    pluginId: "sample.worker",
+    targets: [{ machineId: "second" }, { machineId: "first" }],
+    operationIds: [],
+  };
+  expect(JobDeploymentRequestSchema.parse(request).targets).toEqual(request.targets);
+  expect(
+    JobDeploymentRequestSchema.safeParse({ ...request, operationIds: undefined }).success,
+  ).toBe(false);
+  expect(JobDeploymentRequestSchema.safeParse({ ...request, targets: [] }).success).toBe(false);
+  expect(
+    JobDeploymentRequestSchema.safeParse({
+      ...request,
+      targets: [request.targets[0], request.targets[0]],
+    }).success,
+  ).toBe(false);
+  expect(
+    JobDeploymentRequestSchema.safeParse({
+      ...request,
+      targets: Array.from({ length: 65 }, (_, index) => ({ machineId: `destination-${index}` })),
+    }).success,
+  ).toBe(false);
+  expect(
+    JobDeploymentRequestSchema.safeParse({
+      ...request,
+      operationIds: ["sample.worker.run", "sample.worker.run"],
+    }).success,
+  ).toBe(false);
+});
 
 const location = { anchor: "config", components: ["vault"], revision: "r1", kind: "file" };
 test("guest paths permit exact hidden files but never home-root or noncanonical paths", () => {

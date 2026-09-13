@@ -1,7 +1,7 @@
 /**
- * THE TWO WAYS A GUEST'S CALL INTO THE ENGINE FAILS, as classes a plugin may catch by name.
+ * THE WAYS A GUEST'S CALL INTO THE ENGINE FAILS, as classes a plugin may catch by name.
  *
- * Both guest runtimes map an uncaught instance of either to the named refusal their wire
+ * Both guest runtimes map an uncaught instance of any of them to the named refusal their wire
  * allows — `{ ok: false, rule: "refused" }` for a server dispatch, a `hooked { ok: false }` for
  * a lifecycle hook, a `fault` for a panel — so an author who does not catch them still gets a
  * sentence at the door rather than a hang (ADR 0016 §6).
@@ -36,5 +36,21 @@ export class HostCallError extends Error {
     this.name = "HostCallError";
     this.method = method;
     this.detail = detail;
+  }
+}
+
+/**
+ * A REFUSED DATABASE OPERATION (ADR 0034 §4), by the name the contract promises: a statement
+ * over its size, too many parameters, an oversize batch, a keyword that would reach outside
+ * this plugin's own file, or a plugin that never declared a database at all. The guest raises
+ * it for the bounds it can judge BEFORE the round trip and for the host's own refusal after
+ * one, so a plugin has exactly one class to catch whichever side decided — the same promise
+ * `PluginDatabaseError` makes to an in-realm plugin, kept here without reaching into the
+ * engine's package (see `server.ts` §the database rules).
+ */
+export class PluginDatabaseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PluginDatabaseError";
   }
 }

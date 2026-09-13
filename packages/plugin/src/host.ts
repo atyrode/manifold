@@ -7,6 +7,7 @@ import type {
   ContainerTerminalSummary,
   IndexEntry,
   ManifoldRef,
+  PanelArg,
   PlaceResponse,
   PlacementDenial,
   PlacementDestination,
@@ -532,11 +533,77 @@ export interface HostServices {
    * {@link FeedTopics}.
    */
   readonly topics: FeedTopics;
+  /**
+   * OPEN ONE OF YOUR OWN PANELS, for a thing: place it as a tile beside the caller's own
+   * seat, carrying the opaque {@link PanelArg} the panel then reads off
+   * {@link PanelProps.arg} (issue #516). The answer to "a record cannot be opened in a
+   * second tile": two tiles of one panel showing two records are two seats, each with its
+   * own argument, rather than one panel guessing from a store its tiles share.
+   *
+   * YOUR OWN, and only: `panelId` is a FULL panel id and it must belong to the same plugin
+   * as the calling panel, else the answer is `other_plugin`. Opening somebody else's panel
+   * would be one plugin arranging another's workspace presence, which the tile tree already
+   * has an owner for — the principal, through `core.arrange`.
+   *
+   * IT PLACES THROUGH THE ONE DOOR a workspace tree has ever been written by: the commit is
+   * {@link TileGeometryHandle}'s `applyLayout`, so the write, its authority and its trace are
+   * a grip release's, and nothing here can reach a tree this caller could not already write.
+   *
+   * ALREADY OPEN MEANS FOCUSED, not duplicated: when a tile of that panel already shows an
+   * argument naming the same thing, the answer is that tile (`placed: false`) and the host
+   * moves the reader's focus into it instead of placing a second copy. Opening the same panel
+   * with a DIFFERENT argument is a second tile, which is the point.
+   *
+   * Only a PANEL may ask — a section, an overlay or a route holds the workspace's own host,
+   * which has no seat to open beside and answers `no_tile`.
+   */
+  openPanel(request: OpenPanelRequest): OpenPanelOutcome;
 }
+
+/**
+ * What to open, and where. `beside` is the placement RULE, and `"self"` — after the caller's
+ * own seat, along the axis its parent splits on — is the only one there is today, so absence
+ * means exactly that; a second rule is a member of this word rather than a second method.
+ */
+export interface OpenPanelRequest {
+  /** FULL panel id (`acme.notes.record`), of the CALLER's own plugin. */
+  readonly panelId: string;
+  /** What the panel is being opened for; absent ≡ the panel's argument-free tile. */
+  readonly arg?: PanelArg | undefined;
+  readonly beside?: "self" | undefined;
+}
+
+/**
+ * Why an opening was refused, as a member of a closed set rather than prose — a caller
+ * renders a refusal, and `place()`'s denials are read back mechanically for the same reason.
+ *
+ *   `unknown_panel` — the assembly declares no panel by that id.
+ *   `other_plugin`  — that panel belongs to another plugin.
+ *   `invalid_arg`   — the argument is not bounded JSON data (`validPanelArg`).
+ *   `no_tile`       — the caller holds no seat in a live workspace tree, or the tree refused
+ *                     the insert. Nothing was written either way.
+ */
+export type OpenPanelRefusal = "unknown_panel" | "other_plugin" | "invalid_arg" | "no_tile";
+
+/** What `openPanel()` answers: the tile that shows it now, or the rule that refused. */
+export type OpenPanelOutcome =
+  | { readonly ok: true; readonly tileId: string; readonly placed: boolean }
+  | { readonly ok: false; readonly refused: OpenPanelRefusal };
 
 /** A contributed panel: a tile-ref leaf, including the workspace shell's own two. */
 export interface PanelProps {
   readonly host: HostServices;
+  /**
+   * WHAT THIS TILE IS SHOWING IT FOR: the argument stored on this panel's own leaf, opaque
+   * to everything between the panel that wrote it and the panel that reads it. Absent ≡ this
+   * seat was opened with none, which is every panel that takes none and every tile a
+   * principal arranged by hand.
+   *
+   * It follows the LEAF, so a second tile of the same panel gets its own, and a changed leaf
+   * is a changed prop rather than a remount: a panel renders from this the way it renders
+   * from any other prop, and must not copy it into state it then fails to refresh.
+   */
+  readonly arg?: PanelArg | undefined;
 }
 
 /** A contributed sidebar section, ordered by its manifest's declared `order`. */

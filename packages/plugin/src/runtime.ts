@@ -1,8 +1,11 @@
 import type {
   JobDescription,
+  JobDeploymentDescription,
   JobEvent,
   JobFollowSnapshot,
   JobFollowUpdate,
+  JobJournalPage,
+  JobOutputPage,
   JobRequest,
   JobResourceBindings,
   ListJobRunsArgs,
@@ -62,6 +65,7 @@ export interface PluginJobContext {
     pluginId: string;
     installationRevision?: string | undefined;
   }): JobDescription;
+  describeDeployment(args: { machineId: string; pluginId: string }): JobDeploymentDescription;
   execute(args: JobExecution): PublicJob;
   status(node: JobNode): PublicJob;
   listRuns(args: ListJobRunsArgs): ListJobRunsResult;
@@ -79,6 +83,19 @@ export interface PluginJobContext {
     offset: number;
     maxBytes: number;
   }): Promise<Extract<JobEvent, { type: "output" }>>;
+  /** One finished job's declared output by name, paged; `total` is its sealed length. */
+  outputs(args: {
+    node: JobNode;
+    name: string;
+    offset: number;
+    limit: number;
+  }): Promise<JobOutputPage>;
+  /** A finished job's retained lifecycle frames; live observation is `follow`. */
+  journal(args: {
+    node: JobNode;
+    after?: number | undefined;
+    limit?: number | undefined;
+  }): JobJournalPage;
   schedule(args: JobExecution & JobScheduleTiming): Record<string, never>;
   schedules(): PublicJobSchedule[];
   disableSchedule(args: { scheduleId: string; revision: string }): Record<string, never>;

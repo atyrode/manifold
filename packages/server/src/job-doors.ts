@@ -13,12 +13,26 @@ import {
   type ListJobRunsArgs,
   type ListJobRunsResult,
   JobEventSchema,
+  JobJournalPageSchema,
+  JobOutputPageSchema,
+  MAX_JOB_JOURNAL_EVENTS,
+  MAX_JOB_OUTPUT_PAGE_BYTES,
   JobRequestSchema,
   PublicJobSchema,
   JobDescriptionSchema,
   MachineHalfSchema,
   JobResourceBindingsSchema,
   type PublicJob,
+  JobDeploymentRequestSchema,
+  JobDeploymentApplyArgsSchema,
+  JobDeploymentReviewSchema,
+  JobDeploymentReadArgsSchema,
+  JobDeploymentListArgsSchema,
+  JobDeploymentListResultSchema,
+  JobDeploymentCancelArgsSchema,
+  JobDeploymentDescribeArgsSchema,
+  JobDeploymentDescriptionSchema,
+  JobDeploymentSchema,
 } from "@manifold/protocol";
 import { z } from "zod";
 import { ServiceError, type AuthContext } from "./auth.ts";
@@ -58,6 +72,12 @@ const publicSchedule = schedule
 export const jobDoorSchemas = {
   execute: execute.extend({ pluginId: id }),
   describe: z.strictObject({ machineId: id, pluginId: id, installationRevision: id.optional() }),
+  reviewDeployment: JobDeploymentRequestSchema,
+  applyDeployment: JobDeploymentApplyArgsSchema,
+  readDeployment: JobDeploymentReadArgsSchema,
+  listDeployments: JobDeploymentListArgsSchema,
+  cancelDeployment: JobDeploymentCancelArgsSchema,
+  describeDeployment: JobDeploymentDescribeArgsSchema,
   status: z.strictObject({ node: jobNode }),
   listRuns: ListJobRunsArgsSchema.extend({ pluginId: JobRequestSchema.shape.pluginId }),
   input: z.strictObject({
@@ -72,6 +92,18 @@ export const jobDoorSchemas = {
     node: outputNode,
     offset: z.number().int().nonnegative(),
     maxBytes: z.number().int().positive().max(65536),
+  }),
+  /** A finished job's own output, by declared name: the reader never learns an output ID. */
+  outputs: z.strictObject({
+    node: jobNode,
+    name: JobOutputPageSchema.shape.name,
+    offset: z.number().int().nonnegative(),
+    limit: z.number().int().positive().max(MAX_JOB_OUTPUT_PAGE_BYTES),
+  }),
+  journal: z.strictObject({
+    node: jobNode,
+    after: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    limit: z.number().int().positive().max(MAX_JOB_JOURNAL_EVENTS).optional(),
   }),
   install: z.strictObject({
     machineId: id,
@@ -103,7 +135,7 @@ export function jobContext(
   service: () => JobService,
   auth: AuthContext,
   pluginId: string,
-  traceId: number,
+  traceId: number | string,
 ): JobContext {
   const callee = (requested?: string): string =>
     pluginId === "engine.jobs" ? id.parse(requested) : pluginId;
@@ -112,6 +144,28 @@ export function jobContext(
   };
   return {
     describe: (args) => service().describe(auth, schemas.describe.parse(args), pluginId),
+    describeDeployment: (args) =>
+      service().describeDeployment(auth, schemas.describeDeployment.parse(args), pluginId),
+    reviewDeployment: (args) => {
+      administrator();
+      return service().reviewDeployment(auth, schemas.reviewDeployment.parse(args));
+    },
+    applyDeployment: (args) => {
+      administrator();
+      return service().applyDeployment(auth, schemas.applyDeployment.parse(args), String(traceId));
+    },
+    readDeployment: (args) => {
+      administrator();
+      return service().readDeployment(auth, schemas.readDeployment.parse(args));
+    },
+    listDeployments: (args) => {
+      administrator();
+      return service().listDeployments(auth, schemas.listDeployments.parse(args));
+    },
+    cancelDeployment: (args) => {
+      administrator();
+      return service().cancelDeployment(auth, schemas.cancelDeployment.parse(args));
+    },
     execute: (args) => {
       const { pluginId: requested, ...request } = args;
       return service().publicJob(
@@ -151,6 +205,20 @@ export function jobContext(
     output: (args: z.infer<typeof schemas.output>) => {
       const a = schemas.output.parse(args);
       return service().output(auth, a.node, a.offset, a.maxBytes, pluginId);
+    },
+    outputs: (args: z.infer<typeof schemas.outputs>) => {
+      const a = schemas.outputs.parse(args);
+      return service().outputs(auth, a.node, a.name, a.offset, a.limit, pluginId);
+    },
+    journal: (args: z.infer<typeof schemas.journal>) => {
+      const a = schemas.journal.parse(args);
+      return service().journal(
+        auth,
+        a.node,
+        a.after ?? 0,
+        a.limit ?? MAX_JOB_JOURNAL_EVENTS,
+        pluginId,
+      );
     },
     install: (args: z.infer<typeof schemas.install>) => {
       administrator();
@@ -201,6 +269,19 @@ export function jobContext(
   };
 }
 export interface JobContext extends PluginJobContext {
+  reviewDeployment(
+    args: z.infer<typeof schemas.reviewDeployment>,
+  ): z.infer<typeof JobDeploymentReviewSchema>;
+  applyDeployment(
+    args: z.infer<typeof schemas.applyDeployment>,
+  ): z.infer<typeof JobDeploymentSchema>;
+  readDeployment(args: z.infer<typeof schemas.readDeployment>): z.infer<typeof JobDeploymentSchema>;
+  listDeployments(
+    args: z.infer<typeof schemas.listDeployments>,
+  ): z.infer<typeof JobDeploymentListResultSchema>;
+  cancelDeployment(
+    args: z.infer<typeof schemas.cancelDeployment>,
+  ): z.infer<typeof JobDeploymentSchema>;
   execute(args: z.infer<typeof execute> & { pluginId?: string }): PublicJob;
   listRuns(args: ListJobRunsArgs & { pluginId?: string }): ListJobRunsResult;
   install(args: z.infer<typeof schemas.install>): { accepted: true };
@@ -220,6 +301,27 @@ async function call(run: () => unknown) {
 }
 const empty = z.strictObject({});
 const accepted = z.strictObject({ accepted: z.literal(true) });
+/** What each door answers with; everything absent here answers the empty object. */
+const results: Record<string, z.ZodType<unknown>> = {
+  reviewDeployment: JobDeploymentReviewSchema,
+  applyDeployment: JobDeploymentSchema,
+  readDeployment: JobDeploymentSchema,
+  cancelDeployment: JobDeploymentSchema,
+  listDeployments: JobDeploymentListResultSchema,
+  describeDeployment: JobDeploymentDescriptionSchema,
+  inspectInvocations: InspectJobInvocationsResultSchema,
+  describe: JobDescriptionSchema,
+  execute: publicJob,
+  status: publicJob,
+  listRuns: ListJobRunsResultSchema,
+  output: JobEventSchema,
+  outputs: JobOutputPageSchema,
+  journal: JobJournalPageSchema,
+  schedules: z.array(publicSchedule),
+  install: accepted,
+  input: accepted,
+  cancel: accepted,
+} satisfies Partial<Record<keyof typeof schemas, z.ZodType<unknown>>>;
 export const jobDoors: ServerPluginDef = {
   manifest: {
     id: "engine.jobs",
@@ -246,33 +348,35 @@ export const jobDoors: ServerPluginDef = {
       caps:
         name === "install" ||
         name === "consent" ||
+        name === "reviewDeployment" ||
+        name === "applyDeployment" ||
+        name === "readDeployment" ||
+        name === "listDeployments" ||
+        name === "cancelDeployment" ||
         name === "setInvocationEdge" ||
         name === "inspectInvocations"
           ? ["*"]
           : [],
       trace: "opaque",
       input,
-      result:
-        name === "inspectInvocations"
-          ? InspectJobInvocationsResultSchema
-          : name === "describe"
-            ? JobDescriptionSchema
-            : name === "execute" || name === "status"
-              ? publicJob
-              : name === "listRuns"
-                ? ListJobRunsResultSchema
-                : name === "output"
-                  ? JobEventSchema
-                  : name === "schedules"
-                    ? z.array(publicSchedule)
-                    : name === "install" || name === "input" || name === "cancel"
-                      ? accepted
-                      : empty,
+      result: results[name] ?? empty,
     }),
   ),
   handlers: {
     describe: (ctx: ActionCtx, args: z.infer<typeof schemas.describe>) =>
       call(() => ctx.jobs.describe(args)),
+    describeDeployment: (ctx: ActionCtx, args: z.infer<typeof schemas.describeDeployment>) =>
+      call(() => ctx.jobs.describeDeployment(args)),
+    reviewDeployment: (ctx: ActionCtx, args: z.infer<typeof schemas.reviewDeployment>) =>
+      call(() => ctx.jobs.reviewDeployment(args)),
+    applyDeployment: (ctx: ActionCtx, args: z.infer<typeof schemas.applyDeployment>) =>
+      call(() => ctx.jobs.applyDeployment(args)),
+    readDeployment: (ctx: ActionCtx, args: z.infer<typeof schemas.readDeployment>) =>
+      call(() => ctx.jobs.readDeployment(args)),
+    listDeployments: (ctx: ActionCtx, args: z.infer<typeof schemas.listDeployments>) =>
+      call(() => ctx.jobs.listDeployments(args)),
+    cancelDeployment: (ctx: ActionCtx, args: z.infer<typeof schemas.cancelDeployment>) =>
+      call(() => ctx.jobs.cancelDeployment(args)),
     execute: (ctx: ActionCtx, args: z.infer<typeof schemas.execute>) =>
       call(() => ctx.jobs.execute(args)),
     status: (ctx: ActionCtx, args: z.infer<typeof schemas.status>) =>
@@ -285,6 +389,10 @@ export const jobDoors: ServerPluginDef = {
       call(() => ctx.jobs.cancel(args.node)),
     output: (ctx: ActionCtx, args: z.infer<typeof schemas.output>) =>
       call(() => ctx.jobs.output(args)),
+    outputs: (ctx: ActionCtx, args: z.infer<typeof schemas.outputs>) =>
+      call(() => ctx.jobs.outputs(args)),
+    journal: (ctx: ActionCtx, args: z.infer<typeof schemas.journal>) =>
+      call(() => ctx.jobs.journal(args)),
     install: (ctx: ActionCtx, args: z.infer<typeof schemas.install>) =>
       call(() => ctx.jobs.install(args)),
     consent: (ctx: ActionCtx, args: z.infer<typeof schemas.consent>) =>

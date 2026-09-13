@@ -8,9 +8,12 @@ import type { Hub } from "./hub.ts";
 import {
   exitWith,
   familyOrder,
+  inspectBundle,
   installBundle,
   parseHubFlags,
+  requiredDependencyIds,
   resolveOwnerKey,
+  type BundleFacts,
   type Delivery,
   type InstallOutcome,
 } from "./install.ts";
@@ -25,8 +28,8 @@ import { packPlugin, type PackResult } from "./pack.ts";
  *
  * Every directory under the root holding a `manifest.json` is a plugin (a part lives inside
  * its parent's directory, ADR 0023; `node_modules` and `dist` are never looked into). Each is
- * packed into a temporary directory and installed parents first, with `install`'s exact
- * semantics — so the first cycle on a hub that already runs these ids is a set of `unchanged`
+ * packed into a temporary directory and installed dependencies and parents first, with
+ * `install`'s exact semantics — so the first cycle on a hub that already runs these ids is a set of `unchanged`
  * lines and costs nothing. Then the root is watched; a burst of saves is one cycle, and a
  * cycle installs only the bundles whose sha changed. A cycle that fails to pack or install
  * reports the failure and the loop keeps watching: the author's next save is the retry.
@@ -50,18 +53,18 @@ interface CycleReport {
   readonly ms: number;
 }
 
-/** Every plugin directory under `root`, as `{ dir, id }`, by walking for `manifest.json`. */
+/** Every plugin directory under `root`, with required ids from its validated manifest. */
 export async function discoverPlugins(
   root: string,
-): Promise<{ readonly dir: string; readonly id: string }[]> {
-  const found: { dir: string; id: string }[] = [];
+): Promise<(Pick<BundleFacts, "id" | "requiredDependencies"> & { readonly dir: string })[]> {
+  const found: (Pick<BundleFacts, "id" | "requiredDependencies"> & { readonly dir: string })[] = [];
   const walk = async (dir: string): Promise<void> => {
     const entries = await readdir(dir, { withFileTypes: true });
     if (entries.some((entry) => entry.isFile() && entry.name === "manifest.json")) {
       const manifest = PluginManifestSchema.parse(
         await Bun.file(join(dir, "manifest.json")).json(),
       );
-      found.push({ dir, id: manifest.id });
+      found.push({ dir, id: manifest.id, requiredDependencies: requiredDependencyIds(manifest) });
     }
     for (const entry of entries) {
       if (entry.isDirectory() && SKIPPED_DIRS[entry.name] !== true)
@@ -78,7 +81,7 @@ interface DevOptions {
   readonly deliver?: Delivery;
   readonly hardened?: boolean;
   readonly packDir: string;
-  readonly build?: (packDir: string) => Promise<readonly (PackResult & { readonly id: string })[]>;
+  readonly build?: (packDir: string) => Promise<readonly PackResult[]>;
 }
 
 /**
@@ -92,20 +95,29 @@ async function cycle(
 ): Promise<CycleReport> {
   const started = performance.now();
   const plugins: CycleEntry[] = [];
-  let bundles: readonly (PackResult & { readonly id: string })[];
+  let results: readonly PackResult[];
   if (options.build) {
-    bundles = await options.build(options.packDir);
+    results = await options.build(options.packDir);
   } else {
-    const built: (PackResult & { readonly id: string })[] = [];
+    const built: PackResult[] = [];
     for (const plugin of await discoverPlugins(options.root)) {
       const file = join(options.packDir, `${plugin.id}.manifold-plugin.json`);
-      built.push({
-        id: plugin.id,
-        ...(await packPlugin(plugin.dir, file, { shared: options.hardened !== true })),
-      });
+      built.push(await packPlugin(plugin.dir, file, { shared: options.hardened !== true }));
     }
-    bundles = built;
+    results = built;
   }
+  // Compilation is the snapshot boundary. Trust neither discovery metadata nor a custom
+  // builder's summary after it has produced the actual bytes the hub will install.
+  const bundles = familyOrder(
+    await Promise.all(
+      results.map(async (packed) => {
+        const facts = await inspectBundle(packed.file);
+        if (facts.sha256 !== packed.sha256)
+          throw new Error(`${packed.file}: changed after compilation`);
+        return { ...packed, id: facts.id, requiredDependencies: facts.requiredDependencies };
+      }),
+    ),
+  );
   // A failed compiler must leave every installed part at its previous version.
   for (const packed of bundles) {
     if (last.get(packed.id) === packed.sha256) {
