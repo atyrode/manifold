@@ -134,10 +134,10 @@ function ReviewedPreparation({ review }: { readonly review: JobDeploymentReview 
               <Stack gap="0.65rem">
                 <strong>Exact service-runtime invocation edges</strong>
                 <p>
-                  These edges are additional authority, separate from operation and location consent.
-                  Caller pins identify the installation being prepared. Approval permits only each
-                  pinned caller to invoke its pinned callee with the resources and limits shown.
-                  Changed pins or authority require a fresh review.
+                  These edges are additional authority, separate from operation and location
+                  consent. Caller pins identify the installation being prepared. Approval permits
+                  only each pinned caller to invoke its pinned callee with the resources and limits
+                  shown. Changed pins or authority require a fresh review.
                 </p>
                 {target.invocationEdges.map(({ edge, approved, revision }) => (
                   <section
@@ -732,8 +732,8 @@ export function RuntimePreparation({
         Prepare runtime destinations
       </h5>
       <p>
-        Choose exact machines, then review the server's pinned installation, optional consent and any
-        service-runtime invocation edges before applying. Plugin enablement is separate from
+        Choose exact machines, then review the server's pinned installation, optional consent and
+        any service-runtime invocation edges before applying. Plugin enablement is separate from
         installation and permissions. New machines never join this selection automatically; no
         operation is selected by default.
       </p>
@@ -952,8 +952,8 @@ export function RuntimePreparation({
             {invocationEdgeCount > 0 ? (
               <p>
                 Includes {invocationEdgeCount} exact service-runtime invocation{" "}
-                {invocationEdgeCount === 1 ? "edge" : "edges"}. Review caller and callee pins, location
-                access, output mappings and limits below before approving.
+                {invocationEdgeCount === 1 ? "edge" : "edges"}. Review caller and callee pins,
+                location access, output mappings and limits below before approving.
               </p>
             ) : null}
             <button

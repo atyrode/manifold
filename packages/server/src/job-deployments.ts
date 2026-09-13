@@ -286,10 +286,7 @@ export class JobDeployments {
       };
     });
   }
-  private previousInvocationEdges(
-    request: JobDeploymentRequest,
-    current: JobInstallation | null,
-  ) {
+  private previousInvocationEdges(request: JobDeploymentRequest, current: JobInstallation | null) {
     if (!current) return [];
     return request.operationIds.map((operationId) =>
       this.service.store.db
@@ -307,10 +304,7 @@ export class JobDeployments {
         ),
     );
   }
-  private receipt(
-    request: JobDeploymentRequest,
-    target: JobDeploymentTargetReview,
-  ): TargetReceipt {
+  private receipt(request: JobDeploymentRequest, target: JobDeploymentTargetReview): TargetReceipt {
     return {
       consents: digest(
         this.consents(
@@ -356,7 +350,11 @@ export class JobDeployments {
         target.installationRevision && target.artifactSha256
           ? this.host.invocations(
               auth,
-              this.proposedInstallation(request, target, this.service.declaredMachine(request.pluginId)!),
+              this.proposedInstallation(
+                request,
+                target,
+                this.service.declaredMachine(request.pluginId)!,
+              ),
               request.operationIds,
             ).digest
           : digest(null),
@@ -894,9 +892,7 @@ export class JobDeployments {
       const desired = this.proposed(approval, target);
       if (this.installation(current) !== this.installation(desired))
         return result("needs_review", "installation_changed");
-      const receipt = record.receipt
-        ? (JSON.parse(record.receipt) as TargetReceipt)
-        : null;
+      const receipt = record.receipt ? (JSON.parse(record.receipt) as TargetReceipt) : null;
       const currentReceipt = this.receipt(request, target);
       if (receipt?.invocationEdges !== currentReceipt.invocationEdges)
         return result("needs_review", "invocation_edge_changed");

@@ -2146,8 +2146,7 @@ export class JobService {
         if (!explained.allowed || !consent) refusal ??= "authority_or_consent_refused";
         return {
           ...explained,
-          consent:
-            consent ?? this.consentFor(callee, requirement.ref, requirement.cap, false),
+          consent: consent ?? this.consentFor(callee, requirement.ref, requirement.cap, false),
         };
       });
       evidence.push({ candidate, installation, authority });

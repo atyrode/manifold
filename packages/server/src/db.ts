@@ -755,7 +755,9 @@ UPDATE job_invocation_edges SET revision=lower(hex(randomblob(16)));
       const emptyScope = createHash("sha256")
         .update(canonicalJobJson({ evidence: [], unavailable: [] }))
         .digest("hex");
-      const emptyApprovals = createHash("sha256").update(canonicalJobJson([[], []])).digest("hex");
+      const emptyApprovals = createHash("sha256")
+        .update(canonicalJobJson([[], []]))
+        .digest("hex");
       for (const row of db
         .query<{ deployment_id: string; approval: string }, []>(
           "SELECT deployment_id,approval FROM machine_job_deployments WHERE approval<>''",

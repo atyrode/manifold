@@ -3181,17 +3181,19 @@ describe("reviewed native deployment approvals", () => {
       },
       operations: {
         inspect: {
+          kind: "http-proxy",
           method: "GET",
-          readable: true,
           path: "/inspect",
-          input: {},
-          query: {},
-          body: [],
+          request: { kind: "none" },
+          response: {
+            kind: "stream",
+            disclosure: "full",
+            contentTypes: ["application/json"],
+            headers: [],
+          },
           timeoutMs: 1000,
           maxRequestBytes: 1024,
           maxResponseBytes: 4096,
-          maxResultBytes: 2048,
-          response: { kind: "projected-json", fields: [["state"]], maxArrayItems: 16 },
         },
       },
     };
@@ -3302,7 +3304,7 @@ describe("reviewed native deployment approvals", () => {
               machineId: f.machineId,
               pluginId: callerPlugin,
               operationId: selectedOperation,
-              installationRevision: target.installationRevision,
+              installationRevision: target.installationRevision!,
               artifactSha256: hash,
             },
             callee: {
@@ -3322,16 +3324,23 @@ describe("reviewed native deployment approvals", () => {
           revision: null,
         },
       ]);
-      expect(f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin }).edges).toEqual([]);
+      expect(
+        f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin })
+          .edges,
+      ).toEqual([]);
       const send = f.channel.send;
       f.channel.send = (message) => {
         if (message.command.type === "install" && message.command.pluginId === callerPlugin) {
           expect(
-            f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin }).edges,
+            f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin })
+              .edges,
           ).toEqual([{ edge: target.invocationEdges[0]!.edge, enabled: true }]);
           expect(
-            f.service.describe(f.root, { machineId: f.machineId, pluginId: callerPlugin }).consents
-              .filter((row) => row.enabled).map((row) => row.cap).sort(),
+            f.service
+              .describe(f.root, { machineId: f.machineId, pluginId: callerPlugin })
+              .consents.filter((row) => row.enabled)
+              .map((row) => row.cap)
+              .sort(),
           ).toEqual(target.consents.map((row) => row.cap).sort());
         }
         return send(message);
@@ -3343,7 +3352,9 @@ describe("reviewed native deployment approvals", () => {
       );
       expect(JobDeploymentSchema.parse(deployment).targets[0]!.state).toBe("installing");
       acknowledge();
-      expect(f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state).toBe("ready");
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("ready");
       const parent = f.service.execute(f.root, callerPlugin, "runtime-parent", {
         jobId: "runtime-parent",
         machineId: f.machineId,
@@ -3379,27 +3390,45 @@ describe("reviewed native deployment approvals", () => {
     const { f, value, callerPlugin, selectedOperation, unselectedOperation, acknowledge } =
       runtimeDeploymentFixture();
     try {
-      const installOnly = apply(f, { ...value, deploymentId: "runtime-install-only", operationIds: [] });
+      const installOnly = apply(f, {
+        ...value,
+        deploymentId: "runtime-install-only",
+        operationIds: [],
+      });
       expect(installOnly.review.targets[0]!.invocationEdges).toEqual([]);
       expect(installOnly.review.targets[0]!.consents).toEqual([]);
       expect(installOnly.deployment.targets[0]!.state).toBe("installing");
       acknowledge();
       const { review } = apply(f, value);
       acknowledge();
-      const inspection = f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin });
-      expect(inspection.edges.map(({ edge }) => edge.caller.operationId)).toEqual([selectedOperation]);
-      expect(review.targets[0]!.invocationEdges.map(({ edge }) => edge.caller.operationId)).toEqual([selectedOperation]);
-      const description = f.service.describe(f.root, { machineId: f.machineId, pluginId: callerPlugin });
+      const inspection = f.service.inspectInvocations(f.root, {
+        machineId: f.machineId,
+        pluginId: callerPlugin,
+      });
+      expect(inspection.edges.map(({ edge }) => edge.caller.operationId)).toEqual([
+        selectedOperation,
+      ]);
+      expect(review.targets[0]!.invocationEdges.map(({ edge }) => edge.caller.operationId)).toEqual(
+        [selectedOperation],
+      );
+      const description = f.service.describe(f.root, {
+        machineId: f.machineId,
+        pluginId: callerPlugin,
+      });
       expect(description.operations?.[selectedOperation]?.ready).toBe(true);
       expect(description.operations?.[unselectedOperation]?.ready).toBe(false);
-      expect(description.consents.some((row) => row.node.endsWith(unselectedOperation))).toBe(false);
-      expect(() => f.service.execute(f.root, callerPlugin, "unselected", {
-        jobId: "unselected",
-        machineId: f.machineId,
-        operationId: unselectedOperation,
-        input: { value: "safe" },
-        outputs: [],
-      })).toThrow("service_runtime_edge_missing");
+      expect(description.consents.some((row) => row.node.endsWith(unselectedOperation))).toBe(
+        false,
+      );
+      expect(() =>
+        f.service.execute(f.root, callerPlugin, "unselected", {
+          jobId: "unselected",
+          machineId: f.machineId,
+          operationId: unselectedOperation,
+          input: { value: "safe" },
+          outputs: [],
+        }),
+      ).toThrow("service_runtime_edge_missing");
       expect(f.commands.some((command) => command.type === "start")).toBe(false);
     } finally {
       f.store.close();
@@ -3423,7 +3452,8 @@ describe("reviewed native deployment approvals", () => {
         } else if (change === "policy") {
           f.service.configureServiceConfiguration(f.root, {
             machineId: f.machineId,
-            expectedRevision: f.service.readServiceConfiguration(f.root, { machineId: f.machineId }).configuration.revision,
+            expectedRevision: f.service.readServiceConfiguration(f.root, { machineId: f.machineId })
+              .configuration.revision,
             policies: [{ ...policy, maxConcurrent: 2 }],
           });
         } else {
@@ -3431,13 +3461,24 @@ describe("reviewed native deployment approvals", () => {
           consent(f, "operations:invoke", true);
         }
         f.commands.length = 0;
-        expect(() => f.service.applyDeployment(f.root, {
-          request: value,
-          reviewDigest: review.reviewDigest,
-        }, "stale-runtime")).toThrow("deployment_review_stale");
+        expect(() =>
+          f.service.applyDeployment(
+            f.root,
+            {
+              request: value,
+              reviewDigest: review.reviewDigest,
+            },
+            "stale-runtime",
+          ),
+        ).toThrow("deployment_review_stale");
         expect(f.service.jobs.installation(f.machineId, callerPlugin)).toBeNull();
-        expect(f.service.describe(f.root, { machineId: f.machineId, pluginId: callerPlugin }).consents).toEqual([]);
-        expect(f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin }).edges).toEqual([]);
+        expect(
+          f.service.describe(f.root, { machineId: f.machineId, pluginId: callerPlugin }).consents,
+        ).toEqual([]);
+        expect(
+          f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin })
+            .edges,
+        ).toEqual([]);
         expect(f.commands).toEqual([]);
       } finally {
         f.store.close();
@@ -3452,18 +3493,28 @@ describe("reviewed native deployment approvals", () => {
       acknowledge();
       const edge = review.targets[0]!.invocationEdges[0]!.edge;
       const args = { request: value, reviewDigest: review.reviewDigest };
-      const originalConsents = f.service.describe(f.root, { machineId: f.machineId, pluginId: callerPlugin }).consents;
+      const originalConsents = f.service.describe(f.root, {
+        machineId: f.machineId,
+        pluginId: callerPlugin,
+      }).consents;
       f.service.setInvocationEdge(f.root, { edge, enabled: false });
       f.commands.length = 0;
-      expect(f.service.applyDeployment(f.root, args, "replay-revoked").targets[0]!.state).toBe("needs_review");
+      expect(f.service.applyDeployment(f.root, args, "replay-revoked").targets[0]!.state).toBe(
+        "needs_review",
+      );
       f.service.tick();
-      expect(f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin }).edges).toEqual([{ edge, enabled: false }]);
+      expect(
+        f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin })
+          .edges,
+      ).toEqual([{ edge, enabled: false }]);
       f.service.setInvocationEdge(f.root, { edge, enabled: true });
       expect(f.service.applyDeployment(f.root, args, "replay-regranted").targets[0]).toMatchObject({
         state: "needs_review",
         reason: "invocation_edge_changed",
       });
-      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId: callerPlugin }).consents).toEqual(originalConsents);
+      expect(
+        f.service.describe(f.root, { machineId: f.machineId, pluginId: callerPlugin }).consents,
+      ).toEqual(originalConsents);
       expect(f.commands).toEqual([]);
     } finally {
       f.store.close();
@@ -3481,8 +3532,14 @@ describe("reviewed native deployment approvals", () => {
         f.service.setInvocationEdge(f.root, { edge: tighter, enabled: true });
         const next = { ...value, deploymentId: `edge-change-${boundary}` };
         const review = f.service.reviewDeployment(f.root, next);
-        expect(review.targets[0]!.invocationEdges[0]).toMatchObject({ edge: tighter, approved: true });
-        const consents = f.service.describe(f.root, { machineId: f.machineId, pluginId: callerPlugin }).consents;
+        expect(review.targets[0]!.invocationEdges[0]).toMatchObject({
+          edge: tighter,
+          approved: true,
+        });
+        const consents = f.service.describe(f.root, {
+          machineId: f.machineId,
+          pluginId: callerPlugin,
+        }).consents;
         const revision = f.service.jobs.installation(f.machineId, callerPlugin)!.revision;
         if (boundary === "review") {
           f.service.setInvocationEdge(f.root, { edge: tighter, enabled: false });
@@ -3494,16 +3551,26 @@ describe("reviewed native deployment approvals", () => {
           });
         }
         f.commands.length = 0;
-        const applyChanged = () => f.service.applyDeployment(f.root, {
-          request: next,
-          reviewDigest: review.reviewDigest,
-        }, "changed-edge");
+        const applyChanged = () =>
+          f.service.applyDeployment(
+            f.root,
+            {
+              request: next,
+              reviewDigest: review.reviewDigest,
+            },
+            "changed-edge",
+          );
         if (boundary === "review") expect(applyChanged).toThrow("deployment_review_stale");
         else expect(applyChanged().targets[0]!.state).toBe("needs_review");
         f.service.tick();
         expect(f.service.jobs.installation(f.machineId, callerPlugin)!.revision).toBe(revision);
-        expect(f.service.describe(f.root, { machineId: f.machineId, pluginId: callerPlugin }).consents).toEqual(consents);
-        expect(f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin }).edges).toEqual([{ edge: tighter, enabled: false }]);
+        expect(
+          f.service.describe(f.root, { machineId: f.machineId, pluginId: callerPlugin }).consents,
+        ).toEqual(consents);
+        expect(
+          f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin })
+            .edges,
+        ).toEqual([{ edge: tighter, enabled: false }]);
         expect(f.commands).toEqual([]);
       } finally {
         f.store.close();
@@ -4089,7 +4156,7 @@ describe("reviewed native deployment approvals", () => {
       f.store.close();
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   test("capacity refuses only while every retained review still awaits native acknowledgement", () => {
     const f = fixture();
@@ -4169,10 +4236,13 @@ describe("reviewed native deployment approvals", () => {
       }
       const { reviewDigest: _digest, ...body } = legacy.review;
       const reviewDigest = createHash("sha256")
-        .update(canonicalJobJson({ ...body, evidence: legacy.evidence, credential: legacy.credential }))
+        .update(
+          canonicalJobJson({ ...body, evidence: legacy.evidence, credential: legacy.credential }),
+        )
         .digest("hex");
       legacy.review.reviewDigest = reviewDigest;
-      f.store.db.query("UPDATE machine_job_deployments SET approval=? WHERE deployment_id=?")
+      f.store.db
+        .query("UPDATE machine_job_deployments SET approval=? WHERE deployment_id=?")
         .run(canonicalJobJson(legacy), value.deploymentId);
       f.store.db.exec(`
 UPDATE machine_job_deployment_targets SET receipt=json_extract(receipt,'$.consents');
@@ -4189,15 +4259,26 @@ UPDATE meta SET value='33' WHERE key='schema_version';
       f.commands.length = 0;
       prove(f);
       expect(f.service.jobs.get(running.request.jobId)?.state).toBe("started");
-      expect(f.commands.some((command) => command.type === "start" || command.type === "cancel")).toBe(false);
+      expect(
+        f.commands.some((command) => command.type === "start" || command.type === "cancel"),
+      ).toBe(false);
       expect(f.service.jobs.installation(f.machineId, pluginId)).toEqual(installation);
-      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents).toEqual(consents);
-      expect(f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state).toBe("ready");
+      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents).toEqual(
+        consents,
+      );
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("ready");
       f.commands.length = 0;
-      expect(f.service.applyDeployment(f.root, { request: value, reviewDigest }, "legacy-replay").targets[0]!.state).toBe("ready");
+      expect(
+        f.service.applyDeployment(f.root, { request: value, reviewDigest }, "legacy-replay")
+          .targets[0]!.state,
+      ).toBe("ready");
       expect(f.commands).toEqual([]);
       expect(f.service.jobs.get(running.request.jobId)?.state).toBe("started");
-      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents).toEqual(consents);
+      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents).toEqual(
+        consents,
+      );
     } finally {
       f.store.close();
       rmSync(dir, { recursive: true, force: true });

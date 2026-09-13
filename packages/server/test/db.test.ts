@@ -2314,28 +2314,46 @@ INSERT INTO machine_job_deployment_targets(deployment_id,machine_id,plugin_id,ph
  VALUES ('old-review','machine','plugin','pending');
 UPDATE meta SET value='33' WHERE key='schema_version';
 `);
-    const authority = db.query("SELECT caller,operation_id,edge,enabled FROM job_invocation_edges ORDER BY caller").all();
+    const authority = db
+      .query("SELECT caller,operation_id,edge,enabled FROM job_invocation_edges ORDER BY caller")
+      .all();
     db.close();
     db = openDatabase(path);
-    expect(db.query("SELECT caller,operation_id,edge,enabled FROM job_invocation_edges ORDER BY caller").all()).toEqual(authority);
-    const revisions = db.query<{ revision: string }, []>("SELECT revision FROM job_invocation_edges ORDER BY caller").all();
+    expect(
+      db
+        .query("SELECT caller,operation_id,edge,enabled FROM job_invocation_edges ORDER BY caller")
+        .all(),
+    ).toEqual(authority);
+    const revisions = db
+      .query<{ revision: string }, []>("SELECT revision FROM job_invocation_edges ORDER BY caller")
+      .all();
     expect(revisions[0]!.revision).toMatch(/^[a-f0-9]{32}$/);
     expect(revisions[1]!.revision).not.toBe(revisions[0]!.revision);
     expect(db.query("SELECT phase,reason FROM machine_job_deployment_targets").get()).toEqual({
       phase: "needs_review",
       reason: "deployment_review_stale",
     });
-    const retained = db.query<{ approval: string }, []>("SELECT approval FROM machine_job_deployments WHERE deployment_id='old-review'").get()!;
+    const retained = db
+      .query<{ approval: string }, []>(
+        "SELECT approval FROM machine_job_deployments WHERE deployment_id='old-review'",
+      )
+      .get()!;
     expect(JSON.parse(retained.approval)).toEqual({
       review: {
         reviewDigest: "old-digest",
         targets: [{ machineId: "machine", invocationEdges: [] }],
       },
     });
-    expect(db.query("SELECT approval FROM machine_job_deployments WHERE deployment_id='retired-id'").get()).toEqual({ approval: "" });
+    expect(
+      db
+        .query("SELECT approval FROM machine_job_deployments WHERE deployment_id='retired-id'")
+        .get(),
+    ).toEqual({ approval: "" });
     db.close();
     db = openDatabase(path);
-    expect(db.query("SELECT revision FROM job_invocation_edges ORDER BY caller").all()).toEqual(revisions);
+    expect(db.query("SELECT revision FROM job_invocation_edges ORDER BY caller").all()).toEqual(
+      revisions,
+    );
   } finally {
     db.close();
     rmSync(dir, { recursive: true, force: true });
