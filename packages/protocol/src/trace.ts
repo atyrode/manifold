@@ -38,6 +38,8 @@ export const TRACE_OUTCOMES = [
   "policy_stale",
   "forbidden",
   "invalid_args",
+  "justification_required",
+  "invalid_justification",
   "refused",
   "unavailable",
 ] as const satisfies readonly (Exclude<ActionDenialRule, "unknown_action"> | "ok" | "failed")[];

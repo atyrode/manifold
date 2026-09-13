@@ -5,6 +5,11 @@ import {
   CreateAgentRunRequestSchema,
   FinishAgentRunRequestSchema,
   RenewAgentRunRequestSchema,
+  InspectAgentRunRequestSchema,
+  InspectAgentRunResultSchema,
+  type InspectAgentRunRequest,
+  type InspectAgentRunResult,
+  type AgentRunInspection,
   AGENT_RUN_MAX_RENEWALS,
   BootstrapPrincipalRequestSchema,
   CAPS,
@@ -66,6 +71,7 @@ import type {
 } from "./stores.ts";
 import { sha256Hex } from "./stores.ts";
 import { loadAgentPolicy, type AgentPolicySet } from "./agent-runs.ts";
+import { normalizeAgentDeclaration } from "./log.ts";
 
 const OWNER_PRINCIPAL_META = "owner_principal_id";
 const COLORS = ["#2563eb", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#db2777"] as const;
@@ -475,6 +481,12 @@ export class AuthService {
   private grantsEpoch = 0;
   private readonly authorityChangedListeners = new Set<() => void>();
   private agentPolicy: AgentPolicySet;
+  private liveRunConnections: (principalId: string) => readonly string[] = () => [];
+
+  /** Runtime-only observation, bound once by the session gateway; never a connection ledger. */
+  setRunConnectionReader(reader: (principalId: string) => readonly string[]): void {
+    this.liveRunConnections = reader;
+  }
 
   /** Notify only after grant mutations commit and cached verdicts are invalidated. */
   private authorityChanged(): void {
@@ -1313,6 +1325,113 @@ export class AuthService {
     };
   }
 
+  /** Walk verified sponsorship edges, never merely a shared root id or a minted-by token. */
+  private inspectionAncestors(run: AgentRunRecord): {
+    chain: AgentRunRecord[];
+    complete: boolean;
+  } {
+    const chain = [run];
+    const seen = new Set([run.id]);
+    let cursor = run;
+    while (cursor.parentRunId !== null) {
+      const parent = this.store.getAgentRun(cursor.parentRunId);
+      if (
+        parent === null ||
+        seen.has(parent.id) ||
+        chain.length > 4 ||
+        parent.principalId !== cursor.authorizedByPrincipalId ||
+        parent.rootRunId !== cursor.rootRunId ||
+        parent.depth + 1 !== cursor.depth
+      ) return { chain, complete: false };
+      chain.push(parent);
+      seen.add(parent.id);
+      cursor = parent;
+    }
+    return { chain, complete: cursor.id === run.rootRunId };
+  }
+
+  private mayInspectAgentRun(actor: AuthContext, run: AgentRunRecord): boolean {
+    if (actor.isRoot) return true;
+    const ancestry = this.inspectionAncestors(run).chain;
+    if (ancestry.some((entry) => entry.authorizedByPrincipalId === actor.principal.id)) return true;
+    if (actor.agentRunId === undefined) return false;
+    const own = this.store.getAgentRun(actor.agentRunId);
+    if (own === null || own.principalId !== actor.principal.id) return false;
+    return (
+      ancestry.some((entry) => entry.id === own.id) ||
+      this.inspectionAncestors(own).chain.some((entry) => entry.id === run.id)
+    );
+  }
+
+  inspectAgentRun(input: InspectAgentRunRequest, actor: AuthContext): InspectAgentRunResult {
+    const parsed = InspectAgentRunRequestSchema.parse(input);
+    const current = this.restoreCredential(this.credentialReference(actor));
+    const unavailable = (): never => {
+      throw new ServiceError("forbidden", "agent run inspection unavailable");
+    };
+    if (current === null) return unavailable();
+    const run = parsed.runId === undefined
+      ? this.store.getAgentRunByPrincipal(parsed.principalId!)
+      : this.store.getAgentRun(parsed.runId);
+    if (run === null) {
+      const principal = parsed.principalId === undefined ? null : this.store.getPrincipal(parsed.principalId);
+      if (principal?.kind !== "agent" || (!current.isRoot && principal.id !== current.principal.id)) {
+        return unavailable();
+      }
+      return { availability: "origin_unavailable", principalId: principal.id };
+    }
+    if (!this.mayInspectAgentRun(current, run)) return unavailable();
+    const safeText = (value: string): string => normalizeAgentDeclaration(value) ?? "[redacted]";
+    const now = this.runtime.now();
+    const summarize = (entry: AgentRunRecord): AgentRunInspection["lineage"][number] => ({
+      id: entry.id,
+      principalId: entry.principalId,
+      name: safeText(this.store.getPrincipal(entry.principalId)?.name ?? "Principal unavailable"),
+      state: !TERMINAL_AGENT_RUN_STATES.has(entry.state) && entry.expiresAt <= now ? "expired" : entry.state,
+    });
+    const ancestry = this.inspectionAncestors(run);
+    // Filter every link independently: inspecting an ancestor must not reveal siblings.
+    const lineage = this.store.listAgentRunTree(run.rootRunId)
+      .filter((entry) => this.mayInspectAgentRun(current, entry))
+      .map(summarize);
+    const policy = this.store.getAgentPolicySnapshot(run.id, run.policyRevision);
+    return InspectAgentRunResultSchema.parse({
+      availability: "available",
+      observedAt: now,
+      run: {
+        ...summarize(run),
+        rootRunId: run.rootRunId,
+        parentRunId: run.parentRunId,
+        sponsorPrincipalId: run.authorizedByPrincipalId,
+        authorizationPath: run.authorizationPath,
+        purpose: safeText(run.purpose),
+        ...(run.taskRef === undefined ? {} : { taskRef: safeText(run.taskRef) }),
+        target: safeText(run.target),
+        reach: run.reach,
+        caps: [...run.caps],
+        createdAt: run.createdAt,
+        expiresAt: run.expiresAt,
+        renewals: run.renewals,
+        depth: run.depth,
+        maxDepth: run.maxDepth,
+        maxDescendants: run.maxDescendants,
+        policyRevision: run.policyRevision,
+        acknowledgedPolicyRevision: run.acknowledgedPolicyRevision ?? null,
+        policyAcknowledgedAt: policy?.acknowledgedAt ?? null,
+        cleanup: {
+          ownerPrincipalId: run.cleanupOwnerPrincipalId,
+          revokedCredentials: run.cleanupRevokedCredentials,
+          revokedGrants: run.cleanupRevokedGrants,
+          finishedAt: run.finishedAt ?? null,
+          status: run.state === "cleanup_failed" ? "failed" : run.finishedAt === undefined ? "pending" : "finished",
+        },
+      },
+      lineage,
+      lineageComplete: ancestry.complete,
+      ...this.store.agentRunInspectionFacts(run.principalId, parsed, now, this.liveRunConnections(run.principalId)),
+    });
+  }
+
   createAgentRun(input: CreateAgentRunRequest, actor: AuthContext): CreateAgentRunResult {
     const parsed = CreateAgentRunRequestSchema.parse(input);
     if (containmentPath(parsed.target) === null) {
@@ -1995,40 +2114,21 @@ export class AuthService {
   }
 
   /**
-   * THE CREDENTIAL LIST (ADR 0019 §3): every principal this caller may administer, when it
-   * was created, and the credentials of it that are still alive.
-   *
-   * AUTHORITY, decided explicitly and recorded here because the ADR leaves it open and it is
-   * the one design question in this door. `tokens:mint`, NOT root — and that is a departure
-   * from `listGrants`, which ADR 0011 §8 settled as root-only. The two reads are neighbours
-   * and are not the same question:
-   *
-   *   A GRANT ROW is the map of who may do what over this workspace, which is the
-   *   reconnaissance a caller performs before deciding whom to impersonate. Root-only.
-   *
-   *   A CREDENTIAL ROW says an identity exists and holds a live secret. It carries no
-   *   authority information a `tokens:mint` holder could not obtain by minting, no secret,
-   *   and no hash. Grading it stricter than the WRITE it feeds — `core.access.revoke` is
-   *   `tokens:mint` — would publish a revoke door nobody who can open it can aim, which is
-   *   how an administrator ends up revoking by guesswork.
-   *
-   * NARROWED THE WAY THE WRITE IS NARROWED, which is the other half of that argument: a
-   * non-root caller sees itself and the principals it minted, which is exactly the set
-   * `revokePrincipal` lets it revoke. Root sees everybody, which is what `/api/introspect`
-   * already published to root and nothing else. So this door widens the READER of a fact
-   * only root could see, without widening what anybody may do about it.
+   * Sessions inventory: root sees every identity; an unscoped credential administrator
+   * keeps its existing revocable-principal view. ADR 0041 additionally permits the exact
+   * inspectable run chain, including while that run is awaiting policy acknowledgement.
+   * This list never grants revocation authority and never widens the root-only journal.
    */
   listCredentials(actor: AuthContext): PrincipalCredentials[] {
-    if (!this.allows(actor, "tokens:mint")) {
-      throw new ServiceError("forbidden", "tokens:mint capability required");
-    }
+    const mayListRevocable = actor.containerScope === null && this.allows(actor, "tokens:mint");
     const now = this.runtime.now();
     const rows: PrincipalCredentials[] = [];
     for (const { principal, createdAt } of this.store.listPrincipalsWithCreation()) {
-      const mine =
-        actor.isRoot ||
-        principal.id === actor.principal.id ||
-        this.store.principalMintedBy(principal.id, actor.principal.id);
+      const run = principal.kind === "agent" ? this.store.getAgentRunByPrincipal(principal.id) : null;
+      const mine = actor.isRoot ||
+        (mayListRevocable && (principal.id === actor.principal.id ||
+          this.store.principalMintedBy(principal.id, actor.principal.id))) ||
+        (run !== null && this.mayInspectAgentRun(actor, run));
       if (!mine) continue;
       const sessions = this.store
         .listTokensByPrincipal(principal.id)
@@ -2048,6 +2148,9 @@ export class AuthService {
           ...(token.expiresAt === null ? {} : { expiresAt: token.expiresAt }),
         }));
       rows.push({ principal, createdAt, sessions });
+    }
+    if (!actor.isRoot && !mayListRevocable && rows.length === 0) {
+      throw new ServiceError("forbidden", "credential inspection authority required");
     }
     return rows;
   }

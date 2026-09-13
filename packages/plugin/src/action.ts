@@ -54,11 +54,13 @@ export interface ActionDef<In = unknown, Out = unknown> {
   readonly cleanup?: boolean;
   /**
    * A reserved core identity action's autonomous-run lifecycle exception. Policy
-   * acknowledgement and teardown stay reachable while ordinary authority is suspended;
-   * delegation is graded at the requested child target by the identity mechanism. Assembly
-   * refuses this metadata outside `core.access`.
+   * acknowledgement, teardown and inspection stay reachable while ordinary authority is
+   * suspended; delegation is graded at the requested child target by the identity mechanism.
+   * Assembly refuses this metadata outside `core.access`.
    */
   readonly runAccess?: ActionRunAccess;
+  /** Active autonomous callers must supply a safe declaration, never additional authority. */
+  readonly agentJustification?: "required";
   /**
    * The authority grade this door is written for; absent ≡ `"workspace"`.
    *

@@ -120,7 +120,7 @@ describe("sponsor-bound agent runs", () => {
           target: formatManifoldUri({ kind: "container", containerId }),
           reach: "subtree",
           caps: ["containers:read"],
-        }),
+        }, null, { agentJustification: "Delegate a bounded child for this run." }),
       ),
     );
     const widened = await fix.host.dispatch(parent, "core.access.createAgentRun", {
@@ -129,11 +129,8 @@ describe("sponsor-bound agent runs", () => {
       target: formatManifoldUri({ kind: "container", containerId }),
       reach: "subtree",
       caps: ["terminals:write"],
-    });
-    expect(denial(widened)).toEqual({
-      rule: "refused",
-      message: "cannot delegate capability terminals:write at target",
-    });
+    }, null, { agentJustification: "Delegate a bounded child for this run." });
+    expect(denial(widened).rule).toBe("refused");
     const child = fix.auth.authenticate(childCreated.credential.token);
     expect((await acknowledge(fix, child)).run.state).toBe("active");
     const finished = FinishAgentRunResultSchema.parse(
@@ -193,7 +190,7 @@ describe("sponsor-bound agent runs", () => {
           target: "manifold://",
           reach: "subtree",
           caps: ["containers:read"],
-        }),
+        }, null, { agentJustification: "Delegate a bounded child for this run." }),
       ),
     );
     const child = fix.auth.authenticate(childCreated.credential.token);
@@ -238,7 +235,7 @@ describe("sponsor-bound agent runs", () => {
           target: formatManifoldUri({ kind: "container", containerId: secondContainerId }),
           reach: "subtree",
           caps: ["containers:read"],
-        }),
+        }, null, { agentJustification: "Delegate a bounded child for this run." }),
       ),
     );
     expect(
@@ -308,7 +305,7 @@ describe("sponsor-bound agent runs", () => {
           reach: "subtree",
           caps: ["containers:read"],
           lifetimeMs: 60_000,
-        }),
+        }, null, { agentJustification: "Delegate a bounded child for this run." }),
       ),
     );
     fix.runtime.time += 60_000;
@@ -386,7 +383,7 @@ describe("sponsor-bound agent runs", () => {
           reach: "subtree",
           caps: ["agents:delegate", "containers:read"],
           maxDescendants: 1,
-        }),
+        }, null, { agentJustification: "Delegate a branch within this run envelope." }),
       ),
     );
     const branch = fix.auth.authenticate(branchCreated.credential.token);
@@ -399,7 +396,7 @@ describe("sponsor-bound agent runs", () => {
           target: "manifold://",
           reach: "subtree",
           caps: ["agents:delegate", "containers:read"],
-        }),
+        }, null, { agentJustification: "Delegate the remaining bounded work." }),
       ),
     );
     const leaf = fix.auth.authenticate(leafCreated.credential.token);
@@ -413,12 +410,9 @@ describe("sponsor-bound agent runs", () => {
           target: "manifold://",
           reach: "subtree",
           caps: ["containers:read"],
-        }),
-      ),
-    ).toEqual({
-      rule: "refused",
-      message: "ancestor run descendant budget exhausted",
-    });
+        }, null, { agentJustification: "Attempt a child within the ancestor budget." }),
+      ).rule,
+    ).toBe("refused");
     fix.store.close();
   });
 

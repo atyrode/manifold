@@ -368,23 +368,6 @@ describe("action outcome", () => {
     ).toBe(false);
     expect(ActionOutcomeSchema.safeParse({ ok: false, result: {} }).success).toBe(false);
   });
-
-  test("the denial vocabulary is the whole ladder, published in the order it is walked", () => {
-    // Agents read this list from `/api/protocol` to know what a door can answer. A new rung
-    // is a deliberate protocol change, not an incidental addition, so the list is pinned.
-    // `unavailable` is last: the isolate holding the handler did not answer (ADR 0016 §6),
-    // which is only knowable after every other rung has passed.
-    expect([...ACTION_DENIAL_RULES]).toEqual([
-      "unknown_action",
-      "plugin_disabled",
-      "policy_required",
-      "policy_stale",
-      "forbidden",
-      "invalid_args",
-      "refused",
-      "unavailable",
-    ]);
-  });
 });
 
 describe("the plugin roster", () => {

@@ -1257,6 +1257,9 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         ...(action.delegates === undefined ? {} : { delegates: [...action.delegates] }),
         ...(action.cleanup === undefined ? {} : { cleanup: action.cleanup }),
         ...(action.runAccess === undefined ? {} : { runAccess: action.runAccess }),
+        ...(action.agentJustification === undefined
+          ? {}
+          : { agentJustification: action.agentJustification }),
         scope: action.scope ?? "workspace",
         ...(action.requirements === undefined ? {} : { requirements: [...action.requirements] }),
         ...(action.trace === undefined ? {} : { trace: action.trace }),

@@ -15,6 +15,8 @@ import {
   GrantsSchema,
   FinishAgentRunRequestSchema,
   FinishAgentRunResultSchema,
+  InspectAgentRunRequestSchema,
+  InspectAgentRunResultSchema,
   ListGrantsRequestSchema,
   MintShareRequestSchema,
   MintTokenRequestSchema,
@@ -107,7 +109,7 @@ export const accessManifest: PluginManifest = {
   version: "1.4.0",
   title: "Access",
   description:
-    "Creates principals and sponsor-bound agent runs, enforces exact agent policy acknowledgement, mints delegated tokens, grants and denies capabilities at any node, shares nodes with other instances, revokes them, and lists who holds a live credential — agent run inspector: deferred, door-only; share UI: deferred, door-only; grant UI: deferred, door-only",
+    "Creates sponsor-bound agent runs, enforces exact policy acknowledgement, inspects authorized run chains, and administers credentials, grants and shares — share UI: deferred, door-only; grant UI: deferred, door-only",
   /*
     `*` is here because `createPrincipal` demands root and a manifest is a readable ceiling
     on a plugin's authority: a reader must be able to see, without opening the code, that
@@ -172,6 +174,7 @@ export const accessManifest: PluginManifest = {
  */
 export const ACCESS_LIST_CREDENTIALS_ACTION = `${accessManifest.id}.listCredentials`;
 export const ACCESS_REVOKE_ACTION = `${accessManifest.id}.revoke`;
+export const ACCESS_INSPECT_AGENT_RUN_ACTION = `${accessManifest.id}.inspectAgentRun`;
 
 /**
  * Authority mirrors the deleted routes exactly, rung for rung.
@@ -216,6 +219,7 @@ export const accessActions = [
     title: "Create a sponsor-bound agent run",
     caps: ["agents:delegate"],
     runAccess: "delegate",
+    agentJustification: "required",
     input: CreateAgentRunRequestSchema,
     result: CreateAgentRunResultSchema,
   }),
@@ -240,6 +244,7 @@ export const accessActions = [
     title: "Renew a sponsored agent run",
     caps: ["agents:delegate"],
     runAccess: "delegate",
+    agentJustification: "required",
     input: RenewAgentRunRequestSchema,
     result: RenewAgentRunResultSchema,
   }),
@@ -250,6 +255,15 @@ export const accessActions = [
     runAccess: "teardown",
     input: FinishAgentRunRequestSchema,
     result: FinishAgentRunResultSchema,
+  }),
+  defineAction({
+    name: "inspectAgentRun",
+    title: "Inspect an authorized agent run",
+    caps: [],
+    runAccess: "inspect",
+    trace: "opaque",
+    input: InspectAgentRunRequestSchema,
+    result: InspectAgentRunResultSchema,
   }),
   defineAction({
     name: "reloadAgentPolicy",
@@ -284,33 +298,10 @@ export const accessActions = [
   defineAction({
     name: "listCredentials",
     title: "List who holds a live credential",
-    /*
-      `tokens:mint`, NOT `*`, and this door is where that decision is published rather than
-      only reasoned about (ADR 0019 §3 leaves the authority to the implementing change).
-
-      It is DELIBERATELY graded differently from `listGrants` below, which ADR 0011 §8 settled
-      as root-only. The two are neighbours and are not the same question: a grant row is the
-      map of who may do what over this workspace — the reconnaissance a caller performs before
-      deciding whom to impersonate — while a credential row says an identity exists and holds
-      a live secret, carries no secret and no hash, and tells a reader nothing a `tokens:mint`
-      holder could not learn by minting.
-
-      The load-bearing half of the argument is the WRITE it aims. `revoke` above is
-      `tokens:mint`; grading its list stricter would publish a revoke door that nobody who can
-      open it can see the targets of, which is how an administrator ends up revoking by
-      guesswork. Read and write are graded together, and the mechanism narrows the answer to
-      exactly the principals this caller could revoke (`AuthService.listCredentials`) — so a
-      non-root caller learns nothing it could not already act on.
-    */
-    caps: ["tokens:mint"],
-    /*
-      `scope: "workspace"`, and FORCED rather than chosen. A credential is not addressed by
-      container: a token may be confined to one, but the principal holding it is a workspace
-      fact, and a container-scoped caller asking "who holds a credential here" is asking about
-      something its scope cannot describe. `revoke`'s `scope: "container"` is a different
-      question — it names one principal and the mechanism confines the effect — and preserving
-      that is not the same as admitting a scoped caller to a workspace-wide roster.
-    */
+    // AuthService narrows this read to revocable identities or ratified run-chain inspection.
+    // It is not a workspace roster grant, even when the caller has container-scoped authority.
+    caps: [],
+    runAccess: "inspect",
     scope: "workspace",
     input: z.strictObject({}),
     result: CredentialsResponseSchema,

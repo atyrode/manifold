@@ -524,12 +524,12 @@ describe("the credential list (ADR 0019 §3)", () => {
     fix.store.close();
   });
 
-  test("`tokens:mint` is the authority, so a plain reader is refused at the door", async () => {
+  test("a plain reader without revocable identities or sponsored runs cannot enumerate credentials", async () => {
     const fix = await fixture();
     const reader = fix.auth.authenticate(mint(fix, ["containers:read"]).token);
 
     expect(denial(await fix.host.dispatch(reader, "core.access.listCredentials", {})).rule).toBe(
-      "forbidden",
+      "refused",
     );
     fix.store.close();
   });
