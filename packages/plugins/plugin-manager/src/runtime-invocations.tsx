@@ -48,13 +48,34 @@ function Target({
       <strong>
         {label}: {target.pluginId} / {target.operationId}
       </strong>
-      <small>Machine: {target.machineId}</small>
-      <small>Installation: {target.installationRevision}</small>
-      <small>Artifact SHA-256: {target.artifactSha256}</small>
+      <small>
+        Machine: <code>{target.machineId}</code>
+      </small>
+      <small>
+        Installation:{" "}
+        <code title={target.installationRevision}>{target.installationRevision.slice(0, 12)}</code>
+        {" · "}Artifact SHA-256:{" "}
+        <code title={target.artifactSha256}>{target.artifactSha256.slice(0, 12)}</code>
+      </small>
+      <details className="plugin-manager-runtime-evidence">
+        <summary>Inspect exact {label.toLowerCase()} installation and artifact pins</summary>
+        <div className="plugin-manager-runtime-identity">
+          <small>
+            Installation revision: <code>{target.installationRevision}</code>
+          </small>
+          <small>
+            Artifact SHA-256: <code>{target.artifactSha256}</code>
+          </small>
+        </div>
+      </details>
     </div>
   );
 }
-function EdgeReview({ edge }: { readonly edge: JobInvocationEdge }): ReactElement {
+export function RuntimeInvocationEdgeReview({
+  edge,
+}: {
+  readonly edge: JobInvocationEdge;
+}): ReactElement {
   return (
     <>
       <Target label="Caller" target={edge.caller} />
@@ -67,8 +88,59 @@ function EdgeReview({ edge }: { readonly edge: JobInvocationEdge }): ReactElemen
           {limit.label}: {edge.aggregate[limit.key]}
         </small>
       ))}
-      <details>
-        <summary>Exact location access and output grants</summary>
+      <small>These aggregate ceilings bound the invocation tree, not a single operation.</small>
+      <strong>Required callee location access</strong>
+      {edge.resources.length === 0 ? (
+        <p>No callee location access granted by this edge.</p>
+      ) : (
+        <ul aria-label="Required callee location access">
+          {edge.resources.map((resource) => (
+            <li
+              key={`${resource.locationId}:${resource.access}`}
+              className={`plugin-manager-runtime-right${resource.access === "write" || resource.access === "create" ? " is-high-risk" : ""}`}
+            >
+              <div>
+                <strong>
+                  {resource.access === "write"
+                    ? "Writable location — may modify existing data"
+                    : resource.access === "create"
+                      ? "Create access — may create location contents"
+                      : "Read access"}
+                </strong>
+                <small>
+                  {resource.access} · <code>{resource.locationId}</code>
+                </small>
+                <small>
+                  Location revision: <code>{resource.revision}</code>
+                </small>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <strong>Output mappings into caller locations</strong>
+      {edge.outputs.length === 0 ? (
+        <p>No output mappings — this edge grants no output writes into caller locations.</p>
+      ) : (
+        <ul aria-label="Output mappings into caller locations">
+          {edge.outputs.map((output) => (
+            <li key={output.name} className="plugin-manager-runtime-right is-high-risk">
+              <div>
+                <strong>{output.name}</strong>
+                <small>
+                  Caller location: <code>{output.locationId}</code>
+                </small>
+                <small>
+                  Relative output path: <code>{output.components.join("/")}</code>
+                </small>
+                <small>Maximum additional path components: {output.maxSuffixComponents}</small>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <details className="plugin-manager-runtime-evidence">
+        <summary>Inspect exact location access and output grants</summary>
         <pre>{JSON.stringify({ resources: edge.resources, outputs: edge.outputs }, null, 2)}</pre>
       </details>
     </>
@@ -418,7 +490,7 @@ export function RuntimeInvocations({
                     ? "matches a current runtime candidate"
                     : "not a current runtime candidate; not reusable for changed pins"}
                 </strong>
-                <EdgeReview edge={edge} />
+                <RuntimeInvocationEdgeReview edge={edge} />
                 <button
                   type="button"
                   className="plugin-manager-filter"

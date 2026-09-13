@@ -17,6 +17,7 @@ import {
 } from "@manifold/protocol";
 import { Cluster, Stack } from "@manifold/ui";
 import { useEffect, useRef, useState, type ReactElement } from "react";
+import { RuntimeInvocationEdgeReview } from "./runtime-invocations.tsx";
 
 type Host = SectionProps["host"];
 type ReadResult<T> = { value: T; failure: null } | { value: null; failure: string };
@@ -46,12 +47,15 @@ function failureMessage(reason: unknown): string {
 }
 
 function ReviewedPreparation({ review }: { readonly review: JobDeploymentReview }): ReactElement {
+  const hasInvocationEdges = review.targets.some((target) => target.invocationEdges.length > 0);
   return (
     <Stack gap="0.65rem" className="plugin-manager-runtime-review">
       <p>
         {review.request.operationIds.length === 0
           ? "Installation approval only — no permission changes are requested. Existing consents are not revoked. No operation will run."
-          : `Installation and consent for ${review.request.operationIds.join(", ")} only. No operation will run.`}
+          : hasInvocationEdges
+            ? `Installation, consent and the exact runtime edges below for ${review.request.operationIds.join(", ")} only. No operation will run.`
+            : `Installation and consent for ${review.request.operationIds.join(", ")} only. No operation will run.`}
       </p>
       {review.targets.map((target) => {
         const artifact = target.platform ? review.machine.artifacts[target.platform] : undefined;
@@ -78,7 +82,7 @@ function ReviewedPreparation({ review }: { readonly review: JobDeploymentReview 
             {!target.connected && target.approvable ? (
               <p>
                 Only these known pins may await owner reconnect. Changed authority, declaration,
-                installation, consent or resource evidence requires a new review.
+                installation, consent, invocation edge or resource evidence requires a new review.
               </p>
             ) : null}
             <small>
@@ -125,6 +129,35 @@ function ReviewedPreparation({ review }: { readonly review: JobDeploymentReview 
             {review.request.operationIds.length > 0 &&
             !target.consents.some((consent) => consent.cap === "network:host") ? (
               <p>No host-network permission requested by the selected operations.</p>
+            ) : null}
+            {target.invocationEdges.length > 0 ? (
+              <Stack gap="0.65rem">
+                <strong>Exact service-runtime invocation edges</strong>
+                <p>
+                  These edges are additional authority, separate from operation and location consent.
+                  Caller pins identify the installation being prepared. Approval permits only each
+                  pinned caller to invoke its pinned callee with the resources and limits shown.
+                  Changed pins or authority require a fresh review.
+                </p>
+                {target.invocationEdges.map(({ edge, approved, revision }) => (
+                  <section
+                    key={`${edge.caller.operationId}:${edge.callee.machineId}:${edge.callee.pluginId}:${edge.callee.operationId}`}
+                    className="plugin-manager-runtime-operation"
+                    data-approved={approved}
+                    data-revision={revision ?? ""}
+                  >
+                    <strong>
+                      {approved
+                        ? "Retained approval — this exact edge was enabled at review"
+                        : "New approval requested — this exact edge was not enabled at review"}
+                    </strong>
+                    <small>
+                      Edge approval revision: <code>{revision ?? "none"}</code>
+                    </small>
+                    <RuntimeInvocationEdgeReview edge={edge} />
+                  </section>
+                ))}
+              </Stack>
             ) : null}
             <details className="plugin-manager-runtime-evidence">
               <summary>Inspect installation revisions, hashes and resource bindings</summary>
@@ -199,9 +232,9 @@ function ReviewedPreparation({ review }: { readonly review: JobDeploymentReview 
       </details>
       <p>
         Approval is bound to this actor and credential, exact destinations and current server
-        evidence. Plugin enablement permits preparation; it is not installation, owner
-        acknowledgement or consent. Sending a command is not an acknowledgement, and no approval
-        starts a job.
+        evidence, including any invocation edges shown above. Plugin enablement permits preparation;
+        it is not installation, owner acknowledgement or consent. Sending a command is not an
+        acknowledgement, and no approval starts a job.
       </p>
     </Stack>
   );
@@ -573,6 +606,8 @@ export function RuntimePreparation({
   const draftFocus = useRef<HTMLHeadingElement>(null);
   const declarationKey = canonicalJobJson(declaration);
   const review = reviewed?.review ?? null;
+  const invocationEdgeCount =
+    review?.targets.reduce((count, target) => count + target.invocationEdges.length, 0) ?? 0;
   const reviewCurrent = reviewed?.declaration === declarationKey;
   const { value: saved, refresh } = usePolledResource<ReadResult<JobDeployment[]> | null>(
     async () => {
@@ -672,7 +707,9 @@ export function RuntimePreparation({
       )
         throw new Error("Approval response does not match the reviewed deployment");
       setNotice(
-        "Installation approval saved. Preparation may now install and apply only the reviewed consent; it never executes an operation. Inspect current owner acknowledgement and progress below.",
+        invocationEdgeCount > 0
+          ? "Installation approval saved. Preparation may now install and apply only the reviewed consent and runtime edges; it never executes an operation. Inspect current owner acknowledgement and progress below."
+          : "Installation approval saved. Preparation may now install and apply only the reviewed consent; it never executes an operation. Inspect current owner acknowledgement and progress below.",
       );
     } catch (reason) {
       setFailure(
@@ -695,9 +732,10 @@ export function RuntimePreparation({
         Prepare runtime destinations
       </h5>
       <p>
-        Choose exact machines, then review the server's pinned installation and optional consent
-        before applying. Plugin enablement is separate from installation and permissions. New
-        machines never join this selection automatically; no operation is selected by default.
+        Choose exact machines, then review the server's pinned installation, optional consent and any
+        service-runtime invocation edges before applying. Plugin enablement is separate from
+        installation and permissions. New machines never join this selection automatically; no
+        operation is selected by default.
       </p>
       {!canApprove ? (
         <p>
@@ -812,11 +850,11 @@ export function RuntimePreparation({
         </p>
       </fieldset>
       <fieldset disabled={pending !== null || !canApprove}>
-        <legend>2. Optional operation consent · {operationIds.length} selected</legend>
+        <legend>2. Optional operation permissions · {operationIds.length} selected</legend>
         <p>
           {operationIds.length === 0
             ? "Installation approval only — no permission changes requested."
-            : "Only the selected operations request permissions. Review shows the exact location, operation and network capabilities per machine."}
+            : "Only the selected operations request permissions. Review shows the exact location, operation and network capabilities per machine, plus any additional service-runtime invocation edges and their limits."}
         </p>
         {Object.entries(declaration.operations).map(([operationId, operation]) => (
           <label key={operationId} className="plugin-manager-runtime-choice">
@@ -900,6 +938,7 @@ export function RuntimePreparation({
             <h5>
               Review installation
               {review.request.operationIds.length > 0 ? " and permissions" : " only"}
+              {invocationEdgeCount > 0 ? " and runtime edges" : ""}
             </h5>
             <p role="status">
               {!reviewCurrent
@@ -910,6 +949,13 @@ export function RuntimePreparation({
                     ? "Apply attempted — inspect saved progress before reviewing again."
                     : `${review.targets.length} exact destination${review.targets.length === 1 ? "" : "s"} · ${review.request.operationIds.length === 0 ? "no permission changes" : `${review.request.operationIds.length} selected operation${review.request.operationIds.length === 1 ? "" : "s"}`}`}
             </p>
+            {invocationEdgeCount > 0 ? (
+              <p>
+                Includes {invocationEdgeCount} exact service-runtime invocation{" "}
+                {invocationEdgeCount === 1 ? "edge" : "edges"}. Review caller and callee pins, location
+                access, output mappings and limits below before approving.
+              </p>
+            ) : null}
             <button
               type="button"
               className="plugin-manager-filter plugin-manager-runtime-primary"
@@ -930,7 +976,9 @@ export function RuntimePreparation({
                   ? "Apply attempted — inspect saved progress"
                   : review.request.operationIds.length === 0
                     ? "4. Approve and prepare installation only"
-                    : "4. Approve and prepare installation with exact permissions"}
+                    : invocationEdgeCount > 0
+                      ? "4. Approve and prepare installation with exact permissions and runtime edges"
+                      : "4. Approve and prepare installation with exact permissions"}
             </button>
             <small>
               No operation will run. Installation and current owner acknowledgement are tracked
@@ -941,7 +989,7 @@ export function RuntimePreparation({
             className="plugin-manager-runtime-review-body"
             tabIndex={0}
             role="region"
-            aria-label="Exact reviewed installation and permission evidence"
+            aria-label="Exact reviewed installation, permission and invocation-edge evidence"
           >
             <ReviewedPreparation review={review} />
           </div>
