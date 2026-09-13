@@ -3,8 +3,10 @@ import { createHash } from "node:crypto";
 import {
   closeSync,
   copyFileSync,
+  constants as fsConstants,
   existsSync,
   fsyncSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -352,12 +354,17 @@ function removeImage(path: string): void {
 
 /** Constant-memory hashing: a permitted database can be much larger than the JS heap. */
 function fingerprint(path: string): string | null {
-  if (!existsSync(path)) return null;
-  if (!lstatSync(path).isFile()) throw new Error(`not a regular database image: ${path}`);
-  const fd = openSync(path, "r");
+  let fd: number;
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
   const hash = createHash("sha256");
   const buffer = Buffer.allocUnsafe(64 * 1024);
   try {
+    if (!fstatSync(fd).isFile()) throw new Error(`not a regular database image: ${path}`);
     let length: number;
     while ((length = readSync(fd, buffer, 0, buffer.length, null)) !== 0)
       hash.update(buffer.subarray(0, length));
