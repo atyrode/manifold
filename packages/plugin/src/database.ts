@@ -96,7 +96,9 @@ export const MAX_SQL_BATCH_STATEMENTS = 256;
 export const MAX_SQL_ROWS = 10_000;
 /** Bytes a single call's result may occupy once serialized; the same reason. */
 export const MAX_SQL_RESULT_BYTES = 4 * 1024 * 1024;
-/** A call runs under this deadline; a batch that passes it is rolled back. */
+/** Bound parameter bytes per call and across a batch; IPC must not become a blob-upload door. */
+export const MAX_SQL_PARAMS_BYTES = 4 * 1024 * 1024;
+/** Cooperative batch budget, checked between statements and before commit; not SQL preemption. */
 export const SQL_DEADLINE_MS = 5_000;
 /** The file's size unless the manifest asks for more; the ceiling is the wire's (`@manifold/protocol`). */
 export const DEFAULT_DATABASE_MAX_BYTES = 256 * 1024 * 1024;
@@ -164,9 +166,9 @@ export function assertSqlStatement(sql: string): void {
   }
 }
 
-/** Validates the parameters a PLUGIN supplied for one statement. */
-export function assertSqlParams(params: readonly SqlParam[] | undefined): void {
-  if (params === undefined) return;
+/** Validates and measures parameters a PLUGIN supplied for one statement. */
+function validateSqlParams(params: readonly SqlParam[] | undefined): number {
+  if (params === undefined) return 0;
   if (!Array.isArray(params)) {
     throw new PluginDatabaseError("parameters must be an array");
   }
@@ -175,25 +177,44 @@ export function assertSqlParams(params: readonly SqlParam[] | undefined): void {
       `${String(params.length)} parameters, over the ${String(MAX_SQL_PARAMS)} SQLite allows`,
     );
   }
+  let bytes = 0;
   for (const value of params) {
     const kind = typeof value;
     if (
-      value === null ||
-      kind === "string" ||
-      kind === "number" ||
-      kind === "bigint" ||
-      kind === "boolean" ||
-      value instanceof Uint8Array
+      value !== null &&
+      kind !== "string" &&
+      kind !== "number" &&
+      kind !== "bigint" &&
+      kind !== "boolean" &&
+      !(value instanceof Uint8Array)
     ) {
-      continue;
+      throw new PluginDatabaseError(
+        `a parameter must be a string, number, bigint, boolean, null or Uint8Array, not ${kind}`,
+      );
     }
-    throw new PluginDatabaseError(
-      `a parameter must be a string, number, bigint, boolean, null or Uint8Array, not ${kind}`,
-    );
+    bytes +=
+      typeof value === "string"
+        ? Buffer.byteLength(value)
+        : typeof value === "bigint"
+          ? Buffer.byteLength(value.toString())
+          : value instanceof Uint8Array
+            ? value.byteLength
+            : 8;
+    if (bytes > MAX_SQL_PARAMS_BYTES) {
+      throw new PluginDatabaseError(
+        `parameters are over the ${String(MAX_SQL_PARAMS_BYTES)}-byte limit`,
+      );
+    }
   }
+  return bytes;
 }
 
-/** Validates a batch a PLUGIN supplied: its length and every statement in it. */
+/** Validates the parameters a PLUGIN supplied for one statement. */
+export function assertSqlParams(params: readonly SqlParam[] | undefined): void {
+  validateSqlParams(params);
+}
+
+/** Validates a batch a PLUGIN supplied: its length, aggregate bytes and every statement. */
 export function assertSqlBatch(statements: readonly SqlStatement[]): void {
   if (!Array.isArray(statements) || statements.length === 0) {
     throw new PluginDatabaseError("a batch must hold at least one statement");
@@ -203,9 +224,15 @@ export function assertSqlBatch(statements: readonly SqlStatement[]): void {
       `a batch of ${String(statements.length)} statements is over the ${String(MAX_SQL_BATCH_STATEMENTS)}-statement limit`,
     );
   }
+  let bytes = 0;
   for (const statement of statements) {
     assertSqlStatement(statement.sql);
-    assertSqlParams(statement.params);
+    bytes += Buffer.byteLength(statement.sql) + validateSqlParams(statement.params);
+    if (bytes > MAX_SQL_PARAMS_BYTES) {
+      throw new PluginDatabaseError(
+        `the batch input is over the ${String(MAX_SQL_PARAMS_BYTES)}-byte limit`,
+      );
+    }
   }
 }
 

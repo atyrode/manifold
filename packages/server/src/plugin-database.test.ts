@@ -1,9 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PluginDatabaseError } from "@manifold/plugin";
-import { openPluginDatabase, pluginDatabasePath } from "./plugin-database.ts";
+import { MAX_SQL_PARAMS_BYTES, PluginDatabaseError } from "@manifold/plugin";
+import {
+  openPluginDatabase,
+  pluginDatabasePath,
+  recoverPluginDatabases,
+  stagePluginDatabase,
+} from "./plugin-database.ts";
+import { openDatabase } from "./db.ts";
+import { ServerStore } from "./stores.ts";
 
 function scratch(): { dataDir: string; done: () => void } {
   const dataDir = mkdtempSync(join(tmpdir(), "manifold-plugin-db-"));
@@ -106,6 +113,16 @@ describe("a plugin's own tables", () => {
       await expect(db.query("SELECT 1", new Array(1000).fill(1))).rejects.toThrow(/999/);
       await expect(db.batch([])).rejects.toBeInstanceOf(PluginDatabaseError);
       await expect(db.query("SELECT ?", [{} as never])).rejects.toBeInstanceOf(PluginDatabaseError);
+      await expect(db.query("SELECT ?", ["x".repeat(MAX_SQL_PARAMS_BYTES + 1)])).rejects.toThrow(
+        /parameter.*byte limit/,
+      );
+      const half = "x".repeat(Math.floor(MAX_SQL_PARAMS_BYTES / 2));
+      await expect(
+        db.batch([
+          { sql: "SELECT ?", params: [half] },
+          { sql: "SELECT ?", params: [half] },
+        ]),
+      ).rejects.toThrow(/batch input.*byte limit/);
       db.close();
     } finally {
       done();
@@ -173,6 +190,57 @@ describe("a plugin's own tables", () => {
       await expect(db.query("SELECT v FROM t")).rejects.toThrow(/no such table/);
       db.close();
     } finally {
+      done();
+    }
+  });
+
+  test("a changed live image refuses publication and preserves the competing writer", async () => {
+    const { dataDir, done } = scratch();
+    const store = new ServerStore(openDatabase(":memory:"));
+    const options = { dataDir, pluginId: "atyrode.example" };
+    const live = openPluginDatabase(options);
+    try {
+      await live.run("CREATE TABLE t(v TEXT)");
+      await live.run("INSERT INTO t VALUES ('old')");
+      live.close();
+      const staged = stagePluginDatabase(options, store);
+      await staged.database.run("UPDATE t SET v = 'candidate'");
+      await live.run("UPDATE t SET v = 'concurrent'");
+      live.close();
+      expect(() => staged.activate()).toThrow(/changed while migration was staged/);
+      staged.discard();
+      await expect(staged.database.run("DROP TABLE t")).rejects.toThrow(/closed/);
+      expect(await live.query("SELECT v FROM t")).toEqual([{ v: "concurrent" }]);
+      expect(store.pluginDatabaseJournals()).toEqual([]);
+      expect(existsSync(`${pluginDatabasePath(dataDir, options.pluginId)}.stage`)).toBe(false);
+    } finally {
+      live.close();
+      store.close();
+      done();
+    }
+  });
+
+  test("boot removes fixed unjournaled images and sidecars without touching retained data", async () => {
+    const { dataDir, done } = scratch();
+    const store = new ServerStore(openDatabase(":memory:"));
+    const options = { dataDir, pluginId: "atyrode.example" };
+    const live = openPluginDatabase(options);
+    try {
+      await live.run("CREATE TABLE t(v TEXT)");
+      await live.run("INSERT INTO t VALUES ('retained')");
+      live.close();
+      const path = pluginDatabasePath(dataDir, options.pluginId);
+      for (const image of [".stage", ".backup"])
+        for (const sidecar of ["", "-wal", "-shm", "-journal"])
+          writeFileSync(`${path}${image}${sidecar}`, "unfinished");
+      recoverPluginDatabases(dataDir, store);
+      expect(await live.query("SELECT v FROM t")).toEqual([{ v: "retained" }]);
+      for (const image of [".stage", ".backup"])
+        for (const sidecar of ["", "-wal", "-shm", "-journal"])
+          expect(existsSync(`${path}${image}${sidecar}`)).toBe(false);
+    } finally {
+      live.close();
+      store.close();
       done();
     }
   });

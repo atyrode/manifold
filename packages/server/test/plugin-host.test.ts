@@ -1,6 +1,14 @@
 import "../src/shared-modules.ts";
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,6 +51,7 @@ import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../src/assembly.ts";
 import { authoredLayout } from "../src/authored.ts";
+import { openDatabase } from "../src/db.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
 import { JobService } from "../src/job-service.ts";
 import {
@@ -58,7 +67,11 @@ import { IsolateSupervisor } from "../src/isolate/supervisor.ts";
 import { silentLogger } from "../src/log.ts";
 import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
 import { PLUGIN_UPLOADS_DIR } from "../src/plugin-installs.ts";
-import { pluginDatabasePath } from "../src/plugin-database.ts";
+import {
+  openPluginDatabase,
+  pluginDatabasePath,
+  stagePluginDatabase,
+} from "../src/plugin-database.ts";
 import {
   OUTSIDE_SCOPE_REFUSAL,
   PluginHost,
@@ -68,9 +81,9 @@ import {
   type ServerPluginDef,
 } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
-import { TRACE_ROW_TYPE, sha256Hex, type ServerStore } from "../src/stores.ts";
+import { TRACE_ROW_TYPE, sha256Hex, ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
-import type { StreamProducer } from "@manifold/plugin";
+import type { PluginDatabase, StreamProducer } from "@manifold/plugin";
 import {
   FakeClock,
   FakeRuntime,
@@ -1334,7 +1347,11 @@ describe("PluginHost database", () => {
 
   /** Two plugins that differ in one manifest line: one declares a database, one does not. */
   function databaseDefs(
-    options: { readonly migration?: boolean } = {},
+    options: {
+      readonly migration?: boolean;
+      readonly retain?: (database: PluginDatabase) => void;
+      readonly disable?: () => Promise<void>;
+    } = {},
   ): readonly ServerPluginDef[] {
     return [
       {
@@ -1360,12 +1377,19 @@ describe("PluginHost database", () => {
         handlers: {
           write: async (ctx: ActionCtx) => {
             if (ctx.database === undefined) return { note: "", declared: false };
+            options.retain?.(ctx.database);
             await ctx.database.run(
               "CREATE TABLE IF NOT EXISTS notes(id INTEGER PRIMARY KEY, body TEXT NOT NULL)",
             );
             await ctx.database.run("INSERT INTO notes(body) VALUES (?)", ["kept"]);
             const rows = await ctx.database.query<{ body: string }>("SELECT body FROM notes");
             return { note: rows[0]?.body ?? "", declared: true };
+          },
+        },
+        lifecycle: {
+          onDisable: async (ctx) => {
+            if (ctx.database !== undefined) options.retain?.(ctx.database);
+            await options.disable?.();
           },
         },
         ...(options.migration === true
@@ -1379,6 +1403,7 @@ describe("PluginHost database", () => {
                       await storage.set("migrated", "without a database");
                       return;
                     }
+                    options.retain?.(database);
                     await database.run(
                       "CREATE TABLE notes(id INTEGER PRIMARY KEY, body TEXT NOT NULL)",
                     );
@@ -1446,13 +1471,24 @@ describe("PluginHost database", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "manifold-host-db-"));
     const storage = fixture.store.pluginStorage(ROWS_ID);
     await storage.stampDataVersion({ major: 1, minor: 0 });
-    const host = await customHost(fixture, databaseDefs({ migration: true }), { dataDir });
+    let retained: PluginDatabase | undefined;
+    const host = await customHost(
+      fixture,
+      databaseDefs({
+        migration: true,
+        retain: (database) => {
+          retained = database;
+        },
+      }),
+      { dataDir },
+    );
     try {
       // The ledger and the stamp stay in `plugin_kv` whatever shape the data has, so ONE
       // version and ONE ledger answer for a plugin whose data is keys, rows or both.
       expect(await storage.get("migrated")).toBe("with a database");
       expect(await storage.appliedMigrations()).toEqual(["0001-make-the-table"]);
       expect(await storage.dataVersion()).toEqual({ major: 2, minor: 0 });
+      await expect(retained!.run("DROP TABLE notes")).rejects.toThrow(/closed/);
       // The table the migration created is the one the handler inserts into: a second
       // `CREATE TABLE` would have thrown rather than returned.
       expect(await host.dispatch(fixture.owner, `${ROWS_ID}.write`, {})).toEqual({
@@ -1469,13 +1505,28 @@ describe("PluginHost database", () => {
   test("purge deletes the file with its journal and reports the bytes that went", async () => {
     const fixture = await hostFixture();
     const dataDir = mkdtempSync(join(tmpdir(), "manifold-host-db-"));
-    const host = await customHost(fixture, databaseDefs(), { dataDir });
+    const retained: PluginDatabase[] = [];
+    const disabled = Promise.withResolvers<void>();
+    const host = await customHost(
+      fixture,
+      databaseDefs({
+        retain: (database) => retained.push(database),
+        disable: () => disabled.promise,
+      }),
+      { dataDir, lifecycleTimeoutMs: 5 },
+    );
     try {
       await host.dispatch(fixture.owner, `${ROWS_ID}.write`, {});
+      await expect(retained[0]!.run("DROP TABLE notes")).rejects.toThrow(/closed/);
       // A DISABLE RETAINS: the rows are still on disk when the plugin stops serving, which is
       // what makes purge the separate, explicitly named act that destroys them.
       await host.setEnabled(ROWS_ID, false, "admin");
       expect(existsSync(pluginDatabasePath(dataDir, ROWS_ID))).toBe(true);
+      await expect(retained[1]!.run("DROP TABLE notes")).rejects.toThrow(/closed/);
+      disabled.resolve();
+      const live = openPluginDatabase({ dataDir, pluginId: ROWS_ID });
+      expect(await live.query("SELECT body FROM notes")).toEqual([{ body: "kept" }]);
+      live.close();
 
       const outcome = await host.purge(ROWS_ID, "admin");
       if ("refused" in outcome) throw new Error(outcome.refused);
@@ -1483,6 +1534,10 @@ describe("PluginHost database", () => {
       expect(outcome.databaseBytes).toBeGreaterThan(0);
       expect(existsSync(pluginDatabasePath(dataDir, ROWS_ID))).toBe(false);
       expect(existsSync(`${pluginDatabasePath(dataDir, ROWS_ID)}-wal`)).toBe(false);
+      await expect(retained[0]!.batch([{ sql: "CREATE TABLE resurrected(v)" }])).rejects.toThrow(
+        /closed/,
+      );
+      expect(existsSync(pluginDatabasePath(dataDir, ROWS_ID))).toBe(false);
 
       // The next open starts from no file at all, so the purged plugin is a fresh one.
       await host.setEnabled(ROWS_ID, true, "admin");
@@ -1491,7 +1546,90 @@ describe("PluginHost database", () => {
         result: { note: "kept", declared: true },
       });
     } finally {
+      disabled.resolve();
       host.close();
+      fixture.store.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    "prepared-before-activation",
+    "prepared-between-renames",
+    "prepared-activated",
+    "prepared-first-file",
+    "committed-activated",
+    "committed-cleaned",
+    "prepared-unknown",
+    "committed-unknown",
+  ] as const)("boot recovers %s with the matching KV and ledger", async (point) => {
+    const fixture = await hostFixture();
+    const dataDir = mkdtempSync(join(tmpdir(), "manifold-db-recovery-"));
+    const metadataPath = join(dataDir, "server.db");
+    let store = new ServerStore(openDatabase(metadataPath));
+    const livePath = pluginDatabasePath(dataDir, ROWS_ID);
+    const options = { dataDir, pluginId: ROWS_ID };
+    const first = point === "prepared-first-file";
+    const committed = point.startsWith("committed");
+    try {
+      if (!first) {
+        const old = openPluginDatabase(options);
+        await old.run("CREATE TABLE notes(body TEXT)");
+        await old.run("INSERT INTO notes VALUES ('old')");
+        old.close();
+      }
+      const storage = store.pluginStorage(ROWS_ID);
+      await storage.set("row", "old");
+      await storage.stampDataVersion({ major: 1, minor: 0 });
+      const draft = store.beginPluginMigration(ROWS_ID);
+      const image = stagePluginDatabase(options, store);
+      await image.database.run("CREATE TABLE IF NOT EXISTS notes(body TEXT)");
+      await image.database.run("DELETE FROM notes");
+      await image.database.run("INSERT INTO notes VALUES ('new')");
+      await draft.storage.set("row", "new");
+      await draft.storage.recordMigration("upgrade", 1);
+      await draft.storage.stampDataVersion({ major: 2, minor: 0 });
+      image.activate();
+      if (point === "prepared-before-activation" || point === "prepared-between-renames")
+        renameSync(livePath, `${livePath}.stage`);
+      if (point === "prepared-before-activation") renameSync(`${livePath}.backup`, livePath);
+      if (committed) draft.commit(() => image.committed());
+      else draft.discard();
+      if (point === "committed-cleaned") rmSync(`${livePath}.backup`);
+      if (point.endsWith("unknown")) writeFileSync(livePath, "operator-owned evidence");
+      // Close/reopen the durable metadata DB, deliberately leaving the journal unfinished.
+      store.close();
+      store = new ServerStore(openDatabase(metadataPath));
+      if (point.endsWith("unknown")) {
+        await expect(customHost({ ...fixture, store }, [], { dataDir })).rejects.toThrow(
+          /unknown database image/,
+        );
+        expect(readFileSync(livePath, "utf8")).toBe("operator-owned evidence");
+        expect(existsSync(`${livePath}.backup`)).toBe(true);
+        expect(store.pluginDatabaseJournal(ROWS_ID)?.phase).toBe(
+          committed ? "committed" : "prepared",
+        );
+        return;
+      }
+      const host = await customHost({ ...fixture, store }, [], { dataDir });
+      host.close();
+      const recovered = store.pluginStorage(ROWS_ID);
+      expect(await recovered.get("row")).toBe(committed ? "new" : "old");
+      expect(await recovered.dataVersion()).toEqual({ major: committed ? 2 : 1, minor: 0 });
+      expect(await recovered.appliedMigrations()).toEqual(committed ? ["upgrade"] : []);
+      if (first) expect(existsSync(livePath)).toBe(false);
+      else {
+        const rows = openPluginDatabase(options);
+        expect(await rows.query("SELECT body FROM notes")).toEqual([
+          { body: committed ? "new" : "old" },
+        ]);
+        rows.close();
+      }
+      expect(store.pluginDatabaseJournals()).toEqual([]);
+      expect(existsSync(`${livePath}.stage`)).toBe(false);
+      expect(existsSync(`${livePath}.backup`)).toBe(false);
+    } finally {
+      store.close();
       fixture.store.close();
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -1946,12 +2084,15 @@ async function migrationBundle(
     | "cross-call"
     | "slice"
     | "loaded"
+    | "conflict"
     | "load_failed" = "none",
+  database: NonNullable<PluginManifest["database"]> | null = { maxBytes: 4 * 1024 * 1024 },
 ): Promise<{ source: string; sha256: string }> {
   const manifest: PluginManifest = {
     ...SAMPLE_MANIFEST,
     version: `${String(major)}.0.0`,
     dataVersion: { major, minor: 0 },
+    ...(database === null ? {} : { database }),
     capabilities: [],
     entry: { server: true },
   };
@@ -1966,11 +2107,20 @@ async function migrationBundle(
     let migrationId;
     const def = {
       manifest,
-      actions: ["read", "hold"].map(name => defineServerAction({
+      actions: ["read", "hold", "seed"].map(name => defineServerAction({
         name, title: name, caps: [], input: z.strictObject({}), result: z.unknown()
       })),
       handlers: {
-        async read(ctx) { return JSON.parse(await ctx.storage.get("row") ?? "null"); },
+        async read(ctx) {
+          return { ...JSON.parse(await ctx.storage.get("row") ?? "null"),
+            sql: ctx.database ? (await ctx.database.query("SELECT body FROM state"))[0]?.body : null };
+        },
+        async seed(ctx) {
+          await ctx.database.run("CREATE TABLE state(body TEXT)");
+          await ctx.database.run("INSERT INTO state VALUES (?)",
+            [JSON.parse(await ctx.storage.get("row")).model]);
+          return {};
+        },
         async hold(ctx) {
           await ctx.storage.set("entered", "yes");
           while (await ctx.storage.get("release") !== "yes") await Bun.sleep(1);
@@ -1981,10 +2131,15 @@ async function migrationBundle(
         major === 1
           ? "[]"
           : `[
-        { name: "canonical-v3", to: { major: 2, minor: 0 }, async migrate(storage) {
+        { name: "canonical-v3", to: { major: 2, minor: 0 }, async migrate(storage, database) {
           const before = await storage.get("row");
           const row = JSON.parse(before);
           if (row.schema !== 2) throw new Error("migration ran more than once");
+          if (database) {
+            await database.run("CREATE TABLE IF NOT EXISTS state(body TEXT)");
+            await database.run("DELETE FROM state");
+            await database.run("INSERT INTO state VALUES ('migrated')");
+          }
           await storage.set("row", JSON.stringify({ ...row, schema: 3, choice: row.model }));
           await storage.set("applied", String(Number(await storage.get("applied") ?? "0") + 1));
           ${failure === "throw" ? 'throw new Error("transformation refused");' : ""}
@@ -2024,7 +2179,7 @@ async function untilMigration(predicate: () => Promise<boolean>): Promise<void> 
   }
 }
 
-describe("installed guest storage migrations", () => {
+describe("installed guest data migrations", () => {
   test.each([false, true])(
     "drains old dispatch and atomically serves transformed data (hardened: %s)",
     async (hardened) => {
@@ -2042,6 +2197,7 @@ describe("installed guest storage migrations", () => {
         const storage = f.store.pluginStorage(SAMPLE_ID);
         const original = { schema: 2, revision: 7, model: "kept" };
         await storage.set("row", JSON.stringify(original));
+        expect((await host.dispatch(f.owner, `${SAMPLE_ID}.seed`, {})).ok).toBe(true);
         const old = host.dispatch(f.owner, `${SAMPLE_ID}.hold`, {});
         inFlight.push(old);
         await untilMigration(async () => (await storage.get("entered")) === "yes");
@@ -2079,6 +2235,9 @@ describe("installed guest storage migrations", () => {
         await drafting.promise;
         expect(JSON.parse((await storage.get("row"))!)).toEqual(original);
         expect(await storage.appliedMigrations()).toEqual([]);
+        const live = openPluginDatabase({ dataDir: f.dataDir, pluginId: SAMPLE_ID });
+        expect(await live.query("SELECT body FROM state")).toEqual([{ body: "kept" }]);
+        live.close();
         expect(denial(await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {})).rule).toBe(
           "unavailable",
         );
@@ -2086,7 +2245,7 @@ describe("installed guest storage migrations", () => {
         await f.store.pluginStorage("test.other").set("live", "retained");
         releaseDraft.resolve();
         expect((await upgrade).ok).toBe(true);
-        const transformed = { ...original, schema: 3, choice: "kept" };
+        const transformed = { ...original, schema: 3, choice: "kept", sql: "migrated" };
         expect(await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {})).toEqual({
           ok: true,
           result: transformed,
@@ -2111,6 +2270,15 @@ describe("installed guest storage migrations", () => {
           result: transformed,
         });
         expect(await f.store.pluginStorage("test.other").get("live")).toBe("retained");
+        expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+        // Even with no KV rows left, the file alone prevents silent uninstall.
+        await storage.clear();
+        const retained = await host.uninstall(SAMPLE_ID, "admin", false);
+        expect("refused" in retained && retained.refused.startsWith("storage_retained")).toBe(true);
+        expect(await host.uninstall(SAMPLE_ID, "admin", true)).toEqual({ ok: true });
+        expect(existsSync(pluginDatabasePath(f.dataDir, SAMPLE_ID))).toBe(false);
+        expect(f.store.pluginInstalls()).toEqual([]);
+        host.close();
       } finally {
         releaseDraft.resolve();
         await f.store.pluginStorage(SAMPLE_ID).set("release", "yes");
@@ -2122,18 +2290,28 @@ describe("installed guest storage migrations", () => {
     },
   );
 
-  test.each([
-    "throw",
-    "timeout",
-    "crash",
-    "malformed",
-    "cross-call",
-    "slice",
-    "loaded",
-    "load_failed",
-  ] as const)(
-    "%s never publishes a draft, records success, or loses another plugin's commit",
-    async (failure) => {
+  test.each(
+    (
+      [
+        "throw",
+        "timeout",
+        "crash",
+        "malformed",
+        "cross-call",
+        "slice",
+        "loaded",
+        "load_failed",
+        "conflict",
+      ] as const
+    ).flatMap((failure) =>
+      (failure === "throw" || failure === "timeout" ? [false, true] : [true]).map((hardened) => ({
+        failure,
+        hardened,
+      })),
+    ),
+  )(
+    "%j never publishes a draft, records success, or loses another plugin's commit",
+    async ({ failure, hardened }) => {
       const f = await installFixture();
       const runner = new IsolateSupervisor({
         logger: silentLogger,
@@ -2145,11 +2323,12 @@ describe("installed guest storage migrations", () => {
         const first = await migrationBundle(f, 1);
         const next = await migrationBundle(f, 2, failure);
         expect(
-          (await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, { ...first, hardened: true })).ok,
+          (await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, { ...first, hardened })).ok,
         ).toBe(true);
         const storage = f.store.pluginStorage(SAMPLE_ID);
         const original = { schema: 2, revision: 7, model: "retained" };
         await storage.set("row", JSON.stringify(original));
+        expect((await host.dispatch(f.owner, `${SAMPLE_ID}.seed`, {})).ok).toBe(true);
         const installed = f.store.pluginInstalls();
         const begin = f.store.beginPluginMigration.bind(f.store);
         f.store.beginPluginMigration = (id, includeData) => {
@@ -2168,6 +2347,7 @@ describe("installed guest storage migrations", () => {
                   await f.store
                     .pluginStorage("test.other")
                     .set("live", "committed-during-migration");
+                  if (failure === "conflict") await storage.set("racer", "retained");
                 }
               },
             },
@@ -2175,7 +2355,7 @@ describe("installed guest storage migrations", () => {
         };
         const outcome = await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, {
           ...next,
-          hardened: true,
+          hardened,
           replace: true,
         });
         expect(denial(outcome).message).toContain("artifact_invalid");
@@ -2185,18 +2365,124 @@ describe("installed guest storage migrations", () => {
         expect(await storage.get("applied")).toBeNull();
         expect(await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {})).toEqual({
           ok: true,
-          result: original,
+          result: { ...original, sql: "retained" },
         });
         expect(await f.store.pluginStorage("test.other").get("live")).toBe(
           "committed-during-migration",
         );
+        if (failure === "conflict") expect(await storage.get("racer")).toBe("retained");
+        expect(f.store.pluginDatabaseJournals()).toEqual([]);
+        expect(existsSync(`${pluginDatabasePath(f.dataDir, SAMPLE_ID)}.stage`)).toBe(false);
+        host.close();
       } finally {
         await runner.close();
         f.store.close();
         rmSync(f.dataDir, { recursive: true, force: true });
       }
     },
+    15_000,
   );
+
+  test.each([
+    { change: "add", hardened: false },
+    { change: "remove", hardened: true },
+    { change: "quota", hardened: false },
+  ] as const)(
+    "replacement uses the candidate database declaration: %j",
+    async ({ change, hardened }) => {
+      const f = await installFixture();
+      const runner = new IsolateSupervisor({ logger: silentLogger, runtime: f.runtime });
+      let host: PluginHost | undefined;
+      try {
+        host = await customHost(f, [], { isolates: { ...f.isolates, runner } });
+        const first = await migrationBundle(f, 1, "none", change === "add" ? null : {});
+        const next = await migrationBundle(
+          f,
+          2,
+          "none",
+          change === "remove" ? null : { maxBytes: change === "quota" ? 4096 : 4 * 1024 * 1024 },
+        );
+        expect(
+          (await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, { ...first, hardened })).ok,
+        ).toBe(true);
+        const storage = f.store.pluginStorage(SAMPLE_ID);
+        const original = { schema: 2, revision: 7, model: "retained" };
+        await storage.set("row", JSON.stringify(original));
+        if (change !== "add")
+          expect((await host.dispatch(f.owner, `${SAMPLE_ID}.seed`, {})).ok).toBe(true);
+        const installed = f.store.pluginInstalls();
+        const result = await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, {
+          ...next,
+          hardened,
+          replace: true,
+        });
+        expect(result.ok).toBe(change !== "quota");
+        expect(await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {})).toEqual({
+          ok: true,
+          result:
+            change === "quota"
+              ? { ...original, sql: "retained" }
+              : {
+                  ...original,
+                  schema: 3,
+                  choice: "retained",
+                  sql: change === "remove" ? null : "migrated",
+                },
+        });
+        expect(await storage.dataVersion()).toEqual({
+          major: change === "quota" ? 1 : 2,
+          minor: 0,
+        });
+        expect(await storage.appliedMigrations()).toEqual(
+          change === "quota" ? [] : ["canonical-v3"],
+        );
+        if (change === "quota") expect(f.store.pluginInstalls()).toEqual(installed);
+        if (change === "remove") {
+          const retained = openPluginDatabase({ dataDir: f.dataDir, pluginId: SAMPLE_ID });
+          expect(await retained.query("SELECT body FROM state")).toEqual([{ body: "retained" }]);
+          retained.close();
+        }
+      } finally {
+        host?.close();
+        await runner.close();
+        f.store.close();
+        rmSync(f.dataDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test("replacement enforces a smaller candidate database quota without a migration", async () => {
+    const f = await installFixture();
+    const runner = new IsolateSupervisor({ logger: silentLogger, runtime: f.runtime });
+    let host: PluginHost | undefined;
+    try {
+      host = await customHost(f, [], { isolates: { ...f.isolates, runner } });
+      const first = await migrationBundle(f, 1, "none");
+      expect((await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, first)).ok).toBe(true);
+      const storage = f.store.pluginStorage(SAMPLE_ID);
+      const original = { schema: 2, revision: 7, model: "retained" };
+      await storage.set("row", JSON.stringify(original));
+      expect((await host.dispatch(f.owner, `${SAMPLE_ID}.seed`, {})).ok).toBe(true);
+      const installed = f.store.pluginInstalls();
+
+      const smaller = await migrationBundle(f, 1, "throw", { maxBytes: 4096 });
+      const outcome = await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, {
+        ...smaller,
+        replace: true,
+      });
+      expect(denial(outcome).message).toContain("candidate manifest page budget");
+      expect(f.store.pluginInstalls()).toEqual(installed);
+      expect(await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {})).toEqual({
+        ok: true,
+        result: { ...original, sql: "retained" },
+      });
+    } finally {
+      host?.close();
+      await runner.close();
+      f.store.close();
+      rmSync(f.dataDir, { recursive: true, force: true });
+    }
+  });
 });
 
 function installedRow(host: PluginHost, id: string): PluginRoster[number] {

@@ -85,18 +85,31 @@ data without knowing its shape. What is missing is one thing: a place a plugin m
    parameter, `database` — `migrate(storage, database)` — additive, so every migration in the
    tree keeps compiling and keeps meaning what it meant. The ledger stays where it is: named
    entries under `$migration:` in `plugin_kv`, the version stamp in `$version`, so a plugin has
-   ONE data version and ONE ledger whether its data is keys, rows or both, and `applyMigrations`
-   (`plugin-host.ts:1237`) runs the chain exactly as today. A migration creates its tables with
-   ordinary `CREATE TABLE` statements through `database.run`; there is no schema DSL, because
-   SQL is the schema DSL and a second one would be the second convention CONTRACTS forbids.
+   ONE data version and ONE ledger whether its data is keys, rows or both. In-realm and hardened
+   callbacks receive the same optional second argument, selected by the candidate manifest,
+   never the old installed declaration. SQL is the schema DSL; no parallel migration API exists.
+
+   The host retires the live admin before snapshotting to fixed `data.db.stage` and
+   `data.db.backup` paths. Private images obey the candidate's page cap, bounded SQLite cache
+   settings and operation budget; fingerprints are streamed instead of loading entire files.
+   No SQLite transaction spans a callback await. Before activation, file and directory flushes
+   and a durable `prepared` journal in the server DB preserve recovery evidence. Activation
+   preserves the old image. The synchronous KV/ledger/version/install/claims transaction marks
+   that journal `committed`; only then may cleanup remove the old image. Server and plugin
+   databases use `synchronous = FULL`. Boot recovers prepared state backward and committed
+   state forward before any module is loaded, and cleans unjournaled fixed artifacts.
+   Unknown fingerprints fail closed rather than overwrite a competing writer's bytes.
 
 4. **Bounds are stated numbers, checked by the engine, refused as `PluginDatabaseError`
    rejections** (the same failure path storage uses — a rejection, never a throw):
-   - statement text ≤ 64 KiB; parameters ≤ 999 per statement (SQLite's own bound); a `batch` ≤
+   - statement text ≤ 64 KiB; parameters ≤ 999 per statement (SQLite's own bound) and ≤ 4 MiB
+     per call; aggregate statement-plus-parameter input ≤ 4 MiB across a `batch`; a `batch` ≤
      256 statements;
    - rows returned per call ≤ 10,000 and result bytes ≤ 4 MiB — a plugin pages, the engine does
      not buffer a table into a promise;
-   - a call runs under a 5-second deadline; a `batch` past it is rolled back;
+   - a `batch` has a cooperative 5-second budget, checked between statements and before commit;
+     Bun's synchronous SQLite API exposes no progress-handler cancellation here. A single SQL
+     statement can exceed that budget and block the host thread, even for a hardened guest;
    - the file is capped: `PRAGMA max_page_count` from the manifest's `database.maxBytes`
      (default 256 MiB, ceiling 4 GiB — the engine's ceiling, not the plugin's word), so a runaway
      plugin fills its own file and nothing else;
@@ -112,6 +125,9 @@ data without knowing its shape. What is missing is one thing: a place a plugin m
    page count, so a plugin with rows is refused a silent uninstall the way one with keys is. The
    engine's own backup of `<dataDir>` includes `plugins/`; a plugin's tables are not in
    `manifold.db` and must not be assumed to be.
+   Action, lifecycle and migration callbacks receive logical request leases, never the live
+   admin. Settlement, timeout and retirement revoke those handles before any later callback
+   can reopen or mutate a database belonging to a different installed version.
 
 6. **The manifest declares it.** `database?: { maxBytes?: number }` on the manifest; a plugin
    that declares nothing gets no `ctx.database` (the slice is absent, `slice_unavailable` through
@@ -143,11 +159,10 @@ data without knowing its shape. What is missing is one thing: a place a plugin m
 
 - `atyrode.babel` can start (its plan's P1). Any plugin whose data is row-shaped gets the same
   door; the settings plugin, the launch ledger and the draw plugin keep using keys.
-- New engine surface: `packages/plugin/src/database.ts` (contract, bounds, error), `stores.ts`
-  gains `pluginDatabase(pluginId)` beside `pluginStorage`, `plugin-host.ts` assembles `ctx.database`
-  for declaring plugins and threads it into migrations, `proxy-def.ts` serves the three methods,
-  purge and count widen, the manifest schema gains `database`, `docs/PLUGINS.md` §4 gains "Your
-  tables", and the kit's `verify` exercises query, run, batch, a migration and purge.
+- The host owns per-plugin admins and private migration images; `stores.ts` owns the durable
+  image journal beside KV publication. The context/proxy expose only query, run and batch.
+  The guest migration and database lifecycle matrices cover publication, failure, recovery,
+  replacement declarations and quotas, request retirement, retained data and purge.
 - Revisit triggers: a plugin needs cross-statement read-your-writes inside one transaction that
   `batch` cannot express (the answer is then a bounded transaction with a deadline, added as a
   fourth method, not a change to the three); or the engine grows a backup primitive, at which

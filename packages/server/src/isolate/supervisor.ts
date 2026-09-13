@@ -4,6 +4,7 @@ import type {
   LifecycleCtx,
   StreamProducer,
   JobFollow,
+  PluginDatabase,
   PluginMigration,
   PluginStorage,
 } from "@manifold/plugin";
@@ -170,8 +171,23 @@ export class IsolateSupervisor implements IsolateRunner {
     const transport: IsolateTransport = {
       dispatch: (action, args, ctx) => this.dispatch(pluginId, action, args, ctx),
       hook: (hook, ctx, delta) => this.hook(pluginId, hook, ctx, delta),
-      settled: (ctx, job) => this.settled(pluginId, ctx, job),
-      migrate: (migration, storage) => this.migrate(isolate, migration, storage),
+43:       settled: (ctx, job) => this.settled(pluginId, ctx, job),
+      migrate: (migration, storage, database) =>
+        this.migrate(isolate, migration, storage, database),
+44: import type {
+  JobSettledCtx,
+  LifecycleCtx,
+  PluginDatabase,
+  PluginStorage,
+  SqlStatement,
+} from "@manifold/plugin";
+45:   /** `onJobSettled` alone: its own ctx (the job slice rides it) and its own argument. */
+  settled(ctx: JobSettledCtx, job: SettledJob): Promise<void>;
+  migrate(
+    migration: Pick<PluginMigration, "name" | "to">,
+    storage: PluginStorage,
+    database?: PluginDatabase,
+  ): Promise<void>;
     };
     try {
       return buildIsolateDef(ref.manifest, isolate.loaded, transport);
@@ -300,6 +316,7 @@ export class IsolateSupervisor implements IsolateRunner {
     isolate: Isolate,
     migration: Pick<PluginMigration, "name" | "to">,
     storage: PluginStorage,
+    database?: PluginDatabase,
   ): Promise<void> {
     if (this.isolates.get(isolate.ref.pluginId) !== isolate)
       throw new IsolateDenial("unavailable", "migration belongs to a retired plugin");
@@ -312,7 +329,7 @@ export class IsolateSupervisor implements IsolateRunner {
     const frame = await this.request(
       isolate.ref.pluginId,
       (id) => ({ t: "migrate", id, migration }),
-      { kind: "migration", ctx: { storage } },
+      { kind: "migration", ctx: { storage, ...(database === undefined ? {} : { database }) } },
     );
     if (frame.t !== "migrated" || frame.name !== migration.name)
       throw new IsolateDenial("unavailable", "migration answered out of protocol");
@@ -650,12 +667,14 @@ export class IsolateSupervisor implements IsolateRunner {
       if (migration !== null) {
         if (
           pending?.served.kind !== "migration" ||
-          !frame.method.startsWith("storage.") ||
+          !(frame.method.startsWith("storage.") || frame.method.startsWith("database.")) ||
           migration.calls.has(frame.id) ||
           migration.calls.size >= MAX_MIGRATION_STORAGE_OPERATIONS
         ) {
-          this.failMigration(isolate, "invalid migration storage call");
-          throw new Error("migration may call only its own storage with fresh call ids");
+          this.failMigration(isolate, "invalid migration data call");
+          throw new Error(
+            "migration may call only its own storage and database with fresh call ids",
+          );
         }
         migration.calls.add(frame.id);
       }

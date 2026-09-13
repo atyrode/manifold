@@ -4,6 +4,7 @@ import {
   ENGINE_INSTALLED_EVENT,
   ENGINE_UNINSTALLED_EVENT,
   LIFECYCLE_TIMEOUT_MS,
+  PluginDatabaseError,
   assembleRoster,
   assertStorageKey,
   compareDataVersion,
@@ -32,6 +33,7 @@ import {
   type PluginStorageAdmin,
   type PluginStoredData,
 } from "@manifold/plugin";
+import type { SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
 import type { ServerMigration as GuestMigration } from "@manifold/plugin-kit/server";
 import {
   GuestMigrationDeclarationsSchema,
@@ -106,7 +108,13 @@ import {
 import { localActionDef } from "./isolate/proxy-def.ts";
 import { redactFields, type Logger } from "./log.ts";
 import type { PlaceExecutor } from "./placement.ts";
-import { openPluginDatabase } from "./plugin-database.ts";
+import {
+  openPluginDatabase,
+  recoverPluginDatabase,
+  recoverPluginDatabases,
+  stagePluginDatabase,
+  type PluginDatabaseStage,
+} from "./plugin-database.ts";
 import {
   InstallRefusal,
   installArtifact,
@@ -1081,6 +1089,7 @@ export class PluginHost {
       events,
       options,
     );
+    if (host.dataDir !== null) recoverPluginDatabases(host.dataDir, store);
     await host.loadInstalled();
     host.assembled = await host.reassemble();
     const migrated = await host.runPendingMigrations();
@@ -1209,18 +1218,21 @@ export class PluginHost {
           const invoke = migration.migrate.bind(migration);
           return {
             ...metadata,
-            migrate: (storage) =>
-              invoke({
-                pluginId: storage.pluginId,
-                get: async (key) => {
-                  assertStorageKey(key);
-                  return storage.get(key);
+            migrate: (storage, database) =>
+              invoke(
+                {
+                  pluginId: storage.pluginId,
+                  get: async (key) => {
+                    assertStorageKey(key);
+                    return storage.get(key);
+                  },
+                  set: storage.set,
+                  compareAndSet: storage.compareAndSet,
+                  delete: storage.delete,
+                  keys: storage.keys,
                 },
-                set: storage.set,
-                compareAndSet: storage.compareAndSet,
-                delete: storage.delete,
-                keys: storage.keys,
-              }),
+                database,
+              ),
           };
         });
         return { ...def, manifest: bundle.manifest, migrations: adapted };
@@ -1360,57 +1372,45 @@ export class PluginHost {
     return created;
   }
 
-  /**
-   * ONE FILE PER PLUGIN, opened lazily and kept (ADR 0034 §1). Null when this host has no
-   * data directory — a unit fixture — because a path is the whole of what makes the file this
-   * plugin's and nobody else's, and inventing one under the process's cwd would put a
-   * workspace's rows somewhere no backup looks.
-   *
-   * The handle exists whether or not the manifest DECLARES a database: the purge verb and the
-   * uninstall guard have to answer for a file a plugin wrote before its manifest stopped
-   * asking for one, and opening is lazy, so a plugin that never touches SQL never creates a
-   * file. What the declaration decides is whether `ctx.database` is handed out, which is
-   * `slice(...)` below.
-   */
-  private database(pluginId: string): PluginDatabaseAdmin | null {
-    if (this.dataDir === null) return null;
-    const existing = this.databases.get(pluginId);
-    if (existing !== undefined) return existing;
-    const declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.database;
-    const created = openPluginDatabase({
-      dataDir: this.dataDir,
-      pluginId,
-      ...(declared?.maxBytes === undefined ? {} : { maxBytes: declared.maxBytes }),
-      now: () => this.runtime.now(),
-    });
-    this.databases.set(pluginId, created);
-    return created;
-  }
-
-  /**
-   * The database slice a CONTEXT carries: present exactly when the manifest declared one
-   * (ADR 0034 §6), so a plugin that asked for no file cannot reach one by accident and the
-   * proxy answers `slice_unavailable` for the same reason on the other side of the boundary.
-   */
-  private databaseSlice(pluginId: string): PluginDatabase | undefined {
-    const declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.database;
-    if (declared === undefined) return undefined;
-    return this.database(pluginId) ?? undefined;
-  }
-
-  /** A completed/timed-out handler cannot retain storage authority into a later version. */
-  private storageLease(
+  /** Request-scoped durable authority; settlement, timeout and retirement revoke it. */
+  private dataLease(
     pluginId: string,
     storage: PluginStorage = this.storage(pluginId),
-  ): { storage: PluginStorage; close(): void } {
+    database: PluginDatabase | null = this.databaseSlice(pluginId) ?? null,
+  ): { storage: PluginStorage; database?: PluginDatabase; close(): void } {
     let open = true;
     const check = (): void => {
-      if (!open) throw new Error("plugin storage request is closed");
+      if (!open) throw new Error("plugin data request is closed");
+    };
+    const live = database !== null && this.databases.get(pluginId) === database;
+    const checkDatabase = (): void => {
+      if (!open) throw new PluginDatabaseError("plugin database request is closed");
+      if (live && this.databases.get(pluginId) !== database)
+        throw new PluginDatabaseError("plugin database request belongs to a retired handle");
     };
     return {
       close: () => {
         open = false;
       },
+      ...(database === null
+        ? {}
+        : {
+            database: {
+              pluginId,
+              query: async <Row extends SqlRow>(sql: string, params?: readonly SqlParam[]) => {
+                checkDatabase();
+                return database.query<Row>(sql, params);
+              },
+              run: async (sql: string, params?: readonly SqlParam[]) => {
+                checkDatabase();
+                return database.run(sql, params);
+              },
+              batch: async (statements: readonly SqlStatement[]) => {
+                checkDatabase();
+                return database.batch(statements);
+              },
+            },
+          }),
       storage: {
         pluginId,
         get: async (key) => {
@@ -1474,6 +1474,8 @@ export class PluginHost {
     if (this.dataDir === null) return null;
     const existing = this.databases.get(pluginId);
     if (existing !== undefined) return existing;
+    const journal = this.store.pluginDatabaseJournal(pluginId);
+    if (journal !== null) recoverPluginDatabase(this.dataDir, this.store, journal);
     const declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.database;
     const created = openPluginDatabase({
       dataDir: this.dataDir,
@@ -1483,6 +1485,12 @@ export class PluginHost {
     });
     this.databases.set(pluginId, created);
     return created;
+  }
+
+  private retireDatabase(pluginId: string): void {
+    const database = this.databases.get(pluginId);
+    this.databases.delete(pluginId);
+    database?.close();
   }
 
   /**
@@ -1519,37 +1527,92 @@ export class PluginHost {
   private async prepareMigrations(
     pluginId: string,
     migrations: readonly PluginMigration[],
-    declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.dataVersion,
+    manifest = this.defs.find((def) => def.manifest.id === pluginId)?.manifest,
   ): Promise<PluginMigrationSession> {
+    // Revoke the live admin before snapshotting, including when the candidate removed its
+    // declaration. A replacement's page budget must never come from the installed def.
+    this.retireDatabase(pluginId);
     const staged = this.store.beginPluginMigration(pluginId, migrations.length > 0);
     const admin = staged.storage;
-    const database = this.databaseSlice(pluginId);
+    let image: PluginDatabaseStage | undefined;
     let closeActiveLease = (): void => {};
     try {
+      if (this.dataDir !== null && manifest?.database !== undefined) {
+        const options = {
+          dataDir: this.dataDir,
+          pluginId,
+          ...(manifest.database.maxBytes === undefined
+            ? {}
+            : { maxBytes: manifest.database.maxBytes }),
+          now: () => this.runtime.now(),
+        };
+        if (migrations.length > 0) {
+          image = stagePluginDatabase(options, this.store);
+        } else {
+          // A replacement's smaller cap is part of admission even when no data migration is
+          // owing. Read the existing image under that cap without creating a fresh lazy file.
+          const candidate = openPluginDatabase(options);
+          try {
+            await candidate.pageCount();
+          } finally {
+            candidate.close();
+          }
+        }
+      }
       const outcome = await runHook(async () => {
         for (const migration of migrations) {
-          // A callback sees public storage only, and its handle expires before the next
-          // migration starts; the engine alone records names and the eventual version.
-          const lease = this.storageLease(pluginId, admin);
+          // A callback's handles expire before the next migration starts. Explicit database
+          // absence must not default to the installed manifest's live file.
+          const lease = this.dataLease(pluginId, admin, image?.database ?? null);
           closeActiveLease = lease.close;
           try {
-            await migration.migrate(lease.storage, database);
+            await migration.migrate(lease.storage, lease.database);
           } finally {
             lease.close();
             if (closeActiveLease === lease.close) closeActiveLease = (): void => {};
           }
           await admin.recordMigration(migration.name, this.runtime.now());
         }
-        if (declared !== undefined) await admin.stampDataVersion(declared);
+        if (manifest?.dataVersion !== undefined) await admin.stampDataVersion(manifest.dataVersion);
       }, ISOLATE_MIGRATION_DEADLINE_MS);
       // `runHook` cannot cancel an in-realm promise. Expire its authority when the engine
       // stops waiting, rather than when that promise eventually settles.
       closeActiveLease();
       if (!outcome.ok) throw new Error(`plugin migration failed: ${outcome.reason}`);
-      return staged;
+      return {
+        storage: admin,
+        discard: () => {
+          staged.discard();
+          image?.discard();
+        },
+        commit: (publish) => {
+          try {
+            image?.activate();
+            staged.commit(() => {
+              publish?.();
+              image?.committed();
+            });
+          } catch (error) {
+            staged.discard();
+            image?.discard();
+            throw error;
+          }
+          // Metadata is committed: cleanup may be retried, but never roll it back. A failed
+          // cleanup keeps the journal, and database() must recover it before admitting SQL.
+          try {
+            image?.finish();
+          } catch (error) {
+            this.logger.error("plugin_database_recovery", {
+              plugin: pluginId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        },
+      };
     } catch (error) {
       closeActiveLease();
       staged.discard();
+      image?.discard();
       throw error;
     }
   }
@@ -1557,11 +1620,14 @@ export class PluginHost {
   private async applyMigrations(
     pluginId: string,
     migrations: readonly PluginMigration[],
-    declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.dataVersion,
+    manifest = this.defs.find((def) => def.manifest.id === pluginId)?.manifest,
   ): Promise<boolean> {
     if (migrations.length === 0) return false;
-    const staged = await this.prepareMigrations(pluginId, migrations, declared);
-    staged.commit();
+    const staged = await this.prepareMigrations(pluginId, migrations, manifest);
+    staged.commit(() => {
+      const types = manifest?.contributes.elements.map((element) => element.type) ?? [];
+      if (types.length > 0) this.store.claimElementTypes(pluginId, types);
+    });
     for (const migration of migrations)
       this.logger.info("plugin_migration", { plugin: pluginId, migration: migration.name });
     return true;
@@ -1753,7 +1819,7 @@ export class PluginHost {
       opens the same file again, which is what makes "re-enabling restores it in place" true of
       rows as well as keys.
     */
-    if (!enabled) this.databases.get(id)?.close();
+    if (!enabled) this.retireDatabase(id);
     const installed = this.installed.get(id);
     if (
       !enabled &&
@@ -2034,11 +2100,12 @@ export class PluginHost {
       };
       let staged: PluginMigrationSession | undefined;
       try {
+        if (!prospective.enabled(id)) this.retireDatabase(id);
         if (prospective.enabled(id)) {
           staged = await this.prepareMigrations(
             id,
             prospective.pendingMigrations.get(id) ?? [],
-            bundle.manifest.dataVersion,
+            bundle.manifest,
           );
         }
         const publish = (): void => {
@@ -2335,8 +2402,7 @@ export class PluginHost {
     this.lifecycleStates.delete(id);
     // The row is gone, so the handle onto its file is too. The BYTES stay unless a purge took
     // them — an uninstall never destroys data — and the next install of this id opens afresh.
-    this.databases.get(id)?.close();
-    this.databases.delete(id);
+    this.retireDatabase(id);
     this.syncDefs();
     this.assembled = await this.reassemble();
     this.publish();
@@ -2397,8 +2463,11 @@ export class PluginHost {
    * A first-party row nobody installed, and a row written before schema 32, have no lineage to
    * restore and so have no slice — exactly what they could do before.
    */
-  private lifecycleCtx(pluginId: string, storage: PluginStorage): LifecycleCtx {
-    const database = this.databaseSlice(pluginId);
+  private lifecycleCtx(
+    pluginId: string,
+    storage: PluginStorage,
+    database?: PluginDatabase,
+  ): LifecycleCtx {
     const installer = this.installed.get(pluginId)?.row.installer;
     const auth = installer === undefined ? null : this.authService.restoreCredential(installer);
     return {
@@ -2439,14 +2508,21 @@ export class PluginHost {
     pluginId: string,
     invoke: (ctx: LifecycleCtx) => void | Promise<void>,
   ): Promise<HookOutcome> {
-    const lease = this.storageLease(pluginId);
+    let active: ReturnType<PluginHost["dataLease"]> | undefined;
     try {
-      return await runHook(
-        () => invoke(this.lifecycleCtx(pluginId, lease.storage)),
-        this.lifecycleTimeoutMs,
-      );
+      return await runHook(async () => {
+        const lease = this.dataLease(pluginId);
+        active = lease;
+        try {
+          await invoke(this.lifecycleCtx(pluginId, lease.storage, lease.database));
+        } finally {
+          lease.close();
+          if (active === lease) active = undefined;
+        }
+      }, this.lifecycleTimeoutMs);
     } finally {
-      lease.close();
+      // `runHook` stops waiting at the deadline; the callback may still be live.
+      active?.close();
     }
   }
 
@@ -2816,9 +2892,14 @@ export class PluginHost {
               (cap) => withinCeiling(cap, auth.caps) && withinCeiling(cap, nativeCaps),
             ),
           };
-    const database = this.databaseSlice(pluginId);
-    const lease = this.storageLease(pluginId);
-    const database = this.databaseSlice(pluginId);
+    let lease: ReturnType<PluginHost["dataLease"]>;
+    try {
+      lease = this.dataLease(pluginId);
+    } catch (error) {
+      this.store.settleTrace(traceId, "failed", []);
+      throw error;
+    }
+    const database = lease.database;
     const ctx: ActionCtx = {
       traceId,
       credential: this.authService.credentialReference(auth),
@@ -3020,8 +3101,8 @@ export class PluginHost {
    * SHUTDOWN. Every SQLite handle this host opened on a plugin's behalf is closed, so the
    * process leaves no `-wal` mid-checkpoint behind and a restart opens clean files. It is the
    * host's counterpart to `store.close()` and belongs to the same stop sequence — after the
-   * sockets, so no dispatch in flight finds its database gone. Idempotent: closing a closed
-   * handle is a no-op, and a plugin that touches its database afterwards simply reopens.
+   * sockets, so no dispatch in flight finds its database gone. Clearing the admin map also
+   * revokes outstanding logical leases; retained callbacks cannot reopen a retired file.
    */
   close(): void {
     for (const database of this.databases.values()) database.close();

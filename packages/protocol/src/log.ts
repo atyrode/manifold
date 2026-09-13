@@ -34,6 +34,7 @@ export const LOG_EVENTS = [
   // Server: the plugin host's own bookkeeping (ADR 0013 §2, §6, §11).
   "plugin_lifecycle",
   "plugin_migration",
+  "plugin_database_recovery",
   "plugin_purge",
 
   // Server: the install doors (ADR 0016 §8 stage 2) — a bundle admitted, or removed. A stored

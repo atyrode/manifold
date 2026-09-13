@@ -760,6 +760,14 @@ export interface PluginMigrationSession {
   discard(): void;
 }
 
+/** Fingerprints name closed SQLite images, never paths supplied by a plugin. */
+export interface PluginDatabaseJournal {
+  readonly plugin_id: string;
+  readonly phase: "prepared" | "committed";
+  readonly previous: string | null;
+  readonly next: string | null;
+}
+
 /** Synchronous repository over the server-owned SQLite schema. */
 export class ServerStore {
   private readonly eventCountByContainer = new Map<string, number>();
@@ -957,6 +965,44 @@ export class ServerStore {
    */
   pluginStorage(pluginId: string): PluginStorageAdmin {
     return this.storageHandle(pluginId);
+  }
+
+  pluginDatabaseJournals(): readonly PluginDatabaseJournal[] {
+    return this.db
+      .query<PluginDatabaseJournal, []>(
+        "SELECT plugin_id, phase, previous, next FROM plugin_database_journal ORDER BY plugin_id",
+      )
+      .all();
+  }
+
+  pluginDatabaseJournal(pluginId: string): PluginDatabaseJournal | null {
+    return this.db
+      .query<PluginDatabaseJournal, [string]>(
+        "SELECT plugin_id, phase, previous, next FROM plugin_database_journal WHERE plugin_id = ?",
+      )
+      .get(pluginId);
+  }
+
+  preparePluginDatabase(journal: Omit<PluginDatabaseJournal, "phase">): void {
+    this.db
+      .query(
+        "INSERT INTO plugin_database_journal(plugin_id, phase, previous, next) VALUES (?, 'prepared', ?, ?)",
+      )
+      .run(journal.plugin_id, journal.previous, journal.next);
+  }
+
+  /** Called only inside the KV/ledger/install publication transaction. */
+  commitPluginDatabase(pluginId: string): void {
+    const result = this.db
+      .query(
+        "UPDATE plugin_database_journal SET phase = 'committed' WHERE plugin_id = ? AND phase = 'prepared'",
+      )
+      .run(pluginId);
+    if (result.changes !== 1) throw new Error("plugin database has no prepared image");
+  }
+
+  forgetPluginDatabase(pluginId: string): void {
+    this.db.query("DELETE FROM plugin_database_journal WHERE plugin_id = ?").run(pluginId);
   }
 
   /**

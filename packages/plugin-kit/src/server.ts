@@ -198,7 +198,7 @@ export interface GuestDatabase {
 export interface ServerMigration {
   readonly name: string;
   readonly to: PluginDataVersion;
-  migrate(storage: GuestStorage): void | Promise<void>;
+  migrate(storage: GuestStorage, database?: GuestDatabase): void | Promise<void>;
 }
 
 /**
@@ -502,6 +502,7 @@ function assertStorageValue(key: string, value: string): void {
 const MAX_SQL_STATEMENT_BYTES = 64 * 1024;
 const MAX_SQL_PARAMS = 999;
 const MAX_SQL_BATCH_STATEMENTS = 256;
+const MAX_SQL_PARAMS_BYTES = 4 * 1024 * 1024;
 const REFUSED_LEADING_KEYWORDS: Record<string, true> = {
   ATTACH: true,
   DETACH: true,
@@ -537,7 +538,7 @@ function assertSqlStatement(sql: string): void {
   if (typeof sql !== "string" || sql.trim() === "") {
     throw new PluginDatabaseError("a statement must be a non-empty string");
   }
-  const bytes = new TextEncoder().encode(sql).byteLength;
+  const bytes = Buffer.byteLength(sql);
   if (bytes > MAX_SQL_STATEMENT_BYTES) {
     throw new PluginDatabaseError(
       `statement is ${String(bytes)} bytes, over the ${String(MAX_SQL_STATEMENT_BYTES)}-byte limit`,
@@ -554,14 +555,48 @@ function assertSqlStatement(sql: string): void {
   }
 }
 
-function assertSqlParams(params: readonly GuestSqlParam[] | undefined): void {
-  if (params === undefined) return;
+function validateSqlParams(params: readonly GuestSqlParam[] | undefined): number {
+  if (params === undefined) return 0;
   if (!Array.isArray(params)) throw new PluginDatabaseError("parameters must be an array");
   if (params.length > MAX_SQL_PARAMS) {
     throw new PluginDatabaseError(
       `${String(params.length)} parameters, over the ${String(MAX_SQL_PARAMS)} SQLite allows`,
     );
   }
+  let bytes = 0;
+  for (const value of params) {
+    const kind = typeof value;
+    if (
+      value !== null &&
+      kind !== "string" &&
+      kind !== "number" &&
+      kind !== "bigint" &&
+      kind !== "boolean" &&
+      !(value instanceof Uint8Array)
+    ) {
+      throw new PluginDatabaseError(
+        `a parameter must be a string, number, bigint, boolean, null or Uint8Array, not ${kind}`,
+      );
+    }
+    bytes +=
+      typeof value === "string"
+        ? Buffer.byteLength(value)
+        : typeof value === "bigint"
+          ? value.toString().length
+          : value instanceof Uint8Array
+            ? value.byteLength
+            : 8;
+    if (bytes > MAX_SQL_PARAMS_BYTES) {
+      throw new PluginDatabaseError(
+        `parameters are over the ${String(MAX_SQL_PARAMS_BYTES)}-byte limit`,
+      );
+    }
+  }
+  return bytes;
+}
+
+function assertSqlParams(params: readonly GuestSqlParam[] | undefined): void {
+  validateSqlParams(params);
 }
 
 function assertSqlBatch(statements: readonly GuestSqlStatement[]): void {
@@ -573,10 +608,67 @@ function assertSqlBatch(statements: readonly GuestSqlStatement[]): void {
       `a batch of ${String(statements.length)} statements is over the ${String(MAX_SQL_BATCH_STATEMENTS)}-statement limit`,
     );
   }
+  let bytes = 0;
   for (const statement of statements) {
     assertSqlStatement(statement.sql);
-    assertSqlParams(statement.params);
+    bytes += Buffer.byteLength(statement.sql) + validateSqlParams(statement.params);
+    if (bytes > MAX_SQL_PARAMS_BYTES) {
+      throw new PluginDatabaseError(
+        `the batch input is over the ${String(MAX_SQL_PARAMS_BYTES)}-byte limit`,
+      );
+    }
   }
+}
+
+const SQL_WIRE_TAG = "$manifold.sql";
+const MAX_SQL_BASE64_CHARS = Math.ceil(MAX_SQL_PARAMS_BYTES / 3) * 4;
+
+/** JSON-safe encoding for the two SQLite scalar types JSON itself cannot carry. */
+function sqlValueToWire(value: GuestSqlParam): unknown {
+  if (typeof value === "bigint") return { [SQL_WIRE_TAG]: "bigint", value: value.toString() };
+  if (value instanceof Uint8Array) {
+    return {
+      [SQL_WIRE_TAG]: "bytes",
+      value: Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString("base64"),
+    };
+  }
+  return value;
+}
+
+function sqlValueFromWire(value: unknown): GuestSqlParam {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  )
+    return value;
+  if (typeof value !== "object" || Array.isArray(value))
+    throw new PluginDatabaseError("the host returned an invalid SQL value");
+  const tag = Reflect.get(value, SQL_WIRE_TAG);
+  const encoded = Reflect.get(value, "value");
+  if (tag === "bigint" && typeof encoded === "string" && /^-?\d{1,128}$/.test(encoded))
+    return BigInt(encoded);
+  if (tag === "bytes" && typeof encoded === "string" && encoded.length <= MAX_SQL_BASE64_CHARS) {
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.toString("base64") === encoded) return bytes;
+  }
+  throw new PluginDatabaseError("the host returned an invalid encoded SQL value");
+}
+
+function sqlRowsFromWire(value: unknown): readonly GuestSqlRow[] {
+  if (!Array.isArray(value)) throw new PluginDatabaseError("the host returned invalid SQL rows");
+  return value.map((row) => {
+    if (row === null || typeof row !== "object" || Array.isArray(row))
+      throw new PluginDatabaseError("the host returned an invalid SQL row");
+    return Object.fromEntries(
+      Object.entries(row).map(([column, cell]) => [column, sqlValueFromWire(cell)]),
+    );
+  });
+}
+
+function sqlParamsToWire(params: readonly GuestSqlParam[]): readonly unknown[] {
+  return params.map(sqlValueToWire);
 }
 
 // ---------------------------------------------------------------------------- the runtime
@@ -619,6 +711,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     (def.migrations ?? []).map((migration) => [migration.name, migration]),
   );
   let loaded = false;
+  let databaseDeclared = false;
   const producerClosures = new Map<string, () => void>();
   type JobNotification = Extract<IsolateHostFrame, { t: "job_update" }>;
   interface Observer {
@@ -750,7 +843,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
    * class, so a plugin writes one `try`/`catch` and never has to tell the sides apart.
    */
   const databaseFor = (call: Call): GuestDatabase | undefined => {
-    if (def.manifest.database === undefined) return undefined;
+    if (!databaseDeclared) return undefined;
     const ask = async (
       method: "database.query" | "database.run" | "database.batch",
       args: readonly unknown[],
@@ -772,24 +865,36 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       ) => {
         assertSqlStatement(sql);
         assertSqlParams(params);
-        // Omitted, not sent as a hole: the frame is JSON, which has no `undefined`, and the
-        // same reason `storage.keys` sends `[]` rather than `[undefined]` for no prefix.
-        return (await ask(
-          "database.query",
-          params === undefined ? [sql] : [sql, params],
-        )) as readonly Row[];
+        // Omitted, not sent as a hole: the frame is JSON, which has no `undefined`. Bigints
+        // and blobs use the database wire tags above rather than relying on JSON coercion.
+        return sqlRowsFromWire(
+          await ask(
+            "database.query",
+            params === undefined ? [sql] : [sql, sqlParamsToWire(params)],
+          ),
+        ) as readonly Row[];
       },
       run: async (sql, params) => {
         assertSqlStatement(sql);
         assertSqlParams(params);
-        return (await ask("database.run", params === undefined ? [sql] : [sql, params])) as {
+        return (await ask(
+          "database.run",
+          params === undefined ? [sql] : [sql, sqlParamsToWire(params)],
+        )) as {
           changes: number;
           lastInsertRowid: number;
         };
       },
       batch: async (statements) => {
         assertSqlBatch(statements);
-        return (await ask("database.batch", [statements])) as readonly (readonly GuestSqlRow[])[];
+        const wire = statements.map((statement) => ({
+          sql: statement.sql,
+          ...(statement.params === undefined ? {} : { params: sqlParamsToWire(statement.params) }),
+        }));
+        const result = await ask("database.batch", [wire]);
+        if (!Array.isArray(result))
+          throw new PluginDatabaseError("the host returned invalid SQL batch rows");
+        return result.map(sqlRowsFromWire);
       },
     };
   };
@@ -1064,6 +1169,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       post({ t: "load_failed", error: errorText(error) });
       return;
     }
+    // The pinned candidate manifest is authority, not a module's embedded declaration.
+    databaseDeclared = frame.manifest.database !== undefined;
     loaded = true;
     post({
       t: "loaded",
@@ -1184,7 +1291,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         throw new Error("unknown migration or target");
       }
       // No lifecycle context, caller authority, emissions or long-lived handles.
-      await migration.migrate(storageFor(requests.call));
+      await migration.migrate(storageFor(requests.call), databaseFor(requests.call));
       post({ t: "migrated", id: frame.id, name: migration.name, outcome: { ok: true } });
     } catch (error) {
       post({

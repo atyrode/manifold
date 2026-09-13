@@ -6,7 +6,7 @@ import { migrateToSoloCompositions } from "./migrate-solo.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 32;
+export const SCHEMA_VERSION = 33;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -733,6 +733,15 @@ INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','31');
 ALTER TABLE plugin_installs ADD COLUMN installer_credential TEXT;
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','32');
 `,
+  33: `
+CREATE TABLE plugin_database_journal(
+ plugin_id TEXT PRIMARY KEY,
+ phase TEXT NOT NULL CHECK(phase IN ('prepared','committed')),
+ previous TEXT,
+ next TEXT
+);
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','33');
+`,
 };
 
 interface TableRow {
@@ -794,7 +803,9 @@ export function openDatabase(path: string): Database {
   const db = new Database(path, { create: true, strict: true });
   db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};`);
   db.exec("PRAGMA journal_mode = WAL;");
-  db.exec("PRAGMA synchronous = NORMAL;");
+  // The plugin image journal must be durable before filesystem activation, and its commit
+  // marker must survive with the KV/install transaction before the old image is removed.
+  db.exec("PRAGMA synchronous = FULL;");
   const meta = db
     .query<TableRow, []>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
     .get();
