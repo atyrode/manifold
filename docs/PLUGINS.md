@@ -1704,6 +1704,48 @@ local throwaway proofs, not live-hub installation, deployment approval, or evide
 full Code/Babel parity or product cutover. A command documented here is not a claim of
 passing acceptance: record the actual exercised revision, surface and result.
 
+#### Machine facts: what a folder on a host is
+
+A job sees only the locations its operation declared, so a plugin inside one cannot run
+`git` against a folder the operator merely named — and widening the sandbox to the whole
+home read-only was refused, because that exposes every secret file in `~` to reach one
+`.git`. The enrolled agent is already on the host, so the answer is a governed machine READ
+(issue #529):
+
+```ts
+const outcome = await ctx.machines.repository({ machineId, path: "/home/operator/work" });
+if (outcome.ok && outcome.fact.reason === "repository") {
+  // outcome.fact.identity — the RESOLVED git common directory
+  // outcome.fact.remote   — origin as host/owner/repo, or null
+}
+```
+
+`ctx.machines.repository(query)` is the in-realm handle; a hardened plugin's `GuestCtx`
+carries the same method as a promise, and `engine.machines.repository { machineId, path }`
+is the door both go through. `path` must be absolute, at most 4096 characters and free of
+NUL; anything else is `invalid_args` before a host is asked.
+
+The answer is either `{ ok: true, fact }` or `{ ok: false, reason }`, and the split is not
+cosmetic. A `fact` is something a host OBSERVED, and its `reason` is one of `repository`,
+`not_a_repository`, `absent`, `unreadable`, `git_unavailable` or `timed_out` — states of
+that machine, never faults of the asker. `ok: false` is the fleet saying nobody could be
+asked at all: the machine is offline, its agent is older than machine protocol 31, its
+transport dropped, or it went quiet past the hub's bound. Do not collapse the two; a
+repository identity you invented for an unreachable host is worse than no answer.
+
+`identity` is the resolved git common directory rather than the path, so a checkout and a
+linked worktree of it answer with the SAME identity — that is what makes "one project, two
+folders" sayable — while two clones of one repository share a `remote` and differ in
+`identity`. `remote` is null for a checkout with no origin and for one whose origin names a
+local directory: a repository nobody published is still one repository.
+
+Authority is `machines:read` AT `manifold://machine/<id>`, asked at the machine rather than
+in the abstract, so a token entitled to read one host's folders cannot read another's. The
+probe itself is bounded and read-only on the host — one second, `GIT_OPTIONAL_LOCKS=0`,
+`GIT_TERMINAL_PROMPT=0`, no index and no network — and cached there per path for a minute,
+so a catalogue that asks about the same checkout repeatedly costs one pair of probes. The
+door traces `opaque`: the act and the machine enter the ledger, the folder does not.
+
 #### Terminals through the handle
 
 A terminal is channel traffic — its birth is a round trip to a machine and its bytes are a
@@ -2561,7 +2603,8 @@ served across a process boundary (`docs/CONTRACTS.md` §Hardened plugins, `ISOLA
   `ctx.traceId`, `ctx.containerScope`, `ctx.now()`, `ctx.pluginId`.
 - **Questions the host answers, as promises** — `ctx.auth.allows(cap, containerId?)`,
   `ctx.outsideScope(containerId)`, `ctx.newId()`, `ctx.storage.{get, set, delete, keys}`,
-  `ctx.machines.isOnline(id)`, `ctx.placement.place(request)`, `ctx.host.{roster, enabled}`.
+  `ctx.machines.{isOnline, getTerminalExecution, repository}`, `ctx.placement.place(request)`,
+  `ctx.host.{roster, enabled}`.
   Every one is a `call` frame correlated to the dispatch it belongs to, graded as that dispatch's
   caller; a call the host refuses rejects with `HostCallError` carrying the host's own sentence.
 - **`ctx.emit`** stages exactly as in-realm: the emissions ride back with the outcome and the host

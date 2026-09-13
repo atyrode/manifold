@@ -116,6 +116,7 @@ must never be taught one.
         "packages/server/src/job-schedules.ts",
         "packages/server/src/job-deployments.ts",
         "packages/server/src/job-doors.ts",
+        "packages/server/src/machine-doors.ts",
         "packages/server/src/instance-ws.ts",
         "packages/server/src/instance-dialer.ts",
         "packages/server/src/terminal-broker.ts",
@@ -303,6 +304,10 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     {
       "glob": "packages/server/src/job-doors.ts",
       "why": "ADR 0033 generic traced machine job doors and plugin-bound contexts, never arbitrary executable paths"
+    },
+    {
+      "glob": "packages/server/src/machine-doors.ts",
+      "why": "issue #529 governed machine facts: the traced engine door that asks an enrolled agent what a folder on its host is, with the capability re-asked at that machine"
     },
     {
       "glob": "packages/server/src/instance-ws.ts",

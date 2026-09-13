@@ -312,7 +312,7 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   token.
 - **Owner key** = hex-64 secret; acts as a token with cap `*`. Generated on first boot.
 - Caps: `*`, `containers:read`, `containers:write`, `scenes:write`, `terminals:spawn`,
-  `terminals:write`, `tokens:mint`, `machines:mint`, `plugins:manage`. Reads of scene and
+  `terminals:write`, `tokens:mint`, `machines:mint`, `machines:read`, `plugins:manage`. Reads of scene and
   presence come with `containers:read`. `terminals:write` covers input+resize+kill+take on
   terminals in scope. `plugins:manage` authorizes plugin administration only — the engine
   doors `engine.plugins.setEnabled` and `engine.plugins.purge`. Installing a plugin is NOT
@@ -1383,6 +1383,24 @@ machine ids become unresolved, not rewritten to another machine or a synthetic r
 Re-enrolling a forgotten name creates a new identity. The Machines section offers a two-press
 Forget control only on revoked rows, styled like withdrawal and carrying
 `data-action="core.machines.forget"`.
+
+`engine.machines.repository { machineId, path }` is a governed machine READ (issue #529) and an
+ENGINE door rather than a member of `core.machines`, because switching off the fleet's UI must
+not take a machine fact away from the plugins that depend on it. It carries `machines:read` and
+re-asks it at `manifold://machine/<machineId>`, so a token entitled to read one host cannot read
+another's folders; the refusal names neither host nor folder. `path` must be absolute, at most
+4096 characters and free of NUL. The result is a `MachineRepositoryFact`
+`{ path, identity, remote, reason, observedAt }` where `reason` is one of `repository`,
+`not_a_repository`, `absent`, `unreadable`, `git_unavailable` or `timed_out` — states of that
+machine, observed by its own agent — or `rule: "refused"` when nobody could be asked at all: the
+machine is offline, its transport predates machine protocol 31, it dropped, or it stayed silent
+past the hub's three-second bound. A refusal is never dressed as a fact. `identity` is the
+resolved git common directory, so a checkout and its linked worktree share one identity;
+`remote` is `origin` normalized to `host/owner/repo`, and null for no origin or a local-path
+origin. The agent's probe is bounded at one second per git invocation, runs with
+`GIT_OPTIONAL_LOCKS=0` and `GIT_TERMINAL_PROMPT=0`, touches neither index nor network, and is
+cached on the host for 60 s over at most 4096 paths. The door traces `opaque`: the act and the
+machine target enter the ledger, the folder does not.
 
 A machine summary now carries an optional **`color`**, derived server-side by `identityColorFor`
 over the shared `IDENTITY_COLORS` palette — both exported from `@manifold/protocol`
@@ -2709,7 +2727,9 @@ protocol, so a development-only release does not silently upgrade production or 
 
 Server→agent: `create { terminalId, cols, rows, cwd?, env, program? }`, `input { terminalId,
 data }`, `resize`, `kill`, `snapshot_request { terminalId }`, `ping`,
-`drain { requestId, draining }` (terminal-host-capable agents only). `create.env` is the
+`drain { requestId, draining }` (terminal-host-capable agents only),
+`repository_query { requestId, path }` (protocol-31 agents only; an older transport is refused
+at the door instead, because it would ignore the frame as an unknown type). `create.env` is the
 opener's `terminal_open.env` (if any) with the four minted `MANIFOLD_*` keys written LAST, so
 those always win; `create.program { argv }` is the opener's `terminal_open.program` verbatim, and
 the terminal host execs `argv[0]` with `argv.slice(1)` in place of `$SHELL` → `bash` → `sh`. A missing
@@ -2718,7 +2738,9 @@ or unrunnable `argv[0]` is `create_error { message: "program not found: <argv0>"
 Agent→server: `created { terminalId }` | `create_error { terminalId, message }`,
 `output { terminalId, seq, data }` (seq: monotonic per terminal, assigned at emission),
 `snapshot { terminalId, seq, data }`, `exited { terminalId, exitCode }`, `pong`,
-`drain_status { requestId, terminalHostId, draining, terminalIds }`.
+`drain_status { requestId, terminalHostId, draining, terminalIds }`,
+`repository_fact { requestId, fact }` — exactly one per `repository_query`, correlated by id;
+an answer whose id nobody holds is dropped and logged, never believed.
 
 ### Governed machine jobs
 
