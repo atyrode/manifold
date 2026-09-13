@@ -62,7 +62,18 @@ export class JobContext {
     this.socket.on("data", (bytes: Buffer) => {
       try {
         for (const line of this.reader.push(bytes)) {
+          if (this.closed) return;
           const raw: unknown = JSON.parse(line);
+          // A stage jumps the chain and is not retained. Every other frame is a request whose
+          // reply must keep its order, so `receive` runs them one at a time — and the longest
+          // of those is a service call, which in the brokered lane IS the model call. Queued
+          // behind it, the one line that says `at the model` would arrive after the thing it
+          // announces, be stamped with the wrong time, and a run that reports often would
+          // push `pendingBytes` past the ceiling and have its channel failed underneath it.
+          if (raw !== null && typeof raw === "object" && Reflect.get(raw, "type") === "progress") {
+            this.callbacks.progress?.(WorkerProgressSchema.parse(raw));
+            continue;
+          }
           const size = Buffer.byteLength(line);
           this.pendingBytes += size;
           if (this.pendingBytes > MAX_CONTEXT_BYTES) throw new Error("context_input_limit");
@@ -116,11 +127,6 @@ export class JobContext {
             : { type: "service_ready_result", requestId: request.requestId, ok: false, refusal },
         ),
       );
-      return;
-    }
-    // Fire and forget: a stage is not a request, and the owner answers it with nothing.
-    if (Reflect.get(raw, "type") === "progress") {
-      this.callbacks.progress?.(WorkerProgressSchema.parse(raw));
       return;
     }
     if (Reflect.get(raw, "type") === "service") {

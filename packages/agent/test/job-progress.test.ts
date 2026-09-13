@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { dlopen, FFIType } from "bun:ffi";
-import { JOB_PROGRESS_INTERVAL_MS, type WorkerProgress } from "@manifold/protocol";
+import {
+  JOB_PROGRESS_INTERVAL_MS,
+  type ServiceReply,
+  type WorkerProgress,
+} from "@manifold/protocol";
 import { adoptPrivateSocket } from "../src/job-files.ts";
 import { JobContext } from "../src/job-context.ts";
 import {
@@ -63,12 +67,20 @@ describe.skipIf(process.platform !== "linux")("a workload's progress through its
     const coalescer = new JobProgressCoalescer((progress) => published.push(progress), { clock });
     let awaited = 0;
     let notify: (() => void) | null = null;
+    // A service call the test opens and closes by hand: in the brokered lane this callback is
+    // the model call, and its duration is exactly what a stage must not queue behind.
+    const calling = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<ServiceReply>();
     const context = new JobContext("drain-job", {
       invoke: () => {
         throw new Error("a stage is not an invocation");
       },
       command: async () => {
         throw new Error("a stage is not a command");
+      },
+      service: (request) => {
+        calling.resolve();
+        return held.promise.then((reply) => ({ ...reply, requestId: request.requestId }));
       },
       progress: (frame) => {
         frames.push(frame);
@@ -87,11 +99,26 @@ describe.skipIf(process.platform !== "linux")("a workload's progress through its
     context.releaseChildFd();
     workload.on("error", () => {});
     void failed.promise.catch(() => undefined);
+    const replied = Promise.withResolvers<unknown>();
+    let pendingText = "";
+    workload.on("data", (chunk: Buffer) => {
+      pendingText += chunk.toString();
+      for (let end = pendingText.indexOf("\n"); end >= 0; end = pendingText.indexOf("\n")) {
+        const parsed: unknown = JSON.parse(pendingText.slice(0, end));
+        pendingText = pendingText.slice(end + 1);
+        replied.resolve(parsed);
+      }
+    });
     return {
       published,
       frames,
       failures,
       failed: failed.promise,
+      /** Resolves once the owner has entered the service callback and not yet left it. */
+      calling: calling.promise,
+      releaseService: () =>
+        held.resolve({ type: "service_result", requestId: "held", ok: true, result: "done" }),
+      replied: replied.promise,
       write: (line: unknown) => workload.write(`${JSON.stringify(line)}\n`),
       /** Resolves on the owner's own observation of the nth line, never on a duration. */
       observed: (count: number) => {
@@ -140,6 +167,46 @@ describe.skipIf(process.platform !== "linux")("a workload's progress through its
         fraction: 0.25,
         // The owner's observation, not the release of the window it waited out.
         at: start + 1000,
+      });
+      expect(owner.failures).toEqual([]);
+    } finally {
+      owner.close();
+    }
+  });
+
+  test("a stage is observed during an open service call, and a flood of them cannot fail it", async () => {
+    const clock = testClock();
+    const start = clock.now();
+    const owner = channel(clock);
+    try {
+      owner.write({
+        type: "service",
+        requestId: "call-one",
+        serviceId: "inference",
+        operationId: "messages",
+        input: {},
+      });
+      await owner.calling;
+      // The owner is inside the model call now. A stage reported here is the whole point of
+      // the feature, and it must not wait for the call it announces to finish.
+      owner.write({ type: "progress", stage: "at the model" });
+      await owner.observed(1);
+      // Far more lines than the channel's 256 KiB input budget would retain: a run that
+      // reports often must not have its channel failed and its job cancelled underneath it.
+      const message = "d".repeat(256);
+      for (let line = 0; line < 1000; line++)
+        owner.write({ type: "progress", stage: "at the model", message });
+      await owner.observed(1001);
+      expect(owner.failures).toEqual([]);
+
+      clock.advance(60000);
+      expect(owner.published).toEqual([{ stage: "at the model", message, at: start }]);
+      owner.releaseService();
+      expect(await owner.replied).toEqual({
+        type: "service_result",
+        requestId: "call-one",
+        ok: true,
+        result: "done",
       });
       expect(owner.failures).toEqual([]);
     } finally {
