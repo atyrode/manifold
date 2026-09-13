@@ -24,6 +24,7 @@ import type { ActionCtx, ActionHandler } from "../plugin-host.ts";
 import { IsolateDenial, IsolateLoadError, type IsolateLoadResult } from "./contract.ts";
 import { JobExecuteArgsSchema, jobDoorSchemas } from "../job-doors.ts";
 import { serviceDoorSchemas } from "../service-doors.ts";
+import { machineDoorSchemas } from "../machine-doors.ts";
 
 /**
  * THE TWO DIRECTIONS OF PROXYING, both pure over a transport. Outbound: the child's `loaded`
@@ -227,6 +228,7 @@ export async function serveCtxCall(
     case "newId":
     case "machines.isOnline":
     case "machines.getTerminalExecution":
+    case "machines.repository":
     case "placement.place":
     case "host.roster":
     case "host.enabled":
@@ -301,6 +303,11 @@ export async function serveCtxCall(
       return ctx.machines.isOnline(stringArg(args, 0, method));
     case "machines.getTerminalExecution":
       return ctx.machines.getTerminalExecution(stringArg(args, 0, method));
+    case "machines.repository": {
+      const query = machineDoorSchemas.repository.safeParse(args[0]);
+      if (!query.success) throw new Error(`${method}: argument 0 is not a repository query`);
+      return ctx.machines.repository(query.data.machineId, query.data.path);
+    }
     case "placement.place": {
       const request = PlaceRequestSchema.safeParse(args[0]);
       if (!request.success) throw new Error(`${method}: argument 0 is not a placement request`);

@@ -48,6 +48,21 @@ function liveness(online: ReadonlySet<string>): MachineAdmission {
           ? { ok: true, status: { terminalHostId: "host-A", draining, terminalIds: ["t1"] } }
           : { ok: false, reason: "machine is offline: its terminals are unknown" },
       ),
+    repository: (machineId, path) =>
+      Promise.resolve(
+        online.has(machineId)
+          ? {
+              ok: true,
+              fact: {
+                path,
+                identity: `${path}/.git`,
+                remote: null,
+                reason: "repository",
+                observedAt: 1,
+              },
+            }
+          : { ok: false, reason: "machine is offline: it cannot be asked" },
+      ),
   };
 }
 

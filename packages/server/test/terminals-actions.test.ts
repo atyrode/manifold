@@ -132,6 +132,7 @@ async function fixture(): Promise<TerminalsFixture> {
       isOnline: () => true,
       getTerminalExecution: () => machine.terminalExecution,
       drain: () => Promise.resolve({ ok: false, reason: "fixture has no terminal owner" }),
+      repository: () => Promise.resolve({ ok: false, reason: "fixture has no machine agent" }),
     },
     events,
   });

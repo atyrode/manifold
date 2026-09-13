@@ -57,7 +57,14 @@ class CaptureLogger implements Logger {
 describe("machine channel send status", () => {
   test("-1 is accepted as enqueued backpressure", () => {
     const socket = new StatusSocket(-1);
-    const channel = new LiveMachineChannel("machine", "principal", socket, null, null);
+    const channel = new LiveMachineChannel(
+      "machine",
+      "principal",
+      socket,
+      null,
+      null,
+      PROTOCOL_VERSION,
+    );
 
     expect(channel.send({ type: "kill", terminalId: "terminal" })).toBe(true);
     expect(socket.closed).toBeNull();
@@ -65,14 +72,28 @@ describe("machine channel send status", () => {
 
   test("0 is reported as a dropped frame", () => {
     const socket = new StatusSocket(0);
-    const channel = new LiveMachineChannel("machine", "principal", socket, null, null);
+    const channel = new LiveMachineChannel(
+      "machine",
+      "principal",
+      socket,
+      null,
+      null,
+      PROTOCOL_VERSION,
+    );
 
     expect(channel.send({ type: "kill", terminalId: "terminal" })).toBe(false);
   });
 
   test("bundled worker frames cross the former 1 MiB ceiling without making queues unbounded", () => {
     const socket = new StatusSocket(-1);
-    const channel = new LiveMachineChannel("machine", "principal", socket, null, null);
+    const channel = new LiveMachineChannel(
+      "machine",
+      "principal",
+      socket,
+      null,
+      null,
+      PROTOCOL_VERSION,
+    );
     const bytes = Buffer.alloc(2 * 1024 * 1024, 0x80);
     const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
     expect(
@@ -122,7 +143,14 @@ describe("machine channel send status", () => {
     expect(socket.closed?.code).toBe(1013);
 
     const ordinary = new StatusSocket(-1);
-    const terminalChannel = new LiveMachineChannel("ordinary", "principal", ordinary, null, null);
+    const terminalChannel = new LiveMachineChannel(
+      "ordinary",
+      "principal",
+      ordinary,
+      null,
+      null,
+      PROTOCOL_VERSION,
+    );
     ordinary.bufferedAmount = MAX_SESSION_FRAME_BYTES;
     expect(terminalChannel.send({ type: "kill", terminalId: "terminal" })).toBe(false);
     expect(ordinary.closed?.code).toBe(1013);
@@ -1051,5 +1079,108 @@ describe("machine admission and terminal continuity", () => {
     expect(machineMessages(stray)).toContainEqual({ type: "kill", terminalId: "stray" });
     fix.gateway.shutdown();
     fix.store.close();
+  });
+
+  /**
+   * THE REPOSITORY ROUND TRIP (#529). One question, one answer, and three ways there is
+   * nobody to answer — each of which must be a refusal that says which, never a fabricated
+   * observation and never a hang.
+   */
+  describe("repository facts", () => {
+    const WORK = "/home/operator/work";
+    const answered = {
+      path: WORK,
+      identity: "/home/operator/work/.git",
+      remote: "github.com/atyrode/manifold",
+      reason: "repository",
+      observedAt: 12,
+    } as const;
+
+    test("asks the connected agent once and resolves with what it answered", async () => {
+      const fix = fixture("r".repeat(64), []);
+      const socket = fix.hello("agent", { terminalHostId: "host-A" });
+      const pending = fix.gateway.repository(fix.machineId, WORK);
+
+      const query = machineMessages(socket).find((frame) => frame.type === "repository_query");
+      expect(query).toMatchObject({ type: "repository_query", path: WORK });
+      fix.gateway.message(
+        "agent",
+        JSON.stringify({
+          type: "repository_fact",
+          requestId: query?.type === "repository_query" ? query.requestId : "",
+          fact: answered,
+        }),
+      );
+
+      expect(await pending).toEqual({ ok: true, fact: answered });
+      fix.gateway.shutdown();
+      fix.store.close();
+    });
+
+    test("an agent too old to parse the frame is refused by name, never waited out", async () => {
+      const fix = fixture("s".repeat(64), []);
+      const socket = fix.hello("legacy", { protocolVersion: 30, terminalHostId: "host-A" });
+
+      const outcome = await fix.gateway.repository(fix.machineId, WORK);
+
+      expect(outcome).toEqual({
+        ok: false,
+        reason: "machine agent is too old to answer repository facts",
+      });
+      // The wire an older agent sees stays byte-identical: nothing was sent to it.
+      expect(machineMessages(socket).some((frame) => frame.type === "repository_query")).toBe(
+        false,
+      );
+      fix.gateway.shutdown();
+      fix.store.close();
+    });
+
+    test("a machine with no transport, and one that goes quiet, each say so", async () => {
+      const fix = fixture("t".repeat(64), []);
+      expect(await fix.gateway.repository(fix.machineId, WORK)).toEqual({
+        ok: false,
+        reason: "machine is offline: it cannot be asked",
+      });
+
+      fix.hello("silent", { terminalHostId: "host-A" });
+      const pending = fix.gateway.repository(fix.machineId, WORK);
+      fix.clock.advance(3_000);
+
+      expect(await pending).toEqual({
+        ok: false,
+        reason: "machine agent did not answer in time",
+      });
+      fix.gateway.shutdown();
+      fix.store.close();
+    });
+
+    test("a transport that drops mid-question fails its waiter closed", async () => {
+      const fix = fixture("u".repeat(64), []);
+      fix.hello("dropping", { terminalHostId: "host-A" });
+      const pending = fix.gateway.repository(fix.machineId, WORK);
+
+      fix.gateway.close("dropping");
+
+      expect(await pending).toEqual({
+        ok: false,
+        reason: "machine disconnected before answering",
+      });
+      fix.gateway.shutdown();
+      fix.store.close();
+    });
+
+    test("an answer nobody is waiting for is dropped rather than believed", async () => {
+      const fix = fixture("v".repeat(64), []);
+      fix.hello("late", { terminalHostId: "host-A" });
+
+      fix.gateway.message(
+        "late",
+        JSON.stringify({ type: "repository_fact", requestId: "expired", fact: answered }),
+      );
+
+      expect(fix.logger.events.map((event) => event.evt)).toContain("machine_repository_unmatched");
+      fix.gateway.shutdown();
+      fix.store.close();
+    });
   });
 });

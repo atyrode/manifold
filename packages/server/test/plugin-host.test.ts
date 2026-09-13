@@ -95,6 +95,8 @@ const OFFLINE_MACHINES: MachineAdmission = {
   getTerminalExecution: () => null,
   drain: () =>
     Promise.resolve({ ok: false, reason: "machine is offline: its terminals are unknown" }),
+  repository: () =>
+    Promise.resolve({ ok: false, reason: "machine is offline: it cannot be asked" }),
 };
 
 /**

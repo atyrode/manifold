@@ -3,11 +3,13 @@ import {
   AgentMessageSchema,
   DIAL_PING_INTERVAL_MS,
   MACHINE_PROTOCOL_COMPAT_VERSIONS,
+  MACHINE_REPOSITORY_PROTOCOL_VERSION,
   MAX_SESSION_FRAME_BYTES,
   MAX_JOB_INSTALL_FRAME_BYTES,
   PROTOCOL_VERSION,
   ServerToAgentMessageSchema,
   type AgentMessage,
+  type MachineRepositoryFact,
   type RuntimeDeps,
   type ServerToAgentMessage,
   type TerminalExecution,
@@ -31,6 +33,29 @@ const KNOWN_AGENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
 
 const SUPERSEDE_DAMP_MS = 5_000;
 
+/**
+ * How long the hub waits for one repository answer (issue #529). The agent bounds its own
+ * git probe at a second; this is that second plus the round trip, so a machine that is
+ * genuinely working always beats it and a machine that is not costs the caller three
+ * seconds rather than a hung door.
+ */
+const REPOSITORY_DEADLINE_MS = 3_000;
+
+/**
+ * One host's answer about one folder, or why there is none. Shaped like `DrainOutcome` for
+ * the same reason: a refusal that says which machine state produced it is an ANSWER, and it
+ * must never be confusable with an observation the host actually made.
+ */
+export type MachineRepositoryOutcome =
+  | { readonly ok: true; readonly fact: MachineRepositoryFact }
+  | { readonly ok: false; readonly reason: string };
+
+interface PendingRepositoryQuery {
+  machineId: string;
+  resolve: (outcome: MachineRepositoryOutcome) => void;
+  cancelDeadline: (() => void) | null;
+}
+
 interface PendingMachineConnection {
   socket: RawSocket;
   channel: LiveMachineChannel | null;
@@ -47,6 +72,12 @@ export class LiveMachineChannel implements MachineChannel {
     readonly socket: RawSocket,
     readonly terminalHostId: string | null,
     readonly terminalExecution: TerminalExecution | null,
+    /**
+     * The protocol this transport's hello named. Kept because a frame added after an
+     * accepted version must be sent only to a transport that parses it: an older agent
+     * IGNORES an unknown type, so asking it buys a deadline instead of an answer (#529).
+     */
+    readonly protocolVersion: number,
   ) {}
 
   send(message: ServerToAgentMessage): boolean {
@@ -185,6 +216,8 @@ export class MachineGateway {
   private readonly connections = new Map<string, PendingMachineConnection>();
   private readonly activeByMachine = new Map<string, LiveMachineChannel>();
   private readonly lastSupersededAtByToken = new Map<string, number>();
+  /** Repository questions this hub is still waiting on, by the request id it correlates with. */
+  private readonly pendingRepositories = new Map<string, PendingRepositoryQuery>();
   private readonly removeRevocationListener: () => void;
 
   constructor(
@@ -314,6 +347,7 @@ export class MachineGateway {
       connection.socket,
       terminalHostId,
       message.terminalExecution ?? null,
+      message.protocolVersion,
     );
     const older = this.activeByMachine.get(authenticated.id) ?? null;
     const advertised = new Set<string>();
@@ -435,6 +469,9 @@ export class MachineGateway {
       case "drain_status":
         this.broker.onDrainStatus(channel.machineId, message);
         return;
+      case "repository_fact":
+        this.onRepositoryFact(channel.machineId, message);
+        return;
       default: {
         const exhaustive: never = message;
         void exhaustive;
@@ -456,6 +493,7 @@ export class MachineGateway {
       this.activeByMachine.delete(channel.machineId);
     }
     this.broker.setMachineOffline(channel);
+    this.failPendingRepositories(channel.machineId, "machine disconnected before answering");
     this.jobs?.offline(channel);
   }
 
@@ -491,6 +529,76 @@ export class MachineGateway {
       channel.send({ type: "job_command", command: { type: "drain", draining } });
     }
     return this.broker.drain(machineId, draining);
+  }
+
+  /**
+   * `engine.machines.repository`'s mechanism (issue #529): one bounded question to the agent
+   * that is already standing on the host, one answer, no state kept beyond the wait.
+   *
+   * The three refusals below are the three ways there is nobody to ask, and each says which:
+   * a machine with no live transport, a transport too old to parse the frame, and a socket
+   * that took the frame and then went quiet. None of them is a FACT — a fact is something a
+   * host observed — so none of them is dressed as one, which is the whole reason `reason`
+   * carries no "offline" word to reach for.
+   */
+  repository(machineId: string, path: string): Promise<MachineRepositoryOutcome> {
+    const channel = this.activeByMachine.get(machineId);
+    if (channel === undefined) {
+      return Promise.resolve({ ok: false, reason: "machine is offline: it cannot be asked" });
+    }
+    if (channel.protocolVersion < MACHINE_REPOSITORY_PROTOCOL_VERSION) {
+      return Promise.resolve({
+        ok: false,
+        reason: "machine agent is too old to answer repository facts",
+      });
+    }
+    const requestId = this.runtime.newId();
+    return new Promise<MachineRepositoryOutcome>((resolve) => {
+      const pending: PendingRepositoryQuery = { machineId, resolve, cancelDeadline: null };
+      this.pendingRepositories.set(requestId, pending);
+      if (!channel.send({ type: "repository_query", requestId, path })) {
+        this.pendingRepositories.delete(requestId);
+        resolve({ ok: false, reason: "machine connection unavailable" });
+        return;
+      }
+      pending.cancelDeadline = this.timers.schedule(() => {
+        pending.cancelDeadline = null;
+        if (this.pendingRepositories.get(requestId) !== pending) return;
+        this.pendingRepositories.delete(requestId);
+        this.logger.warn("machine_repository_timeout", { machineId });
+        resolve({ ok: false, reason: "machine agent did not answer in time" });
+      }, REPOSITORY_DEADLINE_MS);
+    });
+  }
+
+  /**
+   * Settles the waiter this answer belongs to, and only if it belongs to it: an id from a
+   * different machine is somebody else's correlation, and an id nobody holds is a reply that
+   * outlived its deadline. Both are dropped with a log line rather than believed, because a
+   * fact attributed to the wrong question is worse than no fact.
+   */
+  private onRepositoryFact(
+    machineId: string,
+    message: Extract<AgentMessage, { type: "repository_fact" }>,
+  ): void {
+    const pending = this.pendingRepositories.get(message.requestId);
+    if (pending === undefined || pending.machineId !== machineId) {
+      this.logger.info("machine_repository_unmatched", { machineId });
+      return;
+    }
+    this.pendingRepositories.delete(message.requestId);
+    pending.cancelDeadline?.();
+    pending.resolve({ ok: true, fact: message.fact });
+  }
+
+  /** A transport that went away answers nothing; its waiters fail closed rather than hang. */
+  private failPendingRepositories(machineId: string, reason: string): void {
+    for (const [requestId, pending] of this.pendingRepositories) {
+      if (pending.machineId !== machineId) continue;
+      pending.cancelDeadline?.();
+      this.pendingRepositories.delete(requestId);
+      pending.resolve({ ok: false, reason });
+    }
   }
 
   /** Closes every machine channel and unregisters auth fanout at shutdown. */
