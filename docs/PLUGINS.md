@@ -1757,7 +1757,12 @@ remain visible and revocable, but cannot authorize a replacement installation.
 Machine workers import `openWorkerContext` and `attachWorkerInput` from
 `@manifold/sdk/worker`. `ready` supplies owner-resolved locations; `callService` uses
 only declared scoped services; a provider calls `announceServiceReady` once after binding
-its listener. The native framed channel handles correlation, bounds, backpressure and
+its listener; `reportProgress({ stage, message?, fraction? })` says where the run is and is
+answered by nothing — the owner folds it to at most one journaled `job_progress` event every
+five seconds per job and the newest line wins, so reporting often is cheap and reporting a
+stale phase is the only mistake available. A worker that is not a TypeScript program writes
+the same `{"type":"progress",…}` line to `MANIFOLD_JOB_CONTEXT_FD` directly.
+The native framed channel handles correlation, bounds, backpressure and
 disconnect cancellation. Do not reimplement that ABI or open a product-owned control socket.
 Readiness does not authenticate a port forever. Before sending a scoped HTTP request,
 the native owner opens a credential-free connection and proves that its established peer
