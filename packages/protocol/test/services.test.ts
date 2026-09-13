@@ -218,6 +218,24 @@ function proxyOperation(): ServiceProxyOperationPolicy {
   };
 }
 
+test("a metered proxy operation requires a JSON request", () => {
+  const operation = proxyOperation();
+  expect(
+    ServiceProxyOperationPolicySchema.safeParse({
+      ...operation,
+      meter: { kind: "openai-usage" },
+    }).success,
+  ).toBe(false);
+  expect(
+    ServiceProxyOperationPolicySchema.safeParse({
+      ...operation,
+      method: "POST",
+      request: { kind: "json", disclosure: "full" },
+      meter: { kind: "openai-usage" },
+    }).success,
+  ).toBe(true);
+});
+
 test("proxy header policies admit application data but never transport, routing or credential controls", () => {
   const operation = proxyOperation();
   expect(

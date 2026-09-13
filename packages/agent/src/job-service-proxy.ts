@@ -13,6 +13,9 @@ import { pipeline } from "node:stream/promises";
 import {
   ServiceBindingSchema,
   ServicePolicySchema,
+  type JobEvent,
+  type JobRequest,
+  type JobResult,
   type ServiceBinding,
   type ServiceInput,
   type ServicePolicy,
@@ -20,6 +23,34 @@ import {
 import type { AuthorizeServiceCall, ResolveServiceCredential } from "./job-services.ts";
 
 type ProxyOperation = Extract<ServicePolicy["operations"][string], { kind: "http-proxy" }>;
+type ModelPrice = NonNullable<ServicePolicy["prices"]>["models"][string];
+/** Totals and ceilings as the protocol states them; the proxy owns neither, it reads both. */
+export type JobInferenceUsage = NonNullable<NonNullable<JobResult["usage"]>["inference"]>;
+export type JobInferenceLimits = NonNullable<JobRequest["limits"]["inference"]>;
+/** What the proxy read of one call: the owner adds the job's identity and sends the event. */
+export type JobInferenceCallReport = Omit<
+  Extract<JobEvent, { type: "inference_call" }>,
+  "type" | "jobId" | "requestDigest" | "ownerId" | "ownerGeneration"
+>;
+export type JobInferenceCeilingReport = Omit<
+  Extract<JobEvent, { type: "inference_ceiling" }>,
+  "type" | "jobId" | "requestDigest" | "ownerId" | "ownerGeneration"
+>;
+/** A ceiling belongs to the job, not to one proxy: the totals live in the owner's job record,
+ * so a proxy rebuilt inside a job's life still sees everything that job has already spent. */
+export interface JobInferenceMetering {
+  /** The job request's `limits.inference`; undefined leaves every metered call unbounded. */
+  limits: JobInferenceLimits | undefined;
+  usage(): JobInferenceUsage;
+  /** Serialize metered calls across all of a job's service proxies so concurrent requests cannot
+   * each pass the same pre-call ceiling snapshot. The caller must release in `finally`. */
+  enter(): Promise<() => void>;
+  /** An unreadable successful usage response latches the job's metered lane closed. */
+  valid(): boolean;
+  onInvalidUsage(): void;
+  onInferenceCall(call: JobInferenceCallReport): void;
+  onInferenceCeiling(refusal: JobInferenceCeilingReport): void;
+}
 export interface JobServiceProxy {
   /** Exact owner-loopback address. The owner alone materializes any guest forwarding. */
   readonly url: string;
@@ -44,11 +75,16 @@ export interface JobServiceProxyOptions {
     policy: ServicePolicy,
     signal: AbortSignal,
   ) => Promise<{ url: string; bearer: string; signal: AbortSignal; socket: Duplex }>;
+  /** Present only for a job whose bound operations may be metered; absent leaves every
+   * operation unmetered, whatever its policy declares. */
+  inference?: JobInferenceMetering;
 }
 class ProxyFailure extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
+    /** Named cause of a refusal the caller must act on: which ceiling, which unpriced model. */
+    readonly detail?: Readonly<Record<string, string>>,
   ) {
     super(code);
   }
@@ -158,7 +194,11 @@ function fail(response: ServerResponse, error: unknown): void {
     "cache-control": "no-store",
     connection: "close",
   });
-  response.end(JSON.stringify({ error: failure.code }));
+  response.end(
+    JSON.stringify({
+      error: failure.detail ? { code: failure.code, ...failure.detail } : failure.code,
+    }),
+  );
 }
 function contentType(value: string | undefined): string | undefined {
   return value
@@ -166,6 +206,211 @@ function contentType(value: string | undefined): string | undefined {
       /^(application\/json|text\/event-stream|text\/plain)(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?$/i,
     )?.[1]
     ?.toLowerCase();
+}
+
+/** One SSE frame is the most a stream is ever held for, and a JSON body no more than the
+ * response limit the policy already states. */
+const METER_FRAME_BYTES = 4194304;
+const DATA_FIELD = Buffer.from("data:");
+type MeteredUsage = {
+  model: string | undefined;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+};
+function tokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+function modelName(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 && value.length <= 256 ? value : undefined;
+}
+/** The provider's own numbers under either OpenAI spelling: chat completions report
+ * `prompt_tokens`/`completion_tokens`, the responses API `input_tokens`/`output_tokens` and
+ * wraps a streamed completion in `response`. Nothing but `usage` and `model` is read. */
+function readUsage(value: unknown): MeteredUsage | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const body = value as Record<string, unknown>;
+  const nested =
+    typeof body.response === "object" && body.response !== null
+      ? (body.response as Record<string, unknown>)
+      : undefined;
+  const reported = body.usage ?? nested?.usage;
+  if (typeof reported !== "object" || reported === null) return undefined;
+  const usage = reported as Record<string, unknown>;
+  const inputTokens = tokenCount(usage.prompt_tokens ?? usage.input_tokens);
+  const outputTokens = tokenCount(usage.completion_tokens ?? usage.output_tokens);
+  if (inputTokens === undefined || outputTokens === undefined) return undefined;
+  const detail = usage.prompt_tokens_details ?? usage.input_tokens_details;
+  const cached =
+    typeof detail === "object" && detail !== null
+      ? tokenCount((detail as Record<string, unknown>).cached_tokens)
+      : undefined;
+  return {
+    model: modelName(body.model) ?? modelName(nested?.model),
+    inputTokens,
+    outputTokens,
+    cachedInputTokens: Math.min(cached ?? 0, inputTokens),
+  };
+}
+/** Relays every byte the instant it arrives and keeps only what a usage read needs: an event
+ * stream's current frame, or a JSON body already bounded by `maxResponseBytes`. A 2xx whose
+ * usage it cannot read ends the caller's stream: an unreadable frame is not a free call. */
+class UsageMeter extends Transform {
+  usage: MeteredUsage | undefined;
+  private buffer: Buffer = EMPTY_BYTES;
+  private whole: Buffer[] = [];
+  private wholeBytes = 0;
+  private frame: string[] = [];
+  private frameBytes = 0;
+  private skipping = false;
+  private overflowed = false;
+  constructor(
+    private readonly stream: boolean,
+    private readonly limit: number,
+    private readonly required: boolean,
+  ) {
+    super({ highWaterMark: 16384 });
+  }
+  override _transform(chunk: Buffer, _encoding: BufferEncoding, done: TransformCallback): void {
+    this.push(chunk);
+    if (this.stream) this.frames(chunk);
+    else if (!this.overflowed) {
+      this.wholeBytes += chunk.length;
+      if (this.wholeBytes > this.limit) {
+        this.overflowed = true;
+        this.whole = [];
+      } else this.whole.push(chunk);
+    }
+    done();
+  }
+  override _flush(done: TransformCallback): void {
+    if (this.stream) {
+      if (this.buffer.length) this.line(this.buffer);
+      this.endFrame();
+    } else if (this.whole.length) {
+      try {
+        this.usage = readUsage(JSON.parse(Buffer.concat(this.whole).toString("utf8")));
+      } catch {
+        this.usage = undefined;
+      }
+    }
+    this.buffer = EMPTY_BYTES;
+    this.whole = [];
+    done(this.required && !this.usage ? new ProxyFailure(502, "service_response_invalid") : null);
+  }
+  private frames(chunk: Buffer): void {
+    let bytes = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : chunk;
+    let start = 0;
+    for (let index = bytes.indexOf(10, start); index >= 0; index = bytes.indexOf(10, start)) {
+      this.line(bytes.subarray(start, index));
+      start = index + 1;
+    }
+    bytes = start ? Buffer.from(bytes.subarray(start)) : bytes;
+    if (bytes.length > METER_FRAME_BYTES) {
+      this.skipping = true;
+      bytes = EMPTY_BYTES;
+    }
+    this.buffer = bytes;
+  }
+  private line(raw: Buffer): void {
+    const end = raw.length && raw[raw.length - 1] === 13 ? raw.length - 1 : raw.length;
+    if (end === 0) {
+      this.endFrame();
+      return;
+    }
+    if (this.skipping || !raw.subarray(0, DATA_FIELD.length).equals(DATA_FIELD)) return;
+    const from = raw[DATA_FIELD.length] === 32 ? DATA_FIELD.length + 1 : DATA_FIELD.length;
+    this.frameBytes += end - from;
+    if (this.frameBytes > METER_FRAME_BYTES) {
+      this.skipping = true;
+      this.frame = [];
+      return;
+    }
+    this.frame.push(raw.subarray(from, end).toString("utf8"));
+  }
+  private endFrame(): void {
+    const lines = this.frame;
+    const skipped = this.skipping;
+    this.frame = [];
+    this.frameBytes = 0;
+    this.skipping = false;
+    if (skipped || !lines.length) return;
+    const payload = lines.join("\n");
+    if (payload === "[DONE]") return;
+    try {
+      this.usage = readUsage(JSON.parse(payload)) ?? this.usage;
+    } catch {
+      /* A frame that is not JSON carries no usage; the last one that does is the answer. */
+    }
+  }
+}
+async function readRequestBody(request: IncomingMessage, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let count = 0;
+  for await (const chunk of request as AsyncIterable<Buffer>) {
+    count += chunk.length;
+    if (count > limit) throw new ProxyFailure(413, "service_input_invalid");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+/** A metered call names its model in the request, and a streamed chat completion is made to
+ * ask for the usage frame: a ceiling evaded by setting `stream` is not a ceiling. Only the
+ * chat shape needs it - a responses request streams its usage in `response.completed`, and
+ * takes no `stream_options` - so every other body is forwarded byte for byte. */
+function meteredRequest(body: Buffer): { model: string; forward: Buffer } {
+  const invalid = () => new ProxyFailure(400, "service_input_invalid");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body.toString("utf8"));
+  } catch {
+    throw invalid();
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw invalid();
+  const call = parsed as Record<string, unknown>;
+  const model = modelName(call.model);
+  if (model === undefined) throw invalid();
+  if (call.stream !== true || !Array.isArray(call.messages)) return { model, forward: body };
+  const declared = call.stream_options;
+  if (declared !== undefined && (typeof declared !== "object" || declared === null))
+    throw invalid();
+  const options = { ...(declared as Record<string, unknown> | undefined), include_usage: true };
+  return {
+    model,
+    forward: Buffer.from(JSON.stringify({ ...call, stream_options: options }), "utf8"),
+  };
+}
+function priceOf(policy: ServicePolicy, model: string): ModelPrice | undefined {
+  const prices = policy.prices;
+  if (!prices) return undefined;
+  return Object.hasOwn(prices.models, model) ? prices.models[model] : prices.default;
+}
+/** Integer micro-dollars rounded to the nearest, in exact arithmetic: tokens times a
+ * per-million price leaves the safe-integer range long before either factor does. */
+function callCost(price: ModelPrice | undefined, usage: MeteredUsage): number {
+  if (!price) return 0;
+  const cached = BigInt(usage.cachedInputTokens);
+  const fresh = BigInt(usage.inputTokens) - cached;
+  const total =
+    fresh * BigInt(price.inputPerMillion) +
+    cached * BigInt(price.cachedInputPerMillion ?? price.inputPerMillion) +
+    BigInt(usage.outputTokens) * BigInt(price.outputPerMillion);
+  const micros = (total + 500000n) / 1000000n;
+  return micros > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(micros);
+}
+/** At the ceiling, not past it: the call that would reach `calls` is the one refused. */
+function reachedCeiling(
+  usage: JobInferenceUsage,
+  limits: JobInferenceLimits | undefined,
+): JobInferenceCeilingReport["ceiling"] | undefined {
+  if (!limits) return undefined;
+  if (limits.calls !== undefined && usage.calls >= limits.calls) return "calls";
+  if (limits.inputTokens !== undefined && usage.inputTokens >= limits.inputTokens)
+    return "inputTokens";
+  if (limits.outputTokens !== undefined && usage.outputTokens >= limits.outputTokens)
+    return "outputTokens";
+  if (limits.costMicros !== undefined && usage.costMicros >= limits.costMicros) return "costMicros";
+  return undefined;
 }
 
 type PathParameter = NonNullable<ProxyOperation["pathParameters"]>[string];
@@ -367,6 +612,10 @@ export async function createJobServiceProxy(
         : undefined;
       if (!operation) throw new Error("service_binding_mismatch");
       if (!("kind" in operation)) continue;
+      // A meter reads the model from the request it forwards; a route without a JSON request
+      // cannot be metered, and an unmeterable metered route is a policy the owner must fix.
+      if (operation.meter && operation.request.kind !== "json")
+        throw new Error("service_policy_invalid");
       const route: ProxyRoute = {
         entry,
         operation,
@@ -491,6 +740,12 @@ export async function createJobServiceProxy(
     let secret: string | undefined;
     let runtimeSocket: Duplex | undefined;
     let runtimeAgent: Agent | undefined;
+    const metering = operation.meter ? options.inference : undefined;
+    let meter: UsageMeter | undefined;
+    let requestModel = "";
+    let meteredStatus = 0;
+    let startedAt = 0;
+    let releaseMetering: (() => void) | undefined;
     try {
       const authority = Object.freeze({
         serviceId: entry.policy.serviceId,
@@ -510,12 +765,41 @@ export async function createJobServiceProxy(
         controller.signal.throwIfAborted();
       };
       await check();
+      let forward: Buffer | undefined;
+      if (metering) {
+        // The body is read here, before anything is forwarded: the model decides the price,
+        // and a call the job may no longer make must not reach the provider at all.
+        const parsed = meteredRequest(
+          await boundedWait(readRequestBody(request, operation.maxRequestBytes), controller.signal),
+        );
+        requestModel = parsed.model;
+        forward = parsed.forward;
+        releaseMetering = await metering.enter();
+        controller.signal.throwIfAborted();
+        if (!metering.valid()) throw new ProxyFailure(502, "service_response_invalid");
+        const reached = { ...metering.usage() };
+        const ceiling = reachedCeiling(reached, metering.limits);
+        if (ceiling) {
+          metering.onInferenceCeiling({
+            serviceId: entry.policy.serviceId,
+            operationId,
+            ceiling,
+            reached,
+          });
+          throw new ProxyFailure(429, "service_ceiling_exceeded", { ceiling });
+        }
+        // A ceiling in money is meaningless without a price, and refusing is the answer
+        // the operator can act on.
+        if (metering.limits?.costMicros !== undefined && !priceOf(entry.policy, requestModel))
+          throw new ProxyFailure(422, "service_price_unknown", { model: requestModel });
+      }
       const headers: Record<string, string> = {
         ...requestHeaders,
         "accept-encoding": "identity",
         accept: operation.response.contentTypes.join(", "),
       };
       if (operation.request.kind === "json") headers["content-type"] = "application/json";
+      if (forward) headers["content-length"] = String(forward.length);
       let origin = entry.policy.origin;
       if (entry.policy.runtime || entry.policy.remote) {
         if (!options.resolveRuntime) throw new ProxyFailure(503, "service_unavailable");
@@ -590,6 +874,7 @@ export async function createJobServiceProxy(
           return socket;
         };
       }
+      startedAt = Date.now();
       const outgoing = (url.protocol === "https:" ? httpsRequest : httpRequest)(
         url,
         {
@@ -604,12 +889,16 @@ export async function createJobServiceProxy(
       );
       outgoing.once("error", received.reject);
       // Upload and download are concurrent; each stream's backpressure bounds buffering.
-      const upload = pipeline(request, new BoundedBody(operation.maxRequestBytes), outgoing, {
-        signal: controller.signal,
-      });
+      // A metered request is already in hand, amended and measured, so it is simply sent.
+      const upload = forward
+        ? Promise.resolve(void outgoing.end(forward))
+        : pipeline(request, new BoundedBody(operation.maxRequestBytes), outgoing, {
+            signal: controller.signal,
+          });
       void upload.catch(() => controller.abort());
       upstream = await received.promise;
       const status = upstream.statusCode ?? 0;
+      if (metering && status >= 100 && status <= 599) meteredStatus = status;
       const notModified =
         status === 304 &&
         operation.method === "GET" &&
@@ -665,9 +954,16 @@ export async function createJobServiceProxy(
       response.writeHead(status, safeHeaders);
       // Headers may precede data; secret-bearing or oversized tails terminate, never expose error text.
       response.flushHeaders();
-      await pipeline(upstream, new BoundedBody(operation.maxResponseBytes, secret), response, {
-        signal: controller.signal,
-      });
+      const bounded = new BoundedBody(operation.maxResponseBytes, secret);
+      if (metering)
+        meter = new UsageMeter(
+          mime === "text/event-stream",
+          operation.maxResponseBytes,
+          status >= 200 && status < 300,
+        );
+      await (meter
+        ? pipeline(upstream, bounded, meter, response, { signal: controller.signal })
+        : pipeline(upstream, bounded, response, { signal: controller.signal }));
       await upload;
     } catch (error) {
       fail(
@@ -689,6 +985,28 @@ export async function createJobServiceProxy(
       runtimeSignal?.removeEventListener("abort", abandoned);
       active.delete(controller);
       entry.active--;
+      // Reported last: a call that reached the provider is spent whatever became of its bytes.
+      // Release even if reporting fails, otherwise every later metered call would deadlock.
+      try {
+        if (metering && meteredStatus) {
+          const counted = meteredStatus >= 200 && meteredStatus < 300 ? meter?.usage : undefined;
+          const model = counted?.model ?? requestModel;
+          if (!counted && meteredStatus >= 200 && meteredStatus < 300) metering.onInvalidUsage();
+          metering.onInferenceCall({
+            serviceId: entry.policy.serviceId,
+            operationId,
+            model,
+            inputTokens: counted?.inputTokens ?? 0,
+            outputTokens: counted?.outputTokens ?? 0,
+            cachedInputTokens: counted?.cachedInputTokens ?? 0,
+            costMicros: counted ? callCost(priceOf(entry.policy, requestModel), counted) : 0,
+            elapsedMs: Date.now() - startedAt,
+            status: meteredStatus,
+          });
+        }
+      } finally {
+        releaseMetering?.();
+      }
     }
   }
   const close = (): Promise<void> => {

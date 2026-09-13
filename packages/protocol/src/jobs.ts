@@ -12,7 +12,7 @@ import { ServiceTunnelFrameSchema } from "./services.ts";
 import { JobResourceBindingsSchema, JobResourceInventorySchema } from "./job-resources.ts";
 
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = 32;
+export const JOB_OWNER_PROTOCOL_VERSION = 33;
 
 const id = z.string().min(1).max(128);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -25,13 +25,37 @@ const locationComponent = z
   .string()
   .regex(/^[A-Za-z0-9.][A-Za-z0-9._-]{0,127}$/)
   .refine((value) => value !== "." && value !== "..");
+/**
+ * What a job may spend through its metered service operations, enforced by the machine owner
+ * before each call: a call that would pass `calls`, or one arriving after a token or cost ceiling
+ * was crossed, is refused `service_ceiling_exceeded`. A stream is never cut mid-answer, so the
+ * overrun is bounded by one response. `costMicros` is integer micro-dollars and needs a price for
+ * every model a call names, else the call is refused `service_price_unknown`.
+ */
+export const JobInferenceLimitsSchema = z.strictObject({
+  calls: z.number().int().positive().max(1_000_000).optional(),
+  inputTokens: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  outputTokens: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  costMicros: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+});
+export type JobInferenceLimits = z.infer<typeof JobInferenceLimitsSchema>;
 export const JobLimitsSchema = z.strictObject({
   timeoutMs: z.number().int().positive().max(86400000),
   memoryBytes: z.number().int().positive().max(1099511627776),
   processes: z.number().int().positive().max(4096),
   outputBytes: z.number().int().positive().max(1073741824),
+  inference: JobInferenceLimitsSchema.optional(),
 });
 export type JobLimits = z.infer<typeof JobLimitsSchema>;
+/** What the owner metered across a job's inference calls; every number is a sum of provider-reported usage. */
+export const JobInferenceUsageSchema = z.strictObject({
+  calls: count,
+  inputTokens: count,
+  outputTokens: count,
+  cachedInputTokens: count,
+  costMicros: count,
+});
+export type JobInferenceUsage = z.infer<typeof JobInferenceUsageSchema>;
 /**
  * An operation declares more than one job carries: `concurrentJobs` bounds how many of this
  * operation's jobs one machine runs at once. The operation's author bounds that fan, never the
@@ -48,6 +72,7 @@ export function jobLimits(limits: MachineOperationLimits): JobLimits {
     memoryBytes: limits.memoryBytes,
     processes: limits.processes,
     outputBytes: limits.outputBytes,
+    ...(limits.inference === undefined ? {} : { inference: limits.inference }),
   };
 }
 /** Zero is reserved for native instance-service admission, never ordinary execution. */
@@ -363,7 +388,8 @@ export const JobInvocationEdgeSchema = z.strictObject({
   outputs: z.array(JobOutputRuleSchema).max(30),
   maxDepth: z.number().int().positive().max(64),
   maxConcurrency: z.number().int().positive().max(4096),
-  aggregate: JobLimitsSchema,
+  /** Summed across the invocation tree; an inference ceiling is per job, never summed. */
+  aggregate: JobLimitsSchema.omit({ inference: true }),
 });
 export type JobInvocationEdge = z.infer<typeof JobInvocationEdgeSchema>;
 export const InspectJobInvocationsArgsSchema = z.strictObject({ machineId: id, pluginId: id });
@@ -441,7 +467,13 @@ export const JobResultSchema = z.strictObject({
   startedAt: count.nullable(),
   finishedAt: count.nullable(),
   usage: z
-    .strictObject({ elapsedMs: count, memoryBytes: count, processes: count, outputBytes: count })
+    .strictObject({
+      elapsedMs: count,
+      memoryBytes: count,
+      processes: count,
+      outputBytes: count,
+      inference: JobInferenceUsageSchema.optional(),
+    })
     .nullable(),
   limits: executionLimits,
   outputs: z
@@ -836,6 +868,41 @@ export const JobProgressEventSchema = z.strictObject({
 export type JobProgressEvent = z.infer<typeof JobProgressEventSchema>;
 /** An owner forwards at most one `job_progress` per job per this many milliseconds. */
 export const JOB_PROGRESS_INTERVAL_MS = 5000;
+/**
+ * One metered inference call, as the owner's proxy read it from the provider's usage object:
+ * the model, the tokens, the price applied, never a prompt or a byte of the answer. Carries the
+ * same owner facts a state event does, so the hub admits it by the same rule.
+ */
+export const JobInferenceCallEventSchema = z.strictObject({
+  type: z.literal("inference_call"),
+  jobId: id,
+  requestDigest: hash,
+  ownerId: id,
+  ownerGeneration: count,
+  serviceId: id,
+  operationId: id,
+  model: z.string().min(1).max(256),
+  inputTokens: count,
+  outputTokens: count,
+  cachedInputTokens: count,
+  costMicros: count,
+  elapsedMs: count,
+  status: z.number().int().min(100).max(599),
+});
+export type JobInferenceCallEvent = z.infer<typeof JobInferenceCallEventSchema>;
+/** A call refused at a ceiling; `ceiling` names which one, `reached` what the job had spent. */
+export const JobInferenceCeilingEventSchema = z.strictObject({
+  type: z.literal("inference_ceiling"),
+  jobId: id,
+  requestDigest: hash,
+  ownerId: id,
+  ownerGeneration: count,
+  serviceId: id,
+  operationId: id,
+  ceiling: z.enum(["calls", "inputTokens", "outputTokens", "costMicros"]),
+  reached: JobInferenceUsageSchema,
+});
+export type JobInferenceCeilingEvent = z.infer<typeof JobInferenceCeilingEventSchema>;
 export const JobEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("owner_proof"),
@@ -959,6 +1026,8 @@ export const JobEventSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({ type: z.literal("service_tunnel_frame"), frame: ServiceTunnelFrameSchema }),
   JobProgressEventSchema,
+  JobInferenceCallEventSchema,
+  JobInferenceCeilingEventSchema,
 ]);
 export type JobEvent = z.infer<typeof JobEventSchema>;
 export const JobFollowEventSchema = z.union([
@@ -967,6 +1036,8 @@ export const JobFollowEventSchema = z.union([
   JobEventSchema.options[4],
   JobEventSchema.options[5],
   JobProgressEventSchema,
+  JobInferenceCallEventSchema,
+  JobInferenceCeilingEventSchema,
 ]);
 export type JobFollowEvent = z.infer<typeof JobFollowEventSchema>;
 export const MAX_JOB_FOLLOW_EVENTS = 128;
@@ -1006,6 +1077,8 @@ export const JobLifecycleEventSchema = z.union([
   JobEventSchema.options[4],
   JobEventSchema.options[5],
   JobProgressEventSchema,
+  JobInferenceCallEventSchema,
+  JobInferenceCeilingEventSchema,
 ]);
 export type JobLifecycleEvent = z.infer<typeof JobLifecycleEventSchema>;
 export const MAX_JOB_JOURNAL_EVENTS = 128;

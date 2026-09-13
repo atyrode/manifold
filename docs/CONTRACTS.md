@@ -2716,11 +2716,11 @@ read a retained IPC-1 owner and resume its existing terminals. Without an explic
 declaration it cannot create new ambient shells. Governed requests still require their
 separate native owner proof and admitted resource/runtime bindings.
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 32. That version covers
-durable instance-owned services, cooperative retirement, proved readiness, bounded
-cross-owner service channels, an operation's declared `limits.concurrentJobs`, which an
-`install` command carries in the manifest to a strict owner parser, and the workload's own
-reported progress.
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 33. Version 31 added an
+operation's declared `limits.concurrentJobs`; version 32 added metered service policies and a job's
+inference limits, usage and journal events; version 33 adds the workload's own reported progress as
+a job event of its own. All of them cross the strict owner parser, in install, start, event and
+result frames, so older owners are fenced before receiving any of those shapes.
 It is not the hub/session `PROTOCOL_VERSION`: an unchanged native RPC remains compatible
 through a transport or browser upgrade. A native RPC change requires its own coordinated,
 drained owner upgrade. Compatibility alone never proves current execution consent or
@@ -3086,6 +3086,27 @@ provider handling and postconditions belong to plugins, never the common floor.
   for the old lifetime to close. Explicit job cancellation and credential, executor,
   installation or other authority revocation remain forceful; retirement cannot downgrade
   an already-requested cancellation.
+- **Metered inference** ([ADR 0038](decisions/0038-brokered-inference.md)). A job that drives a
+  model never holds the model's credential: inference is an Instance Service whose origin is a
+  provider and whose credential only the machine owner resolves, and the job is handed a loopback
+  URL and a bearer minted for that one run. A proxy operation declaring
+  `meter: { kind: "openai-usage" }` is the only thing that reads a body, and it reads exactly the
+  provider's own `usage` object and the `model` it names — from a JSON response or the final usage
+  frame of a stream the owner amended with `stream_options.include_usage` — never a prompt, never a
+  byte of the answer; unreadable usage on a 2xx is `service_response_invalid`, counts as a call and
+  latches that job's metered lane closed so missing usage cannot evade token or cost ceilings.
+  Prices are policy content in integer micro-dollars, pinned by the policy's `revision`; ceilings
+  are the job's `limits.inference`, and an operation's declared ceiling can be lowered by a request
+  but never dropped (`limit_exceeded`). The owner serializes metered calls across every service
+  proxy in one job so each pre-call check sees one authoritative total. It never cuts a call
+  mid-stream: a call that would pass a ceiling is refused `service_ceiling_exceeded` (HTTP 429, no
+  `Retry-After`) and a cost ceiling over an unpriced model is refused `service_price_unknown`
+  (HTTP 422), while a call already in flight is relayed to its end. Refusals are not calls. Each
+  call appends
+  `inference_call` and each refusal `inference_ceiling` to the job's journal, admitted by the same
+  owner facts as a `state` event and only while the job is `started`; the settled record's
+  `usage.inference` carries the totals. Spend is read from those records, never from what the
+  workload reports about itself.
 - **Output and privacy.** `child_exit` is execution observation with `outputsSealed: false`,
   not a final result, writer-drain acknowledgement or closure proof. Sealing waits for the
   execution tree to be empty and authorized overlapping writers to release, including

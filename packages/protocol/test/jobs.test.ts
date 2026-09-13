@@ -185,6 +185,10 @@ test("an operation's author declares its concurrency ceiling and no request may 
     false,
   );
   expect(jobLimits({ ...perJob, concurrentJobs: 2 })).toEqual(perJob);
+  expect(jobLimits({ ...perJob, concurrentJobs: 2, inference: { calls: 1 } })).toEqual({
+    ...perJob,
+    inference: { calls: 1 },
+  });
 });
 
 test("managed executables require an explicit runtime dependency and readonly inputs require string declarations", () => {
