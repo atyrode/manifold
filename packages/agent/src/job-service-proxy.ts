@@ -348,9 +348,10 @@ async function readRequestBody(request: IncomingMessage, limit: number): Promise
   }
   return Buffer.concat(chunks);
 }
-/** A metered call names its model in the request, and a streamed one is made to ask for the
- * usage frame: a ceiling evaded by setting `stream` is not a ceiling. The body is forwarded
- * byte for byte unless that amendment is needed. */
+/** A metered call names its model in the request, and a streamed chat completion is made to
+ * ask for the usage frame: a ceiling evaded by setting `stream` is not a ceiling. Only the
+ * chat shape needs it - a responses request streams its usage in `response.completed`, and
+ * takes no `stream_options` - so every other body is forwarded byte for byte. */
 function meteredRequest(body: Buffer): { model: string; forward: Buffer } {
   const invalid = () => new ProxyFailure(400, "service_input_invalid");
   let parsed: unknown;
@@ -363,7 +364,7 @@ function meteredRequest(body: Buffer): { model: string; forward: Buffer } {
   const call = parsed as Record<string, unknown>;
   const model = modelName(call.model);
   if (model === undefined) throw invalid();
-  if (call.stream !== true) return { model, forward: body };
+  if (call.stream !== true || !Array.isArray(call.messages)) return { model, forward: body };
   const declared = call.stream_options;
   if (declared !== undefined && (typeof declared !== "object" || declared === null))
     throw invalid();
