@@ -1,3 +1,12 @@
+export { ActionRunner, ActionRunnerError } from "./action-runner.ts";
+export {
+  ActionHttpError,
+  ActionProtocolError,
+  discoverActions,
+  invokeAction,
+  type ActionHttpOptions,
+  type ActionInvocation,
+} from "./action-http.ts";
 export { base64ToBytes, base64ToText, bytesToBase64, textToBase64 } from "./base64.ts";
 export {
   InstanceDial,

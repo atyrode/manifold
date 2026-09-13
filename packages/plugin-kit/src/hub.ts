@@ -1,11 +1,11 @@
 import {
-  ActionOutcomeSchema,
   HttpErrorSchema,
   PluginsResponseSchema,
   type ActionDenialRule,
   type ActionOutcome,
   type PluginRoster,
 } from "@manifold/protocol";
+import { ActionHttpError, invokeAction } from "@manifold/sdk";
 
 /**
  * THE KIT'S VIEW OF A HUB — the three HTTP calls `install`, `dev` and `verify` share, and
@@ -121,19 +121,13 @@ export async function dispatch(
   name: string,
   args: unknown,
 ): Promise<ActionOutcome> {
-  const response = await fetch(new URL(`/api/actions/${encodeURIComponent(name)}`, hub.url), {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${token}`,
-      accept: "application/json",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(args),
-    signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-  });
-  const body = await readJson(response);
-  if (!response.ok) throw new HubHttpError(response.status, failureDetail(body));
-  return ActionOutcomeSchema.parse(body);
+  try {
+    return (await invokeAction({ origin: hub.url, token, timeoutMs: HTTP_TIMEOUT_MS }, name, args))
+      .outcome;
+  } catch (error) {
+    if (error instanceof ActionHttpError) throw new HubHttpError(error.status, error.message);
+    throw error;
+  }
 }
 
 /** Dispatches as the owner and answers the result, raising a denial as a `HubRefusal`. */

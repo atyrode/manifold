@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { AUTH_REFUSALS, CredentialSchema } from "./http.ts";
+import {
+  ACTION_TRACE_ID_HEADER,
+  AGENT_JUSTIFICATION_HEADER,
+  AUTH_REFUSALS,
+  CredentialSchema,
+} from "./http.ts";
 import { AgentMessageSchema, ServerToAgentMessageSchema } from "./machine.ts";
 import { GuestMessageSchema, HostToGuestMessageSchema, instanceVocabulary } from "./instance.ts";
 import { eventVocabulary } from "./events.ts";
@@ -97,6 +102,11 @@ export interface ProtocolExtras {
 export function buildProtocolJsonSchema(extras?: ProtocolExtras): Record<string, unknown> {
   const description: Record<string, unknown> = {
     protocolVersion: PROTOCOL_VERSION,
+    actionTransport: {
+      traceIdHeader: ACTION_TRACE_ID_HEADER,
+      agentJustificationHeader: AGENT_JUSTIFICATION_HEADER,
+      agentJustificationEncoding: "v1.percent-encoded-utf8",
+    },
     session: {
       client: z.toJSONSchema(ClientMessageSchema),
       server: z.toJSONSchema(ServerMessageSchema),

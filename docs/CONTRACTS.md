@@ -152,6 +152,46 @@ failure is a failed run: report the instance, non-secret resource IDs and failed
 never call it clean. Tests whose entire throwaway server and data directory are destroyed
 need no additional credential revocation.
 
+#### External action runner
+
+`@manifold/sdk` owns the authenticated HTTP transport: `discoverActions` reads live
+`GET /api/protocol`; `invokeAction` posts only to `POST /api/actions/:name` and returns
+`{ outcome, traceId }`. `SessionClient.action` and plugin-kit dispatch consume that same
+transport while preserving their ordinary `ActionOutcome` contract. The numeric
+`x-manifold-trace-id` response header is the existing durable event row id, including known-door
+policy, capability and input refusals and broken handlers. Missing headers remain `null`;
+unknown doors and pre-dispatch transport/authentication failures acquire no invented id.
+The optional `x-manifold-agent-justification` header uses the protocol's reversible ASCII
+`v1.` + `encodeURIComponent` codec; HTTP rejects malformed encodings as invalid before dispatch
+and passes decoded Unicode through the dispatch option reserved for #557's semantic normalization. Shared HTTP deadlines and
+response ceilings are opt-in; the bounded runner explicitly supplies its own limits.
+
+The executable `manifold-action-runner` lives in the SDK; its trusted launcher supplies
+`MANIFOLD_ORIGIN` and process-owned `MANIFOLD_SPONSOR_TOKEN`, never credentials in argv or
+JSONL. It creates one root run, delivers live schemas and exact server-selected policy,
+requires an explicit exact acknowledgement, and retains every child/replacement bearer
+internally. `child`, `renew`, `policy`, `ack`, `discover`, `invoke` and `finish` frames consume
+the existing lifecycle/action doors. An ordinary `invoke` cannot impersonate a lifecycle
+frame. A policy-stale refusal is returned with its durable id and followed by fresh policy;
+the caller must acknowledge explicitly before retrying. The server remains the one argument
+validator and authorization decision; discovery never creates an alternate policy engine.
+The runner's owned root may itself be a server child of an accountable-agent launcher;
+renewal and teardown select that retained launcher credential by owned-root identity, not
+by an assumption that its server `parentRunId` is null.
+
+JSONL results publish only mechanical success or the server's refusal rule, door, caller-declared
+target, run id, trace id and bounded lifecycle facts. They do not publish raw action results,
+free-form refusal messages, arguments, environment/terminal/output bytes, credential values or
+credential hashes. Policy digests are public acknowledgement identifiers, not credential hashes.
+The target is a declaration, not a claim that the caller has reconstructed resolved ledger targets.
+Frames reject credential fields and bearer-shaped input even inside opaque action arguments.
+The runner bounds frames to 64 KiB, requests to 1024, idle time to five minutes, process lifetime
+to one hour and each HTTP request to 30 seconds. EOF abandons unfinished work; malformed input
+fails it; interruption cancels it. Teardown attempts the same finish door with the retained direct
+sponsor, including when the child's bearer has expired. Lost creation responses, network failure
+and uncatchable termination cannot guarantee cleanup: report failure and rely on server expiry
+only as the backstop. See [the operating contract](../packages/sdk/README.md) before launching.
+
 ## Topology
 
 ```

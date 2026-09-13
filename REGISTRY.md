@@ -172,7 +172,7 @@ must never be taught one.
       "id": "sdk",
       "globs": ["packages/sdk/src/**"],
       "litmus": ["bootstrap", "neutrality", "arbitration"],
-      "verdict": "the only WebSocket state machine plus the typed HTTP client: dial, liveness, rejoin, channel demux, connection frames, action dispatch. Every principal — browser, agent, remote SDK — reaches the doors through it, which is the mechanism behind A2's 'one door, every principal'.",
+      "verdict": "the only WebSocket state machine plus the typed HTTP client: dial, liveness, rejoin, channel demux, connection frames, action dispatch, and the bounded external action runner's process-owned credential lifecycle. Every principal — browser, agent, remote SDK — reaches the doors through it, which is the mechanism behind A2's 'one door, every principal'.",
       "adr": "docs/decisions/0010-plugin-engine-and-action-plane.md"
     },
     {

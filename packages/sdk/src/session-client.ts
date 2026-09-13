@@ -1,5 +1,4 @@
 import {
-  ActionOutcomeSchema,
   BootstrapPrincipalRequestSchema,
   ClientMessageBodySchema,
   CredentialsResponseSchema,
@@ -82,6 +81,7 @@ import {
   type ScenePatch,
 } from "@manifold/scene";
 import { bytesToBase64, textToBase64 } from "./base64.ts";
+import { invokeAction } from "./action-http.ts";
 import {
   acquireChannel,
   type ChannelFrame,
@@ -875,26 +875,8 @@ export class SessionClient {
    * the WORKSPACE, while this client is joined to one room.
    */
   async action(name: string, args: unknown): Promise<ActionOutcome> {
-    const response = await fetch(`${this.apiOrigin()}/api/actions/${encodeURIComponent(name)}`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.opts.token}`,
-      },
-      // An argument-free action still sends an envelope: the door parses a body.
-      body: JSON.stringify(args ?? {}),
-    });
-    let payload: unknown = null;
-    try {
-      payload = await response.json();
-    } catch {
-      throw new Error(`action ${name} returned a non-JSON response (${response.status})`);
-    }
-    if (response.ok) return ActionOutcomeSchema.parse(payload);
-    const failure = HttpErrorSchema.safeParse(payload);
-    throw new Error(
-      failure.success ? failure.data.error.message : `action ${name} failed (${response.status})`,
-    );
+    return (await invokeAction({ origin: this.apiOrigin(), token: this.opts.token }, name, args))
+      .outcome;
   }
 
   /** The HTTP origin this terminal's socket URL implies; `apiUrl` overrides it. */

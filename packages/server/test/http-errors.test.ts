@@ -3,6 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ACTION_TRACE_ID_HEADER,
+  AGENT_JUSTIFICATION_HEADER,
+  HttpErrorSchema,
   ActionOutcomeSchema,
   MachineEnrollResponseSchema,
   ResolveResponseSchema,
@@ -11,6 +14,8 @@ import {
 import { loadConfig } from "../src/config.ts";
 import type { Logger } from "../src/log.ts";
 import { startServer, type RunningServer } from "../src/main.ts";
+import { EventsListResponseSchema } from "@manifold-plugin/events";
+import { invokeAction } from "@manifold/sdk";
 
 const OWNER_KEY = "f".repeat(64);
 const temporaryDirectories: string[] = [];
@@ -71,6 +76,88 @@ afterEach(async () => {
 });
 
 describe("HTTP error mapping", () => {
+  test("Unicode justification crosses HTTP, but malformed encoding cannot dispatch an effect", async () => {
+    const logger: Logger = { info(): void {}, warn(): void {}, error(): void {} };
+    const running = await startFixture(new FaultRuntime(), logger);
+    const created = await invokeAction(
+      { origin: running.publicUrl, token: OWNER_KEY },
+      "core.index.createContainer",
+      { name: "encoded claim" },
+      { agentJustification: "Create the approved container —\nthen verify it." },
+    );
+    expect(created.outcome.ok).toBe(true);
+    const malformed = await fetch(
+      new Request(`${running.publicUrl}/api/actions/core.index.createContainer`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${OWNER_KEY}`,
+          "content-type": "application/json",
+          [AGENT_JUSTIFICATION_HEADER]: "v1.%FF",
+        },
+        body: JSON.stringify({ name: "must not dispatch" }),
+      }),
+    );
+    expect(malformed.status).toBe(400);
+    expect(HttpErrorSchema.parse(await malformed.json()).error.code).toBe("invalid");
+    expect(malformed.headers.get(ACTION_TRACE_ID_HEADER)).toBeNull();
+    const history = await invokeAction(
+      { origin: running.publicUrl, token: OWNER_KEY },
+      "core.events.list",
+      { kind: "trace", limit: 100 },
+    );
+    if (!history.outcome.ok) throw new Error("history refused");
+    expect(
+      EventsListResponseSchema.parse(history.outcome.result).events.filter(
+        (trace) => trace.door === "core.index.createContainer",
+      ),
+    ).toHaveLength(1);
+  });
+
+  test("the HTTP reference is the durable ledger id for success, refusal and broken handlers only", async () => {
+    const runtime = new FaultRuntime();
+    const logger: Logger = { info(): void {}, warn(): void {}, error(): void {} };
+    const running = await startFixture(runtime, logger);
+    const success = await fetch(createContainerRequest(running, { name: "traced" }));
+    const refusal = await fetch(createContainerRequest(running, { name: "" }));
+    runtime.failNewId = true;
+    const failed = await fetch(createContainerRequest(running, { name: "broken" }));
+    runtime.failNewId = false;
+    const history = await invokeAction(
+      { origin: running.publicUrl, token: OWNER_KEY },
+      "core.events.list",
+      { kind: "trace", limit: 100 },
+    );
+    if (!history.outcome.ok) throw new Error("history refused");
+    const traces = EventsListResponseSchema.parse(history.outcome.result).events;
+    for (const [response, outcome] of [
+      [success, "ok"],
+      [refusal, "invalid_args"],
+      [failed, "failed"],
+    ] as const) {
+      const id = Number(response.headers.get(ACTION_TRACE_ID_HEADER));
+      expect(traces.find((trace) => trace.id === id)).toMatchObject({
+        door: "core.index.createContainer",
+        outcome,
+      });
+    }
+    const unknown = await fetch(
+      new Request(`${running.publicUrl}/api/actions/absent.effect`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${OWNER_KEY}`, "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+    expect(unknown.headers.get(ACTION_TRACE_ID_HEADER)).toBeNull();
+    const unauthenticated = await fetch(
+      new Request(`${running.publicUrl}/api/actions/core.index.createContainer`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+    expect(unauthenticated.headers.get(ACTION_TRACE_ID_HEADER)).toBeNull();
+  });
+
   test("resolve names an enrolled machine and answers absence for an unknown machine", async () => {
     const logger: Logger = { info(): void {}, warn(): void {}, error(): void {} };
     const running = await startFixture(new FaultRuntime(), logger);
