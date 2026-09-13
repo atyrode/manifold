@@ -45,3 +45,14 @@ export {
   type JobOwnerDialer,
 } from "./job-owner-link.ts";
 export { openConfiguredJobOwner } from "./job-runtime.ts";
+export {
+  REPOSITORY_CACHE_MAX_ENTRIES,
+  REPOSITORY_CACHE_TTL_MS,
+  REPOSITORY_PROBE_TIMEOUT_MS,
+  RepositoryObserver,
+  normalizeRemote,
+  spawnProbe,
+  type ProbeOutcome,
+  type RepositoryObserverOptions,
+  type RepositoryProbe,
+} from "./repository.ts";
