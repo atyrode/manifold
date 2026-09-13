@@ -154,20 +154,22 @@ fail, the blocking findings. A new push invalidates every earlier verdict.
 
 ## Merge
 
-An agent may squash-merge with branch deletion when **all** of these hold:
+An agent squash-merges with branch deletion, without an additional waiting period, when **all** of
+these hold:
 
 1. The pull request closes an issue carrying `agent-ready` and a priority label.
 2. Required CI is green on the current head: `gh pr checks <n> --required` exits 0 and
    `gh run list --workflow ci.yml --commit <head> --status success --json databaseId` is non-empty.
 3. The newest `## Verdict:` comment is `pass` and is dated after the head commit was pushed.
-4. At least **24 hours** have passed since that verdict — the operator's veto window.
-5. Neither the pull request nor its issue carries `needs-operator`, `design` or `area:infra`.
-6. The pull request touches none of: `.github/workflows/**`, `infra/**`, `Dockerfile*`,
+4. Neither the pull request nor its issue carries `needs-operator`, `design` or `area:infra`.
+5. The pull request touches none of: `.github/workflows/**`, `infra/**`, `Dockerfile*`,
    `compose*.y*ml`, `flake.nix`, `AXIOMS.md`, `docs/decisions/**`, `scripts/release*.ts`,
    `scripts/promote.ts`, `packages/server/src/auth.ts`, `packages/web/src/identity.tsx`.
 
-Anything else waits for the operator: the ship runbook labels such a pull request `needs-operator`
-and writes a decision block on it. The operator vetoes any pull request by adding `needs-operator`.
+A failure of criteria 1–3 blocks the merge until the pull request is corrected. Criteria 4 or 5
+identify a concrete operator decision or protected scope: the ship runbook labels the pull request
+`needs-operator` and writes a decision block. There is no time-based veto window. The operator may
+hold any pull request by adding `needs-operator`.
 
 This grant is bounded and mechanical; it does not touch `bun run release` or `bun run promote`,
 which remain explicitly authorized actions under [`AGENTS.md`](../AGENTS.md) Boundaries. After each

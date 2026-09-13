@@ -73,7 +73,12 @@ process.on("message", async (frame) => {
       process.send({
         t: "loaded",
         actions: Object.keys(handlers).map((name) => action(name)),
-        hooks: { onEnable: true, onDisable: false, onAssemblyChanged: false },
+        hooks: {
+          onEnable: true,
+          onDisable: false,
+          onAssemblyChanged: false,
+          onJobSettled: false,
+        },
       });
       return;
     case "dispatch": {

@@ -207,6 +207,13 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       */
       distribution: SHIPPED_PLUGIN_IDS,
       isolates: { runner: isolates, dataDir: config.dataDir, devPaths: config.pluginDevPaths },
+      /*
+        Where a plugin's own SQLite file lives (ADR 0034 §1). The same directory the isolates
+        extract into, named separately because a plugin's database has nothing to do with
+        whether this host admits bundles: a first-party in-realm plugin declaring `database`
+        gets a file on a server that never spawned a child.
+      */
+      dataDir: config.dataDir,
     },
   );
   plugins.setJobs(jobs);
@@ -349,6 +356,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       dialer.shutdown();
       await server.stop(true);
       await isolates.close();
+      plugins.close();
       localAgent?.release();
       store.close();
     },

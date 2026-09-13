@@ -13,7 +13,7 @@ import {
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
 import { StreamServerMessageSchema } from "./stream.ts";
-import { JobFollowUpdateSchema, machineArtifacts } from "./jobs.ts";
+import { JobFollowUpdateSchema, SettledJobSchema, machineArtifacts } from "./jobs.ts";
 
 /**
  * THE ISOLATION VOCABULARY (ADR 0016): everything that crosses the boundary between the engine
@@ -337,16 +337,18 @@ export const ISOLATE_MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 /** Correlates a request with its answer on either ipc direction; sender-chosen, opaque. */
 const frameId = z.string().min(1).max(64);
 
-/** Prose about a failure, bounded because the child writes it and the host logs it. */
-const errorText = z.string().max(2048);
+/** Maximum failure prose carried by an isolate frame. */
+export const ISOLATE_ERROR_TEXT_MAX = 2_048;
+const errorText = z.string().max(ISOLATE_ERROR_TEXT_MAX);
 
 /**
  * The ctx slices a child may CALL BACK into (ADR 0016 §2), each one an RPC the host serves on
- * the plugin's behalf: storage namespaced by plugin id, the dispatching caller's authority,
- * and the two host services a first-party slice already reaches by method name. Everything
- * else in `ActionCtx` is NOT served in stage 1 — the guest runtime raises
- * `IsolateSliceUnavailable(method)` and maps it to `{ ok: false, rule: "refused" }`, so the
- * absence is a named refusal at the door rather than a hang or a throw.
+ * the plugin's behalf: storage namespaced by plugin id, the plugin's own database when its
+ * manifest declared one, the dispatching caller's authority, and the two host services a
+ * first-party slice already reaches by method name. Everything else in `ActionCtx` is NOT
+ * served in stage 1 — the guest runtime raises `IsolateSliceUnavailable(method)` and maps it
+ * to `{ ok: false, rule: "refused" }`, so the absence is a named refusal at the door rather
+ * than a hang or a throw.
  */
 export const ISOLATE_CTX_METHODS = [
   "storage.get",
@@ -354,6 +356,9 @@ export const ISOLATE_CTX_METHODS = [
   "storage.compareAndSet",
   "storage.delete",
   "storage.keys",
+  "database.query",
+  "database.run",
+  "database.batch",
   "auth.allows",
   "outsideScope",
   "newId",
@@ -374,6 +379,8 @@ export const ISOLATE_CTX_METHODS = [
   "jobs.input",
   "jobs.cancel",
   "jobs.output",
+  "jobs.outputs",
+  "jobs.journal",
   "jobs.follow",
   "jobs.ack",
   "jobs.unfollow",
@@ -392,8 +399,13 @@ export const ISOLATE_CTX_METHODS = [
 export const IsolateCtxMethodSchema = z.enum(ISOLATE_CTX_METHODS);
 export type IsolateCtxMethod = (typeof ISOLATE_CTX_METHODS)[number];
 
-/** The three lifecycle hooks a server half may declare; `purge` never crosses (it is the host's). */
-export const ISOLATE_HOOKS = ["onEnable", "onDisable", "onAssemblyChanged"] as const;
+/** The four lifecycle hooks a server half may declare; `purge` never crosses (it is the host's). */
+export const ISOLATE_HOOKS = [
+  "onEnable",
+  "onDisable",
+  "onAssemblyChanged",
+  "onJobSettled",
+] as const;
 export const IsolateHookSchema = z.enum(ISOLATE_HOOKS);
 export type IsolateHook = (typeof ISOLATE_HOOKS)[number];
 
@@ -504,6 +516,7 @@ export const IsolateHostFrameSchema = z.discriminatedUnion("t", [
     id: frameId,
     hook: IsolateHookSchema,
     delta: AssemblyDeltaSchema.optional(),
+    job: SettledJobSchema.optional(),
   }),
   z.strictObject({
     t: z.literal("migrate"),
@@ -543,6 +556,7 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
       onEnable: z.boolean(),
       onDisable: z.boolean(),
       onAssemblyChanged: z.boolean(),
+      onJobSettled: z.boolean(),
     }),
     migrations: IsolateMigrationsSchema.optional(),
   }),

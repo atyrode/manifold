@@ -654,12 +654,14 @@ export function applyTileLayout(doc: Y.Doc, next: TileLayout, origin: unknown): 
 /**
  * Writes only the fields that actually changed, so untouched tiles never churn.
  *
- * `sections` is deliberately NOT among them. A tile's section arrangement is PER-PRINCIPAL
- * workspace data (protocol layout.ts): it lives on the tree `core.space.setLayout` stores
- * per principal, and a composition document is shared state every occupant merges into. One
- * reader's arrangement written there would be everyone's, so the composition writer drops it
- * on the floor on purpose — the field cannot reach this path today, and the day something
- * tries, this is the line that says the answer is no rather than yes-by-omission.
+ * A PANEL LEAF'S OWN TWO FIELDS are deliberately NOT among them. A tile's section
+ * arrangement and its panel argument (`sections`, `arg`; protocol layout.ts) are
+ * PER-PRINCIPAL workspace data: they live on the tree `core.space.setLayout` stores per
+ * principal, and a composition document is shared state every occupant merges into. One
+ * reader's arrangement — or the record one reader opened — written there would be
+ * everyone's, so the composition writer drops both on the floor on purpose. Neither field
+ * can reach this path today (a composition's leaves hold no panels), and this is the line
+ * that says the answer is no rather than yes-by-omission the day something tries.
  */
 function updateTileFields(map: Y.Map<unknown>, tile: Tile): void {
   if (map.get("id") !== tile.id) map.set("id", tile.id);

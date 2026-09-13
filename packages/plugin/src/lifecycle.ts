@@ -1,6 +1,8 @@
-import type { PluginId } from "@manifold/protocol";
+import type { PluginId, SettledJob } from "@manifold/protocol";
 import type { EmitEvent } from "./emit.ts";
+import type { PluginDatabase } from "./database.ts";
 import type { PluginStorage } from "./storage.ts";
+import type { PluginJobContext } from "./runtime.ts";
 
 /**
  * THE LIFECYCLE — four hooks, one bound, no veto.
@@ -21,11 +23,11 @@ import type { PluginStorage } from "./storage.ts";
 export const LIFECYCLE_TIMEOUT_MS = 2_000;
 
 /**
- * What a hook is handed: its own identity, its own storage, the server's clock, and the one
- * emission call. Nothing else — deliberately. A lifecycle hook exists to put a plugin's OWN
- * durable state in order; anything that touches the workspace is a mutation, and every
- * mutation goes through an action door where it can be authorized, validated, logged and
- * observed (AXIOMS.md §The plane rule).
+ * What a hook is handed: its own identity, its own storage, its own tables when it declared
+ * any, the server's clock, and the one emission call. Nothing else — deliberately. A
+ * lifecycle hook exists to put a plugin's OWN durable state in order; anything that touches
+ * the workspace is a mutation, and every mutation goes through an action door where it can be
+ * authorized, validated, logged and observed (AXIOMS.md §The plane rule).
  *
  * `emit` is not an exception to that rule, it is the shape of it: an event NOTIFIES and never
  * mutates, so handing a hook the ability to say "I am serving now" costs nothing a door would
@@ -40,6 +42,13 @@ export const LIFECYCLE_TIMEOUT_MS = 2_000;
 export interface LifecycleCtx {
   readonly pluginId: string;
   readonly storage: PluginStorage;
+  /**
+   * This plugin's own tables (ADR 0034), present exactly when its manifest declares
+   * `database`. A plugin that declared none has no slice here — the member is absent, not an
+   * empty handle — which is why a hook that uses it declares it and every hook written before
+   * the file existed keeps type-checking unchanged.
+   */
+  readonly database?: PluginDatabase;
   readonly emit: EmitEvent;
   now(): number;
 }
@@ -56,6 +65,17 @@ export interface AssemblyDelta {
 
 export type LifecycleHook = (ctx: LifecycleCtx) => void | Promise<void>;
 export type AssemblyChangedHook = (ctx: LifecycleCtx, delta: AssemblyDelta) => void | Promise<void>;
+/**
+ * What `onJobSettled` is handed beyond an ordinary hook ctx: the job slice, bound to the
+ * CREDENTIAL THE JOB RAN UNDER, restored and rechecked at delivery. It is not ambient plugin
+ * authority and it is not the enabling administrator's — a revoked or expired credential
+ * simply has no wake to deliver, and every read through it still discharges consent and
+ * grants the way a door-dispatched one does (ADR 0033 §Execution and authority).
+ */
+export interface JobSettledCtx extends LifecycleCtx {
+  readonly jobs: PluginJobContext;
+}
+export type JobSettledHook = (ctx: JobSettledCtx, job: SettledJob) => void | Promise<void>;
 
 /**
  * The hooks a plugin may declare. Every one is optional and most plugins declare none: a
@@ -70,11 +90,18 @@ export type AssemblyChangedHook = (ctx: LifecycleCtx, delta: AssemblyDelta) => v
  * `onPurge` fires from the purge door only — never from a disable. A disable RETAINS data
  * (the residual mechanism is `retain`; there is no erase-on-disable), and destruction is a
  * separate, explicitly named verb.
+ *
+ * `onJobSettled` is the ONE hook that is not a composition transition: a job the plugin
+ * started reached a terminal state, and its owner is told once, under the same bound and the
+ * same no-veto rule. It fires for the OWNING plugin only and only while that plugin is
+ * enabled — a disabled plugin's jobs are cancelled, not delivered — and it carries safe
+ * metadata, so reading the bytes is still `ctx.jobs.outputs` under current authority.
  */
 export interface PluginLifecycle {
   readonly onEnable?: LifecycleHook;
   readonly onDisable?: LifecycleHook;
   readonly onAssemblyChanged?: AssemblyChangedHook;
+  readonly onJobSettled?: JobSettledHook;
   readonly onPurge?: LifecycleHook;
 }
 

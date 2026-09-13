@@ -291,6 +291,7 @@ export const CAP_MEANINGS: Readonly<Record<Cap, string>> = {
   "terminals:write": "Type into terminals",
   "tokens:mint": "Mint tokens: hand authority to others",
   "machines:mint": "Enroll machines into the fleet",
+  "machines:read": "Read what an enrolled machine reports about its own host",
   "machines:run": "Run admitted machine operations with explicit version-bound consent",
   "jobs:read": "Read admitted jobs and their outputs",
   "jobs:input": "Provide input to admitted jobs",

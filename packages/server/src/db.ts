@@ -6,7 +6,7 @@ import { migrateToSoloCompositions } from "./migrate-solo.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 31;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -712,6 +712,13 @@ CREATE TABLE machine_job_deployment_targets(
 CREATE UNIQUE INDEX machine_job_deployment_pending
  ON machine_job_deployment_targets(machine_id,plugin_id) WHERE phase IN ('pending','applying');
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','30');
+`,
+  31: `
+CREATE TABLE machine_job_journal(
+ job_id TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL, event TEXT NOT NULL,
+ PRIMARY KEY(job_id,seq)
+);
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','31');
 `,
 };
 

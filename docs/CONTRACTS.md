@@ -1202,7 +1202,13 @@ tokens), and
 its validation is STRUCTURAL ONLY: `validateTileLayout` plus "every leaf ref is a panel".
 Unknown or disabled panel ids are ACCEPTED — a disabled plugin must never brick layout writes —
 and those leaves render placeholders whose chrome offers a remove control that commits the pruned
-tree through the same action. Divider drags obey the plane rule: local optimistic ratios per
+tree through the same action. A panel leaf may also carry `arg`, the opaque
+`Record<string, unknown>` naming what that tile is showing it for (ADR 0037): legal on a panel
+leaf and nowhere else, refused past `MAX_PANEL_ARG_BYTES` (4 KiB of JSON) or when it is not JSON
+data, absent ≡ none, delivered to the panel as `PanelProps.arg`, travelling with the panel when a
+seat moves, and written by the same one door — `host.openPanel` computes the tree and commits it
+through it, so an opening is an ordinary arrangement write.
+Divider drags obey the plane rule: local optimistic ratios per
 frame, ONE `core.space.setLayout` on pointerup or pointercancel after movement, never during a
 held pause or per frame. A press without movement writes nothing.
 
@@ -3095,6 +3101,29 @@ provider handling and postconditions belong to plugins, never the common floor.
   same `consent` action, without authorizing new starts or replaying old jobs. Output
   availability still depends on the proved owner and retained bytes; purged/released
   output references do not become readable again on re-enable or reinstall.
+- **Reading a finished job.** `engine.jobs.outputs` / `ctx.jobs.outputs({ node, name, offset,
+limit })` reads one declared output of a FINISHED job of the calling plugin, addressed by
+  the operation's output name rather than by an owner-minted output ID, in pages of at most
+  64 KiB. It answers `{ jobId, outputId, name, sha256, files, total, offset, data, eof }`,
+  where `total` is the sealed length. An unfinished job refuses `job_unfinished`, an unsealed
+  name refuses `unknown_job_output`, and another plugin's job refuses like every other job
+  door; the page itself is the same authorized private read as `output`, so a consent revoked
+  between pages refuses the next one. `engine.jobs.journal` / `ctx.jobs.journal({ node,
+after?, limit? })` reads that finished job's durable LIFECYCLE frames — `{ jobId, events:
+[{ seq, at, event }], firstSeq, nextAfter }`, at most 128 retained per job, oldest dropped
+  first and dropped entirely on purge. Byte-channel frames are never journaled, so gaps in
+  `seq` are stdout/stderr and never loss, and `firstSeq` discloses what retention dropped.
+  Neither door starts, resumes or re-executes anything, and neither replaces `follow`.
+- **Settled-job wake.** A server half may declare `onJobSettled(ctx, job)`; the host calls it
+  once per settled job of THAT plugin with `{ jobId, machineId, operationId, pluginId, state,
+exitCode, reason, finishedAt, scheduleId?, revision?, outputs }` — the job's own terminal
+  state and sealed output descriptors, never bytes. It is published after the result and its
+  journal frame are durable, delivery is at-least-once, and consumers must be idempotent.
+  `ctx.jobs` on that hook is bound to the job's ORIGINAL credential, restored and rechecked
+  at delivery: a revoked or expired credential is not woken at all, and every read still
+  discharges caps, grants and that revision's consent. `follow` is not served there. The hook
+  obeys the lifecycle bound and the no-veto rule: nothing waits for it, a throw or overrun is
+  logged and never retried, no lifecycle state is recorded, and a disabled plugin is skipped.
 - **Schedules.** The same admission path consumes durable schedule revision, nominal
   occurrence, interval, deadline, expiry and `skip`/`coalesce-one` offline policy. Occurrence
   identity is committed before enqueue. Original credential lineage/ceiling persists;
@@ -3349,7 +3378,7 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- layout:<principalId>
 ```
 
-Schema version 30 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
+Schema version 31 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
 — `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
 `grants` substrate; 14 is the trace ledger — five nullable columns on `events`; 15 is credential
 expiry — `tokens.expires_at`; 16 retires the grant rows of already-revoked tokens, the same rule
@@ -3366,11 +3395,15 @@ new table and nothing rewritten; 18 adds `plugin_installs.actions`, defaulted to
 27 adds installation resource bindings and native service configurations;
 28 records owner workload closure and instance-service ownership;
 29 distinguishes cancellation from cooperative retirement;
-30 adds reviewed native deployment approvals and their fenced per-destination phases).
+30 adds reviewed native deployment approvals and their fenced per-destination phases;
+31 retains a finished job's lifecycle frames).
 Migration 30 adds `machine_job_deployments` and `machine_job_deployment_targets`, including
 the partial unique index that permits only one pending/applying approval per machine/plugin.
 It does not rewrite existing installation or consent rows. Those rows remain the authority
 for committed effects; deployment rows retain reviewed scope, lifecycle and effect receipts.
+Migration 31 adds `machine_job_journal`, keyed by job and sequence. It rewrites nothing:
+a job that finished before the upgrade simply has no frames to read, which is what an empty
+page already means.
 Migrations 12, 14, 15, 17, 18 and 20 are plain SQL for the same reason: none touches a stored
 document and existing rows need no backfill, since absence already means the right thing — a
 NULL origin means "this instance", a NULL `door` means "this row is an event, not a trace", a

@@ -1,14 +1,14 @@
 /**
  * `@manifold/plugin-kit` — the authoring kit for an ISOLATED plugin (ADR 0016).
  *
- * The root export is the pure half: the vocabulary builders, the two error classes and every
+ * The root export is the pure half: the vocabulary builders, the error classes and every
  * public type. The runtimes live behind their own doors so a bundle carries only the half it
  * runs — `@manifold/plugin-kit/server` (`defineServerPlugin`), `@manifold/plugin-kit/web`
  * (`defineWebPlugin`) — and the commands are `pack` (a directory to an artifact), `install` (an
  * artifact onto a hub), `dev` (pack and install on every change) and `verify` (artifacts against
  * a real spawned engine), each its own file under `src/` (issue #319).
  */
-export { HostCallError, IsolateSliceUnavailable } from "./errors.ts";
+export { HostCallError, IsolateSliceUnavailable, PluginDatabaseError } from "./errors.ts";
 export {
   ui,
   type BoxOptions,
@@ -22,6 +22,10 @@ export {
 export type {
   GuestAuth,
   GuestCtx,
+  GuestDatabase,
+  GuestSqlParam,
+  GuestSqlRow,
+  GuestSqlStatement,
   GuestEmit,
   GuestJobs,
   GuestServices,

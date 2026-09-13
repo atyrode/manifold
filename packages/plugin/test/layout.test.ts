@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  MAX_PANEL_ARG_BYTES,
   MAX_PANEL_SECTIONS,
   ROOT_TILE_ID,
   validateTileLayout,
@@ -10,6 +11,7 @@ import { resolveTileAim, type TileAim } from "../src/tile-geometry.ts";
 import {
   arrangedSections,
   clusteredSections,
+  openedPanel,
   panelSections,
   projectSectionArrangement,
   releasedSectionArrangement,
@@ -17,6 +19,7 @@ import {
   sectionArrangementOf,
   withPanelSections,
 } from "../src/layout.ts";
+import { releasedTileLayout } from "../src/tile-release.ts";
 
 /**
  * THE SECTION ARRANGEMENT POLICY.
@@ -444,5 +447,126 @@ describe("section clusters", () => {
 
   test("an empty stack has no units", () => {
     expect(units([])).toEqual([]);
+  });
+});
+
+/**
+ * OPENING A PANEL FOR A THING (issue #516).
+ *
+ * The contract is one sentence with a fork in it: asking for a panel of one's own plugin
+ * with an argument means one more seat beside the caller carrying that argument — UNLESS a
+ * seat already shows the same thing, in which case it means that seat and no write at all.
+ * What the cases defend is the fork, where the new seat lands, and that the argument follows
+ * the PANEL rather than the seat when a reader rearranges afterwards.
+ */
+describe("opening a panel with an argument", () => {
+  const RECORD = "acme.feed.record";
+  const R1 = { kind: "record", id: "r-1" };
+
+  /** The workspace above with the record panel open on `r-1` in the main seat. */
+  const reading = (): TileLayout => {
+    const layout = shell();
+    return {
+      ...layout,
+      "ws-main": { ...layout["ws-main"]!, ref: { kind: "panel", panelId: RECORD }, arg: R1 },
+    };
+  };
+
+  test("an opening joins the caller's own row, carrying its argument", () => {
+    const opening = openedPanel(shell(), RECORD, R1, "ws-main");
+    expect(opening).not.toBeNull();
+    expect(opening?.placed).toBe(true);
+    const tileId = opening?.tileId ?? "";
+    const next = opening?.layout ?? {};
+    expect(next[tileId]?.ref).toEqual({ kind: "panel", panelId: RECORD });
+    expect(next[tileId]?.arg).toEqual(R1);
+    // FLAT, and after the caller: the workspace is a row, so it grows one more pane to the
+    // right rather than nesting a split inside the seat that asked.
+    expect(next[ROOT_TILE_ID]?.children).toEqual(["ws-sidebar", "ws-main", tileId]);
+    // And it is a tree the door will accept, argument and all.
+    expect(validateTileLayout(next)).toBe(true);
+    // The caller's own seat is untouched — an opening is not a navigation.
+    expect(next["ws-main"]).toEqual(shell()["ws-main"]);
+  });
+
+  test("a seat already showing the same thing is the answer, and nothing is written", () => {
+    const layout = reading();
+    const again = openedPanel(layout, RECORD, R1, "ws-sidebar");
+    expect(again).toEqual({ layout, tileId: "ws-main", placed: false });
+    // The tree comes back UNCHANGED by identity, so a caller committing it is a no-op.
+    expect(again?.layout).toBe(layout);
+    // Key order is how a caller happened to build the record, not part of what it names.
+    const reordered = openedPanel(layout, RECORD, { id: "r-1", kind: "record" }, "ws-sidebar");
+    expect(reordered?.placed).toBe(false);
+    expect(reordered?.tileId).toBe("ws-main");
+  });
+
+  test("a different thing is a second seat, which is the whole point", () => {
+    const opening = openedPanel(reading(), RECORD, { kind: "record", id: "r-2" }, "ws-main");
+    expect(opening?.placed).toBe(true);
+    const next = opening?.layout ?? {};
+    const showing = Object.values(next)
+      .filter((tile) => tile.ref?.kind === "panel" && tile.ref.panelId === RECORD)
+      .map((tile) => tile.arg);
+    expect(showing).toHaveLength(2);
+    expect(showing).toContainEqual(R1);
+    expect(showing).toContainEqual({ kind: "record", id: "r-2" });
+    // An argument-free seat of the same panel is a THIRD state, not a match for either.
+    const bare = openedPanel(next, RECORD, undefined, "ws-main");
+    expect(bare?.placed).toBe(true);
+    expect(bare?.layout[bare.tileId]).not.toHaveProperty("arg");
+    // ...and asking for it again now dedups onto it.
+    expect(openedPanel(bare?.layout ?? {}, RECORD, undefined, "ws-main")?.tileId).toBe(
+      bare?.tileId,
+    );
+  });
+
+  test("a column grows downward, and a lone root leaf is split into a row", () => {
+    const stacked: TileLayout = { ...shell(), root: { ...shell().root!, dir: "column" } };
+    const below = openedPanel(stacked, RECORD, R1, "ws-main");
+    expect(below?.layout[ROOT_TILE_ID]?.children).toEqual([
+      "ws-sidebar",
+      "ws-main",
+      below?.tileId ?? "",
+    ]);
+    expect(below?.layout[ROOT_TILE_ID]?.dir).toBe("column");
+
+    const solo: TileLayout = {
+      [ROOT_TILE_ID]: {
+        id: ROOT_TILE_ID,
+        dir: null,
+        ratios: [],
+        children: [],
+        ref: { kind: "panel", panelId: RECORD },
+      },
+    };
+    const beside = openedPanel(solo, RECORD, R1, ROOT_TILE_ID);
+    expect(beside?.layout[ROOT_TILE_ID]?.dir).toBe("row");
+    expect(validateTileLayout(beside?.layout ?? {})).toBe(true);
+  });
+
+  test("a write the door would refuse is refused before it reaches the wire", () => {
+    // Past the wire's own bound on an argument, and not JSON data: both are the rules
+    // `validateTileLayout` would reject the committed tree by.
+    expect(
+      openedPanel(shell(), RECORD, { id: "x".repeat(MAX_PANEL_ARG_BYTES) }, "ws-main"),
+    ).toBeNull();
+    expect(openedPanel(shell(), RECORD, { at: new Date(0) }, "ws-main")).toBeNull();
+    // A seat that is not in this tree is nothing to open beside.
+    expect(openedPanel(shell(), RECORD, R1, "ws-ghost")).toBeNull();
+  });
+
+  test("the argument travels with the panel when the reader rearranges", () => {
+    const layout = reading();
+    const aim: TileAim = { tileId: "ws-sidebar", edge: "bottom", action: "place", depth: 1 };
+    const moved = releasedTileLayout(layout, { kind: "seat", tileId: "ws-main" }, aim);
+    expect(moved).not.toBeNull();
+    const seat = Object.values(moved ?? {}).find(
+      (tile) => tile.ref?.kind === "panel" && tile.ref.panelId === RECORD,
+    );
+    // The reader moved the tile showing `r-1`; it still shows `r-1`.
+    expect(seat?.arg).toEqual(R1);
+    expect(seat?.id).not.toBe("ws-main");
+    expect(validateTileLayout(moved ?? {})).toBe(true);
   });
 });

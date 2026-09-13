@@ -220,7 +220,12 @@ describe("load", () => {
       type: "object",
       properties: { text: { type: "string", minLength: 1 } },
     });
-    expect(loaded.hooks).toEqual({ onEnable: true, onDisable: false, onAssemblyChanged: false });
+    expect(loaded.hooks).toEqual({
+      onEnable: true,
+      onDisable: false,
+      onAssemblyChanged: false,
+      onJobSettled: false,
+    });
   });
 
   test("refuses to load under another id or with an action nobody handles", async () => {
@@ -678,26 +683,19 @@ test("guest job discovery cannot hide a host authority refusal", async () => {
 });
 
 describe("named storage migrations", () => {
-  /*
-    ONE ROW, ONE ARGUMENT — the descriptor LIST. A rest parameter over rows of two different
-    arities infers as a union of tuples that also carries `test.each`'s optional `done`
-    callback, so the mapped element type stops being a migration descriptor and the block
-    fails to typecheck. Naming the list as the single argument is what every row already
-    meant; the cases and their assertion are unchanged.
-  */
-  test.each([
-    [[{ name: "", to: { major: 2, minor: 0 } }]],
-    [[{ name: "bad name", to: { major: 2, minor: 0 } }]],
-    [[{ name: "invalid", to: { major: -1, minor: 0 } }]],
-    [[{ name: "fractional", to: { major: 1, minor: 0.5 } }]],
-    [[{ name: "future", to: { major: 3, minor: 0 } }]],
+  // Mixed-arity rows: without the row type, `descriptors` widens to a union whose narrowest
+  // branch has neither `name` nor `to`, and the spread below stops being a `ServerMigration`.
+  test.each<{ name: string; to: { major: number; minor: number } }[]>([
+    [{ name: "", to: { major: 2, minor: 0 } }],
+    [{ name: "bad name", to: { major: 2, minor: 0 } }],
+    [{ name: "invalid", to: { major: -1, minor: 0 } }],
+    [{ name: "fractional", to: { major: 1, minor: 0.5 } }],
+    [{ name: "future", to: { major: 3, minor: 0 } }],
     [
-      [
-        { name: "duplicate", to: { major: 1, minor: 0 } },
-        { name: "duplicate", to: { major: 2, minor: 0 } },
-      ],
+      { name: "duplicate", to: { major: 1, minor: 0 } },
+      { name: "duplicate", to: { major: 2, minor: 0 } },
     ],
-  ])("refuses malformed or ambiguous migration metadata: %j", async (descriptors) => {
+  ])("refuses malformed or ambiguous migration metadata: %j", async (...descriptors) => {
     const versioned = { ...manifest, dataVersion: { major: 2, minor: 0 } };
     const fake = host({
       manifest: versioned,

@@ -1,0 +1,11 @@
+{
+  "id": "example.rows",
+  "version": "1.0.0",
+  "title": "Example rows",
+  "description": "The plugin-kit's reference plugin for a plugin whose data is ROWS: one SQLite file of its own, made in onEnable and exercised through one door. Exists to be packed by the kit's tests and read by plugin authors whose data is a graph rather than a setting.",
+  "capabilities": ["containers:read"],
+  "database": { "maxBytes": 16777216 },
+  "contributes": {},
+  "entry": { "server": true },
+  "links": { "repository": "https://github.com/atyrode/manifold" }
+}
