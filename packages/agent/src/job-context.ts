@@ -9,11 +9,13 @@ import {
   ServiceReplySchema,
   ServiceReadySchema,
   ServiceReadyResultSchema,
+  WorkerProgressSchema,
   type ServiceCall,
   type ServiceReply,
   type ServiceReadyRefusal,
   type JobCommand,
   type JobEvent,
+  type WorkerProgress,
 } from "@manifold/protocol";
 import { FrameReader } from "./ipc-framing.ts";
 
@@ -50,6 +52,7 @@ export class JobContext {
       command(command: JobCommand): Promise<void>;
       service?(request: ServiceCall, signal: AbortSignal): Promise<ServiceReply>;
       serviceReady?(port: number): Promise<void>;
+      progress?(frame: WorkerProgress): void;
       failure(reason: string): void;
     },
   ) {
@@ -113,6 +116,11 @@ export class JobContext {
             : { type: "service_ready_result", requestId: request.requestId, ok: false, refusal },
         ),
       );
+      return;
+    }
+    // Fire and forget: a stage is not a request, and the owner answers it with nothing.
+    if (Reflect.get(raw, "type") === "progress") {
+      this.callbacks.progress?.(WorkerProgressSchema.parse(raw));
       return;
     }
     if (Reflect.get(raw, "type") === "service") {
