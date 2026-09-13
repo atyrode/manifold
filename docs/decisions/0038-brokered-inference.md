@@ -1,7 +1,7 @@
 # A job that drives a model never holds the model's credential: inference is a metered Instance Service
 
 Date: 2026-09-13
-Status: proposed
+Status: accepted
 
 ## Context
 
