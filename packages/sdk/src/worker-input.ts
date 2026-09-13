@@ -16,7 +16,8 @@ export type WorkerErrorCode =
   | "worker_closed"
   | "worker_cancelled"
   | "worker_input_invalid"
-  | "worker_input_closed";
+  | "worker_input_closed"
+  | "worker_progress_invalid";
 
 /** Only named refusals cross the application boundary; never raw transport/payload errors. */
 export class WorkerError extends Error {

@@ -11,8 +11,10 @@ import {
   ServiceReadySchema,
   ServiceReadyResultSchema,
   WorkerContextSchema,
+  WorkerProgressSchema,
   type ServiceCall,
   type WorkerLocation,
+  type WorkerProgress,
 } from "@manifold/protocol";
 import { JsonFrameReader, WorkerError, type WorkerErrorCode } from "./worker-input.ts";
 
@@ -22,7 +24,7 @@ export type {
   WorkerErrorCode,
   WorkerInputOptions,
 } from "./worker-input.ts";
-export type { WorkerLocation } from "@manifold/protocol";
+export type { WorkerLocation, WorkerProgress } from "@manifold/protocol";
 
 export interface WorkerContextOptions {
   /** Defaults to MANIFOLD_JOB_CONTEXT_FD. Ownership transfers on successful adoption. */
@@ -39,6 +41,12 @@ export interface WorkerContext {
   callService(request: Pick<ServiceCall, "serviceId" | "operationId" | "input">): Promise<unknown>;
   /** Resolves only after the owner accepts this child's runtime-service readiness. One attempt. */
   announceServiceReady(port: number): Promise<void>;
+  /**
+   * Says where this workload is. Fire and forget: the owner answers nothing, coalesces to at
+   * most one event every five seconds per job, and the newest line always wins — so reporting
+   * often is cheap and reporting a stale phase is the only mistake available.
+   */
+  reportProgress(progress: Omit<WorkerProgress, "type">): void;
   close(): void;
 }
 
@@ -128,6 +136,27 @@ class NativeWorkerContext implements WorkerContext {
     if (!request.success) throw new WorkerError("service_invalid_request");
     this.#announced = true;
     await this.#request(request.data.requestId, "service_ready", request.data);
+  }
+
+  reportProgress(progress: Omit<WorkerProgress, "type">): void {
+    if (this.#failure) return;
+    const frame = WorkerProgressSchema.safeParse({ ...progress, type: "progress" });
+    if (!frame.success) throw new WorkerError("worker_progress_invalid");
+    const bytes = Buffer.from(`${JSON.stringify(frame.data)}\n`);
+    // A stage is disposable by construction: dropping one under backpressure is strictly
+    // better than failing the run or displacing a reply the application is awaiting.
+    if (bytes.length > WORKER_FRAME_BYTES || this.#queuedBytes + bytes.length > WORKER_QUEUE_BYTES)
+      return;
+    this.#queuedBytes += bytes.length;
+    try {
+      this.socket.write(bytes, (error) => {
+        this.#queuedBytes -= bytes.length;
+        if (error) this.#finish("worker_disconnected");
+      });
+    } catch {
+      this.#queuedBytes -= bytes.length;
+      this.#finish("worker_disconnected");
+    }
   }
 
   #request(requestId: string, kind: PendingRequest["kind"], value: unknown): Promise<unknown> {
