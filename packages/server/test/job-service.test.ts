@@ -20,6 +20,7 @@ import {
 import {
   canonicalJobJson,
   type JobCommand,
+  type JobEvent,
   type JobOwner,
   type JobRequest,
   type MachineHalf,
@@ -3190,6 +3191,298 @@ describe("durable job authority", () => {
       // The wake carries the job's own restored credential, never ambient plugin authority.
       expect(deliveries[0]?.auth?.principal.id).toBe(f.root.principal.id);
       expect(deliveries[0]?.traceId).toBe("trace-1");
+    } finally {
+      f.store.close();
+    }
+  });
+});
+
+describe("metered inference journal and ceilings", () => {
+  const ceiling = { calls: 4, costMicros: 50_000 } as const;
+  const metered: MachineHalf = {
+    ...machine,
+    operations: {
+      [operationId]: {
+        ...machine.operations[operationId]!,
+        limits: { ...limits, inference: ceiling },
+      },
+    },
+  };
+  const node = (f: Fixture) => ({
+    kind: "job" as const,
+    machineId: f.machineId,
+    operationId,
+    jobId: "job",
+  });
+  /** A job the owner has confirmed running: the only state a metered call can be reported for. */
+  function started(f: Fixture): JobRequest {
+    consent(f, "machines:run");
+    prove(f);
+    const job = execute(f);
+    f.service.event(f.channel, {
+      type: "state",
+      state: "started",
+      jobId: "job",
+      requestDigest: job.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+    });
+    return job.request;
+  }
+  function facts(f: Fixture, request: JobRequest) {
+    return {
+      jobId: "job",
+      requestDigest: request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+      serviceId: "atyrode.babel.inference",
+    };
+  }
+  const usage = {
+    calls: 1,
+    inputTokens: 1200,
+    outputTokens: 340,
+    cachedInputTokens: 200,
+    costMicros: 4200,
+  };
+  function call(
+    f: Fixture,
+    request: JobRequest,
+    overrides: Record<string, unknown> = {},
+  ): JobEvent {
+    return {
+      type: "inference_call",
+      ...facts(f, request),
+      operationId: "chat",
+      model: "openai/gpt-5",
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cachedInputTokens: usage.cachedInputTokens,
+      costMicros: usage.costMicros,
+      elapsedMs: 812,
+      status: 200,
+      ...overrides,
+    } as JobEvent;
+  }
+  /** Settles the job so the retained journal becomes readable, carrying `usage.inference`. */
+  function settle(f: Fixture, request: JobRequest, inference?: typeof usage): void {
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        jobId: "job",
+        requestDigest: request.requestDigest,
+        ownerId: f.owner.ownerId,
+        ownerGeneration: f.owner.generation,
+        state: "exited",
+        exitCode: 0,
+        reason: null,
+        startedAt: 0,
+        finishedAt: 7,
+        usage: {
+          elapsedMs: 1,
+          memoryBytes: 1,
+          processes: 1,
+          outputBytes: 0,
+          ...(inference ? { inference } : {}),
+        },
+        limits: request.limits,
+        outputs: [],
+      },
+    });
+  }
+
+  test("a metered call and a ceiling refusal reach a live follower and the retained journal", () => {
+    const f = fixture();
+    try {
+      const request = started(f);
+      consent(f, "jobs:read");
+      const updates: JobFollowUpdate[] = [];
+      const follow = f.service.follow(f.root, node(f), (update) => updates.push(update));
+      f.service.event(f.channel, call(f, request));
+      f.service.event(f.channel, {
+        type: "inference_ceiling",
+        ...facts(f, request),
+        operationId: "chat",
+        ceiling: "costMicros",
+        reached: usage,
+      });
+      expect(
+        updates.map((update) => (update.type === "event" ? update.event.type : update.type)),
+      ).toEqual(["inference_call", "inference_ceiling"]);
+      const delivered = updates[0];
+      if (delivered?.type !== "event" || delivered.event.type !== "inference_call")
+        throw new Error("metered call missing from the follow stream");
+      // The numbers a follower reads are the owner's, unrounded and unsummarised.
+      expect(delivered.event).toMatchObject({
+        model: "openai/gpt-5",
+        inputTokens: 1200,
+        outputTokens: 340,
+        cachedInputTokens: 200,
+        costMicros: 4200,
+        status: 200,
+      });
+      follow.close();
+      settle(f, request);
+      expect(
+        f.service.journal(f.root, node(f), 0, 64).events.map((frame) => frame.event.type),
+      ).toEqual(["state", "inference_call", "inference_ceiling", "result"]);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("a metered call is ignored on a wrong digest, a stale generation and another machine's channel", () => {
+    const f = fixture();
+    try {
+      const request = started(f);
+      consent(f, "jobs:read");
+      f.service.event(f.channel, call(f, request, { requestDigest: "c".repeat(64) }));
+      f.service.event(f.channel, call(f, request, { ownerGeneration: f.owner.generation + 1 }));
+      // A second proved machine is still not this job's owner: the fact is bound to the run.
+      const other = f.auth.enrollMachine("other", f.root).machine.id;
+      const commands: JobCommand[] = [];
+      const channel = {
+        machineId: other,
+        send: (message: { type: "job_command"; command: JobCommand }) => {
+          commands.push(message.command);
+          return true;
+        },
+      };
+      const pair = generateKeyPairSync("ed25519");
+      const owner: JobOwner = {
+        ...f.owner,
+        ownerId: "other-owner",
+        publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      };
+      f.service.online(channel, owner, "epoch");
+      const challenge = commands.at(-1);
+      if (challenge?.type !== "owner_challenge") throw new Error("owner challenge missing");
+      const body = {
+        nonce: challenge.nonce,
+        serverEpoch: challenge.serverEpoch,
+        machineId: other,
+        owner,
+      };
+      f.service.event(channel, {
+        type: "owner_proof",
+        ...body,
+        signature: sign(null, Buffer.from(canonicalJobJson(body)), pair.privateKey).toString(
+          "base64",
+        ),
+      });
+      f.service.event(channel, call(f, request));
+      settle(f, request);
+      expect(
+        f.service.journal(f.root, node(f), 0, 64).events.map((frame) => frame.event.type),
+      ).toEqual(["state", "result"]);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("a metered call for a job the owner never started is ignored", () => {
+    const f = fixture();
+    try {
+      consent(f, "machines:run");
+      const job = execute(f);
+      expect(job.state).toBe("queued");
+      consent(f, "jobs:read");
+      const updates: JobFollowUpdate[] = [];
+      f.service.follow(f.root, node(f), (update) => updates.push(update));
+      prove(f);
+      // Admitted and committed, but no owner `started`: a call before the run exists is not a fact.
+      f.service.event(f.channel, call(f, job.request));
+      expect(f.service.jobs.get("job")?.state).toBe("start-committed");
+      expect(updates).toEqual([]);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("a declared inference ceiling survives a request that omits one and cannot be raised", () => {
+    const f = fixture(":memory:", metered);
+    try {
+      consent(f, "machines:run");
+      prove(f);
+      f.service.execute(f.root, pluginId, "trace-1", {
+        jobId: "job",
+        machineId: f.machineId,
+        operationId,
+        input: { value: "safe" },
+        outputs: [],
+        limits,
+      });
+      expect(f.service.jobs.get("job")?.request.limits.inference).toEqual(ceiling);
+      expect(() =>
+        f.service.execute(f.root, pluginId, "trace-1", {
+          jobId: "over",
+          machineId: f.machineId,
+          operationId,
+          input: { value: "safe" },
+          outputs: [],
+          limits: { ...limits, inference: { calls: 4, costMicros: 50_001 } },
+        }),
+      ).toThrow("limit_exceeded");
+      // Naming only one of a declared pair drops the other, which is raising it.
+      expect(() =>
+        f.service.execute(f.root, pluginId, "trace-1", {
+          jobId: "partial",
+          machineId: f.machineId,
+          operationId,
+          input: { value: "safe" },
+          outputs: [],
+          limits: { ...limits, inference: { calls: 1 } },
+        }),
+      ).toThrow("limit_exceeded");
+      f.service.execute(f.root, pluginId, "trace-1", {
+        jobId: "lower",
+        machineId: f.machineId,
+        operationId,
+        input: { value: "safe" },
+        outputs: [],
+        limits: { ...limits, inference: { calls: 1, costMicros: 10 } },
+      });
+      expect(f.service.jobs.get("lower")?.request.limits.inference).toEqual({
+        calls: 1,
+        costMicros: 10,
+      });
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("an operation declaring no ceiling still accepts a caller's own", () => {
+    const f = fixture();
+    try {
+      consent(f, "machines:run");
+      prove(f);
+      f.service.execute(f.root, pluginId, "trace-1", {
+        jobId: "job",
+        machineId: f.machineId,
+        operationId,
+        input: { value: "safe" },
+        outputs: [],
+        limits: { ...limits, inference: { costMicros: 250_000 } },
+      });
+      expect(f.service.jobs.get("job")?.request.limits.inference).toEqual({ costMicros: 250_000 });
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("settled inference totals survive storage and reach status and the journal unchanged", () => {
+    const f = fixture();
+    try {
+      const request = started(f);
+      consent(f, "jobs:read");
+      settle(f, request, usage);
+      expect(f.service.status(f.root, node(f)).result?.usage?.inference).toEqual(usage);
+      expect(f.service.publicJob(f.service.jobs.get("job")!).result?.usage?.inference).toEqual(
+        usage,
+      );
+      const settled = f.service.journal(f.root, node(f), 0, 64).events.at(-1)?.event;
+      if (settled?.type !== "result") throw new Error("settled result missing from the journal");
+      expect(settled.result.usage?.inference).toEqual(usage);
     } finally {
       f.store.close();
     }

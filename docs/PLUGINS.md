@@ -1783,6 +1783,58 @@ The configuration remains `stopping` until whole-workload emptiness is proved, a
 replacement cannot start early. Explicit cancellation and authority revocation still
 force termination. See [instance-service retirement](CONTRACTS.md#governed-machine-jobs).
 
+**A metered service operation, and what a job may spend through it.** A proxy operation may
+declare `meter: { kind: "openai-usage" }` ([ADR 0038](decisions/0038-brokered-inference.md)),
+which is the only thing that ever reads a body: the provider's own `usage` object and the `model`
+it names, from a JSON response or from the final usage frame of an SSE stream — the owner sets
+`stream_options.include_usage` on a streaming request so that frame exists. Nothing else of the
+request or the response is read, kept or logged, and the bytes reach the caller unchanged. A 2xx
+response on a metered operation whose usage the meter cannot read is `service_response_invalid`,
+never a free call.
+
+Prices are the owner's, not the caller's: the policy carries
+`prices: { models: { "<model id>": { inputPerMillion, outputPerMillion, cachedInputPerMillion? } }, default? }`
+in integer micro-dollars per million tokens, so they are pinned by the policy's `revision` and
+consented like the rest of it. A cost is
+`(inputTokens - cachedInputTokens) * inputPerMillion / 1e6 + cachedInputTokens *
+(cachedInputPerMillion ?? inputPerMillion) / 1e6 + outputTokens * outputPerMillion / 1e6`, rounded
+to whole micro-dollars.
+
+A job's ceiling is `limits.inference: { calls?, inputTokens?, outputTokens?, costMicros? }` on the
+request `ctx.jobs.execute` sends, beside the existing time/memory/process/output limits. An
+operation may declare one in its manifest: a request that omits `inference` inherits the declared
+ceiling, and a request that names a higher one — or names some of a declared pair and drops the
+rest — refuses `limit_exceeded`. A ceiling can be lowered, never dropped. An operation that
+declares none still accepts a caller's own.
+
+The machine owner enforces per call, before forwarding, and refuses with the provider's own wire
+shape so an OpenAI-compatible client sees an ordinary error:
+
+```
+HTTP 429  {"error":{"code":"service_ceiling_exceeded","ceiling":"calls"|"inputTokens"|"outputTokens"|"costMicros"}}
+HTTP 422  {"error":{"code":"service_price_unknown","model":"<model id>"}}
+```
+
+There is no `Retry-After`: the ceiling is the job's, and waiting does not raise it. `429` is the
+answer when the job's totals have already reached a ceiling; `422` is the answer when a cost
+ceiling is set and the model a call names has no price (no `models[model]`, no `default`). With no
+cost ceiling and no price a call proceeds and costs zero. A refusal is not a call and does not
+count against `calls`. A stream is never cut mid-answer, so the overrun after the last permitted
+call is bounded by one response's `maxResponseBytes`.
+
+Every metered call appends one journal frame,
+`inference_call { serviceId, operationId, model, inputTokens, outputTokens, cachedInputTokens,
+costMicros, elapsedMs, status }`, and every refusal appends
+`inference_ceiling { serviceId, operationId, ceiling, reached }` — never a prompt, never a byte of
+the answer. Both arrive live on `ctx.jobs.follow(node, receive)` and survive in
+`ctx.jobs.journal({ node })` under the same 128-frame retention as the rest of the journal; the
+journal read refuses `job_unfinished` while the run is live, because watching one is what `follow`
+is for. The settled job's `result.usage.inference` — read through `ctx.jobs.status(node)` — carries
+`{ calls, inputTokens, outputTokens, cachedInputTokens, costMicros }` as totals whenever the job
+bound a metered operation, zeros if it made no call. Take spend from those two reads, never from
+what the workload reports about itself. `onJobSettled`'s `SettledJob` names the node and the
+terminal facts only; it does not carry usage.
+
 `ctx.jobs.execute({ jobId, machineId, operationId, input, outputs, limits? })` returns safe
 job metadata. `outputs` contains exact `{ name, locationId, components }` bindings.
 Keep the same immutable request for retry: exact duplicates recover prior state only under
