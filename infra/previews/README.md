@@ -94,8 +94,12 @@ supervisor restart. The existing named volume must already exist; missing data f
 Before any retained stop, the **actual incumbent** must also prove server-only:
 its existing container configuration explicitly disables local spawning, uses the
 supported ordinary entrypoint without execution overrides or non-data mounts, and
-a credential-free `/proc` probe finds only the PID1 hub and the stock read-only
-healthcheck. Desired replacement settings never prove the old process tree safe.
+a credential-free `/proc` probe finds only the PID1 hub, the stock read-only
+healthcheck and installed server-plugin isolates matching the hub loader's complete
+direct-child command, bundle path, process identity, control descriptor and minimal
+environment fingerprint. Those isolates are supervised parts of the hub: they stop
+with it, reload from their pinned bundles after replacement and own no native execution.
+Desired replacement settings never prove the old process tree safe.
 Its actual named volume, machine identity and selected networks must match the final
 Compose merge; both generations must mount the volume's actual backing root and use
 `/data` as the effective application data directory. Volume subpaths are unsupported;

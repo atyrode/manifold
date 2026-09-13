@@ -1192,6 +1192,45 @@ try {
       await rememberImages();
       await ready();
       await acquireIdentity();
+      const pluginId = "example.counter";
+      const bumpAction = `${pluginId}.bump`;
+      const bundleName = `${pluginId}.manifold-plugin.json`;
+      const bundlePath = join(directory, bundleName);
+      const packed = await command(
+        [
+          "bun",
+          join(repo, "packages/plugin-kit/src/pack.ts"),
+          join(repo, "packages/plugin-kit/test/fixtures/sample"),
+          "--out",
+          bundlePath,
+          "--self-contained",
+        ],
+        { cwd: join(repo, "packages/plugin-kit"), timeoutMs: 120_000 },
+      );
+      const pluginSha256 = String(Reflect.get(JSON.parse(packed.out) as object, "sha256"));
+      requireThat(/^[a-f0-9]{64}$/.test(pluginSha256), "plugin pack returned an invalid digest");
+      const uploadDir = "/data/plugin-uploads";
+      const uploadedBundle = `${uploadDir}/${bundleName}`;
+      await execBun(
+        `import { mkdirSync } from "node:fs"; mkdirSync(${JSON.stringify(uploadDir)}, { recursive: true, mode: 0o700 });`,
+      );
+      await docker(["cp", bundlePath, `${await containerId()}:${uploadedBundle}`]);
+      await act("engine.plugins.install", {
+        source: uploadedBundle,
+        sha256: pluginSha256,
+        hardened: true,
+      });
+      const counter = async (): Promise<number> => {
+        const result = await act(bumpAction, { by: 1 });
+        return Number(Reflect.get(result as object, "count"));
+      };
+      requireThat(
+        (await counter()) === 1,
+        "installed server plugin did not answer before replacement",
+      );
+      // The successful dispatch leaves the hub-owned isolate live for ten minutes. Replacement
+      // must recognize that exact child as restartable rather than waiting for idle eviction.
+      const incumbentId = (await inspectContainer()).Id;
       const made = ContainerResponseSchema.parse(
         await act("core.index.createContainer", { name: `retained-${number}` }),
       ).container;
@@ -1220,6 +1259,14 @@ console.log(JSON.stringify({
       rmSync(join(tooling, "terminal-lifecycle.ts"));
       await up();
       await ready();
+      requireThat(
+        (await inspectContainer()).Id !== incumbentId,
+        "retained deployment did not replace the incumbent with a live plugin isolate",
+      );
+      requireThat(
+        (await counter()) === 2,
+        "installed server plugin did not restart with preserved storage after replacement",
+      );
       requireThat(
         (await execBun(retainedState, true)) === before,
         "retained identity or file ownership changed",
