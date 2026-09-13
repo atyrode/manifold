@@ -27,6 +27,7 @@ import {
   composeBindings,
   composeSettings,
   keystrokeMatches,
+  openedPanel,
   parseKeystroke,
   reportDuplicates,
   visibleSections,
@@ -42,6 +43,8 @@ import {
   type AuthoringHandle,
   type TileGeometryHandle,
   type ViewportHandle,
+  type OpenPanelOutcome,
+  type OpenPanelRequest,
   type PanelProps,
   type SectionProps,
 } from "@manifold/plugin";
@@ -54,7 +57,9 @@ import {
   parseManifoldUri,
   PluginsResponseSchema,
   SettingsResponseSchema,
+  validPanelArg,
   type ManifoldRef,
+  type PanelArg,
   type PluginRoster,
 } from "@manifold/protocol";
 import { SessionClient } from "@manifold/sdk";
@@ -1017,15 +1022,33 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
     <PluginsAttachContext.Provider value={attachPluginsClient}>
       <BindingsRefreshContext.Provider value={refreshBindings}>
         <SettingsRefreshContext.Provider value={refreshSettings}>
-          <AssemblyContext.Provider value={assembly}>
+          <ComposedAssemblyProvider value={assembly}>
             <EssentialRecovery identity={identity} roster={state.roster} onRestored={publish}>
               {children}
             </EssentialRecovery>
-          </AssemblyContext.Provider>
+          </ComposedAssemblyProvider>
         </SettingsRefreshContext.Provider>
       </BindingsRefreshContext.Provider>
     </PluginsAttachContext.Provider>
   );
+}
+
+interface ComposedAssemblyProviderProps {
+  readonly value: BrowserAssembly;
+  readonly children: ReactNode;
+}
+
+/**
+ * Publishes an ALREADY-COMPOSED assembly — the read half of {@link AssemblyProvider}, which
+ * is this plus the roster fetch that feeds it. The split is what lets a host that already
+ * holds a composition hand it down (the outlets resolve their occupants off it), including
+ * one that built it from a roster of its own rather than from this instance's.
+ */
+export function ComposedAssemblyProvider({
+  value,
+  children,
+}: ComposedAssemblyProviderProps): ReactElement {
+  return <AssemblyContext.Provider value={value}>{children}</AssemblyContext.Provider>;
 }
 
 const HostServicesContext = createContext<HostServices | null>(null);
@@ -1139,6 +1162,74 @@ function useBindingDispatch(bindings: readonly ComposedBinding[], host: HostServ
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [bindings, host]);
+}
+
+/**
+ * WHICH SEAT ASKED: the panel a host ref was built for, and the leaf it is painted in
+ * (`PanelOutlet`). Null on the workspace's own host — a section, an overlay or a route has
+ * no seat of its own, so it has nothing to open a panel beside.
+ */
+interface PanelSeat {
+  readonly panelId: string;
+  readonly tileId: string;
+}
+
+/**
+ * What a reader's keyboard may land on inside a tile. There is no "focus a tile" state in
+ * the workspace — every tile is on screen at once, which is what a tiled workspace IS — so
+ * revealing the seat that already shows what a caller asked to open means putting the reader
+ * INTO it: the first thing in it they could have tabbed to. A tile with nothing focusable is
+ * left alone rather than faked at; the outcome still names it.
+ */
+const FOCUSABLE_IN_TILE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * `host.openPanel`, performed (issue #516): the caller's authority checked, the tree the
+ * opening means computed by the engine's own algebra (`openedPanel`), and the result
+ * committed through the ONE door a workspace tree is written by — `applyLayout`, which is
+ * the floor's own debounced `core.space.setLayout`. So an opening is traced and authorised
+ * exactly as a grip release is, and this function holds no door name of its own.
+ *
+ * Every refusal is a named member of {@link OpenPanelRefusal} and NOTHING is written on any
+ * of them.
+ */
+function openPanelFor(
+  host: HostServices,
+  seat: PanelSeat | null,
+  request: OpenPanelRequest,
+): OpenPanelOutcome {
+  const tree = host.tileGeometry;
+  const layout = tree?.layout ?? null;
+  if (seat === null || tree === null || layout === null) return { ok: false, refused: "no_tile" };
+  const opened = host.assembly.panels.get(request.panelId);
+  if (opened === undefined) return { ok: false, refused: "unknown_panel" };
+  const asking = host.assembly.panels.get(seat.panelId);
+  if (asking === undefined || asking.plugin !== opened.plugin) {
+    return { ok: false, refused: "other_plugin" };
+  }
+  if (request.arg !== undefined && !validPanelArg(request.arg)) {
+    return { ok: false, refused: "invalid_arg" };
+  }
+  const opening = openedPanel(layout, request.panelId, request.arg, seat.tileId);
+  if (opening === null) return { ok: false, refused: "no_tile" };
+  if (opening.placed) {
+    tree.applyLayout(opening.layout);
+  } else {
+    /*
+      THE SEAT THAT ALREADY ANSWERS, REVEALED. `getTreeElement` is typed `unknown` because
+      the shared host contract is read by the server too, so the narrowing happens here — the
+      one place that knows it is in a browser (`TileGeometryHandle`'s own doc note sanctions
+      it). Null with no tree mounted, where there is nothing to reveal and nothing to fake.
+    */
+    const root = tree.getTreeElement() as HTMLElement | null;
+    const box =
+      root === null || root.getAttribute("data-tile-id") === opening.tileId
+        ? root
+        : root.querySelector<HTMLElement>(`[data-tile-id="${CSS.escape(opening.tileId)}"]`);
+    box?.querySelector<HTMLElement>(FOCUSABLE_IN_TILE)?.focus();
+  }
+  return { ok: true, tileId: opening.tileId, placed: opening.placed };
 }
 
 /**
@@ -1368,6 +1459,13 @@ export function HostServicesGate({
         so the terminal listing's topic reaches `core.index`'s sidebar section through here.
        */
       topics: FEED_TOPICS,
+      /*
+        NO SEAT, NO OPENING. This is the WORKSPACE's host — what a section, an overlay or a
+        route is handed — and an opening lands beside the CALLER's own tile, which none of
+        them has. A panel is handed this host with its seat bound onto it (`PanelOutlet`),
+        and that is the only host `openPanel` answers on (issue #516).
+       */
+      openPanel: () => ({ ok: false, refused: "no_tile" }),
     }),
     [
       authoring,
@@ -1497,6 +1595,10 @@ export function PluginPlaceholder({ name, state, onRemove }: PluginPlaceholderPr
 export interface PanelOutletProps {
   /** FULL panel id, exactly as a `panel` tile ref carries it. */
   readonly panelId: string;
+  /** The LEAF this panel is painted in: what an opening of its own lands beside (issue #516). */
+  readonly tileId: string;
+  /** The leaf's own opaque argument, handed straight to the panel; absent ≡ this seat has none. */
+  readonly arg?: PanelArg | undefined;
   /** Offered on placeholders only: prune this leaf from the caller's own layout. */
   readonly onRemove?: (() => void) | undefined;
 }
@@ -1506,9 +1608,23 @@ export interface PanelOutletProps {
  * and plugin code. Every failure mode is a named placeholder rather than an empty pane:
  * unknown id, known-but-disabled plugin, or a declared panel whose web half is absent.
  */
-export function PanelOutlet({ panelId, onRemove }: PanelOutletProps): ReactElement {
+export function PanelOutlet({ panelId, tileId, arg, onRemove }: PanelOutletProps): ReactElement {
   const assembly = useAssembly();
   const host = useHostServices();
+  /*
+    THE HOST A PANEL IS HANDED: the workspace's own, with this SEAT bound onto it, because
+    `openPanel` opens beside the caller and the caller is the leaf this outlet is painting
+    (issue #516). Memoized on the seat rather than rebuilt per render — a panel that keys an
+    effect on `host` must not be re-run for having been painted again — and it moves exactly
+    when the workspace host moves, which is already once per committed layout.
+   */
+  const seated = useMemo<HostServices>(
+    () => ({
+      ...host,
+      openPanel: (request) => openPanelFor(host, { panelId, tileId }, request),
+    }),
+    [host, panelId, tileId],
+  );
   const panel = assembly.panels.get(panelId);
 
   if (panel === undefined) {
@@ -1522,5 +1638,5 @@ export function PanelOutlet({ panelId, onRemove }: PanelOutletProps): ReactEleme
     return <PluginPlaceholder name={name} state="unavailable" onRemove={onRemove} />;
   }
   const Panel = panel.Component;
-  return <Panel host={host} />;
+  return <Panel host={seated} arg={arg} />;
 }

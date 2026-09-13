@@ -11,6 +11,7 @@ import {
   canonicalJobJson,
   JOB_OWNER_PROTOCOL_VERSION,
   JobDeploymentReviewSchema,
+  MAX_PANEL_ARG_BYTES,
 } from "@manifold/protocol";
 import {
   ENGINE_AUTHOR_ACTION,
@@ -604,6 +605,39 @@ describe("core.space.setLayout", () => {
       message: 'workspace leaves hold panels, not "terminal"',
     });
     expect(fixture.store.workspaceLayout(fixture.owner.principal.id)).toBeNull();
+    fixture.store.close();
+  });
+
+  test("a panel leaf's argument rides the door, and an unbounded one is refused", async () => {
+    const fixture = await hostFixture();
+    const root = layoutWith({ kind: "panel", panelId: "core.shell.sidebar" }).root;
+    const opened: TileLayout = { root: { ...root!, arg: { kind: "record", id: "r-1" } } };
+
+    const stored = await fixture.host.dispatch(fixture.owner, "core.space.setLayout", {
+      layout: opened,
+    });
+    expect(stored).toEqual({ ok: true, result: {} });
+    expect(fixture.store.workspaceLayout(fixture.owner.principal.id)).toEqual(opened);
+
+    /*
+      The one thing the door decides about an argument beyond where it may sit: a value it
+      could not hand back unchanged, or one large enough to bloat every workspace read, is
+      refused rather than stored (issue #516, `validPanelArg`). The store is the reason —
+      a tree is read whole on every boot, so the bound is the door's business and not a
+      caller's good manners.
+     */
+    const bloated: TileLayout = {
+      root: { ...root!, arg: { id: "x".repeat(MAX_PANEL_ARG_BYTES) } },
+    };
+    const outcome = await fixture.host.dispatch(fixture.owner, "core.space.setLayout", {
+      layout: bloated,
+    });
+
+    expect(denial(outcome)).toEqual({
+      rule: "refused",
+      message: "layout is not a valid tile tree",
+    });
+    expect(fixture.store.workspaceLayout(fixture.owner.principal.id)).toEqual(opened);
     fixture.store.close();
   });
 

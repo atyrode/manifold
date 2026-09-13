@@ -1202,7 +1202,13 @@ tokens), and
 its validation is STRUCTURAL ONLY: `validateTileLayout` plus "every leaf ref is a panel".
 Unknown or disabled panel ids are ACCEPTED — a disabled plugin must never brick layout writes —
 and those leaves render placeholders whose chrome offers a remove control that commits the pruned
-tree through the same action. Divider drags obey the plane rule: local optimistic ratios per
+tree through the same action. A panel leaf may also carry `arg`, the opaque
+`Record<string, unknown>` naming what that tile is showing it for (ADR 0037): legal on a panel
+leaf and nowhere else, refused past `MAX_PANEL_ARG_BYTES` (4 KiB of JSON) or when it is not JSON
+data, absent ≡ none, delivered to the panel as `PanelProps.arg`, travelling with the panel when a
+seat moves, and written by the same one door — `host.openPanel` computes the tree and commits it
+through it, so an opening is an ordinary arrangement write.
+Divider drags obey the plane rule: local optimistic ratios per
 frame, ONE `core.space.setLayout` on pointerup or pointercancel after movement, never during a
 held pause or per frame. A press without movement writes nothing.
 

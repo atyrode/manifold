@@ -220,6 +220,91 @@ export function validSectionArrangement(nodes: readonly SectionNode[]): boolean 
 }
 
 /**
+ * A PANEL ARGUMENT: what a panel leaf is SHOWING, as an opaque record the panel itself
+ * authored and the engine never reads (issue #516).
+ *
+ * A panel id says WHICH panel a leaf holds; this says WHICH THING it holds it for — the
+ * record a reading surface is peeled open on, the run a control room is following. Without
+ * it a plugin's second tile of one panel is a duplicate of the first: the panel has to keep
+ * "what am I showing" in a module its two tiles share, so only one subject can be shown at
+ * a time and nothing can be linked to.
+ *
+ * OPAQUE, and that is the contract. The keys and the values are the panel's own vocabulary,
+ * so the engine stores it, moves it with the leaf and hands it back unchanged; there is no
+ * registry of argument shapes and no engine branch on one. What the engine DOES enforce is
+ * that it survives the round trip it promises — see {@link validPanelArg}.
+ */
+export const PanelArgSchema = z.record(z.string(), z.unknown());
+export type PanelArg = z.infer<typeof PanelArgSchema>;
+
+/**
+ * Bound on one panel argument, as bytes of its JSON. An argument NAMES a subject — an id, a
+ * filter, a cursor — and a workspace tree is read whole on every boot and written whole on
+ * every arrangement, so the bound is generous for naming and far too small for a payload: a
+ * panel that wants to carry state carries it in its own storage and names it here.
+ */
+export const MAX_PANEL_ARG_BYTES = 4096;
+
+/** One encoder for the byte count below; the measurement is not worth an allocation per call. */
+const UTF8 = new TextEncoder();
+
+/**
+ * Whether every value under `value` is JSON DATA: objects, arrays, strings, finite numbers,
+ * booleans and null, and nothing a stringify would quietly rewrite — no `undefined` member,
+ * no function, no symbol, no `NaN`, no `Date`, no cycle.
+ *
+ * The round trip is the reason. A panel argument is persisted with the layout and read back
+ * from JSON, so a value JSON cannot carry comes back as something else — an `undefined`
+ * member vanishes, `NaN` becomes `null`, a `Date` becomes a string — and the panel is handed
+ * an argument it never wrote. Refusing at the door makes that a visible refusal rather than a
+ * silent rewrite. A cycle is refused here rather than thrown at by `JSON.stringify`, which is
+ * also what makes the byte count below total.
+ *
+ * `path` holds the objects on the way down, so a value REACHED twice is legal (JSON copies
+ * it) while a value containing itself is not.
+ */
+function jsonData(value: unknown, path: Set<object>): boolean {
+  if (value === null) return true;
+  switch (typeof value) {
+    case "string":
+    case "boolean":
+      return true;
+    case "number":
+      return Number.isFinite(value);
+    case "object":
+      break;
+    default:
+      return false;
+  }
+  const held = value as object;
+  if (path.has(held)) return false;
+  const array = Array.isArray(held);
+  if (!array && Object.getPrototypeOf(held) !== Object.prototype) return false;
+  path.add(held);
+  for (const member of array ? held : Object.values(held)) {
+    if (!jsonData(member, path)) return false;
+  }
+  path.delete(held);
+  return true;
+}
+
+/**
+ * Everything a panel argument must be that the schema cannot say: JSON data all the way down
+ * (see {@link jsonData}) and no larger than {@link MAX_PANEL_ARG_BYTES} as JSON. Exported
+ * because both ends enforce it — the layout validator below, which is what the workspace
+ * door refuses a write by, and the host surface that opens a panel with one.
+ *
+ * The length in CODE UNITS is the cheap lower bound on the length in bytes, so an argument
+ * that is obviously too long is refused without encoding it at all.
+ */
+export function validPanelArg(arg: PanelArg): boolean {
+  if (!jsonData(arg, new Set())) return false;
+  const json = JSON.stringify(arg);
+  if (json.length > MAX_PANEL_ARG_BYTES) return false;
+  return UTF8.encode(json).length <= MAX_PANEL_ARG_BYTES;
+}
+
+/**
  * One tile. Exactly two shapes are legal: a SPLIT (`dir` set, `children` and
  * `ratios` parallel, `ref` null) or a LEAF (`dir` null, `children` empty,
  * `ref` either a reference or null for a vacant drop target).
@@ -250,6 +335,25 @@ export const TileSchema = z.strictObject({
    * through {@link validSectionArrangement}.
    */
   sections: z.array(SectionNodeSchema).max(MAX_PANEL_SECTIONS).optional(),
+  /**
+   * WHAT this panel leaf is showing it FOR: the panel's own opaque {@link PanelArg}, stored
+   * beside the panel id the leaf already holds (issue #516). Absent ≡ no argument, which is
+   * every leaf written before this field existed and every panel that takes none — so a
+   * stored tree serializes exactly as it did, and a panel that ignores the field observes
+   * the tree it always did.
+   *
+   * It sits on the LEAF and not on the `panel` ref for the reason `sections` does: the ref
+   * is the item's ADDRESS, shared with `PlacementRef` and `ManifoldRef` (D7), and two tiles
+   * of one panel showing two records are two seats of the same addressed panel rather than
+   * two panels. It travels WITH the panel when a seat moves (`releasedTileLayout`), for the
+   * same reason an arrangement does: a reader who opened a record and then moved the tile
+   * kept the record.
+   *
+   * Legal on a leaf holding a PANEL ref and nowhere else, and bounded — neither is
+   * expressible here, so {@link validateTileLayout} enforces both through
+   * {@link validPanelArg}.
+   */
+  arg: PanelArgSchema.optional(),
 });
 export type Tile = z.infer<typeof TileSchema>;
 
@@ -261,8 +365,9 @@ export type TileLayout = z.infer<typeof TileLayoutSchema>;
  * Structural validation the schema cannot express: the root exists, every child
  * reference resolves, nothing is reachable twice (no cycles, no shared subtrees),
  * ratios stay parallel to children, refs sit on leaves only, a section arrangement
- * sits on a panel leaf and names each section once, and a container never tiles
- * itself. Pass `containerId` to enforce the self-reference rule.
+ * sits on a panel leaf and names each section once, a panel argument sits on a panel
+ * leaf and is bounded JSON data, and a container never tiles itself. Pass `containerId`
+ * to enforce the self-reference rule.
  *
  * Unreachable tiles are tolerated: they are inert garbage that the next
  * structural write prunes, and rejecting them would strand a live room.
@@ -290,6 +395,16 @@ export function validateTileLayout(layout: TileLayout, containerId?: string): bo
     if (tile.sections !== undefined) {
       if (tile.ref === null || tile.ref.kind !== "panel") return false;
       if (!validSectionArrangement(tile.sections)) return false;
+    }
+    /*
+      An argument says what a PANEL leaf is showing it for, so it is meaningless everywhere
+      a section arrangement is — and a value the round trip would rewrite, or one large
+      enough to bloat every workspace read, is refused at the door rather than stored and
+      handed back changed (issue #516).
+    */
+    if (tile.arg !== undefined) {
+      if (tile.ref === null || tile.ref.kind !== "panel") return false;
+      if (!validPanelArg(tile.arg)) return false;
     }
     if (
       containerId !== undefined &&
