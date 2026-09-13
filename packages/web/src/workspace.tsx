@@ -382,7 +382,14 @@ export function WorkspaceHost({
           />
         );
       }
-      return <PanelOutlet panelId={ref.panelId} onRemove={() => pruneLeaf(node.id)} />;
+      return (
+        <PanelOutlet
+          panelId={ref.panelId}
+          tileId={node.id}
+          arg={node.arg}
+          onRemove={() => pruneLeaf(node.id)}
+        />
+      );
     },
     [pruneLeaf],
   );

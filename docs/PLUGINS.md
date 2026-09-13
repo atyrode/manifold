@@ -1106,6 +1106,9 @@ their work invisible without deleting it, which is the one outcome worse than a 
   composition of panels (`core.shell.sidebar` and `core.shell.container-view` by default),
   rendered
   by the same `TileTree` component that renders a composition. One tree vocabulary everywhere.
+  A leaf may also carry **`arg`**, an opaque record of YOUR OWN naming what that tile is
+  showing it for; the panel reads it off `PanelProps.arg` and opens more of its own tiles with
+  `host.openPanel` (below). Absent ≡ no argument, which is every panel that takes none.
 - **`seats`** say where your panels ask to SIT in a workspace nobody has arranged yet. The
   engine composes that default from the enabled roster's seats — one row of leaves in `order`,
   `ratio` weighting each against its siblings — so there is no default-layout constant to edit
@@ -1183,11 +1186,12 @@ title: "Deep links" }` is `core.uri` saying it answers on `/uri/<rest>`. There i
 
 ### Host services
 
-A panel or section component receives exactly one prop:
+A section component receives exactly one prop, and a panel one more — its own leaf's argument:
 
 ```ts
 interface PanelProps {
   host: HostServices;
+  readonly arg?: PanelArg | undefined; // what THIS tile is showing it for; absent ≡ none
 }
 interface SectionProps {
   host: HostServices;
@@ -1209,6 +1213,7 @@ interface HostServices {
   readonly viewport: ViewportHandle | null; // null until a container renderer is mounted
   readonly authoring: AuthoringHandle | null; // null when nothing can be authored into
   readonly assembly: AssemblyFacet; // read the composition: see below
+  openPanel(request: OpenPanelRequest): OpenPanelOutcome; // open one of YOUR panels: see below
 }
 
 interface AssemblyFacet {
@@ -1223,7 +1228,45 @@ interface ViewportHandle {
   centerOn(uri: string): void;
   viewport(): { x: number; y: number; zoom: number } | null;
 }
+
+/** A panel argument: an opaque record of your own, ≤ 4 KiB of JSON, JSON data only. */
+type PanelArg = Record<string, unknown>;
+
+interface OpenPanelRequest {
+  readonly panelId: string; // FULL id (`acme.notes.record`), of YOUR OWN plugin
+  readonly arg?: PanelArg | undefined; // what you are opening it for
+  readonly beside?: "self" | undefined; // the placement rule; absent ≡ "self"
+}
+
+type OpenPanelOutcome =
+  | { readonly ok: true; readonly tileId: string; readonly placed: boolean }
+  | {
+      readonly ok: false;
+      readonly refused: "unknown_panel" | "other_plugin" | "invalid_arg" | "no_tile";
+    };
 ```
+
+**A panel is opened FOR something** (ADR 0037, issue #516). `arg` is yours: an opaque record
+naming the subject of that tile — `{ kind: "record", id }` — stored on the leaf with the panel
+id, kept across reloads and rearrangements, and handed back byte for byte. The engine never
+reads inside it. What it does enforce is that it survives the round trip the store promises: no
+larger than 4 KiB of JSON, and JSON DATA all the way down (an `undefined` member, `NaN`, a
+`Date`, a `Map` or a cycle is refused rather than silently rewritten into something you did not
+write). Render FROM the prop rather than copying it into state; a leaf that changes is a prop
+that changes, not a remount.
+
+`host.openPanel({ panelId, arg })` is how a second tile happens: it places a panel OF YOUR OWN
+PLUGIN after the caller's own seat, along the axis that seat's parent already splits on — a row
+of panels grows one to the right, a column one below. If a tile of that panel already shows an
+argument naming the same thing it is FOCUSED instead (`placed: false`, nothing written), so a
+reader clicking one record twice keeps one tile while a different record is genuinely a second
+one. It commits through the same debounced `core.space.setLayout` a grip release does, so an
+opening carries your caller's authority and appears in the trace like any other arrangement —
+there is no new door and no way to write a tree you could not already write. Four named
+refusals, and none of them writes anything: `unknown_panel` (no such panel), `other_plugin`
+(not yours — the tile tree's arranger is the principal, not a stranger's plugin), `invalid_arg`
+(see above) and `no_tile` (the caller holds no seat: a SECTION, an overlay or a route gets this,
+because an opening lands beside a tile and they have none).
 
 `assembly` is READ-ONLY and it is the same surface for everybody — the plugin manager listing the
 roster and the shell's own sidebar panel drawing the section stack open the identical door. There
@@ -2976,6 +3019,11 @@ runner, paid only by a row whose installer chose it:
   a worker serves. This is ADR 0016's T3 stated plainly: element renderers are a two-class
   contribution, and WHICH interfaces a stranger's agent can author against depends on whether
   the installer hardened the row. `core.notes` is the worked example of what stays in-realm.
+- **No panel argument, and no `openPanel`.** A worker's panel is mounted by instance id and
+  receives no leaf state, so `PanelProps.arg` and `host.openPanel` (ADR 0037) are in-realm only:
+  both would have to cross the boundary as frames the stage-1 surface does not carry
+  (`WEB_HOST_METHODS`, `mount`). A hardened reading surface therefore still shows one subject
+  per panel.
 - **No engine object.** `ctx.store`, `ctx.rooms`, `ctx.broker`, `ctx.identity`, `ctx.dials` and
   the storage ledger verbs (`dataVersion`, `appliedMigrations`) are not served in stage 1. They are
   absent from `GuestCtx`'s type, and reaching one at runtime anyway raises
