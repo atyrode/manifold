@@ -269,8 +269,15 @@ describe("dispatch", () => {
             containerId: "c1",
           });
           const online = await ctx.machines.isOnline("m1");
+          // The fleet read reaches the SAME door an in-realm handler opens (#529): one
+          // query object out, the host's outcome back — never a fact the guest invented.
+          const repository = await ctx.machines.repository({ machineId: "m1", path: "/srv/w" });
           ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, "thing_happened", { id });
-          return { text: `${previous ?? "-"}:${args.text}:${String(may)}:${String(online)}` };
+          return {
+            text: `${previous ?? "-"}:${args.text}:${String(may)}:${String(online)}:${
+              repository.ok ? repository.fact.reason : repository.reason
+            }`,
+          };
         },
       },
     });
@@ -294,12 +301,17 @@ describe("dispatch", () => {
       args: ["containers:write", { kind: "container", containerId: "c1" }],
     });
     expect(await serve(fake, false)).toMatchObject({ id: "r7:5", method: "machines.isOnline" });
+    expect(await serve(fake, { ok: false, reason: "machine is offline" })).toMatchObject({
+      id: "r7:6",
+      method: "machines.repository",
+      args: [{ machineId: "m1", path: "/srv/w" }],
+    });
     expect(await fake.next()).toEqual({
       t: "dispatched",
       id: "r7",
       outcome: {
         ok: true,
-        result: { text: "old:hi:true:false" },
+        result: { text: "old:hi:true:false:machine is offline" },
         emits: [
           {
             ref: { kind: "plugin", pluginId: "example.thing" },
@@ -666,17 +678,26 @@ test("guest job discovery cannot hide a host authority refusal", async () => {
 });
 
 describe("named storage migrations", () => {
+  /*
+    ONE ROW, ONE ARGUMENT — the descriptor LIST. A rest parameter over rows of two different
+    arities infers as a union of tuples that also carries `test.each`'s optional `done`
+    callback, so the mapped element type stops being a migration descriptor and the block
+    fails to typecheck. Naming the list as the single argument is what every row already
+    meant; the cases and their assertion are unchanged.
+  */
   test.each([
-    [{ name: "", to: { major: 2, minor: 0 } }],
-    [{ name: "bad name", to: { major: 2, minor: 0 } }],
-    [{ name: "invalid", to: { major: -1, minor: 0 } }],
-    [{ name: "fractional", to: { major: 1, minor: 0.5 } }],
-    [{ name: "future", to: { major: 3, minor: 0 } }],
+    [[{ name: "", to: { major: 2, minor: 0 } }]],
+    [[{ name: "bad name", to: { major: 2, minor: 0 } }]],
+    [[{ name: "invalid", to: { major: -1, minor: 0 } }]],
+    [[{ name: "fractional", to: { major: 1, minor: 0.5 } }]],
+    [[{ name: "future", to: { major: 3, minor: 0 } }]],
     [
-      { name: "duplicate", to: { major: 1, minor: 0 } },
-      { name: "duplicate", to: { major: 2, minor: 0 } },
+      [
+        { name: "duplicate", to: { major: 1, minor: 0 } },
+        { name: "duplicate", to: { major: 2, minor: 0 } },
+      ],
     ],
-  ])("refuses malformed or ambiguous migration metadata: %j", async (...descriptors) => {
+  ])("refuses malformed or ambiguous migration metadata: %j", async (descriptors) => {
     const versioned = { ...manifest, dataVersion: { major: 2, minor: 0 } };
     const fake = host({
       manifest: versioned,
