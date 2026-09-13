@@ -1064,6 +1064,11 @@ a.plugin-manager-chip[data-tone="publisher"]:focus-visible {
   line-height: 1.45;
 }
 
+/* The card's prose reads at the sheet's size, not the root's: it sat beside 0.78rem text at 16px. */
+.plugin-manager-runtime p {
+  font-size: 0.78rem;
+}
+
 .plugin-manager-runtime
   :is(
     .plugin-manager-runtime-identity,

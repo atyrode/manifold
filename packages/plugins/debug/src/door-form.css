@@ -57,10 +57,6 @@
   font-size: 0.7rem;
 }
 
-.door-form input[type="checkbox"] {
-  width: auto;
-}
-
 .door-form input:focus-visible,
 .door-form select:focus-visible,
 .door-form textarea:focus-visible {

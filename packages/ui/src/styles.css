@@ -81,8 +81,16 @@ button {
   color: inherit;
 }
 
-/* The gate's and every panel's text field: one default box, one focus ring. */
-input {
+/*
+  The gate's and every panel's text field: one default box, one focus ring. A checkbox, radio,
+  range, color or file control is not a text field: the box would swallow its label's row (the
+  plugin manager's machine choices rendered one character per line), so those keep the browser's
+  own size. `:where` keeps this at the specificity of a bare `input`, so every panel's own rule
+  still wins as it did.
+*/
+input:where(
+  :not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"])
+) {
   width: 100%;
   border: 1px solid #495057;
   border-radius: 0.55rem;
