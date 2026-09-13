@@ -806,6 +806,46 @@ test("an operation that declares no concurrency admits every job its caller post
   }
 });
 
+test("a schedule occurrence at the ceiling is refused, not started beside the jobs holding it", () => {
+  const f = fixture(":memory:", bounded);
+  try {
+    for (const cap of ["machines:run", "jobs:read"] as const) consent(f, cap);
+    prove(f);
+    expect([execute(f, "one").state, execute(f, "two").state]).toEqual([
+      "start-committed",
+      "start-committed",
+    ]);
+    f.service.schedule(f.root, pluginId, "trace-1", {
+      jobId: "template",
+      machineId: f.machineId,
+      operationId,
+      input: { value: "safe" },
+      outputs: [],
+      scheduleId: "beat",
+      revision: "r1",
+      firstNominalAt: f.runtime.now(),
+      intervalMs: 100,
+      deadlineMs: 50,
+      expiresAt: f.runtime.now() + 1000,
+      offlinePolicy: "skip",
+    });
+    f.service.tick();
+    const occurrence = f.service
+      .listRuns(f.root, pluginId, { machineId: f.machineId })
+      .runs.find((row) => row.occurrence)!.occurrence!;
+    const scheduled = f.service.jobs.get(occurrence.jobId)!;
+    expect(scheduled.state).toBe("refused");
+    expect(f.service.jobs.authority(scheduled).decision?.refusal).toBe("concurrency_limit");
+    expect(
+      f.commands.some(
+        (command) => command.type === "start" && command.request.jobId === occurrence.jobId,
+      ),
+    ).toBe(false);
+  } finally {
+    f.store.close();
+  }
+});
+
 test("uncertain service completion holds its lifetime until a fenced empty-tree proof arrives", () => {
   const f = fixture();
   try {

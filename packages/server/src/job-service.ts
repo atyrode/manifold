@@ -1173,8 +1173,11 @@ export class JobService {
   }
   /**
    * An operation's declared `concurrentJobs` bounds its own fan on one machine. Every job of it
-   * that has not settled occupies a slot, whoever posted it, and the count is read inside the
-   * admission transaction so two simultaneous executes cannot both see the last free slot.
+   * that has not settled occupies a slot, whoever posted it, so both admissions consult this:
+   * `execute` at the door and `start` for the jobs the hub itself posts from a schedule or an
+   * invocation. Each reads the count inside its admission transaction, so two simultaneous
+   * posters cannot both see the last free slot, and `exceptJobId` keeps a job that was already
+   * counted while queued from refusing its own start.
    */
   private concurrencyRefusal(request: JobRequest): string | null {
     const limit = this.jobs.installation(request.machineId, request.pluginId)?.machine.operations[
@@ -3536,7 +3539,8 @@ export class JobService {
         : (operationReason ??
           this.jobSchedules.startRefusal(request.jobId, this.runtime.now()) ??
           this.jobs.cancellation(request.jobId)?.reason ??
-          this.invocationRefusal(request));
+          this.invocationRefusal(request) ??
+          this.concurrencyRefusal(request));
       let requirements: AuthorityRequirement[] = [];
       try {
         requirements = this.requirements(request);
