@@ -2855,27 +2855,33 @@ provider handling and postconditions belong to plugins, never the common floor.
 - **Exact review and consent selection.** A request names one plugin, 1–64 distinct
   `{ machineId, platform? }` destinations and at most 128 distinct declared `operationIds`.
   There is no machine-label, wildcard, implicit future destination or latest-version
-  selection. `operationIds: []` is install-only: it adds no execution, invocation,
-  location or host-network consent and does not revoke existing consent.
+  selection. `operationIds: []` is install-only: it adds no execution, invocation edge,
+  location or host-network consent and does not revoke existing consent or edge authority.
   Selecting an operation requests its exact operation-node `machines:run`, `jobs:read`,
   `jobs:cancel` and `operations:invoke` rights, plus `jobs:input` if stdin is declared,
   `network:host` for host networking, and each declared location's exact access capability.
-  Shared node/capability pairs are deduplicated. Service invocation authority is checked
-  separately; this selection does not create invocation edges or service configuration.
-  The review exposes every requested `{ node, cap, approved, revision }` consent against
-  the proposed installation pin, distinguishing existing approval from changes to apply.
+  Shared node/capability pairs are deduplicated. A selected operation that consumes a
+  non-instance native service runtime also reviews its exact caller and callee installation
+  pins, callee location resources, empty output mappings, aggregate declared limits, and
+  depth/concurrency ceilings. The target's required `invocationEdges` evidence distinguishes
+  an unchanged enabled edge from a new approval and includes its durable revision. A compatible
+  existing bounded edge is retained exactly rather than normalized or widened. The review
+  exposes every requested `{ node, cap, approved, revision }` consent against the proposed
+  installation pin, distinguishing existing approval from changes to apply.
 
   The immutable review contains the request, full declared machine half, declaration
   digest, selected platform/artifact, expected current and proposed installation revisions,
-  concrete tool/service/anchor hashes and consent evidence for every destination.
-  Its `reviewDigest` also binds the approving credential reference, evaluated authority,
-  enrollment/owner identity, current installation and relevant current/proposed consent
-  revisions and service policies. Reusing an unchanged declaration, artifact and resource
-  binding preserves the current installation revision; otherwise the proposed revision is
-  deterministically bound to this deployment, destination and those exact pins.
-  Apply recomputes the review against current state in a transaction: changed request,
-  actor, declaration, destination, installation, resource or consent evidence requires
-  another review, not a client-edited digest or automatic approval of the replacement.
+  concrete tool/service/anchor hashes, consent evidence and invocation-edge evidence for every
+  destination. Its `reviewDigest` also binds the approving credential reference, evaluated
+  authority, enrollment/owner identity, current installation and relevant current/proposed
+  consent revisions and service policies. Every proposed runtime edge additionally binds the
+  current callee installation, service policy, resource and permission evidence, plus the prior
+  edge revision. Reusing an unchanged declaration, artifact and resource binding preserves the
+  current installation revision; otherwise the proposed revision is deterministically bound to
+  this deployment, destination and those exact pins. Apply recomputes the review against current
+  state in a transaction: changed request, actor, declaration, destination, installation,
+  resource, consent, service or invocation-edge evidence requires another review, not a
+  client-edited digest or automatic approval of the replacement.
 
 - **Bounded offline evidence.** A disconnected destination is approvable only with known
   enrolled identity and a previously proved native owner, a selected available declaration
@@ -2904,11 +2910,13 @@ provider handling and postconditions belong to plugins, never the common floor.
   installation workload and an undrained machine. Invalid evidence becomes `needs_review`;
   it cannot silently retarget. A durable compare-and-set `pending` → `applying` transition
   and attempt ID fence the effect. A second transaction verifies that same uncancelled
-  attempt and current evidence before invoking the existing `install` and `consent`
-  functions. Native rows, a consent-evidence receipt and the `applied` phase commit together
-  before installation commands are sent. A post-commit transport error cannot erase that
-  receipt. Recovery of an interrupted `applying` phase reports `needs_review` with
-  `deployment_application_uncertain` instead of replaying authority-changing effects.
+  attempt and current evidence before invoking the existing installation, edge and consent
+  functions. Native installation rows, newly reviewed invocation edges, consent rows and their
+  evidence receipt commit atomically before installation commands are sent, so a selected
+  service consumer can be prepared on its first installation without an out-of-band edge grant.
+  A post-commit transport error cannot erase that receipt. Recovery of an interrupted `applying`
+  phase reports `needs_review` with `deployment_application_uncertain` instead of replaying
+  authority-changing effects.
 
   Cancellation requires the current deployment `revision`; stale revisions refuse before
   mutation. It marks the approval cancelled and fences remaining `pending`/`applying`

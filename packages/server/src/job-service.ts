@@ -18,6 +18,7 @@ import {
   type RuntimeDeps,
   type PluginBundle,
   type JobArtifactDelivery,
+  type JobDeploymentInvocationEdge,
   type ServiceConfigurationRead,
   type ConfigureInstanceServiceArgs,
   type InstanceServiceConfigurationRead,
@@ -1094,7 +1095,11 @@ export class JobService {
     return policy;
   }
 
-  private resourceRefusal(install: JobInstallation, operationId: string): string | null {
+  private resourceRefusal(
+    install: JobInstallation,
+    operationId: string,
+    invocationEdges: readonly JobInvocationEdge[] = [],
+  ): string | null {
     const live = this.channels.get(install.machineId);
     const refusal = jobResourceRefusal(
       install.machine,
@@ -1118,6 +1123,8 @@ export class JobService {
         install.machineId,
         install,
         operationId,
+        new Set(),
+        invocationEdges,
       );
       if (runtimeReason) return runtimeReason;
     }
@@ -1187,6 +1194,7 @@ export class JobService {
     caller?: JobInstallation,
     callerOperationId?: string,
     visiting: ReadonlySet<string> = new Set(),
+    reviewedEdges: readonly JobInvocationEdge[] = [],
   ): string | null {
     if (policy.remote) {
       const remote = policy.remote;
@@ -1262,8 +1270,7 @@ export class JobService {
     const edges = this.store.db
       .query<{ edge: string }, []>("SELECT edge FROM job_invocation_edges WHERE enabled=1")
       .all();
-    const matching = edges.some((row) => {
-      const edge = JSON.parse(row.edge) as JobInvocationEdge;
+    const matches = (edge: JobInvocationEdge) => {
       if (callerOperationId !== undefined && edge.caller.operationId !== callerOperationId)
         return false;
       if (
@@ -1289,7 +1296,10 @@ export class JobService {
             binding.serviceId === policy.serviceId && binding.revision === policy.revision,
         ) === true
       );
-    });
+    };
+    const matching =
+      edges.some((row) => matches(JSON.parse(row.edge) as JobInvocationEdge)) ||
+      reviewedEdges.some(matches);
     return matching ? null : "service_runtime_edge_missing";
   }
   private authorizeJobService(
@@ -1984,8 +1994,24 @@ export class JobService {
     }
     const caller = this.jobs.installation(args.machineId, args.pluginId);
     if (!caller) return result;
-    const policies = this.effectiveConfiguration(args.machineId).policies;
-    for (const [operationId, operation] of Object.entries(caller.machine.operations)) {
+    return {
+      ...result,
+      ...this.invocationCandidates(caller, Object.keys(caller.machine.operations)),
+    };
+  }
+
+  private invocationCandidates(
+    caller: JobInstallation,
+    operationIds: readonly string[],
+  ): Pick<InspectJobInvocationsResult, "candidates" | "unavailable"> {
+    const result: Pick<InspectJobInvocationsResult, "candidates" | "unavailable"> = {
+      candidates: [],
+      unavailable: [],
+    };
+    const policies = this.effectiveConfiguration(caller.machineId).policies;
+    for (const operationId of operationIds) {
+      const operation = caller.machine.operations[operationId];
+      if (!operation) fail("unknown_operation");
       const callerRef: JobInvocationEdge["caller"] = {
         machineId: caller.machineId,
         pluginId: caller.pluginId,
@@ -2021,7 +2047,7 @@ export class JobService {
         if (!policy?.runtime) continue;
         let callee: JobInstallation | null;
         try {
-          callee = this.runtimeInstallation(policy, args.machineId);
+          callee = this.runtimeInstallation(policy, caller.machineId);
         } catch (error) {
           if (!(error instanceof ServiceError)) throw error;
           result.unavailable.push({
@@ -2086,12 +2112,96 @@ export class JobService {
     return result;
   }
 
+  private deploymentInvocations(
+    auth: AuthContext,
+    caller: JobInstallation,
+    operationIds: readonly string[],
+  ): { edges: JobDeploymentInvocationEdge[]; digest: string; refusal: string | null } {
+    const inspected = this.invocationCandidates(caller, operationIds);
+    const edges: JobDeploymentInvocationEdge[] = [];
+    const evidence: unknown[] = [];
+    let refusal = inspected.unavailable[0]?.reason ?? null;
+    const policies = this.effectiveConfiguration(caller.machineId).policies;
+    for (const candidate of inspected.candidates) {
+      const policy = policies.find((policy) => policy.serviceId === candidate.serviceId)!;
+      if (policy.runtime?.scope === "instance") continue;
+      const callee = this.jobs.installation(candidate.callee.machineId, candidate.callee.pluginId)!;
+      const installation = { ...callee, ready: undefined };
+      const requirements: AuthorityRequirement[] = [
+        {
+          cap: "operations:invoke",
+          ref: {
+            kind: "operation",
+            machineId: callee.machineId,
+            operationId: candidate.callee.operationId,
+          },
+        },
+        ...this.operationRequirements(callee, candidate.callee.operationId),
+      ];
+      const authority = requirements.map((requirement) => {
+        const explained = this.auth.explain(auth, requirement);
+        const consent =
+          this.serviceConsent(requirement.ref, requirement.cap, policies) ??
+          this.consentFor(callee, requirement.ref, requirement.cap);
+        if (!explained.allowed || !consent) refusal ??= "authority_or_consent_refused";
+        return {
+          ...explained,
+          consent: consent ?? this.consentFor(callee, requirement.ref, requirement.cap, false),
+        };
+      });
+      evidence.push({ candidate, installation, authority });
+      const stored = this.store.db
+        .query<{ edge: string; enabled: number; revision: string }, [string, string]>(
+          "SELECT edge,enabled,revision FROM job_invocation_edges WHERE caller=? AND operation_id=?",
+        )
+        .get(canonicalJobJson(candidate.caller), candidate.callee.operationId);
+      const previous = stored ? JobInvocationEdgeSchema.parse(JSON.parse(stored.edge)) : null;
+      // Existing exact authority is displayed unchanged, never widened to a default.
+      const edge: JobInvocationEdge =
+        previous &&
+        canonicalJobJson(previous.callee) === canonicalJobJson(candidate.callee) &&
+        canonicalJobJson(previous.resources) === canonicalJobJson(candidate.resources)
+          ? previous
+          : {
+              caller: candidate.caller,
+              callee: candidate.callee,
+              resources: candidate.resources,
+              outputs: [],
+              maxDepth: 1,
+              maxConcurrency: 1,
+              aggregate: candidate.calleeLimits,
+            };
+      try {
+        this.validateInvocationEdge(edge, caller);
+      } catch (error) {
+        if (!(error instanceof ServiceError)) throw error;
+        refusal ??= error.message;
+      }
+      const existing = edges.find(
+        (value) =>
+          canonicalJobJson(value.edge.caller) === canonicalJobJson(edge.caller) &&
+          value.edge.callee.operationId === edge.callee.operationId,
+      );
+      if (existing) {
+        if (canonicalJobJson(existing.edge) !== canonicalJobJson(edge))
+          refusal ??= "invocation_edge_conflict";
+        continue;
+      }
+      edges.push({
+        edge,
+        approved: stored?.enabled === 1 && stored.edge === canonicalJobJson(edge),
+        revision: stored?.revision ?? null,
+      });
+    }
+    return { edges, digest: digest({ evidence, unavailable: inspected.unavailable }), refusal };
+  }
+
   setInvocationEdge(auth: AuthContext, args: { edge: JobInvocationEdge; enabled: boolean }): void {
     if (!this.auth.restoreCredential(this.auth.credentialReference(auth))?.isRoot) fail();
     const edge = JobInvocationEdgeSchema.parse(args.edge);
     const { enabled } = args;
-    if (enabled) this.validateInvocationEdge(edge);
     this.store.transaction(() => {
+      if (enabled) this.validateInvocationEdge(edge);
       if (!enabled) {
         // Revocation must remain possible after either installation changes. It cannot
         // replace a newer approval under the same durable caller/operation key.
@@ -2105,27 +2215,35 @@ export class JobService {
       }
       this.store.db
         .query(
-          "INSERT INTO job_invocation_edges(caller,operation_id,edge,enabled) VALUES(?,?,?,?) ON CONFLICT(caller,operation_id) DO UPDATE SET edge=excluded.edge,enabled=excluded.enabled",
+          "INSERT INTO job_invocation_edges(caller,operation_id,edge,enabled,revision) VALUES(?,?,?,?,?) ON CONFLICT(caller,operation_id) DO UPDATE SET edge=excluded.edge,enabled=excluded.enabled,revision=excluded.revision",
         )
         .run(
           canonicalJobJson(edge.caller),
           edge.callee.operationId,
           canonicalJobJson(edge),
           enabled ? 1 : 0,
+          randomUUID(),
         );
     });
-    for (const job of this.jobs.active())
-      if (job.request.parent && this.invocationRefusal(job.request, false))
-        this.cancelRecord(job, "invocation_edge_changed");
-    this.accessChanged();
+    this.store.afterCommit(() => {
+      for (const job of this.jobs.active())
+        if (job.request.parent && this.invocationRefusal(job.request, false))
+          this.cancelRecord(job, "invocation_edge_changed");
+      this.accessChanged();
+    });
   }
 
-  private validateInvocationEdge(edge: JobInvocationEdge): void {
+  private validateInvocationEdge(edge: JobInvocationEdge, proposedCaller?: JobInstallation): void {
     for (const bound of [edge.maxDepth, edge.maxConcurrency, ...Object.values(edge.aggregate)])
       if (!Number.isSafeInteger(bound) || bound < 1) fail("invalid_invocation_bound");
     if (edge.caller.machineId !== edge.callee.machineId) fail("invocation_cross_host");
     for (const target of [edge.caller, edge.callee]) {
-      const install = this.jobs.installation(target.machineId, target.pluginId);
+      const install =
+        proposedCaller &&
+        target.machineId === proposedCaller.machineId &&
+        target.pluginId === proposedCaller.pluginId
+          ? proposedCaller
+          : this.jobs.installation(target.machineId, target.pluginId);
       if (
         !install?.enabled ||
         install.purgeRequested ||
@@ -2146,7 +2264,8 @@ export class JobService {
       fail("invocation_resources_changed");
     if (edge.outputs.length > 30) fail("invocation_output_limit");
     const outputs = edge.outputs.map((output) => JobOutputRuleSchema.parse(output));
-    const caller = this.jobs.installation(edge.caller.machineId, edge.caller.pluginId)!;
+    const caller =
+      proposedCaller ?? this.jobs.installation(edge.caller.machineId, edge.caller.pluginId)!;
     const callerOperation = caller.machine.operations[edge.caller.operationId]!;
     if (
       new Set(outputs.map((output) => output.name)).size !== outputs.length ||
@@ -2567,7 +2686,10 @@ export class JobService {
           install.artifact,
           this.channels.get(install.machineId)?.owner.platforms,
         ) !== null,
-      resourceRefusal: (install, operationId) => this.resourceRefusal(install, operationId),
+      resourceRefusal: (install, operationId, edges) =>
+        this.resourceRefusal(install, operationId, edges),
+      invocations: (auth, install, operationIds) =>
+        this.deploymentInvocations(auth, install, operationIds),
       servicePolicies: (machineId, machine, bindings) => {
         const policies = this.effectiveConfiguration(machineId).policies;
         const required = Object.values(machine.operations).flatMap(
@@ -3133,34 +3255,35 @@ export class JobService {
             },
           ]
         : []),
+      ...this.operationRequirements(install, request.operationId),
+    ];
+  }
+  private operationRequirements(
+    install: JobInstallation,
+    operationId: string,
+  ): AuthorityRequirement[] {
+    const op = install.machine.operations[operationId]!;
+    const machineId = install.machineId;
+    return [
       {
         cap: "machines:run",
-        ref: { kind: "operation", machineId: request.machineId, operationId: request.operationId },
+        ref: { kind: "operation", machineId, operationId },
       },
-      ...op.locations.map((l) => ({
-        cap: `locations:${l.access}` as const,
-        ref: { kind: "location" as const, machineId: request.machineId, locationId: l.locationId },
+      ...op.locations.map((location) => ({
+        cap: `locations:${location.access}` as const,
+        ref: { kind: "location" as const, machineId, locationId: location.locationId },
       })),
       ...(op.services ?? []).flatMap((binding) =>
         binding.operationIds.map((operationId) => ({
           cap: "services:invoke" as const,
-          ref: {
-            kind: "service" as const,
-            machineId: request.machineId,
-            serviceId: binding.serviceId,
-            operationId,
-          },
+          ref: { kind: "service" as const, machineId, serviceId: binding.serviceId, operationId },
         })),
       ),
       ...(op.network === "host"
         ? [
             {
               cap: "network:host" as const,
-              ref: {
-                kind: "operation" as const,
-                machineId: request.machineId,
-                operationId: request.operationId,
-              },
+              ref: { kind: "operation" as const, machineId, operationId },
             },
           ]
         : []),

@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
 import { JobResourceBindingsSchema } from "./job-resources.ts";
-import { JobOwnerSchema, JobRequestSchema, MachineHalfSchema } from "./jobs.ts";
+import {
+  JobInvocationEdgeSchema,
+  JobOwnerSchema,
+  JobRequestSchema,
+  MachineHalfSchema,
+} from "./jobs.ts";
 
 const id = JobRequestSchema.shape.jobId;
 const hash = JobRequestSchema.shape.artifactSha256;
@@ -39,6 +44,13 @@ export const JobDeploymentConsentSchema = z.strictObject({
 });
 export type JobDeploymentConsent = z.infer<typeof JobDeploymentConsentSchema>;
 
+export const JobDeploymentInvocationEdgeSchema = z.strictObject({
+  edge: JobInvocationEdgeSchema,
+  approved: z.boolean(),
+  revision: id.nullable(),
+});
+export type JobDeploymentInvocationEdge = z.infer<typeof JobDeploymentInvocationEdgeSchema>;
+
 export const JobDeploymentTargetReviewSchema = z.strictObject({
   machineId: JobRequestSchema.shape.machineId,
   machineName: z.string().max(512),
@@ -56,12 +68,13 @@ export const JobDeploymentTargetReviewSchema = z.strictObject({
     }),
   ),
   consents: z.array(JobDeploymentConsentSchema),
+  invocationEdges: z.array(JobDeploymentInvocationEdgeSchema),
   approvable: z.boolean(),
   reason,
 });
 export type JobDeploymentTargetReview = z.infer<typeof JobDeploymentTargetReviewSchema>;
 
-/** The digest binds the current declaration, destination evidence and exact consent changes. */
+/** The digest binds the declaration, destination evidence and exact consent/edge changes. */
 export const JobDeploymentReviewSchema = z.strictObject({
   request: JobDeploymentRequestSchema,
   machine: MachineHalfSchema,

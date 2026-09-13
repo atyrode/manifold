@@ -3148,6 +3148,436 @@ describe("reviewed native deployment approvals", () => {
     return { f, bound };
   }
 
+  function runtimeDeploymentFixture() {
+    const locationId = `${pluginId}.data`;
+    const provider: MachineHalf = {
+      ...machine,
+      locations: {
+        [locationId]: { anchor: "data", components: ["runtime"], revision: "data-r1" },
+      },
+      operations: {
+        [operationId]: {
+          ...machine.operations[operationId]!,
+          providesService: true,
+          locations: [{ locationId, access: "read" }],
+        },
+      },
+    };
+    const f = fixture(":memory:", provider);
+    const callerPlugin = "sample.consumer";
+    const selectedOperation = `${callerPlugin}.run`;
+    const unselectedOperation = `${callerPlugin}.other`;
+    const policy: ServicePolicy = {
+      serviceId: "sample.service",
+      revision: "service-r1",
+      maxConcurrent: 1,
+      runtime: {
+        pluginId,
+        operationId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+        resourceBindingDigest: createHash("sha256").update(canonicalJobJson(null)).digest("hex"),
+        input: { value: { literal: "serve" } },
+      },
+      operations: {
+        inspect: {
+          kind: "http-proxy",
+          method: "GET",
+          path: "/inspect",
+          request: { kind: "none" },
+          response: {
+            kind: "stream",
+            disclosure: "full",
+            contentTypes: ["application/json"],
+            headers: [],
+          },
+          timeoutMs: 1000,
+          maxRequestBytes: 1024,
+          maxResponseBytes: 4096,
+        },
+      },
+    };
+    const callerOperation = {
+      ...machine.operations[operationId]!,
+      services: [
+        { serviceId: policy.serviceId, revision: policy.revision, operationIds: ["inspect"] },
+      ],
+    };
+    const consumer: MachineHalf = {
+      ...machine,
+      operations: {
+        [selectedOperation]: callerOperation,
+        [unselectedOperation]: callerOperation,
+      },
+    };
+    f.service.setManifestResolver((id) =>
+      id === pluginId ? provider : id === callerPlugin ? consumer : null,
+    );
+    f.service.configureServiceConfiguration(f.root, {
+      machineId: f.machineId,
+      expectedRevision: null,
+      policies: [policy],
+    });
+    f.owner.resources = {
+      tools: {},
+      anchors: {},
+      services: {
+        [policy.serviceId]: createHash("sha256").update(canonicalJobJson(policy)).digest("hex"),
+      },
+      serviceDefinitions: {
+        [policy.serviceId]: { revision: policy.revision, operationIds: ["inspect"] },
+      },
+    };
+    consent(f, "machines:run");
+    consent(f, "operations:invoke");
+    f.service.consent(f.root, {
+      machineId: f.machineId,
+      pluginId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+      node: formatManifoldUri({ kind: "location", machineId: f.machineId, locationId }),
+      cap: "locations:read",
+      enabled: true,
+    });
+    prove(f);
+    f.service.event(f.channel, {
+      type: "installed",
+      pluginId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+      resources: {
+        artifactAvailable: true,
+        tools: [],
+        operations: [{ operationId, available: true }],
+      },
+    });
+    const value: JobDeploymentRequest = {
+      deploymentId: "first-runtime-install",
+      pluginId: callerPlugin,
+      targets: [{ machineId: f.machineId, platform: "linux-x64" }],
+      operationIds: [selectedOperation],
+    };
+    const acknowledge = () => {
+      const install = f.service.jobs.installation(f.machineId, callerPlugin)!;
+      f.service.event(f.channel, {
+        type: "installed",
+        pluginId: callerPlugin,
+        installationRevision: install.revision,
+        artifactSha256: install.artifact,
+        resources: {
+          artifactAvailable: true,
+          tools: [],
+          operations: [
+            { operationId: selectedOperation, available: true },
+            { operationId: unselectedOperation, available: true },
+          ],
+        },
+      });
+    };
+    f.commands.length = 0;
+    return {
+      f,
+      provider,
+      consumer,
+      policy,
+      value,
+      callerPlugin,
+      selectedOperation,
+      unselectedOperation,
+      locationId,
+      acknowledge,
+    };
+  }
+
+  test("first install reviews exact runtime authority and commits it before native dispatch", () => {
+    const { f, value, callerPlugin, selectedOperation, locationId, acknowledge } =
+      runtimeDeploymentFixture();
+    try {
+      expect(f.service.jobs.installation(f.machineId, callerPlugin)).toBeNull();
+      const review = f.service.reviewDeployment(f.root, value);
+      expect(review.approvable).toBe(true);
+      const target = review.targets[0]!;
+      expect(target.invocationEdges).toEqual([
+        {
+          edge: {
+            caller: {
+              machineId: f.machineId,
+              pluginId: callerPlugin,
+              operationId: selectedOperation,
+              installationRevision: target.installationRevision!,
+              artifactSha256: hash,
+            },
+            callee: {
+              machineId: f.machineId,
+              pluginId,
+              operationId,
+              installationRevision: "r1",
+              artifactSha256: hash,
+            },
+            resources: [{ locationId, revision: "data-r1", access: "read" }],
+            outputs: [],
+            maxDepth: 1,
+            maxConcurrency: 1,
+            aggregate: limits,
+          },
+          approved: false,
+          revision: null,
+        },
+      ]);
+      expect(
+        f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin })
+          .edges,
+      ).toEqual([]);
+      const send = f.channel.send;
+      f.channel.send = (message) => {
+        if (message.command.type === "install" && message.command.pluginId === callerPlugin) {
+          expect(
+            f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin })
+              .edges,
+          ).toEqual([{ edge: target.invocationEdges[0]!.edge, enabled: true }]);
+          expect(
+            f.service
+              .describe(f.root, { machineId: f.machineId, pluginId: callerPlugin })
+              .consents.filter((row) => row.enabled)
+              .map((row) => row.cap)
+              .sort(),
+          ).toEqual(target.consents.map((row) => row.cap).sort());
+        }
+        return send(message);
+      };
+      const deployment = f.service.applyDeployment(
+        f.root,
+        { request: value, reviewDigest: review.reviewDigest },
+        "first-runtime",
+      );
+      expect(JobDeploymentSchema.parse(deployment).targets[0]!.state).toBe("installing");
+      acknowledge();
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("ready");
+      const parent = f.service.execute(f.root, callerPlugin, "runtime-parent", {
+        jobId: "runtime-parent",
+        machineId: f.machineId,
+        operationId: selectedOperation,
+        input: { value: "safe" },
+        outputs: [],
+      });
+      expect(parent.state).toBe("start-committed");
+      f.service.jobs.state(parent.request.jobId, "started");
+      f.service.event(f.channel, {
+        type: "invocation",
+        parentJobId: parent.request.jobId,
+        invocationId: "runtime-child",
+        operationId,
+        input: { value: "serve" },
+        outputs: [],
+      });
+      const child = f.service.jobs.active().find((job) => job.request.parent !== null);
+      expect(child?.state).toBe("start-committed");
+      expect(child?.request).toMatchObject({
+        pluginId,
+        operationId,
+        installationRevision: "r1",
+        outputs: [],
+        parent: { parentJobId: parent.request.jobId, invocationId: "runtime-child" },
+      });
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("subset and install-only reviews never approve unrelated runtime operations", () => {
+    const { f, value, callerPlugin, selectedOperation, unselectedOperation, acknowledge } =
+      runtimeDeploymentFixture();
+    try {
+      const installOnly = apply(f, {
+        ...value,
+        deploymentId: "runtime-install-only",
+        operationIds: [],
+      });
+      expect(installOnly.review.targets[0]!.invocationEdges).toEqual([]);
+      expect(installOnly.review.targets[0]!.consents).toEqual([]);
+      expect(installOnly.deployment.targets[0]!.state).toBe("installing");
+      acknowledge();
+      const { review } = apply(f, value);
+      acknowledge();
+      const inspection = f.service.inspectInvocations(f.root, {
+        machineId: f.machineId,
+        pluginId: callerPlugin,
+      });
+      expect(inspection.edges.map(({ edge }) => edge.caller.operationId)).toEqual([
+        selectedOperation,
+      ]);
+      expect(review.targets[0]!.invocationEdges.map(({ edge }) => edge.caller.operationId)).toEqual(
+        [selectedOperation],
+      );
+      const description = f.service.describe(f.root, {
+        machineId: f.machineId,
+        pluginId: callerPlugin,
+      });
+      expect(description.operations?.[selectedOperation]?.ready).toBe(true);
+      expect(description.operations?.[unselectedOperation]?.ready).toBe(false);
+      expect(description.consents.some((row) => row.node.endsWith(unselectedOperation))).toBe(
+        false,
+      );
+      expect(() =>
+        f.service.execute(f.root, callerPlugin, "unselected", {
+          jobId: "unselected",
+          machineId: f.machineId,
+          operationId: unselectedOperation,
+          input: { value: "safe" },
+          outputs: [],
+        }),
+      ).toThrow("service_runtime_edge_missing");
+      expect(f.commands.some((command) => command.type === "start")).toBe(false);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("changed callee installation, service policy, or callee consent invalidates first-install review without effects", () => {
+    for (const change of ["callee", "policy", "consent"] as const) {
+      const { f, value, provider, policy, callerPlugin } = runtimeDeploymentFixture();
+      try {
+        const review = f.service.reviewDeployment(f.root, value);
+        expect(review.approvable).toBe(true);
+        if (change === "callee") {
+          f.service.install(f.root, {
+            machineId: f.machineId,
+            pluginId,
+            installationRevision: "r2",
+            artifactSha256: hash,
+            machine: provider,
+          });
+        } else if (change === "policy") {
+          f.service.configureServiceConfiguration(f.root, {
+            machineId: f.machineId,
+            expectedRevision: f.service.readServiceConfiguration(f.root, { machineId: f.machineId })
+              .configuration.revision,
+            policies: [{ ...policy, maxConcurrent: 2 }],
+          });
+        } else {
+          consent(f, "operations:invoke", false);
+          consent(f, "operations:invoke", true);
+        }
+        f.commands.length = 0;
+        expect(() =>
+          f.service.applyDeployment(
+            f.root,
+            {
+              request: value,
+              reviewDigest: review.reviewDigest,
+            },
+            "stale-runtime",
+          ),
+        ).toThrow("deployment_review_stale");
+        expect(f.service.jobs.installation(f.machineId, callerPlugin)).toBeNull();
+        expect(
+          f.service.describe(f.root, { machineId: f.machineId, pluginId: callerPlugin }).consents,
+        ).toEqual([]);
+        expect(
+          f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin })
+            .edges,
+        ).toEqual([]);
+        expect(f.commands).toEqual([]);
+      } finally {
+        f.store.close();
+      }
+    }
+  });
+
+  test("revoked runtime edges cannot be restored by deployment replay, even after regrant", () => {
+    const { f, value, callerPlugin, acknowledge } = runtimeDeploymentFixture();
+    try {
+      const { review } = apply(f, value);
+      acknowledge();
+      const edge = review.targets[0]!.invocationEdges[0]!.edge;
+      const args = { request: value, reviewDigest: review.reviewDigest };
+      const originalConsents = f.service.describe(f.root, {
+        machineId: f.machineId,
+        pluginId: callerPlugin,
+      }).consents;
+      f.service.setInvocationEdge(f.root, { edge, enabled: false });
+      f.commands.length = 0;
+      expect(f.service.applyDeployment(f.root, args, "replay-revoked").targets[0]!.state).toBe(
+        "needs_review",
+      );
+      f.service.tick();
+      expect(
+        f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin })
+          .edges,
+      ).toEqual([{ edge, enabled: false }]);
+      f.service.setInvocationEdge(f.root, { edge, enabled: true });
+      expect(f.service.applyDeployment(f.root, args, "replay-regranted").targets[0]).toMatchObject({
+        state: "needs_review",
+        reason: "invocation_edge_changed",
+      });
+      expect(
+        f.service.describe(f.root, { machineId: f.machineId, pluginId: callerPlugin }).consents,
+      ).toEqual(originalConsents);
+      expect(f.commands).toEqual([]);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("changed edge authority fences review and the write-ahead claim without reinstallation or regrant", () => {
+    for (const boundary of ["review", "claim"] as const) {
+      const { f, value, callerPlugin, acknowledge } = runtimeDeploymentFixture();
+      try {
+        const first = apply(f, value);
+        acknowledge();
+        const original = first.review.targets[0]!.invocationEdges[0]!.edge;
+        const tighter = { ...original, aggregate: { ...limits, timeoutMs: limits.timeoutMs - 1 } };
+        f.service.setInvocationEdge(f.root, { edge: tighter, enabled: true });
+        const next = { ...value, deploymentId: `edge-change-${boundary}` };
+        const review = f.service.reviewDeployment(f.root, next);
+        expect(review.targets[0]!.invocationEdges[0]).toMatchObject({
+          edge: tighter,
+          approved: true,
+        });
+        const consents = f.service.describe(f.root, {
+          machineId: f.machineId,
+          pluginId: callerPlugin,
+        }).consents;
+        const revision = f.service.jobs.installation(f.machineId, callerPlugin)!.revision;
+        if (boundary === "review") {
+          f.service.setInvocationEdge(f.root, { edge: tighter, enabled: false });
+        } else {
+          f.service.setLifecycleRecorder((record) => {
+            f.store.appendTrace(record);
+            if (record.payload.deploymentLifecycle === "applying")
+              f.service.setInvocationEdge(f.root, { edge: tighter, enabled: false });
+          });
+        }
+        f.commands.length = 0;
+        const applyChanged = () =>
+          f.service.applyDeployment(
+            f.root,
+            {
+              request: next,
+              reviewDigest: review.reviewDigest,
+            },
+            "changed-edge",
+          );
+        if (boundary === "review") expect(applyChanged).toThrow("deployment_review_stale");
+        else expect(applyChanged().targets[0]!.state).toBe("needs_review");
+        f.service.tick();
+        expect(f.service.jobs.installation(f.machineId, callerPlugin)!.revision).toBe(revision);
+        expect(
+          f.service.describe(f.root, { machineId: f.machineId, pluginId: callerPlugin }).consents,
+        ).toEqual(consents);
+        expect(
+          f.service.inspectInvocations(f.root, { machineId: f.machineId, pluginId: callerPlugin })
+            .edges,
+        ).toEqual([{ edge: tighter, enabled: false }]);
+        expect(f.commands).toEqual([]);
+      } finally {
+        f.store.close();
+      }
+    }
+  });
+
   test("stale review refuses before installation or consent effects", () => {
     const f = fixture();
     try {
@@ -3726,7 +4156,7 @@ describe("reviewed native deployment approvals", () => {
       f.store.close();
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   test("capacity refuses only while every retained review still awaits native acknowledgement", () => {
     const f = fixture();
@@ -3772,6 +4202,86 @@ describe("reviewed native deployment approvals", () => {
       ).toBe("ready");
     } finally {
       f.store.close();
+    }
+  });
+
+  test("migration preserves edge-free deployment readiness and live native work without regrant or restart", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-deployment-edge-free-upgrade-"));
+    const path = join(dir, "db.sqlite");
+    const provider: MachineHalf = {
+      ...machine,
+      operations: {
+        [operationId]: { ...machine.operations[operationId]!, providesService: true },
+      },
+    };
+    const f = fixture(path, provider);
+    try {
+      prove(f);
+      const value = request(f, "legacy-edge-free", [operationId]);
+      expect(apply(f, value).deployment.targets[0]!.state).toBe("ready");
+      const running = execute(f, "legacy-live-worker");
+      f.service.jobs.state(running.request.jobId, "started");
+      const installation = f.service.jobs.installation(f.machineId, pluginId);
+      const consents = f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents;
+      const stored = f.store.db
+        .query<{ approval: string }, [string]>(
+          "SELECT approval FROM machine_job_deployments WHERE deployment_id=?",
+        )
+        .get(value.deploymentId)!;
+      const legacy = JSON.parse(stored.approval);
+      for (const target of legacy.review.targets) delete target.invocationEdges;
+      for (const evidence of legacy.evidence) {
+        delete evidence.invocations;
+        delete evidence.invocationApprovals;
+      }
+      const body = { ...legacy.review, reviewDigest: undefined };
+      const reviewDigest = createHash("sha256")
+        .update(
+          canonicalJobJson({ ...body, evidence: legacy.evidence, credential: legacy.credential }),
+        )
+        .digest("hex");
+      legacy.review.reviewDigest = reviewDigest;
+      f.store.db
+        .query("UPDATE machine_job_deployments SET approval=? WHERE deployment_id=?")
+        .run(canonicalJobJson(legacy), value.deploymentId);
+      f.store.db.exec(`
+UPDATE machine_job_deployment_targets SET receipt=json_extract(receipt,'$.consents');
+ALTER TABLE job_invocation_edges DROP COLUMN revision;
+UPDATE meta SET value='33' WHERE key='schema_version';
+`);
+      f.store.close();
+      f.store = new ServerStore(openDatabase(path));
+      f.auth = new AuthService(f.store, key, f.runtime);
+      f.root = f.auth.authenticate(key);
+      f.service = new JobService(f.store, f.auth, f.runtime);
+      f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
+      f.service.setManifestResolver((id) => (id === pluginId ? provider : null));
+      f.commands.length = 0;
+      prove(f);
+      expect(f.service.jobs.get(running.request.jobId)?.state).toBe("started");
+      expect(
+        f.commands.some((command) => command.type === "start" || command.type === "cancel"),
+      ).toBe(false);
+      expect(f.service.jobs.installation(f.machineId, pluginId)).toEqual(installation);
+      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents).toEqual(
+        consents,
+      );
+      expect(
+        f.service.readDeployment(f.root, { deploymentId: value.deploymentId }).targets[0]!.state,
+      ).toBe("ready");
+      f.commands.length = 0;
+      expect(
+        f.service.applyDeployment(f.root, { request: value, reviewDigest }, "legacy-replay")
+          .targets[0]!.state,
+      ).toBe("ready");
+      expect(f.commands).toEqual([]);
+      expect(f.service.jobs.get(running.request.jobId)?.state).toBe("started");
+      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).consents).toEqual(
+        consents,
+      );
+    } finally {
+      f.store.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

@@ -1,6 +1,7 @@
 export {
   JobDeploymentRequestSchema,
   JobDeploymentConsentSchema,
+  JobDeploymentInvocationEdgeSchema,
   JobDeploymentTargetReviewSchema,
   JobDeploymentReviewSchema,
   JobDeploymentApplyArgsSchema,
@@ -15,6 +16,7 @@ export {
   JobDeploymentDescriptionSchema,
   type JobDeploymentRequest,
   type JobDeploymentConsent,
+  type JobDeploymentInvocationEdge,
   type JobDeploymentTargetReview,
   type JobDeploymentReview,
   type JobDeploymentApplyArgs,
