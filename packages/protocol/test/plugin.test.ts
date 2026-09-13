@@ -377,6 +377,8 @@ describe("action outcome", () => {
     expect([...ACTION_DENIAL_RULES]).toEqual([
       "unknown_action",
       "plugin_disabled",
+      "policy_required",
+      "policy_stale",
       "forbidden",
       "invalid_args",
       "refused",

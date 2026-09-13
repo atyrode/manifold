@@ -70,6 +70,8 @@ const PING_FRAME = JSON.stringify({ type: "ping" });
 const DENIAL_ERROR_CODES: Readonly<Record<ActionDenialRule, ErrorCode>> = {
   unknown_action: "forbidden",
   plugin_disabled: "forbidden",
+  policy_required: "forbidden",
+  policy_stale: "forbidden",
   forbidden: "forbidden",
   invalid_args: "invalid",
   refused: "conflict",

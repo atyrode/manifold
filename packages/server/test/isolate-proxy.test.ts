@@ -176,6 +176,19 @@ describe("buildIsolateDef", () => {
       IsolateLoadError,
     );
   });
+  test("preserves agent-run lifecycle access declared across the isolate boundary", () => {
+    const summary = loaded(["test.proxy.finish"]);
+    const report: Loaded = {
+      ...summary,
+      actions: summary.actions.map((action) => ({ ...action, runAccess: "teardown" })),
+    };
+    const { def } = buildIsolateDef(
+      manifest,
+      report,
+      scripted({ ok: true, result: null, emits: [] }),
+    );
+    expect(def.actions[0]?.runAccess).toBe("teardown");
+  });
 
   test("the roster publishes the child's own JSON Schema while the host grades nothing", () => {
     const { def } = buildIsolateDef(

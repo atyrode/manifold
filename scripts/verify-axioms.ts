@@ -2774,7 +2774,7 @@ try {
     );
 
     const scoped = await mint({
-      principal: { name: "axiom-scoped", kind: "agent" },
+      principal: { name: "axiom-scoped", kind: "human" },
       caps: ["containers:read", "containers:write", "scenes:write"],
       containerId: canvasContainerId,
     });
@@ -5145,7 +5145,7 @@ try {
 
     /* Connection three: a scoped token, whose subscription must be refused and stay silent. */
     const confined = await mint({
-      principal: { name: "axiom-confined", kind: "agent" },
+      principal: { name: "axiom-confined", kind: "human" },
       caps: ["containers:read", "containers:write"],
       containerId: canvasContainerId,
     });
@@ -5163,7 +5163,7 @@ try {
 
     /* The mutator: a third principal, so `actor` is somebody's name and not an assumption. */
     const mutator = await mint({
-      principal: { name: "axiom-mutator", kind: "agent" },
+      principal: { name: "axiom-mutator", kind: "human" },
       caps: ["containers:read", "containers:write"],
     });
 

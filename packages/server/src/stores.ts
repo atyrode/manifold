@@ -12,11 +12,17 @@ import {
   type PluginStorageAdmin,
 } from "@manifold/plugin";
 import {
+  AgentPolicyBundleSchema,
+  AgentRunCapSchema,
+  AgentRunAuthorizationPathSchema,
+  AgentRunStateSchema,
   ActionSummarySchema,
   AuthoredCapSchema,
   MAX_MIGRATION_STORAGE_OPERATIONS,
   BindingOverridesSchema,
   CapSchema,
+  GrantNodeSchema,
+  GrantReachSchema,
   ContainerDisciplineSchema,
   ContainerSchema,
   GrantSchema,
@@ -27,6 +33,12 @@ import {
   TileLayoutSchema,
   validateTileLayout,
   type ActionSummary,
+  type AgentPolicyBundle,
+  type AgentRunCap,
+  type AgentRunState,
+  type AgentRunAuthorizationPath,
+  type AgentRunAuthorizationCredential,
+  type GrantReach,
   type BindingOverrides,
   type AuthoredCap,
   type Cap,
@@ -159,6 +171,84 @@ interface TokenRow {
   revoked_at: number | null;
   grant_id: string | null;
   expires_at: number | null;
+}
+
+interface AgentRunRow {
+  id: string;
+  principal_id: string;
+  root_run_id: string;
+  parent_run_id: string | null;
+  authorized_by_principal_id: string;
+  authorization_path: string;
+  authorizer_token_id: string | null;
+  authorizer_grant_id: string | null;
+  authorizer_caps: string;
+  authorizer_container_scope: string | null;
+  authorizer_expires_at: number | null;
+  purpose: string;
+  task_ref: string | null;
+  target: string;
+  reach: string;
+  caps: string;
+  created_at: number;
+  expires_at: number;
+  renewals: number;
+  max_depth: number;
+  max_descendants: number;
+  depth: number;
+  cleanup_owner_principal_id: string;
+  state: string;
+  policy_revision: string;
+  acknowledged_policy_revision: string | null;
+  cleanup_revoked_credentials: number;
+  cleanup_revoked_grants: number;
+  finished_at: number | null;
+  cleanup_failure: string | null;
+}
+
+interface AgentPolicySnapshotRow {
+  run_id: string;
+  revision: string;
+  bundles: string;
+  issued_at: number;
+  acknowledged_at: number | null;
+}
+
+export interface AgentRunRecord {
+  readonly id: string;
+  readonly principalId: string;
+  readonly rootRunId: string;
+  readonly parentRunId: string | null;
+  readonly authorizedByPrincipalId: string;
+  readonly authorizationPath: AgentRunAuthorizationPath;
+  readonly authorizationCredential: AgentRunAuthorizationCredential;
+  readonly purpose: string;
+  readonly taskRef?: string;
+  readonly target: string;
+  readonly reach: GrantReach;
+  readonly caps: readonly AgentRunCap[];
+  readonly createdAt: number;
+  readonly expiresAt: number;
+  readonly renewals: number;
+  readonly maxDepth: number;
+  readonly maxDescendants: number;
+  readonly depth: number;
+  readonly cleanupOwnerPrincipalId: string;
+  readonly state: AgentRunState;
+  readonly policyRevision: string;
+  readonly acknowledgedPolicyRevision?: string;
+  readonly cleanupRevokedCredentials: number;
+  readonly cleanupRevokedGrants: number;
+  readonly finishedAt?: number;
+  readonly cleanupFailure?: string;
+}
+
+export interface AgentPolicySnapshotRecord {
+  readonly runId: string;
+  readonly revision: string;
+  readonly bundles: readonly AgentPolicyBundle[];
+  readonly issuedAt: number;
+  readonly acknowledgedAt?: number;
 }
 
 interface GrantRow {
@@ -555,6 +645,55 @@ function toToken(row: TokenRow): TokenRecord {
     revokedAt: row.revoked_at,
     grantId: row.grant_id,
     expiresAt: row.expires_at,
+  };
+}
+
+function toAgentRun(row: AgentRunRow): AgentRunRecord {
+  return {
+    id: row.id,
+    principalId: row.principal_id,
+    rootRunId: row.root_run_id,
+    parentRunId: row.parent_run_id,
+    authorizedByPrincipalId: row.authorized_by_principal_id,
+    authorizationPath: AgentRunAuthorizationPathSchema.parse(row.authorization_path),
+    authorizationCredential: {
+      tokenId: row.authorizer_token_id,
+      grantId: row.authorizer_grant_id,
+      caps: CapSchema.array().parse(JSON.parse(row.authorizer_caps)),
+      containerScope: row.authorizer_container_scope,
+      ...(row.authorizer_expires_at === null ? {} : { expiresAt: row.authorizer_expires_at }),
+    },
+    purpose: row.purpose,
+    ...(row.task_ref === null ? {} : { taskRef: row.task_ref }),
+    target: GrantNodeSchema.parse(row.target),
+    reach: GrantReachSchema.parse(row.reach),
+    caps: AgentRunCapSchema.array().parse(JSON.parse(row.caps)),
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    renewals: row.renewals,
+    maxDepth: row.max_depth,
+    maxDescendants: row.max_descendants,
+    depth: row.depth,
+    cleanupOwnerPrincipalId: row.cleanup_owner_principal_id,
+    state: AgentRunStateSchema.parse(row.state),
+    policyRevision: row.policy_revision,
+    ...(row.acknowledged_policy_revision === null
+      ? {}
+      : { acknowledgedPolicyRevision: row.acknowledged_policy_revision }),
+    cleanupRevokedCredentials: row.cleanup_revoked_credentials,
+    cleanupRevokedGrants: row.cleanup_revoked_grants,
+    ...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
+    ...(row.cleanup_failure === null ? {} : { cleanupFailure: row.cleanup_failure }),
+  };
+}
+
+function toAgentPolicySnapshot(row: AgentPolicySnapshotRow): AgentPolicySnapshotRecord {
+  return {
+    runId: row.run_id,
+    revision: row.revision,
+    bundles: AgentPolicyBundleSchema.array().parse(JSON.parse(row.bundles)),
+    issuedAt: row.issued_at,
+    ...(row.acknowledged_at === null ? {} : { acknowledgedAt: row.acknowledged_at }),
   };
 }
 
@@ -1739,6 +1878,238 @@ export class ServerStore {
       )
       .all()
       .map((row) => ({ principal: toPrincipal(row), createdAt: row.created_at }));
+  }
+
+  createAgentRun(record: AgentRunRecord, snapshot: AgentPolicySnapshotRecord): void {
+    this.db
+      .query(
+        `INSERT INTO agent_runs(
+           id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
+           authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
+           authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
+           created_at,expires_at,renewals,max_depth,max_descendants,depth,
+           cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
+           cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        record.id,
+        record.principalId,
+        record.rootRunId,
+        record.parentRunId,
+        record.authorizedByPrincipalId,
+        record.authorizationPath,
+        record.authorizationCredential.tokenId,
+        record.authorizationCredential.grantId,
+        JSON.stringify(record.authorizationCredential.caps),
+        record.authorizationCredential.containerScope,
+        record.authorizationCredential.expiresAt ?? null,
+        record.purpose,
+        record.taskRef ?? null,
+        record.target,
+        record.reach,
+        JSON.stringify(record.caps),
+        record.createdAt,
+        record.expiresAt,
+        record.renewals,
+        record.maxDepth,
+        record.maxDescendants,
+        record.depth,
+        record.cleanupOwnerPrincipalId,
+        record.state,
+        record.policyRevision,
+        record.acknowledgedPolicyRevision ?? null,
+        record.cleanupRevokedCredentials,
+        record.cleanupRevokedGrants,
+        record.finishedAt ?? null,
+        record.cleanupFailure ?? null,
+      );
+    this.issueAgentPolicySnapshot(snapshot);
+  }
+
+  issueAgentPolicySnapshot(snapshot: AgentPolicySnapshotRecord): void {
+    this.db
+      .query(
+        `INSERT INTO agent_run_policy_snapshots(
+           run_id,revision,bundles,issued_at,acknowledged_at
+         ) VALUES (?,?,?,?,?)
+         ON CONFLICT(run_id,revision) DO UPDATE SET
+           bundles=excluded.bundles,
+           issued_at=excluded.issued_at,
+           acknowledged_at=excluded.acknowledged_at`,
+      )
+      .run(
+        snapshot.runId,
+        snapshot.revision,
+        JSON.stringify(snapshot.bundles),
+        snapshot.issuedAt,
+        snapshot.acknowledgedAt ?? null,
+      );
+  }
+
+  getAgentRun(id: string): AgentRunRecord | null {
+    const row = this.db
+      .query<AgentRunRow, [string]>(
+        `SELECT id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
+                authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
+                authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
+                created_at,expires_at,renewals,max_depth,max_descendants,depth,
+                cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
+                cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure
+         FROM agent_runs WHERE id=?`,
+      )
+      .get(id);
+    return row === null ? null : toAgentRun(row);
+  }
+
+  getAgentRunByPrincipal(principalId: string): AgentRunRecord | null {
+    const row = this.db
+      .query<AgentRunRow, [string]>(
+        `SELECT id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
+                authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
+                authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
+                created_at,expires_at,renewals,max_depth,max_descendants,depth,
+                cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
+                cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure
+         FROM agent_runs WHERE principal_id=?`,
+      )
+      .get(principalId);
+    return row === null ? null : toAgentRun(row);
+  }
+
+  listAgentRunTree(rootRunId: string): AgentRunRecord[] {
+    return this.db
+      .query<AgentRunRow, [string]>(
+        `SELECT id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
+                authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
+                authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
+                created_at,expires_at,renewals,max_depth,max_descendants,depth,
+                cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
+                cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure
+         FROM agent_runs WHERE root_run_id=? ORDER BY depth,id`,
+      )
+      .all(rootRunId)
+      .map(toAgentRun);
+  }
+
+  listOpenAgentRuns(now: number): AgentRunRecord[] {
+    return this.db
+      .query<AgentRunRow, [number]>(
+        `SELECT id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
+                authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
+                authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
+                created_at,expires_at,renewals,max_depth,max_descendants,depth,
+                cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
+                cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure
+         FROM agent_runs
+         WHERE state IN ('pending_policy','active','policy_stale') AND expires_at>?
+         ORDER BY created_at,id`,
+      )
+      .all(now)
+      .map(toAgentRun);
+  }
+
+  listExpiredAgentRuns(now: number): AgentRunRecord[] {
+    return this.db
+      .query<AgentRunRow, [number]>(
+        `SELECT id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
+                authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
+                authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
+                created_at,expires_at,renewals,max_depth,max_descendants,depth,
+                cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
+                cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure
+         FROM agent_runs
+         WHERE state IN ('pending_policy','active','policy_stale') AND expires_at<=?
+         ORDER BY depth,created_at,id`,
+      )
+      .all(now)
+      .map(toAgentRun);
+  }
+
+  getAgentPolicySnapshot(runId: string, revision: string): AgentPolicySnapshotRecord | null {
+    const row = this.db
+      .query<AgentPolicySnapshotRow, [string, string]>(
+        `SELECT run_id,revision,bundles,issued_at,acknowledged_at
+         FROM agent_run_policy_snapshots WHERE run_id=? AND revision=?`,
+      )
+      .get(runId, revision);
+    return row === null ? null : toAgentPolicySnapshot(row);
+  }
+
+  acknowledgeAgentPolicy(runId: string, revision: string, at: number): boolean {
+    const snapshot = this.db
+      .query<void, [number, string, string]>(
+        `UPDATE agent_run_policy_snapshots SET acknowledged_at=?
+         WHERE run_id=? AND revision=? AND acknowledged_at IS NULL`,
+      )
+      .run(at, runId, revision);
+    const run = this.db
+      .query<void, [string, string, string]>(
+        `UPDATE agent_runs
+         SET acknowledged_policy_revision=?,state='active'
+         WHERE id=? AND policy_revision=?
+           AND state IN ('pending_policy','policy_stale')`,
+      )
+      .run(revision, runId, revision);
+    return snapshot.changes === 1 && run.changes === 1;
+  }
+
+  updateAgentRunPolicy(
+    runId: string,
+    revision: string,
+    state: "pending_policy" | "policy_stale",
+  ): void {
+    this.db
+      .query<void, [string, string, string]>(
+        `UPDATE agent_runs SET policy_revision=?,state=? WHERE id=?`,
+      )
+      .run(revision, state, runId);
+  }
+
+  renewAgentRun(
+    runId: string,
+    expiresAt: number,
+    authorizationCredential: AgentRunAuthorizationCredential,
+  ): boolean {
+    return (
+      this.db
+        .query<
+          void,
+          [number, string | null, string | null, string, string | null, number | null, string]
+        >(
+          `UPDATE agent_runs
+           SET expires_at=?,renewals=renewals+1,authorizer_token_id=?,authorizer_grant_id=?,
+               authorizer_caps=?,authorizer_container_scope=?,authorizer_expires_at=?
+           WHERE id=? AND state='active'`,
+        )
+        .run(
+          expiresAt,
+          authorizationCredential.tokenId,
+          authorizationCredential.grantId,
+          JSON.stringify(authorizationCredential.caps),
+          authorizationCredential.containerScope,
+          authorizationCredential.expiresAt ?? null,
+          runId,
+        ).changes === 1
+    );
+  }
+
+  settleAgentRun(
+    runId: string,
+    state: AgentRunState,
+    at: number,
+    revokedCredentials: number,
+    revokedGrants: number,
+    failure?: string,
+  ): void {
+    this.db
+      .query<void, [string, number, number, number, string | null, string]>(
+        `UPDATE agent_runs
+         SET state=?,finished_at=?,cleanup_revoked_credentials=?,cleanup_revoked_grants=?,
+             cleanup_failure=?
+         WHERE id=?`,
+      )
+      .run(state, at, revokedCredentials, revokedGrants, failure ?? null, runId);
   }
 
   createToken(record: TokenRecord): void {

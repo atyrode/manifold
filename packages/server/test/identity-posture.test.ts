@@ -25,7 +25,7 @@ import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from
  *
  * Three exemptions are asserted as loudly as the rule, because each one is a lockout if it
  * ever silently stops holding: a machine's credential, a terminal-lifecycle credential, and
- * the owner key itself. Ordinary agents have their own finite bound.
+ * the owner key itself. Sponsor-bound agent runs have their own finite bound.
  */
 
 const OWNER_KEY = "a".repeat(64);
@@ -78,8 +78,11 @@ async function fixture(options: { readonly online?: ReadonlySet<string> } = {}):
   };
 }
 
-function mint(fix: Fixture, caps: readonly Cap[], kind: "human" | "agent" = "human"): TokenGrant {
-  return fix.auth.mintToken({ principal: { name: "guest", kind }, caps: [...caps] }, fix.owner);
+function mint(fix: Fixture, caps: readonly Cap[]): TokenGrant {
+  return fix.auth.mintToken(
+    { principal: { name: "guest", kind: "human" }, caps: [...caps] },
+    fix.owner,
+  );
 }
 
 function refusal(run: () => unknown): { code: string; message: string } {
@@ -155,35 +158,51 @@ describe("session expiry (ADR 0019 §2)", () => {
     fix.store.close();
   });
 
-  test("an ordinary agent mint publishes the exact last-valid and first-expired boundary", async () => {
+  test("an agent run publishes the exact last-valid and first-expired boundary", async () => {
     const fix = await fixture();
-    const granted = mint(fix, ["scenes:write"], "agent");
-    const expiresAt = fix.runtime.time + 60 * 60 * 1000;
+    const created = fix.auth.createAgentRun(
+      {
+        name: "bounded automation",
+        purpose: "Exercise the credential expiry boundary.",
+        target: "manifold://",
+        reach: "subtree",
+        caps: ["scenes:write"],
+        lifetimeMs: AUTOMATED_TOKEN_TTL_MS,
+        maxDepth: 4,
+        maxDescendants: 32,
+      },
+      fix.owner,
+    );
+    const expiresAt = fix.runtime.time + AUTOMATED_TOKEN_TTL_MS;
 
-    expect(granted.expiresAt).toBe(expiresAt);
+    expect(created.credential.expiresAt).toBe(expiresAt);
     fix.runtime.time = expiresAt - 1;
-    expect(fix.auth.authenticate(granted.token)).toMatchObject({
-      principal: { id: granted.principal.id },
+    expect(fix.auth.authenticate(created.credential.token)).toMatchObject({
+      principal: { id: created.run.principal.id, kind: "agent" },
       expiresAt,
+      agentRunId: created.run.id,
+      isRoot: false,
     });
     fix.runtime.time += 1;
-    expect(refusal(() => fix.auth.authenticate(granted.token))).toEqual({
+    expect(refusal(() => fix.auth.authenticate(created.credential.token))).toEqual({
       code: "forbidden",
       message: "expired",
     });
+    expect(fix.store.getAgentRun(created.run.id)?.state).toBe("expired");
     fix.store.close();
   });
 
-  test("agent bootstrap expires even though it grants root authority", async () => {
+  test("legacy bootstrap rejects autonomous identities at the published door", async () => {
     const fix = await fixture();
-    const granted = fix.auth.bootstrapPrincipal({ name: "automation", kind: "agent" }, fix.owner);
-    const expiresAt = fix.runtime.time + AUTOMATED_TOKEN_TTL_MS;
 
-    expect(granted.expiresAt).toBe(expiresAt);
-    fix.runtime.time = expiresAt - 1;
-    expect(fix.auth.authenticate(granted.token).isRoot).toBe(true);
-    fix.runtime.time += 1;
-    expect(refusal(() => fix.auth.authenticate(granted.token)).message).toBe("expired");
+    const outcome = await fix.host.dispatch(fix.owner, "core.access.createPrincipal", {
+      name: "automation",
+      kind: "agent",
+    });
+    expect(outcome).toMatchObject({
+      ok: false,
+      denial: { rule: "invalid_args" },
+    });
     expect(fix.auth.authenticate(OWNER_KEY).isRoot).toBe(true);
     fix.store.close();
   });
@@ -235,7 +254,7 @@ describe("session expiry (ADR 0019 §2)", () => {
     fix.store.close();
   });
 
-  test("only the internally issued terminal credential is lifecycle-bound, not its principal", async () => {
+  test("a terminal-lifecycle identity cannot escape through the generic token door", async () => {
     const fix = await fixture();
     const containerId = fix.runtime.newId();
     fix.store.createContainer({
@@ -249,16 +268,19 @@ describe("session expiry (ADR 0019 §2)", () => {
       containerId,
       fix.owner.principal.id,
     );
-    const external = fix.auth.mintToken(
-      { principalId: terminal.principal.id, caps: ["containers:read"], containerId },
-      fix.owner,
-    );
+
+    expect(
+      refusal(() =>
+        fix.auth.mintToken(
+          { principalId: terminal.principal.id, caps: ["containers:read"], containerId },
+          fix.owner,
+        ),
+      ),
+    ).toEqual({
+      code: "forbidden",
+      message: "agent credentials require renewAgentRun",
+    });
     expect(terminal.expiresAt).toBeUndefined();
-    expect(external.expiresAt).toBe(fix.runtime.time + AUTOMATED_TOKEN_TTL_MS);
-    fix.runtime.time += AUTOMATED_TOKEN_TTL_MS - 1;
-    expect(fix.auth.authenticate(external.token).principal.id).toBe(terminal.principal.id);
-    fix.runtime.time += 1;
-    expect(refusal(() => fix.auth.authenticate(external.token)).message).toBe("expired");
     fix.runtime.time += INTERACTIVE_TOKEN_TTL_MS * 10;
     expect(fix.auth.authenticate(terminal.token).principal.id).toBe(terminal.principal.id);
     fix.auth.revokeIssuedPrincipal(terminal.principal.id, fix.owner.principal.id);
@@ -479,7 +501,7 @@ describe("the credential list (ADR 0019 §3)", () => {
     const minter = mint(fix, ["tokens:mint", "containers:read"]);
     const minterContext = fix.auth.authenticate(minter.token);
     const delegate = fix.auth.mintToken(
-      { principal: { name: "sub-agent", kind: "agent" }, caps: ["containers:read"] },
+      { principal: { name: "delegate", kind: "human" }, caps: ["containers:read"] },
       minterContext,
     );
     const stranger = mint(fix, ["containers:read"]);

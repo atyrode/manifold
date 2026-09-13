@@ -382,7 +382,7 @@ try {
 
   const grant = ActionOutcomeSchema.parse(
     await dispatch("core.access.mint", {
-      principal: { name: "trace-gate", kind: "agent" },
+      principal: { name: "trace-gate", kind: "human" },
       caps: ["containers:read"],
     }),
   );

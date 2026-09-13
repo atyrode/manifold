@@ -1,18 +1,28 @@
 import type {
+  AcknowledgeAgentPolicyRequest,
+  AcknowledgeAgentPolicyResult,
+  AgentPolicyChallenge,
   BootstrapPrincipalRequest,
   CreateGrantRequest,
+  CreateAgentRunRequest,
+  CreateAgentRunResult,
   Dial,
   DialShareRequest,
   DialTicket,
   Grant,
   Grants,
   ListGrantsRequest,
+  FinishAgentRunRequest,
+  FinishAgentRunResult,
   MintShareRequest,
   MintTokenRequest,
   OpenDialRequest,
   PrincipalCredentials,
   RevokeGrantRequest,
   RevokeResult,
+  ReloadAgentPolicyResult,
+  RenewAgentRunRequest,
+  RenewAgentRunResult,
   RevokeShareRequest,
   Share,
   ShareGrant,
@@ -31,16 +41,24 @@ type IdentityAnswer<T> =
   | { readonly ok: false; readonly code: string; readonly message: string };
 
 /**
- * The slice of the host this plugin touches, declared locally (D1): three calls on an
- * identity ref that is already bound to the caller. No store, no rooms, no broker, and
- * deliberately no `AuthService` — this plugin never sees a bearer secret it did not just
- * mint, never authenticates anybody, and cannot choose whose authority it acts with.
- * `assembly.ts` checks this shape against the real `ActionCtx` by assignment.
+ * The slice of the host this plugin touches, declared locally (D1): identity lifecycle calls
+ * on a ref already bound to the caller. No store, rooms or broker, and deliberately no
+ * `AuthService` — this plugin never sees a bearer secret it did not just mint, never
+ * authenticates anybody, and cannot choose whose authority it acts with. `assembly.ts` checks
+ * this shape against the real `ActionCtx` by assignment.
  */
 interface AccessCtx {
   readonly identity: {
     createPrincipal(input: BootstrapPrincipalRequest): IdentityAnswer<TokenGrant>;
     mintToken(input: MintTokenRequest): IdentityAnswer<TokenGrant>;
+    createAgentRun(input: CreateAgentRunRequest): IdentityAnswer<CreateAgentRunResult>;
+    agentPolicyChallenge(): IdentityAnswer<AgentPolicyChallenge>;
+    acknowledgeAgentPolicy(
+      input: AcknowledgeAgentPolicyRequest,
+    ): IdentityAnswer<AcknowledgeAgentPolicyResult>;
+    renewAgentRun(input: RenewAgentRunRequest): IdentityAnswer<RenewAgentRunResult>;
+    finishAgentRun(input: FinishAgentRunRequest): IdentityAnswer<FinishAgentRunResult>;
+    reloadAgentPolicy(): IdentityAnswer<ReloadAgentPolicyResult>;
     revokePrincipal(principalId: string): IdentityAnswer<number>;
     /*
       The credential READ (ADR 0019 §3), on the identity door because a credential is what
@@ -84,7 +102,7 @@ interface AccessCtx {
 type Outcome<T> = { refused: string } | T;
 
 /**
- * These are the bodies of the three deleted routes, moved with their meaning intact.
+ * These are thin action bodies over the identity mechanism.
  *
  * Every refusal the mechanism can produce is relayed VERBATIM — "root capability required",
  * "cannot mint capability terminals:write", "cannot widen container scope", "principal not found",
@@ -114,6 +132,54 @@ export const accessHandlers = {
     */
     const minted = ctx.identity.mintToken(args);
     return minted.ok ? minted.value : { refused: minted.message };
+  },
+
+  async createAgentRun(
+    ctx: AccessCtx,
+    args: CreateAgentRunRequest,
+  ): Promise<Outcome<CreateAgentRunResult>> {
+    const created = ctx.identity.createAgentRun(args);
+    return created.ok ? created.value : { refused: created.message };
+  },
+
+  async getAgentPolicy(
+    ctx: AccessCtx,
+    _args: Record<string, never>,
+  ): Promise<Outcome<AgentPolicyChallenge>> {
+    const policy = ctx.identity.agentPolicyChallenge();
+    return policy.ok ? policy.value : { refused: policy.message };
+  },
+
+  async acknowledgeAgentPolicy(
+    ctx: AccessCtx,
+    args: AcknowledgeAgentPolicyRequest,
+  ): Promise<Outcome<AcknowledgeAgentPolicyResult>> {
+    const acknowledged = ctx.identity.acknowledgeAgentPolicy(args);
+    return acknowledged.ok ? acknowledged.value : { refused: acknowledged.message };
+  },
+
+  async renewAgentRun(
+    ctx: AccessCtx,
+    args: RenewAgentRunRequest,
+  ): Promise<Outcome<RenewAgentRunResult>> {
+    const renewed = ctx.identity.renewAgentRun(args);
+    return renewed.ok ? renewed.value : { refused: renewed.message };
+  },
+
+  async finishAgentRun(
+    ctx: AccessCtx,
+    args: FinishAgentRunRequest,
+  ): Promise<Outcome<FinishAgentRunResult>> {
+    const finished = ctx.identity.finishAgentRun(args);
+    return finished.ok ? finished.value : { refused: finished.message };
+  },
+
+  async reloadAgentPolicy(
+    ctx: AccessCtx,
+    _args: Record<string, never>,
+  ): Promise<Outcome<ReloadAgentPolicyResult>> {
+    const reloaded = ctx.identity.reloadAgentPolicy();
+    return reloaded.ok ? reloaded.value : { refused: reloaded.message };
   },
 
   async revoke(ctx: AccessCtx, args: { principalId: string }): Promise<Outcome<RevokeResult>> {

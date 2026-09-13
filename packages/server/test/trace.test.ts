@@ -2,6 +2,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { defineAction } from "@manifold/plugin";
 import { EventsListResponseSchema } from "@manifold-plugin/events";
 import {
+  CreateAgentRunResultSchema,
   ManifoldRefSchema,
   ContainerResponseSchema,
   PlaceResponseSchema,
@@ -498,6 +499,23 @@ describe("the trace ledger records every exercise of authority", () => {
     const argRow = newestTrace(base);
     expect(argRow.outcome).toBe("invalid_args");
     expect(JSON.parse(argRow.payload)).toEqual({ nonsense: true });
+    const runCreated = await base.host.dispatch(base.owner, "core.access.createAgentRun", {
+      name: "trace-policy-rungs",
+      purpose: "Exercise both policy refusal rungs in the trace ledger.",
+      target: "manifold://",
+      reach: "subtree",
+      caps: ["containers:read"],
+    });
+    if (!runCreated.ok) throw new Error("fixture agent run was refused");
+    const run = CreateAgentRunResultSchema.parse(runCreated.result);
+    const pendingRun = base.auth.authenticate(run.credential.token);
+    const policyRequired = await base.host.dispatch(pendingRun, "core.machines.list", {});
+    expect(policyRequired.ok).toBeFalse();
+    expect(newestTrace(base).outcome).toBe("policy_required");
+    base.store.updateAgentRunPolicy(run.run.id, "0".repeat(64), "policy_stale");
+    const policyStale = await base.host.dispatch(pendingRun, "core.machines.list", {});
+    expect(policyStale.ok).toBeFalse();
+    expect(newestTrace(base).outcome).toBe("policy_stale");
 
     /*
       Rung 2, PLUGIN DISABLED: a door whose plugin is off answers, and the answer is recorded.

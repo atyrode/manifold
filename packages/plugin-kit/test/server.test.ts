@@ -202,7 +202,10 @@ describe("load", () => {
   test("answers loaded with fully qualified summaries, JSON schemas and the hook flags", async () => {
     const fake = host({
       manifest,
-      actions: [echo, { ...echo, name: "sweep", cleanup: true, scope: "container" }],
+      actions: [
+        echo,
+        { ...echo, name: "sweep", cleanup: true, runAccess: "teardown", scope: "container" },
+      ],
       handlers: { echo: async () => ({ text: "" }), sweep: async () => ({ text: "" }) },
       lifecycle: { onEnable: () => {} },
     });
@@ -216,7 +219,11 @@ describe("load", () => {
     ]);
     expect(loaded.actions[0]).toMatchObject({ scope: "workspace", caps: ["containers:read"] });
     expect(loaded.actions[0]).not.toHaveProperty("cleanup");
-    expect(loaded.actions[1]).toMatchObject({ scope: "container", cleanup: true });
+    expect(loaded.actions[1]).toMatchObject({
+      scope: "container",
+      cleanup: true,
+      runAccess: "teardown",
+    });
     // The JSON Schema is generated from the enforcing zod schema, never written twice.
     expect(loaded.actions[0]?.input).toMatchObject({
       type: "object",

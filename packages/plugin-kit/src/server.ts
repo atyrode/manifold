@@ -28,6 +28,7 @@ import {
   type ActionScope,
   type ActionRequirement,
   type ActionSummary,
+  type ActionRunAccess,
   type AssemblyDelta,
   type AskableCap,
   type AuthoredCap,
@@ -121,6 +122,8 @@ export interface ServerActionDef<In = unknown, Out = unknown> {
   readonly trace?: "redacted" | "opaque";
   /** A cleanup action stays dispatchable while the plugin is disabled (D12). */
   readonly cleanup?: boolean | undefined;
+  /** Reserved core identity lifecycle metadata; host assembly refuses it outside `core.access`. */
+  readonly runAccess?: ActionRunAccess | undefined;
   readonly input: z.ZodType<In>;
   readonly result: z.ZodType<Out>;
 }
@@ -1203,6 +1206,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         caps: [...action.caps],
         ...(action.delegates === undefined ? {} : { delegates: [...action.delegates] }),
         ...(action.cleanup === undefined ? {} : { cleanup: action.cleanup }),
+        ...(action.runAccess === undefined ? {} : { runAccess: action.runAccess }),
         scope: action.scope ?? "workspace",
         ...(action.requirements === undefined ? {} : { requirements: [...action.requirements] }),
         ...(action.trace === undefined ? {} : { trace: action.trace }),

@@ -780,6 +780,8 @@ export const ActionRequirementSchema = z.strictObject({
 export type ActionRequirement = z.infer<typeof ActionRequirementSchema>;
 export const ActionRequirementsSchema = z.array(ActionRequirementSchema).min(1).max(64);
 export const ActionTracePolicySchema = z.enum(["redacted", "opaque"]);
+export const ActionRunAccessSchema = z.enum(["policy", "teardown", "delegate"]);
+export type ActionRunAccess = z.infer<typeof ActionRunAccessSchema>;
 
 /** Only native job/resource/service APIs can discharge these at concrete targets. */
 const NATIVE_DELEGATE_CAPS: readonly Cap[] = [
@@ -825,6 +827,13 @@ export const ActionSummarySchema = z.strictObject({
    * Published so a client can tell which affordances outlive a toggle.
    */
   cleanup: z.boolean().optional(),
+  /**
+   * A reserved core identity action's autonomous-run lifecycle exception. `policy` and
+   * `teardown` remain reachable while ordinary authority is suspended; `delegate` publishes
+   * target-relative authority that the identity mechanism re-evaluates against the requested
+   * child envelope. Assembly refuses this metadata outside `core.access`.
+   */
+  runAccess: ActionRunAccessSchema.optional(),
   /**
    * The authority grade this door is written for. Published (defaulted, so an older reader
    * that never saw the field reads the conservative answer) because "may my container-scoped
@@ -1092,6 +1101,8 @@ export function rosterDisciplines(
 export const ACTION_DENIAL_RULES = [
   "unknown_action",
   "plugin_disabled",
+  "policy_required",
+  "policy_stale",
   "forbidden",
   "invalid_args",
   "refused",

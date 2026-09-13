@@ -96,6 +96,7 @@ export function localActionDef(pluginId: string, summary: ActionSummary): AnyAct
     ...(summary.requirements === undefined ? {} : { requirements: summary.requirements }),
     ...(summary.trace === undefined ? {} : { trace: summary.trace }),
     ...(summary.cleanup === true ? { cleanup: true } : {}),
+    ...(summary.runAccess === undefined ? {} : { runAccess: summary.runAccess }),
     input: z.unknown().meta({ ...summary.input }),
     result: z.unknown().meta({ ...summary.result }),
   };

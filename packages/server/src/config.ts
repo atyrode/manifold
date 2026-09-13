@@ -43,6 +43,8 @@ export interface ServerConfig {
   /** Instance-local Ed25519 issuer key; the private half never leaves this process. */
   previewIdentityPrivateKey: string;
   previewIdentityPublicKey: string;
+  /** Optional trusted operator policy text required by every ordinary autonomous-agent run. */
+  agentPolicyFile?: string;
 }
 
 function randomHex(bytes: number): string {
@@ -212,6 +214,13 @@ export function loadConfig(
       ? null
       : normalizeIdentityAuthority(configuredIdentityAuthority);
   const previewDomain = normalizePreviewDomain(env.MANIFOLD_PREVIEW_DOMAIN);
+  const configuredAgentPolicyFile = env.MANIFOLD_AGENT_POLICY_FILE?.trim();
+  if (configuredAgentPolicyFile?.includes("\0"))
+    throw new Error("MANIFOLD_AGENT_POLICY_FILE must not contain a null byte");
+  const agentPolicyFile =
+    configuredAgentPolicyFile === undefined || configuredAgentPolicyFile === ""
+      ? undefined
+      : resolve(cwd, configuredAgentPolicyFile);
   const previewIdentityKey = loadPreviewIdentityKey(dataDir);
   return {
     port,
@@ -230,6 +239,7 @@ export function loadConfig(
     pluginDevPaths: env.MANIFOLD_PLUGIN_DEV_PATHS === "1",
     previewIdentityAuthority,
     previewDomain,
+    ...(agentPolicyFile === undefined ? {} : { agentPolicyFile }),
     previewIdentityPrivateKey: previewIdentityKey.privateKey,
     previewIdentityPublicKey: previewIdentityKey.publicKey,
     identity: resolveBuildIdentity(env),

@@ -1,0 +1,493 @@
+import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  AgentPolicyChallengeSchema,
+  AcknowledgeAgentPolicyResultSchema,
+  CreateAgentRunResultSchema,
+  FinishAgentRunResultSchema,
+  ReloadAgentPolicyResultSchema,
+  RenewAgentRunResultSchema,
+  formatManifoldUri,
+  type ActionOutcome,
+} from "@manifold/protocol";
+import { AuthService, type AuthContext } from "../src/auth.ts";
+import { silentLogger } from "../src/log.ts";
+import type { PluginHost } from "../src/plugin-host.ts";
+import { RoomManager } from "../src/room.ts";
+import type { ServerStore } from "../src/stores.ts";
+import { TerminalBroker } from "../src/terminal-broker.ts";
+import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+
+const OWNER_KEY = "r".repeat(64);
+
+interface Fixture {
+  readonly runtime: FakeRuntime;
+  readonly store: ServerStore;
+  readonly auth: AuthService;
+  readonly owner: AuthContext;
+  readonly host: PluginHost;
+}
+
+async function fixture(policyFile?: string): Promise<Fixture> {
+  const runtime = new FakeRuntime();
+  const clock = new FakeClock(runtime);
+  const store = testStore();
+  const auth = new AuthService(store, OWNER_KEY, runtime, undefined, policyFile);
+  const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
+  const broker = new TerminalBroker(
+    store,
+    auth,
+    rooms,
+    runtime,
+    clock,
+    silentLogger,
+    () => "http://localhost:7777",
+    testTileTrees,
+  );
+  rooms.setTerminalProvider((containerId) => broker.listForContainer(containerId));
+  rooms.setPendingOpenProvider((containerId) => broker.hasPendingOpenForContainer(containerId));
+  return {
+    runtime,
+    store,
+    auth,
+    owner: auth.authenticate(OWNER_KEY),
+    host: await testPluginHost(store, auth, rooms, broker, runtime),
+  };
+}
+
+function value(outcome: ActionOutcome): unknown {
+  if (!outcome.ok) throw new Error(`expected result, got ${outcome.denial.rule}`);
+  return outcome.result;
+}
+
+function denial(outcome: ActionOutcome): { rule: string; message: string } {
+  if (outcome.ok) throw new Error("expected denial");
+  return outcome.denial;
+}
+
+async function acknowledge(fix: Fixture, actor: AuthContext) {
+  const challenge = AgentPolicyChallengeSchema.parse(
+    value(await fix.host.dispatch(actor, "core.access.getAgentPolicy", {})),
+  );
+  return AcknowledgeAgentPolicyResultSchema.parse(
+    value(
+      await fix.host.dispatch(actor, "core.access.acknowledgeAgentPolicy", {
+        revision: challenge.revision,
+        acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
+      }),
+    ),
+  );
+}
+
+describe("sponsor-bound agent runs", () => {
+  test("policy gates every ordinary action and parent settlement revokes descendants", async () => {
+    const fix = await fixture();
+    const containerId = fix.runtime.newId();
+    fix.store.createContainer({
+      id: containerId,
+      name: "bounded work",
+      createdAt: fix.runtime.now(),
+      discipline: "canvas",
+    });
+
+    const created = CreateAgentRunResultSchema.parse(
+      value(
+        await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
+          name: "planner",
+          purpose: "Inspect the bounded workspace and delegate one read-only child.",
+          taskRef: "issue:559",
+          target: "manifold://",
+          reach: "subtree",
+          caps: ["agents:delegate", "containers:read"],
+        }),
+      ),
+    );
+    const parent = fix.auth.authenticate(created.credential.token);
+
+    expect(denial(await fix.host.dispatch(parent, "core.machines.list", {})).rule).toBe(
+      "policy_required",
+    );
+    expect((await acknowledge(fix, parent)).run.state).toBe("active");
+    expect((await fix.host.dispatch(parent, "core.machines.list", {})).ok).toBe(true);
+
+    const childCreated = CreateAgentRunResultSchema.parse(
+      value(
+        await fix.host.dispatch(parent, "core.access.createAgentRun", {
+          name: "reader",
+          purpose: "Read the one sponsored container.",
+          target: formatManifoldUri({ kind: "container", containerId }),
+          reach: "subtree",
+          caps: ["containers:read"],
+        }),
+      ),
+    );
+    const widened = await fix.host.dispatch(parent, "core.access.createAgentRun", {
+      name: "wider",
+      purpose: "Attempt authority the sponsor did not grant.",
+      target: formatManifoldUri({ kind: "container", containerId }),
+      reach: "subtree",
+      caps: ["terminals:write"],
+    });
+    expect(denial(widened)).toEqual({
+      rule: "refused",
+      message: "cannot delegate capability terminals:write at target",
+    });
+    const child = fix.auth.authenticate(childCreated.credential.token);
+    expect((await acknowledge(fix, child)).run.state).toBe("active");
+    const finished = FinishAgentRunResultSchema.parse(
+      value(
+        await fix.host.dispatch(parent, "core.access.finishAgentRun", {
+          runId: created.run.id,
+          outcome: "completed",
+        }),
+      ),
+    );
+    expect(finished).toMatchObject({ finishedRuns: 2, run: { state: "completed" } });
+    expect(fix.store.getAgentRun(childCreated.run.id)?.state).toBe("revoked");
+    expect(() => fix.auth.authenticate(created.credential.token)).toThrow("revoked");
+    expect(() => fix.auth.authenticate(childCreated.credential.token)).toThrow("revoked");
+    fix.store.close();
+  });
+  test("a child remains bounded by the sponsor waterfall at every descendant node", async () => {
+    const fix = await fixture();
+    const containerId = fix.runtime.newId();
+    const containerNode = formatManifoldUri({ kind: "container", containerId });
+    fix.store.createContainer({
+      id: containerId,
+      name: "denied descendant",
+      createdAt: fix.runtime.now(),
+      discipline: "canvas",
+    });
+    const created = CreateAgentRunResultSchema.parse(
+      value(
+        await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
+          name: "parent",
+          purpose: "Delegate without escaping a descendant-specific denial.",
+          target: "manifold://",
+          reach: "subtree",
+          caps: ["agents:delegate", "containers:read"],
+        }),
+      ),
+    );
+    const parent = fix.auth.authenticate(created.credential.token);
+    await acknowledge(fix, parent);
+    fix.auth.grant(
+      {
+        principal: { kind: "principal", id: created.run.principal.id },
+        node: containerNode,
+        caps: ["containers:read"],
+        effect: "deny",
+        reach: "subtree",
+      },
+      fix.owner,
+    );
+    expect(fix.auth.effectiveCaps(parent, containerNode).has("containers:read")).toBe(false);
+
+    const childCreated = CreateAgentRunResultSchema.parse(
+      value(
+        await fix.host.dispatch(parent, "core.access.createAgentRun", {
+          name: "child",
+          purpose: "Remain inside the sponsor's exact authority waterfall.",
+          target: "manifold://",
+          reach: "subtree",
+          caps: ["containers:read"],
+        }),
+      ),
+    );
+    const child = fix.auth.authenticate(childCreated.credential.token);
+    await acknowledge(fix, child);
+    expect(fix.auth.effectiveCaps(child, containerNode).has("containers:read")).toBe(false);
+    fix.store.close();
+  });
+
+  test("generic revocation is transitive and scoped credentials cannot clean up elsewhere", async () => {
+    const fix = await fixture();
+    const firstContainerId = fix.runtime.newId();
+    const secondContainerId = fix.runtime.newId();
+    for (const [id, name] of [
+      [firstContainerId, "first"],
+      [secondContainerId, "second"],
+    ] as const) {
+      fix.store.createContainer({
+        id,
+        name,
+        createdAt: fix.runtime.now(),
+        discipline: "canvas",
+      });
+    }
+    const parentCreated = CreateAgentRunResultSchema.parse(
+      value(
+        await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
+          name: "revoked-parent",
+          purpose: "Prove generic revocation settles the complete run subtree.",
+          target: "manifold://",
+          reach: "subtree",
+          caps: ["agents:delegate", "containers:read"],
+        }),
+      ),
+    );
+    const parent = fix.auth.authenticate(parentCreated.credential.token);
+    await acknowledge(fix, parent);
+    const childCreated = CreateAgentRunResultSchema.parse(
+      value(
+        await fix.host.dispatch(parent, "core.access.createAgentRun", {
+          name: "revoked-child",
+          purpose: "Be revoked with the parent.",
+          target: formatManifoldUri({ kind: "container", containerId: secondContainerId }),
+          reach: "subtree",
+          caps: ["containers:read"],
+        }),
+      ),
+    );
+    expect(
+      (
+        await fix.host.dispatch(fix.owner, "core.access.revoke", {
+          principalId: parentCreated.run.principal.id,
+        })
+      ).ok,
+    ).toBe(true);
+    expect(fix.store.getAgentRun(parentCreated.run.id)?.state).toBe("revoked");
+    expect(fix.store.getAgentRun(childCreated.run.id)?.state).toBe("revoked");
+    expect(() => fix.auth.authenticate(childCreated.credential.token)).toThrow("revoked");
+
+    const outsideCreated = CreateAgentRunResultSchema.parse(
+      value(
+        await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
+          name: "outside",
+          purpose: "Remain outside a narrow cleanup credential.",
+          target: formatManifoldUri({ kind: "container", containerId: secondContainerId }),
+          reach: "subtree",
+          caps: ["containers:read"],
+        }),
+      ),
+    );
+    const narrow = fix.auth.mintToken(
+      {
+        principalId: fix.owner.principal.id,
+        caps: ["containers:read"],
+        containerId: firstContainerId,
+      },
+      fix.owner,
+    );
+    const narrowOwner = fix.auth.authenticate(narrow.token);
+    expect(
+      denial(
+        await fix.host.dispatch(narrowOwner, "core.access.finishAgentRun", {
+          runId: outsideCreated.run.id,
+          outcome: "cancelled",
+        }),
+      ).message,
+    ).toBe("cannot widen container scope");
+    fix.store.close();
+  });
+
+  test("expiry withdraws a hot run subtree before teardown can claim success", async () => {
+    const fix = await fixture();
+    const parentCreated = CreateAgentRunResultSchema.parse(
+      value(
+        await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
+          name: "expiring-parent",
+          purpose: "Prove expiry is a backstop rather than successful teardown.",
+          target: "manifold://",
+          reach: "subtree",
+          caps: ["agents:delegate", "containers:read"],
+          lifetimeMs: 60_000,
+        }),
+      ),
+    );
+    const parent = fix.auth.authenticate(parentCreated.credential.token);
+    await acknowledge(fix, parent);
+    const childCreated = CreateAgentRunResultSchema.parse(
+      value(
+        await fix.host.dispatch(parent, "core.access.createAgentRun", {
+          name: "expiring-child",
+          purpose: "Expire with the parent.",
+          target: "manifold://",
+          reach: "subtree",
+          caps: ["containers:read"],
+          lifetimeMs: 60_000,
+        }),
+      ),
+    );
+    fix.runtime.time += 60_000;
+
+    expect(
+      denial(
+        await fix.host.dispatch(parent, "core.access.finishAgentRun", {
+          runId: parentCreated.run.id,
+          outcome: "completed",
+        }),
+      ),
+    ).toEqual({ rule: "forbidden", message: "agent run expired" });
+    expect(fix.store.getAgentRun(parentCreated.run.id)?.state).toBe("expired");
+    expect(fix.store.getAgentRun(childCreated.run.id)?.state).toBe("revoked");
+    fix.store.close();
+  });
+
+  test("renewal replaces the credential without extending the run silently", async () => {
+    const fix = await fixture();
+    const created = CreateAgentRunResultSchema.parse(
+      value(
+        await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
+          name: "renewed",
+          purpose: "Exercise explicit sponsor renewal.",
+          target: "manifold://",
+          reach: "subtree",
+          caps: ["containers:read"],
+          lifetimeMs: 60_000,
+        }),
+      ),
+    );
+    const original = fix.auth.authenticate(created.credential.token);
+    await acknowledge(fix, original);
+    const renewed = RenewAgentRunResultSchema.parse(
+      value(
+        await fix.host.dispatch(fix.owner, "core.access.renewAgentRun", {
+          runId: created.run.id,
+          lifetimeMs: 120_000,
+        }),
+      ),
+    );
+    expect(renewed.run).toMatchObject({
+      renewals: 1,
+      expiresAt: fix.runtime.now() + 120_000,
+    });
+    expect(renewed.revokedCredentials).toBe(1);
+    expect(() => fix.auth.authenticate(created.credential.token)).toThrow("revoked");
+    const replacement = fix.auth.authenticate(renewed.credential.token);
+    expect((await fix.host.dispatch(replacement, "core.machines.list", {})).ok).toBe(true);
+    fix.store.close();
+  });
+
+  test("each ancestor enforces its own descendant budget", async () => {
+    const fix = await fixture();
+    const rootCreated = CreateAgentRunResultSchema.parse(
+      value(
+        await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
+          name: "bounded-root",
+          purpose: "Delegate through a branch with a lower local budget.",
+          target: "manifold://",
+          reach: "subtree",
+          caps: ["agents:delegate", "containers:read"],
+          maxDescendants: 3,
+        }),
+      ),
+    );
+    const root = fix.auth.authenticate(rootCreated.credential.token);
+    await acknowledge(fix, root);
+    const branchCreated = CreateAgentRunResultSchema.parse(
+      value(
+        await fix.host.dispatch(root, "core.access.createAgentRun", {
+          name: "bounded-branch",
+          purpose: "Allow exactly one descendant in this branch.",
+          target: "manifold://",
+          reach: "subtree",
+          caps: ["agents:delegate", "containers:read"],
+          maxDescendants: 1,
+        }),
+      ),
+    );
+    const branch = fix.auth.authenticate(branchCreated.credential.token);
+    await acknowledge(fix, branch);
+    const leafCreated = CreateAgentRunResultSchema.parse(
+      value(
+        await fix.host.dispatch(branch, "core.access.createAgentRun", {
+          name: "bounded-leaf",
+          purpose: "Consume the branch descendant budget.",
+          target: "manifold://",
+          reach: "subtree",
+          caps: ["agents:delegate", "containers:read"],
+        }),
+      ),
+    );
+    const leaf = fix.auth.authenticate(leafCreated.credential.token);
+    await acknowledge(fix, leaf);
+
+    expect(
+      denial(
+        await fix.host.dispatch(leaf, "core.access.createAgentRun", {
+          name: "too-deep-in-branch",
+          purpose: "Attempt to bypass the intermediate ancestor budget.",
+          target: "manifold://",
+          reach: "subtree",
+          caps: ["containers:read"],
+        }),
+      ),
+    ).toEqual({
+      rule: "refused",
+      message: "ancestor run descendant budget exhausted",
+    });
+    fix.store.close();
+  });
+
+  test("a trusted policy reload suspends active runs until exact re-acknowledgement", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "manifold-agent-policy-"));
+    const policyFile = join(directory, "operator.txt");
+    writeFileSync(policyFile, "Operator policy revision one.\n");
+    const fix = await fixture(policyFile);
+    try {
+      const created = CreateAgentRunResultSchema.parse(
+        value(
+          await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
+            name: "policy-reader",
+            purpose: "Exercise live policy replacement.",
+            target: "manifold://",
+            reach: "subtree",
+            caps: ["containers:read"],
+          }),
+        ),
+      );
+      const actor = fix.auth.authenticate(created.credential.token);
+      const first = await acknowledge(fix, actor);
+      writeFileSync(policyFile, "Operator policy revision two.\n");
+
+      const reloaded = ReloadAgentPolicyResultSchema.parse(
+        value(await fix.host.dispatch(fix.owner, "core.access.reloadAgentPolicy", {})),
+      );
+      expect(reloaded.suspendedRuns).toBe(1);
+      expect(reloaded.revision).not.toBe(first.run.policyRevision);
+      expect(denial(await fix.host.dispatch(actor, "core.machines.list", {})).rule).toBe(
+        "policy_stale",
+      );
+      expect(
+        denial(
+          await fix.host.dispatch(fix.owner, "core.access.renewAgentRun", {
+            runId: created.run.id,
+            lifetimeMs: 60_000,
+          }),
+        ).message,
+      ).toBe("only an active policy-current run may be renewed");
+
+      const challenge = AgentPolicyChallengeSchema.parse(
+        value(await fix.host.dispatch(actor, "core.access.getAgentPolicy", {})),
+      );
+      expect(challenge.required.find(({ id }) => id === "operator")?.body).toBe(
+        "Operator policy revision two.\n",
+      );
+      const wrong = await fix.host.dispatch(actor, "core.access.acknowledgeAgentPolicy", {
+        revision: challenge.revision,
+        acknowledgements: challenge.required.map(({ id, digest }) => ({
+          id,
+          digest: id === "operator" ? "0".repeat(64) : digest,
+        })),
+      });
+      expect(denial(wrong).rule).toBe("refused");
+      expect((await acknowledge(fix, actor)).run.state).toBe("active");
+      expect((await fix.host.dispatch(actor, "core.machines.list", {})).ok).toBe(true);
+
+      writeFileSync(policyFile, "Operator policy revision one.\n");
+      value(await fix.host.dispatch(fix.owner, "core.access.reloadAgentPolicy", {}));
+      const reissued = AgentPolicyChallengeSchema.parse(
+        value(await fix.host.dispatch(actor, "core.access.getAgentPolicy", {})),
+      );
+      expect(reissued.revision).toBe(first.run.policyRevision);
+      expect(reissued.acknowledgedAt).toBeUndefined();
+      expect((await acknowledge(fix, actor)).run.state).toBe("active");
+    } finally {
+      fix.store.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});

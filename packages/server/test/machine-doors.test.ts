@@ -83,7 +83,7 @@ async function fixture(answer?: MachineRepositoryOutcome): Promise<Fixture> {
 /** A real token, so authority is exercised through attenuation rather than a hand-built context. */
 function context(fix: Fixture, caps: readonly Cap[]): AuthContext {
   const grant = fix.auth.mintToken(
-    { principal: { name: "reader", kind: "agent" }, caps: [...caps] },
+    { principal: { name: "reader", kind: "human" }, caps: [...caps] },
     fix.owner,
   );
   return fix.auth.authenticate(grant.token);

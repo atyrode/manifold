@@ -83,9 +83,15 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const timers = options.timers ?? defaultRoomTimers;
   const logger = options.logger ?? createLogger(runtime);
   const store = new ServerStore(openDatabase(resolve(config.dataDir, "manifold.db")));
-  const auth = new AuthService(store, config.ownerKey, runtime, {
-    decide: (request) => jobs.decide(request),
-  });
+  const auth = new AuthService(
+    store,
+    config.ownerKey,
+    runtime,
+    {
+      decide: (request) => jobs.decide(request),
+    },
+    config.agentPolicyFile,
+  );
   const jobs: JobService = new JobService(store, auth, runtime, config.serviceOwnerMachineId);
   /*
     THE ASSEMBLY'S PLACEMENT VOCABULARY, before anything that reads it. Element traits, the

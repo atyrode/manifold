@@ -471,7 +471,7 @@ describe("minted credentials answer the same questions as migrated ones", () => 
     const scopedCaps: Cap[] = ["containers:read", "scenes:write", "terminals:write", "tokens:mint"];
     const scoped = auth.mintToken(
       {
-        principal: { name: "builder", kind: "agent" },
+        principal: { name: "builder", kind: "human" },
         caps: scopedCaps,
         containerId: CONTAINER_A,
       },

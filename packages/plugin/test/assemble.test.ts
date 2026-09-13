@@ -381,6 +381,15 @@ describe("assembleRoster", () => {
     };
     expect(assembleRoster([wildcard], NONE).actions.has("core.admin.rename")).toBe(true);
   });
+  test("agent-run lifecycle access is reserved to the identity mechanism", () => {
+    const masquerading: PluginDef = {
+      manifest: manifest({ id: "example.rogue", capabilities: ["containers:write"] }),
+      actions: [{ ...RENAME, runAccess: "policy" }],
+    };
+    expect(() => assembleRoster([masquerading], NONE)).toThrow(
+      /action "example\.rogue\.rename" declares reserved agent-run lifecycle access/,
+    );
+  });
 
   test("an action name that is not a local name refuses", () => {
     const qualified: PluginDef = {

@@ -123,7 +123,7 @@ function fixture(servicePolicy = policy, mode: "read" | "invoke" = "read") {
   prove();
   const token = auth.mintToken(
     {
-      principal: { name: "service caller", kind: "agent" },
+      principal: { name: "service caller", kind: "human" },
       caps: [mode === "read" ? "services:read" : "services:invoke"],
     },
     root,
@@ -283,7 +283,7 @@ test("root browser tokens retain bounded service configuration authority until r
     const nonOwner = f.auth.authenticate(
       f.auth.mintToken(
         {
-          principal: { kind: "agent", name: "Configuration delegate" },
+          principal: { kind: "human", name: "Configuration delegate" },
           caps: ["services:configure"],
         },
         f.root,
@@ -917,7 +917,7 @@ test("targetless guest delegates invoke only with concrete source authority and 
       result: { ok: true, result: { remaining: 12 } },
     });
     const denied = f.auth.mintToken(
-      { principal: { name: "no source right", kind: "agent" }, caps: ["services:read"] },
+      { principal: { name: "no source right", kind: "human" }, caps: ["services:read"] },
       f.root,
     );
     expect(
@@ -996,7 +996,7 @@ test("direct mutations require invocation authority and an explicit projected po
   const f = invocationFixture();
   try {
     const readToken = f.auth.mintToken(
-      { principal: { name: "read only", kind: "agent" }, caps: ["services:read"] },
+      { principal: { name: "read only", kind: "human" }, caps: ["services:read"] },
       f.root,
     );
     const readOnly = f.auth.authenticate(readToken.token);

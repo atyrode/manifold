@@ -1858,7 +1858,15 @@ describe("migration 24: legacy credential grace", () => {
     try {
       // Insert historical rows directly, never through today's credential minting policy.
       db = seedPreV24(path);
-      const owner = new AuthService(new ServerStore(db), ownerKey, runtime).ownerPrincipal;
+      const legacyStore = new ServerStore(db);
+      const owner = {
+        id: "legacy-owner",
+        kind: "human" as const,
+        name: "owner",
+        color: "#2563eb",
+      };
+      legacyStore.createPrincipal(owner, runtime.now());
+      legacyStore.setMeta("owner_principal_id", owner.id);
       const fixtures = [
         { id: "human", kind: "human", name: "machine", expires: null, revoked: null },
         { id: "agent", kind: "agent", name: "terminal-looking-name", expires: null, revoked: null },
@@ -2312,6 +2320,8 @@ INSERT INTO machine_job_deployments VALUES
  ('retired-id','plugin',1,1,0,'');
 INSERT INTO machine_job_deployment_targets(deployment_id,machine_id,plugin_id,phase)
  VALUES ('old-review','machine','plugin','pending');
+DROP TABLE agent_run_policy_snapshots;
+DROP TABLE agent_runs;
 UPDATE meta SET value='33' WHERE key='schema_version';
 `);
     const authority = db

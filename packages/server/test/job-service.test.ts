@@ -1346,7 +1346,7 @@ test("bound terminal admission requires current spawn authority, exact pins and 
     ).toThrow();
     const token = f.auth.mintToken(
       {
-        principal: { name: "terminal-opener", kind: "agent" },
+        principal: { name: "terminal-opener", kind: "human" },
         caps: ["machines:run", "terminals:spawn"],
       },
       f.root,
@@ -1420,7 +1420,7 @@ describe("retained job discovery", () => {
         execute(f, `hidden-private-reference-${index}`);
       }
       const token = f.auth.mintToken(
-        { principal: { name: "run-reader", kind: "agent" }, caps: ["jobs:read"] },
+        { principal: { name: "run-reader", kind: "human" }, caps: ["jobs:read"] },
         f.root,
       );
       const reader = f.auth.authenticate(token.token);
@@ -1961,7 +1961,7 @@ describe("job lifecycle audit and inspection", () => {
       const args = { machineId: f.machineId, pluginId };
       f.service.setInvocationEdge(f.root, { edge, enabled: true });
       const token = f.auth.mintToken(
-        { principal: { name: "scoped", kind: "agent" }, caps: ["jobs:read"] },
+        { principal: { name: "scoped", kind: "human" }, caps: ["jobs:read"] },
         f.root,
       );
       const scoped = f.auth.authenticate(token.token);
@@ -2210,7 +2210,7 @@ describe("durable job authority", () => {
       consent(f, "machines:run");
       const token = f.auth.mintToken(
         {
-          principal: { name: "runner", kind: "agent" },
+          principal: { name: "runner", kind: "human" },
           caps: ["machines:run"],
         },
         f.root,
@@ -2283,7 +2283,7 @@ describe("durable job authority", () => {
       consent(f, "machines:run");
       const token = f.auth.mintToken(
         {
-          principal: { name: "runner", kind: "agent" },
+          principal: { name: "runner", kind: "human" },
           caps: ["machines:run"],
         },
         f.root,
@@ -2423,7 +2423,7 @@ describe("durable job authority", () => {
       consent(f, "machines:run");
       const token = f.auth.mintToken(
         {
-          principal: { name: "replay-runner", kind: "agent" },
+          principal: { name: "replay-runner", kind: "human" },
           caps: ["machines:run", "jobs:read"],
         },
         f.root,
@@ -4130,7 +4130,7 @@ describe("reviewed native deployment approvals", () => {
       const value = request(f, "admin");
       const { review, deployment } = apply(f, value);
       const token = f.auth.mintToken(
-        { principal: { name: "inspector", kind: "agent" }, caps: ["machines:run"] },
+        { principal: { name: "inspector", kind: "human" }, caps: ["machines:run"] },
         f.root,
       );
       const reader = f.auth.authenticate(token.token);
@@ -4730,6 +4730,8 @@ describe("reviewed native deployment approvals", () => {
       f.store.db.exec(`
 UPDATE machine_job_deployment_targets SET receipt=json_extract(receipt,'$.consents');
 ALTER TABLE job_invocation_edges DROP COLUMN revision;
+DROP TABLE agent_run_policy_snapshots;
+DROP TABLE agent_runs;
 UPDATE meta SET value='33' WHERE key='schema_version';
 `);
       f.store.close();
