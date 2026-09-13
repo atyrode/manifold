@@ -8,6 +8,7 @@ a checkout of `origin/main`.
 
 Commands: `bun scripts/triage-policy.ts --fix`, then `--report`, then `--flow`.
 
-Classify every `needs-triage` issue oldest first, write a decision block on every hold that lacks
-one, and finish with the hold digest for the operator and the flow snapshot. Never record a
-decision the operator did not give.
+Classify every `needs-triage` issue oldest first and write a decision block on every hold that lacks
+one. With the operator present, use the interactive question tool to present concrete options and a
+recommendation; record only the answer the operator actually gives. Finish with the hold digest and
+flow snapshot. Held implementation stays draft and stopped.

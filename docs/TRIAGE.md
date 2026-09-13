@@ -113,6 +113,9 @@ typically `needs-operator` → `agent-ready` plus a priority, or a close with a 
 (§Exit). A recorded decision is not a permanent veto, and arbitrary comment text is not operator
 authorization: an agent never writes `## Decision recorded` without an explicit operator answer in
 its own session or a comment the operator authored.
+When the operator is present, use the interactive question tool when available to present the
+decision's concrete options and recommendation. Do not bury a hold in a progress report or continue
+implementation while waiting for the answer.
 
 ## Claims and dispatch
 
@@ -126,27 +129,41 @@ Release it, when you stop, with `Release: <reason>`. Both are plain comments; no
 label or schema is required, and an older claim in a different shape is still a claim.
 
 `bun scripts/dispatch.ts --next` lists the ready queue in pick order: `p0` → `p3`, then oldest
-first. It skips an issue that already has an open pull request referencing it, or a `Claim:` from
-someone else that is newer than 24 hours with no later `Release:`. Take at most **two** concurrent
-claims per contributor session.
+first. Before listing new work it refuses while any open non-draft pull request needs review,
+correction, operator routing or merge. It skips an issue that already has an open pull request
+referencing it, or a `Claim:` from someone else that is newer than 24 hours with no later
+`Release:`. Take at most **two** concurrent claims per contributor session.
 
-Branch names are `<prefix>/<issue>-<slug>`, where `<prefix>` is the commit prefix for the area:
-`server`, `web`, `agent`, `sdk`, `plugin`, `protocol`, `scaffold` or `docs`. Work in your own
-worktree. The 24-hour quiet-branch rule, the takeover limits and the prohibition on pushing to
-someone else's branch live in [`AGENTS.md`](../AGENTS.md) Boundaries and apply unchanged.
+`main` is the only integrated implementation, and one initiative has one open pull request. A
+dependency on an open pull request is an explicit stack: write `Depends-on: #N` under
+`## Dependencies`, base on that PR's head branch, and merge in dependency order. Otherwise use
+`- None` and branch from `origin/main`. Branch names are `<prefix>/<issue>-<slug>`, where `<prefix>`
+is the commit prefix for the area: `server`, `web`, `agent`, `sdk`, `plugin`, `protocol`,
+`scaffold` or `docs`. Work in your own worktree. The 24-hour quiet-branch rule, takeover limits and
+the prohibition on pushing to someone else's branch live in [`AGENTS.md`](../AGENTS.md).
 
 ## Pull requests and review
 
-Open as a draft, with `Closes #N` — or `Refs #N` for partial work, naming what remains — and these
-sections:
+Open one draft for the initiative, with `Closes #N` — or `Refs #N` for partial work, naming what
+remains — and these sections:
 
 - `## Problem` — what is wrong, in the issue's terms.
 - `## Change` — what this does about it.
+- `## Dependencies` — exactly `- None`, or `- Depends-on: #N` for its actual Git base.
 - `## Evidence` — gate output, the commands run, screenshots for anything a person looks at.
 - `## Acceptance` — the issue's criteria as a checklist.
 
-Mark it ready only once `bun run gate` is green on the pushed head, as
-[`AGENTS.md`](../AGENTS.md) Delivery requires.
+`scripts/pull-policy.ts` enforces the mechanically knowable parts on every pull request. Keep a
+`needs-operator` PR draft. Mark implementation ready only after its issue is `agent-ready`,
+`bun run gate` is green on the pushed head and [`AGENTS.md`](../AGENTS.md) Delivery is satisfied.
+
+| Rule | Pull-request invariant                                                                          |
+| ---- | ----------------------------------------------------------------------------------------------- |
+| P1   | Every claimed issue is `agent-ready` with one priority, or a structured operator hold.          |
+| P2   | Operator-held work remains draft, carries a `## Decision` block and contains no implementation. |
+| P3   | No other open pull request claims the same issue or outcome.                                    |
+| P4   | `## Dependencies` says `- None`, or names the one PR whose head is the actual Git base.         |
+| P5   | The pull request has a unique diff; empty or superseded work is reconciled instead.             |
 
 Review posts exactly one comment per reviewed head, beginning `## Verdict: pass` or
 `## Verdict: fail`, followed by the acceptance checklist with the evidence for each item and, on a
@@ -208,26 +225,30 @@ supports skills, or by saying "follow docs/TRIAGE.md §Runbooks › <name>".
      `#N`), `needs-operator` (writing the decision block), or close with `Disposition:`.
 3. Holds pass. List every `needs-operator` issue and write a decision block for each that lacks
    one, researching the code and docs so the options are concrete rather than "what should we do".
-   Then present a digest table — number, question, recommended — to the operator and record each
-   answer as a `## Decision recorded (<date>)` comment quoting it, applying `Unblocks`. With no
-   operator in the session, skip the questions; the blocks are still written.
+   With the operator present, use the interactive question tool when available; then record each
+   answer as a `## Decision recorded (<date>)` comment quoting it and apply `Unblocks`. With no
+   operator in the session, skip the questions; the blocks are still written. Never continue held
+   implementation while waiting.
 4. `bun scripts/triage-policy.ts --flow`. End with the digest and the flow snapshot.
 
 ### dispatch
 
-1. `bun scripts/dispatch.ts --next --limit 5`; take items up to the two-claim limit.
-2. For each: post the `Claim:` comment, create a worktree on `<prefix>/<issue>-<slug>` from
-   `origin/main`, implement to the acceptance criteria, run `bun run gate`, push, open the draft
-   pull request per §Pull requests, mark it ready once the pushed head's CI is green, then run
-   **review**.
+1. `bun scripts/dispatch.ts --next --limit 5`. If it reports non-draft PRs, run **review** or
+   **ship**, correct the PR, or route its operator hold; do not claim new work. Otherwise take items
+   up to the two-claim limit.
+2. For each: post the `Claim:` comment, create a worktree from `origin/main` — or the declared
+   dependency PR's head for a real stack — implement to the acceptance criteria, run
+   `bun run gate`, push, open the single draft per §Pull requests, mark it ready once pushed-head CI
+   is green, then run **review** and **ship** without returning to dispatch.
 3. If implementing reveals a decision is needed, post `Release: needs decision`, relabel the issue
-   `needs-operator`, write the decision block and stop. A guess is not a decision.
+   `needs-operator`, write the decision block, keep any PR draft and stop. A guess is not a decision.
 
 ### review
 
 Read the issue's acceptance criteria, the diff, the gate and CI evidence, and the contract sections
 the change touches. Post the single `## Verdict:` comment described in §Pull requests. Review reads
-and writes one comment; it does not push to the branch.
+and writes one comment; it does not push to the branch. A pass hands the same head directly to
+**ship**; it never starts another dispatch.
 
 ### ship
 
@@ -235,8 +256,11 @@ For each open non-draft pull request, evaluate §Merge mechanically —
 `gh pr view <n> --json labels,files,headRefOid,closingIssuesReferences,comments,isDraft`,
 `gh pr checks <n> --required`, `gh run list` — and either merge with
 `gh pr merge <n> --squash --delete-branch` or report which criterion failed. For a pull request
-excluded by criteria 5 or 6, label it `needs-operator` and write a decision block. After each
-merge, watch `deploy-dev.yml` for the merge commit.
+excluded by criteria 4 or 5, label it `needs-operator`, make it draft and write a decision block.
+After each merge, watch `deploy-dev.yml` for the merge commit, then list dependent open PRs.
+Rebase and reverify branches you own; for another owner, comment the merged revision and required
+base update. Close an empty or superseded draft only after preserving unique work and recording its
+destination. Do not return to dispatch until this reconciliation is complete.
 
 ## Flow
 

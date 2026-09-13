@@ -3,12 +3,12 @@
  * The ready queue. `bun scripts/dispatch.ts [--next|--claims] [--limit N] [--json]
  * [--repo owner/name]`.
  *
- * `--next` answers one question — what may I pick up right now — in the order
- * `docs/TRIAGE.md` §Claims and dispatch defines: priority, then oldest. It removes what someone
- * else already holds: an issue with an open pull request against it, or a `Claim:` comment from
- * another login with no later `Release:` and less than CLAIM_HOURS old. Your own claims stay in
- * the list, because resuming your own work is the normal case. `--claims` shows exactly what
- * `--next` removed, which is how you see who is holding what.
+ * `--next` first answers whether integration is drained: any open non-draft pull request refuses
+ * new work. Otherwise it lists ready issues in the order `docs/TRIAGE.md` §Claims and dispatch
+ * defines: priority, then oldest. It removes what someone else already holds: an issue with an
+ * open pull request against it, or a `Claim:` comment from another login with no later `Release:`
+ * and less than CLAIM_HOURS old. Your own claims stay in the list, because resuming your own work
+ * is the normal case. `--claims` shows exactly what `--next` removed.
  *
  * This script never writes. Claiming is a comment you post; the claim is the comment, not a
  * label, an assignee or a row in a second tracker.
@@ -51,6 +51,18 @@ export interface Item {
   readonly status: string;
   /** Someone else has it: an open pull request, or a live claim from another login. */
   readonly held: boolean;
+}
+
+export interface DrainPull {
+  readonly number: number;
+  readonly title: string;
+  readonly url: string;
+  readonly isDraft: boolean;
+}
+
+/** Non-draft work is integration work; the ready issue queue stays closed until it drains. */
+export function drainingPulls(pulls: readonly DrainPull[]): readonly DrainPull[] {
+  return pulls.filter((pull) => !pull.isDraft).sort((left, right) => left.number - right.number);
 }
 
 /**
@@ -204,6 +216,7 @@ if (import.meta.main) {
   });
 
   const pullBodies = new Map<number, string>();
+  const openPulls: DrainPull[] = [];
   for (const raw of asArray(
     JSON.parse(
       await gh([
@@ -215,12 +228,44 @@ if (import.meta.main) {
         "--limit",
         "200",
         "--json",
-        "number,body,isDraft,headRefName",
+        "number,title,url,body,isDraft,headRefName",
       ]),
     ),
   )) {
-    const number = asRecord(raw)["number"];
-    if (typeof number === "number") pullBodies.set(number, text(raw, "body"));
+    const record = asRecord(raw);
+    const number = record["number"];
+    if (typeof number !== "number") continue;
+    pullBodies.set(number, text(record, "body"));
+    openPulls.push({
+      number,
+      title: text(record, "title"),
+      url: text(record, "url"),
+      isDraft: record["isDraft"] === true,
+    });
+  }
+
+  if (!wantClaims) {
+    const draining = drainingPulls(openPulls);
+    if (draining.length > 0) {
+      if (asJson) {
+        console.log(
+          JSON.stringify(
+            {
+              blocked: "open non-draft pull requests must drain before new work",
+              pulls: draining,
+            },
+            null,
+            2,
+          ),
+        );
+      } else {
+        console.error("Dispatch blocked: drain every open non-draft pull request first.");
+        for (const pull of draining) {
+          console.error(`- #${String(pull.number)} ${pull.title} (${pull.url})`);
+        }
+      }
+      process.exit(2);
+    }
   }
 
   const items = queue(issues, pullBodies, viewer, Date.now());

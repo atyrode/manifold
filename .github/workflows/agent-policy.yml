@@ -3,6 +3,17 @@ name: Agent policy
 on:
   pull_request:
     branches: [main]
+    types:
+      [
+        opened,
+        synchronize,
+        reopened,
+        edited,
+        ready_for_review,
+        converted_to_draft,
+        labeled,
+        unlabeled,
+      ]
   push:
     branches: [main]
   schedule:
@@ -11,7 +22,8 @@ on:
 
 permissions:
   contents: read
-
+  issues: read
+  pull-requests: read
 jobs:
   agent-policy:
     name: agent-policy
@@ -26,6 +38,19 @@ jobs:
       # Following reviewed dotfiles main trusts its automation code as well as its policy.
       - name: Check shared engineering contract
         uses: atyrode/dotfiles/.github/actions/agent-policy@main
+
+      - name: Install Bun
+        if: github.event_name == 'pull_request'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Check pull request lifecycle
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bun scripts/pull-policy.ts --pr "${{ github.event.pull_request.number }}"
 
   sync-agent-policy:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
