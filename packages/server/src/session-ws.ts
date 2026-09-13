@@ -74,6 +74,8 @@ const DENIAL_ERROR_CODES: Readonly<Record<ActionDenialRule, ErrorCode>> = {
   policy_stale: "forbidden",
   forbidden: "forbidden",
   invalid_args: "invalid",
+  justification_required: "forbidden",
+  invalid_justification: "invalid",
   refused: "conflict",
   unavailable: "forbidden",
 };

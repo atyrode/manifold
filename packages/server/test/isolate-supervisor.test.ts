@@ -99,8 +99,10 @@ function actionCtx(
     | "now"
     | "newId"
     | "emit"
+    | "admitPrepared"
   > = {
     traceId: 1,
+    admitPrepared: () => {},
     principal,
     auth: {
       principal,

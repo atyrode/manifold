@@ -152,6 +152,9 @@ function recorder(options: {
         inspectAgentRun: () => {
           throw new Error("unused agent run inspection fixture");
         },
+        listAgentRuns: () => {
+          throw new Error("unused agent run inventory fixture");
+        },
         agentPolicyChallenge: () => {
           throw new Error("unused agent policy fixture");
         },

@@ -116,7 +116,7 @@ export class JobSchedules {
     });
   }
 
-  putSchedule(spec: JobScheduleSpec): void {
+  putSchedule(spec: JobScheduleSpec, beforeEffect?: () => void): void {
     validateRequest(spec.request);
     if (
       !spec.scheduleId ||
@@ -146,8 +146,10 @@ export class JobSchedules {
       const encoded = canonicalJobJson(spec);
       if (previous) {
         if (previous.spec !== encoded) throw new Error("schedule-revision-conflict");
+        beforeEffect?.();
         return;
       }
+      beforeEffect?.();
       this.store.db
         .query(
           "UPDATE job_schedules SET disabled_reason='schedule-replaced' WHERE schedule_id=? AND disabled_reason IS NULL",

@@ -3,6 +3,7 @@ import {
   AcknowledgeAgentPolicyRequestSchema,
   AcknowledgeAgentPolicyResultSchema,
   AgentPolicyChallengeSchema,
+  AgentRunInventorySchema,
   BootstrapPrincipalRequestSchema,
   CreateGrantRequestSchema,
   CreateAgentRunRequestSchema,
@@ -175,6 +176,7 @@ export const accessManifest: PluginManifest = {
 export const ACCESS_LIST_CREDENTIALS_ACTION = `${accessManifest.id}.listCredentials`;
 export const ACCESS_REVOKE_ACTION = `${accessManifest.id}.revoke`;
 export const ACCESS_INSPECT_AGENT_RUN_ACTION = `${accessManifest.id}.inspectAgentRun`;
+export const ACCESS_LIST_AGENT_RUNS_ACTION = `${accessManifest.id}.listAgentRuns`;
 
 /**
  * Authority mirrors the deleted routes exactly, rung for rung.
@@ -257,6 +259,15 @@ export const accessActions = [
     result: FinishAgentRunResultSchema,
   }),
   defineAction({
+    name: "listAgentRuns",
+    title: "List safely inspectable agent runs",
+    caps: [],
+    runAccess: "inspect",
+    trace: "opaque",
+    input: z.strictObject({}),
+    result: AgentRunInventorySchema,
+  }),
+  defineAction({
     name: "inspectAgentRun",
     title: "Inspect an authorized agent run",
     caps: [],
@@ -298,10 +309,8 @@ export const accessActions = [
   defineAction({
     name: "listCredentials",
     title: "List who holds a live credential",
-    // AuthService narrows this read to revocable identities or ratified run-chain inspection.
-    // It is not a workspace roster grant, even when the caller has container-scoped authority.
-    caps: [],
-    runAccess: "inspect",
+    // Credential references retain their legacy administrator-only audience.
+    caps: ["tokens:mint"],
     scope: "workspace",
     input: z.strictObject({}),
     result: CredentialsResponseSchema,

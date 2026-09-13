@@ -3,20 +3,23 @@ import type { SectionProps } from "@manifold/plugin";
 import { Chip, ControlIcon, Disclosure, KeyValueList, KeyValueRow, Stack } from "@manifold/ui";
 import {
   CredentialsResponseSchema,
+  AgentRunInventorySchema,
   InspectAgentRunResultSchema,
   formatManifoldUri,
   parseManifoldUri,
   RevokeResultSchema,
   type AgentRunInspection,
+  type AgentRunInventory,
   type AgentRunTraceSummary,
   type InspectAgentRunRequest,
   type InspectAgentRunResult,
   type PrincipalCredentials,
 } from "@manifold/protocol";
-import { useCallback, useEffect, useId, useState, type ReactElement, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type ReactElement, type ReactNode } from "react";
 import {
   ACCESS_INSPECT_AGENT_RUN_ACTION,
   ACCESS_LIST_CREDENTIALS_ACTION,
+  ACCESS_LIST_AGENT_RUNS_ACTION,
   ACCESS_REVOKE_ACTION,
 } from "./index.ts";
 import { partitionCredentials } from "./rows.ts";
@@ -26,10 +29,10 @@ import { partitionCredentials } from "./rows.ts";
  * actionable in the workspace.
  *
  * Before this section the data existed and nothing could reach it: `GET /api/introspect`
- * published principals to a root caller and nothing else did, so a human could not look and
- * neither could an agent. What is drawn here is `core.access.listCredentials`, narrowed by
- * the server to revocable identities and the viewer's authorized run chain, beside the
- * existing revoke door and the same headless inspection action used by agents.
+ * published principals to a root caller. The administrator list remains beside the
+ * existing revoke door. Non-administrators use the separately bounded `listAgentRuns`
+ * summary to discover their inspectable chains without receiving credential references.
+ * Both audiences expand runs through the same headless inspection action.
  *
  * IT LIVES IN `core.access` BECAUSE THE CONCEPT DOES. Principals and the credentials they
  * hold are what this plugin mints and revokes; the fleet's half of the same question — which
@@ -89,40 +92,43 @@ type InspectionRead =
   | { readonly state: "failed"; readonly message: string }
   | { readonly state: "ready"; readonly result: InspectAgentRunResult };
 
-/** One mounted snapshot, not a cache or a second history store. Callers key each request. */
+/** Results belong to one client, viewer and request generation, never an authority cache. */
 function useInspection(host: SectionProps["host"], request: InspectAgentRunRequest): InspectionRead {
-  const [read, setRead] = useState<InspectionRead>({ state: "loading" });
   const { runId, principalId, traceId, beforeTraceId, limit } = request;
+  const scope = useMemo(() => ({
+    client: host.client,
+    viewer: host.principal.id,
+    request: {
+      ...(runId === undefined ? { principalId } : { runId }),
+      ...(traceId === undefined ? {} : { traceId }),
+      ...(beforeTraceId === undefined ? {} : { beforeTraceId }),
+      limit,
+    },
+  }), [host.client, host.principal.id, runId, principalId, traceId, beforeTraceId, limit]);
+  const [snapshot, setSnapshot] = useState<{ scope: typeof scope; read: InspectionRead } | null>(null);
   useEffect(() => {
     let stale = false;
     void (async () => {
       try {
-        const outcome = await host.client.action(ACCESS_INSPECT_AGENT_RUN_ACTION, {
-          ...(runId === undefined ? { principalId } : { runId }),
-          ...(traceId === undefined ? {} : { traceId }),
-          ...(beforeTraceId === undefined ? {} : { beforeTraceId }),
-          limit,
-        });
+        const outcome = await scope.client.action(ACCESS_INSPECT_AGENT_RUN_ACTION, scope.request);
         if (stale) return;
         if (!outcome.ok) {
-          setRead({ state: "failed", message: outcome.denial.message });
+          setSnapshot({ scope, read: { state: "failed", message: outcome.denial.message } });
           return;
         }
         const parsed = InspectAgentRunResultSchema.safeParse(outcome.result);
-        setRead(
-          parsed.success
-            ? { state: "ready", result: parsed.data }
-            : { state: "failed", message: "The run inspection could not be read." },
-        );
+        setSnapshot({ scope, read: parsed.success
+          ? { state: "ready", result: parsed.data }
+          : { state: "failed", message: "The run inspection could not be read." } });
       } catch {
-        if (!stale) setRead({ state: "failed", message: "The run inspection could not be loaded." });
+        if (!stale) setSnapshot({ scope, read: { state: "failed", message: "The run inspection could not be loaded." } });
       }
     })();
-    return () => {
-      stale = true;
-    };
-  }, [host.client, runId, principalId, traceId, beforeTraceId, limit]);
-  return read;
+    return () => { stale = true; };
+  }, [scope]);
+  // Rendering a changed authority/request cannot expose the previous result even before
+  // effect cleanup runs. The generation identity also prevents A→B→A from reviving A.
+  return snapshot?.scope === scope ? snapshot.read : { state: "loading" };
 }
 
 function inspectionTime(at: number | null): string {
@@ -160,7 +166,11 @@ function NativeReference({
   readonly uri: string;
 }): ReactElement {
   const ref = parseManifoldUri(uri);
-  return ref === null || Object.values(ref).includes("[redacted]") ? (
+  const navigable = ref !== null && (
+    ref.kind === "container" || ref.kind === "element" || ref.kind === "tile" ||
+    ref.kind === "terminal" || ref.kind === "plugin"
+  );
+  return !navigable || ref === null || Object.values(ref).includes("[redacted]") ? (
     <span>{uri}</span>
   ) : (
     <Chip
@@ -388,11 +398,7 @@ function RunSnapshot({
         {result.jobs.map((job) => (
           <Stack key={job.jobId} className="credential-inspection-record" gap="0.25rem">
             <KeyValueList>
-              <KeyValueRow label="Job">
-                <NativeReference host={host} uri={formatManifoldUri({
-                  kind: "job", jobId: job.jobId, machineId: job.machineId, operationId: job.operationId,
-                })} /> · {job.state}
-              </KeyValueRow>
+              <KeyValueRow label="Job">{job.jobId} · {job.state}</KeyValueRow>
               <KeyValueRow label="Operation">{job.pluginId} / {job.operationId}</KeyValueRow>
               <KeyValueRow label="Machine">{job.machineId}</KeyValueRow>
               <KeyValueRow label="Installation revision">{job.installationRevision}</KeyValueRow>
@@ -478,7 +484,75 @@ function AgentRunInspector({
   );
 }
 
+/** Reset the whole privileged subtree before a replacement viewer can see its old rows. */
 export function SessionsSection({ host }: SectionProps): ReactElement {
+  const [authority, setAuthority] = useState({
+    client: host.client, viewer: host.principal.id, generation: 0,
+  });
+  if (authority.client !== host.client || authority.viewer !== host.principal.id) {
+    setAuthority({ client: host.client, viewer: host.principal.id, generation: authority.generation + 1 });
+    return <span className="sidebar-section-empty">Loading credentials…</span>;
+  }
+  const caps = host.client.selfCaps();
+  return caps.includes("*") || caps.includes("tokens:mint")
+    ? <CredentialSessions key={authority.generation} host={host} />
+    : <AgentRunSessions key={authority.generation} host={host} />;
+}
+
+/** Run-chain viewers receive no credential IDs, sessions, raw names or revocation controls. */
+function AgentRunSessions({ host }: SectionProps): ReactElement {
+  const [inventory, setInventory] = useState<AgentRunInventory | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [inspectedPrincipalId, setInspectedPrincipalId] = useState<string | null>(null);
+  const inspectionId = useId();
+  useEffect(() => {
+    let stale = false;
+    void (async () => {
+      try {
+        const outcome = await host.client.action(ACCESS_LIST_AGENT_RUNS_ACTION, {});
+        if (stale) return;
+        if (!outcome.ok) {
+          setFailure(outcome.denial.message);
+          return;
+        }
+        const parsed = AgentRunInventorySchema.safeParse(outcome.result);
+        if (parsed.success) setInventory(parsed.data);
+        else setFailure("The agent run inventory could not be read.");
+      } catch {
+        if (!stale) setFailure("The agent run inventory could not be loaded.");
+      }
+    })();
+    return () => { stale = true; };
+  }, [host.client]);
+  return (
+    <Stack className="sidebar-section-content" gap="0.35rem">
+      {failure === null ? null : <span className="credential-failure" role="alert">{failure}</span>}
+      {inventory === null && failure === null ? <span className="sidebar-section-empty">Loading agent runs…</span> : null}
+      {inventory?.runs.length === 0 ? <span className="sidebar-section-empty">No inspectable agent runs</span> : null}
+      {inventory?.runs.map((run) => (
+        <div className={`credential-row${run.principalId === host.principal.id ? " is-self" : ""}`}
+          key={run.id} data-principal={run.principalId}>
+          <span className="credential-name">
+            <button className="credential-inspect" type="button" data-action={ACCESS_INSPECT_AGENT_RUN_ACTION}
+              aria-label={`Inspect agent run for ${run.name}`}
+              aria-expanded={inspectedPrincipalId === run.principalId}
+              aria-controls={inspectedPrincipalId === run.principalId ? inspectionId : undefined}
+              onClick={() => setInspectedPrincipalId((current) => current === run.principalId ? null : run.principalId)}>
+              <strong>{run.name}</strong>
+            </button>
+            <span className="credential-meta">{run.state} · {inspectionTime(run.createdAt)}</span>
+          </span>
+          {inspectedPrincipalId === run.principalId
+            ? <AgentRunInspector key={run.id} host={host} principalId={run.principalId} id={inspectionId} />
+            : null}
+        </div>
+      ))}
+      {inventory?.truncated ? <span className="sidebar-section-empty">Showing the newest 100 inspectable runs.</span> : null}
+    </Stack>
+  );
+}
+
+function CredentialSessions({ host }: SectionProps): ReactElement {
   const caps = host.client.selfCaps();
   const mayRevoke = caps.includes("*") || caps.includes("tokens:mint");
   const [rows, setRows] = useState<readonly PrincipalCredentials[] | null>(null);
@@ -489,6 +563,7 @@ export function SessionsSection({ host }: SectionProps): ReactElement {
    */
   const [readAt, setReadAt] = useState(0);
   const [failure, setFailure] = useState<string | null>(null);
+  const [chainOnly, setChainOnly] = useState(false);
   /**
    * Which row's withdrawal is ARMED. Revocation severs live sockets, so it is a two-press
    * act by construction: the first press says what will happen, the second does it. ONE slot
@@ -508,6 +583,9 @@ export function SessionsSection({ host }: SectionProps): ReactElement {
   const read = useCallback(async (): Promise<void> => {
     const outcome = await host.client.action(ACCESS_LIST_CREDENTIALS_ACTION, {});
     if (!outcome.ok) {
+      // Caps alone do not reveal a scoped minter's workspace boundary. If the server
+      // refuses the administrator read, offer only the separately authorized safe read.
+      setChainOnly(outcome.denial.rule === "forbidden");
       setFailure(outcome.denial.message);
       setRows([]);
       return;
@@ -652,6 +730,8 @@ export function SessionsSection({ host }: SectionProps): ReactElement {
       </div>
     );
   };
+
+  if (chainOnly) return <AgentRunSessions host={host} />;
 
   return (
     <Stack className="sidebar-section-content" gap="0.35rem">

@@ -137,13 +137,16 @@ export class JobStore {
       )
       .run(state, reason, jobId, requestId);
   }
-  reserve(request: JobRequest, now: number): JobRecord {
+  /** Read-only reservation admission, shared by execute and every durable reservation. */
+  reservation(request: JobRequest): JobRecord | null {
     const previous = this.get(request.jobId);
-    if (previous) {
-      if (previous.request.requestDigest !== request.requestDigest)
-        throw new Error("job_digest_conflict");
-      return previous;
-    }
+    if (previous !== null && previous.request.requestDigest !== request.requestDigest)
+      throw new Error("job_digest_conflict");
+    return previous;
+  }
+  reserve(request: JobRequest, now: number): JobRecord {
+    const previous = this.reservation(request);
+    if (previous !== null) return previous;
     this.store.db
       .query(
         "INSERT INTO machine_jobs(job_id,machine_id,plugin_id,digest,request,state,created_at,audit_origin) VALUES (?,?,?,?,?,'queued',?,?)",
@@ -338,7 +341,7 @@ export class JobStore {
       )
       .get(traceId);
   }
-  private origin(request: JobRequest): JobAuditOrigin | null {
+  origin(request: JobRequest): JobAuditOrigin | null {
     if (request.parent) return this.get(request.parent.parentJobId)?.auditOrigin ?? null;
     if (request.service) {
       const service = this.store.db

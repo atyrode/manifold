@@ -2,6 +2,7 @@ import type {
   AcknowledgeAgentPolicyRequest,
   AcknowledgeAgentPolicyResult,
   AgentPolicyChallenge,
+  AgentRunInventory,
   BootstrapPrincipalRequest,
   CreateGrantRequest,
   CreateAgentRunRequest,
@@ -55,6 +56,7 @@ interface AccessCtx {
     mintToken(input: MintTokenRequest): IdentityAnswer<TokenGrant>;
     createAgentRun(input: CreateAgentRunRequest): IdentityAnswer<CreateAgentRunResult>;
     inspectAgentRun(input: InspectAgentRunRequest): IdentityAnswer<InspectAgentRunResult>;
+    listAgentRuns(): IdentityAnswer<AgentRunInventory>;
     agentPolicyChallenge(): IdentityAnswer<AgentPolicyChallenge>;
     acknowledgeAgentPolicy(
       input: AcknowledgeAgentPolicyRequest,
@@ -67,8 +69,8 @@ interface AccessCtx {
       The credential READ (ADR 0019 §3), on the identity door because a credential is what
       this door hands out: the list and the revoke it aims are the same concept read and
       written, and a `credentials` surface beside `identity` would say otherwise. The
-      mechanism narrows the answer to this caller's revocable identities and ratified run
-      chain, so the handler below has nothing to filter and deliberately does not try.
+      mechanism narrows the answer to this caller's revocable identities. Run-chain readers
+      use listAgentRuns instead; they never inherit this credential-reference inventory.
     */
     listCredentials(): IdentityAnswer<readonly PrincipalCredentials[]>;
     /*
@@ -151,6 +153,14 @@ export const accessHandlers = {
   ): Promise<Outcome<InspectAgentRunResult>> {
     const inspected = ctx.identity.inspectAgentRun(args);
     return inspected.ok ? inspected.value : { refused: inspected.message };
+  },
+
+  async listAgentRuns(
+    ctx: AccessCtx,
+    _args: Record<string, never>,
+  ): Promise<Outcome<AgentRunInventory>> {
+    const inventory = ctx.identity.listAgentRuns();
+    return inventory.ok ? inventory.value : { refused: inventory.message };
   },
 
   async getAgentPolicy(

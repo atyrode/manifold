@@ -33,6 +33,7 @@ function onFrame(receive) {
 
 let calls = 0;
 const waiting = new Map();
+const admissions = new Map();
 
 function call(requestId, method, args) {
   calls += 1;
@@ -55,9 +56,6 @@ const action = (name, input = schema) => ({
 
 const handlers = {
   async echo(id, args) {
-    if (typeof args !== "object" || args === null || typeof args.text !== "string") {
-      return { ok: false, rule: "invalid_args", message: "text must be a string" };
-    }
     let count;
     for (;;) {
       const seen = await call(id, "storage.get", ["count"]);
@@ -116,10 +114,28 @@ onFrame(async (frame) => {
       });
       return;
     case "dispatch": {
+      if (
+        frame.action === "echo" &&
+        (typeof frame.args !== "object" || frame.args === null || typeof frame.args.text !== "string")
+      ) {
+        send({
+          t: "dispatched",
+          id: frame.id,
+          outcome: { ok: false, rule: "invalid_args", message: "text must be a string" },
+        });
+        return;
+      }
+      const admission = new Promise((resolve) => admissions.set(frame.id, resolve));
+      send({ t: "prepared", id: frame.id, targets: [] });
+      if (!(await admission)) return;
       const outcome = await handlers[frame.action](frame.id, frame.args);
       if (outcome !== null) send({ t: "dispatched", id: frame.id, outcome });
       return;
     }
+    case "admitted":
+      admissions.get(frame.id)?.(frame.allowed);
+      admissions.delete(frame.id);
+      return;
     case "hook": {
       const marker = await call(frame.id, "storage.get", ["enabled"]);
       send({ t: "hooked", id: frame.id, ok: marker === null || marker === "yes" });

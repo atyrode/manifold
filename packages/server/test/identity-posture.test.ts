@@ -529,7 +529,7 @@ describe("the credential list (ADR 0019 §3)", () => {
     const reader = fix.auth.authenticate(mint(fix, ["containers:read"]).token);
 
     expect(denial(await fix.host.dispatch(reader, "core.access.listCredentials", {})).rule).toBe(
-      "refused",
+      "forbidden",
     );
     fix.store.close();
   });

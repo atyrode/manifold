@@ -671,6 +671,8 @@ describe("the packed server half, as a real isolate", () => {
           now: 1_000,
         },
       });
+      expect(await next()).toEqual({ t: "prepared", id: "r1", targets: [] });
+      await send({ t: "admitted", id: "r1", allowed: true });
       const read = await next();
       expect(read).toEqual({ t: "call", id: "r1:1", method: "storage.get", args: ["count"] });
       await send({ t: "reply", id: "r1:1", ok: true, result: "37" });

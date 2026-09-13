@@ -1996,6 +1996,24 @@ export class ServerStore {
       .map(toAgentRun);
   }
 
+  /** Candidate roots narrow scanning only; AuthService still authorizes every returned run. */
+  *agentRunInspectionCandidates(principalId: string, root: boolean): Iterable<AgentRunRecord> {
+    const rows = this.db.query<AgentRunRow, [number, string, string]>(
+      `SELECT id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
+              authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
+              authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
+              created_at,expires_at,renewals,max_depth,max_descendants,depth,
+              cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
+              cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure
+       FROM agent_runs
+       WHERE ?=1 OR root_run_id IN (
+         SELECT root_run_id FROM agent_runs WHERE principal_id=? OR authorized_by_principal_id=?
+       )
+       ORDER BY created_at DESC,id DESC`,
+    ).iterate(root ? 1 : 0, principalId, principalId);
+    for (const row of rows) yield toAgentRun(row);
+  }
+
   listOpenAgentRuns(now: number): AgentRunRecord[] {
     return this.db
       .query<AgentRunRow, [number]>(
@@ -2822,22 +2840,34 @@ export class ServerStore {
     "history" | "jobs" | "terminals" | "nativeTruncated"
   > {
     const safeText = (value: string): string => normalizeAgentDeclaration(value) ?? "[redacted]";
+    // This known native-id form is safe only as a selected job reference, never free text.
+    const safeJobId = (value: string): string =>
+      /^schedule-[a-f0-9]{64}$/.test(value) ? value : safeText(value);
+    // Migration 36 is the only initializer. Never infer trust from retained rows or
+    // repair an absent/corrupt boundary on read or reopen. SQLite's decimal round-trip
+    // rejects noncanonical or out-of-INT64-range metadata without JS number coercion.
     const traceRows = this.db.query<{
-      id: number; ts: number; door: string; authority: string; targets: string;
+      id: string; ts: number; door: string; authority: string; targets: string;
       outcome: TraceOutcome | null; session: string | null; declaration: unknown;
     }, [string, string | null, string | null, string | null, string | null, number]>(
-      `SELECT id,ts,door,authority,targets,outcome,session,
-        CASE WHEN json_valid(payload) THEN json_extract(payload,'$.agentDeclaration') END AS declaration
+      `WITH declaration_cutover AS (
+        SELECT CAST(value AS INTEGER) AS id FROM meta
+         WHERE key='agent-runs:declarations-after-event-id'
+          AND value=CAST(CAST(value AS INTEGER) AS TEXT) AND CAST(value AS INTEGER)>=0
+       )
+       SELECT CAST(id AS TEXT) AS id,ts,door,authority,targets,outcome,session,
+        CASE WHEN id>(SELECT id FROM declaration_cutover) AND json_valid(payload)
+          THEN json_extract(payload,'$.agentDeclaration') END AS declaration
        FROM events WHERE type='trace' AND principal_id=?
         AND (? IS NULL OR id=?) AND (? IS NULL OR id<?)
-       ORDER BY id DESC LIMIT ?`,
+       ORDER BY events.id DESC LIMIT ?`,
     ).all(principalId, input.traceId ?? null, input.traceId ?? null,
       input.beforeTraceId ?? null, input.beforeTraceId ?? null, input.limit + 1);
     const traces = traceRows.slice(0, input.limit).map((row) => {
       const declaration = row.outcome === "invalid_args" || typeof row.declaration !== "string"
         ? null : normalizeAgentDeclaration(row.declaration);
       return AgentRunTraceSummarySchema.parse({
-        traceId: String(row.id),
+        traceId: row.id,
         at: row.ts,
         actor: principalId,
         action: safeText(row.door),
@@ -2916,7 +2946,7 @@ export class ServerStore {
        ORDER BY j.created_at DESC,j.job_id DESC LIMIT 101`,
     ).all(principalId, principalId);
     const jobs: AgentRunInspection["jobs"] = jobRows.slice(0, 100).map((row) => ({
-      jobId: safeText(row.jobId),
+      jobId: safeJobId(row.jobId),
       machineId: safeText(row.machineId),
       pluginId: safeText(row.pluginId),
       operationId: safeText(row.operationId),
@@ -2929,17 +2959,17 @@ export class ServerStore {
       exitCode: row.exitCode,
       traceId: safeText(row.traceId),
       origin: row.retained === 1 && /^[1-9][0-9]*$/.test(row.traceId) ? "retained" : "unavailable",
-      parentJobId: row.parentJobId === null ? null : safeText(row.parentJobId),
+      parentJobId: row.parentJobId === null ? null : safeJobId(row.parentJobId),
       terminalId: row.terminalId === null ? null : safeText(row.terminalId),
       ownerState: row.ownerClosed === 1 ? "closed" : "unconfirmed",
     }));
     const terminalRows = this.db.query<{
       terminalId: string; machineId: string; containerId: string; createdAt: number;
-      state: "running" | "exited"; exitCode: number | null; traceId: number | null;
+      state: "running" | "exited"; exitCode: number | null; traceId: string | null;
     }, [string]>(
       `SELECT t.id AS terminalId,t.machine_id AS machineId,t.container_id AS containerId,
         t.created_at AS createdAt,t.status AS state,t.exit_code AS exitCode,
-        (SELECT e.id FROM machine_jobs j JOIN events e ON e.id=json_extract(j.request,'$.traceId')
+        (SELECT CAST(e.id AS TEXT) FROM machine_jobs j JOIN events e ON e.id=json_extract(j.request,'$.traceId')
           WHERE e.type='trace' AND e.principal_id=t.created_by
             AND json_extract(j.request,'$.credential.principalId')=t.created_by
             AND json_extract(j.request,'$.terminal.terminalId')=t.id
@@ -2953,7 +2983,7 @@ export class ServerStore {
       createdAt: row.createdAt,
       state: row.state,
       exitCode: row.exitCode,
-      traceId: row.traceId === null ? null : String(row.traceId),
+      traceId: row.traceId,
       retention: "retained",
     }));
     return {

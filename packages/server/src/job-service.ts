@@ -89,6 +89,7 @@ import {
   type AuthService,
   type CredentialReference,
   type AuthorityRequirement,
+  type AuthorityEvidence,
   type GovernedAdmissionRequest,
   type GovernedAdmissionDecision,
 } from "./auth.ts";
@@ -1847,6 +1848,7 @@ export class JobService {
     traceId: string,
     args: JobExecution & Omit<JobScheduleSpec, "request">,
     callerPluginId = pluginId,
+    beforeEffect?: () => void,
   ): JobScheduleSpec {
     const {
       scheduleId,
@@ -1899,7 +1901,7 @@ export class JobService {
         fail("schedule_owner_mismatch");
       const refusal = this.reauthorizeDeferred(request);
       if (refusal) fail(refusal);
-      this.jobSchedules.putSchedule(spec);
+      this.jobSchedules.putSchedule(spec, beforeEffect);
       this.store.db
         .query(
           "UPDATE job_schedules SET audit_origin=COALESCE(audit_origin,?) WHERE schedule_id=? AND revision=?",
@@ -2927,12 +2929,13 @@ export class JobService {
   decide(
     request: GovernedAdmissionRequest,
     refusal: string | null = null,
+    beforeEffect?: () => void,
   ): GovernedAdmissionDecision & { decisionId: string; policyRevision: string } {
     return this.store.transaction(() => {
       const context = this.auth.restoreCredential(request.credential);
       let allowed = context !== null && request.evidence.length > 0 && refusal === null;
       const consents: { node: string; revision: string; artifactSha256: string }[] = [];
-      const evidence: unknown[] = [];
+      const evidence: AuthorityEvidence[] = [];
       const servicePolicies = new Map<string, ServicePolicy[]>();
       for (const prior of request.evidence) {
         const { cap, ref } = prior.requirement;
@@ -2966,13 +2969,15 @@ export class JobService {
           requirement: prior.requirement,
           winner: fresh.winner,
           allowed: discharged,
-          revision: this.jobs.revision(
-            "grant",
-            fresh.winner?.id ?? "missing",
-            digest(fresh.winner),
-          ),
         });
       }
+      // The complete native verdict precedes every revision/decision/job write.
+      // A denied native admission retains its own answer, regardless of declaration.
+      if (allowed) beforeEffect?.();
+      const recordedEvidence = evidence.map((entry) => ({
+        ...entry,
+        revision: this.jobs.revision("grant", entry.winner?.id ?? "missing", digest(entry.winner)),
+      }));
       const credentialRevision = this.jobs.revision(
         "credential",
         request.credential.tokenId ?? request.credential.principalId,
@@ -2987,7 +2992,7 @@ export class JobService {
       const verdict = {
         allowed,
         refusal: allowed ? null : (refusal ?? "authority_or_consent_refused"),
-        requirements: evidence,
+        requirements: recordedEvidence,
       };
       const policyRevision = String(
         this.jobs.revision(
@@ -3438,37 +3443,50 @@ export class JobService {
     };
     return JobRequestSchema.parse({ ...unsigned, requestDigest: digest(unsigned) });
   }
-  execute(auth: AuthContext, pluginId: string, traceId: string, args: JobExecution): JobRecord {
+  execute(
+    auth: AuthContext,
+    pluginId: string,
+    traceId: string,
+    args: JobExecution,
+    beforeEffect?: () => void,
+  ): JobRecord {
     if ("terminal" in args) fail("native_terminal_admission_required");
     if ("service" in args) fail("native_service_admission_required");
     const context = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (!context) fail("credential_revoked_or_expired");
     const request = this.build(context, pluginId, traceId, args);
     const job = this.store.transaction(() => {
-      const reserved = this.jobs.reserve(request, this.runtime.now());
-      if (reserved.state !== "queued")
-        return this.authorizedJob(
+      const previous = this.jobs.reservation(request);
+      if (previous !== null && previous.state !== "queued") {
+        const existing = this.authorizedJob(
           context,
           {
             kind: "job",
-            machineId: reserved.request.machineId,
-            operationId: reserved.request.operationId,
-            jobId: reserved.request.jobId,
+            machineId: previous.request.machineId,
+            operationId: previous.request.operationId,
+            jobId: previous.request.jobId,
           },
           "jobs:read",
           pluginId,
         );
+        beforeEffect?.();
+        return existing;
+      }
       const decision = this.decide(
         {
           credential: request.credential,
           pluginId,
-          action: reserved.auditOrigin?.door ?? "engine.jobs.execute",
+          action:
+            (previous === null ? this.jobs.origin(request) : previous.auditOrigin)?.door ??
+            "engine.jobs.execute",
           evidence: this.requirements(request).map((requirement) =>
             this.auth.explain(context, requirement),
           ),
         },
         this.concurrencyRefusal(request),
+        beforeEffect,
       );
+      const reserved = this.jobs.reserve(request, this.runtime.now());
       this.jobs.decision(request.jobId, decision.decisionId);
       const allowed = decision.allowed;
       if (!allowed) {

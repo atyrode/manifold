@@ -783,6 +783,9 @@ async function orchestratorHost(f: {
   let settle: (outcome: IsolateDispatchOutcome) => void = () => {
     throw new Error("no dispatch");
   };
+  let rejectDispatch: (error: unknown) => void = () => {
+    throw new Error("no dispatch");
+  };
   const warnings: string[] = [];
   const loaded = Promise.withResolvers<Extract<IsolateChildFrame, { t: "loaded" }>>();
   attachServerGuest(
@@ -820,6 +823,16 @@ async function orchestratorHost(f: {
         if (frame.t === "loaded") loaded.resolve(frame);
         else if (frame.t === "load_failed") loaded.reject(new Error(frame.error));
         else if (frame.t === "dispatched") settle(frame.outcome);
+        else if (frame.t === "prepared") {
+          try {
+            if (active?.admitPrepared === undefined) throw new Error("missing admission");
+            active.admitPrepared(frame.targets);
+            receive({ t: "admitted", id: frame.id, allowed: true } satisfies IsolateHostFrame);
+          } catch (error) {
+            rejectDispatch(error);
+            receive({ t: "admitted", id: frame.id, allowed: false } satisfies IsolateHostFrame);
+          }
+        }
         else if (frame.t === "call") {
           if (!active) throw new Error("host call outside dispatch");
           void serveCtxCall(frame.method, frame.args, { kind: "dispatch", ctx: active }).then(
@@ -848,6 +861,7 @@ async function orchestratorHost(f: {
       const pending = Promise.withResolvers<IsolateDispatchOutcome>();
       active = ctx;
       settle = pending.resolve;
+      rejectDispatch = pending.reject;
       receive({
         t: "dispatch",
         id: String(ctx.traceId),

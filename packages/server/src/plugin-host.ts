@@ -76,6 +76,7 @@ import type {
   FinishAgentRunRequest,
   InspectAgentRunRequest,
   InspectAgentRunResult,
+  AgentRunInventory,
   FinishAgentRunResult,
   ManifoldRef,
   MintShareRequest,
@@ -198,6 +199,8 @@ export interface IdentityDoor {
   createAgentRun(input: CreateAgentRunRequest): IdentityResult<CreateAgentRunResult>;
   /** A payload-free projection, authorized by durable run sponsorship rather than journal access. */
   inspectAgentRun(input: InspectAgentRunRequest): IdentityResult<InspectAgentRunResult>;
+  /** Bounded inspectable-run discovery, without administrator credential references. */
+  listAgentRuns(): IdentityResult<AgentRunInventory>;
   /** Returns the exact server-selected policy bytes this run must acknowledge. */
   agentPolicyChallenge(): IdentityResult<AgentPolicyChallenge>;
   /** Activates this run only after every exact policy digest is acknowledged. */
@@ -545,6 +548,8 @@ export interface ActionCtx {
   /** Host-bound lineage and durable admission evidence; never caller supplied. */
   readonly credential: CredentialReference;
   readonly admission: GovernedAdmissionDecision | null;
+  /** Host-only continuation after the isolate's real input parse; not a guest ctx slice. */
+  readonly admitPrepared?: (targets: readonly unknown[]) => void;
   readonly streams: PluginStreamContext;
   readonly jobs: JobContext;
   readonly services: PluginServiceContext;
@@ -679,7 +684,19 @@ export type ActionHandler = (ctx: ActionCtx, args: never) => Promise<unknown>;
 /** A plugin's server half: what it declares, plus a handler per declared action. */
 export type ServerPluginDef = PluginDef & {
   readonly handlers: Readonly<Record<string, ActionHandler>>;
+  /** Set only by the isolate bridge: real parsing precedes the host admission continuation. */
+  readonly inputValidation?: "guest";
 };
+
+class ActionAdmissionDenial extends Error {
+  constructor(
+    readonly rule: Exclude<ActionDenialRule, typeof UNTRACED_DENIAL_RULE>,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ActionAdmissionDenial";
+  }
+}
 
 /**
  * The slice the engine's own doors touch: identity, the credential the two admitting doors
@@ -926,6 +943,7 @@ export class PluginHost {
   private defs: readonly ServerPluginDef[];
   private readonly firstParty: readonly ServerPluginDef[];
   private readonly handlers = new Map<string, Readonly<Record<string, ActionHandler>>>();
+  private readonly guestInputPlugins = new Set<string>();
   /** Installed plugins by id: the row, the verified bundle, and the def the runner produced. */
   private readonly installed = new Map<string, InstalledPlugin>();
   private readonly installedDefs = new Map<string, ServerPluginDef>();
@@ -1063,7 +1081,7 @@ export class PluginHost {
             this.isolates.pack,
           );
     this.lifecycleTimeoutMs = options.lifecycleTimeoutMs ?? LIFECYCLE_TIMEOUT_MS;
-    for (const def of this.defs) this.handlers.set(def.manifest.id, def.handlers);
+    this.syncDefs();
   }
 
   /**
@@ -1284,7 +1302,11 @@ export class PluginHost {
   private syncDefs(): void {
     this.defs = [...this.firstParty, ...this.installedDefs.values()];
     this.handlers.clear();
-    for (const def of this.defs) this.handlers.set(def.manifest.id, def.handlers);
+    this.guestInputPlugins.clear();
+    for (const def of this.defs) {
+      this.handlers.set(def.manifest.id, def.handlers);
+      if (def.inputValidation === "guest") this.guestInputPlugins.add(def.manifest.id);
+    }
   }
 
   /**
@@ -2795,6 +2817,29 @@ export class PluginHost {
     const pluginId = entry.plugin.id;
     const runAccess = pluginId === "core.access" ? entry.def.runAccess : undefined;
     const runPolicyState = this.authService.agentRunPolicyState(auth);
+    const declaration = options?.agentJustification;
+    const activeRun = auth.agentRunId !== undefined && runPolicyState === "active";
+    const normalizedDeclaration =
+      activeRun && typeof declaration === "string" ? normalizeAgentDeclaration(declaration) : null;
+    if (normalizedDeclaration !== null) payload.agentDeclaration = normalizedDeclaration;
+    const declarationDenial = !activeRun
+      ? null
+      : declaration === undefined
+        ? entry.def.agentJustification === "required"
+          ? new ActionAdmissionDenial("justification_required", "agent declaration required")
+          : null
+        : normalizedDeclaration === null
+          ? new ActionAdmissionDenial("invalid_justification", "agent declaration is invalid")
+          : null;
+    const enforceDeclaration = (): void => {
+      if (declarationDenial !== null) throw declarationDenial;
+    };
+    const guestInput = this.guestInputPlugins.has(pluginId);
+    const nativeEffectAdmission =
+      fullName === "core.access.createAgentRun" ||
+      fullName === "core.access.renewAgentRun" ||
+      fullName === "engine.jobs.execute" ||
+      fullName === "engine.jobs.schedule";
     if (runPolicyState === "expired") {
       return refuse("forbidden", "agent run expired");
     }
@@ -2880,54 +2925,47 @@ export class PluginHost {
         .join("; ");
       return refuse("invalid_args", detail);
     }
-    const requirements: AuthorityRequirement[] = [];
-    for (const declared of entry.def.requirements ?? []) {
-      let value: unknown = parsed.data;
-      for (const segment of declared.target) {
-        value =
-          value !== null && typeof value === "object" && Object.hasOwn(value, segment)
-            ? Reflect.get(value, segment)
-            : undefined;
-      }
-      const ref = ManifoldRefSchema.safeParse(value);
-      if (!ref.success) return refuse("invalid_args", "invalid authority target");
-      if (!this.authService.allowsRef(auth, declared.cap, ref.data))
-        return refuse("forbidden", `${declared.cap} capability required at target`);
-      /*
-        THE GOVERNED LIST IS THE ENGINE'S VOCABULARY (ADR 0035). Every declared requirement is
-        discharged above, at its own target, through the one evaluator — that is the whole check
-        for a plugin's own capability, because governed admission binds a capability to an
-        artifact or resource REVISION and a namespaced name has none to bind. So a plugin cap
-        passes the door and never enters a job's admission evidence, where every entry has to be
-        re-dischargeable against consent at each deferred effect.
-      */
-      if (isEngineCap(declared.cap)) requirements.push({ cap: declared.cap, ref: ref.data });
-    }
     let admission: GovernedAdmissionDecision | null = null;
-    if (entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap))) {
-      admission = this.authService.admitGoverned(auth, pluginId, fullName, requirements);
-      if (!admission.allowed) return refuse("forbidden", "explicit version-bound consent required");
-    }
-    // Claims are evidence, not authority: policy, scope, caps and arguments always win.
-    // Human and legacy credentials cannot manufacture an autonomous-run declaration.
-    if (auth.agentRunId !== undefined && runPolicyState === "active") {
-      const declaration = options?.agentJustification;
-      if (declaration === undefined) {
-        if (entry.def.agentJustification === "required")
-          return refuse("justification_required", "agent declaration required");
-      } else {
-        const normalized =
-          typeof declaration === "string" ? normalizeAgentDeclaration(declaration) : null;
-        if (normalized === null)
-          return refuse("invalid_justification", "agent declaration is invalid");
-        payload.agentDeclaration = normalized;
+    const admitInput = (
+      args: unknown,
+      preparedTargets?: readonly unknown[],
+    ): ActionAdmissionDenial | null => {
+      const declaredRequirements = entry.def.requirements ?? [];
+      if (preparedTargets !== undefined && preparedTargets.length !== declaredRequirements.length)
+        return new ActionAdmissionDenial("invalid_args", "invalid authority targets");
+      const requirements: AuthorityRequirement[] = [];
+      for (const [index, declared] of declaredRequirements.entries()) {
+        let value: unknown = args;
+        if (preparedTargets === undefined) {
+          for (const segment of declared.target) {
+            value =
+              value !== null && typeof value === "object" && Object.hasOwn(value, segment)
+                ? Reflect.get(value, segment)
+                : undefined;
+          }
+        } else {
+          value = preparedTargets[index];
+        }
+        const ref = ManifoldRefSchema.safeParse(value);
+        if (!ref.success)
+          return new ActionAdmissionDenial("invalid_args", "invalid authority target");
+        if (!this.authService.allowsRef(auth, declared.cap, ref.data))
+          return new ActionAdmissionDenial("forbidden", `${declared.cap} capability required at target`);
+        // Only engine capabilities have native revision-bound admission evidence.
+        if (isEngineCap(declared.cap)) requirements.push({ cap: declared.cap, ref: ref.data });
       }
-    }
-    const handler = this.handlers.get(pluginId)?.[entry.def.name];
-    if (handler === undefined) {
-      // An assembled action with no handler is a wiring bug in `assembly.ts`, never a
-      // caller's problem: it must be reported as a server failure, not as a denial.
-      throw new Error(`action "${fullName}" has no server handler`);
+      if (entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap))) {
+        admission = this.authService.admitGoverned(auth, pluginId, fullName, requirements);
+        if (!admission.allowed)
+          return new ActionAdmissionDenial("forbidden", "explicit version-bound consent required");
+      }
+      return null;
+    };
+    if (!guestInput) {
+      const denial = admitInput(parsed.data);
+      if (denial !== null) return refuse(denial.rule, denial.message);
+      if (!nativeEffectAdmission && declarationDenial !== null)
+        return refuse(declarationDenial.rule, declarationDenial.message);
     }
     /*
       THE STAGING BUFFER, one per dispatch. `ctx.emit` appends here and nothing leaves until
@@ -2979,10 +3017,24 @@ export class PluginHost {
       throw error;
     }
     const database = lease.database;
+    let guestAdmitted = false;
     const ctx: ActionCtx = {
       traceId,
       credential: this.authService.credentialReference(auth),
-      admission,
+      get admission() {
+        return admission;
+      },
+      ...(guestInput
+        ? {
+            admitPrepared: (targets: readonly unknown[]): void => {
+              if (guestAdmitted) throw new IsolateDenial("unavailable", "isolate admitted twice");
+              const denial = admitInput(undefined, targets);
+              if (denial !== null) throw denial;
+              enforceDeclaration();
+              guestAdmitted = true;
+            },
+          }
+        : {}),
       jobs: jobContext(
         () => {
           if (this.jobs === null) throw new ServiceError("forbidden", "job service unavailable");
@@ -2991,6 +3043,7 @@ export class PluginHost {
         nativeAuth,
         pluginId,
         traceId,
+        nativeEffectAdmission ? enforceDeclaration : undefined,
       ),
       services: serviceContext(
         () => {
@@ -3062,12 +3115,14 @@ export class PluginHost {
         createPrincipal: (input) =>
           identityCall(() => this.authService.bootstrapPrincipal(input, auth)),
         mintToken: (input) => identityCall(() => this.authService.mintToken(input, auth)),
-        createAgentRun: (input) => identityCall(() => this.authService.createAgentRun(input, auth)),
+        createAgentRun: (input) =>
+          identityCall(() => this.authService.createAgentRun(input, auth, enforceDeclaration)),
         inspectAgentRun: (input) => identityCall(() => this.authService.inspectAgentRun(input, auth)),
         agentPolicyChallenge: () => identityCall(() => this.authService.agentPolicyChallenge(auth)),
         acknowledgeAgentPolicy: (input) =>
           identityCall(() => this.authService.acknowledgeAgentPolicy(input, auth)),
-        renewAgentRun: (input) => identityCall(() => this.authService.renewAgentRun(input, auth)),
+        renewAgentRun: (input) =>
+          identityCall(() => this.authService.renewAgentRun(input, auth, enforceDeclaration)),
         finishAgentRun: (input) => identityCall(() => this.authService.finishAgentRun(input, auth)),
         reloadAgentPolicy: () => identityCall(() => this.authService.reloadAgentPolicy(auth)),
         revokePrincipal: (principalId) =>
@@ -3089,6 +3144,7 @@ export class PluginHost {
             this.logger.info("machine_forgotten", { machineId, principal: auth.principal.id });
           }),
         listCredentials: () => identityCall(() => this.authService.listCredentials(auth)),
+        listAgentRuns: () => identityCall(() => this.authService.listAgentRuns(auth)),
       },
       /*
         The guest door is bound to the CALLING PRINCIPAL the same way the identity door is,
@@ -3116,11 +3172,16 @@ export class PluginHost {
         if (!opaque) targets.push(ref);
       },
     };
-    const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
     let produced: unknown;
     const admitted = async (): Promise<unknown> => {
       try {
-        return await invoke(ctx, parsed.data);
+        const handler = this.handlers.get(pluginId)?.[entry.def.name];
+        if (handler === undefined) throw new Error(`action "${fullName}" has no server handler`);
+        const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
+        const answer = await invoke(ctx, parsed.data);
+        if (guestInput && !guestAdmitted)
+          throw new IsolateDenial("unavailable", "isolate returned before admission");
+        return answer;
       } finally {
         lease.close();
       }
@@ -3130,14 +3191,9 @@ export class PluginHost {
     } catch (error) {
       streamAdmissionOpen = false;
       for (const producer of openedStreams) producer.close();
-      if (error instanceof IsolateDenial) {
-        /*
-          THE CHILD'S OWN RUNGS (ADR 0016 §6). An isolated handler grades `invalid_args`
-          itself — its zod schema lives where its code lives — and the supervisor answers
-          `unavailable` for a child that is not running or did not answer in time. Both arrive
-          as a throw from the proxy and are settled here as the rung they name, traced exactly
-          as an in-realm rung is; they are answers, never failures.
-        */
+      if (error instanceof IsolateDenial || error instanceof ActionAdmissionDenial) {
+        // Guest parsing, host post-parse admission, and native pre-effect declarations all
+        // settle the existing write-ahead trace as refusals, never as handler failures.
         this.store.settleTrace(traceId, error.rule, traceTargets(targets));
         return { ok: false, denial: { rule: error.rule, message: error.message } };
       }
