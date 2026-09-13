@@ -165,39 +165,6 @@ export interface GuestStorage {
 }
 
 /**
- * A bound parameter and one statement, as the database takes them. The same shapes
- * `@manifold/plugin` declares; a blob is in-realm only in practice, because this boundary is
- * JSON and a `Uint8Array` does not survive it intact.
- */
-export type GuestSqlParam = string | number | bigint | boolean | null | Uint8Array;
-export interface GuestSqlStatement {
-  readonly sql: string;
-  readonly params?: readonly GuestSqlParam[];
-}
-export type GuestSqlRow = Readonly<Record<string, GuestSqlParam>>;
-
-/**
- * THE PLUGIN'S OWN TABLES, served over the boundary (ADR 0034). The same three verbs an
- * in-realm plugin gets, with the same meanings: `query` returns rows, `run` returns what it
- * changed, and `batch` is the transaction — its statements are known before it starts, it
- * commits or rolls back whole, and it costs ONE round trip where a statement-at-a-time loop
- * would cost one each. Present on the context exactly when the manifest declared `database`;
- * absent otherwise, which is what the host answers `slice_unavailable` for.
- */
-export interface GuestDatabase {
-  readonly pluginId: string;
-  query<Row extends GuestSqlRow = GuestSqlRow>(
-    sql: string,
-    params?: readonly GuestSqlParam[],
-  ): Promise<readonly Row[]>;
-  run(
-    sql: string,
-    params?: readonly GuestSqlParam[],
-  ): Promise<{ readonly changes: number; readonly lastInsertRowid: number }>;
-  batch(statements: readonly GuestSqlStatement[]): Promise<readonly (readonly GuestSqlRow[])[]>;
-}
-
-/**
  * A named transformation of this plugin's retained data, committed by the native ledger.
  * Storage only, deliberately: the host admits `storage.*` from a migrating guest and nothing
  * else, so a guest that keeps rows makes its tables in `onEnable`, whose ctx carries the slice.

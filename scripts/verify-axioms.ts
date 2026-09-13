@@ -2162,7 +2162,6 @@ function scanTree(dir: string, out: string[]): void {
   );
 }
 
-
 // ────────────────────────────────────────── S17: hosting neutrality
 
 /**

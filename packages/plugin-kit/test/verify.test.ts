@@ -27,21 +27,6 @@ let bundle = "";
 let rowsBundle = "";
 let part = "";
 let client = "";
-let rowsBundle = "";
-
-/** Packs one fixture directory the way an author's release would: the command, a second process. */
-async function pack(source: string, out: string): Promise<void> {
-  const command = Bun.spawn(
-    ["bun", `${KIT}/src/pack.ts`, source, "--out", out, "--self-contained"],
-    {
-      cwd: KIT,
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
-  const [stderr, code] = await Promise.all([new Response(command.stderr).text(), command.exited]);
-  if (code !== 0) throw new Error(`pack exited ${String(code)}: ${stderr}`);
-}
 
 /** Packs one fixture directory the way an author's release would: the command, a second process. */
 async function pack(source: string, out: string): Promise<void> {
@@ -63,13 +48,11 @@ beforeAll(async () => {
   rowsBundle = `${dir}/${ROWS_ID}.manifold-plugin.json`;
   part = `${dir}/${PART_ID}.manifold-plugin.json`;
   client = `${dir}/${CLIENT_ID}.manifold-plugin.json`;
-  rowsBundle = `${dir}/${ROWS_ID}.manifold-plugin.json`;
   for (const [source, output] of [
     [SAMPLE, bundle],
     [ROWS, rowsBundle],
     [`${SAMPLE}/part`, part],
     [`${import.meta.dir}/fixtures/client`, client],
-    [ROWS, rowsBundle],
   ] as const) {
     await pack(source, output);
   }

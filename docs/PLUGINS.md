@@ -1015,6 +1015,7 @@ It is not a document plane (§5 is still where large blobs and collaborative tex
 shared database (no plugin reads another's rows — cross-plugin data travels through actions and
 events), not a query API over the engine's own tables, and not a replacement for `ctx.storage`: a
 preference is still a key. The reasoning is `docs/decisions/0034-plugin-database.md`.
+
 ### Element types are reserved while you are away
 
 The engine records which plugin owns which element `type` (a workspace-level `meta` row, beside the
