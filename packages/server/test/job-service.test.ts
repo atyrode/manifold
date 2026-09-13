@@ -1181,6 +1181,7 @@ test("bound terminal admission requires current spawn authority, exact pins and 
       });
     let traceId = spawnTrace(f.root);
     const runtime = {
+      machineId: f.machineId,
       pluginId,
       operationId,
       installationRevision: "r1",
@@ -1209,6 +1210,16 @@ test("bound terminal admission requires current spawn authority, exact pins and 
     expect(() => f.service.admitTerminal(f.root, runtime, f.machineId, binding, traceId)).toThrow();
     f.owner.terminalHostId = "native-host";
     prove(f);
+    expect(() =>
+      f.service.admitTerminal(
+        f.root,
+        { ...runtime, machineId: "another-machine" },
+        f.machineId,
+        binding,
+        traceId,
+      ),
+    ).toThrow("terminal_runtime_destination_changed");
+    expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
     expect(() =>
       f.service.admitTerminal(
         f.root,

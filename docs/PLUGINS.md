@@ -1894,6 +1894,11 @@ const born = await host.client.openTerminal({
 host.client.sendTerminalInput(born.id, "code launch --selection ...\n");
 ```
 
+A plugin-supplied `runtime` is a reviewed native descriptor, not a portable operation recipe. It
+includes the destination `machineId`; `openTerminal` must name that same machine, and native
+admission refuses a mismatch before reserving a job or creating a terminal. Matching installation
+and resource pins on another machine do not make the descriptor transferable.
+
 The opener holds the controller lease, so the input is forwarded; anyone else's lands as an
 `error` frame with code `not_controller` and `ref` naming the terminal. A CONTAINER RENDERER is
 the one contribution that dials a room of its own (A4: resolve the reference, open a pipe with a
