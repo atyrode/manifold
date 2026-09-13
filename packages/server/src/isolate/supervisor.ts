@@ -4,11 +4,15 @@ import type {
   LifecycleCtx,
   StreamProducer,
   JobFollow,
+  PluginMigration,
+  PluginStorage,
 } from "@manifold/plugin";
 import {
   ISOLATE_CRASH_BUDGET,
   ISOLATE_DISPATCH_DEADLINE_MS,
   ISOLATE_IDLE_EVICT_MS,
+  ISOLATE_MIGRATION_DEADLINE_MS,
+  MAX_MIGRATION_STORAGE_OPERATIONS,
   ManifoldRefSchema,
   type IsolateChildFrame,
   type IsolateHook,
@@ -58,11 +62,13 @@ import {
 const SHUTDOWN_GRACE_MS = 2_000;
 
 type LoadedFrame = Extract<IsolateChildFrame, { t: "loaded" }>;
-type AnsweredFrame = Extract<IsolateChildFrame, { t: "dispatched" | "hooked" }>;
+type AnsweredFrame = Extract<IsolateChildFrame, { t: "dispatched" | "hooked" | "migrated" }>;
 
 /** One round trip awaiting its answer, with the ctx that serves the child's calls meanwhile. */
 interface Pending {
   readonly served: ServedCtx;
+  readonly request: IsolateHostFrame;
+  serving: number;
   readonly answer: (frame: AnsweredFrame) => void;
   readonly fail: (error: Error) => void;
 }
@@ -90,6 +96,7 @@ class Isolate {
   /** The child's first report; a respawn's is not consulted, the bundle is pinned by hash. */
   loaded: LoadedFrame | null = null;
   readonly pending = new Map<string, Pending>();
+  migration: { readonly id: string; readonly calls: Set<string> } | null = null;
   readonly producers = new Map<string, StreamProducer>();
   readonly jobObservers = new Map<string, JobObserver>();
   nextProducer = 0;
@@ -108,6 +115,7 @@ export interface IsolateSupervisorDeps {
   /** The runner's numbers, defaulting to the protocol's; a test narrows them. */
   readonly dispatchDeadlineMs?: number;
   readonly idleEvictMs?: number;
+  readonly migrationDeadlineMs?: number;
   readonly crashBudget?: { readonly count: number; readonly windowMs: number };
 }
 
@@ -127,6 +135,7 @@ export class IsolateSupervisor implements IsolateRunner {
   private readonly runtime: RuntimeDeps;
   private readonly dispatchDeadlineMs: number;
   private readonly idleEvictMs: number;
+  private readonly migrationDeadlineMs: number;
   private readonly crashBudget: { readonly count: number; readonly windowMs: number };
   private closed = false;
 
@@ -135,6 +144,7 @@ export class IsolateSupervisor implements IsolateRunner {
     this.runtime = deps.runtime;
     this.dispatchDeadlineMs = deps.dispatchDeadlineMs ?? ISOLATE_DISPATCH_DEADLINE_MS;
     this.idleEvictMs = deps.idleEvictMs ?? ISOLATE_IDLE_EVICT_MS;
+    this.migrationDeadlineMs = deps.migrationDeadlineMs ?? ISOLATE_MIGRATION_DEADLINE_MS;
     this.crashBudget = deps.crashBudget ?? ISOLATE_CRASH_BUDGET;
   }
 
@@ -161,6 +171,7 @@ export class IsolateSupervisor implements IsolateRunner {
       dispatch: (action, args, ctx) => this.dispatch(pluginId, action, args, ctx),
       hook: (hook, ctx, delta) => this.hook(pluginId, hook, ctx, delta),
       settled: (ctx, job) => this.settled(pluginId, ctx, job),
+      migrate: (migration, storage) => this.migrate(isolate, migration, storage),
     };
     try {
       return buildIsolateDef(ref.manifest, isolate.loaded, transport);
@@ -283,6 +294,29 @@ export class IsolateSupervisor implements IsolateRunner {
     if (!frame.ok) throw new Error(frame.error ?? `${hook} failed in the isolate`);
   }
 
+  private async migrate(
+    isolate: Isolate,
+    migration: Pick<PluginMigration, "name" | "to">,
+    storage: PluginStorage,
+  ): Promise<void> {
+    if (this.isolates.get(isolate.ref.pluginId) !== isolate)
+      throw new IsolateDenial("unavailable", "migration belongs to a retired plugin");
+    if (
+      isolate.pending.size !== 0 ||
+      isolate.producers.size !== 0 ||
+      isolate.jobObservers.size !== 0
+    )
+      throw new IsolateDenial("unavailable", "migration requires a drained guest");
+    const frame = await this.request(
+      isolate.ref.pluginId,
+      (id) => ({ t: "migrate", id, migration }),
+      { kind: "migration", ctx: { storage } },
+    );
+    if (frame.t !== "migrated" || frame.name !== migration.name)
+      throw new IsolateDenial("unavailable", "migration answered out of protocol");
+    if (!frame.outcome.ok) throw new Error(frame.outcome.error);
+  }
+
   /**
    * One round trip: a running child (spawned now if it was evicted), a fresh id, the frame,
    * and the answer inside the deadline. The pending entry holds the request's ctx for the
@@ -311,18 +345,26 @@ export class IsolateSupervisor implements IsolateRunner {
     if (child === null || this.isolates.get(pluginId) !== isolate) {
       throw new IsolateDenial("unavailable", "isolate unloaded");
     }
+    if (isolate.migration !== null || (served.kind === "migration" && isolate.pending.size !== 0))
+      throw new IsolateDenial("unavailable", "migration requires exclusive guest access");
     isolate.nextRequest += 1;
     const id = `r${String(isolate.nextRequest)}`;
     this.clearIdle(isolate);
-    const deadline = setTimeout(() => this.expire(isolate, id), this.dispatchDeadlineMs);
+    const deadline = setTimeout(
+      () => this.expire(isolate, id),
+      served.kind === "migration" ? this.migrationDeadlineMs : this.dispatchDeadlineMs,
+    );
     try {
-      return await new Promise<AnsweredFrame>((resolve, reject) => {
-        isolate.pending.set(id, { served, answer: resolve, fail: reject });
-        if (!child.send(build(id))) reject(new IsolateDenial("unavailable", "isolate exited"));
-      });
+      const { promise, resolve, reject } = Promise.withResolvers<AnsweredFrame>();
+      const request = build(id);
+      if (served.kind === "migration") isolate.migration = { id, calls: new Set() };
+      isolate.pending.set(id, { served, request, serving: 0, answer: resolve, fail: reject });
+      if (!child.send(request)) reject(new IsolateDenial("unavailable", "isolate exited"));
+      return await promise;
     } finally {
       clearTimeout(deadline);
       isolate.pending.delete(id);
+      if (isolate.migration?.id === id) isolate.migration = null;
       this.armIdle(isolate);
     }
   }
@@ -496,12 +538,21 @@ export class IsolateSupervisor implements IsolateRunner {
     if (isolate.child !== child) return;
     switch (frame.t) {
       case "loaded":
-        isolate.handshake?.resolve(frame);
+        if (isolate.handshake === null) {
+          this.failMigration(isolate, "loaded frame outside the load handshake");
+          return;
+        }
+        isolate.handshake.resolve(frame);
         return;
       case "load_failed":
-        isolate.handshake?.reject(new IsolateLoadError(frame.error));
+        if (isolate.handshake === null) {
+          this.failMigration(isolate, "load_failed frame outside the load handshake");
+          return;
+        }
+        isolate.handshake.reject(new IsolateLoadError(frame.error));
         return;
       case "dispatched":
+      case "migrated":
       case "hooked": {
         const pending = isolate.pending.get(frame.id);
         if (pending === undefined) {
@@ -510,9 +561,27 @@ export class IsolateSupervisor implements IsolateRunner {
             id: frame.id,
             reason: "answer to no request",
           });
+          this.failMigration(isolate, "answer to no migration request");
           return;
         }
-        pending.answer(frame);
+        const expected =
+          pending.request.t === "dispatch"
+            ? "dispatched"
+            : pending.request.t === "hook"
+              ? "hooked"
+              : "migrated";
+        if (
+          frame.t !== expected ||
+          (pending.request.t === "migrate" &&
+            (frame.t !== "migrated" ||
+              frame.name !== pending.request.migration.name ||
+              pending.serving !== 0))
+        ) {
+          pending.fail(new IsolateDenial("unavailable", "isolate answered out of protocol"));
+        } else {
+          pending.answer(frame);
+        }
+        isolate.pending.delete(frame.id);
         return;
       }
       case "call":
@@ -544,6 +613,7 @@ export class IsolateSupervisor implements IsolateRunner {
       detail,
     });
     const pending = id === null ? undefined : isolate.pending.get(id);
+    if (this.failMigration(isolate, "malformed migration frame")) return;
     if (pending !== undefined) {
       pending.fail(new IsolateDenial("unavailable", "isolate answered with a malformed frame"));
       return;
@@ -551,6 +621,16 @@ export class IsolateSupervisor implements IsolateRunner {
     if (id === null) {
       isolate.handshake?.reject(new IsolateLoadError(`malformed frame during load: ${detail}`));
     }
+  }
+
+  private failMigration(isolate: Isolate, detail: string): boolean {
+    const migration = isolate.migration;
+    if (migration === null) return false;
+    const pending = isolate.pending.get(migration.id);
+    if (pending === undefined) return false;
+    pending.fail(new IsolateDenial("unavailable", detail));
+    isolate.pending.delete(migration.id);
+    return true;
   }
 
   /** Serves one `call` from the ctx of the request its id is prefixed with. */
@@ -563,7 +643,21 @@ export class IsolateSupervisor implements IsolateRunner {
     const pending =
       separator === -1 ? undefined : isolate.pending.get(frame.id.slice(0, separator));
     let reply: IsolateHostFrame;
+    const migration = isolate.migration;
     try {
+      if (migration !== null) {
+        if (
+          pending?.served.kind !== "migration" ||
+          !frame.method.startsWith("storage.") ||
+          migration.calls.has(frame.id) ||
+          migration.calls.size >= MAX_MIGRATION_STORAGE_OPERATIONS
+        ) {
+          this.failMigration(isolate, "invalid migration storage call");
+          throw new Error("migration may call only its own storage with fresh call ids");
+        }
+        migration.calls.add(frame.id);
+      }
+      if (pending !== undefined) pending.serving += 1;
       let result: unknown;
       if (frame.method === "jobs.ack" || frame.method === "jobs.unfollow") {
         const id = frame.args[0];
@@ -658,6 +752,8 @@ export class IsolateSupervisor implements IsolateRunner {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       reply = { t: "reply", id: frame.id, ok: false, error: message.slice(0, 2048) };
+    } finally {
+      if (pending !== undefined && pending.serving > 0) pending.serving -= 1;
     }
     if (isolate.child === child) child.send(reply);
   }

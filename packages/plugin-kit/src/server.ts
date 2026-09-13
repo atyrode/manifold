@@ -9,6 +9,7 @@ import {
   EventPayloadSchema,
   IsolateChildFrameSchema,
   IsolateHostFrameSchema,
+  GuestMigrationDeclarationsSchema,
   MAX_ISOLATE_ACTIONS,
   MAX_ISOLATE_EMITS,
   ManifoldRefSchema,
@@ -17,6 +18,9 @@ import {
   type ListJobRunsArgs,
   type ListJobRunsResult,
   type JobDescription,
+  JobDeploymentDescribeArgsSchema,
+  JobDeploymentDescriptionSchema,
+  type JobDeploymentDescription,
   type ActionScope,
   type ActionRequirement,
   type ActionSummary,
@@ -33,6 +37,7 @@ import {
   type PlaceResponse,
   type PlacementDenial,
   type PluginManifest,
+  type PluginDataVersion,
   type PluginRoster,
   type Principal,
   type ServiceConfiguration,
@@ -59,7 +64,7 @@ import {
   type JobEvent,
 } from "../../protocol/src/jobs.ts";
 import { z } from "zod";
-import { HostCallError, IsolateSliceUnavailable } from "./errors.ts";
+import { HostCallError, IsolateSliceUnavailable, PluginDatabaseError } from "./errors.ts";
 
 /**
  * THE SERVER GUEST RUNTIME (ADR 0016 §1, §2).
@@ -136,6 +141,50 @@ export interface GuestStorage {
   keys(prefix?: string): Promise<readonly string[]>;
 }
 
+/**
+ * A bound parameter and one statement, as the database takes them. The same shapes
+ * `@manifold/plugin` declares; a blob is in-realm only in practice, because this boundary is
+ * JSON and a `Uint8Array` does not survive it intact.
+ */
+export type GuestSqlParam = string | number | bigint | boolean | null | Uint8Array;
+export interface GuestSqlStatement {
+  readonly sql: string;
+  readonly params?: readonly GuestSqlParam[];
+}
+export type GuestSqlRow = Readonly<Record<string, GuestSqlParam>>;
+
+/**
+ * THE PLUGIN'S OWN TABLES, served over the boundary (ADR 0034). The same three verbs an
+ * in-realm plugin gets, with the same meanings: `query` returns rows, `run` returns what it
+ * changed, and `batch` is the transaction — its statements are known before it starts, it
+ * commits or rolls back whole, and it costs ONE round trip where a statement-at-a-time loop
+ * would cost one each. Present on the context exactly when the manifest declared `database`;
+ * absent otherwise, which is what the host answers `slice_unavailable` for.
+ */
+export interface GuestDatabase {
+  readonly pluginId: string;
+  query<Row extends GuestSqlRow = GuestSqlRow>(
+    sql: string,
+    params?: readonly GuestSqlParam[],
+  ): Promise<readonly Row[]>;
+  run(
+    sql: string,
+    params?: readonly GuestSqlParam[],
+  ): Promise<{ readonly changes: number; readonly lastInsertRowid: number }>;
+  batch(statements: readonly GuestSqlStatement[]): Promise<readonly (readonly GuestSqlRow[])[]>;
+}
+
+/**
+ * A named transformation of this plugin's retained data, committed by the native ledger.
+ * Storage only, deliberately: the host admits `storage.*` from a migrating guest and nothing
+ * else, so a guest that keeps rows makes its tables in `onEnable`, whose ctx carries the slice.
+ */
+export interface ServerMigration {
+  readonly name: string;
+  readonly to: PluginDataVersion;
+  migrate(storage: GuestStorage): void | Promise<void>;
+}
+
 /** What the engine's placement executor answers, restated over protocol types. */
 export type GuestPlaceOutcome =
   | { readonly status: "placed"; readonly result: PlaceResponse }
@@ -179,6 +228,10 @@ export interface GuestJobs {
     pluginId: string;
     installationRevision?: string;
   }): Promise<JobDescription>;
+  describeDeployment(args: {
+    machineId: string;
+    pluginId: string;
+  }): Promise<JobDeploymentDescription>;
   execute(args: GuestJobRequest): Promise<GuestJobStatus>;
   status(node: GuestJobNode): Promise<GuestJobStatus>;
   listRuns(args: ListJobRunsArgs): Promise<ListJobRunsResult>;
@@ -232,6 +285,12 @@ export interface GuestCtx {
   now(): number;
   newId(): Promise<string>;
   readonly storage: GuestStorage;
+  /**
+   * This plugin's own tables, present exactly when its manifest declares `database`. A plugin
+   * that declared none has no member here and the host answers `slice_unavailable` to anyone
+   * who forges the call frame anyway (ADR 0034 §6).
+   */
+  readonly database?: GuestDatabase;
   readonly jobs: GuestJobs;
   readonly services: GuestServices;
   readonly streams: {
@@ -247,13 +306,16 @@ export interface GuestCtx {
 }
 
 /**
- * What a lifecycle hook is given. Storage is served; `emit` is NOT — the `hooked` frame has
- * no carrier for emissions, so a hook that emits raises {@link IsolateSliceUnavailable} and
- * the hook fails by name rather than publishing into the void.
+ * What a lifecycle hook is given. Storage is served, and so is the database when the manifest
+ * declared one — a hook orders its OWN durable state, and rows are as much of that as keys.
+ * `emit` is NOT: the `hooked` frame has no carrier for emissions, so a hook that emits raises
+ * {@link IsolateSliceUnavailable} and the hook fails by name rather than publishing into the
+ * void.
  */
 export interface GuestLifecycleCtx {
   readonly pluginId: string;
   readonly storage: GuestStorage;
+  readonly database?: GuestDatabase;
   readonly emit: GuestEmit;
   now(): number;
 }
@@ -282,6 +344,7 @@ export interface ServerPluginDef {
   readonly actions: readonly ServerActionDef[];
   readonly handlers: Readonly<Record<string, ServerHandler>>;
   readonly lifecycle?: GuestLifecycle | undefined;
+  readonly migrations?: readonly ServerMigration[] | undefined;
 }
 
 // ---------------------------------------------------------------------------- the transport
@@ -353,6 +416,96 @@ function assertStorageValue(key: string, value: string): void {
   }
 }
 
+// ---------------------------------------------------------------------------- the database rules
+
+/*
+  The statement discipline of `@manifold/plugin`'s `database.ts`, restated for exactly the
+  reason the storage rules above are: the kit may depend only on the protocol — `@manifold/plugin`
+  pulls the engine's whole composition half, and a packed server bundle inlines what it imports
+  — and an author deserves the refusal before the round trip rather than after it. The host
+  enforces the same bounds on its side, so a drift here can only make a statement fail EARLIER,
+  never let one through.
+ */
+const MAX_SQL_STATEMENT_BYTES = 64 * 1024;
+const MAX_SQL_PARAMS = 999;
+const MAX_SQL_BATCH_STATEMENTS = 256;
+const REFUSED_LEADING_KEYWORDS: Record<string, true> = {
+  ATTACH: true,
+  DETACH: true,
+  VACUUM: true,
+  PRAGMA: true,
+};
+const REFUSED_FUNCTIONS = /\bload_extension\s*\(/i;
+
+/** The first keyword of a statement, comments and leading whitespace removed; "" for none. */
+function leadingKeyword(sql: string): string {
+  let rest = sql;
+  for (;;) {
+    rest = rest.trimStart();
+    if (rest.startsWith("--")) {
+      const end = rest.indexOf("\n");
+      if (end === -1) return "";
+      rest = rest.slice(end + 1);
+      continue;
+    }
+    if (rest.startsWith("/*")) {
+      const end = rest.indexOf("*/");
+      if (end === -1) return "";
+      rest = rest.slice(end + 2);
+      continue;
+    }
+    break;
+  }
+  const match = /^[A-Za-z_]+/.exec(rest);
+  return match === null ? "" : match[0].toUpperCase();
+}
+
+function assertSqlStatement(sql: string): void {
+  if (typeof sql !== "string" || sql.trim() === "") {
+    throw new PluginDatabaseError("a statement must be a non-empty string");
+  }
+  const bytes = new TextEncoder().encode(sql).byteLength;
+  if (bytes > MAX_SQL_STATEMENT_BYTES) {
+    throw new PluginDatabaseError(
+      `statement is ${String(bytes)} bytes, over the ${String(MAX_SQL_STATEMENT_BYTES)}-byte limit`,
+    );
+  }
+  const keyword = leadingKeyword(sql);
+  if (REFUSED_LEADING_KEYWORDS[keyword] === true) {
+    throw new PluginDatabaseError(
+      `${keyword} is refused: a plugin's database is one file and the engine opened it`,
+    );
+  }
+  if (REFUSED_FUNCTIONS.test(sql)) {
+    throw new PluginDatabaseError("load_extension is refused: a plugin's database loads nothing");
+  }
+}
+
+function assertSqlParams(params: readonly GuestSqlParam[] | undefined): void {
+  if (params === undefined) return;
+  if (!Array.isArray(params)) throw new PluginDatabaseError("parameters must be an array");
+  if (params.length > MAX_SQL_PARAMS) {
+    throw new PluginDatabaseError(
+      `${String(params.length)} parameters, over the ${String(MAX_SQL_PARAMS)} SQLite allows`,
+    );
+  }
+}
+
+function assertSqlBatch(statements: readonly GuestSqlStatement[]): void {
+  if (!Array.isArray(statements) || statements.length === 0) {
+    throw new PluginDatabaseError("a batch must hold at least one statement");
+  }
+  if (statements.length > MAX_SQL_BATCH_STATEMENTS) {
+    throw new PluginDatabaseError(
+      `a batch of ${String(statements.length)} statements is over the ${String(MAX_SQL_BATCH_STATEMENTS)}-statement limit`,
+    );
+  }
+  for (const statement of statements) {
+    assertSqlStatement(statement.sql);
+    assertSqlParams(statement.params);
+  }
+}
+
 // ---------------------------------------------------------------------------- the runtime
 
 /** The ActionCtx members stage 1 does not serve; reaching one is a named refusal, not a TypeError. */
@@ -389,6 +542,9 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     { readonly method: IsolateCtxMethod; resolve(value: unknown): void; reject(error: Error): void }
   >();
   const actions = new Map(def.actions.map((action) => [action.name, action] as const));
+  const migrations = new Map(
+    (def.migrations ?? []).map((migration) => [migration.name, migration]),
+  );
   let loaded = false;
   const producerClosures = new Map<string, () => void>();
   type JobNotification = Extract<IsolateHostFrame, { t: "job_update" }>;
@@ -427,6 +583,11 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       },
       close: () => {
         open = false;
+        for (const [id, waiting] of pending) {
+          if (!id.startsWith(`${requestId}:`)) continue;
+          pending.delete(id);
+          waiting.reject(new Error(`request "${requestId}" already answered`));
+        }
       },
     };
   };
@@ -505,9 +666,68 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       (await call("storage.keys", prefix === undefined ? [] : [prefix])) as readonly string[],
   });
 
+  /**
+   * The database handle, or undefined for a plugin whose manifest declared none — the same
+   * absence the host serves `slice_unavailable` for, decided here from the manifest this
+   * process loaded so an author sees it in the type rather than at the boundary.
+   *
+   * A refusal is a REJECTION with `PluginDatabaseError`, whichever side decided: the bounds
+   * above reject before the round trip, and the host's own refusal — an oversize result, a
+   * SQLite error, a plugin that asked for a table it never made — is rethrown as the same
+   * class, so a plugin writes one `try`/`catch` and never has to tell the sides apart.
+   */
+  const databaseFor = (call: Call): GuestDatabase | undefined => {
+    if (def.manifest.database === undefined) return undefined;
+    const ask = async (
+      method: "database.query" | "database.run" | "database.batch",
+      args: readonly unknown[],
+    ): Promise<unknown> => {
+      try {
+        return await call(method, args);
+      } catch (error) {
+        if (error instanceof PluginDatabaseError) throw error;
+        throw new PluginDatabaseError(
+          error instanceof HostCallError ? error.detail : errorText(error),
+        );
+      }
+    };
+    return {
+      pluginId: def.manifest.id,
+      query: async <Row extends GuestSqlRow = GuestSqlRow>(
+        sql: string,
+        params?: readonly GuestSqlParam[],
+      ) => {
+        assertSqlStatement(sql);
+        assertSqlParams(params);
+        // Omitted, not sent as a hole: the frame is JSON, which has no `undefined`, and the
+        // same reason `storage.keys` sends `[]` rather than `[undefined]` for no prefix.
+        return (await ask(
+          "database.query",
+          params === undefined ? [sql] : [sql, params],
+        )) as readonly Row[];
+      },
+      run: async (sql, params) => {
+        assertSqlStatement(sql);
+        assertSqlParams(params);
+        return (await ask("database.run", params === undefined ? [sql] : [sql, params])) as {
+          changes: number;
+          lastInsertRowid: number;
+        };
+      },
+      batch: async (statements) => {
+        assertSqlBatch(statements);
+        return (await ask("database.batch", [statements])) as readonly (readonly GuestSqlRow[])[];
+      },
+    };
+  };
+
   /** Every job verb but `follow`: a live subscription belongs to a dispatch, not to a hook. */
   const jobsFor = (call: Call): GuestSettledJobs => ({
     describe: async (args) => (await call("jobs.describe", [args])) as JobDescription,
+    describeDeployment: async (args) =>
+      JobDeploymentDescriptionSchema.parse(
+        await call("jobs.describeDeployment", [JobDeploymentDescribeArgsSchema.parse(args)]),
+      ),
     execute: async (args) => (await call("jobs.execute", [args])) as GuestJobStatus,
     status: async (node) => (await call("jobs.status", [node])) as GuestJobStatus,
     listRuns: async (args) =>
@@ -525,6 +745,9 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
   });
 
   const dispatchCtx = (call: Call, carried: IsolateDispatchCtx, staged: Emission[]): GuestCtx => {
+    // Spread, not assigned: a plugin that declared no database has NO member here, so reading
+    // it is `undefined` rather than a handle that would fail one round trip later.
+    const database = databaseFor(call);
     const ctx: GuestCtx = {
       traceId: carried.traceId,
       pluginId: def.manifest.id,
@@ -543,6 +766,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       now: () => carried.now,
       newId: async () => (await call("newId", [])) as string,
       storage: storageFor(call),
+      ...(database === undefined ? {} : { database }),
       jobs: {
         ...jobsFor(call),
         follow: async (node, receive) => {
@@ -691,14 +915,18 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     return ctx;
   };
 
-  const hookCtx = (call: Call): GuestLifecycleCtx => ({
-    pluginId: def.manifest.id,
-    storage: storageFor(call),
-    emit: () => {
-      throw new IsolateSliceUnavailable("emit");
-    },
-    now: () => Date.now(),
-  });
+  const hookCtx = (call: Call): GuestLifecycleCtx => {
+    const database = databaseFor(call);
+    return {
+      pluginId: def.manifest.id,
+      storage: storageFor(call),
+      ...(database === undefined ? {} : { database }),
+      emit: () => {
+        throw new IsolateSliceUnavailable("emit");
+      },
+      now: () => Date.now(),
+    };
+  };
 
   /** The `loaded` payload, or the sentence that makes this definition unloadable. */
   const describe = (pluginId: string): ActionSummary[] => {
@@ -743,6 +971,14 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     let summaries: ActionSummary[];
     try {
       summaries = describe(frame.pluginId);
+      GuestMigrationDeclarationsSchema.parse({
+        dataVersion: frame.manifest.dataVersion,
+        migrations: (def.migrations ?? []).map(({ name, to }) => ({ name, to })),
+      });
+      for (const migration of def.migrations ?? []) {
+        if (typeof migration.migrate !== "function")
+          throw new Error(`migration "${migration.name}" has no callback`);
+      }
     } catch (error) {
       post({ t: "load_failed", error: errorText(error) });
       return;
@@ -757,6 +993,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         onAssemblyChanged: def.lifecycle?.onAssemblyChanged !== undefined,
         onJobSettled: def.lifecycle?.onJobSettled !== undefined,
       },
+      migrations: (def.migrations ?? []).map(({ name, to }) => ({ name, to })),
     });
   };
 
@@ -853,6 +1090,33 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     post({ t: "hooked", id: frame.id, ok: true });
   };
 
+  const onMigrate = async (frame: Extract<IsolateHostFrame, { t: "migrate" }>): Promise<void> => {
+    const requests = callsFor(frame.id);
+    try {
+      const migration = migrations.get(frame.migration.name);
+      if (
+        !loaded ||
+        migration === undefined ||
+        migration.to.major !== frame.migration.to.major ||
+        migration.to.minor !== frame.migration.to.minor
+      ) {
+        throw new Error("unknown migration or target");
+      }
+      // No lifecycle context, caller authority, emissions or long-lived handles.
+      await migration.migrate(storageFor(requests.call));
+      post({ t: "migrated", id: frame.id, name: migration.name, outcome: { ok: true } });
+    } catch (error) {
+      post({
+        t: "migrated",
+        id: frame.id,
+        name: frame.migration.name,
+        outcome: { ok: false, error: errorText(error).slice(0, 2048) },
+      });
+    } finally {
+      requests.close();
+    }
+  };
+
   const onReply = (frame: Extract<IsolateHostFrame, { t: "reply" }>): void => {
     const waiting = pending.get(frame.id);
     if (waiting === undefined) {
@@ -880,6 +1144,9 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         return;
       case "hook":
         void onHook(host);
+        return;
+      case "migrate":
+        void onMigrate(host);
         return;
       case "reply":
         onReply(host);

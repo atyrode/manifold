@@ -870,6 +870,9 @@ async function orchestratorHost(f: {
     settled: async () => {
       throw new Error("no lifecycle hook declared");
     },
+    migrate: async () => {
+      throw new Error("no migration declared by this service fixture");
+    },
   });
   const clock = new FakeClock(f.runtime);
   const rooms = new RoomManager(f.store, f.runtime, clock, silentLogger, testTileTrees);

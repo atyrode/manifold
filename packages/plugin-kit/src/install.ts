@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { PluginBundleSchema, type PluginRoster } from "@manifold/protocol";
+import { PluginBundleSchema, type PluginManifest } from "@manifold/protocol";
 import { resolve } from "node:path";
 import { assertOwnerKey, ownerAction, parseHubUrl, roster, type Hub } from "./hub.ts";
 
@@ -10,10 +10,9 @@ import { assertOwnerKey, ownerAction, parseHubUrl, roster, type Hub } from "./hu
  *         [--sha256 <hex>] [--deliver path | docker:<container>] [--owner-key-file <path>]
  *
  * The command is IDEMPOTENT over the roster it reads first: the same id at the same sha is
- * `unchanged` and nothing is asked of the hub; another sha is a `replaced` — the row is
- * switched off, installed over with `replace: true` and switched back on, the three steps
- * `engine.plugins.install` demands (`docs/PLUGINS.md` §7), with any enabled row that requires
- * it taken down first and brought back after (a parent under its parts, ADR 0023); an absent
+ * `unchanged` and nothing is asked of the hub; another sha is a `replaced` through
+ * `engine.plugins.install` with `replace: true`. The host replaces the module without
+ * changing the target's or its dependents' durable enablement or native approvals. An absent
  * id is `installed`. One JSON line answers, `{ id, sha256, hub, outcome }`, and a refusal exits
  * non-zero naming the class and detail on stderr, never a stack.
  *
@@ -50,9 +49,10 @@ export interface InstallReport {
   readonly outcome: InstallOutcome;
 }
 
-/** What a bundle IS before any hub sees it: its id, the pin over its exact bytes, and where. */
+/** A bundle's identity, required ids, pin over its exact bytes, and source before any hub sees it. */
 export interface BundleFacts {
   readonly id: string;
+  readonly requiredDependencies: readonly string[];
   readonly sha256: string;
   /** The absolute path, or the URL as given. */
   readonly source: string;
@@ -75,6 +75,15 @@ export class BundleError extends Error {
   }
 }
 
+/** Only required ids constrain delivery; optional/incompatible relationships stay hub decisions. */
+export function requiredDependencyIds(manifest: Pick<PluginManifest, "dependencies">): string[] {
+  const ids: string[] = [];
+  for (const [id, dependency] of Object.entries(manifest.dependencies ?? {})) {
+    if (dependency.type === "required") ids.push(id);
+  }
+  return ids;
+}
+
 function factsOf(bytes: Uint8Array, source: string): BundleFacts {
   let raw: unknown;
   try {
@@ -89,7 +98,12 @@ function factsOf(bytes: Uint8Array, source: string): BundleFacts {
     throw new BundleError(source, `not a plugin bundle${at}`);
   }
   const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
-  return { id: parsed.data.manifest.id, sha256, source };
+  return {
+    id: parsed.data.manifest.id,
+    requiredDependencies: requiredDependencyIds(parsed.data.manifest),
+    sha256,
+    source,
+  };
 }
 
 /**
@@ -110,15 +124,106 @@ export async function inspectBundle(source: string): Promise<BundleFacts> {
   return factsOf(new Uint8Array(await Bun.file(file).arrayBuffer()), file);
 }
 
+/** A whole-batch refusal, before any caller starts installation. */
+export class BundleOrderError extends Error {
+  constructor(
+    readonly reason: "duplicate" | "cycle",
+    readonly ids: readonly string[],
+  ) {
+    super(
+      reason === "duplicate"
+        ? `duplicate bundle ids: ${ids.join(", ")}`
+        : `dependency cycle blocks bundles: ${ids.join(", ")}`,
+    );
+    this.name = "BundleOrderError";
+  }
+}
+
 /**
- * Parents before parts (ADR 0023: `a.b` is a dependency of `a.b.c`), ties by id — the order
- * a set of bundles from one repository installs in, whatever order a shell glob handed them.
+ * Supplied required dependencies and namespace parents before their consumers. Among ready
+ * bundles, preserve the original depth-then-id order. Absent dependencies are not invented:
+ * only the hub decides whether an external prerequisite is available.
  */
-export function familyOrder<T extends { readonly id: string }>(bundles: readonly T[]): T[] {
-  return [...bundles].sort((a, b) => {
-    const depth = a.id.split(".").length - b.id.split(".").length;
-    return depth !== 0 ? depth : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+export function familyOrder<
+  T extends { readonly id: string; readonly requiredDependencies?: readonly string[] },
+>(bundles: readonly T[]): T[] {
+  const nodes = bundles.map((bundle) => ({
+    bundle,
+    depth: bundle.id.split(".").length,
+    blockers: 0,
+    dependents: [] as number[],
+  }));
+  nodes.sort((a, b) => {
+    const depth = a.depth - b.depth;
+    return depth !== 0 ? depth : a.bundle.id < b.bundle.id ? -1 : a.bundle.id > b.bundle.id ? 1 : 0;
   });
+  const byId = new Map<string, number>();
+  for (const [index, node] of nodes.entries()) {
+    if (byId.has(node.bundle.id)) throw new BundleOrderError("duplicate", [node.bundle.id]);
+    byId.set(node.bundle.id, index);
+  }
+  for (const [index, node] of nodes.entries()) {
+    const required = new Set(node.bundle.requiredDependencies);
+    for (
+      let dot = node.bundle.id.lastIndexOf(".");
+      dot > 0;
+      dot = node.bundle.id.lastIndexOf(".", dot - 1)
+    ) {
+      required.add(node.bundle.id.slice(0, dot));
+    }
+    for (const id of required) {
+      const dependency = byId.get(id);
+      if (dependency === undefined) continue;
+      nodes[dependency]!.dependents.push(index);
+      node.blockers++;
+    }
+  }
+
+  // Kahn's ready set is a min-heap of depth/id ranks: no rescans or quadratic array shifts.
+  const ready: number[] = [];
+  const enqueue = (index: number): void => {
+    let slot = ready.length;
+    ready.push(index);
+    while (slot > 0) {
+      const parent = (slot - 1) >> 1;
+      if (ready[parent]! < index) break;
+      ready[slot] = ready[parent]!;
+      slot = parent;
+    }
+    ready[slot] = index;
+  };
+  for (const [index, node] of nodes.entries()) {
+    if (node.blockers === 0) enqueue(index);
+  }
+  const ordered: T[] = [];
+  while (ready.length > 0) {
+    const index = ready[0]!;
+    const last = ready.pop()!;
+    if (ready.length > 0) {
+      let slot = 0;
+      for (;;) {
+        let child = slot * 2 + 1;
+        if (child >= ready.length) break;
+        if (child + 1 < ready.length && ready[child + 1]! < ready[child]!) child++;
+        if (last < ready[child]!) break;
+        ready[slot] = ready[child]!;
+        slot = child;
+      }
+      ready[slot] = last;
+    }
+    const node = nodes[index]!;
+    ordered.push(node.bundle);
+    for (const dependent of node.dependents) {
+      if (--nodes[dependent]!.blockers === 0) enqueue(dependent);
+    }
+  }
+  if (ordered.length !== nodes.length) {
+    throw new BundleOrderError(
+      "cycle",
+      nodes.filter((node) => node.blockers > 0).map((node) => node.bundle.id),
+    );
+  }
+  return ordered;
 }
 
 async function docker(args: readonly string[]): Promise<string> {
@@ -177,29 +282,6 @@ async function deliver(facts: BundleFacts, delivery: Delivery): Promise<string> 
   return target;
 }
 
-/**
- * The ENABLED rows that require `id`, transitively, deepest first: the order they must be
- * switched off in before `id` may be, because the engine refuses to disable a plugin an enabled
- * row declares `required` (`missing_dependency`). A part inside its parent (ADR 0023) is the
- * everyday case; the walk is general.
- */
-function enabledDependents(rows: PluginRoster, id: string): string[] {
-  const order: string[] = [];
-  const seen = new Set<string>([id]);
-  const visit = (target: string): void => {
-    for (const row of rows) {
-      const dependent = row.manifest.id;
-      if (seen.has(dependent) || !row.enabled) continue;
-      if (row.manifest.dependencies?.[target]?.type !== "required") continue;
-      seen.add(dependent);
-      visit(dependent);
-      order.push(dependent);
-    }
-  };
-  visit(id);
-  return order;
-}
-
 export async function installBundle(options: InstallOptions): Promise<InstallReport> {
   const facts = await inspectBundle(options.source);
   if (options.sha256 !== undefined && options.sha256.toLowerCase() !== facts.sha256) {
@@ -230,29 +312,12 @@ export async function installBundle(options: InstallOptions): Promise<InstallRep
     });
     return report("installed");
   }
-  // A replace needs the row off (`still_enabled`), and the row cannot go off while an enabled
-  // dependent requires it — so the family goes dark from the leaves in, and comes back from the
-  // root out. A fresh install is on by default while a replace keeps the switch where it was,
-  // so the target is flipped back explicitly. A refused replace leaves the OLD bundle in place,
-  // and everything goes back on the same way: an upgrade that did not happen must not read as
-  // an outage on the hub.
-  const off = [...enabledDependents(rows, facts.id), facts.id];
-  const on = [...off].reverse();
-  const setEnabled = (id: string, enabled: boolean): Promise<unknown> =>
-    ownerAction(hub, "engine.plugins.setEnabled", { id, enabled });
-  for (const id of off) await setEnabled(id, false);
-  try {
-    await ownerAction(hub, "engine.plugins.install", {
-      source,
-      sha256: facts.sha256,
-      replace: true,
-      hardened: options.hardened === true,
-    });
-  } catch (error) {
-    for (const id of on) await setEnabled(id, true).catch(() => {});
-    throw error;
-  }
-  for (const id of on) await setEnabled(id, true);
+  await ownerAction(hub, "engine.plugins.install", {
+    source,
+    sha256: facts.sha256,
+    replace: true,
+    hardened: options.hardened === true,
+  });
   return report("replaced");
 }
 

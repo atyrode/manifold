@@ -411,6 +411,8 @@ describe("a subscription-backed feed", () => {
     const shell = reader(socket);
     const section = reader(socket);
     await flush();
+    clock.advance(50);
+    await flush();
 
     expect(shell.reads() + section.reads()).toBe(1);
     expect(socket.declared).toBe(1);
@@ -483,6 +485,115 @@ describe("the fallback cadence", () => {
 });
 
 describe("a socket that comes and goes", () => {
+  test.each([null, "connecting", "open"] as const)(
+    "joining a quiet live door closes the %s initial-request gap at settlement",
+    async (status) => {
+      const snapshot = Promise.withResolvers<unknown>();
+      const first = reader(status === null ? null : fakeSocket(status), {
+        answer: (n) => (n === 1 ? snapshot.promise : { revision: 2 }),
+      });
+      const live = fakeSocket("open");
+      const second = reader(live);
+      const third = reader(live);
+      expect(first.reads() + second.reads() + third.reads()).toBe(1);
+
+      snapshot.resolve({ revision: 1 });
+      await flush();
+      // No clock advancement or event: settlement itself must earn the post-binding read.
+      expect(first.reads() + second.reads() + third.reads()).toBe(2);
+      expect(first.notices()).toBe(2);
+      expect(second.notices()).toBe(2);
+      expect(third.notices()).toBe(2);
+      first.release();
+      second.release();
+      third.release();
+    },
+  );
+
+  test("a live rebind during acceptance is caught up after the accepting request settles", async () => {
+    const next = fakeSocket("open");
+    let reads = 0;
+    const release = attachFeed({
+      feedId: "core.index.read|null",
+      intervalMs: 2_000,
+      initial: null,
+      events: fakeSocket("open"),
+      topics: [INDEX_TOPIC],
+      fetchFn: async () => ({ revision: ++reads }),
+      notify: () => undefined,
+      onSuccess: () => {
+        rebindFeed("core.index.read|null", next, [INDEX_TOPIC], "manifold://plugin/core.index");
+      },
+    });
+    await flush();
+    expect(reads).toBe(2);
+    release();
+  });
+
+  test("a discarded initial binding cannot drain a replacement generation's catch-up", async () => {
+    const oldSnapshot = Promise.withResolvers<unknown>();
+    const old = reader(fakeSocket("connecting"), { answer: () => oldSnapshot.promise });
+    const oldJoin = reader(fakeSocket("open"));
+    old.release();
+    oldJoin.release();
+
+    const currentSnapshot = Promise.withResolvers<unknown>();
+    const current = reader(fakeSocket("connecting"), {
+      answer: (n) => (n === 1 ? currentSnapshot.promise : { revision: 2 }),
+    });
+    const currentJoin = reader(fakeSocket("open"));
+    oldSnapshot.resolve({ revision: "obsolete" });
+    await flush();
+    expect(old.reads() + oldJoin.reads()).toBe(1);
+    expect(current.reads() + currentJoin.reads()).toBe(1);
+    expect(current.notices()).toBe(0);
+    expect(currentJoin.notices()).toBe(0);
+
+    currentSnapshot.resolve({ revision: 1 });
+    await flush();
+    expect(current.reads() + currentJoin.reads()).toBe(2);
+    expect(current.notices()).toBe(2);
+    expect(currentJoin.notices()).toBe(2);
+    current.release();
+    currentJoin.release();
+  });
+
+  test("an opening channel catches up after its pending connecting snapshot settles", async () => {
+    const socket = fakeSocket("connecting");
+    const snapshot = Promise.withResolvers<unknown>();
+    const index = reader(socket, {
+      answer: (n) => (n === 1 ? snapshot.promise : { revision: 2 }),
+    });
+    socket.moveTo("open");
+    expect(index.reads()).toBe(1);
+    snapshot.resolve({ revision: 1 });
+    await flush();
+    expect(index.reads()).toBe(2);
+    expect(index.notices()).toBe(2);
+    index.release();
+  });
+
+  test("an already-queued event covers a pending binding catch-up without a duplicate read", async () => {
+    const snapshot = Promise.withResolvers<unknown>();
+    const first = reader(fakeSocket("open"), {
+      answer: (n) => (n === 1 ? snapshot.promise : { revision: 2 }),
+    });
+    const live = fakeSocket("open");
+    const second = reader(live);
+    live.fire();
+    snapshot.resolve({ revision: 1 });
+    await flush();
+    clock.advance(50);
+    await flush();
+    clock.advance(50);
+    await flush();
+    expect(first.reads() + second.reads()).toBe(2);
+    expect(first.notices()).toBe(2);
+    expect(second.notices()).toBe(2);
+    first.release();
+    second.release();
+  });
+
   test("reconnecting keeps the declaration and pays exactly one catch-up read", async () => {
     const socket = fakeSocket("connecting");
     const index = reader(socket);

@@ -99,6 +99,7 @@ import {
 } from "./job-store.ts";
 import type { ServerStore, TraceRecord } from "./stores.ts";
 import { JobSchedules, type JobScheduleSpec } from "./job-schedules.ts";
+import { JobDeployments } from "./job-deployments.ts";
 import { InstanceServiceStore, type InstanceServiceRecord } from "./instance-service-store.ts";
 export type { JobRecord } from "./job-store.ts";
 import { deliveredArtifact } from "@manifold/plugin-kit/artifacts";
@@ -1546,6 +1547,7 @@ export class JobService {
   private lifecycleRecorder: ((record: TraceRecord) => void) | null = null;
   setLifecycleRecorder(record: (record: TraceRecord) => void): void {
     this.lifecycleRecorder = record;
+    this.deployments.recover();
   }
   private settledListener: ((delivery: SettledJobDelivery) => void) | null = null;
   /** The host's fan-out to the owning plugin's server half; absent where nothing consumes it. */
@@ -1957,6 +1959,7 @@ export class JobService {
     for (const follower of [...this.followers])
       if (!this.canReadGoverned(follower.auth, follower.node, follower.callerPluginId))
         this.closeFollower(follower, "authority_revoked");
+    this.deployments.reconcile();
   }
 
   inspectInvocations(
@@ -2301,6 +2304,7 @@ export class JobService {
   private bundleResolver: ((pluginId: string) => PluginBundle | null) | null = null;
   setBundleResolver(resolver: (pluginId: string) => PluginBundle | null): void {
     this.bundleResolver = resolver;
+    if (this.lifecycleRecorder && this.manifestResolver) this.deployments.reconcile();
   }
   private artifactDelivery(
     pluginId: string,
@@ -2521,6 +2525,7 @@ export class JobService {
     }
   }
   readonly jobs: JobStore;
+  private readonly deployments: JobDeployments;
   readonly admissionPublicKey: string;
   private readonly signingKey: string;
   private readonly channels = new Map<
@@ -2549,6 +2554,49 @@ export class JobService {
   ) {
     this.jobs = new JobStore(store, (job, phase) => this.lifecycle(job, phase));
     this.instanceServices = new InstanceServiceStore(store, auth, runtime, serviceOwnerMachineId);
+    this.deployments = new JobDeployments(this, {
+      owner: (machineId) => {
+        const live = this.channels.get(machineId);
+        return live?.proved ? live.owner : null;
+      },
+      artifactAvailable: (install, platform) =>
+        install.machine.artifacts[platform]?.sha256 === install.artifact &&
+        this.artifactDelivery(
+          install.pluginId,
+          install.machine,
+          install.artifact,
+          this.channels.get(install.machineId)?.owner.platforms,
+        ) !== null,
+      resourceRefusal: (install, operationId) => this.resourceRefusal(install, operationId),
+      servicePolicies: (machineId, machine, bindings) => {
+        const policies = this.effectiveConfiguration(machineId).policies;
+        const required = Object.values(machine.operations).flatMap(
+          (operation) => operation.services ?? [],
+        );
+        const selected = required.map(
+          (binding) => policies.find((policy) => policy.serviceId === binding.serviceId) ?? null,
+        );
+        return {
+          digest: digest(selected),
+          refusal: required.some((binding, index) => {
+            const policy = selected[index];
+            return (
+              !policy ||
+              policy.revision !== binding.revision ||
+              bindings?.services[binding.serviceId] !== digest(policy) ||
+              binding.operationIds.some((id) => !Object.hasOwn(policy.operations, id))
+            );
+          })
+            ? "service_definition_changed"
+            : null,
+        };
+      },
+      record: (record) => {
+        if (!this.lifecycleRecorder) throw new Error("job_lifecycle_recorder_required");
+        this.lifecycleRecorder(record);
+      },
+      changed: () => this.accessChanged(),
+    });
     store.db
       .query(
         "UPDATE machine_job_inputs SET state='unknown',reason='job_input_delivery_unknown' WHERE state='pending'",
@@ -2591,6 +2639,7 @@ export class JobService {
         if (machine && this.store.getToken(machine.tokenId)?.principalId === principalId)
           this.cancelRecord(job, "executor_revoked");
       }
+      this.deployments.reconcile();
     });
   }
   private retainedRequest(jobId: string): JobRequest | null {
@@ -2808,6 +2857,24 @@ export class JobService {
         : { allowed: false, decisionId, policyRevision };
     });
   }
+  reviewDeployment(...args: Parameters<JobDeployments["review"]>) {
+    return this.deployments.review(...args);
+  }
+  applyDeployment(...args: Parameters<JobDeployments["apply"]>) {
+    return this.deployments.apply(...args);
+  }
+  readDeployment(...args: Parameters<JobDeployments["read"]>) {
+    return this.deployments.read(...args);
+  }
+  listDeployments(...args: Parameters<JobDeployments["list"]>) {
+    return this.deployments.list(...args);
+  }
+  cancelDeployment(...args: Parameters<JobDeployments["cancel"]>) {
+    return this.deployments.cancel(...args);
+  }
+  describeDeployment(...args: Parameters<JobDeployments["describe"]>) {
+    return this.deployments.describe(...args);
+  }
   install(
     auth: AuthContext,
     args: {
@@ -2919,8 +2986,10 @@ export class JobService {
           resourceBindings === undefined ? null : canonicalJobJson(resourceBindings),
         );
     });
-    this.sendInstall(this.jobs.installation(args.machineId, args.pluginId)!);
-    this.reconcileAuthority();
+    this.store.afterCommit(() => {
+      this.sendInstall(this.jobs.installation(args.machineId, args.pluginId)!);
+      this.reconcileAuthority();
+    });
     this.accessChanged();
   }
   consent(
@@ -2979,7 +3048,7 @@ export class JobService {
         randomUUID(),
         args.enabled ? 1 : 0,
       );
-    this.reconcileAuthority();
+    this.store.afterCommit(() => this.reconcileAuthority());
     this.accessChanged();
   }
   private requirements(request: JobRequest, retiring = false): AuthorityRequirement[] {
@@ -3248,6 +3317,7 @@ export class JobService {
     terminal: NonNullable<JobRequest["terminal"]>,
     traceId: number,
   ): Extract<JobCommand, { type: "start" }> {
+    if (runtime.machineId !== machineId) fail("terminal_runtime_destination_changed");
     const live = this.channels.get(machineId);
     const install = this.jobs.installation(machineId, runtime.pluginId);
     if (
@@ -3417,6 +3487,7 @@ export class JobService {
         .query("UPDATE machine_job_installs SET ready=0 WHERE machine_id=?")
         .run(channel.machineId);
     }
+    this.accessChanged();
   }
   private serviceTunnelCurrent(tunnel: HubServiceTunnel): boolean {
     const job = this.jobs.get(tunnel.request.jobId);
@@ -4001,6 +4072,7 @@ export class JobService {
         .query("UPDATE machine_job_installs SET ready=1 WHERE machine_id=? AND plugin_id=?")
         .run(channel.machineId, event.pluginId);
       this.reconcileAuthority();
+      this.accessChanged();
       for (const job of this.jobs.active(channel.machineId))
         if (job.state === "queued") this.start(job);
       return;
@@ -4490,6 +4562,7 @@ export class JobService {
     for (const follower of this.followers)
       if (this.jobs.get(follower.node.jobId)?.request.pluginId === pluginId)
         this.closeFollower(follower, "authority_revoked");
+    this.deployments.reconcile();
     this.accessChanged();
   }
   purgePlugin(pluginId: string): void {

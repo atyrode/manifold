@@ -378,8 +378,9 @@ export const InspectJobInvocationsResultSchema = z.strictObject({
   edges: z.array(z.strictObject({ edge: JobInvocationEdgeSchema, enabled: z.boolean() })),
 });
 export type InspectJobInvocationsResult = z.infer<typeof InspectJobInvocationsResultSchema>;
-/** Pinned installation input, not executable, working-directory or environment authority. */
+/** Pinned installation input for one destination, not executable, working-directory or environment authority. */
 export const TerminalRuntimeSchema = JobRequestSchema.pick({
+  machineId: true,
   pluginId: true,
   operationId: true,
   installationRevision: true,

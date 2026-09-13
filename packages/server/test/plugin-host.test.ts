@@ -1,8 +1,17 @@
 import "../src/shared-modules.ts";
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { generateKeyPairSync, sign } from "node:crypto";
+import { installBundle } from "@manifold/plugin-kit/install";
+import { packPlugin } from "@manifold/plugin-kit/pack";
+import {
+  canonicalJobJson,
+  JOB_OWNER_PROTOCOL_VERSION,
+  JobDeploymentReviewSchema,
+} from "@manifold/protocol";
 import {
   ENGINE_AUTHOR_ACTION,
   ENGINE_INSTALL_ACTION,
@@ -20,6 +29,10 @@ import {
 import type {
   ActionOutcome,
   Cap,
+  JobCommand,
+  JobOwner,
+  MachineHalf,
+  ServicePolicy,
   PluginManifest,
   PluginRoster,
   TileLayout,
@@ -30,6 +43,7 @@ import { AuthService, type AuthContext } from "../src/auth.ts";
 import { SERVER_PLUGIN_DEFS, SHIPPED_PLUGIN_IDS } from "../src/assembly.ts";
 import { authoredLayout } from "../src/authored.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
+import { JobService } from "../src/job-service.ts";
 import {
   IsolateDenial,
   IsolateLoadError,
@@ -39,12 +53,15 @@ import {
   type IsolateState,
 } from "../src/isolate/contract.ts";
 import { serveCtxCall } from "../src/isolate/proxy-def.ts";
+import { IsolateSupervisor } from "../src/isolate/supervisor.ts";
 import { silentLogger } from "../src/log.ts";
 import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
 import { PLUGIN_UPLOADS_DIR } from "../src/plugin-installs.ts";
+import { pluginDatabasePath } from "../src/plugin-database.ts";
 import {
   OUTSIDE_SCOPE_REFUSAL,
   PluginHost,
+  type ActionCtx,
   type IsolateDeps,
   type MachineAdmission,
   type ServerPluginDef,
@@ -770,6 +787,7 @@ async function customHost(
     readonly lifecycleTimeoutMs?: number;
     readonly distribution?: ReadonlySet<string>;
     readonly isolates?: IsolateDeps;
+    readonly dataDir?: string;
   } = {},
 ): Promise<PluginHost> {
   // The hub reads the assembly of the host it is handed to, exactly as `main.ts` wires it.
@@ -1229,6 +1247,8 @@ describe("PluginHost storage, migrations and purge", () => {
     expect(outcome).toEqual({
       id: VERSIONED_ID,
       removed: { storage: 2, elements: 1, ownership: 1 },
+      // A plugin that declared no database still reports a size, and 0 is a real size.
+      databaseBytes: 0,
     });
     expect(await storage.get("row")).toBeNull();
     expect(await storage.dataVersion()).toBeNull();
@@ -1254,9 +1274,191 @@ describe("PluginHost storage, migrations and purge", () => {
     expect(outcome).toEqual({
       ok: true,
       // One row: the data-version stamp the engine wrote when the plugin started serving.
-      result: { id: VERSIONED_ID, removed: { storage: 1, elements: 1, ownership: 1 } },
+      result: {
+        id: VERSIONED_ID,
+        removed: { storage: 1, elements: 1, ownership: 1 },
+        databaseBytes: 0,
+      },
     });
     fixture.store.close();
+  });
+});
+
+/**
+ * THE PLUGIN'S OWN TABLES, from the host's side (ADR 0034).
+ *
+ * The engine's file is `plugin-database.test.ts`'s subject. What these cases pin is the
+ * WIRING: who gets a slice and who does not, that a migration is handed one, and that the
+ * file follows storage's lifecycle — retained by a disable, destroyed by a purge, and
+ * refusing a silent uninstall exactly as a namespace holding keys does.
+ */
+describe("PluginHost database", () => {
+  const ROWS_ID = "test.rows";
+  const KEYS_ID = "test.keys";
+
+  /** Two plugins that differ in one manifest line: one declares a database, one does not. */
+  function databaseDefs(
+    options: { readonly migration?: boolean } = {},
+  ): readonly ServerPluginDef[] {
+    return [
+      {
+        manifest: {
+          id: ROWS_ID,
+          version: "1.0.0",
+          title: "Rows",
+          description: "Keeps its data as rows.",
+          capabilities: [],
+          database: { maxBytes: 4 * 1024 * 1024 },
+          ...(options.migration === true ? { dataVersion: { major: 2, minor: 0 } } : {}),
+          contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+        },
+        actions: [
+          defineAction({
+            name: "write",
+            title: "Write a row",
+            caps: [],
+            input: z.strictObject({}),
+            result: z.strictObject({ note: z.string(), declared: z.boolean() }),
+          }),
+        ],
+        handlers: {
+          write: async (ctx: ActionCtx) => {
+            if (ctx.database === undefined) return { note: "", declared: false };
+            await ctx.database.run(
+              "CREATE TABLE IF NOT EXISTS notes(id INTEGER PRIMARY KEY, body TEXT NOT NULL)",
+            );
+            await ctx.database.run("INSERT INTO notes(body) VALUES (?)", ["kept"]);
+            const rows = await ctx.database.query<{ body: string }>("SELECT body FROM notes");
+            return { note: rows[0]?.body ?? "", declared: true };
+          },
+        },
+        ...(options.migration === true
+          ? {
+              migrations: [
+                {
+                  name: "0001-make-the-table",
+                  to: { major: 2, minor: 0 },
+                  migrate: async (storage, database) => {
+                    if (database === undefined) {
+                      await storage.set("migrated", "without a database");
+                      return;
+                    }
+                    await database.run(
+                      "CREATE TABLE notes(id INTEGER PRIMARY KEY, body TEXT NOT NULL)",
+                    );
+                    await storage.set("migrated", "with a database");
+                  },
+                },
+              ],
+            }
+          : {}),
+      },
+      {
+        manifest: {
+          id: KEYS_ID,
+          version: "1.0.0",
+          title: "Keys",
+          description: "Keeps its data as keys.",
+          capabilities: [],
+          contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+        },
+        actions: [
+          defineAction({
+            name: "look",
+            title: "Look for a database",
+            caps: [],
+            input: z.strictObject({}),
+            result: z.strictObject({ declared: z.boolean() }),
+          }),
+        ],
+        handlers: {
+          look: async (ctx: ActionCtx) => ({ declared: ctx.database !== undefined }),
+        },
+      },
+    ];
+  }
+
+  test("the slice reaches the plugin that declared a database, and nobody else", async () => {
+    const fixture = await hostFixture();
+    const dataDir = mkdtempSync(join(tmpdir(), "manifold-host-db-"));
+    const host = await customHost(fixture, databaseDefs(), { dataDir });
+    try {
+      expect(await host.dispatch(fixture.owner, `${ROWS_ID}.write`, {})).toEqual({
+        ok: true,
+        result: { note: "kept", declared: true },
+      });
+      /*
+        The declaration is the whole of what decides it (ADR 0034 §6): the second plugin runs
+        in the same host, on the same data directory, and has no slice at all — so a file
+        exists only for the plugin that asked for one, and nothing was created for the other.
+      */
+      expect(await host.dispatch(fixture.owner, `${KEYS_ID}.look`, {})).toEqual({
+        ok: true,
+        result: { declared: false },
+      });
+      expect(existsSync(pluginDatabasePath(dataDir, ROWS_ID))).toBe(true);
+      expect(existsSync(pluginDatabasePath(dataDir, KEYS_ID))).toBe(false);
+    } finally {
+      host.close();
+      fixture.store.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a migration is handed the database, and makes the table its plugin then writes to", async () => {
+    const fixture = await hostFixture();
+    const dataDir = mkdtempSync(join(tmpdir(), "manifold-host-db-"));
+    const storage = fixture.store.pluginStorage(ROWS_ID);
+    await storage.stampDataVersion({ major: 1, minor: 0 });
+    const host = await customHost(fixture, databaseDefs({ migration: true }), { dataDir });
+    try {
+      // The ledger and the stamp stay in `plugin_kv` whatever shape the data has, so ONE
+      // version and ONE ledger answer for a plugin whose data is keys, rows or both.
+      expect(await storage.get("migrated")).toBe("with a database");
+      expect(await storage.appliedMigrations()).toEqual(["0001-make-the-table"]);
+      expect(await storage.dataVersion()).toEqual({ major: 2, minor: 0 });
+      // The table the migration created is the one the handler inserts into: a second
+      // `CREATE TABLE` would have thrown rather than returned.
+      expect(await host.dispatch(fixture.owner, `${ROWS_ID}.write`, {})).toEqual({
+        ok: true,
+        result: { note: "kept", declared: true },
+      });
+    } finally {
+      host.close();
+      fixture.store.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("purge deletes the file with its journal and reports the bytes that went", async () => {
+    const fixture = await hostFixture();
+    const dataDir = mkdtempSync(join(tmpdir(), "manifold-host-db-"));
+    const host = await customHost(fixture, databaseDefs(), { dataDir });
+    try {
+      await host.dispatch(fixture.owner, `${ROWS_ID}.write`, {});
+      // A DISABLE RETAINS: the rows are still on disk when the plugin stops serving, which is
+      // what makes purge the separate, explicitly named act that destroys them.
+      await host.setEnabled(ROWS_ID, false, "admin");
+      expect(existsSync(pluginDatabasePath(dataDir, ROWS_ID))).toBe(true);
+
+      const outcome = await host.purge(ROWS_ID, "admin");
+      if ("refused" in outcome) throw new Error(outcome.refused);
+      expect(outcome.id).toBe(ROWS_ID);
+      expect(outcome.databaseBytes).toBeGreaterThan(0);
+      expect(existsSync(pluginDatabasePath(dataDir, ROWS_ID))).toBe(false);
+      expect(existsSync(`${pluginDatabasePath(dataDir, ROWS_ID)}-wal`)).toBe(false);
+
+      // The next open starts from no file at all, so the purged plugin is a fresh one.
+      await host.setEnabled(ROWS_ID, true, "admin");
+      expect(await host.dispatch(fixture.owner, `${ROWS_ID}.write`, {})).toEqual({
+        ok: true,
+        result: { note: "kept", declared: true },
+      });
+    } finally {
+      host.close();
+      fixture.store.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1695,6 +1897,272 @@ async function installFixture(
   };
 }
 
+/** Real authored exports, packed and admitted through the ordinary pinned install door. */
+async function migrationBundle(
+  fixture: InstallFixture,
+  major: number,
+  failure:
+    | "none"
+    | "throw"
+    | "timeout"
+    | "crash"
+    | "malformed"
+    | "cross-call"
+    | "slice"
+    | "loaded"
+    | "load_failed" = "none",
+): Promise<{ source: string; sha256: string }> {
+  const manifest: PluginManifest = {
+    ...SAMPLE_MANIFEST,
+    version: `${String(major)}.0.0`,
+    dataVersion: { major, minor: 0 },
+    capabilities: [],
+    entry: { server: true },
+  };
+  const dir = mkdtempSync(join(fixture.dataDir, "migration-author-"));
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+  writeFileSync(
+    join(dir, "server.ts"),
+    `
+    import { z } from ${JSON.stringify(fileURLToPath(import.meta.resolve("zod")))};
+    import { defineServerAction, defineServerPlugin } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@manifold/plugin-kit/server")))};
+    const manifest = ${JSON.stringify(manifest)};
+    let migrationId;
+    const def = {
+      manifest,
+      actions: ["read", "hold"].map(name => defineServerAction({
+        name, title: name, caps: [], input: z.strictObject({}), result: z.unknown()
+      })),
+      handlers: {
+        async read(ctx) { return JSON.parse(await ctx.storage.get("row") ?? "null"); },
+        async hold(ctx) {
+          await ctx.storage.set("entered", "yes");
+          while (await ctx.storage.get("release") !== "yes") await Bun.sleep(1);
+          return JSON.parse(await ctx.storage.get("row"));
+        }
+      },
+      migrations: ${
+        major === 1
+          ? "[]"
+          : `[
+        { name: "canonical-v3", to: { major: 2, minor: 0 }, async migrate(storage) {
+          const before = await storage.get("row");
+          const row = JSON.parse(before);
+          if (row.schema !== 2) throw new Error("migration ran more than once");
+          await storage.set("row", JSON.stringify({ ...row, schema: 3, choice: row.model }));
+          await storage.set("applied", String(Number(await storage.get("applied") ?? "0") + 1));
+          ${failure === "throw" ? 'throw new Error("transformation refused");' : ""}
+          ${failure === "timeout" ? "await Promise.withResolvers().promise;" : ""}
+          ${failure === "crash" ? "process.exit(7);" : ""}
+          ${failure === "malformed" ? 'process.send({t:"migrated", id:migrationId, name:"canonical-v3", outcome:{ok:"yes"}});' : ""}
+          ${failure === "cross-call" ? 'process.send({t:"migrated", id:"retired-request", name:"canonical-v3", outcome:{ok:true}});' : ""}
+          ${failure === "slice" ? 'process.send({t:"call", id:migrationId + ":forbidden", method:"newId", args:[]});' : ""}
+          ${failure === "loaded" ? 'process.send({t:"loaded", actions:[], hooks:{onEnable:false,onDisable:false,onAssemblyChanged:false}});' : ""}
+          ${failure === "load_failed" ? 'process.send({t:"load_failed", error:"wrong-phase load failure"});' : ""}
+        } }
+      ]`
+      }
+    };
+    defineServerPlugin(def);
+    if (typeof process.send === "function")
+      process.on("message", frame => { if (frame.t === "migrate") migrationId = frame.id; });
+    export default def;
+  `,
+  );
+  const source = join(
+    fixture.dataDir,
+    PLUGIN_UPLOADS_DIR,
+    `${String(major)}-${failure}.manifold-plugin.json`,
+  );
+  const packed = await packPlugin(dir, source);
+  return { source, sha256: packed.sha256 };
+}
+
+// Real subprocess IPC and child exit are not driven by the host's fake clock. Poll the
+// observable boundary, never a guessed "long enough" delay.
+async function untilMigration(predicate: () => Promise<boolean>): Promise<void> {
+  const until = Date.now() + 3000;
+  while (!(await predicate())) {
+    if (Date.now() >= until) throw new Error("migration boundary did not arrive");
+    await Bun.sleep(1);
+  }
+}
+
+describe("installed guest storage migrations", () => {
+  test.each([false, true])(
+    "drains old dispatch and atomically serves transformed data (hardened: %s)",
+    async (hardened) => {
+      const f = await installFixture();
+      const runner = new IsolateSupervisor({ logger: silentLogger, runtime: f.runtime });
+      const releaseDraft = Promise.withResolvers<void>();
+      const inFlight: Promise<unknown>[] = [];
+      try {
+        const host = await customHost(f, [], { isolates: { ...f.isolates, runner } });
+        const first = await migrationBundle(f, 1);
+        const next = await migrationBundle(f, 2);
+        expect(
+          (await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, { ...first, hardened })).ok,
+        ).toBe(true);
+        const storage = f.store.pluginStorage(SAMPLE_ID);
+        const original = { schema: 2, revision: 7, model: "kept" };
+        await storage.set("row", JSON.stringify(original));
+        const old = host.dispatch(f.owner, `${SAMPLE_ID}.hold`, {});
+        inFlight.push(old);
+        await untilMigration(async () => (await storage.get("entered")) === "yes");
+        const drafting = Promise.withResolvers<void>();
+        const begin = f.store.beginPluginMigration.bind(f.store);
+        f.store.beginPluginMigration = (id, includeData) => {
+          const session = begin(id, includeData);
+          return {
+            ...session,
+            storage: {
+              ...session.storage,
+              set: async (key, value) => {
+                await session.storage.set(key, value);
+                if (id === SAMPLE_ID && key === "row") {
+                  drafting.resolve();
+                  await releaseDraft.promise;
+                }
+              },
+            },
+          };
+        };
+        const upgrade = host.dispatch(f.owner, ENGINE_INSTALL_ACTION, {
+          ...next,
+          hardened,
+          replace: true,
+        });
+        inFlight.push(upgrade);
+        await untilMigration(async () => {
+          const result = await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {});
+          return !result.ok && result.denial.rule === "unavailable";
+        });
+        expect(await storage.dataVersion()).toEqual({ major: 1, minor: 0 });
+        await storage.set("release", "yes");
+        expect(await old).toEqual({ ok: true, result: original });
+        await drafting.promise;
+        expect(JSON.parse((await storage.get("row"))!)).toEqual(original);
+        expect(await storage.appliedMigrations()).toEqual([]);
+        expect(denial(await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {})).rule).toBe(
+          "unavailable",
+        );
+        // An unrelated namespace commits during IPC, outside the migration's transaction.
+        await f.store.pluginStorage("test.other").set("live", "retained");
+        releaseDraft.resolve();
+        expect((await upgrade).ok).toBe(true);
+        const transformed = { ...original, schema: 3, choice: "kept" };
+        expect(await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {})).toEqual({
+          ok: true,
+          result: transformed,
+        });
+        expect(await storage.appliedMigrations()).toEqual(["canonical-v3"]);
+        expect(await storage.dataVersion()).toEqual({ major: 2, minor: 0 });
+        expect(await storage.get("applied")).toBe("1");
+        expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+        expect(await host.setEnabled(SAMPLE_ID, true, "admin")).toEqual({ ok: true });
+        expect(await storage.get("applied")).toBe("1");
+        expect(
+          denial(
+            await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, {
+              ...first,
+              hardened,
+              replace: true,
+            }),
+          ).message,
+        ).toContain("major downgrade");
+        expect(await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {})).toEqual({
+          ok: true,
+          result: transformed,
+        });
+        expect(await f.store.pluginStorage("test.other").get("live")).toBe("retained");
+      } finally {
+        releaseDraft.resolve();
+        await f.store.pluginStorage(SAMPLE_ID).set("release", "yes");
+        await Promise.allSettled(inFlight);
+        await runner.close();
+        f.store.close();
+        rmSync(f.dataDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.each([
+    "throw",
+    "timeout",
+    "crash",
+    "malformed",
+    "cross-call",
+    "slice",
+    "loaded",
+    "load_failed",
+  ] as const)(
+    "%s never publishes a draft, records success, or loses another plugin's commit",
+    async (failure) => {
+      const f = await installFixture();
+      const runner = new IsolateSupervisor({
+        logger: silentLogger,
+        runtime: f.runtime,
+        migrationDeadlineMs: failure === "timeout" ? 100 : 10_000,
+      });
+      try {
+        const host = await customHost(f, [], { isolates: { ...f.isolates, runner } });
+        const first = await migrationBundle(f, 1);
+        const next = await migrationBundle(f, 2, failure);
+        expect(
+          (await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, { ...first, hardened: true })).ok,
+        ).toBe(true);
+        const storage = f.store.pluginStorage(SAMPLE_ID);
+        const original = { schema: 2, revision: 7, model: "retained" };
+        await storage.set("row", JSON.stringify(original));
+        const installed = f.store.pluginInstalls();
+        const begin = f.store.beginPluginMigration.bind(f.store);
+        f.store.beginPluginMigration = (id, includeData) => {
+          const session = begin(id, includeData);
+          return {
+            ...session,
+            storage: {
+              ...session.storage,
+              set: async (key, value) => {
+                await session.storage.set(key, value);
+                if (key === "row") {
+                  expect(JSON.parse((await storage.get("row"))!)).toEqual(original);
+                  expect(denial(await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {})).rule).toBe(
+                    "unavailable",
+                  );
+                  await f.store
+                    .pluginStorage("test.other")
+                    .set("live", "committed-during-migration");
+                }
+              },
+            },
+          };
+        };
+        const outcome = await host.dispatch(f.owner, ENGINE_INSTALL_ACTION, {
+          ...next,
+          hardened: true,
+          replace: true,
+        });
+        expect(denial(outcome).message).toContain("artifact_invalid");
+        expect(f.store.pluginInstalls()).toEqual(installed);
+        expect(await storage.appliedMigrations()).toEqual([]);
+        expect(await storage.dataVersion()).toEqual({ major: 1, minor: 0 });
+        expect(await storage.get("applied")).toBeNull();
+        expect(await host.dispatch(f.owner, `${SAMPLE_ID}.read`, {})).toEqual({
+          ok: true,
+          result: original,
+        });
+        expect(await f.store.pluginStorage("test.other").get("live")).toBe(
+          "committed-during-migration",
+        );
+      } finally {
+        await runner.close();
+        f.store.close();
+        rmSync(f.dataDir, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
 function installedRow(host: PluginHost, id: string): PluginRoster[number] {
   const row = host.roster().find((entry) => entry.manifest.id === id);
   if (row === undefined) throw new Error(`${id} is not on the roster`);
@@ -1925,7 +2393,7 @@ describe("PluginHost install doors", () => {
     const retained = await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID });
     expect(denial(retained)).toEqual({
       rule: "refused",
-      message: "storage_retained: 1 keys; purge first or pass purge: true",
+      message: "storage_retained: 1 keys and 0 database pages; purge first or pass purge: true",
     });
     expect(fixture.store.pluginInstalls().map((row) => row.pluginId)).toEqual([SAMPLE_ID]);
     expect(existsSync(stored.bundlePath)).toBe(true);
@@ -1948,6 +2416,62 @@ describe("PluginHost install doors", () => {
         .message,
     ).toMatch(/^not_installed: /);
     fixture.store.close();
+  });
+
+  test("a row whose data is ROWS is refused a silent uninstall exactly as one holding keys is", async () => {
+    /*
+      #233's guard widened to the shape ADR 0034 added (§5). The sample declares a database and
+      its door writes a table; it holds NO keys, so the only thing standing between it and a
+      silent uninstall is the page count — which is the whole point of counting it.
+    */
+    const fixture = await installFixture((ref) =>
+      sampleLoad(ref, {
+        ping: async (ctx: unknown) => {
+          const database = (ctx as ActionCtx).database;
+          if (database === undefined) return { pong: false };
+          await database.run("CREATE TABLE records(id INTEGER PRIMARY KEY, body TEXT NOT NULL)");
+          await database.run("INSERT INTO records(body) VALUES (?)", ["kept"]);
+          return { pong: true };
+        },
+      }),
+    );
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    try {
+      const { source, sha256 } = fixture.drop({ ...SAMPLE_MANIFEST, database: {} });
+      expect(
+        (
+          await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
+            source,
+            sha256,
+            hardened: true,
+          })
+        ).ok,
+      ).toBe(true);
+      expect(await host.dispatch(fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+        ok: true,
+        result: { pong: true },
+      });
+      expect(await fixture.store.pluginStorage(SAMPLE_ID).count()).toBe(0);
+
+      expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
+      const retained = await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, {
+        id: SAMPLE_ID,
+      });
+      expect(denial(retained).rule).toBe("refused");
+      expect(denial(retained).message).toMatch(
+        /^storage_retained: 0 keys and [1-9]\d* database pages; /,
+      );
+      expect(existsSync(pluginDatabasePath(fixture.dataDir, SAMPLE_ID))).toBe(true);
+
+      // Consent, and the file goes with the row: the purge runs first and reports the bytes.
+      expect(
+        await host.dispatch(fixture.owner, ENGINE_UNINSTALL_ACTION, { id: SAMPLE_ID, purge: true }),
+      ).toEqual({ ok: true, result: {} });
+      expect(existsSync(pluginDatabasePath(fixture.dataDir, SAMPLE_ID))).toBe(false);
+    } finally {
+      host.close();
+      fixture.store.close();
+    }
   });
 
   test("uninstall forgets the switch: a reinstall of the same id is on, like a first install", async () => {
@@ -2080,7 +2604,7 @@ describe("PluginHost install doors", () => {
     fixture.store.close();
   });
 
-  test("a second install of an id is already_installed; replace needs the row off, then upgrades", async () => {
+  test("a second install needs replace and an intentionally disabled replacement stays off", async () => {
     const fixture = await installFixture();
     const host = await customHost(fixture, [], { isolates: fixture.isolates });
     const first = fixture.drop();
@@ -2091,15 +2615,6 @@ describe("PluginHost install doors", () => {
     expect(
       denial(await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, second)).message,
     ).toMatch(/^already_installed: /);
-    expect(
-      denial(
-        await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, {
-          ...second,
-          replace: true,
-          hardened: true,
-        }),
-      ).message,
-    ).toMatch(/^still_enabled: /);
 
     expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
     expect(
@@ -2139,7 +2654,6 @@ describe("PluginHost install doors", () => {
     expect(denial(outcome).message).toMatch(/^artifact_invalid: duplicate plugin id/);
     expect(fixture.store.pluginInstalls()).toEqual([]);
     expect(existsSync(join(fixture.dataDir, "plugins", SAMPLE_ID))).toBe(false);
-    expect(fixture.runner.unloads).toEqual([SAMPLE_ID]);
     // The in-realm row is untouched: still one row under that id, still the first-party one.
     const rows = host.roster().filter((entry) => entry.manifest.id === SAMPLE_ID);
     expect(rows).toHaveLength(1);
@@ -2304,6 +2818,827 @@ describe("PluginHost install doors", () => {
     expect(await host.setEnabled(SAMPLE_ID, false, "admin")).toEqual({ ok: true });
     expect(host.webModule(SAMPLE_ID)).toBeNull();
     fixture.store.close();
+  });
+});
+
+/** Real install/dispatch/native services; only the native owner's transport is simulated. */
+async function retainedServiceFixture() {
+  const generations = new Map<string, number>();
+  const fixture: InstallFixture = await installFixture((ref) => {
+    const generation = (generations.get(ref.pluginId) ?? 0) + 1;
+    generations.set(ref.pluginId, generation);
+    if (ref.manifest.version === "9.0.0") throw new IsolateLoadError("candidate did not load");
+    const loaded = sampleLoad(ref, {
+      ping: async () => {
+        if (
+          generations.get(ref.pluginId) !== generation ||
+          fixture.runner.state(ref.pluginId) !== "running"
+        )
+          throw new IsolateDenial("unavailable", "retired child");
+        return { version: ref.manifest.version };
+      },
+    });
+    return ref.manifest.version === "8.0.0"
+      ? {
+          ...loaded,
+          def: { ...loaded.def, actions: [...loaded.def.actions, ...loaded.def.actions] },
+        }
+      : loaded;
+  });
+  try {
+    const host = await customHost(fixture, [], { isolates: fixture.isolates });
+    const jobs = new JobService(fixture.store, fixture.auth, fixture.runtime);
+    host.setJobs(jobs);
+    const machineId = fixture.auth.enrollMachine("native-owner", fixture.owner).machine.id;
+    const operationId = `${SAMPLE_ID}.serve`;
+    const artifactSha256 = "a".repeat(64);
+    const machine: MachineHalf = {
+      artifacts: {
+        "linux-x64": {
+          url: "https://example.invalid/worker",
+          sha256: artifactSha256,
+          entrySha256: artifactSha256,
+          format: "raw",
+          entry: ["worker"],
+          maxBytes: 4096,
+          maxExpandedBytes: 4096,
+          maxMembers: 1,
+        },
+      },
+      operations: {
+        [operationId]: {
+          argv: [],
+          input: {},
+          runtimeTools: [],
+          locations: [],
+          outputs: [],
+          network: "none",
+          providesService: true,
+          stdin: false,
+          limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+        },
+      },
+      locations: {},
+    };
+    const manifest: PluginManifest = { ...SAMPLE_MANIFEST, machine };
+    const first = fixture.drop(manifest);
+    expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, first)).ok).toBe(true);
+    const commands: JobCommand[] = [];
+    const channel = {
+      machineId,
+      send: ({ command }: { type: "job_command"; command: JobCommand }) => {
+        commands.push(command);
+        return true;
+      },
+    };
+    const pair = generateKeyPairSync("ed25519");
+    const owner: JobOwner = {
+      protocolVersion: JOB_OWNER_PROTOCOL_VERSION,
+      ownerId: "retained-owner",
+      generation: 1,
+      platforms: ["linux-x64"],
+      inventoryDigest: "b".repeat(64),
+      publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      resources: { tools: {}, services: {}, anchors: {}, serviceDefinitions: {} },
+    };
+    const proveOwner = () => {
+      jobs.online(channel, owner, "epoch");
+      const challenge = commands.at(-1);
+      if (challenge?.type !== "owner_challenge") throw new Error("missing native challenge");
+      const proof = {
+        nonce: challenge.nonce,
+        serverEpoch: challenge.serverEpoch,
+        machineId,
+        owner,
+      };
+      jobs.event(channel, {
+        type: "owner_proof",
+        ...proof,
+        signature: sign(null, Buffer.from(canonicalJobJson(proof)), pair.privateKey).toString(
+          "base64",
+        ),
+      });
+    };
+    proveOwner();
+    const request = {
+      deploymentId: "retained-service",
+      pluginId: SAMPLE_ID,
+      targets: [{ machineId }],
+      operationIds: [operationId],
+    };
+    const reviewOutcome = await host.dispatch(
+      fixture.owner,
+      "engine.jobs.reviewDeployment",
+      request,
+    );
+    if (!reviewOutcome.ok) throw new Error(reviewOutcome.denial.message);
+    const review = JobDeploymentReviewSchema.parse(reviewOutcome.result);
+    expect(
+      (
+        await host.dispatch(fixture.owner, "engine.jobs.applyDeployment", {
+          request,
+          reviewDigest: review.reviewDigest,
+        })
+      ).ok,
+    ).toBe(true);
+    const install = commands.findLast((command) => command.type === "install");
+    if (install?.type !== "install") throw new Error("missing reviewed native installation");
+    jobs.event(channel, {
+      type: "installed",
+      pluginId: SAMPLE_ID,
+      installationRevision: install.installationRevision,
+      artifactSha256,
+    });
+    const policy: ServicePolicy = {
+      serviceId: `${SAMPLE_ID}.broker`,
+      revision: "one",
+      maxConcurrent: 1,
+      runtime: {
+        scope: "instance",
+        pluginId: SAMPLE_ID,
+        operationId,
+        installationRevision: install.installationRevision,
+        artifactSha256,
+        resourceBindingDigest: sha256Hex(canonicalJobJson(null)),
+        input: {},
+      },
+      operations: {
+        inspect: {
+          method: "GET",
+          readable: true,
+          path: "/inspect",
+          input: {},
+          query: {},
+          body: [],
+          timeoutMs: 1000,
+          maxRequestBytes: 1024,
+          maxResponseBytes: 4096,
+          maxResultBytes: 2048,
+          response: { kind: "projected-json", fields: [["state"]], maxArrayItems: 16 },
+        },
+      },
+    };
+    const configured = await jobs.configureInstanceService(fixture.owner, {
+      serviceId: policy.serviceId,
+      expectedRevision: null,
+      machineId,
+      policy,
+      enabled: true,
+    });
+    const start = commands.find((command) => command.type === "start");
+    if (!start || !start.request.service || !configured.configuration)
+      throw new Error("reviewed native service did not start");
+    const storedPolicy = jobs.readInstanceServiceConfiguration(fixture.owner, {
+      serviceId: policy.serviceId,
+    }).policy;
+    if (!storedPolicy) throw new Error("missing service policy");
+    owner.resources = {
+      tools: {},
+      anchors: {},
+      services: { [policy.serviceId]: sha256Hex(canonicalJobJson(storedPolicy)) },
+      serviceDefinitions: {
+        [policy.serviceId]: { revision: storedPolicy.revision, operationIds: ["inspect"] },
+      },
+    };
+    proveOwner();
+    jobs.event(channel, {
+      type: "installed",
+      pluginId: SAMPLE_ID,
+      installationRevision: install.installationRevision,
+      artifactSha256,
+    });
+    jobs.event(channel, {
+      type: "state",
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: owner.ownerId,
+      ownerGeneration: owner.generation,
+      state: "started",
+    });
+    jobs.event(channel, {
+      type: "service_ready",
+      jobId: start.request.jobId,
+      service: start.request.service,
+    });
+    const readService = async () => {
+      const pending = host.dispatch(fixture.owner, "engine.services.readInstance", {
+        serviceId: policy.serviceId,
+        expectedRevision: configured.configuration!.revision,
+        operationId: "inspect",
+        input: {},
+      });
+      const command = commands.findLast((command) => command.type === "service_read");
+      if (command?.type !== "service_read") throw new Error("native read was not admitted");
+      jobs.event(channel, {
+        type: "service_authorize",
+        subject: { kind: "read", requestId: command.requestId },
+        authorizationId: `authorize-${command.requestId}`,
+        serviceId: command.serviceId,
+        revision: command.revision,
+        policySha256: command.policySha256,
+        operationId: command.operationId,
+      });
+      jobs.event(channel, {
+        type: "service_read_result",
+        requestId: command.requestId,
+        reply: {
+          type: "service_result",
+          requestId: command.requestId,
+          ok: true,
+          result: { state: "usable" },
+        },
+      });
+      expect(await pending).toEqual({
+        ok: true,
+        result: {
+          type: "service_result",
+          requestId: command.requestId,
+          ok: true,
+          result: { state: "usable" },
+        },
+      });
+    };
+    const http = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        const auth = fixture.auth.authenticate(
+          request.headers.get("authorization")?.slice(7) ?? "",
+        );
+        const path = new URL(request.url).pathname;
+        if (path === "/api/plugins")
+          return Response.json({ plugins: host.roster(), developerMode: false });
+        if (path.startsWith("/api/actions/"))
+          return Response.json(
+            await host.dispatch(
+              auth,
+              decodeURIComponent(path.slice("/api/actions/".length)),
+              await request.json(),
+            ),
+          );
+        return new Response("not found", { status: 404 });
+      },
+    });
+    return {
+      fixture,
+      host,
+      jobs,
+      machineId,
+      machine,
+      manifest,
+      operationId,
+      policy,
+      first,
+      start,
+      commands,
+      readService,
+      hub: { url: http.url.origin, ownerKey: OWNER_KEY },
+      close: () => {
+        http.stop(true);
+        jobs.offline(channel);
+        fixture.store.close();
+        rmSync(fixture.dataDir, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    fixture.store.close();
+    rmSync(fixture.dataDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+describe("enabled bundle replacement retains native execution", () => {
+  test("the supported installer replaces a parent without changing its usable broker or enabled dependent", async () => {
+    const f = await retainedServiceFixture();
+    try {
+      const childId = `${SAMPLE_ID}.part`;
+      const child = f.fixture.drop({
+        ...SAMPLE_MANIFEST,
+        id: childId,
+        dependencies: { [SAMPLE_ID]: { type: "required" } },
+      });
+      expect((await f.host.dispatch(f.fixture.owner, ENGINE_INSTALL_ACTION, child)).ok).toBe(true);
+      await f.readService();
+      const before = f.jobs.describe(f.fixture.owner, {
+        machineId: f.machineId,
+        pluginId: SAMPLE_ID,
+      });
+      const native = f.jobs.jobs.installation(f.machineId, SAMPLE_ID);
+      const policy = f.jobs.readInstanceServiceConfiguration(f.fixture.owner, {
+        serviceId: f.policy.serviceId,
+      }).policy;
+      const updated = f.fixture.drop({ ...f.manifest, version: "2.0.0" });
+      expect((await installBundle({ ...updated, hub: f.hub })).outcome).toBe("replaced");
+      expect((await installBundle({ ...updated, hub: f.hub })).outcome).toBe("unchanged");
+      expect(f.host.enabled(childId)).toBe(true);
+      expect(f.fixture.store.disabledPlugins().size).toBe(0);
+      expect(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+        ok: true,
+        result: { version: "2.0.0" },
+      });
+      f.jobs.tick();
+      await f.readService();
+      expect(
+        f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID }),
+      ).toEqual(before);
+      expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toEqual(native);
+      expect(f.jobs.jobs.get(f.start.request.jobId)?.request).toEqual(f.start.request);
+      expect(f.jobs.jobs.cancellation(f.start.request.jobId)).toBeNull();
+      expect(
+        f.jobs.jobs.instanceServiceJobs(f.policy.serviceId).map((job) => job.request.jobId),
+      ).toEqual([f.start.request.jobId]);
+      expect(
+        f.jobs.readInstanceServiceConfiguration(f.fixture.owner, { serviceId: f.policy.serviceId })
+          .policy,
+      ).toEqual(policy);
+      expect(
+        f.jobs.describeInstanceService(f.fixture.owner, { serviceId: f.policy.serviceId }).state,
+      ).toBe("ready");
+    } finally {
+      f.close();
+    }
+  });
+
+  test.each(["assembly", "child-load", "action-collision"] as const)(
+    "%s replacement failure restores a callable old module and the same usable native service",
+    async (failure) => {
+      const f = await retainedServiceFixture();
+      try {
+        const before = f.jobs.describe(f.fixture.owner, {
+          machineId: f.machineId,
+          pluginId: SAMPLE_ID,
+        });
+        const oldRow = f.fixture.store.pluginInstalls();
+        const candidate = f.fixture.drop({
+          ...f.manifest,
+          version:
+            failure === "child-load" ? "9.0.0" : failure === "action-collision" ? "8.0.0" : "2.0.0",
+          ...(failure === "assembly"
+            ? { dependencies: { "vendor.absent": { type: "required" as const } } }
+            : {}),
+          ...(failure === "child-load"
+            ? {
+                machine: {
+                  ...f.machine,
+                  operations: {
+                    [f.operationId]: {
+                      ...f.machine.operations[f.operationId]!,
+                      network: "host" as const,
+                    },
+                  },
+                },
+              }
+            : {}),
+        });
+        await expect(installBundle({ ...candidate, hub: f.hub })).rejects.toThrow(
+          "artifact_invalid",
+        );
+        expect(f.fixture.store.pluginInstalls()).toEqual(oldRow);
+        expect(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+          ok: true,
+          result: { version: SAMPLE_MANIFEST.version },
+        });
+        f.jobs.tick();
+        await f.readService();
+        expect(
+          f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID }),
+        ).toEqual(before);
+        expect(f.jobs.jobs.cancellation(f.start.request.jobId)).toBeNull();
+        expect(
+          f.jobs.jobs.instanceServiceJobs(f.policy.serviceId).map((job) => job.request.jobId),
+        ).toEqual([f.start.request.jobId]);
+        const corrected = f.fixture.drop({ ...f.manifest, version: "2.0.1" });
+        expect((await installBundle({ ...corrected, hub: f.hub })).outcome).toBe("replaced");
+        await f.readService();
+      } finally {
+        f.close();
+      }
+    },
+  );
+
+  test("a refused in-realm replacement exposes a surviving child's terminal crash without retiring native execution", async () => {
+    const f = await retainedServiceFixture();
+    const crashKey = `manifold.test.admission-crash:${f.fixture.dataDir}`;
+    const globals = globalThis as Record<symbol, unknown>;
+    globals[Symbol.for(crashKey)] = () => f.fixture.runner.report(SAMPLE_ID, "crashed");
+    try {
+      const oldRow = f.fixture.store.pluginInstalls();
+      const native = f.jobs.describe(f.fixture.owner, {
+        machineId: f.machineId,
+        pluginId: SAMPLE_ID,
+      });
+      const published: PluginRoster[] = [];
+      f.host.onRosterChange((roster) => published.push(roster));
+      const candidate = f.fixture.drop(
+        { ...f.manifest, version: "2.0.0" },
+        {
+          "server.js": `
+          globalThis[Symbol.for(${JSON.stringify(crashKey)})]();
+          throw new Error("candidate admission refused");
+        `,
+          "web.js": "export {};",
+        },
+      );
+      expect(
+        denial(
+          await f.host.dispatch(f.fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...candidate,
+            hardened: false,
+            replace: true,
+          }),
+        ).message,
+      ).toMatch(/^artifact_invalid:/);
+      expect(f.fixture.store.pluginInstalls()).toEqual(oldRow);
+      expect(installedRow(f.host, SAMPLE_ID)).toMatchObject({
+        enabled: true,
+        lifecycle: "isolate_crashed",
+        manifest: { version: SAMPLE_MANIFEST.version },
+      });
+      expect(
+        published.map((roster) => roster.find((row) => row.manifest.id === SAMPLE_ID)?.lifecycle),
+      ).toEqual(["isolate_crashed"]);
+      expect(denial(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe(
+        "unavailable",
+      );
+      await f.readService();
+      expect(
+        f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID }),
+      ).toEqual(native);
+      expect(f.jobs.jobs.cancellation(f.start.request.jobId)).toBeNull();
+
+      // A later failed child admission reloads a healthy old module: the earlier terminal
+      // state belongs to the retired child, not that newly loaded generation.
+      const failedChild = f.fixture.drop({ ...f.manifest, version: "9.0.0" });
+      expect(
+        denial(
+          await f.host.dispatch(f.fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...failedChild,
+            replace: true,
+          }),
+        ).message,
+      ).toMatch(/^artifact_invalid:/);
+      expect(installedRow(f.host, SAMPLE_ID).lifecycle).toBeUndefined();
+      expect(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+        ok: true,
+        result: { version: SAMPLE_MANIFEST.version },
+      });
+      await f.readService();
+    } finally {
+      delete globals[Symbol.for(crashKey)];
+      f.close();
+    }
+  });
+
+  test("a successful in-realm replacement does not inherit the old child's admission-time crash", async () => {
+    const f = await retainedServiceFixture();
+    const crashKey = `manifold.test.admission-crash:${f.fixture.dataDir}`;
+    const globals = globalThis as Record<symbol, unknown>;
+    globals[Symbol.for(crashKey)] = () => f.fixture.runner.report(SAMPLE_ID, "crashed");
+    try {
+      const native = f.jobs.describe(f.fixture.owner, {
+        machineId: f.machineId,
+        pluginId: SAMPLE_ID,
+      });
+      const published: PluginRoster[] = [];
+      f.host.onRosterChange((roster) => published.push(roster));
+      const candidate = f.fixture.drop(
+        { ...f.manifest, version: "2.0.0" },
+        {
+          "server.js": `
+          import { z } from ${JSON.stringify(import.meta.resolve("zod"))};
+          const { defineAction } = globalThis[Symbol.for("manifold.shared")]["@manifold/plugin"];
+          globalThis[Symbol.for(${JSON.stringify(crashKey)})]();
+          export default {
+            actions: [defineAction({
+              name: "ping", title: "Ping", caps: ["containers:read"],
+              input: z.strictObject({}), result: z.unknown(),
+            })],
+            handlers: { ping: async () => ({ version: "2.0.0" }) },
+          };
+        `,
+          "web.js": "export {};",
+        },
+      );
+      expect(
+        (
+          await f.host.dispatch(f.fixture.owner, ENGINE_INSTALL_ACTION, {
+            ...candidate,
+            hardened: false,
+            replace: true,
+          })
+        ).ok,
+      ).toBe(true);
+      expect(installedRow(f.host, SAMPLE_ID).lifecycle).toBeUndefined();
+      expect(
+        published.map((roster) => roster.find((row) => row.manifest.id === SAMPLE_ID)?.lifecycle),
+      ).toEqual([undefined]);
+      expect(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+        ok: true,
+        result: { version: "2.0.0" },
+      });
+      await f.readService();
+      expect(
+        f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID }),
+      ).toEqual(native);
+      expect(f.jobs.jobs.cancellation(f.start.request.jobId)).toBeNull();
+    } finally {
+      delete globals[Symbol.for(crashKey)];
+      f.close();
+    }
+  });
+
+  test.each(["declaration", "artifact", "resources", "operator-disable"] as const)(
+    "%s never inherits execution through replacement or an assembly enable",
+    async (change) => {
+      const f = await retainedServiceFixture();
+      try {
+        const original = f.jobs.jobs.installation(f.machineId, SAMPLE_ID)!;
+        const machine = structuredClone(f.machine);
+        if (change === "operator-disable")
+          expect(await f.host.setEnabled(SAMPLE_ID, false, f.fixture.owner.principal.id)).toEqual({
+            ok: true,
+          });
+        else if (change === "declaration") machine.operations[f.operationId]!.network = "host";
+        else if (change === "artifact") {
+          machine.artifacts["linux-x64"]!.sha256 = "c".repeat(64);
+          machine.artifacts["linux-x64"]!.entrySha256 = "c".repeat(64);
+        } else machine.requiresResourceBindings = true;
+        const candidate = f.fixture.drop({ ...f.manifest, version: "2.0.0", machine });
+        expect((await installBundle({ ...candidate, hub: f.hub })).outcome).toBe("replaced");
+        expect(f.host.enabled(SAMPLE_ID)).toBe(change !== "operator-disable");
+        expect(await f.host.setEnabled(SAMPLE_ID, true, f.fixture.owner.principal.id)).toEqual({
+          ok: true,
+        });
+        f.jobs.tick();
+        const description = f.jobs.describe(f.fixture.owner, {
+          machineId: f.machineId,
+          pluginId: SAMPLE_ID,
+        });
+        expect(description.installation).toMatchObject({
+          revision: original.revision,
+          artifactSha256: original.artifact,
+          enabled: false,
+          ready: false,
+        });
+        expect(description.consents.every((consent) => !consent.enabled)).toBe(true);
+        expect(
+          f.jobs.describeInstanceService(f.fixture.owner, { serviceId: f.policy.serviceId }).state,
+        ).toBe("stopping");
+        expect(() =>
+          f.jobs.execute(f.fixture.owner, SAMPLE_ID, "new-execution", {
+            jobId: "not-approved",
+            machineId: f.machineId,
+            operationId: f.operationId,
+            input: {},
+            outputs: [],
+          }),
+        ).toThrow("installation_changed");
+        // Restoring the old declaration is not a hidden re-grant either.
+        expect((await installBundle({ ...f.first, hub: f.hub })).outcome).toBe("replaced");
+        expect(
+          f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID })
+            .installation?.enabled,
+        ).toBe(false);
+      } finally {
+        f.close();
+      }
+    },
+  );
+
+  test.each([
+    { damage: "missing", disabled: false, failureVersion: "9.0.0" },
+    { damage: "tampered", disabled: true, failureVersion: "8.0.0" },
+  ] as const)(
+    "a $damage boot-unverified bundle repairs without purging data (disabled: $disabled)",
+    async ({ damage, disabled, failureVersion }) => {
+      const f = await retainedServiceFixture();
+      try {
+        const storage = f.fixture.store.pluginStorage(SAMPLE_ID);
+        await storage.set("value", "retained before restart");
+        const stored = f.fixture.store.pluginInstalls()[0];
+        if (stored === undefined) throw new Error("no installed bundle");
+        await f.fixture.runner.unload(SAMPLE_ID);
+        if (damage === "missing") rmSync(stored.bundlePath);
+        else writeFileSync(stored.bundlePath, "tampered bundle bytes");
+
+        const runner = new FakeRunner((ref): IsolateLoadResult => {
+          if (ref.manifest.version === "9.0.0")
+            throw new IsolateLoadError("candidate did not load");
+          const loaded = sampleLoad(ref);
+          let enabled = false;
+          return {
+            ...loaded,
+            lifecycle: {
+              onEnable: () => {
+                enabled = true;
+              },
+              onDisable: () => {
+                enabled = false;
+              },
+            },
+            def: {
+              ...loaded.def,
+              actions:
+                ref.manifest.version === "8.0.0"
+                  ? [...loaded.def.actions, ...loaded.def.actions]
+                  : loaded.def.actions,
+              handlers: {
+                ...loaded.def.handlers,
+                ping: async (ctx) => {
+                  if (!enabled) throw new IsolateDenial("unavailable", "child was not enabled");
+                  return {
+                    version: ref.manifest.version,
+                    value: await ctx.storage.get("value"),
+                  };
+                },
+              },
+            },
+          };
+        });
+        const rebooted = await customHost(f.fixture, [], {
+          isolates: { runner, dataDir: f.fixture.dataDir },
+        });
+        rebooted.setJobs(f.jobs);
+        expect(installedRow(rebooted, SAMPLE_ID)).toMatchObject({
+          enabled: true,
+          lifecycle: "enable_failed",
+          manifest: { version: "unverified" },
+          install: {
+            sha256: stored.sha256,
+            refusal: damage === "missing" ? "artifact_unreadable" : "hash_mismatch",
+          },
+        });
+        expect(runner.loads).toEqual([]);
+        expect(denial(await rebooted.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).rule).toBe(
+          "unavailable",
+        );
+        if (disabled)
+          expect(await rebooted.setEnabled(SAMPLE_ID, false, f.fixture.owner.principal.id)).toEqual(
+            { ok: true },
+          );
+
+        const before = installedRow(rebooted, SAMPLE_ID);
+        const deniedBefore = await rebooted.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {});
+        // Fail both before a child is admitted and after its actions are loaded. Neither
+        // path may try to resurrect the unreadable old module or erase its boot refusal.
+        const failed = f.fixture.drop({ ...f.manifest, version: failureVersion });
+        expect(
+          denial(
+            await rebooted.dispatch(f.fixture.owner, ENGINE_INSTALL_ACTION, {
+              ...failed,
+              replace: true,
+            }),
+          ).message,
+        ).toMatch(/^artifact_invalid:/);
+        expect(f.fixture.store.pluginInstalls()).toEqual([stored]);
+        expect(installedRow(rebooted, SAMPLE_ID)).toEqual(before);
+        expect(await rebooted.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual(
+          deniedBefore,
+        );
+        expect(rebooted.webModule(SAMPLE_ID)).toBeNull();
+        expect(await storage.get("value")).toBe("retained before restart");
+        expect(runner.state(SAMPLE_ID)).toBe("stopped");
+
+        const repaired = f.fixture.drop({ ...f.manifest, version: "2.0.0" });
+        expect(
+          (
+            await rebooted.dispatch(f.fixture.owner, ENGINE_INSTALL_ACTION, {
+              ...repaired,
+              replace: true,
+            })
+          ).ok,
+        ).toBe(true);
+        expect(installedRow(rebooted, SAMPLE_ID)).toMatchObject({
+          enabled: !disabled,
+          manifest: { version: "2.0.0" },
+          install: { sha256: repaired.sha256 },
+        });
+        expect(installedRow(rebooted, SAMPLE_ID).install?.refusal).toBeUndefined();
+        expect(f.fixture.store.disabledPlugins().has(SAMPLE_ID)).toBe(disabled);
+        if (disabled) {
+          expect(
+            denial(await rebooted.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).rule,
+          ).toBe("plugin_disabled");
+          expect(rebooted.webModule(SAMPLE_ID)).toBeNull();
+          expect(await rebooted.setEnabled(SAMPLE_ID, true, f.fixture.owner.principal.id)).toEqual({
+            ok: true,
+          });
+        }
+        expect(await rebooted.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+          ok: true,
+          result: { version: "2.0.0", value: "retained before restart" },
+        });
+        expect(rebooted.webModule(SAMPLE_ID)?.sha256).toBe(repaired.sha256);
+        // Even the same candidate machine declaration cannot inherit authority from an
+        // unknown old declaration. An assembly enable is not a new native review.
+        const native = f.jobs.describe(f.fixture.owner, {
+          machineId: f.machineId,
+          pluginId: SAMPLE_ID,
+        });
+        expect(native.installation).toMatchObject({ enabled: false, ready: false });
+        expect(native.consents.every((consent) => !consent.enabled)).toBe(true);
+        expect(() =>
+          f.jobs.execute(f.fixture.owner, SAMPLE_ID, "unverified-repair", {
+            jobId: "unreviewed-repair",
+            machineId: f.machineId,
+            operationId: f.operationId,
+            input: {},
+            outputs: [],
+          }),
+        ).toThrow("installation_changed");
+      } finally {
+        f.close();
+      }
+    },
+  );
+
+  test("in-realm migration failure rolls back data and ledger while the original native service stays usable", async () => {
+    const f = await retainedServiceFixture();
+    try {
+      const server = (migrate: boolean, fail: boolean) => `
+        import { z } from ${JSON.stringify(import.meta.resolve("zod"))};
+        const { defineAction } = globalThis[Symbol.for("manifold.shared")]["@manifold/plugin"];
+        export default {
+          actions: [defineAction({
+            name: "ping", title: "Read stored data", caps: ["containers:read"],
+            input: z.strictObject({}), result: z.unknown(),
+          })],
+          handlers: { async ping(ctx) {
+            return { value: await ctx.storage.get("value"), version: await ctx.storage.dataVersion(),
+              migrations: await ctx.storage.appliedMigrations() };
+          } },
+          migrations: ${
+            migrate
+              ? `[
+            { name: "first", to: { major: 2, minor: 0 }, async migrate(storage) {
+              await storage.set("value", "first");
+            } },
+            { name: "second", to: { major: 3, minor: 0 }, async migrate(storage) {
+              await storage.set("value", "second");
+              ${fail ? 'throw new Error("migration failed after writing");' : ""}
+            } }
+          ]`
+              : "[]"
+          },
+        };
+      `;
+      const first = f.fixture.drop(
+        { ...f.manifest, dataVersion: { major: 1, minor: 0 } },
+        {
+          "server.js": server(false, false),
+          "web.js": "export {};",
+        },
+      );
+      expect((await installBundle({ ...first, hardened: false, hub: f.hub })).outcome).toBe(
+        "replaced",
+      );
+      await f.fixture.store.pluginStorage(SAMPLE_ID).set("value", "original");
+      const old = f.fixture.store.pluginInstalls();
+      const before = f.jobs.describe(f.fixture.owner, {
+        machineId: f.machineId,
+        pluginId: SAMPLE_ID,
+      });
+      const next = { ...f.manifest, version: "3.0.0", dataVersion: { major: 3, minor: 0 } };
+      const failed = f.fixture.drop(next, {
+        "server.js": server(true, true),
+        "web.js": "export {};",
+      });
+      await expect(installBundle({ ...failed, hardened: false, hub: f.hub })).rejects.toThrow(
+        "migration failed",
+      );
+      expect(f.fixture.store.pluginInstalls()).toEqual(old);
+      expect(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+        ok: true,
+        result: { value: "original", version: { major: 1, minor: 0 }, migrations: [] },
+      });
+      await f.readService();
+      const corrected = f.fixture.drop(next, {
+        "server.js": server(true, false),
+        "web.js": "export {};",
+      });
+      expect((await installBundle({ ...corrected, hardened: false, hub: f.hub })).outcome).toBe(
+        "replaced",
+      );
+      expect(await f.host.dispatch(f.fixture.owner, `${SAMPLE_ID}.ping`, {})).toEqual({
+        ok: true,
+        result: {
+          value: "second",
+          version: { major: 3, minor: 0 },
+          migrations: ["first", "second"],
+        },
+      });
+      await expect(installBundle({ ...first, hardened: false, hub: f.hub })).rejects.toThrow(
+        "major downgrade",
+      );
+      f.jobs.tick();
+      await f.readService();
+      expect(
+        f.jobs.describe(f.fixture.owner, { machineId: f.machineId, pluginId: SAMPLE_ID }),
+      ).toEqual(before);
+      expect(f.jobs.jobs.cancellation(f.start.request.jobId)).toBeNull();
+    } finally {
+      f.close();
+    }
   });
 });
 
@@ -2500,7 +3835,7 @@ describe("PluginHost unpacked plugins", () => {
     expect(fixture.store.pluginInstalls().map((stored) => stored.sha256)).toEqual([
       authored.sha256,
     ]);
-    expect(hookLog()).toEqual(["enable:1.0.0", "disable:1.0.0", "enable:1.0.0"]);
+    expect(hookLog()).toEqual(["enable:1.0.0"]);
 
     // A build that fails (the manifest is not even JSON) is the same class, and the row stands.
     const unbuildable = await host.author(

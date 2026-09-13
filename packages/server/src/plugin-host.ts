@@ -5,6 +5,7 @@ import {
   ENGINE_UNINSTALLED_EVENT,
   LIFECYCLE_TIMEOUT_MS,
   assembleRoster,
+  assertStorageKey,
   compareDataVersion,
   enginePluginsActions,
   enginePluginsManifest,
@@ -18,17 +19,23 @@ import {
   type EmitEvent,
   type JobSettledCtx,
   type LifecycleCtx,
+  type HookOutcome,
   type PluginAuthorRequest,
   type PluginAuthorResult,
   type PluginDef,
   type PluginInstallRequest,
   type PluginInstallResult,
+  type PluginDatabase,
+  type PluginDatabaseAdmin,
   type PluginMigration,
   type PluginStorage,
   type PluginStorageAdmin,
   type PluginStoredData,
 } from "@manifold/plugin";
+import type { ServerMigration as GuestMigration } from "@manifold/plugin-kit/server";
 import {
+  GuestMigrationDeclarationsSchema,
+  ISOLATE_MIGRATION_DEADLINE_MS,
   CAPS,
   GOVERNED_CAPS,
   ManifoldRefSchema,
@@ -38,6 +45,7 @@ import {
   type TerminalExecution,
   PLUGIN_BUNDLE_STYLES_FILE,
   formatManifoldUri,
+  canonicalJobJson,
   TRACE_AUTHORITY_OPEN,
   TRACE_AUTHORITY_ROOT,
 } from "@manifold/protocol";
@@ -90,11 +98,11 @@ import {
   IsolateLoadError,
   isolateLifecycleState,
   type IsolateRunner,
-  type IsolateState,
 } from "./isolate/contract.ts";
 import { localActionDef } from "./isolate/proxy-def.ts";
 import { redactFields, type Logger } from "./log.ts";
 import type { PlaceExecutor } from "./placement.ts";
+import { openPluginDatabase } from "./plugin-database.ts";
 import {
   InstallRefusal,
   installArtifact,
@@ -103,7 +111,13 @@ import {
   type InstalledArtifact,
 } from "./plugin-installs.ts";
 import type { RoomManager } from "./room.ts";
-import type { MachineRecord, PluginInstallRow, ServerStore, TraceAttribution } from "./stores.ts";
+import type {
+  MachineRecord,
+  PluginInstallRow,
+  PluginMigrationSession,
+  ServerStore,
+  TraceAttribution,
+} from "./stores.ts";
 import type { DrainOutcome, TerminalBroker } from "./terminal-broker.ts";
 import { StreamService } from "./stream-service.ts";
 import type { StreamProducer, PluginStreamContext, PluginServiceContext } from "@manifold/plugin";
@@ -521,6 +535,15 @@ export interface ActionCtx {
    */
   readonly storage: PluginStorage;
   /**
+   * THIS PLUGIN'S OWN TABLES (ADR 0034), present exactly when its manifest declares
+   * `database`. A plugin that declared none has no slice here — the member is absent, and
+   * through the isolate proxy the same absence answers `slice_unavailable` — so the file
+   * exists only for plugins that asked for one. It is promise-returning for the same reason
+   * storage is, it is the plugin's alone (one file per manifest id), and `batch` is its
+   * transaction: there is no open handle a plugin could hold across its own awaits.
+   */
+  readonly database?: PluginDatabase;
+  /**
    * The server's clock, injected rather than read from `Date`: a plugin enforcing a cadence
    * (a throttle, a cooldown) must be drivable by a deterministic test the same way every
    * other timed plane in the server is.
@@ -815,6 +838,10 @@ export class PluginHost {
   /** Installed plugins by id: the row, the verified bundle, and the def the runner produced. */
   private readonly installed = new Map<string, InstalledPlugin>();
   private readonly installedDefs = new Map<string, ServerPluginDef>();
+  /** Assembly mutations share the runner's one-child-per-id and data-commit boundary. */
+  private assemblyChange: Promise<void> = Promise.resolve();
+  private replacing: string | null = null;
+  private readonly activeDispatches = new Map<string, Set<Promise<void>>>();
   private readonly isolates: IsolateDeps | null;
   /**
    * The unpacked directory's hands (ADR 0025 §4): present exactly when this host admits
@@ -822,6 +849,18 @@ export class PluginHost {
    */
   private readonly authored: AuthoredPlugins | null;
   private readonly storages = new Map<string, PluginStorageAdmin>();
+  /**
+   * One open handle per plugin that has touched its file, closed by a disable, a purge and
+   * the shutdown. Keyed like `storages` and for the same reason: the handle is bound to one
+   * manifest id, so two plugins cannot reach each other's rows even by naming the same table.
+   */
+  private readonly databases = new Map<string, PluginDatabaseAdmin>();
+  /**
+   * Where `plugins/<id>/data.db` lives (ADR 0034 §1) — `config.dataDir`, the same directory
+   * the isolate runner extracts bundles into. Null for a host assembled without one, which is
+   * a unit fixture: no directory, no file, and `ctx.database` is absent for every plugin.
+   */
+  private readonly dataDir: string | null;
   private readonly rosterListeners = new Set<
     (roster: PluginRoster, developerMode: boolean) => void
   >();
@@ -909,6 +948,7 @@ export class PluginHost {
       readonly lifecycleTimeoutMs?: number;
       readonly distribution?: ReadonlySet<string>;
       readonly isolates?: IsolateDeps;
+      readonly dataDir?: string;
     },
   ) {
     this.firstParty = [...ENGINE_BUILTIN_DEFS, ...defs];
@@ -916,6 +956,7 @@ export class PluginHost {
     this.builtins = new Set(ENGINE_BUILTIN_DEFS.map((def) => def.manifest.id));
     this.distribution = options.distribution;
     this.isolates = options.isolates ?? null;
+    this.dataDir = options.dataDir ?? options.isolates?.dataDir ?? null;
     this.authored =
       this.isolates === null
         ? null
@@ -965,6 +1006,12 @@ export class PluginHost {
       readonly lifecycleTimeoutMs?: number;
       readonly distribution?: ReadonlySet<string>;
       readonly isolates?: IsolateDeps;
+      /**
+       * Where a plugin's own SQLite file lives (ADR 0034 §1): `<dataDir>/plugins/<id>/data.db`.
+       * `isolates.dataDir` is the same directory, so a host that admits bundles need not
+       * repeat it; absent entirely means no plugin gets a `ctx.database`.
+       */
+      readonly dataDir?: string;
     } = {},
   ): Promise<PluginHost> {
     const host = new PluginHost(
@@ -1053,8 +1100,8 @@ export class PluginHost {
       }
     }
     this.syncDefs();
-    this.isolates.runner.onState((pluginId, state) => {
-      this.onIsolateState(pluginId, state);
+    this.isolates.runner.onState((pluginId) => {
+      this.onIsolateState(pluginId);
     });
   }
 
@@ -1097,7 +1144,33 @@ export class PluginHost {
         ) {
           throw new Error("server module must default-export a ServerPluginDef");
         }
-        return { ...def, manifest: bundle.manifest };
+        const migrations: readonly GuestMigration[] = def.migrations ?? [];
+        const declarations = GuestMigrationDeclarationsSchema.parse({
+          dataVersion: bundle.manifest.dataVersion,
+          migrations: migrations.map(({ name, to }) => ({ name, to })),
+        });
+        const adapted = declarations.migrations.map((metadata, index): PluginMigration => {
+          const migration = migrations[index];
+          if (migration === undefined || typeof migration.migrate !== "function")
+            throw new Error(`migration "${metadata.name}" has no callback`);
+          const invoke = migration.migrate.bind(migration);
+          return {
+            ...metadata,
+            migrate: (storage) =>
+              invoke({
+                pluginId: storage.pluginId,
+                get: async (key) => {
+                  assertStorageKey(key);
+                  return storage.get(key);
+                },
+                set: storage.set,
+                compareAndSet: storage.compareAndSet,
+                delete: storage.delete,
+                keys: storage.keys,
+              }),
+          };
+        });
+        return { ...def, manifest: bundle.manifest, migrations: adapted };
       } catch (error) {
         throw new IsolateLoadError(error instanceof Error ? error.message : "server import failed");
       } finally {
@@ -1125,28 +1198,43 @@ export class PluginHost {
    * state that maps to no lifecycle clears only an isolate state — a hook's own
    * `enable_failed` is a different report and stands until the next transition.
    */
-  private onIsolateState(pluginId: string, state: IsolateState): void {
+  private reconcileIsolateState(pluginId: string): boolean {
+    const installed = this.installed.get(pluginId);
+    if (
+      this.isolates === null ||
+      installed?.row.hardened !== true ||
+      installed.bundle?.manifest.entry.server !== true
+    )
+      return false;
+    // Notifications can belong to a retired child. Only the runner's current child for
+    // this verified installation owns a roster state; in-realm modules and failed repairs do not.
+    const state = this.isolates.runner.state(pluginId);
     const lifecycle = isolateLifecycleState(state);
+    const current = this.lifecycleStates.get(pluginId);
+    if (lifecycle === current) return false;
     if (lifecycle !== undefined) {
       this.lifecycleStates.set(pluginId, lifecycle);
     } else {
-      const current = this.lifecycleStates.get(pluginId);
-      if (current !== "isolate_starting" && current !== "isolate_crashed") return;
+      if (current !== "isolate_starting" && current !== "isolate_crashed") return false;
       this.lifecycleStates.delete(pluginId);
     }
-    this.reassemble().then(
-      (assembly) => {
-        this.assembled = assembly;
-        this.publish();
-      },
-      (error: unknown) => {
-        this.logger.error("plugin_lifecycle", {
-          plugin: pluginId,
-          hook: "state",
-          error: error instanceof Error ? error.message : "reassembly failed",
-        });
-      },
-    );
+    return true;
+  }
+
+  private onIsolateState(pluginId: string): void {
+    // A candidate child is not the published installation. Leaving replacement reconciles
+    // the surviving child, including terminal transitions that arrive during admission.
+    if (this.replacing === pluginId || !this.reconcileIsolateState(pluginId)) return;
+    this.changeAssembly(async () => {
+      this.assembled = await this.reassemble();
+      this.publish();
+    }).catch((error: unknown) => {
+      this.logger.error("plugin_lifecycle", {
+        plugin: pluginId,
+        hook: "state",
+        error: error instanceof Error ? error.message : "reassembly failed",
+      });
+    });
   }
 
   /** One composition over the store's current enablement and the facts `env` reads fresh. */
@@ -1219,6 +1307,103 @@ export class PluginHost {
     return created;
   }
 
+  /**
+   * ONE FILE PER PLUGIN, opened lazily and kept (ADR 0034 §1). Null when this host has no
+   * data directory — a unit fixture — because a path is the whole of what makes the file this
+   * plugin's and nobody else's, and inventing one under the process's cwd would put a
+   * workspace's rows somewhere no backup looks.
+   *
+   * The handle exists whether or not the manifest DECLARES a database: the purge verb and the
+   * uninstall guard have to answer for a file a plugin wrote before its manifest stopped
+   * asking for one, and opening is lazy, so a plugin that never touches SQL never creates a
+   * file. What the declaration decides is whether `ctx.database` is handed out, which is
+   * `slice(...)` below.
+   */
+  private database(pluginId: string): PluginDatabaseAdmin | null {
+    if (this.dataDir === null) return null;
+    const existing = this.databases.get(pluginId);
+    if (existing !== undefined) return existing;
+    const declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.database;
+    const created = openPluginDatabase({
+      dataDir: this.dataDir,
+      pluginId,
+      ...(declared?.maxBytes === undefined ? {} : { maxBytes: declared.maxBytes }),
+      now: () => this.runtime.now(),
+    });
+    this.databases.set(pluginId, created);
+    return created;
+  }
+
+  /**
+   * The database slice a CONTEXT carries: present exactly when the manifest declared one
+   * (ADR 0034 §6), so a plugin that asked for no file cannot reach one by accident and the
+   * proxy answers `slice_unavailable` for the same reason on the other side of the boundary.
+   */
+  private databaseSlice(pluginId: string): PluginDatabase | undefined {
+    const declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.database;
+    if (declared === undefined) return undefined;
+    return this.database(pluginId) ?? undefined;
+  }
+
+  /** A completed/timed-out handler cannot retain storage authority into a later version. */
+  private storageLease(
+    pluginId: string,
+    storage: PluginStorage = this.storage(pluginId),
+  ): { storage: PluginStorage; close(): void } {
+    let open = true;
+    const check = (): void => {
+      if (!open) throw new Error("plugin storage request is closed");
+    };
+    return {
+      close: () => {
+        open = false;
+      },
+      storage: {
+        pluginId,
+        get: async (key) => {
+          check();
+          return storage.get(key);
+        },
+        set: async (key, value) => {
+          check();
+          await storage.set(key, value);
+        },
+        compareAndSet: async (key, expected, value) => {
+          check();
+          return storage.compareAndSet(key, expected, value);
+        },
+        delete: async (key) => {
+          check();
+          await storage.delete(key);
+        },
+        keys: async (prefix) => {
+          check();
+          return storage.keys(prefix);
+        },
+        dataVersion: async () => {
+          check();
+          return storage.dataVersion();
+        },
+        appliedMigrations: async () => {
+          check();
+          return storage.appliedMigrations();
+        },
+      },
+    };
+  }
+
+  private async drainDispatches(pluginId: string): Promise<void> {
+    const pending = this.activeDispatches.get(pluginId);
+    if (pending === undefined || pending.size === 0) return;
+    const outcome = await runHook(async () => {
+      await Promise.all(pending);
+    }, ISOLATE_MIGRATION_DEADLINE_MS);
+    if (!outcome.ok)
+      throw new InstallRefusal(
+        "artifact_invalid",
+        `plugin "${pluginId}" has active dispatches: ${outcome.reason}`,
+      );
+  }
   /** Applies every migration the current assembly found owing. True if any ran. */
   private async runPendingMigrations(): Promise<boolean> {
     let ran = false;
@@ -1229,28 +1414,65 @@ export class PluginHost {
   }
 
   /**
-   * One plugin's migration chain, in order, each recorded by NAME before the next runs. The
-   * ledger entry is what makes a migration at-most-once across restarts, and the version
-   * stamp is what makes the next boot's plan a no-op.
+   * Stage the entire chain, including the native ledger/version, on private plugin storage.
+   * No data is published on failure, timeout or process loss; late work sees a closed handle.
+   * The caller commits synchronously, optionally with the installed row and element claims.
    *
-   * A throwing migration is fatal by design: the alternative is serving requests over data
-   * a plugin declared it cannot read. There is no half-migrated state to reason about
-   * because there is no catch here — and no interleaving to reason about either, because the
-   * storage every await here resolves against settles synchronously (`PluginMigration`).
+   * The plugin's OWN FILE is the exception, and deliberately so (ADR 0034 §1): `data.db` is
+   * not `manifold.db`, so its statements cannot join this transaction, and staging a copy of
+   * a file the ADR caps at 4 GiB would be a second consistency model for the same chain.
+   * Its DDL commits as it runs; a discarded chain leaves the ledger unwritten, so the same
+   * migration is planned again — which is why `docs/PLUGINS.md` §"Your tables" tells authors
+   * to write DDL that can run twice.
    */
+  private async prepareMigrations(
+    pluginId: string,
+    migrations: readonly PluginMigration[],
+    declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.dataVersion,
+  ): Promise<PluginMigrationSession> {
+    const staged = this.store.beginPluginMigration(pluginId, migrations.length > 0);
+    const admin = staged.storage;
+    const database = this.databaseSlice(pluginId);
+    let closeActiveLease = (): void => {};
+    try {
+      const outcome = await runHook(async () => {
+        for (const migration of migrations) {
+          // A callback sees public storage only, and its handle expires before the next
+          // migration starts; the engine alone records names and the eventual version.
+          const lease = this.storageLease(pluginId, admin);
+          closeActiveLease = lease.close;
+          try {
+            await migration.migrate(lease.storage, database);
+          } finally {
+            lease.close();
+            if (closeActiveLease === lease.close) closeActiveLease = (): void => {};
+          }
+          await admin.recordMigration(migration.name, this.runtime.now());
+        }
+        if (declared !== undefined) await admin.stampDataVersion(declared);
+      }, ISOLATE_MIGRATION_DEADLINE_MS);
+      // `runHook` cannot cancel an in-realm promise. Expire its authority when the engine
+      // stops waiting, rather than when that promise eventually settles.
+      closeActiveLease();
+      if (!outcome.ok) throw new Error(`plugin migration failed: ${outcome.reason}`);
+      return staged;
+    } catch (error) {
+      closeActiveLease();
+      staged.discard();
+      throw error;
+    }
+  }
+
   private async applyMigrations(
     pluginId: string,
     migrations: readonly PluginMigration[],
+    declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.dataVersion,
   ): Promise<boolean> {
     if (migrations.length === 0) return false;
-    const storage = this.storage(pluginId);
-    for (const migration of migrations) {
-      await migration.migrate(storage);
-      await storage.recordMigration(migration.name, this.runtime.now());
+    const staged = await this.prepareMigrations(pluginId, migrations, declared);
+    staged.commit();
+    for (const migration of migrations)
       this.logger.info("plugin_migration", { plugin: pluginId, migration: migration.name });
-    }
-    const declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.dataVersion;
-    if (declared !== undefined) await storage.stampDataVersion(declared);
     return true;
   }
 
@@ -1289,6 +1511,20 @@ export class PluginHost {
     return this.authored?.watch() ?? (() => {});
   }
 
+  private async changeAssembly<T>(change: () => Promise<T>): Promise<T> {
+    const preceding = this.assemblyChange;
+    let release!: () => void;
+    this.assemblyChange = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await preceding;
+    try {
+      return await change();
+    } finally {
+      release();
+    }
+  }
+
   /**
    * Flips workspace-global enablement, persists it with attribution, reassembles, tells the
    * plugins that survived, and publishes the new roster.
@@ -1310,6 +1546,27 @@ export class PluginHost {
    *   safely read by its code, and no migration bridges the gap.
    */
   async setEnabled(
+    id: string,
+    enabled: boolean,
+    changedBy: string,
+  ): Promise<ActionRefused | { ok: true }> {
+    return this.changeAssembly(async () => {
+      if (!enabled || this.assembled.enabled(id) || this.assembled.builtin(id))
+        return this.setEnabledNow(id, enabled, changedBy);
+      this.replacing = id;
+      try {
+        await this.drainDispatches(id);
+        return await this.setEnabledNow(id, enabled, changedBy);
+      } catch (error) {
+        if (error instanceof InstallRefusal) return { refused: error.message };
+        throw error;
+      } finally {
+        this.replacing = null;
+      }
+    });
+  }
+
+  private async setEnabledNow(
     id: string,
     enabled: boolean,
     changedBy: string,
@@ -1398,6 +1655,14 @@ export class PluginHost {
       ),
     };
     await this.fanOut(delta, wasEnabled);
+    /*
+      A DISABLE RETAINS AND RELEASES: the file stays exactly as the plugin left it (the
+      residual mechanism is `retain`), and the engine's handle onto it does not — after
+      `onDisable` has had its turn, so a hook may still write its parting row. The next enable
+      opens the same file again, which is what makes "re-enabling restores it in place" true of
+      rows as well as keys.
+    */
+    if (!enabled) this.databases.get(id)?.close();
     const installed = this.installed.get(id);
     if (
       !enabled &&
@@ -1441,12 +1706,17 @@ export class PluginHost {
    * through `onPurge` — under the same 2-second bound, and its failure does not stop the
    * purge, because the remedy for a plugin that will not clean up cannot be that plugin.
    *
-   * What goes: its storage namespace (rows, data-version stamp, migration ledger) and its
-   * element-type reservations. What does not: documents. A canvas's `draw` elements are the
-   * workspace's data, not the plugin's, and they keep rendering as named placeholders — the
-   * purge released the reservation, so a replacement may now claim the type deliberately.
+   * What goes: its storage namespace (rows, data-version stamp, migration ledger), its own
+   * SQLite file with its journal, and its element-type reservations. What does not: documents.
+   * A canvas's `draw` elements are the workspace's data, not the plugin's, and they keep
+   * rendering as named placeholders — the purge released the reservation, so a replacement may
+   * now claim the type deliberately.
    */
   async purge(id: string, purgedBy: string): Promise<ActionRefused | PluginPurgeResult> {
+    return this.changeAssembly(() => this.purgeNow(id, purgedBy));
+  }
+
+  private async purgeNow(id: string, purgedBy: string): Promise<ActionRefused | PluginPurgeResult> {
     const entry = this.assembled.roster.find((candidate) => candidate.manifest.id === id);
     if (entry === undefined) return refused("unknown_plugin", [id]);
     if (this.assembled.builtin(id)) return refused("builtin", [id]);
@@ -1462,7 +1732,7 @@ export class PluginHost {
     const def = this.defs.find((candidate) => candidate.manifest.id === id);
     const onPurge = def?.lifecycle?.onPurge;
     if (onPurge !== undefined) {
-      const outcome = await runHook(() => onPurge(this.lifecycleCtx(id)), this.lifecycleTimeoutMs);
+      const outcome = await this.runLifecycle(id, onPurge);
       if (!outcome.ok) {
         this.logger.error("plugin_lifecycle", {
           plugin: id,
@@ -1474,11 +1744,20 @@ export class PluginHost {
 
     const storage = this.storage(id);
     const removedRows = await storage.clear();
+    /*
+      The file goes the way the rows do, and by the same verb (ADR 0034 §5): `clear` closes
+      the handle first — an open SQLite connection to a deleted file is a handle onto nothing
+      — then deletes `data.db` with its `-wal` and `-shm`, and reports the bytes that went.
+      The cache entry goes with it, so the next open of this id starts from no file at all.
+    */
+    const removedBytes = (await this.database(id)?.clear()) ?? 0;
+    this.databases.delete(id);
     const releasedTypes = this.store.releaseElementTypes(id);
     this.logger.info("plugin_purge", {
       plugin: id,
       principal: purgedBy,
       rows: removedRows,
+      databaseBytes: removedBytes,
       types: releasedTypes,
     });
     // Same commit point, same ledger node, same reason as the enablement pair above.
@@ -1487,7 +1766,7 @@ export class PluginHost {
       { kind: "plugin", pluginId: enginePluginsManifest.id },
       "plugin_purged",
       purgedBy,
-      { plugin: id, rows: removedRows, types: releasedTypes },
+      { plugin: id, rows: removedRows, databaseBytes: removedBytes, types: releasedTypes },
     );
     return {
       id,
@@ -1496,39 +1775,39 @@ export class PluginHost {
         elements: entry.manifest.contributes.elements.length,
         ownership: releasedTypes,
       },
+      databaseBytes: removedBytes,
     };
   }
 
   /**
-   * THE INSTALL DOOR (ADR 0016 §8 stage 2). In order, and the order is the contract:
+   * The install and replacement door. Artifact integrity, assembly and data compatibility
+   * are preflighted before committing an installation. A replacement preserves the durable
+   * enablement switch, including an intentionally disabled row, and never toggles dependents.
    *
-   *  1. the artifact is read, pinned and parsed, and NOTHING is written until the bundle is
-   *     admitted (`plugin-installs.ts`): a `hash_mismatch` or a refused manifest leaves no
-   *     file behind;
-   *  2. admission is the host's verdict — `namespace_reserved` for `engine.` / `core.`,
-   *     `already_installed` unless `replace`, `still_enabled` for a replace of a running row;
-   *  3. the runner spawns the child and the assembly is rebuilt with the new def. A load
-   *     failure or an `AssemblyError` (a duplicate id, a colliding action name) ROLLS BACK —
-   *     files, child, the host's index — and answers `artifact_invalid` naming the problem, so
-   *     a stranger's bundle is refused at the door rather than surfacing as a boot that will
-   *     not come up;
-   *  4. the row is persisted, once, with the grant (`grantFor`: declared minus the high-risk
-   *     set, widened by `grant`) and the doors the assembly just published — the record a boot
-   *     that cannot re-verify the bundle puts on the roster in the file's place.
+   * Enabled modules use the same lifecycle as an authored edit: old onDisable, new onEnable.
+   * These are module notifications, NOT an operator disable of native authority. Unchanged
+   * machine declarations retain the exact installations, consents and running service jobs;
+   * a changed declaration fences native execution at commit and still needs native review.
    *
-   * Then the transition is announced exactly as a toggle is: hooks fan out (an install of an
-   * enabled row IS an enable), the roster is published, one log line, one event.
-   *
-   * `unpacked` is the rebuild loop knocking (ADR 0025 §4): the artifact is what the hub just
-   * packed from `<data>/authored/<id>/`, the row lands as `mode: "unpacked"`, and the manifest
-   * must name the directory it was built from. It is the ONE difference in admission: a
-   * running unpacked row is replaced LIVE rather than refused `still_enabled` — its `onDisable`
-   * runs, the previous module is left behind (it stays in memory until restart, a cost
-   * developer mode accepts), the new one is imported fresh, and `onEnable` fans out as for an
-   * enable — because a save is not a state anybody wants to be asked to disable for. An
-   * `AssemblyError` in the edit rolls back to the previous row and wakes it again.
+   * A failed candidate restores the old module or boot-unverified placeholder, reloading only
+   * a prior hardened child. Migrations and their ledger commit with the install row or roll
+   * back together. Lifecycle hooks retain their no-veto contract: failures are roster-visible.
    */
   async install(
+    request: PluginInstallRequest,
+    installedBy: string,
+    unpacked?: { readonly id: string },
+  ): Promise<ActionRefused | PluginInstallResult> {
+    return this.changeAssembly(async () => {
+      try {
+        return await this.installNext(request, installedBy, unpacked);
+      } finally {
+        this.replacing = null;
+      }
+    });
+  }
+
+  private async installNext(
     request: PluginInstallRequest,
     installedBy: string,
     unpacked?: { readonly id: string },
@@ -1537,6 +1816,8 @@ export class PluginHost {
     if (isolates === null) {
       return installRefused("artifact_unreadable", "this server admits no bundles");
     }
+    if (unpacked !== undefined && !this.store.developerMode())
+      return refused("developer_mode_off", [unpacked.id]);
     const sha256 = request.sha256.toLowerCase();
     let artifact: InstalledArtifact;
     try {
@@ -1567,10 +1848,6 @@ export class PluginHost {
               `"${id}" is installed at ${existing.row.sha256}; pass replace to upgrade it`,
             );
           }
-          const live = unpacked !== undefined && existing.row.mode === "unpacked";
-          if (this.assembled.enabled(id) && !live) {
-            return new InstallRefusal("still_enabled", `disable "${id}" before replacing it`);
-          }
           return null;
         },
       });
@@ -1600,56 +1877,145 @@ export class PluginHost {
     const wasEnabled = new Set(
       this.assembled.roster.filter((entry) => entry.enabled).map((entry) => entry.manifest.id),
     );
-    // A LIVE replace (unpacked over a running unpacked row): the old module is told first, and
-    // the row leaves the "was enabled" set so the new module's `onEnable` fans out below.
-    const live = previous !== undefined && wasEnabled.has(id);
-    if (live) {
-      this.jobs?.disablePlugin(id);
-      await this.hook(id, "onDisable", "disable_failed");
-      wasEnabled.delete(id);
-    }
-    // A replace retires the running child first: two children for one id is two doors.
-    if (previous?.row.hardened === true) await isolates.runner.unload(id);
-    this.installed.set(id, { row: consent, bundle, web, styles });
-    this.lifecycleStates.delete(id);
+    const live = previous !== undefined && previous.bundle !== null && wasEnabled.has(id);
+    const previousChild =
+      previous?.row.hardened === true && previous.bundle?.manifest.entry.server === true;
+    const previousLifecycle = this.lifecycleStates.get(id);
+    let retired = false;
+    let candidateChild = false;
+    let notified = false;
+    let row: PluginInstallRow;
+    this.replacing = id;
     try {
+      // Refuse new dispatches above, and finish admitted old handlers before any hook,
+      // runner replacement or snapshot. Other plugins remain independently serviceable.
+      await this.drainDispatches(id);
+      // Only a verified hardened module has a child to restore. A boot-unverified row keeps
+      // its fail-closed def on rollback; unreadable old bytes must not prevent its repair.
+      if (previousChild) {
+        const verdict = verifyInstalledBundle(previous.row);
+        if (!verdict.ok) throw new InstallRefusal(verdict.refusal, verdict.detail);
+      }
+      const env = await this.env();
+      // Manifest/dependency preflight needs no child. The module supplies the candidate's
+      // actions and migrations, which are checked separately after loading.
+      const dataState = new Map(env.dataState);
+      dataState.delete(id);
+      this.preflightInstall(
+        id,
+        { manifest: bundle.manifest, actions: [], handlers: {} },
+        { ...env, dataState },
+      );
+      let candidate: ServerPluginDef;
+      if (consent.hardened !== true) {
+        candidate = await this.loadBundle(bundle, artifact.dir, false);
+        this.preflightInstall(id, candidate, await this.env());
+      } else {
+        // One child owns one id. A failed candidate reloads only an actual prior child.
+        if (live) {
+          await this.hook(id, "onDisable", "disable_failed");
+          notified = true;
+        }
+        if (previousChild) {
+          retired = true;
+          await isolates.runner.unload(id);
+        }
+        candidateChild = true;
+        candidate = await this.loadBundle(bundle, artifact.dir, true);
+      }
+      const prospective = this.preflightInstall(id, candidate, await this.env());
+      if (candidateChild && isolates.runner.state(id) === "crashed")
+        throw new IsolateLoadError("candidate child crashed during admission");
+      if (live && !notified) {
+        await this.hook(id, "onDisable", "disable_failed");
+        notified = true;
+      }
+      if (previousChild && !retired) {
+        retired = true;
+        await isolates.runner.unload(id);
+      }
+      row = {
+        ...consent,
+        actions: prospective.roster.find((entry) => entry.manifest.id === id)?.actions ?? [],
+      };
+      let staged: PluginMigrationSession | undefined;
+      try {
+        if (prospective.enabled(id)) {
+          staged = await this.prepareMigrations(
+            id,
+            prospective.pendingMigrations.get(id) ?? [],
+            bundle.manifest.dataVersion,
+          );
+        }
+        const publish = (): void => {
+          this.store.putPluginInstall(row);
+          const types = bundle.manifest.contributes.elements.map((element) => element.type);
+          if (types.length > 0) this.store.claimElementTypes(id, types);
+        };
+        if (staged !== undefined) staged.commit(publish);
+        else this.store.transaction(publish);
+      } catch (error) {
+        staged?.discard();
+        throw new InstallRefusal(
+          "artifact_invalid",
+          error instanceof Error ? error.message : "migration failed",
+        );
+      }
+      this.installed.set(id, { row, bundle, web, styles });
       this.installedDefs.set(
         id,
-        await this.loadBundle(bundle, artifact.dir, consent.hardened === true),
+        !prospective.enabled(id) && row.hardened !== true
+          ? this.dormantDef(row, bundle)
+          : candidate,
       );
+      this.lifecycleStates.delete(id);
       this.syncDefs();
-      this.assembled = await this.reassemble();
     } catch (error) {
-      await this.rollbackInstall(id, artifact, previous, previousDef);
-      // The previous row is still on and still serving: wake it again, as it was.
-      if (live) await this.hook(id, "onEnable", "enable_failed");
+      try {
+        await this.rollbackInstall(id, artifact, previous, previousDef, retired, candidateChild);
+        if (previousLifecycle === undefined) this.lifecycleStates.delete(id);
+        else this.lifecycleStates.set(id, previousLifecycle);
+        if (notified) await this.hook(id, "onEnable", "enable_failed");
+        this.replacing = null;
+        this.reconcileIsolateState(id);
+        this.assembled = await this.reassemble();
+        this.publish();
+      } catch (rollbackError) {
+        this.lifecycleStates.set(id, "enable_failed");
+        this.assembled = await this.reassemble();
+        this.publish();
+        throw new AggregateError(
+          [error, rollbackError],
+          `replacement and rollback failed for ${id}`,
+        );
+      }
+      if (error instanceof InstallRefusal) return { refused: error.message };
+      if (error instanceof AssemblyError)
+        return installRefused("artifact_invalid", error.problems.join("; "));
       if (error instanceof IsolateLoadError)
         return installRefused("artifact_invalid", error.message);
-      if (error instanceof AssemblyError) {
-        return installRefused("artifact_invalid", error.problems.join("; "));
-      }
       throw error;
     }
-    const row: PluginInstallRow = {
-      ...consent,
-      actions: this.assembled.roster.find((entry) => entry.manifest.id === id)?.actions ?? [],
-    };
-    this.store.putPluginInstall(row);
-    this.installed.set(id, { row, bundle, web, styles });
+    this.assembled = await this.reassemble();
+    if (
+      previous !== undefined &&
+      (previous.bundle === null ||
+        canonicalJobJson(previous.bundle.manifest.machine ?? null) !==
+          canonicalJobJson(bundle.manifest.machine ?? null))
+    ) {
+      // No consent is copied or granted. The reviewed deployment door alone can admit
+      // the changed native declaration, artifact and resources.
+      this.jobs?.disablePlugin(id);
+    }
     if (previous !== undefined && previous.row.sha256 !== sha256) removeInstall(previous.row);
-    const types = bundle.manifest.contributes.elements.map((element) => element.type);
-    if (types.length > 0) this.store.claimElementTypes(id, types);
-    await this.stampDeclaredVersions();
+    if (previous !== undefined) wasEnabled.delete(id);
     const delta: AssemblyDelta = {
       enabled: this.assembled.enabled(id) && !wasEnabled.has(id) ? [id] : [],
       disabled: [],
     };
     if (delta.enabled.length > 0) await this.fanOut(delta, wasEnabled);
-    if (!this.assembled.enabled(id) && row.hardened !== true) {
-      this.installedDefs.set(id, this.dormantDef(row, bundle));
-      this.syncDefs();
-      this.assembled = await this.reassemble();
-    }
+    this.replacing = null;
+    if (this.reconcileIsolateState(id)) this.assembled = await this.reassemble();
     this.publish();
     this.logger.info("plugin_installed", {
       plugin: id,
@@ -1669,6 +2035,28 @@ export class PluginHost {
       { plugin: id, version: bundle.manifest.version, sha256 },
     );
     return { id, version: bundle.manifest.version, grantedCaps: [...row.grantedCaps] };
+  }
+
+  /** Assemble a candidate without exposing its bundle or handlers to native resolvers. */
+  private preflightInstall(id: string, candidate: ServerPluginDef, env: AssemblyEnv): Assembly {
+    const defs = new Map(this.installedDefs);
+    defs.set(id, candidate);
+    const assembly = assembleRoster(
+      [...this.firstParty, ...defs.values()],
+      this.store.disabledPlugins(),
+      env,
+    );
+    for (const row of assembly.roster) {
+      if (!row.enabled) continue;
+      const pluginId = row.manifest.id;
+      const missing = assembly.unmet(pluginId);
+      const clashes = assembly.conflicts(pluginId);
+      if (missing.length > 0 || clashes.length > 0)
+        throw new AssemblyError([
+          `${pluginId}: ${missing.length > 0 ? "dependency_disabled" : "incompatible_dependency"}: ${[...missing, ...clashes].join(", ")}`,
+        ]);
+    }
+    return assembly;
   }
 
   /**
@@ -1709,6 +2097,13 @@ export class PluginHost {
    * `developer_mode_off` marks lift, and the next save or authoring call builds again.
    */
   async setDeveloperMode(on: boolean, changedBy: string): Promise<ActionRefused | { ok: true }> {
+    return this.changeAssembly(() => this.setDeveloperModeNow(on, changedBy));
+  }
+
+  private async setDeveloperModeNow(
+    on: boolean,
+    changedBy: string,
+  ): Promise<ActionRefused | { ok: true }> {
     if (this.authored === null) {
       return installRefused("artifact_unreadable", "this server admits no bundles");
     }
@@ -1716,7 +2111,7 @@ export class PluginHost {
     if (!on) {
       for (const [id, entry] of this.installed) {
         if (entry.row.mode !== "unpacked" || !this.assembled.enabled(id)) continue;
-        const outcome = await this.setEnabled(id, false, changedBy);
+        const outcome = await this.setEnabledNow(id, false, changedBy);
         if ("refused" in outcome) return outcome;
       }
     }
@@ -1745,29 +2140,16 @@ export class PluginHost {
     return this.authored.author(request, authoredBy);
   }
 
-  /**
-   * Undoes everything `install` did before the failure: the child, the files of THIS artifact
-   * (never a replaced install's, which are still the row of record), and the host's index —
-   * restored to the previous install when this was a replace, dropped when it was not. The
-   * store needs no undoing: the row lands only after the assembly has taken the def.
-   */
+  /** Retire only the candidate and restore the exact old installation, never native jobs. */
   private async rollbackInstall(
     id: string,
     artifact: InstalledArtifact,
     previous: InstalledPlugin | undefined,
     previousDef: ServerPluginDef | undefined,
+    retired: boolean,
+    candidateChild: boolean,
   ): Promise<void> {
-    if (this.isolates !== null && this.installed.get(id)?.row.hardened === true) {
-      try {
-        await this.isolates.runner.unload(id);
-      } catch (error) {
-        this.logger.error("plugin_lifecycle", {
-          plugin: id,
-          hook: "unload",
-          error: error instanceof Error ? error.message : "unload failed",
-        });
-      }
-    }
+    if (this.isolates !== null && candidateChild) await this.isolates.runner.unload(id);
     if (previous === undefined || previous.row.sha256 !== artifact.sha256) {
       removeInstall(artifact);
     }
@@ -1776,7 +2158,14 @@ export class PluginHost {
       this.installedDefs.delete(id);
     } else {
       this.installed.set(id, previous);
-      this.installedDefs.set(id, previousDef);
+      if (retired) {
+        const verdict = verifyInstalledBundle(previous.row);
+        if (!verdict.ok) throw new InstallRefusal(verdict.refusal, verdict.detail);
+        this.installedDefs.set(id, await this.loadBundle(verdict.bundle, verdict.dir, true));
+      } else {
+        // A boot-unverified placeholder never owned a child or trusted rollback bytes.
+        this.installedDefs.set(id, previousDef);
+      }
     }
     this.syncDefs();
   }
@@ -1788,8 +2177,9 @@ export class PluginHost {
    * reassembles.
    *
    * The plugin's storage is never destroyed by this door on its own, and never stranded by it
-   * either (#233): while the namespace holds rows the door refuses `storage_retained` naming
-   * the count, and `purge: true` is consent to run the purge verb FIRST — the same path and
+   * either (#233): while the namespace holds keys or its own file holds pages the door refuses
+   * `storage_retained` naming both counts, and `purge: true` is consent to run the purge verb
+   * FIRST — the same path and
    * the same `plugin_purged` event `engine.plugins.purge` gives — and uninstall second. There
    * is no order in which data becomes unreachable: the row an uninstalled id's purge would
    * resolve against is gone, so the purge has to come before.
@@ -1803,6 +2193,14 @@ export class PluginHost {
     removedBy: string,
     purge: boolean,
   ): Promise<ActionRefused | { ok: true }> {
+    return this.changeAssembly(() => this.uninstallNow(id, removedBy, purge));
+  }
+
+  private async uninstallNow(
+    id: string,
+    removedBy: string,
+    purge: boolean,
+  ): Promise<ActionRefused | { ok: true }> {
     const entry = this.installed.get(id);
     if (entry === undefined || this.isolates === null) {
       return installRefused("not_installed", `"${id}" was not installed here`);
@@ -1811,14 +2209,21 @@ export class PluginHost {
       return installRefused("still_enabled", `disable "${id}" before uninstalling it`);
     }
     if (purge) {
-      const purged = await this.purge(id, removedBy);
+      const purged = await this.purgeNow(id, removedBy);
       if ("refused" in purged) return purged;
     } else {
-      const retained = await this.storage(id).count();
-      if (retained > 0) {
+      /*
+        RETAINED IS RETAINED, whatever shape the data has (#233, ADR 0034 §5): keys in the
+        namespace and pages in the file are both "this plugin still holds something", so the
+        guard counts them together and the sentence names each. A plugin whose data is rows
+        must not be uninstallable in silence when one whose data is keys is not.
+      */
+      const keys = await this.storage(id).count();
+      const pages = (await this.database(id)?.pageCount()) ?? 0;
+      if (keys > 0 || pages > 0) {
         return installRefused(
           "storage_retained",
-          `${String(retained)} keys; purge first or pass purge: true`,
+          `${String(keys)} keys and ${String(pages)} database pages; purge first or pass purge: true`,
         );
       }
     }
@@ -1829,6 +2234,10 @@ export class PluginHost {
     this.installed.delete(id);
     this.installedDefs.delete(id);
     this.lifecycleStates.delete(id);
+    // The row is gone, so the handle onto its file is too. The BYTES stay unless a purge took
+    // them — an uninstall never destroys data — and the next install of this id opens afresh.
+    this.databases.get(id)?.close();
+    this.databases.delete(id);
     this.syncDefs();
     this.assembled = await this.reassemble();
     this.publish();
@@ -1875,10 +2284,14 @@ export class PluginHost {
     return { sha256: entry.row.sha256, bytes: entry.styles };
   }
 
-  private lifecycleCtx(pluginId: string): LifecycleCtx {
+  private lifecycleCtx(pluginId: string, storage: PluginStorage): LifecycleCtx {
+    const database = this.databaseSlice(pluginId);
     return {
       pluginId,
-      storage: this.storage(pluginId),
+      storage,
+      // Present exactly for a plugin whose manifest declared a file; absent, not empty, for
+      // every other plugin — the same rule the dispatch context and the proxy both apply.
+      ...(database === undefined ? {} : { database }),
       now: () => this.runtime.now(),
       /*
         A lifecycle hook's emission is NOT staged: the transition that called the hook has
@@ -1891,6 +2304,21 @@ export class PluginHost {
         this.events.emit(pluginId, ref, kind, null, payload ?? {});
       },
     };
+  }
+
+  private async runLifecycle(
+    pluginId: string,
+    invoke: (ctx: LifecycleCtx) => void | Promise<void>,
+  ): Promise<HookOutcome> {
+    const lease = this.storageLease(pluginId);
+    try {
+      return await runHook(
+        () => invoke(this.lifecycleCtx(pluginId, lease.storage)),
+        this.lifecycleTimeoutMs,
+      );
+    } finally {
+      lease.close();
+    }
   }
 
   /**
@@ -1919,10 +2347,7 @@ export class PluginHost {
     for (const id of survivors) {
       const changed = this.defs.find((def) => def.manifest.id === id)?.lifecycle?.onAssemblyChanged;
       if (changed === undefined) continue;
-      const outcome = await runHook(
-        () => changed(this.lifecycleCtx(id), delta),
-        this.lifecycleTimeoutMs,
-      );
+      const outcome = await this.runLifecycle(id, (ctx) => changed(ctx, delta));
       if (outcome.ok) continue;
       // No lifecycle CLASS for this one, and deliberately none: the plugin's own enablement
       // did not move, so there is no state about it to correct — only a report to make.
@@ -1947,7 +2372,7 @@ export class PluginHost {
       this.lifecycleStates.delete(id);
       return;
     }
-    const outcome = await runHook(() => invoke(this.lifecycleCtx(id)), this.lifecycleTimeoutMs);
+    const outcome = await this.runLifecycle(id, invoke);
     if (outcome.ok) {
       this.lifecycleStates.delete(id);
       return;
@@ -1978,8 +2403,11 @@ export class PluginHost {
       });
       return;
     }
+    // The settled hook is a lifecycle hook, so its storage authority ends with the call —
+    // the same lease `runLifecycle` takes, closed whether the hook returned or overran.
+    const lease = this.storageLease(id);
     const ctx: JobSettledCtx = {
-      ...this.lifecycleCtx(id),
+      ...this.lifecycleCtx(id, lease.storage),
       jobs: jobContext(
         () => {
           if (this.jobs === null) throw new ServiceError("forbidden", "job service unavailable");
@@ -1990,7 +2418,12 @@ export class PluginHost {
         delivery.traceId,
       ),
     };
-    const outcome = await runHook(() => invoke(ctx, delivery.settled), this.lifecycleTimeoutMs);
+    let outcome: HookOutcome;
+    try {
+      outcome = await runHook(() => invoke(ctx, delivery.settled), this.lifecycleTimeoutMs);
+    } finally {
+      lease.close();
+    }
     if (outcome.ok) return;
     this.logger.error("plugin_lifecycle", {
       plugin: id,
@@ -2022,9 +2455,26 @@ export class PluginHost {
     rawArgs: unknown,
     session: string | null = null,
   ): Promise<ActionOutcome> {
+    const pluginId = this.assembled.actions.get(fullName)?.plugin.id;
+    const settled = Promise.withResolvers<void>();
+    let active: Set<Promise<void>> | undefined;
+    if (pluginId !== undefined) {
+      active = this.activeDispatches.get(pluginId);
+      if (active === undefined) {
+        active = new Set();
+        this.activeDispatches.set(pluginId, active);
+      }
+      active.add(settled.promise);
+    }
     let outcome: ActionOutcome;
     try {
-      outcome = await this.run(auth, fullName, rawArgs, session);
+      try {
+        outcome = await this.run(auth, fullName, rawArgs, session);
+      } finally {
+        settled.resolve();
+        active?.delete(settled.promise);
+        if (pluginId !== undefined && active?.size === 0) this.activeDispatches.delete(pluginId);
+      }
     } catch (error) {
       this.logger.error("action", {
         name: fullName,
@@ -2104,6 +2554,9 @@ export class PluginHost {
       // Cleanup actions (D12) outlive a disable: turning core.terminals off must refuse
       // creation and administration, never the ability to remove what already exists.
       return refuse("plugin_disabled", `plugin "${pluginId}" is disabled`);
+    }
+    if (this.replacing === pluginId) {
+      return refuse("unavailable", `plugin "${pluginId}" is being replaced`);
     }
     /*
       RUNG 3 — SCOPE. A token scoped to one container cannot authorize a WORKSPACE-grade
@@ -2226,6 +2679,8 @@ export class PluginHost {
               (cap) => withinCeiling(cap, auth.caps) && withinCeiling(cap, nativeCaps),
             ),
           };
+    const database = this.databaseSlice(pluginId);
+    const lease = this.storageLease(pluginId);
     const ctx: ActionCtx = {
       traceId,
       credential: this.authService.credentialReference(auth),
@@ -2340,7 +2795,11 @@ export class PluginHost {
         open: (dialId) => identityCallAsync(() => this.dialer.open(dialId, auth.principal)),
         list: () => identityCall(() => this.dialer.list()),
       },
-      storage: this.storage(pluginId),
+      storage: lease.storage,
+      // Spread rather than assigned: a plugin that declared no database has NO member here,
+      // which is what makes "the slice is absent" (ADR 0034 §6) true of the object and not
+      // only of its type — and what the isolate proxy answers `slice_unavailable` for.
+      ...(database === undefined ? {} : { database }),
       now: () => this.runtime.now(),
       newId: () => this.runtime.newId(),
       target: (ref) => {
@@ -2353,8 +2812,15 @@ export class PluginHost {
     };
     const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
     let produced: unknown;
+    const admitted = async (): Promise<unknown> => {
+      try {
+        return await invoke(ctx, parsed.data);
+      } finally {
+        lease.close();
+      }
+    };
     try {
-      produced = await invoke(ctx, parsed.data);
+      produced = await admitted();
     } catch (error) {
       streamAdmissionOpen = false;
       for (const producer of openedStreams) producer.close();
@@ -2410,5 +2876,17 @@ export class PluginHost {
 
   enabled(id: string): boolean {
     return this.assembled.enabled(id);
+  }
+
+  /**
+   * SHUTDOWN. Every SQLite handle this host opened on a plugin's behalf is closed, so the
+   * process leaves no `-wal` mid-checkpoint behind and a restart opens clean files. It is the
+   * host's counterpart to `store.close()` and belongs to the same stop sequence — after the
+   * sockets, so no dispatch in flight finds its database gone. Idempotent: closing a closed
+   * handle is a no-op, and a plugin that touches its database afterwards simply reopens.
+   */
+  close(): void {
+    for (const database of this.databases.values()) database.close();
+    this.databases.clear();
   }
 }
