@@ -34,6 +34,8 @@ export const ServiceRefusalSchema = z.enum([
   "service_upstream_refused",
   "service_response_invalid",
   "service_response_limit",
+  "service_ceiling_exceeded",
+  "service_price_unknown",
 ]);
 export const ServiceReplySchema = z
   .discriminatedUnion("ok", [
@@ -303,6 +305,14 @@ const proxyRequestHeaders = proxyHeaderObject
     );
   });
 
+/** Micro-dollars per million tokens: $3.00 is 3_000_000. Cached input defaults to the input price. */
+export const ServiceModelPriceSchema = z.strictObject({
+  inputPerMillion: z.number().int().nonnegative().max(1_000_000_000_000),
+  outputPerMillion: z.number().int().nonnegative().max(1_000_000_000_000),
+  cachedInputPerMillion: z.number().int().nonnegative().max(1_000_000_000_000).optional(),
+});
+export type ServiceModelPrice = z.infer<typeof ServiceModelPriceSchema>;
+
 /** Opaque application bytes are data, never transport controls. The trusted installer
  * opts into full request/response disclosure for approved routes and bounded parameters;
  * no caller origin, undeclared query/header, redirect or content negotiation is forwarded. */
@@ -369,6 +379,13 @@ export const ServiceProxyOperationPolicySchema = z
       .int()
       .positive()
       .max(256 * 1024 * 1024),
+    /**
+     * A metered operation's proxy reads the provider's own `usage` object (and `model`) from a
+     * JSON response or the final usage frame of an SSE stream, and nothing else of the body. A
+     * streaming request is amended with `stream_options.include_usage` so that frame exists; a
+     * response the meter cannot read is `service_response_invalid`, never a free call.
+     */
+    meter: z.strictObject({ kind: z.literal("openai-usage") }).optional(),
   })
   .refine((operation) => operation.method !== "GET" || operation.request.kind === "none")
   .superRefine((operation, ctx) => {
@@ -449,6 +466,19 @@ export const ServicePolicySchema = z
     operations: z
       .record(name, z.union([ServiceOperationPolicySchema, ServiceProxyOperationPolicySchema]))
       .refine((value) => Object.keys(value).length > 0 && Object.keys(value).length <= 64),
+    /**
+     * Integer micro-dollars per million tokens, keyed by the model id a metered call names;
+     * `default` prices any model the map does not. Policy content, so pinned by `revision` and
+     * consented like the rest of it: a price change is a new revision.
+     */
+    prices: z
+      .strictObject({
+        default: ServiceModelPriceSchema.optional(),
+        models: z
+          .record(z.string().min(1).max(256), ServiceModelPriceSchema)
+          .refine((value) => Object.keys(value).length <= 256),
+      })
+      .optional(),
   })
   .refine((policy) => {
     if (policy.runtime || policy.remote)
