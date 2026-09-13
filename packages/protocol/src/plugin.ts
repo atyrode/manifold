@@ -529,10 +529,16 @@ export type PluginPurgeTarget = (typeof PLUGIN_PURGE_TARGETS)[number];
  * What a purge REMOVED, per target — every target accounted for, zeros included, because
  * "nothing was there" and "that target was skipped" must not read the same to the caller
  * who just authorised a deletion.
+ *
+ * `databaseBytes` is the plugin's own SQLite file, journal included, as it stood when the
+ * purge deleted it (ADR 0034 §5). It sits BESIDE `removed` rather than inside it because
+ * `removed` counts things — rows, elements, reservations — and this is bytes; a plugin that
+ * never declared a database reports 0, which is the honest size of a file that never existed.
  */
 export const PluginPurgeResultSchema = z.strictObject({
   id: PluginIdSchema,
   removed: z.record(PluginPurgeTargetSchema, z.number().int().min(0)),
+  databaseBytes: z.number().int().min(0),
 });
 export type PluginPurgeResult = z.infer<typeof PluginPurgeResultSchema>;
 
@@ -557,6 +563,14 @@ export const PluginEntrySchema = z.strictObject({
   styles: z.boolean().optional(),
 });
 export type PluginEntry = z.infer<typeof PluginEntrySchema>;
+
+/**
+ * THE CEILING on a plugin's own SQLite file (ADR 0034 §4): the engine's number, not the
+ * plugin's word. A manifest may ask for less and gets what it asked for; a manifest asking
+ * for more is refused here, at the wire, rather than clamped silently somewhere downstream.
+ * It lives in the protocol because it bounds a MANIFEST field, and a manifest is wire.
+ */
+export const CEILING_DATABASE_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 
 export const PluginManifestSchema = z.strictObject({
   id: PluginIdSchema,
@@ -596,6 +610,18 @@ export const PluginManifestSchema = z.strictObject({
   after: PluginIdSchema.array().max(16).optional(),
   /** Absent ≡ unversioned data: nothing to migrate, nothing to refuse. */
   dataVersion: PluginDataVersionSchema.optional(),
+  /**
+   * ONE SQLITE FILE OF THIS PLUGIN'S OWN, beside its key-value ref (ADR 0034). Declaring it
+   * is what makes `ctx.database` exist: a plugin that says nothing here has no file, no slice
+   * and nothing for a purge to delete, which is every manifest written before this field.
+   * `maxBytes` is a REQUEST — the engine grants it up to `CEILING_DATABASE_MAX_BYTES` and
+   * defaults it when absent — so a runaway plugin fills its own file and nothing else.
+   */
+  database: z
+    .strictObject({
+      maxBytes: z.number().int().positive().max(CEILING_DATABASE_MAX_BYTES).optional(),
+    })
+    .optional(),
   /** Absent ≡ `{ mode: DEFAULT_DORMANT_MODE }` — a named, inert ghost. */
   dormant: PluginDormantSchema.optional(),
   /**

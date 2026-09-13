@@ -24,6 +24,8 @@ import {
   type PluginDef,
   type PluginInstallRequest,
   type PluginInstallResult,
+  type PluginDatabase,
+  type PluginDatabaseAdmin,
   type PluginMigration,
   type PluginStorage,
   type PluginStorageAdmin,
@@ -99,6 +101,7 @@ import {
 import { localActionDef } from "./isolate/proxy-def.ts";
 import { redactFields, type Logger } from "./log.ts";
 import type { PlaceExecutor } from "./placement.ts";
+import { openPluginDatabase } from "./plugin-database.ts";
 import {
   InstallRefusal,
   installArtifact,
@@ -531,6 +534,15 @@ export interface ActionCtx {
    */
   readonly storage: PluginStorage;
   /**
+   * THIS PLUGIN'S OWN TABLES (ADR 0034), present exactly when its manifest declares
+   * `database`. A plugin that declared none has no slice here — the member is absent, and
+   * through the isolate proxy the same absence answers `slice_unavailable` — so the file
+   * exists only for plugins that asked for one. It is promise-returning for the same reason
+   * storage is, it is the plugin's alone (one file per manifest id), and `batch` is its
+   * transaction: there is no open handle a plugin could hold across its own awaits.
+   */
+  readonly database?: PluginDatabase;
+  /**
    * The server's clock, injected rather than read from `Date`: a plugin enforcing a cadence
    * (a throttle, a cooldown) must be drivable by a deterministic test the same way every
    * other timed plane in the server is.
@@ -836,6 +848,18 @@ export class PluginHost {
    */
   private readonly authored: AuthoredPlugins | null;
   private readonly storages = new Map<string, PluginStorageAdmin>();
+  /**
+   * One open handle per plugin that has touched its file, closed by a disable, a purge and
+   * the shutdown. Keyed like `storages` and for the same reason: the handle is bound to one
+   * manifest id, so two plugins cannot reach each other's rows even by naming the same table.
+   */
+  private readonly databases = new Map<string, PluginDatabaseAdmin>();
+  /**
+   * Where `plugins/<id>/data.db` lives (ADR 0034 §1) — `config.dataDir`, the same directory
+   * the isolate runner extracts bundles into. Null for a host assembled without one, which is
+   * a unit fixture: no directory, no file, and `ctx.database` is absent for every plugin.
+   */
+  private readonly dataDir: string | null;
   private readonly rosterListeners = new Set<
     (roster: PluginRoster, developerMode: boolean) => void
   >();
@@ -920,6 +944,7 @@ export class PluginHost {
       readonly lifecycleTimeoutMs?: number;
       readonly distribution?: ReadonlySet<string>;
       readonly isolates?: IsolateDeps;
+      readonly dataDir?: string;
     },
   ) {
     this.firstParty = [...ENGINE_BUILTIN_DEFS, ...defs];
@@ -927,6 +952,7 @@ export class PluginHost {
     this.builtins = new Set(ENGINE_BUILTIN_DEFS.map((def) => def.manifest.id));
     this.distribution = options.distribution;
     this.isolates = options.isolates ?? null;
+    this.dataDir = options.dataDir ?? options.isolates?.dataDir ?? null;
     this.authored =
       this.isolates === null
         ? null
@@ -976,6 +1002,12 @@ export class PluginHost {
       readonly lifecycleTimeoutMs?: number;
       readonly distribution?: ReadonlySet<string>;
       readonly isolates?: IsolateDeps;
+      /**
+       * Where a plugin's own SQLite file lives (ADR 0034 §1): `<dataDir>/plugins/<id>/data.db`.
+       * `isolates.dataDir` is the same directory, so a host that admits bundles need not
+       * repeat it; absent entirely means no plugin gets a `ctx.database`.
+       */
+      readonly dataDir?: string;
     } = {},
   ): Promise<PluginHost> {
     const host = new PluginHost(
@@ -1271,6 +1303,44 @@ export class PluginHost {
     return created;
   }
 
+  /**
+   * ONE FILE PER PLUGIN, opened lazily and kept (ADR 0034 §1). Null when this host has no
+   * data directory — a unit fixture — because a path is the whole of what makes the file this
+   * plugin's and nobody else's, and inventing one under the process's cwd would put a
+   * workspace's rows somewhere no backup looks.
+   *
+   * The handle exists whether or not the manifest DECLARES a database: the purge verb and the
+   * uninstall guard have to answer for a file a plugin wrote before its manifest stopped
+   * asking for one, and opening is lazy, so a plugin that never touches SQL never creates a
+   * file. What the declaration decides is whether `ctx.database` is handed out, which is
+   * `slice(...)` below.
+   */
+  private database(pluginId: string): PluginDatabaseAdmin | null {
+    if (this.dataDir === null) return null;
+    const existing = this.databases.get(pluginId);
+    if (existing !== undefined) return existing;
+    const declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.database;
+    const created = openPluginDatabase({
+      dataDir: this.dataDir,
+      pluginId,
+      ...(declared?.maxBytes === undefined ? {} : { maxBytes: declared.maxBytes }),
+      now: () => this.runtime.now(),
+    });
+    this.databases.set(pluginId, created);
+    return created;
+  }
+
+  /**
+   * The database slice a CONTEXT carries: present exactly when the manifest declared one
+   * (ADR 0034 §6), so a plugin that asked for no file cannot reach one by accident and the
+   * proxy answers `slice_unavailable` for the same reason on the other side of the boundary.
+   */
+  private databaseSlice(pluginId: string): PluginDatabase | undefined {
+    const declared = this.defs.find((def) => def.manifest.id === pluginId)?.manifest.database;
+    if (declared === undefined) return undefined;
+    return this.database(pluginId) ?? undefined;
+  }
+
   /** A completed/timed-out handler cannot retain storage authority into a later version. */
   private storageLease(
     pluginId: string,
@@ -1330,7 +1400,6 @@ export class PluginHost {
         `plugin "${pluginId}" has active dispatches: ${outcome.reason}`,
       );
   }
-
   /** Applies every migration the current assembly found owing. True if any ran. */
   private async runPendingMigrations(): Promise<boolean> {
     let ran = false;
@@ -1344,6 +1413,13 @@ export class PluginHost {
    * Stage the entire chain, including the native ledger/version, on private plugin storage.
    * No data is published on failure, timeout or process loss; late work sees a closed handle.
    * The caller commits synchronously, optionally with the installed row and element claims.
+   *
+   * The plugin's OWN FILE is the exception, and deliberately so (ADR 0034 §1): `data.db` is
+   * not `manifold.db`, so its statements cannot join this transaction, and staging a copy of
+   * a file the ADR caps at 4 GiB would be a second consistency model for the same chain.
+   * Its DDL commits as it runs; a discarded chain leaves the ledger unwritten, so the same
+   * migration is planned again — which is why `docs/PLUGINS.md` §"Your tables" tells authors
+   * to write DDL that can run twice.
    */
   private async prepareMigrations(
     pluginId: string,
@@ -1352,6 +1428,7 @@ export class PluginHost {
   ): Promise<PluginMigrationSession> {
     const staged = this.store.beginPluginMigration(pluginId, migrations.length > 0);
     const admin = staged.storage;
+    const database = this.databaseSlice(pluginId);
     let closeActiveLease = (): void => {};
     try {
       const outcome = await runHook(async () => {
@@ -1361,7 +1438,7 @@ export class PluginHost {
           const lease = this.storageLease(pluginId, admin);
           closeActiveLease = lease.close;
           try {
-            await migration.migrate(lease.storage);
+            await migration.migrate(lease.storage, database);
           } finally {
             lease.close();
             if (closeActiveLease === lease.close) closeActiveLease = (): void => {};
@@ -1574,6 +1651,14 @@ export class PluginHost {
       ),
     };
     await this.fanOut(delta, wasEnabled);
+    /*
+      A DISABLE RETAINS AND RELEASES: the file stays exactly as the plugin left it (the
+      residual mechanism is `retain`), and the engine's handle onto it does not — after
+      `onDisable` has had its turn, so a hook may still write its parting row. The next enable
+      opens the same file again, which is what makes "re-enabling restores it in place" true of
+      rows as well as keys.
+    */
+    if (!enabled) this.databases.get(id)?.close();
     const installed = this.installed.get(id);
     if (
       !enabled &&
@@ -1617,10 +1702,11 @@ export class PluginHost {
    * through `onPurge` — under the same 2-second bound, and its failure does not stop the
    * purge, because the remedy for a plugin that will not clean up cannot be that plugin.
    *
-   * What goes: its storage namespace (rows, data-version stamp, migration ledger) and its
-   * element-type reservations. What does not: documents. A canvas's `draw` elements are the
-   * workspace's data, not the plugin's, and they keep rendering as named placeholders — the
-   * purge released the reservation, so a replacement may now claim the type deliberately.
+   * What goes: its storage namespace (rows, data-version stamp, migration ledger), its own
+   * SQLite file with its journal, and its element-type reservations. What does not: documents.
+   * A canvas's `draw` elements are the workspace's data, not the plugin's, and they keep
+   * rendering as named placeholders — the purge released the reservation, so a replacement may
+   * now claim the type deliberately.
    */
   async purge(id: string, purgedBy: string): Promise<ActionRefused | PluginPurgeResult> {
     return this.changeAssembly(() => this.purgeNow(id, purgedBy));
@@ -1654,11 +1740,20 @@ export class PluginHost {
 
     const storage = this.storage(id);
     const removedRows = await storage.clear();
+    /*
+      The file goes the way the rows do, and by the same verb (ADR 0034 §5): `clear` closes
+      the handle first — an open SQLite connection to a deleted file is a handle onto nothing
+      — then deletes `data.db` with its `-wal` and `-shm`, and reports the bytes that went.
+      The cache entry goes with it, so the next open of this id starts from no file at all.
+    */
+    const removedBytes = (await this.database(id)?.clear()) ?? 0;
+    this.databases.delete(id);
     const releasedTypes = this.store.releaseElementTypes(id);
     this.logger.info("plugin_purge", {
       plugin: id,
       principal: purgedBy,
       rows: removedRows,
+      databaseBytes: removedBytes,
       types: releasedTypes,
     });
     // Same commit point, same ledger node, same reason as the enablement pair above.
@@ -1667,7 +1762,7 @@ export class PluginHost {
       { kind: "plugin", pluginId: enginePluginsManifest.id },
       "plugin_purged",
       purgedBy,
-      { plugin: id, rows: removedRows, types: releasedTypes },
+      { plugin: id, rows: removedRows, databaseBytes: removedBytes, types: releasedTypes },
     );
     return {
       id,
@@ -1676,6 +1771,7 @@ export class PluginHost {
         elements: entry.manifest.contributes.elements.length,
         ownership: releasedTypes,
       },
+      databaseBytes: removedBytes,
     };
   }
 
@@ -2077,8 +2173,9 @@ export class PluginHost {
    * reassembles.
    *
    * The plugin's storage is never destroyed by this door on its own, and never stranded by it
-   * either (#233): while the namespace holds rows the door refuses `storage_retained` naming
-   * the count, and `purge: true` is consent to run the purge verb FIRST — the same path and
+   * either (#233): while the namespace holds keys or its own file holds pages the door refuses
+   * `storage_retained` naming both counts, and `purge: true` is consent to run the purge verb
+   * FIRST — the same path and
    * the same `plugin_purged` event `engine.plugins.purge` gives — and uninstall second. There
    * is no order in which data becomes unreachable: the row an uninstalled id's purge would
    * resolve against is gone, so the purge has to come before.
@@ -2111,11 +2208,18 @@ export class PluginHost {
       const purged = await this.purgeNow(id, removedBy);
       if ("refused" in purged) return purged;
     } else {
-      const retained = await this.storage(id).count();
-      if (retained > 0) {
+      /*
+        RETAINED IS RETAINED, whatever shape the data has (#233, ADR 0034 §5): keys in the
+        namespace and pages in the file are both "this plugin still holds something", so the
+        guard counts them together and the sentence names each. A plugin whose data is rows
+        must not be uninstallable in silence when one whose data is keys is not.
+      */
+      const keys = await this.storage(id).count();
+      const pages = (await this.database(id)?.pageCount()) ?? 0;
+      if (keys > 0 || pages > 0) {
         return installRefused(
           "storage_retained",
-          `${String(retained)} keys; purge first or pass purge: true`,
+          `${String(keys)} keys and ${String(pages)} database pages; purge first or pass purge: true`,
         );
       }
     }
@@ -2126,6 +2230,10 @@ export class PluginHost {
     this.installed.delete(id);
     this.installedDefs.delete(id);
     this.lifecycleStates.delete(id);
+    // The row is gone, so the handle onto its file is too. The BYTES stay unless a purge took
+    // them — an uninstall never destroys data — and the next install of this id opens afresh.
+    this.databases.get(id)?.close();
+    this.databases.delete(id);
     this.syncDefs();
     this.assembled = await this.reassemble();
     this.publish();
@@ -2173,9 +2281,13 @@ export class PluginHost {
   }
 
   private lifecycleCtx(pluginId: string, storage: PluginStorage): LifecycleCtx {
+    const database = this.databaseSlice(pluginId);
     return {
       pluginId,
       storage,
+      // Present exactly for a plugin whose manifest declared a file; absent, not empty, for
+      // every other plugin — the same rule the dispatch context and the proxy both apply.
+      ...(database === undefined ? {} : { database }),
       now: () => this.runtime.now(),
       /*
         A lifecycle hook's emission is NOT staged: the transition that called the hook has
@@ -2512,6 +2624,7 @@ export class PluginHost {
               (cap) => withinCeiling(cap, auth.caps) && withinCeiling(cap, nativeCaps),
             ),
           };
+    const database = this.databaseSlice(pluginId);
     const lease = this.storageLease(pluginId);
     const ctx: ActionCtx = {
       traceId,
@@ -2628,6 +2741,10 @@ export class PluginHost {
         list: () => identityCall(() => this.dialer.list()),
       },
       storage: lease.storage,
+      // Spread rather than assigned: a plugin that declared no database has NO member here,
+      // which is what makes "the slice is absent" (ADR 0034 §6) true of the object and not
+      // only of its type — and what the isolate proxy answers `slice_unavailable` for.
+      ...(database === undefined ? {} : { database }),
       now: () => this.runtime.now(),
       newId: () => this.runtime.newId(),
       target: (ref) => {
@@ -2704,5 +2821,17 @@ export class PluginHost {
 
   enabled(id: string): boolean {
     return this.assembled.enabled(id);
+  }
+
+  /**
+   * SHUTDOWN. Every SQLite handle this host opened on a plugin's behalf is closed, so the
+   * process leaves no `-wal` mid-checkpoint behind and a restart opens clean files. It is the
+   * host's counterpart to `store.close()` and belongs to the same stop sequence — after the
+   * sockets, so no dispatch in flight finds its database gone. Idempotent: closing a closed
+   * handle is a no-op, and a plugin that touches its database afterwards simply reopens.
+   */
+  close(): void {
+    for (const database of this.databases.values()) database.close();
+    this.databases.clear();
   }
 }

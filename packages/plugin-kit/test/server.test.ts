@@ -666,7 +666,9 @@ test("guest job discovery cannot hide a host authority refusal", async () => {
 });
 
 describe("named storage migrations", () => {
-  test.each([
+  // Mixed-arity rows: without the row type, `descriptors` widens to a union whose narrowest
+  // branch has neither `name` nor `to`, and the spread below stops being a `ServerMigration`.
+  test.each<{ name: string; to: { major: number; minor: number } }[]>([
     [{ name: "", to: { major: 2, minor: 0 } }],
     [{ name: "bad name", to: { major: 2, minor: 0 } }],
     [{ name: "invalid", to: { major: -1, minor: 0 } }],

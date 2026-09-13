@@ -3,6 +3,7 @@ import {
   ACTION_DENIAL_RULES,
   ActionOutcomeSchema,
   ActionSummarySchema,
+  CEILING_DATABASE_MAX_BYTES,
   CONNECTION_BODIES,
   CORE_NAMESPACE_PREFIX,
   DEFAULT_DORMANT_MODE,
@@ -662,6 +663,30 @@ describe("plugin data versioning", () => {
       ).toBe(false);
     }
   });
+
+  test("a plugin's own SQLite file is DECLARED, and the byte request is bounded", () => {
+    // Absent ≡ no file, no `ctx.database`, nothing for a purge to delete (ADR 0034 §6), which
+    // is every manifest written before this field existed.
+    expect(PluginManifestSchema.parse(manifest()).database).toBeUndefined();
+    expect(PluginManifestSchema.parse(manifest({ database: {} })).database).toEqual({});
+    expect(
+      PluginManifestSchema.parse(manifest({ database: { maxBytes: 64 * 1024 * 1024 } })).database,
+    ).toEqual({ maxBytes: 64 * 1024 * 1024 });
+    // The ceiling is the ENGINE's, so a manifest cannot ask its way past it, and the request
+    // is a whole number of bytes rather than a fraction or a negative one.
+    for (const database of [
+      { maxBytes: CEILING_DATABASE_MAX_BYTES + 1 },
+      { maxBytes: 0 },
+      { maxBytes: -1 },
+      { maxBytes: 1.5 },
+      { maxBytes: 4096, tables: ["notes"] },
+    ]) {
+      expect(
+        PluginManifestSchema.safeParse(manifest({ database } as never)).success,
+        JSON.stringify(database),
+      ).toBe(false);
+    }
+  });
 });
 
 describe("dormancy is declarative", () => {
@@ -730,12 +755,16 @@ describe("the residual carve-out and the purge verb", () => {
     ).toBe(false);
   });
 
-  test("a purge report accounts for every target, zeros included", () => {
+  test("a purge report accounts for every target, zeros included, and sizes the file", () => {
     const report = PluginPurgeResultSchema.parse({
       id: "core.canvas.draw",
       removed: { storage: 3, elements: 0, ownership: 1 },
+      databaseBytes: 0,
     });
     expect(report.removed.elements).toBe(0);
+    // A plugin that never declared a database reports 0 bytes, not silence: the caller who
+    // authorised a deletion is told the size of what went, and 0 is a real size.
+    expect(report.databaseBytes).toBe(0);
     // "nothing was there" and "that target was skipped" must not read the same to someone
     // who just authorised a deletion, so a partial report is refused rather than defaulted.
     for (const removed of [
@@ -744,7 +773,8 @@ describe("the residual carve-out and the purge verb", () => {
       { storage: -1, elements: 0, ownership: 0 },
     ]) {
       expect(
-        PluginPurgeResultSchema.safeParse({ id: "core.canvas.draw", removed }).success,
+        PluginPurgeResultSchema.safeParse({ id: "core.canvas.draw", removed, databaseBytes: 0 })
+          .success,
         JSON.stringify(removed),
       ).toBe(false);
     }
@@ -854,6 +884,7 @@ describe("a v14 manifest is a v15 manifest", () => {
     expect(parsed.dataVersion).toBeUndefined();
     expect(parsed.dormant).toBeUndefined();
     expect(parsed.purges).toBeUndefined();
+    expect(parsed.database).toBeUndefined();
     expect(parsed.contributes.elements[0]?.placement).toBeUndefined();
 
     const row = PluginRosterEntrySchema.parse({
@@ -898,7 +929,7 @@ describe("the published plugin vocabulary", () => {
 
   test("the manifest SHAPE is published, so the new fields are discoverable without source", () => {
     const schema = pluginVocabulary()["manifest"] as { properties: Record<string, unknown> };
-    for (const field of ["dependencies", "after", "dataVersion", "dormant", "purges"]) {
+    for (const field of ["dependencies", "after", "dataVersion", "database", "dormant", "purges"]) {
       expect(Object.keys(schema.properties), field).toContain(field);
     }
     expect(pluginVocabulary()["rosterEntry"]).toBeDefined();
