@@ -46,7 +46,8 @@ const chat: ServiceProxyOperationPolicy = {
   maxRequestBytes: 65536,
   maxResponseBytes: 65536,
 };
-const { meter: _metered, ...unmetered } = chat;
+const { meter: metered, ...unmetered } = chat;
+void metered;
 function policy(origin: string, prices = priced): ServicePolicy {
   return {
     serviceId: binding.serviceId,
@@ -515,7 +516,7 @@ test("an operation without a meter is forwarded untouched and reports nothing", 
   const proxy = await proxyFor(source.origin, owner.metering);
   try {
     const asked = '{"input":"no model here","stream":true}';
-    for (const _attempt of [1, 2]) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       const response = await send(proxy, { path: "/v1/embeddings", body: asked });
       expect(response.status).toBe(200);
       expect(response.body).toBe('{"data":[]}');
