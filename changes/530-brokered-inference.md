@@ -20,9 +20,7 @@ snapshot, then enforces before forwarding — a call that would pass a ceiling i
 is refused with HTTP 422 and `service_price_unknown`. Missing usage terminates that response and
 closes the job's metered lane rather than allowing zero-cost calls. A stream is never cut for
 crossing a budget, so a truncated answer is never produced by one. Every metered call appends
-`inference_call` to the
-job's journal with its model, tokens, cost, elapsed time and status, every refusal appends
-`inference_ceiling` with the ceiling that refused, and the settled job's `usage.inference` carries
-the totals, so what a run spent is a fact the hub recorded rather than a number the run reported
-about itself. The plugin manager's run history shows those calls and the totals beside the job's
-other usage.
+`inference_call` to the job's journal with its model, tokens, cost, elapsed time and status, every
+refusal appends `inference_ceiling` with the ceiling that refused, and the settled job's
+`usage.inference` carries the totals, so what a run spent is a fact the hub recorded rather than a
+number the run reported about itself.

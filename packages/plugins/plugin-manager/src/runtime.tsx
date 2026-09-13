@@ -4,13 +4,11 @@ import {
   canonicalJobJson,
   formatManifoldUri,
   JobDescriptionSchema,
-  JobJournalPageSchema,
   JobRequestSchema,
   ListJobRunsResultSchema,
   PublicJobSchema,
   type Cap,
   type JobDescription,
-  type JobJournalPage,
   type ListJobRunsResult,
   type MachineHalf,
   type MachineOperation,
@@ -334,51 +332,6 @@ function OperationForm({
   );
 }
 
-/** Integer micro-dollars as money, the only arithmetic this surface does (ADR 0038 §3). */
-function dollars(costMicros: number): string {
-  return `$${(costMicros / 1_000_000).toFixed(4)}`;
-}
-
-/**
- * What each metered inference call cost, as the hub's journal recorded it — never as the run
- * reported it about itself (ADR 0038 §5). Renders nothing for a job that made no metered call,
- * which is every job that bound no metered service operation.
- */
-function InferenceCalls({
-  frames,
-}: {
-  readonly frames: JobJournalPage["events"];
-}): ReactElement | null {
-  const metered = frames.filter(
-    (frame) => frame.event.type === "inference_call" || frame.event.type === "inference_ceiling",
-  );
-  if (metered.length === 0) return null;
-  return (
-    <details>
-      <summary>Inference calls ({metered.length})</summary>
-      <div className="plugin-manager-runtime-identity">
-        {metered.map((frame) => {
-          const event = frame.event;
-          if (event.type === "inference_call")
-            return (
-              <small key={frame.seq}>
-                {event.model} · {event.inputTokens} in / {event.outputTokens} out ·{" "}
-                {dollars(event.costMicros)} · status {event.status}
-              </small>
-            );
-          if (event.type === "inference_ceiling")
-            return (
-              <small key={frame.seq}>
-                Refused at the {event.ceiling} ceiling · {event.operationId} · no call was made
-              </small>
-            );
-          return null;
-        })}
-      </div>
-    </details>
-  );
-}
-
 function JobStatus({
   host,
   jobId,
@@ -424,30 +377,6 @@ function JobStatus({
     job !== null &&
     job !== undefined &&
     ["exited", "interrupted", "cancelled", "refused"].includes(job.state);
-  /**
-   * The journal is retrieval, not observation: it refuses a job that has not settled, so this
-   * read only opens once the run reached a terminal state.
-   */
-  const { value: journal } = usePolledResource<JobJournalPage | null>(
-    async () => {
-      try {
-        const page = JobJournalPageSchema.parse(
-          await request(host, "engine.jobs.journal", { node }),
-        );
-        return page.jobId === jobId ? page : null;
-      } catch {
-        return null;
-      }
-    },
-    FALLBACK_POLL_MS,
-    {
-      key: `engine.jobs.journal:${formatManifoldUri(node)}`,
-      initial: null,
-      enabled: terminal,
-      topics: [JOBS_TOPIC],
-      events: host.client,
-    },
-  );
   const cancel = async (): Promise<void> => {
     setPending(true);
     setNotice(null);
@@ -500,15 +429,6 @@ function JobStatus({
               · output {job.result.usage.outputBytes} bytes
             </small>
           ) : null}
-          {job.result.usage?.inference ? (
-            <small>
-              Inference {job.result.usage.inference.calls} calls ·{" "}
-              {job.result.usage.inference.inputTokens} in /{" "}
-              {job.result.usage.inference.outputTokens} out tokens ·{" "}
-              {job.result.usage.inference.cachedInputTokens} cached ·{" "}
-              {dollars(job.result.usage.inference.costMicros)}
-            </small>
-          ) : null}
           {job.result.outputs.map((output) => (
             <small key={output.outputId}>
               Output {output.name}: {output.bytes} bytes · SHA-256 {output.sha256}
@@ -516,7 +436,6 @@ function JobStatus({
           ))}
         </>
       ) : null}
-      <InferenceCalls frames={journal?.events ?? []} />
       {job ? (
         <details>
           <summary>Authority and attribution</summary>
