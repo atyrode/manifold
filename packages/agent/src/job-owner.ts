@@ -71,7 +71,13 @@ import {
   type AuthorizeServiceCall,
   type JobServiceRunner,
 } from "./job-services.ts";
-import { createJobServiceProxy, type JobServiceProxy } from "./job-service-proxy.ts";
+import {
+  createJobServiceProxy,
+  type JobInferenceCallReport,
+  type JobInferenceCeilingReport,
+  type JobInferenceUsage,
+  type JobServiceProxy,
+} from "./job-service-proxy.ts";
 import { materializeJobInputs, type JobServiceEndpoint } from "./job-inputs.ts";
 import { createServiceTunnel, type ServiceTunnel } from "./job-service-tunnel.ts";
 
@@ -144,6 +150,15 @@ interface OwnedJob {
   serviceProxies: Map<string, JobServiceProxy>;
   runtimeServices: Map<string, RuntimeService>;
   serviceRuntime: RuntimeService | undefined;
+  /** Totals across the job's metered calls, or null when it bound no metered operation.
+   * They belong to the job, not to a proxy, and settle with its result. */
+  inferenceUsage: JobInferenceUsage | null;
+  /** False after a successful provider response omits valid usage; later calls stay refused
+   * rather than evading token and cost ceilings as zero-priced calls. */
+  inferenceValid: boolean;
+  /** Tail of the job-wide metered-call queue. Hard token and cost ceilings require one
+   * authoritative pre-call snapshot; independent service proxies share this queue. */
+  inferenceTail: Promise<void>;
 }
 
 interface RuntimeService {
@@ -983,6 +998,21 @@ export class MachineJobOwner {
       const fingerprint = job.request.resourceBindings?.services[serviceId];
       if (!policy || !binding || !fingerprint || jobDigest(policy) !== fingerprint)
         throw new Error("service_binding_mismatch");
+      const metered = binding.operationIds.some((operationId) => {
+        const bound = Object.hasOwn(policy.operations, operationId)
+          ? policy.operations[operationId]
+          : undefined;
+        return bound !== undefined && "kind" in bound && bound.meter !== undefined;
+      });
+      if (metered)
+        job.inferenceUsage ??= {
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedInputTokens: 0,
+          costMicros: 0,
+        };
+      const totals = job.inferenceUsage;
       const proxy = await createJobServiceProxy({
         policies: [policy],
         bindings: [binding],
@@ -1009,9 +1039,73 @@ export class MachineJobOwner {
             : boundPolicy.runtime?.scope === "instance"
               ? this.instanceService(boundPolicy, signal)
               : this.runtimeService(job, boundPolicy, signal),
+        ...(totals
+          ? {
+              inference: {
+                limits: job.request.limits.inference,
+                usage: () => totals,
+                enter: () => this.enterInference(job),
+                valid: () => job.inferenceValid,
+                onInvalidUsage: () => {
+                  job.inferenceValid = false;
+                },
+                onInferenceCall: (call: JobInferenceCallReport) => this.meteredCall(job, call),
+                onInferenceCeiling: (refusal: JobInferenceCeilingReport) =>
+                  this.meteredCeiling(job, refusal),
+              },
+            }
+          : {}),
       });
       job.serviceProxies.set(serviceId, proxy);
     }
+  }
+
+  private async enterInference(job: OwnedJob): Promise<() => void> {
+    const turn = Promise.withResolvers<void>();
+    const previous = job.inferenceTail;
+    job.inferenceTail = turn.promise;
+    await previous;
+    return turn.resolve;
+  }
+
+  /** One metered call, added to the job's totals and told to the hub with the same owner
+   * facts a state event carries. Never a prompt, never a byte of the answer. */
+  private meteredCall(job: OwnedJob, call: JobInferenceCallReport): void {
+    const totals = job.inferenceUsage;
+    if (totals) {
+      const add = (spent: number, more: number) => Math.min(spent + more, Number.MAX_SAFE_INTEGER);
+      totals.calls = add(totals.calls, 1);
+      totals.inputTokens = add(totals.inputTokens, call.inputTokens);
+      totals.outputTokens = add(totals.outputTokens, call.outputTokens);
+      totals.cachedInputTokens = add(totals.cachedInputTokens, call.cachedInputTokens);
+      totals.costMicros = add(totals.costMicros, call.costMicros);
+    }
+    this.emit(
+      {
+        type: "inference_call",
+        jobId: job.request.jobId,
+        requestDigest: job.request.requestDigest,
+        ownerId: job.result.ownerId,
+        ownerGeneration: job.result.ownerGeneration,
+        ...call,
+      },
+      job,
+    );
+  }
+
+  /** A refusal is not a call: nothing is added, and the totals it reached are the record. */
+  private meteredCeiling(job: OwnedJob, refusal: JobInferenceCeilingReport): void {
+    this.emit(
+      {
+        type: "inference_ceiling",
+        jobId: job.request.jobId,
+        requestDigest: job.request.requestDigest,
+        ownerId: job.result.ownerId,
+        ownerGeneration: job.result.ownerGeneration,
+        ...refusal,
+      },
+      job,
+    );
   }
 
   private async runtimeService(
@@ -2289,6 +2383,7 @@ export class MachineJobOwner {
         memoryBytes: observed.usage.memoryPeakBytes,
         processes: observed.usage.processesPeak,
         outputBytes: observed.usage.outputBytes,
+        ...(job.inferenceUsage ? { inference: { ...job.inferenceUsage } } : {}),
       },
     };
     for (const channel of job.request.terminal ? [] : (["stdout", "stderr"] as const))
@@ -2536,6 +2631,9 @@ export class MachineJobOwner {
       serviceProxies: new Map(),
       runtimeServices: new Map(),
       serviceRuntime: undefined,
+      inferenceUsage: null,
+      inferenceValid: true,
+      inferenceTail: Promise.resolve(),
     };
     return job;
   }

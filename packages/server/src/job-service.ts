@@ -168,6 +168,21 @@ export interface SettledJobDelivery {
   readonly traceId: string;
 }
 
+const executionLimitKeys = ["timeoutMs", "memoryBytes", "processes", "outputBytes"] as const;
+const inferenceLimitKeys = ["calls", "inputTokens", "outputTokens", "costMicros"] as const;
+/**
+ * A request's limits replace the operation's, except that an inference ceiling the operation
+ * declares and the request omits still applies: a ceiling can only be lowered, never dropped.
+ */
+function effectiveJobLimits(
+  requested: JobRequest["limits"] | undefined,
+  declared: JobRequest["limits"],
+): JobRequest["limits"] {
+  if (!requested) return declared;
+  if (requested.inference !== undefined || declared.inference === undefined) return requested;
+  return { ...requested, inference: declared.inference };
+}
+
 export class JobService {
   readonly jobSchedules: JobSchedules;
   private readonly runCursorKey = randomBytes(32);
@@ -2597,7 +2612,9 @@ export class JobService {
       event.type !== "state" &&
       event.type !== "result" &&
       event.type !== "output" &&
-      event.type !== "refusal"
+      event.type !== "refusal" &&
+      event.type !== "inference_call" &&
+      event.type !== "inference_ceiling"
     )
       return;
     if (event.type === "output" && event.requestId !== jobId) return;
@@ -3363,10 +3380,15 @@ export class JobService {
     }
     if (Object.keys(args.input).some((k) => !Object.hasOwn(op.input, k))) fail("invalid_input");
     const ceiling = jobLimits(op.limits);
-    const limits = args.limits ?? ceiling;
+    const limits = effectiveJobLimits(args.limits, ceiling);
     if (limits.timeoutMs <= 0) fail("invalid_limits");
-    for (const key of Object.keys(ceiling) as (keyof typeof ceiling)[])
-      if (limits[key] > ceiling[key]) fail("limit_exceeded");
+    for (const key of executionLimitKeys) if (limits[key] > ceiling[key]) fail("limit_exceeded");
+    for (const key of inferenceLimitKeys) {
+      const declared = ceiling.inference?.[key];
+      const requested = limits.inference?.[key];
+      if (declared !== undefined && (requested === undefined || requested > declared))
+        fail("limit_exceeded");
+    }
     const outputInstall = outputParent
       ? this.jobs.installation(outputParent.machineId, outputParent.pluginId)
       : install;
@@ -4320,6 +4342,12 @@ export class JobService {
           this.instanceReadiness.delete(serviceId);
         this.accessChanged();
       }
+      return;
+    }
+    if (event.type === "inference_call" || event.type === "inference_ceiling") {
+      // A metered call is a journal fact about a running job: admitted by the owner facts
+      // above, retained by the same fan-out as a state change, never a state change itself.
+      if (job.state === "started") this.publishJobEvent(job.request.jobId, event);
       return;
     }
     if (event.type === "state" || event.result.state === "started") {
