@@ -98,6 +98,62 @@ describe.skipIf(process.platform !== "linux")("native worker context socket", ()
     }
   });
 
+  test("a burst of stages is dropped rather than rejecting the call that follows it", async () => {
+    const c = channel();
+    try {
+      c.send(context);
+      expect(await c.worker.ready).toEqual(context.locations);
+      const message = "d".repeat(256);
+      for (let line = 0; line < 1200; line++)
+        c.worker.reportProgress({ stage: "at the model", message });
+      // A full reply queue ends the whole context, so bytes a disposable stage put on the
+      // wire must not be able to reject a call the application is awaiting.
+      const call = c.worker.callService(service);
+      let stages = 0;
+      let frame: unknown = await c.next();
+      while (
+        frame !== null &&
+        typeof frame === "object" &&
+        Reflect.get(frame, "type") === "progress"
+      ) {
+        stages++;
+        frame = await c.next();
+      }
+      const request = ServiceCallSchema.parse(frame);
+      c.send({ type: "service_result", requestId: request.requestId, ok: true, result: "ok" });
+      expect(await call).toBe("ok");
+      expect(c.worker.signal.aborted).toBe(false);
+      // Some reached the owner and the rest were dropped, which is what coalescing would
+      // have done to them anyway.
+      expect(stages).toBeGreaterThan(0);
+      expect(stages).toBeLessThan(1200);
+    } finally {
+      c.close();
+    }
+  });
+
+  test("an invalid stage is refused before it is written, never by failing the run", async () => {
+    const c = channel();
+    try {
+      c.send(context);
+      expect(await c.worker.ready).toEqual(context.locations);
+      for (const invalid of [
+        { stage: "AT THE MODEL" },
+        { stage: "" },
+        { stage: "a".repeat(65) },
+        { stage: " preparing" },
+        { stage: "preparing", message: "carriage\rreturn" },
+        { stage: "preparing", fraction: 1.5 },
+      ])
+        expect(() => c.worker.reportProgress(invalid)).toThrow("worker_progress_invalid");
+      expect(c.worker.signal.aborted).toBe(false);
+      c.worker.reportProgress({ stage: "at the model" });
+      expect(await c.next()).toEqual({ type: "progress", stage: "at the model" });
+    } finally {
+      c.close();
+    }
+  });
+
   test("denials are safe named errors and do not close the authorized service channel", async () => {
     const c = channel();
     try {
