@@ -2716,10 +2716,10 @@ read a retained IPC-1 owner and resume its existing terminals. Without an explic
 declaration it cannot create new ambient shells. Governed requests still require their
 separate native owner proof and admitted resource/runtime bindings.
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 31. That version covers
-durable instance-owned services, cooperative retirement, proved readiness, bounded
-cross-owner service channels and an operation's declared `limits.concurrentJobs`, which an
-`install` command carries in the manifest to a strict owner parser.
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 32. Version 31 added an
+operation's declared `limits.concurrentJobs`; version 32 adds metered service policies and a job's
+inference limits, usage and journal events. Both cross the strict owner parser in install, start,
+event and result frames, so older owners are fenced before receiving either shape.
 It is not the hub/session `PROTOCOL_VERSION`: an unchanged native RPC remains compatible
 through a transport or browser upgrade. A native RPC change requires its own coordinated,
 drained owner upgrade. Compatibility alone never proves current execution consent or

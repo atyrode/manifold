@@ -3379,83 +3379,16 @@ export class JobService {
         fail("invalid_input");
     }
     if (Object.keys(args.input).some((k) => !Object.hasOwn(op.input, k))) fail("invalid_input");
-3:     const ceiling = jobLimits(op.limits);
+    const ceiling = jobLimits(op.limits);
     const limits = effectiveJobLimits(args.limits, ceiling);
-4:     for (const key of executionLimitKeys) if (limits[key] > ceiling[key]) fail("limit_exceeded");
-    for (const key of inferenceLimitKeys) {
-      const declared = ceiling.inference?.[key];
-      const requested = limits.inference?.[key];
-      if (declared !== undefined && (requested === undefined || requested > declared))
-        fail("limit_exceeded");
-    }
-5: export type JobLimits = z.infer<typeof JobLimitsSchema>;
-/** What the owner metered across a job's inference calls; every number is a sum of provider-reported usage. */
-export const JobInferenceUsageSchema = z.strictObject({
-  calls: count,
-  inputTokens: count,
-  outputTokens: count,
-  cachedInputTokens: count,
-  costMicros: count,
-});
-export type JobInferenceUsage = z.infer<typeof JobInferenceUsageSchema>;
-/**
- * An operation declares more than one job carries: `concurrentJobs` bounds how many of this
- * operation's jobs one machine runs at once. The operation's author bounds that fan, never the
- * caller, so the ceiling belongs to the manifest and never to a request or an edge aggregate.
- */
-export const MachineOperationLimitsSchema = JobLimitsSchema.extend({
-  concurrentJobs: z.number().int().positive().max(4096).optional(),
-});
-export type MachineOperationLimits = z.infer<typeof MachineOperationLimitsSchema>;
-/** The per-job half of a declaration: what a request carries and an invocation edge aggregates. */
-export function jobLimits(limits: MachineOperationLimits): JobLimits {
-  return {
-    timeoutMs: limits.timeoutMs,
-    memoryBytes: limits.memoryBytes,
-    processes: limits.processes,
-    outputBytes: limits.outputBytes,
-    ...(limits.inference === undefined ? {} : { inference: limits.inference }),
-  };
-}
     if (limits.timeoutMs <= 0) fail("invalid_limits");
-3:     const ceiling = jobLimits(op.limits);
-    const limits = effectiveJobLimits(args.limits, ceiling);
-4:     for (const key of executionLimitKeys) if (limits[key] > ceiling[key]) fail("limit_exceeded");
+    for (const key of executionLimitKeys) if (limits[key] > ceiling[key]) fail("limit_exceeded");
     for (const key of inferenceLimitKeys) {
       const declared = ceiling.inference?.[key];
       const requested = limits.inference?.[key];
       if (declared !== undefined && (requested === undefined || requested > declared))
         fail("limit_exceeded");
     }
-5: export type JobLimits = z.infer<typeof JobLimitsSchema>;
-/** What the owner metered across a job's inference calls; every number is a sum of provider-reported usage. */
-export const JobInferenceUsageSchema = z.strictObject({
-  calls: count,
-  inputTokens: count,
-  outputTokens: count,
-  cachedInputTokens: count,
-  costMicros: count,
-});
-export type JobInferenceUsage = z.infer<typeof JobInferenceUsageSchema>;
-/**
- * An operation declares more than one job carries: `concurrentJobs` bounds how many of this
- * operation's jobs one machine runs at once. The operation's author bounds that fan, never the
- * caller, so the ceiling belongs to the manifest and never to a request or an edge aggregate.
- */
-export const MachineOperationLimitsSchema = JobLimitsSchema.extend({
-  concurrentJobs: z.number().int().positive().max(4096).optional(),
-});
-export type MachineOperationLimits = z.infer<typeof MachineOperationLimitsSchema>;
-/** The per-job half of a declaration: what a request carries and an invocation edge aggregates. */
-export function jobLimits(limits: MachineOperationLimits): JobLimits {
-  return {
-    timeoutMs: limits.timeoutMs,
-    memoryBytes: limits.memoryBytes,
-    processes: limits.processes,
-    outputBytes: limits.outputBytes,
-    ...(limits.inference === undefined ? {} : { inference: limits.inference }),
-  };
-}
     const outputInstall = outputParent
       ? this.jobs.installation(outputParent.machineId, outputParent.pluginId)
       : install;

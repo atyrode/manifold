@@ -12,7 +12,7 @@ import { ServiceTunnelFrameSchema } from "./services.ts";
 import { JobResourceBindingsSchema, JobResourceInventorySchema } from "./job-resources.ts";
 
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = 31;
+export const JOB_OWNER_PROTOCOL_VERSION = 32;
 
 const id = z.string().min(1).max(128);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -46,16 +46,7 @@ export const JobLimitsSchema = z.strictObject({
   outputBytes: z.number().int().positive().max(1073741824),
   inference: JobInferenceLimitsSchema.optional(),
 });
-3:     const ceiling = jobLimits(op.limits);
-    const limits = effectiveJobLimits(args.limits, ceiling);
-4:     for (const key of executionLimitKeys) if (limits[key] > ceiling[key]) fail("limit_exceeded");
-    for (const key of inferenceLimitKeys) {
-      const declared = ceiling.inference?.[key];
-      const requested = limits.inference?.[key];
-      if (declared !== undefined && (requested === undefined || requested > declared))
-        fail("limit_exceeded");
-    }
-5: export type JobLimits = z.infer<typeof JobLimitsSchema>;
+export type JobLimits = z.infer<typeof JobLimitsSchema>;
 /** What the owner metered across a job's inference calls; every number is a sum of provider-reported usage. */
 export const JobInferenceUsageSchema = z.strictObject({
   calls: count,
