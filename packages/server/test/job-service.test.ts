@@ -3060,6 +3060,91 @@ describe("durable job authority", () => {
     }
   });
 
+  /** The owner's facts for one job, the shape every job event repeats. */
+  function identity(job: JobRecord) {
+    return {
+      jobId: job.request.jobId,
+      requestDigest: job.request.requestDigest,
+      ownerId: "test-owner",
+      ownerGeneration: 1,
+    };
+  }
+
+  test("a running workload's stage reaches a follower live and the journal after settle", () => {
+    const f = fixture();
+    try {
+      consent(f, "machines:run");
+      prove(f);
+      const job = execute(f);
+      consent(f, "jobs:read");
+      const node = { kind: "job" as const, machineId: f.machineId, operationId, jobId: "job" };
+      const updates: JobFollowUpdate[] = [];
+      const follow = f.service.follow(f.root, node, (update) => updates.push(update));
+      f.service.event(f.channel, { type: "state", ...identity(job), state: "started" });
+      f.service.event(f.channel, {
+        type: "job_progress",
+        ...identity(job),
+        stage: "at the model",
+        message: "drawing evr_85c8994c",
+        fraction: 0.25,
+        at: 1757770000000,
+      });
+      expect(updates.flatMap((u) => (u.type === "event" ? [u.event.type] : []))).toEqual([
+        "state",
+        "job_progress",
+      ]);
+      expect(updates.at(-1)).toMatchObject({
+        type: "event",
+        event: {
+          type: "job_progress",
+          stage: "at the model",
+          message: "drawing evr_85c8994c",
+          fraction: 0.25,
+          at: 1757770000000,
+        },
+      });
+      follow.close();
+      settle(f, job);
+      const page = f.service.journal(f.root, node, 0, 64);
+      expect(page.events.map((frame) => frame.event.type)).toEqual([
+        "state",
+        "job_progress",
+        "result",
+      ]);
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("a stage for a job the hub has not seen start is dropped, live and durably", () => {
+    const f = fixture();
+    try {
+      consent(f, "machines:run");
+      prove(f);
+      const job = execute(f);
+      consent(f, "jobs:read");
+      const node = { kind: "job" as const, machineId: f.machineId, operationId, jobId: "job" };
+      const updates: JobFollowUpdate[] = [];
+      const follow = f.service.follow(f.root, node, (update) => updates.push(update));
+      expect(f.service.jobs.get("job")?.state).toBe("start-committed");
+      f.service.event(f.channel, {
+        type: "job_progress",
+        ...identity(job),
+        stage: "at the model",
+        at: 1757770000000,
+      });
+      expect(updates).toEqual([]);
+      follow.close();
+      f.service.event(f.channel, { type: "state", ...identity(job), state: "started" });
+      settle(f, job);
+      expect(
+        f.service.journal(f.root, node, 0, 64).events.map((frame) => frame.event.type),
+      ).toEqual(["state", "result"]);
+    } finally {
+      f.store.close();
+    }
+  });
+
   test("a settled job is announced to its own plugin with its own credential", () => {
     const f = fixture();
     try {
