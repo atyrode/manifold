@@ -3244,6 +3244,7 @@ export class JobService {
     terminal: NonNullable<JobRequest["terminal"]>,
     traceId: number,
   ): Extract<JobCommand, { type: "start" }> {
+    if (runtime.machineId !== machineId) fail("terminal_runtime_destination_changed");
     const live = this.channels.get(machineId);
     const install = this.jobs.installation(machineId, runtime.pluginId);
     if (
