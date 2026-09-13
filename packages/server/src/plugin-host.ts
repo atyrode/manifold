@@ -74,6 +74,8 @@ import type {
   Grant,
   ListGrantsRequest,
   FinishAgentRunRequest,
+  InspectAgentRunRequest,
+  InspectAgentRunResult,
   FinishAgentRunResult,
   ManifoldRef,
   MintShareRequest,
@@ -116,7 +118,7 @@ import {
   type IsolateRunner,
 } from "./isolate/contract.ts";
 import { localActionDef } from "./isolate/proxy-def.ts";
-import { redactFields, type Logger } from "./log.ts";
+import { normalizeAgentDeclaration, redactFields, type Logger } from "./log.ts";
 import type { PlaceExecutor } from "./placement.ts";
 import {
   openPluginDatabase,
@@ -194,6 +196,8 @@ export interface IdentityDoor {
   mintToken(input: MintTokenRequest): IdentityResult<TokenGrant>;
   /** Creates a fresh sponsor-bound autonomous identity in pending-policy state. */
   createAgentRun(input: CreateAgentRunRequest): IdentityResult<CreateAgentRunResult>;
+  /** A payload-free projection, authorized by durable run sponsorship rather than journal access. */
+  inspectAgentRun(input: InspectAgentRunRequest): IdentityResult<InspectAgentRunResult>;
   /** Returns the exact server-selected policy bytes this run must acknowledge. */
   agentPolicyChallenge(): IdentityResult<AgentPolicyChallenge>;
   /** Activates this run only after every exact policy digest is acknowledged. */
@@ -872,9 +876,11 @@ function traceContainer(auth: AuthContext, rawArgs: unknown): string | null {
  * about to name — and the ledger's payload column is a map of a door's named arguments, not a
  * place to keep whatever JSON a stranger posted.
  */
-function tracePayload(rawArgs: unknown): Readonly<Record<string, unknown>> {
+function tracePayload(rawArgs: unknown): Record<string, unknown> {
   if (rawArgs === null || typeof rawArgs !== "object" || Array.isArray(rawArgs)) return {};
   const redacted = redactFields(rawArgs as Record<string, unknown>);
+  // Only the dispatch options may supply this claim, never an argument impersonating it.
+  delete redacted.agentDeclaration;
   const text = JSON.stringify(redacted);
   if (text.length <= TRACE_PAYLOAD_MAX_CHARS) return redacted;
   return { oversize: text.length, keys: Object.keys(redacted) };
@@ -2688,6 +2694,7 @@ export class PluginHost {
     fullName: string,
     rawArgs: unknown,
     session: string | null = null,
+    options?: { agentJustification?: string },
   ): Promise<ActionOutcome> {
     const pluginId = this.assembled.actions.get(fullName)?.plugin.id;
     const settled = Promise.withResolvers<void>();
@@ -2703,7 +2710,7 @@ export class PluginHost {
     let outcome: ActionOutcome;
     try {
       try {
-        outcome = await this.run(auth, fullName, rawArgs, session);
+        outcome = await this.run(auth, fullName, rawArgs, session, options);
       } finally {
         settled.resolve();
         active?.delete(settled.promise);
@@ -2731,6 +2738,7 @@ export class PluginHost {
     fullName: string,
     rawArgs: unknown,
     session: string | null,
+    options?: { agentJustification?: string },
   ): Promise<ActionOutcome> {
     const entry = this.assembled.actions.get(fullName);
     if (entry === undefined) {
@@ -2757,13 +2765,14 @@ export class PluginHost {
       entry.def.trace === "opaque" ||
       entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap)) ||
       entry.def.delegates?.some((cap) => GOVERNED_CAPS.includes(cap)) === true;
+    const payload: Record<string, unknown> = opaque ? {} : tracePayload(rawArgs);
     const attribution: TraceAttribution = {
       ts: this.runtime.now(),
       actor: auth.principal.id,
       authority: traceAuthority(auth, entry.def.caps),
       door: fullName,
       containerId: opaque ? auth.containerScope : traceContainer(auth, rawArgs),
-      payload: opaque ? {} : tracePayload(rawArgs),
+      payload,
       session,
     };
     /*
@@ -2789,10 +2798,20 @@ export class PluginHost {
     if (runPolicyState === "expired") {
       return refuse("forbidden", "agent run expired");
     }
-    if (runPolicyState === "pending_policy" && runAccess !== "policy" && runAccess !== "teardown") {
+    if (
+      runPolicyState === "pending_policy" &&
+      runAccess !== "policy" &&
+      runAccess !== "teardown" &&
+      runAccess !== "inspect"
+    ) {
       return refuse("policy_required", "agent policy acknowledgement required");
     }
-    if (runPolicyState === "policy_stale" && runAccess !== "policy" && runAccess !== "teardown") {
+    if (
+      runPolicyState === "policy_stale" &&
+      runAccess !== "policy" &&
+      runAccess !== "teardown" &&
+      runAccess !== "inspect"
+    ) {
       return refuse("policy_stale", "agent policy changed; acknowledgement required");
     }
     if (!this.assembled.enabled(pluginId) && entry.def.cleanup !== true) {
@@ -2888,6 +2907,21 @@ export class PluginHost {
     if (entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap))) {
       admission = this.authService.admitGoverned(auth, pluginId, fullName, requirements);
       if (!admission.allowed) return refuse("forbidden", "explicit version-bound consent required");
+    }
+    // Claims are evidence, not authority: policy, scope, caps and arguments always win.
+    // Human and legacy credentials cannot manufacture an autonomous-run declaration.
+    if (auth.agentRunId !== undefined && runPolicyState === "active") {
+      const declaration = options?.agentJustification;
+      if (declaration === undefined) {
+        if (entry.def.agentJustification === "required")
+          return refuse("justification_required", "agent declaration required");
+      } else {
+        const normalized =
+          typeof declaration === "string" ? normalizeAgentDeclaration(declaration) : null;
+        if (normalized === null)
+          return refuse("invalid_justification", "agent declaration is invalid");
+        payload.agentDeclaration = normalized;
+      }
     }
     const handler = this.handlers.get(pluginId)?.[entry.def.name];
     if (handler === undefined) {
@@ -3029,6 +3063,7 @@ export class PluginHost {
           identityCall(() => this.authService.bootstrapPrincipal(input, auth)),
         mintToken: (input) => identityCall(() => this.authService.mintToken(input, auth)),
         createAgentRun: (input) => identityCall(() => this.authService.createAgentRun(input, auth)),
+        inspectAgentRun: (input) => identityCall(() => this.authService.inspectAgentRun(input, auth)),
         agentPolicyChallenge: () => identityCall(() => this.authService.agentPolicyChallenge(auth)),
         acknowledgeAgentPolicy: (input) =>
           identityCall(() => this.authService.acknowledgeAgentPolicy(input, auth)),

@@ -559,6 +559,17 @@ export const archive = defineAction({
 effect: "allow", reach: "subtree" }` is then the whole administration: one principal, one
 machine, one verb.
 
+For selected high-impact delegated effects, **`agentJustification: "required"`** publishes a
+bounded declaration requirement in the same action metadata at `GET /api/protocol`.
+An active accountable run supplies `x-manifold-agent-justification` through the shared action
+transport; raw and normalized text are limited to 512 characters, normalized to one safe line
+and rejected when credential-like. Missing/invalid declarations are traced structured
+refusals, never authority. The dispatcher owns the reserved trace `agentDeclaration` field;
+action arguments cannot forge it. Human callers are not asked to invent reasoning.
+Use this on high-impact delegation/execution, not ordinary reads or cleanup. The
+[inspection contract](CONTRACTS.md#agent-run-inspection-and-declarations) owns privacy and
+retention; it exposes no general trace payload.
+
 Two optional fields on an action are declared carve-outs from exactly one rung of the denial ladder,
 and they are the only ones:
 

@@ -360,6 +360,9 @@ export const jobDoors: ServerPluginDef = {
           ? ["*"]
           : [],
       trace: "opaque",
+      ...(name === "execute" || name === "schedule"
+        ? { agentJustification: "required" as const }
+        : {}),
       input,
       result: results[name] ?? empty,
     }),

@@ -1,13 +1,24 @@
 import "./styles.css";
 import type { SectionProps } from "@manifold/plugin";
-import { ControlIcon, Disclosure, Stack } from "@manifold/ui";
+import { Chip, ControlIcon, Disclosure, KeyValueList, KeyValueRow, Stack } from "@manifold/ui";
 import {
   CredentialsResponseSchema,
+  InspectAgentRunResultSchema,
+  formatManifoldUri,
+  parseManifoldUri,
   RevokeResultSchema,
+  type AgentRunInspection,
+  type AgentRunTraceSummary,
+  type InspectAgentRunRequest,
+  type InspectAgentRunResult,
   type PrincipalCredentials,
 } from "@manifold/protocol";
-import { useCallback, useEffect, useState, type ReactElement } from "react";
-import { ACCESS_LIST_CREDENTIALS_ACTION, ACCESS_REVOKE_ACTION } from "./index.ts";
+import { useCallback, useEffect, useId, useState, type ReactElement, type ReactNode } from "react";
+import {
+  ACCESS_INSPECT_AGENT_RUN_ACTION,
+  ACCESS_LIST_CREDENTIALS_ACTION,
+  ACCESS_REVOKE_ACTION,
+} from "./index.ts";
 import { partitionCredentials } from "./rows.ts";
 
 /**
@@ -17,8 +28,8 @@ import { partitionCredentials } from "./rows.ts";
  * Before this section the data existed and nothing could reach it: `GET /api/introspect`
  * published principals to a root caller and nothing else did, so a human could not look and
  * neither could an agent. What is drawn here is `core.access.listCredentials`, narrowed by
- * the server to exactly the principals this caller could revoke, beside the revoke door that
- * already existed.
+ * the server to revocable identities and the viewer's authorized run chain, beside the
+ * existing revoke door and the same headless inspection action used by agents.
  *
  * IT LIVES IN `core.access` BECAUSE THE CONCEPT DOES. Principals and the credentials they
  * hold are what this plugin mints and revokes; the fleet's half of the same question — which
@@ -73,6 +84,400 @@ function metaLine(row: PrincipalCredentials, now: number): string {
   return parts.join(" · ");
 }
 
+type InspectionRead =
+  | { readonly state: "loading" }
+  | { readonly state: "failed"; readonly message: string }
+  | { readonly state: "ready"; readonly result: InspectAgentRunResult };
+
+/** One mounted snapshot, not a cache or a second history store. Callers key each request. */
+function useInspection(host: SectionProps["host"], request: InspectAgentRunRequest): InspectionRead {
+  const [read, setRead] = useState<InspectionRead>({ state: "loading" });
+  const { runId, principalId, traceId, beforeTraceId, limit } = request;
+  useEffect(() => {
+    let stale = false;
+    void (async () => {
+      try {
+        const outcome = await host.client.action(ACCESS_INSPECT_AGENT_RUN_ACTION, {
+          ...(runId === undefined ? { principalId } : { runId }),
+          ...(traceId === undefined ? {} : { traceId }),
+          ...(beforeTraceId === undefined ? {} : { beforeTraceId }),
+          limit,
+        });
+        if (stale) return;
+        if (!outcome.ok) {
+          setRead({ state: "failed", message: outcome.denial.message });
+          return;
+        }
+        const parsed = InspectAgentRunResultSchema.safeParse(outcome.result);
+        setRead(
+          parsed.success
+            ? { state: "ready", result: parsed.data }
+            : { state: "failed", message: "The run inspection could not be read." },
+        );
+      } catch {
+        if (!stale) setRead({ state: "failed", message: "The run inspection could not be loaded." });
+      }
+    })();
+    return () => {
+      stale = true;
+    };
+  }, [host.client, runId, principalId, traceId, beforeTraceId, limit]);
+  return read;
+}
+
+function inspectionTime(at: number | null): string {
+  return at === null ? "Not recorded" : new Date(at).toLocaleString();
+}
+
+function InspectionFold({
+  title,
+  children,
+  initiallyOpen = false,
+}: {
+  readonly title: string;
+  readonly children: ReactNode;
+  readonly initiallyOpen?: boolean;
+}): ReactElement {
+  const [open, setOpen] = useState(initiallyOpen);
+  return (
+    <Disclosure
+      className="credential-inspection-fold"
+      headerClassName="credential-inspection-heading"
+      header={title}
+      open={open}
+      onOpenChange={setOpen}
+    >
+      <Stack gap="0.45rem">{children}</Stack>
+    </Disclosure>
+  );
+}
+
+function NativeReference({
+  host,
+  uri,
+}: {
+  readonly host: SectionProps["host"];
+  readonly uri: string;
+}): ReactElement {
+  const ref = parseManifoldUri(uri);
+  return ref === null || Object.values(ref).includes("[redacted]") ? (
+    <span>{uri}</span>
+  ) : (
+    <Chip
+      className="credential-inspection-link"
+      aria-label={`Open ${uri}`}
+      onClick={() => host.navigate(formatManifoldUri(ref))}
+    >
+      {uri}
+    </Chip>
+  );
+}
+
+function traceStatus(trace: AgentRunTraceSummary): string {
+  if (trace.settlement === "pending_or_crashed") return "pending_or_crashed · outcome unknown";
+  if (trace.outcome === null) return "Outcome unavailable";
+  if (trace.outcome === "ok") return "Succeeded";
+  if (trace.outcome === "failed") return "Failed";
+  return `Refused · ${trace.outcome}`;
+}
+
+function ExactTrace({
+  host,
+  runId,
+  traceId,
+}: {
+  readonly host: SectionProps["host"];
+  readonly runId: string;
+  readonly traceId: string;
+}): ReactElement {
+  const read = useInspection(host, { runId, traceId, limit: 1 });
+  if (read.state === "loading") return <p role="status">Loading trace {traceId}…</p>;
+  if (read.state === "failed") return <p role="alert">{read.message}</p>;
+  const result = read.result;
+  if (result.availability === "origin_unavailable") {
+    return <p>Origin unavailable. This identity has no retained run envelope.</p>;
+  }
+  const trace = result.traces.find((entry) => entry.traceId === traceId);
+  if (result.requestedTrace !== "available" || trace === undefined) {
+    return <p>Trace {traceId} is unavailable in retained history. Its outcome is not known.</p>;
+  }
+  return (
+    <KeyValueList>
+      <KeyValueRow label="Attempt">{trace.action}</KeyValueRow>
+      <KeyValueRow label="Outcome">{traceStatus(trace)}</KeyValueRow>
+      <KeyValueRow label="At">{inspectionTime(trace.at)}</KeyValueRow>
+      <KeyValueRow label="Actor">{trace.actor}</KeyValueRow>
+      <KeyValueRow label="Authority">{trace.authority}</KeyValueRow>
+      <KeyValueRow label="Origin">{trace.origin}</KeyValueRow>
+      <KeyValueRow label="Connection">{trace.connectionId ?? "Not recorded"}</KeyValueRow>
+      <KeyValueRow label="Agent declaration">
+        {trace.agentDeclaration ?? "Not supplied"}
+      </KeyValueRow>
+      <KeyValueRow label="Targets">
+        {trace.targets.length === 0
+          ? "None recorded"
+          : trace.targets.map((target) => <NativeReference key={target} host={host} uri={target} />)}
+      </KeyValueRow>
+    </KeyValueList>
+  );
+}
+
+/** Native references stay on the same authorized, payload-free inspection door. */
+function TraceReference({
+  host,
+  runId,
+  traceId,
+  summary,
+}: {
+  readonly host: SectionProps["host"];
+  readonly runId: string;
+  readonly traceId: string;
+  readonly summary?: AgentRunTraceSummary;
+}): ReactElement {
+  const [open, setOpen] = useState(false);
+  return (
+    <Disclosure
+      className="credential-inspection-trace"
+      headerClassName="credential-inspection-heading"
+      open={open}
+      onOpenChange={setOpen}
+      header={
+        <span>
+          <span className="credential-inspection-link">Trace {traceId}</span>
+          {summary === undefined ? null : (
+            <span className="credential-inspection-note">
+              {summary.action} · {traceStatus(summary)}
+            </span>
+          )}
+        </span>
+      }
+    >
+      {open ? <ExactTrace host={host} runId={runId} traceId={traceId} /> : null}
+    </Disclosure>
+  );
+}
+
+function RunSnapshot({
+  host,
+  result,
+  inspect,
+  olderPage,
+}: {
+  readonly host: SectionProps["host"];
+  readonly result: AgentRunInspection;
+  readonly inspect: (request: InspectAgentRunRequest) => void;
+  readonly olderPage: boolean;
+}): ReactElement {
+  const { run } = result;
+  return (
+    <Stack gap="0.5rem">
+      <strong>{run.name} · {run.state}</strong>
+      <p className="credential-inspection-note">
+        Retained-only history · observed {inspectionTime(result.observedAt)}. Missing records are
+        not proof that no activity occurred. Declarations are reported claims, not reasoning or
+        authorization.
+      </p>
+      <KeyValueList>
+        <KeyValueRow label="Run">{run.id}</KeyValueRow>
+        <KeyValueRow label="Principal">{run.principalId}</KeyValueRow>
+        <KeyValueRow label="Sponsor">{run.sponsorPrincipalId}</KeyValueRow>
+        <KeyValueRow label="Purpose declaration">{run.purpose}</KeyValueRow>
+        <KeyValueRow label="Task reference">{run.taskRef ?? "Not supplied"}</KeyValueRow>
+        <KeyValueRow label="Scope">
+          <NativeReference host={host} uri={run.target} /> · {run.reach}
+        </KeyValueRow>
+        <KeyValueRow label="Capabilities">{run.caps.join(", ")}</KeyValueRow>
+        <KeyValueRow label="Authorization">{run.authorizationPath}</KeyValueRow>
+        <KeyValueRow label="Created">{inspectionTime(run.createdAt)}</KeyValueRow>
+        <KeyValueRow label="Expiry">{inspectionTime(run.expiresAt)}</KeyValueRow>
+        <KeyValueRow label="Policy">
+          {run.acknowledgedPolicyRevision === run.policyRevision ? "Acknowledged" : "Not acknowledged"}
+          {" · "}{run.policyRevision}
+          {run.acknowledgedPolicyRevision === null ? null : (
+            <span className="credential-inspection-note">
+              Acknowledged revision {run.acknowledgedPolicyRevision} ·{" "}
+              {inspectionTime(run.policyAcknowledgedAt)}
+            </span>
+          )}
+        </KeyValueRow>
+        <KeyValueRow label="Cleanup">
+          {run.cleanup.status === "failed" ? "cleanup_failed" : run.cleanup.status}
+          {" · owner "}{run.cleanup.ownerPrincipalId}
+          <span className="credential-inspection-note">
+            {run.cleanup.revokedCredentials} credentials / {run.cleanup.revokedGrants} grants revoked
+            {" · finished "}{inspectionTime(run.cleanup.finishedAt)}
+          </span>
+        </KeyValueRow>
+      </KeyValueList>
+      <InspectionFold title={`Run lineage · ${String(result.lineage.length)}`}>
+        <p className="credential-inspection-note">
+          Root {run.rootRunId} · parent {run.parentRunId ?? "none"} · depth {run.depth}/{run.maxDepth}
+          {" · descendant limit "}{run.maxDescendants} · renewals {run.renewals}
+        </p>
+        {result.lineageComplete ? null : <p>Lineage is incomplete or not fully authorized.</p>}
+        {result.lineage.map((entry) => (
+          <Chip
+            key={entry.id}
+            className="credential-inspection-link"
+            aria-label={`Inspect run ${entry.name}`}
+            aria-current={entry.id === run.id ? "true" : undefined}
+            onClick={() => inspect({ runId: entry.id, limit: 50 })}
+          >
+            {entry.name} · {entry.state}
+          </Chip>
+        ))}
+      </InspectionFold>
+      <InspectionFold title={`Credentials · ${String(result.credentials.length)}`}>
+        {result.credentials.length === 0 ? <p>No retained credentials.</p> : null}
+        {result.credentials.map((credential, index) => (
+          <KeyValueList key={index} className="credential-inspection-record">
+            <KeyValueRow label="State">{credential.state}</KeyValueRow>
+            <KeyValueRow label="Created">{inspectionTime(credential.createdAt)}</KeyValueRow>
+            <KeyValueRow label="Expiry">
+              {credential.expiresAt === null ? "No expiry" : inspectionTime(credential.expiresAt)}
+            </KeyValueRow>
+            <KeyValueRow label="Revoked">{inspectionTime(credential.revokedAt)}</KeyValueRow>
+            <KeyValueRow label="Grant">
+              {credential.grant === null ? "Unavailable" : (
+                <>
+                  <NativeReference host={host} uri={credential.grant.node} />
+                  {" · "}{credential.grant.effect} · {credential.grant.reach}
+                  {" · "}{credential.grant.caps.join(", ")}
+                </>
+              )}
+            </KeyValueRow>
+          </KeyValueList>
+        ))}
+      </InspectionFold>
+      <InspectionFold title={`Connections · ${String(result.connections.length)}`}>
+        {result.connections.length === 0 ? <p>No retained or live connections.</p> : null}
+        {result.connections.map((connection) => (
+          <KeyValueList key={connection.connectionId} className="credential-inspection-record">
+            <KeyValueRow label="Connection">{connection.connectionId}</KeyValueRow>
+            <KeyValueRow label="State">
+              {connection.state === "live" ? "Live" : "Closed or unavailable"}
+            </KeyValueRow>
+            <KeyValueRow label="First seen">{inspectionTime(connection.firstObservedAt)}</KeyValueRow>
+            <KeyValueRow label="Last seen">{inspectionTime(connection.lastObservedAt)}</KeyValueRow>
+          </KeyValueList>
+        ))}
+      </InspectionFold>
+      <InspectionFold title={`Trace attempts · ${String(result.traces.length)}`} initiallyOpen>
+        <p className="credential-inspection-note">
+          Refusals are attempts too. pending_or_crashed means an unsettled attempt, not success.
+        </p>
+        {result.traces.length === 0 ? <p>No attempts in this retained page.</p> : null}
+        {result.traces.map((trace) => (
+          <TraceReference key={trace.traceId} host={host} runId={run.id} traceId={trace.traceId} summary={trace} />
+        ))}
+        {result.nextBeforeTraceId === null ? null : (
+          <Chip className="credential-inspection-link" onClick={() => {
+            if (result.nextBeforeTraceId !== null) {
+              inspect({ runId: run.id, beforeTraceId: result.nextBeforeTraceId, limit: 50 });
+            }
+          }}>Older attempts</Chip>
+        )}
+        {olderPage ? (
+          <Chip className="credential-inspection-link" onClick={() => inspect({ runId: run.id, limit: 50 })}>
+            Latest retained attempts
+          </Chip>
+        ) : null}
+      </InspectionFold>
+      <InspectionFold title={`Jobs · ${String(result.jobs.length)}`}>
+        {result.jobs.length === 0 ? <p>No retained jobs.</p> : null}
+        {result.jobs.map((job) => (
+          <Stack key={job.jobId} className="credential-inspection-record" gap="0.25rem">
+            <KeyValueList>
+              <KeyValueRow label="Job">
+                <NativeReference host={host} uri={formatManifoldUri({
+                  kind: "job", jobId: job.jobId, machineId: job.machineId, operationId: job.operationId,
+                })} /> · {job.state}
+              </KeyValueRow>
+              <KeyValueRow label="Operation">{job.pluginId} / {job.operationId}</KeyValueRow>
+              <KeyValueRow label="Machine">{job.machineId}</KeyValueRow>
+              <KeyValueRow label="Installation revision">{job.installationRevision}</KeyValueRow>
+              <KeyValueRow label="Artifact pin">{job.artifactSha256}</KeyValueRow>
+              <KeyValueRow label="Origin">{job.origin}</KeyValueRow>
+              <KeyValueRow label="Owner">{job.ownerState}</KeyValueRow>
+              <KeyValueRow label="Parent job">{job.parentJobId ?? "None recorded"}</KeyValueRow>
+              <KeyValueRow label="Created">{inspectionTime(job.createdAt)}</KeyValueRow>
+              <KeyValueRow label="Started">{inspectionTime(job.startedAt)}</KeyValueRow>
+              <KeyValueRow label="Finished">{inspectionTime(job.finishedAt)}</KeyValueRow>
+              <KeyValueRow label="Exit">{job.exitCode ?? "Not recorded"}</KeyValueRow>
+              {job.terminalId === null ? null : (
+                <KeyValueRow label="Terminal">
+                  <NativeReference host={host} uri={formatManifoldUri({ kind: "terminal", terminalId: job.terminalId })} />
+                </KeyValueRow>
+              )}
+            </KeyValueList>
+            {job.origin === "retained" ? (
+              <TraceReference host={host} runId={run.id} traceId={job.traceId} />
+            ) : <p>Origin trace unavailable; ownership is not proof of completed cleanup.</p>}
+          </Stack>
+        ))}
+      </InspectionFold>
+      <InspectionFold title={`Terminals · ${String(result.terminals.length)}`}>
+        {result.terminals.length === 0 ? <p>No retained terminals.</p> : null}
+        {result.terminals.map((terminal) => (
+          <Stack key={terminal.terminalId} className="credential-inspection-record" gap="0.25rem">
+            <KeyValueList>
+              <KeyValueRow label="Terminal">
+                <NativeReference host={host} uri={formatManifoldUri({ kind: "terminal", terminalId: terminal.terminalId })} />
+              </KeyValueRow>
+              <KeyValueRow label="State">{terminal.state} · retained record</KeyValueRow>
+              <KeyValueRow label="Machine">{terminal.machineId}</KeyValueRow>
+              <KeyValueRow label="Container">
+                <NativeReference host={host} uri={formatManifoldUri({ kind: "container", containerId: terminal.containerId })} />
+              </KeyValueRow>
+              <KeyValueRow label="Created">{inspectionTime(terminal.createdAt)}</KeyValueRow>
+              <KeyValueRow label="Exit">{terminal.exitCode ?? "Not recorded"}</KeyValueRow>
+            </KeyValueList>
+            {terminal.traceId === null ? <p>Origin trace unavailable.</p> : (
+              <TraceReference host={host} runId={run.id} traceId={terminal.traceId} />
+            )}
+          </Stack>
+        ))}
+      </InspectionFold>
+      {result.nativeTruncated ? <p>Native job or terminal history is truncated.</p> : null}
+    </Stack>
+  );
+}
+
+function InspectionSnapshot({
+  host,
+  request,
+  inspect,
+}: {
+  readonly host: SectionProps["host"];
+  readonly request: InspectAgentRunRequest;
+  readonly inspect: (request: InspectAgentRunRequest) => void;
+}): ReactElement {
+  const read = useInspection(host, request);
+  if (read.state === "loading") return <p role="status">Loading agent run…</p>;
+  if (read.state === "failed") return <p className="credential-failure" role="alert">{read.message}</p>;
+  if (read.result.availability === "origin_unavailable") {
+    return <p>Origin unavailable. This legacy agent identity has no retained run envelope.</p>;
+  }
+  return <RunSnapshot host={host} result={read.result} inspect={inspect} olderPage={request.beforeTraceId !== undefined} />;
+}
+
+function AgentRunInspector({
+  host,
+  principalId,
+  id,
+}: {
+  readonly host: SectionProps["host"];
+  readonly principalId: string;
+  readonly id: string;
+}): ReactElement {
+  const [request, inspect] = useState<InspectAgentRunRequest>({ principalId, limit: 50 });
+  return (
+    <section id={id} className="credential-inspection" aria-label="Agent run inspection">
+      <InspectionSnapshot key={JSON.stringify(request)} host={host} request={request} inspect={inspect} />
+    </section>
+  );
+}
+
 export function SessionsSection({ host }: SectionProps): ReactElement {
   const caps = host.client.selfCaps();
   const mayRevoke = caps.includes("*") || caps.includes("tokens:mint");
@@ -97,6 +502,8 @@ export function SessionsSection({ host }: SectionProps): ReactElement {
    * the noise the fold exists to end.
    */
   const [inactiveOpen, setInactiveOpen] = useState(false);
+  const [inspectedPrincipalId, setInspectedPrincipalId] = useState<string | null>(null);
+  const inspectionId = useId();
 
   const read = useCallback(async (): Promise<void> => {
     const outcome = await host.client.action(ACCESS_LIST_CREDENTIALS_ACTION, {});
@@ -187,7 +594,19 @@ export function SessionsSection({ host }: SectionProps): ReactElement {
           aria-hidden="true"
         />
         <span className="credential-name">
-          <strong>{row.principal.name}</strong>
+          {row.principal.kind === "agent" ? (
+            <button
+              className="credential-inspect"
+              type="button"
+              data-action={ACCESS_INSPECT_AGENT_RUN_ACTION}
+              aria-label={`Inspect agent run for ${row.principal.name}`}
+              aria-expanded={inspectedPrincipalId === row.principal.id}
+              aria-controls={inspectedPrincipalId === row.principal.id ? inspectionId : undefined}
+              onClick={() => setInspectedPrincipalId((current) => current === row.principal.id ? null : row.principal.id)}
+            >
+              <strong>{row.principal.name}</strong>
+            </button>
+          ) : <strong>{row.principal.name}</strong>}
           <span className="credential-meta">{metaLine(row, now)}</span>
         </span>
         {/* A row with nothing live has nothing to withdraw; the control is absent
@@ -226,6 +645,9 @@ export function SessionsSection({ host }: SectionProps): ReactElement {
           >
             <ControlIcon kind="revoke" {...ROW_ICON} />
           </button>
+        ) : null}
+        {row.principal.kind === "agent" && inspectedPrincipalId === row.principal.id ? (
+          <AgentRunInspector key={row.principal.id} host={host} principalId={row.principal.id} id={inspectionId} />
         ) : null}
       </div>
     );
