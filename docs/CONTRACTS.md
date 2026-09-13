@@ -3119,14 +3119,20 @@ provider handling and postconditions belong to plugins, never the common floor.
   (`MANIFOLD_JOB_CONTEXT_FD`; `WorkerContext.reportProgress` in the SDK). It is a frame on that
   channel rather than a host file the owner tails, because every job already has the channel,
   it is bounded on both sides, and a workload-writable host file would have to join the output
-  store's writer retention. The owner validates it, folds it to at most one `job_progress`
-  event per `JOB_PROGRESS_INTERVAL_MS` per job with the NEWEST line winning, carries the same
-  owner facts every other job event carries plus the owner's own observation time `at`, and
-  flushes whatever it still holds before the job's terminal event. The hub admits it only for
-  a job it has already seen start and drops it otherwise, exactly like any other event for a
-  job that is not running; admitted, it journals and follows like every lifecycle frame and is
-  subject to the same retention. A stage is the workload's own word, never a hub assertion that
-  the work is progressing, and nothing waits on one: a job that reports none is not unhealthy.
+  store's writer retention. The owner takes a stage off that channel WITHOUT the ordering every
+  other frame keeps, because the request it would queue behind is a service call — the model
+  call itself in the brokered lane — and a line announcing that call must not arrive after it,
+  be stamped at release, or spend the channel's input budget. A malformed stage is still a
+  protocol failure on that channel and cancels the job, which is why `reportProgress` validates
+  before writing and refuses `worker_progress_invalid` instead. The owner folds accepted lines
+  to at most one `job_progress` event per `JOB_PROGRESS_INTERVAL_MS` per job with the NEWEST
+  winning, carries the same owner facts every other job event carries plus the owner's own
+  observation time `at`, and flushes whatever it still holds before the job's terminal event.
+  The hub admits it only for a job it has already seen start and drops it otherwise, exactly
+  like any other event for a job that is not running; admitted, it journals and follows like
+  every lifecycle frame and is subject to the same retention. A stage is the workload's own
+  word, never a hub assertion that the work is progressing, and nothing waits on one: a job
+  that reports none is not unhealthy, and no valid stage can fail one.
 - **Follow and retention.** The public `PluginJobContext` exported from `@manifold/plugin`
   types `ctx.jobs`; `ctx.jobs.follow(node, receive)` returns a watermark snapshot and a
   close handle. `GuestJobs.follow` supplies the asynchronous contract across isolation.
