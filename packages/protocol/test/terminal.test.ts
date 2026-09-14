@@ -88,7 +88,6 @@ describe("terminal_open program and env", () => {
 
 describe("terminal cwd and restart compatibility", () => {
   test("pre-restart transports stay admitted while restart needs the capable owner", () => {
-
     expect(TERMINAL_RESTART_PROTOCOL_VERSION).toBe(33);
     for (const version of [30, 31, 32, TERMINAL_RESTART_PROTOCOL_VERSION, PROTOCOL_VERSION]) {
       expect(MACHINE_PROTOCOL_COMPAT_VERSIONS.has(version)).toBe(true);
