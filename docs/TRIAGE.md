@@ -169,6 +169,32 @@ Review posts exactly one comment per reviewed head, beginning `## Verdict: pass`
 `## Verdict: fail`, followed by the acceptance checklist with the evidence for each item and, on a
 fail, the blocking findings. A new push invalidates every earlier verdict.
 
+## CI evidence and performance
+
+The no-argument `bun run gate` is the memory-bounded authoritative full gate. CI may fan out work
+across runners only by selecting tasks from the [`scripts/gate.ts`](../scripts/gate.ts) registry;
+it does not own a parallel checklist. Any task addition or change must update that topology and pass
+`bun scripts/ci-coverage.ts`. Speed work preserves every check and assertion unless the operator
+explicitly accepts its removal.
+
+Required source-change CI operates to **under 7 minutes p95** for execution wall clock over a
+rolling window of at least ten recent clean runs, assuming sufficient hosted-runner concurrency.
+Record execution wall clock and queue delay separately alongside the run, commit SHA, event,
+attempt, per-job durations and critical path; keep retries separate. Queue growth is an explicit
+capacity incident, not permission to serialize checks or weaken coverage. Triage execution
+regressions from those receipts.
+
+Build consumers may use only an artifact built from the exact source tree under test. Exact-tree
+artifacts expire after one day; when one has expired, rerun the whole workflow so it is rebuilt,
+never replay only a failed job against the missing artifact. Every required job has a bounded
+timeout, and the final aggregation job runs unconditionally and fails for any required failure or
+unexpected skip. Plain-preview and integrated-preview runtime proofs remain concurrent rather than
+becoming a serial critical path.
+
+Strict/current-base protection is an accepted merge-tax decision: it protects against semantic
+conflicts between the reviewed head and its integration base. Improve scheduling and task topology;
+do not weaken current-base integration evidence to meet the SLO.
+
 ## Merge
 
 An agent squash-merges with branch deletion, without an additional waiting period, when **all** of

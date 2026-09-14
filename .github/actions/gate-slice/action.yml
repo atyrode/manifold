@@ -1,0 +1,32 @@
+name: Run gate slice
+description: Run one registry selector, optionally against the exact-commit web distribution.
+
+inputs:
+  task:
+    description: Registry group or task selected by scripts/gate.ts.
+    required: true
+  dist:
+    description: Download and consume the exact-commit web distribution.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Download exact-commit web distribution
+      if: inputs.dist == 'true'
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: manifold-web-dist-${{ github.sha }}
+        path: ${{ runner.temp }}/manifold-gate-dist
+
+    - name: Run ${{ inputs.task }}
+      shell: bash
+      env:
+        GATE_DIST: ${{ inputs.dist }}
+        GATE_TASK: ${{ inputs.task }}
+      run: |
+        if [[ $GATE_DIST == true || $GATE_TASK == build ]]; then
+          export MANIFOLD_GATE_DIST="${RUNNER_TEMP:?}/manifold-gate-dist"
+        fi
+        bun scripts/gate.ts --only "$GATE_TASK"

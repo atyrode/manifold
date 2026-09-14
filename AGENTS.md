@@ -108,6 +108,26 @@ Use [`package.json`](package.json) for targeted check/test/browser commands and
 [`scripts/gate.ts`](scripts/gate.ts) for gate composition. Plugin development commands live
 in [`docs/PLUGINS.md`](docs/PLUGINS.md); deployment and release commands are routed below.
 
+## CI performance contract
+
+- `bun run gate` is the authoritative full repository gate. Its no-argument execution stays
+  memory-bounded for local use; CI gains speed by scheduling the same task registry from
+  [`scripts/gate.ts`](scripts/gate.ts) across runners, not by maintaining a second list of checks.
+- Every gate-task addition or change must update the CI topology and pass
+  `bun scripts/ci-coverage.ts`. No check or assertion may be removed, narrowed or skipped for speed
+  without explicit operator acceptance.
+- Required source-change CI has an operating SLO of **under 7 minutes p95** for execution wall
+  clock over recent clean runs with sufficient hosted-runner concurrency. Record execution and
+  queue delay separately. Queue growth is a capacity incident, not permission to serialize checks
+  or weaken coverage; triage regressions from the recorded per-job receipts.
+- A build artifact is reusable only when it was produced from the exact source tree being checked.
+  Exact-tree artifacts expire after one day; after expiry, rerun the whole workflow, never only a
+  failed job against the missing artifact. Every required job has a bounded timeout, and a final
+  always-run aggregation job must reject failures and unexpected skips.
+- Plain-preview and integrated-preview runtime proofs remain concurrent required evidence. Retain
+  strict/current-base branch protection for semantic-conflict safety: optimize the CI topology
+  rather than weakening integration evidence to reduce merge tax.
+
 ## Boundaries
 
 - Planned code or user-visible documentation changes require a GitHub issue with the problem
