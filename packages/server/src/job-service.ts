@@ -120,6 +120,15 @@ interface JobChannel {
   machineId: string;
   send(message: { type: "job_command"; command: JobCommand }): boolean;
 }
+interface LiveJobOwner {
+  channel: JobChannel;
+  owner: JobOwner;
+  nonce: string;
+  epoch: string;
+  proved: boolean;
+  retirementOnly: boolean;
+  retirementProved: boolean;
+}
 interface ServiceTunnelDirection {
   next: number;
   waiting: number | null;
@@ -143,6 +152,10 @@ function fail(code = "governed_authority_refused"): never {
   throw new ServiceError("forbidden", code);
 }
 const active = new Set(["queued", "admitted", "start-committed", "started"]);
+// Each current RPC must opt into its audited retirement-only predecessors; a future bump defaults closed.
+const legacyRetirementProtocols = new Map<number, ReadonlySet<number>>([
+  [33, new Set([30, 31, 32])],
+]);
 const runCursorSchema = z.strictObject({
   filter: z.strictObject({
     pluginId: z.string().min(1).max(256),
@@ -2687,10 +2700,7 @@ export class JobService {
   private readonly deployments: JobDeployments;
   readonly admissionPublicKey: string;
   private readonly signingKey: string;
-  private readonly channels = new Map<
-    string,
-    { channel: JobChannel; owner: JobOwner; nonce: string; epoch: string; proved: boolean }
-  >();
+  private readonly channels = new Map<string, LiveJobOwner>();
   private readonly reads = new Map<
     string,
     {
@@ -3623,6 +3633,37 @@ export class JobService {
       return command;
     }
   }
+  private legacyRetirementOwner(machineId: string, owner: JobOwner): boolean {
+    if (
+      legacyRetirementProtocols.get(JOB_OWNER_PROTOCOL_VERSION)?.has(owner.protocolVersion) !==
+        true ||
+      !this.store.getMachine(machineId)?.draining
+    )
+      return false;
+    const pinned = this.jobs.owner(machineId);
+    return (
+      pinned !== null &&
+      pinned.ownerId === owner.ownerId &&
+      pinned.publicKey === owner.publicKey &&
+      pinned.generation === owner.generation
+    );
+  }
+  private legacyRetirementJob(
+    live: LiveJobOwner,
+    job: JobRecord,
+    cancellation: JobCancellation | null,
+  ): boolean {
+    return (
+      live.retirementProved &&
+      this.legacyRetirementOwner(job.request.machineId, live.owner) &&
+      cancellation !== null &&
+      job.permit !== null &&
+      job.permit.ownerId === live.owner.ownerId &&
+      job.permit.ownerGeneration === live.owner.generation &&
+      (active.has(job.state) || job.request.service !== undefined) &&
+      (cancellation.mode !== "retire" || job.request.service !== undefined)
+    );
+  }
   online(channel: JobChannel, owner: JobOwner | undefined, epoch: string): void {
     const previous = this.channels.get(channel.machineId)?.channel;
     if (previous) this.disconnectInputs(previous);
@@ -3630,17 +3671,30 @@ export class JobService {
     this.store.db
       .query("UPDATE machine_job_installs SET ready=0 WHERE machine_id=?")
       .run(channel.machineId);
-    if (!owner || owner.protocolVersion !== JOB_OWNER_PROTOCOL_VERSION) return;
-    const pinned = this.jobs.owner(channel.machineId);
-    if (
-      pinned &&
-      (pinned.ownerId !== owner.ownerId ||
-        pinned.publicKey !== owner.publicKey ||
-        owner.generation < pinned.generation)
-    )
-      return;
+    if (!owner) return;
+    const retirementOnly = owner.protocolVersion !== JOB_OWNER_PROTOCOL_VERSION;
+    if (retirementOnly) {
+      if (!this.legacyRetirementOwner(channel.machineId, owner)) return;
+    } else {
+      const pinned = this.jobs.owner(channel.machineId);
+      if (
+        pinned &&
+        (pinned.ownerId !== owner.ownerId ||
+          pinned.publicKey !== owner.publicKey ||
+          owner.generation < pinned.generation)
+      )
+        return;
+    }
     const nonce = randomUUID();
-    this.channels.set(channel.machineId, { channel, owner, nonce, epoch, proved: false });
+    this.channels.set(channel.machineId, {
+      channel,
+      owner,
+      nonce,
+      epoch,
+      proved: false,
+      retirementOnly,
+      retirementProved: false,
+    });
     channel.send({
       type: "job_command",
       command: {
@@ -3884,6 +3938,7 @@ export class JobService {
     if (event.type === "owner_proof") {
       if (
         live.proved ||
+        live.retirementProved ||
         event.nonce !== live.nonce ||
         event.serverEpoch !== live.epoch ||
         event.machineId !== channel.machineId ||
@@ -3907,6 +3962,38 @@ export class JobService {
         )
           return;
       } catch {
+        return;
+      }
+      if (live.retirementOnly) {
+        if (!this.legacyRetirementOwner(channel.machineId, live.owner)) {
+          this.offline(channel);
+          return;
+        }
+        live.retirementProved = true;
+        if (
+          !channel.send({
+            type: "job_command",
+            command: { type: "drain", draining: true },
+          })
+        ) {
+          this.offline(channel);
+          return;
+        }
+        for (const job of this.jobs.reconcilable(channel.machineId)) {
+          const cancellation = this.jobs.cancellation(job.request.jobId);
+          if (cancellation === null || !this.legacyRetirementJob(live, job, cancellation)) continue;
+          const statusDelivered = channel.send({
+            type: "job_command",
+            command: { type: "status", jobId: job.request.jobId },
+          });
+          const cancellationDelivered =
+            job.ownerClosed || this.dispatchCancellation(job, cancellation);
+          const delivered = statusDelivered && cancellationDelivered;
+          if (!delivered) {
+            this.offline(channel);
+            return;
+          }
+        }
         return;
       }
       this.store.transaction(() => {
@@ -3953,7 +4040,23 @@ export class JobService {
       }
       return;
     }
-    if (!live.proved) return;
+    if (!live.proved) {
+      if (!live.retirementProved) return;
+      const job =
+        event.type === "result"
+          ? this.jobs.get(event.result.jobId)
+          : "jobId" in event
+            ? this.jobs.get(event.jobId)
+            : null;
+      const cancellation = job ? this.jobs.cancellation(job.request.jobId) : null;
+      if (
+        !job ||
+        !this.legacyRetirementJob(live, job, cancellation) ||
+        (event.type !== "workload_empty" &&
+          (event.type !== "result" || active.has(event.result.state)))
+      )
+        return;
+    }
     if (event.type === "service_tunnel_open") {
       this.openServiceTunnel(channel, event);
       return;
@@ -4569,6 +4672,29 @@ export class JobService {
       if (job.request.terminal?.terminalId === terminalId)
         this.cancelRecord(job, "terminal_closed");
   }
+  private dispatchCancellation(job: JobRecord, cancellation: JobCancellation): boolean {
+    const live = this.channels.get(job.request.machineId);
+    if (live?.proved)
+      return live.channel.send({
+        type: "job_command",
+        command: {
+          type: cancellation.mode,
+          jobId: job.request.jobId,
+          reason: cancellation.reason,
+          ...(job.permit ? { admission: { request: job.request, permit: job.permit } } : {}),
+        },
+      });
+    if (live && !job.ownerClosed && this.legacyRetirementJob(live, job, cancellation))
+      return live.channel.send({
+        type: "job_command",
+        command: {
+          type: cancellation.mode,
+          jobId: job.request.jobId,
+          reason: cancellation.reason,
+        },
+      });
+    return false;
+  }
   private cancelRecord(
     job: JobRecord,
     reason: string,
@@ -4585,16 +4711,7 @@ export class JobService {
         jobId: job.request.jobId,
         reason: "cancelled",
       });
-    } else
-      this.channels.get(job.request.machineId)?.channel.send({
-        type: "job_command",
-        command: {
-          type: cancellation.mode,
-          jobId: job.request.jobId,
-          reason: cancellation.reason,
-          ...(job.permit ? { admission: { request: job.request, permit: job.permit } } : {}),
-        },
-      });
+    } else this.dispatchCancellation(job, cancellation);
     if (cancellation.mode === "cancel")
       for (const child of this.jobs.active())
         if (child.request.parent?.parentJobId === job.request.jobId)
