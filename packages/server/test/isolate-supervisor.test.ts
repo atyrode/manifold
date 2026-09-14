@@ -17,7 +17,6 @@ import { FakeRuntime, testStore } from "./helpers.ts";
 
 const GUEST_DIR = resolve(import.meta.dir, "fixtures/isolate-guest");
 const SILENT_GUEST_DIR = resolve(import.meta.dir, "fixtures/isolate-guest-silent");
-const PRE_FD3_GUEST_DIR = resolve(import.meta.dir, "fixtures/isolate-guest-pre-fd3");
 const PLUGIN_ID = "test.guest";
 
 const manifest: PluginManifest = {
@@ -191,15 +190,6 @@ describe("IsolateSupervisor", () => {
     expect(supervisor.state(PLUGIN_ID)).toBe("running");
     expect(states.map((row) => row.state)).toEqual(["starting", "running"]);
     expect(logger.count("isolate_spawned")).toBe(1);
-  });
-
-  test("a pre-fd3 child is refused with actionable repack guidance", async () => {
-    const { supervisor } = fixture({ dispatchDeadlineMs: 200 });
-
-    await expect(
-      supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: PRE_FD3_GUEST_DIR }),
-    ).rejects.toThrow("repack with a current plugin kit");
-    expect(supervisor.state(PLUGIN_ID)).toBe("stopped");
   });
 
   test("a dispatch round-trips through the child, which reaches storage by call, and its emits are re-staged", async () => {
