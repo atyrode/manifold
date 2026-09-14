@@ -4204,5 +4204,7 @@ content, URLs and continuous per-frame traffic are never logged.
 The log is the OPERATIONAL stream and it is not the audit: the durable record of who exercised
 what is the journal's trace family, read through `core.events.list` (axiom A6, §The journal and
 its two families). The two say the same word for the same dispatch — the `action` line's
-`outcome` and the trace row's `outcome` are the same vocabulary — and one field rule redacts both
-(`redactFields`, `packages/server/src/log.ts`), so a secret cannot reach either.
+`outcome` and the trace row's `outcome` are the same vocabulary — and the shared field rule
+redacts generic secrets from both (`redactFields`, `packages/server/src/log.ts`). Typed sensitive
+doors project one safe fact shape before either durable boundary: `engine.plugins.author` keeps
+only the plugin id and changed-file count, never file names, source values or build diagnostics.

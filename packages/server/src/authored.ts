@@ -12,7 +12,7 @@ import { join, resolve } from "node:path";
 import { packPlugin } from "@manifold/plugin-kit/pack";
 import type { PluginAuthorRequest, PluginAuthorResult } from "@manifold/plugin";
 import type { CredentialReference } from "./auth.ts";
-import type { Logger } from "./log.ts";
+import { projectPluginAuthorFacts, type Logger } from "./log.ts";
 import { AUTHORED_BUILD_DIR, AUTHORED_DIR, PLUGIN_BUNDLE_SUFFIX } from "./plugin-installs.ts";
 
 /**
@@ -120,9 +120,8 @@ export class AuthoredPlugins {
       else writeFileSync(join(dir, name), text, { mode: 0o600 });
     }
     this.logger.info("plugin_authored", {
-      plugin: request.id,
+      ...projectPluginAuthorFacts(request),
       principal: authoredBy,
-      files: Object.keys(request.files).length,
     });
     return this.rebuild(request.id, authoredBy, credential);
   }
@@ -164,7 +163,7 @@ export class AuthoredPlugins {
       ({ sha256 } = await this.pack(dir, bundle));
     } catch (error) {
       const detail = error instanceof Error ? error.message : "build failed";
-      this.logger.warn("plugin_authored_build_failed", { plugin: id, error: detail });
+      this.logger.warn("plugin_authored_build_failed", { plugin: id });
       return { refused: `artifact_invalid: ${detail}` };
     }
     const current = this.host.unpackedRow(id);
@@ -189,7 +188,7 @@ export class AuthoredPlugins {
       current?.installer ?? credential,
     );
     if ("refused" in outcome) {
-      this.logger.warn("plugin_authored_build_failed", { plugin: id, error: outcome.refused });
+      this.logger.warn("plugin_authored_build_failed", { plugin: id });
     }
     return outcome;
   }
@@ -250,11 +249,8 @@ export class AuthoredPlugins {
     const timer = setTimeout(() => {
       this.pending.delete(id);
       if (!this.host.developerMode()) return;
-      void this.rebuild(id, "engine.plugins", null).catch((error: unknown) => {
-        this.logger.error("plugin_authored_build_failed", {
-          plugin: id,
-          error: error instanceof Error ? error.message : "rebuild failed",
-        });
+      void this.rebuild(id, "engine.plugins", null).catch(() => {
+        this.logger.error("plugin_authored_build_failed", { plugin: id });
       });
     }, REBUILD_DEBOUNCE_MS);
     this.pending.set(id, () => clearTimeout(timer));

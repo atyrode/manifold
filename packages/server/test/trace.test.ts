@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defineAction } from "@manifold/plugin";
+import { ENGINE_AUTHOR_ACTION, defineAction } from "@manifold/plugin";
 import { EventsListResponseSchema } from "@manifold-plugin/events";
 import {
   AgentPolicyChallengeSchema,
@@ -19,9 +19,10 @@ import {
 import { tileIdForRef } from "@manifold/scene";
 import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
+import { AuthoredPlugins, authoredLayout } from "../src/authored.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
 import { JobService } from "../src/job-service.ts";
-import { createLogger, silentLogger } from "../src/log.ts";
+import { createLogger, silentLogger, type Logger } from "../src/log.ts";
 import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
 import { PluginHost, type ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
@@ -777,6 +778,93 @@ describe("the trace ledger records every exercise of authority", () => {
     } finally {
       stdout.mockRestore();
       base.store.close();
+    }
+  });
+
+  test("plugin authoring traces file facts without persisting source", async () => {
+    const base = await fixture();
+    const source = "export const author_trace_canary = 'AUTHOR-SOURCE-384';";
+    try {
+      const dispatched = await base.host.dispatch(base.owner, ENGINE_AUTHOR_ACTION, {
+        id: "trace.authored",
+        files: {
+          "manifest.json": '{"id":"trace.authored"}',
+          "server.ts": source,
+        },
+      });
+      expect(dispatched.ok).toBeFalse();
+
+      const listed = await base.host.dispatch(base.owner, "core.events.list", {
+        kind: TRACE_ROW_TYPE,
+        limit: 10,
+      });
+      if (!listed.ok) throw new Error("the ledger read door refused");
+      const row = EventsListResponseSchema.parse(listed.result).events.find(
+        (entry) => entry.door === ENGINE_AUTHOR_ACTION,
+      );
+      if (row === undefined) throw new Error("the read door returned no author trace");
+
+      expect(JSON.parse(row.payload)).toEqual({
+        plugin: "trace.authored",
+        files: 2,
+      });
+      expect(row).toMatchObject({
+        principalId: base.owner.principal.id,
+        authority: TRACE_AUTHORITY_ROOT,
+        outcome: "refused",
+      });
+      expect(JSON.stringify(listed.result)).not.toContain(source);
+    } finally {
+      base.store.close();
+    }
+  });
+
+  test("author build failures omit source diagnostics from JSONL", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "manifold-author-log-"));
+    const id = "trace.authored";
+    const source = "export const author_log_canary = 'AUTHOR-LOG-SOURCE-384';";
+    const records: {
+      level: string;
+      evt: string;
+      fields: Readonly<Record<string, unknown>> | undefined;
+    }[] = [];
+    const logger: Logger = {
+      info: (evt, fields) => records.push({ level: "info", evt, fields }),
+      warn: (evt, fields) => records.push({ level: "warn", evt, fields }),
+      error: (evt, fields) => records.push({ level: "error", evt, fields }),
+    };
+    try {
+      const { dir } = authoredLayout(dataDir, id);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "manifest.json"), `{"id":"${id}"}`);
+      writeFileSync(join(dir, "server.ts"), source);
+      const authored = new AuthoredPlugins(
+        dataDir,
+        {
+          developerMode: () => true,
+          unpackedRow: () => null,
+          installUnpacked: async () => {
+            throw new Error("an invalid build reached installation");
+          },
+        },
+        logger,
+        async () => {
+          throw new Error(`Unexpected token from ${source}`);
+        },
+      );
+
+      const outcome = await authored.rebuild(id, "owner", null);
+      expect(outcome).toEqual({ refused: `artifact_invalid: Unexpected token from ${source}` });
+      expect(records).toEqual([
+        {
+          level: "warn",
+          evt: "plugin_authored_build_failed",
+          fields: { plugin: id },
+        },
+      ]);
+      expect(JSON.stringify(records)).not.toContain(source);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
     }
   });
 
