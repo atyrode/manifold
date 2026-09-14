@@ -203,15 +203,19 @@ try {
     20_000,
     "xterm textarea focused",
   );
-  await browser.typeText("clear; seq 1 40 | sed 's/.*/ROW-& selection clipboard target/'");
+  const completionNonce = crypto.randomUUID();
+  const completionSentinel = `TERMINAL-SELECTION-COMPLETE-${completionNonce}`;
+  await browser.typeText(
+    `clear; seq 1 40 | sed 's/.*/ROW-& selection clipboard target/'; printf '%s%s\\n' 'TERMINAL-SELECTION-COMPLETE-' '${completionNonce}'`,
+  );
   await browser.typeText("\r");
   await until(
     () =>
       browser!.evaluate<boolean>(
-        "(() => { const rows = [...document.querySelector('.xterm-rows').children].map(row => row.textContent.trim()); const last = rows.indexOf('ROW-40 selection clipboard target'); return last >= 0 && rows.slice(last + 1).some(text => text.length > 0); })()",
+        `(() => { const rows = [...document.querySelector('.xterm-rows').children].map(row => row.textContent.trim()); return rows.includes(${JSON.stringify(completionSentinel)}); })()`,
       ),
     20_000,
-    "known terminal output through row 40 and returned shell prompt painted",
+    "known terminal output through row 40 and explicit completion sentinel painted",
   );
   await revealScreen();
 

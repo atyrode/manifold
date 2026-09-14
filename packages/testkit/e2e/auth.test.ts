@@ -602,6 +602,19 @@ test("a revoked preview browser identity returns through production admission wi
       }),
     ).container;
     await browser.launch({ incognito: true });
+    const evaluateWhileNavigating = async (expression: string): Promise<boolean> => {
+      try {
+        return await browser.evaluate<boolean>(expression);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.includes("Inspected target navigated or closed")
+        ) {
+          return false;
+        }
+        throw error;
+      }
+    };
     await browser.goto(`${production.httpUrl}/#key=${production.ownerKey}`);
     await waitFor(
       () => browser.evaluate<boolean>("document.querySelector('#identity-name') !== null"),
@@ -621,7 +634,7 @@ test("a revoked preview browser identity returns through production admission wi
     await browser.goto(`${previewOrigin}/`);
     await waitFor(
       () =>
-        browser.evaluate<boolean>(
+        evaluateWhileNavigating(
           `location.origin === ${JSON.stringify(previewOrigin)} &&
          document.querySelector('.workspace') !== null &&
          localStorage.getItem('manifold.identity') !== null`,
@@ -632,9 +645,23 @@ test("a revoked preview browser identity returns through production admission wi
     const initial = await browser.evaluate<{ token: string; principal: Principal }>(
       "JSON.parse(localStorage.getItem('manifold.identity'))",
     );
+    const admittedRoster = await fetch(`${previewOwner.httpUrl}/api/plugins`, {
+      headers: { authorization: `Bearer ${initial.token}` },
+    });
+    expect(admittedRoster.status).toBe(200);
     await browser.evaluate(`localStorage.setItem('identity-test-content', 'keep');
       localStorage.setItem('manifold.identity@https://elsewhere.example', 'keep-foreign');
       localStorage.setItem('manifold.ownerKey', ${JSON.stringify(preview.ownerKey)})`);
+    // Leave the live application before revocation. Otherwise its authenticated requests can
+    // observe the revocation and begin a successful handoff while this test is still arranging
+    // the deliberately failed recovery attempt below.
+    await browser.goto(`${previewOrigin}/healthz`);
+    expect(
+      await browser.evaluate<boolean>(
+        `JSON.parse(localStorage.getItem('manifold.identity') || 'null')?.token ===
+          ${JSON.stringify(initial.token)}`,
+      ),
+    ).toBe(true);
     await ownerAction(previewOwner, "core.access.revoke", { principalId: initial.principal.id });
     const refused = await fetch(`${previewOwner.httpUrl}/api/plugins`, {
       headers: { authorization: `Bearer ${initial.token}` },
@@ -658,9 +685,17 @@ test("a revoked preview browser identity returns through production admission wi
         source: `(() => {
           const fetch = window.fetch.bind(window);
           window.__protectedIdentityRequests = 0;
+          window.__protectedIdentityStatuses = [];
+          window.__protectedIdentityUsedRejected = [];
           window.fetch = async (input, init) => {
             const path = new URL(input, location.href).pathname;
-            if (path === '/api/plugins') window.__protectedIdentityRequests++;
+            if (path === '/api/plugins') {
+              window.__protectedIdentityRequests++;
+              const headers = new Headers(input instanceof Request ? input.headers : init?.headers);
+              window.__protectedIdentityUsedRejected.push(
+                headers.get('authorization') === ${JSON.stringify(`Bearer ${initial.token}`)}
+              );
+            }
             if (path === '/api/identity/preview-start') {
               window.__admissionAttemptSeen = true;
               if (${JSON.stringify(scenario.admission)} === 'interrupted') {
@@ -670,7 +705,9 @@ test("a revoked preview browser identity returns through production admission wi
                 code: 'unavailable', message: 'Admission temporarily unavailable'
               } }, { status: 503 });
             }
-            return fetch(input, init);
+            const response = await fetch(input, init);
+            if (path === '/api/plugins') window.__protectedIdentityStatuses.push(response.status);
+            return response;
           };
         })()`,
       });
@@ -678,16 +715,66 @@ test("a revoked preview browser identity returns through production admission wi
       for (const reload of [false, true]) {
         if (reload) {
           await browser.evaluate("window.__admissionAttemptSeen = false");
-          await browser.send("Page.reload", {});
+          await browser.reload();
         }
-        await waitFor(
-          () =>
-            browser.evaluate<boolean>(
-              "window.__admissionAttemptSeen === true && document.querySelector('.gate-screen') !== null",
-            ),
-          20_000,
-          50,
-        );
+        try {
+          await waitFor(
+            () =>
+              browser.evaluate<boolean>(
+                "window.__admissionAttemptSeen === true && document.querySelector('.gate-screen') !== null",
+              ),
+            20_000,
+            50,
+          );
+        } catch (error) {
+          const state = await browser.evaluate<{
+            origin: string;
+            pathname: string;
+            readyState: string;
+            admissionAttemptSeen: boolean;
+            gateScreen: boolean;
+            workspace: boolean;
+            identityName: boolean;
+            identityPresent: boolean;
+            storedIdentityIsRejected: boolean;
+            protectedIdentityRequests: number | null;
+            protectedIdentityStatuses: number[] | null;
+            protectedIdentityUsedRejected: boolean[] | null;
+          }>(`({
+            origin: location.origin,
+            pathname: location.pathname,
+            readyState: document.readyState,
+            admissionAttemptSeen: window.__admissionAttemptSeen === true,
+            gateScreen: document.querySelector('.gate-screen') !== null,
+            workspace: document.querySelector('.workspace') !== null,
+            identityName: document.querySelector('#identity-name') !== null,
+            identityPresent: localStorage.getItem('manifold.identity') !== null,
+            storedIdentityIsRejected:
+              JSON.parse(localStorage.getItem('manifold.identity') || 'null')?.token ===
+                ${JSON.stringify(initial.token)},
+            protectedIdentityRequests:
+              typeof window.__protectedIdentityRequests === 'number'
+                ? window.__protectedIdentityRequests
+                : null,
+            protectedIdentityStatuses:
+              Array.isArray(window.__protectedIdentityStatuses)
+                ? window.__protectedIdentityStatuses
+                : null,
+            protectedIdentityUsedRejected:
+              Array.isArray(window.__protectedIdentityUsedRejected)
+                ? window.__protectedIdentityUsedRejected
+                : null
+          })`);
+          throw new Error(
+            `admission gate did not appear: ${JSON.stringify({
+              admission: scenario.admission,
+              expired: scenario.expired,
+              reload,
+              ...state,
+            })}`,
+            { cause: error },
+          );
+        }
         expect(
           await browser.evaluate<boolean>(
             "document.querySelector('#identity-name') === null && document.querySelector('.workspace') === null",
@@ -707,12 +794,12 @@ test("a revoked preview browser identity returns through production admission wi
         identifier: unavailable.result?.["identifier"],
       });
     }
-    // No admission URL shortcut: reopening the ordinary preview must complete the same
+    // No admission URL shortcut: reloading the ordinary preview must complete the same
     // production handoff after both rejected and locally expired recovery attempts.
-    await browser.goto(`${previewOrigin}/`);
+    await browser.reload();
     await waitFor(
       () =>
-        browser.evaluate<boolean>(
+        evaluateWhileNavigating(
           `location.origin === ${JSON.stringify(previewOrigin)} &&
          document.querySelector('.workspace') !== null &&
          JSON.parse(localStorage.getItem('manifold.identity') || 'null')?.token !==

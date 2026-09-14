@@ -329,10 +329,12 @@ test("directory mount inspection refuses an over-deep held tree before superviso
   }
 });
 
+// verify-jobs selects the [real-linux] cases by name; reserve that marker for
+// tests unlocked by its delegated cgroup, bubblewrap, and static fixtures.
 // Dedicated read-only fixture containing an otherwise empty directory with one
 // descendant bind/tmpfs mount; its setup belongs to the external Linux harness.
 const mountTreePath = process.env.MANIFOLD_TEST_MOUNT_TREE;
-test.skipIf(!mountTreePath)("recursive bind preflight refuses a descendant mount", () => {
+test.skipIf(!mountTreePath)("[real-linux] recursive bind rejects descendant mount", () => {
   const f = fixture();
   const tree = HeldDirectory.openAbsolute(mountTreePath!);
   try {
@@ -397,7 +399,7 @@ async function withLinux(
 }
 
 test.skipIf(!realLinux)(
-  "real sandbox has no ambient home, runtime fd or enrollment environment and roundtrips private input",
+  "[real-linux] real sandbox has no ambient home, runtime fd or enrollment environment and roundtrips private input",
   async () => {
     await withLinux(
       'test "$HOME" = /home/job && test "$XDG_DATA_HOME" = /home/job/.local/share && test "$XDG_RUNTIME_DIR" = /home/job/.run && test -z "$MANIFOLD_MACHINE_TOKEN" && test ! -e /etc/passwd && test ! -e /proc/self/fd/6 && test ! -e "$HOME/.ssh" && test ! -e "$HOME/private" || exit 70; for directory in "$HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_RUNTIME_DIR"; do printf private > "$directory/private" || exit 71; test "$(/bin/busybox stat -f -c %T "$directory")" = tmpfs || exit 72; done; test "$(/bin/busybox stat -c %a "$XDG_RUNTIME_DIR")" = 700 || exit 73; if ( printf forbidden > /job/ambient ) 2>/dev/null; then exit 74; fi; printf scratch > /tmp/private && read line && printf "%s" "$line"',
@@ -428,7 +430,7 @@ test.skipIf(!realLinux)(
 );
 
 test.skipIf(!realLinux)(
-  "native PTY keeps input, resize and snapshots outside job output storage",
+  "[real-linux] native PTY keeps input, resize and snapshots outside job output storage",
   async () => {
     await withLinux(
       'test -t 0 && test -t 1 && test -t 2 || exit 71; test "$TERM" = xterm-256color || exit 72; test -z "$MANIFOLD_JOB_OWNER_SOCKET$MANIFOLD_MACHINE_TOKEN" || exit 73; printf ready; read line; /bin/busybox stty size; printf "received:%s" "$line"; while :; do /bin/busybox sleep 1; done',
@@ -492,7 +494,7 @@ test.skipIf(!realLinux)(
 );
 
 test.skipIf(!realLinux)(
-  "native PTY meters cumulative bytes before delivery without persisting terminal output",
+  "[real-linux] native PTY meters cumulative bytes before delivery without persisting terminal output",
   async () => {
     await withLinux(
       'printf ready; read line; while :; do printf "0123456789abcdef"; done',
@@ -546,7 +548,7 @@ test.skipIf(!realLinux)(
 );
 
 test.skipIf(!realLinux)(
-  "native PTY delivery failure cancels its workload instead of escaping the owner",
+  "[real-linux] native PTY delivery failure cancels its workload instead of escaping the owner",
   async () => {
     await withLinux(
       "printf ready; read line; printf rejected; while :; do /bin/busybox sleep 1; done",
@@ -588,7 +590,7 @@ test.skipIf(!realLinux)(
 );
 
 test.skipIf(!realLinux)(
-  "selected runtime executable reads exact readonly native config instead of running the primary worker",
+  "[real-linux] selected runtime executable reads exact readonly native config instead of running the primary worker",
   async () => {
     await withLinux("exit 91", async (spec) => {
       const fd = privateByteFile(Buffer.from("private-native-config\n"));
@@ -625,7 +627,7 @@ test.skipIf(!realLinux)(
 );
 
 test.skipIf(!realLinux)(
-  "sealed private-home config is readonly while adjacent home files remain writable",
+  "[real-linux] sealed private-home config is readonly while adjacent home files remain writable",
   async () => {
     await withLinux(
       [
@@ -721,7 +723,7 @@ async function listeningJob(
 }
 
 test.skipIf(!realLinux || !listenerProbe)(
-  "service providers reject deferred accept without changing ordinary jobs or sending unproved bytes",
+  "[real-linux] service providers reject deferred accept without changing ordinary jobs or sending unproved bytes",
   async () => {
     for (const providesService of [false, true]) {
       await withLinux("exit 91", async (spec) => {
@@ -774,7 +776,7 @@ test.skipIf(!realLinux || !listenerProbe)(
 );
 
 test.skipIf(!realLinux || !listenerProbe).each(["loopback", "nested"] as const)(
-  "kernel proof admits a live %s listener, not a foreign port or a closed/exited/released socket",
+  "[real-linux] kernel proof admits a live %s listener, not a foreign port or a closed/exited/released socket",
   async (mode) => {
     const foreign = createServer();
     try {
@@ -815,7 +817,7 @@ test.skipIf(!realLinux || !listenerProbe).each(["loopback", "nested"] as const)(
 );
 
 test.skipIf(!realLinux || !listenerProbe)(
-  "scoped runtime HTTP uses the proved connection and refuses a live runtime's rebound port",
+  "[real-linux] scoped runtime HTTP uses the proved connection and refuses a live runtime's rebound port",
   async () => {
     await withLinux("exit 91", async (spec) => {
       const { handle, port, closed } = await listeningJob(spec, "http");
@@ -960,7 +962,7 @@ test.skipIf(!realLinux || !listenerProbe)(
 );
 
 test.skipIf(!realLinux || !listenerProbe)(
-  "wildcard and separately admitted child listeners cannot prove parent ownership",
+  "[real-linux] wildcard and separately admitted child listeners cannot prove parent ownership",
   async () => {
     await withLinux("exit 91", async (spec) => {
       const parent = await listeningJob(spec, "loopback");
@@ -993,7 +995,7 @@ test.skipIf(!realLinux || !listenerProbe)(
   },
 );
 test.skipIf(!realLinux)(
-  "whole-tree cancellation drains a descendant moved into a nested cgroup",
+  "[real-linux] whole-tree cancellation drains a descendant moved into a nested cgroup",
   async () => {
     const ready = Promise.withResolvers<void>();
     const frames: { channel: string; text: string }[] = [];
@@ -1040,7 +1042,7 @@ test.skipIf(!realLinux)(
 );
 
 test.skipIf(!realLinux)(
-  "stdout overflow is explicit and cannot publish a successful result",
+  "[real-linux] stdout overflow is explicit and cannot publish a successful result",
   async () => {
     await withLinux('while :; do printf "0123456789abcdef"; done', async (spec) => {
       let delivered = 0;
@@ -1062,7 +1064,7 @@ test.skipIf(!realLinux)(
 );
 
 test.skipIf(!realLinux)(
-  "parent cancellation contains separately admitted child jobs under its aggregate group",
+  "[real-linux] parent cancellation contains separately admitted child jobs under its aggregate group",
   async () => {
     await withLinux("printf ready; while :; do :; done", async (spec) => {
       const parentReady = Promise.withResolvers<void>();
@@ -1104,7 +1106,7 @@ test.skipIf(!realLinux)(
 );
 
 test.skipIf(!realLinux)(
-  "retirement retains a live delegated workload after leader exit until explicit cancellation",
+  "[real-linux] retirement retains a live delegated workload after leader exit until explicit cancellation",
   async () => {
     await withLinux("printf ready; read finish; printf leaving", async (spec) => {
       const retirement = new AbortController();
@@ -1174,7 +1176,7 @@ test.skipIf(!realLinux)(
 );
 
 test.skipIf(!realLinux || !outputRoot)(
-  "named output storage returns ENOSPC during writes while the output-only child is still alive",
+  "[real-linux] named output storage returns ENOSPC during writes while the output-only child is still alive",
   async () => {
     const path = mkdtempSync(join(outputRoot!, "budget-"));
     const directory = HeldDirectory.openAbsolute(path);
@@ -1222,7 +1224,7 @@ test.skipIf(!realLinux || !outputRoot)(
 );
 
 test.skipIf(!realLinux || !outputRoot)(
-  "bounded child output remains writable by its live parent and seals only after handoff closes",
+  "[real-linux] bounded child output remains writable by its live parent and seals only after handoff closes",
   async () => {
     const path = mkdtempSync(join(outputRoot!, "handoff-"));
     const directory = HeldDirectory.openAbsolute(path);
@@ -1311,7 +1313,7 @@ test.skipIf(!realLinux || !outputRoot)(
 );
 
 test.skipIf(!realLinux || !syscallProbe)(
-  "host-network DNS resolves both address families without descriptor-export syscalls",
+  "[real-linux] host-network DNS resolves both address families without descriptor-export syscalls",
   async () => {
     const dns = createSocket("udp4");
     const ready = Promise.withResolvers<void>();
@@ -1380,7 +1382,7 @@ test.skipIf(!realLinux || !syscallProbe)(
 );
 
 test.skipIf(!realLinux || !syscallProbe)(
-  "seccomp refuses SCM_RIGHTS and io_uring exports while preserving byte socket context",
+  "[real-linux] seccomp refuses SCM_RIGHTS and io_uring exports while preserving byte socket context",
   async () => {
     const fd = openSync(syscallProbe!, constants.O_RDONLY | constants.O_NOFOLLOW);
     const context = privateSocketPair();

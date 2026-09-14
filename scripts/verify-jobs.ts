@@ -1,6 +1,22 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+// The ordinary unit/e2e gates already execute every portable case in these files.
+// Select only tests whose skip conditions are unlocked by this delegated Linux
+// fixture, so the runtime proof does not repeat unconditional tests.
+const fixtureTestPattern = [
+  "\\[real-linux\\]",
+  "never-admitted (?:expired|status|cancel|retire|recovered-status) starts close durably without accepting forged absence or replay",
+  "bundled (?:primary|managed|companion) execution survives missing optional tools and owner recovery without replay",
+  "real owner bounds aggregate sparse output materialization before rolling back earlier archives",
+  "native direct invocation projects PATCH results and binds cancellation and owner authorization to invoke",
+  "reacquired runtime artifacts restore dependent service readiness without new configuration",
+  "(?:read|tunnel) service authority refreshes a changed runtime before seeking a hub grant",
+  "instance retirement preserves native (?:cooperative|lost-completion|launch-race|noncooperative) ownership until confirmed exit",
+  "real machine jobs enforce consent, execute once across transport replacement, and fence queued revocation",
+  "instance services survive hub and transport replacement and route only current cross-owner authority",
+].join("|");
+
 // Run only inside a disposable delegated systemd unit, never in the caller's normal cgroup.
 const unit = process.env.MANIFOLD_TEST_UNIT;
 if (
@@ -45,10 +61,10 @@ const child = Bun.spawn(
     "test",
     "packages/agent/src/job-linux.test.ts",
     "packages/agent/test/job-owner.test.ts",
-    "packages/agent/test/job-locations.test.ts",
-    "packages/agent/test/job-outputs.test.ts",
     "packages/testkit/e2e/jobs.test.ts",
     "packages/testkit/e2e/instance-services.test.ts",
+    "--test-name-pattern",
+    fixtureTestPattern,
     "--timeout",
     "120000",
   ],

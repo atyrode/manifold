@@ -1,23 +1,39 @@
 /**
- * The repository gate, parallelized.
- *
- * Same checks as the old `&&` chain — nothing is skipped and nothing is scoped down —
- * but the wall time is the SLOWEST task, not the sum. Two facts make that safe:
- * every browser gate is fully isolated (own server on its own port, own data dir,
- * own chromium debug port), and the web bundle they exercise is byte-identical, so
- * it is built ONCE and shared through `MANIFOLD_GATE_DIST` instead of four times.
- *
- * Static checks, unit tests and the testkit e2e run concurrently with that build;
- * the browser gates launch the moment the bundle lands. Output is buffered per task
- * and replayed on completion, so failures read whole instead of interleaved.
+ * The repository gate, parallelized for one memory-bounded developer machine and selectable
+ * by CI from one command registry. With no arguments the phase ordering is deliberately
+ * conservative; `--only` lets an isolated CI runner execute one registry slice.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 const repoRoot = join(import.meta.dir, "..");
-const distParent = mkdtempSync(join(tmpdir(), "manifold-gate-"));
-const sharedDist = join(distParent, "dist");
+
+type Group =
+  | "build"
+  | "types"
+  | "style"
+  | "trace"
+  | "unit"
+  | "e2e"
+  | "convergence"
+  | "terminal-selection"
+  | "terminal-mirror"
+  | "tile-drop"
+  | "budgets"
+  | "pwa"
+  | "axioms";
+type Phase = "prepare" | "build" | "static" | "post-static" | "convergence" | "browser";
+
+interface GateTask {
+  readonly name: string;
+  readonly group: Group;
+  readonly phase: Phase;
+  readonly command: (dist: string | null) => readonly string[];
+  readonly cwd?: string;
+  readonly usesDist?: true;
+  readonly retry?: true;
+}
 
 interface TaskResult {
   readonly name: string;
@@ -26,30 +42,11 @@ interface TaskResult {
   readonly output: string;
 }
 
-async function run(name: string, cmd: readonly string[], cwd = repoRoot): Promise<TaskResult> {
-  const started = performance.now();
-  const child = Bun.spawn([...cmd], {
-    cwd,
-    env: { ...process.env, MANIFOLD_GATE_DIST: sharedDist },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  const seconds = (performance.now() - started) / 1000;
-  const result = { name, ok: exitCode === 0, seconds, output: `${stdout}${stderr}` };
-  console.log(`${result.ok ? "PASS" : "FAIL"}  ${name} (${seconds.toFixed(1)}s)`);
-  if (!result.ok) console.log(result.output);
-  return result;
-}
-
 const packages = [
   "protocol",
   "ui",
   "plugin",
+  "plugin-kit",
   "scene",
   "sdk",
   "server",
@@ -73,15 +70,223 @@ const packages = [
   "plugins/compositions",
   "plugins/arrange",
   "plugins/commands",
+] as const;
+
+function fixed(...command: string[]): () => readonly string[] {
+  return () => command;
+}
+
+/** The sole registry of gate task names, groups, commands, and local scheduling phases. */
+const tasks: readonly GateTask[] = [
+  {
+    name: "changelog:generate",
+    group: "build",
+    phase: "prepare",
+    command: fixed("bun", "scripts/generate-web-changelog.ts"),
+  },
+  {
+    name: "build:web (shared dist)",
+    group: "build",
+    phase: "build",
+    command: (dist) => {
+      if (dist === null) throw new Error("the web build requires a dist directory");
+      return ["bunx", "vite", "build", "--outDir", dist, "--emptyOutDir"];
+    },
+    cwd: join(repoRoot, "packages", "web"),
+    usesDist: true,
+  },
+  ...packages.map((name): GateTask => ({
+    name: `tsc ${name}`,
+    group: "types",
+    phase: "static",
+    command: fixed("bunx", "tsc", "-p", `packages/${name}`),
+  })),
+  {
+    name: "tsc scripts",
+    group: "types",
+    phase: "static",
+    command: fixed("bunx", "tsc", "-p", "tsconfig.scripts.json"),
+  },
+  {
+    name: "changelog:check",
+    group: "style",
+    phase: "static",
+    command: fixed("bun", "scripts/generate-web-changelog.ts", "--check"),
+  },
+  {
+    name: "verify:trace",
+    group: "trace",
+    phase: "static",
+    command: fixed("bun", "scripts/verify-trace.ts"),
+  },
+  { name: "lint", group: "style", phase: "static", command: fixed("bunx", "eslint", ".") },
+  {
+    name: "format:check",
+    group: "style",
+    phase: "static",
+    command: fixed("bunx", "prettier", "--check", "."),
+  },
+  {
+    name: "unit tests",
+    group: "unit",
+    phase: "static",
+    command: fixed(
+      "bun",
+      "test",
+      "scripts",
+      ...packages.filter((name) => name !== "testkit").map((name) => `packages/${name}`),
+    ),
+  },
+  {
+    name: "e2e (testkit except preview recovery)",
+    group: "e2e",
+    phase: "static",
+    command: fixed(
+      "bun",
+      "test",
+      "packages/testkit",
+      "--test-name-pattern",
+      "^(?!a revoked preview browser identity returns through production admission without clearing content$).*$",
+      "--timeout",
+      "60000",
+    ),
+    usesDist: true,
+  },
+  {
+    name: "e2e (preview recovery)",
+    group: "e2e",
+    phase: "post-static",
+    command: fixed(
+      "bun",
+      "test",
+      "packages/testkit",
+      "--test-name-pattern",
+      "^a revoked preview browser identity returns through production admission without clearing content$",
+      "--timeout",
+      "60000",
+    ),
+    usesDist: true,
+  },
+  {
+    name: "verify:convergence",
+    group: "convergence",
+    phase: "convergence",
+    command: fixed("bun", "scripts/verify-convergence.ts"),
+    usesDist: true,
+    retry: true,
+  },
+  {
+    name: "verify:terminal-selection",
+    group: "terminal-selection",
+    phase: "browser",
+    command: fixed("bun", "scripts/verify-terminal-selection.ts"),
+    usesDist: true,
+  },
+  {
+    name: "verify:terminal-mirror",
+    group: "terminal-mirror",
+    phase: "browser",
+    command: fixed("bun", "scripts/verify-terminal-mirror.ts"),
+    usesDist: true,
+  },
+  {
+    name: "verify:tile-drop",
+    group: "tile-drop",
+    phase: "browser",
+    command: fixed("bun", "scripts/verify-tile-drop.ts"),
+    usesDist: true,
+  },
+  {
+    name: "verify:budgets",
+    group: "budgets",
+    phase: "browser",
+    command: fixed("bun", "scripts/verify-budgets.ts"),
+    usesDist: true,
+  },
+  {
+    name: "verify:pwa",
+    group: "pwa",
+    phase: "browser",
+    command: fixed("bun", "scripts/verify-pwa.ts"),
+    usesDist: true,
+  },
+  {
+    name: "verify:axioms",
+    group: "axioms",
+    phase: "browser",
+    command: fixed("bun", "scripts/verify-axioms.ts"),
+    usesDist: true,
+  },
 ];
 
-/**
- * Bounded fan-out for the per-package typechecks. Wave 1 doubled the package count to 17,
- * and 17 unbounded tsc processes peak past what a 32 GB box under normal desktop load can
- * give — the kernel reaps a few (SIGTERM, empty output) and the gate reads that as a
- * nondeterministic type failure. Six at a time keeps the wall clock flat on big machines
- * and the memory ceiling honest on small ones.
- */
+interface Options {
+  readonly list: boolean;
+  readonly only: string | null;
+}
+
+function usage(message: string): never {
+  console.error(`gate: ${message}\nusage: bun scripts/gate.ts [--list | --only <group-or-task>]`);
+  process.exit(2);
+}
+
+function parseArgs(argv: readonly string[]): Options {
+  let list = false;
+  let only: string | null = null;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === "--list") {
+      if (list) usage("--list may be specified only once");
+      list = true;
+      continue;
+    }
+    if (argument === "--only") {
+      if (only !== null) usage("--only may be specified only once");
+      const value = argv[index + 1];
+      if (value === undefined || value.startsWith("--")) usage("--only requires a value");
+      if (value === "") usage("--only requires a non-empty value");
+      only = value;
+      index += 1;
+      continue;
+    }
+    usage(`unknown argument ${JSON.stringify(argument)}`);
+  }
+  if (list && only !== null) usage("--list and --only cannot be combined");
+  return { list, only };
+}
+
+async function run(
+  task: GateTask,
+  dist: string | null,
+  displayName = task.name,
+): Promise<TaskResult> {
+  const started = performance.now();
+  const env = { ...process.env };
+  if (task.usesDist === true && dist !== null) env["MANIFOLD_GATE_DIST"] = dist;
+  else delete env["MANIFOLD_GATE_DIST"];
+  const child = Bun.spawn([...task.command(dist)], {
+    cwd: task.cwd ?? repoRoot,
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  const seconds = (performance.now() - started) / 1000;
+  const result = {
+    name: displayName,
+    ok: exitCode === 0,
+    seconds,
+    output: `${stdout}${stderr}`,
+  };
+  console.log(`${result.ok ? "PASS" : "FAIL"}  ${displayName} (${seconds.toFixed(1)}s)`);
+  if (!result.ok) console.log(result.output);
+  return result;
+}
+
+/** Six-wide locally: compilers, eslint, and Bun tests all have material memory footprints. */
 async function runLimited(
   limit: number,
   jobs: readonly (() => Promise<TaskResult>)[],
@@ -101,82 +306,120 @@ async function runLimited(
   return results;
 }
 
-try {
-  // The in-app history is untracked and generated from CHANGELOG.md + changes/*.md: the web
-  // typecheck and the shared bundle both import it, so it is produced before either starts.
-  const generated = await run("changelog:generate", ["bun", "scripts/generate-web-changelog.ts"]);
-  if (!generated.ok) {
-    console.log("\ngate: RED\n - changelog:generate");
-    process.exit(1);
-  }
+async function runWithRetry(task: GateTask, dist: string | null): Promise<TaskResult> {
+  const first = await run(task, dist);
+  if (first.ok || task.retry !== true) return first;
+  return run(task, dist, `${task.name} (retry 1)`);
+}
 
-  const build = run(
-    "build:web (shared dist)",
-    ["bunx", "vite", "build", "--outDir", sharedDist, "--emptyOutDir"],
-    join(repoRoot, "packages", "web"),
-  );
-
-  // Everything that is not a browser gate rides one bounded pool: eslint's compiler pass
-  // and bun's test runners are as memory-hungry as tsc, and any of them reaped under
-  // pressure reads as a phantom failure with empty output.
-  const staticChecks = runLimited(6, [
-    ...packages.map((name) => () => run(`tsc ${name}`, ["bunx", "tsc", "-p", `packages/${name}`])),
-    () => run("tsc scripts", ["bunx", "tsc", "-p", "tsconfig.scripts.json"]),
-    () => run("changelog:check", ["bun", "scripts/generate-web-changelog.ts", "--check"]),
-    /*
-      The trace gate rides the STATIC pool rather than the browser one: it spawns a server of
-      its own on an ephemeral port and dispatches over HTTP, so it costs a process rather than
-      a Chromium, and it is a claim about the dispatch ladder rather than about a rendered
-      surface (axiom A6, ADR 0018).
-     */
-    () => run("verify:trace", ["bun", "scripts/verify-trace.ts"]),
-    () => run("lint", ["bunx", "eslint", "."]),
-    () => run("format:check", ["bunx", "prettier", "--check", "."]),
-    () =>
-      run("unit tests", [
-        "bun",
-        "test",
-        ...packages.filter((name) => name !== "testkit").map((name) => `packages/${name}`),
-      ]),
-    () => run("e2e (testkit)", ["bun", "test", "packages/testkit", "--timeout", "60000"]),
-  ]);
-
-  const built = await build;
-  // The static pool must DRAIN before the browser gates start: each browser gate is a
-  // server + one or two real Chromiums, and running them beside six compilers is what
-  // put this box over its ceiling — the kernel reaps a compiler and the gate reads a
-  // phantom failure with empty output. Two phases cost ~40s of wall clock; a phantom
-  // RED costs a human diagnosing a failure that does not exist.
-  const statics = await staticChecks;
-  // verify:convergence drives TWO real browsers for ~3 minutes and is the one gate that
-  // flakes under load (cold caches right after the static pool drains). It runs alone and
-  // gets ONE retry — visibly: a pass-on-retry is reported as such, never silently green.
-  let convergence: TaskResult[] = [];
-  if (built.ok) {
-    const first = await run("verify:convergence", ["bun", "scripts/verify-convergence.ts"]);
-    convergence = first.ok
-      ? [first]
-      : [await run("verify:convergence (retry 1)", ["bun", "scripts/verify-convergence.ts"])];
-  }
-  const browserGates = built.ok
-    ? await runLimited(2, [
-        () => run("verify:terminal-selection", ["bun", "scripts/verify-terminal-selection.ts"]),
-        () => run("verify:terminal-mirror", ["bun", "scripts/verify-terminal-mirror.ts"]),
-        () => run("verify:tile-drop", ["bun", "scripts/verify-tile-drop.ts"]),
-        () => run("verify:budgets", ["bun", "scripts/verify-budgets.ts"]),
-        () => run("verify:pwa", ["bun", "scripts/verify-pwa.ts"]),
-        () => run("verify:axioms", ["bun", "scripts/verify-axioms.ts"]),
-      ])
-    : [];
-
-  const results = [built, ...statics, ...convergence, ...browserGates];
+function report(results: readonly TaskResult[]): number {
   const failed = results.filter((result) => !result.ok);
   console.log(
     failed.length === 0
       ? "\ngate: GREEN"
       : `\ngate: RED\n${failed.map((result) => ` - ${result.name}`).join("\n")}`,
   );
-  process.exit(failed.length === 0 ? 0 : 1);
-} finally {
-  rmSync(distParent, { recursive: true, force: true });
+  return failed.length === 0 ? 0 : 1;
 }
+
+const options = parseArgs(process.argv.slice(2));
+if (options.list) {
+  for (const task of tasks) console.log(`${task.group}\t${task.name}`);
+  process.exit(0);
+}
+
+const configuredDist = process.env["MANIFOLD_GATE_DIST"] ?? "";
+if (configuredDist !== "" && !isAbsolute(configuredDist)) {
+  usage("MANIFOLD_GATE_DIST must be an absolute path");
+}
+let createdDistParent: string | null = null;
+const dist = (): string => {
+  if (configuredDist !== "") return configuredDist;
+  createdDistParent ??= mkdtempSync(join(tmpdir(), "manifold-gate-"));
+  return join(createdDistParent, "dist");
+};
+
+async function selected(selector: string): Promise<number> {
+  const matching = tasks.filter((task) => task.group === selector || task.name === selector);
+  if (matching.length === 0) usage(`unknown task or group ${JSON.stringify(selector)}`);
+
+  const results: TaskResult[] = [];
+  // Registry order is significant for the build group: generated history must exist before Vite.
+  if (matching.some((task) => task.phase === "build" || task.phase === "prepare")) {
+    for (const task of matching) {
+      const result = await runWithRetry(task, task.usesDist === true ? dist() : null);
+      results.push(result);
+      if (!result.ok) break;
+    }
+  } else {
+    const selectedDist = configuredDist === "" ? null : configuredDist;
+    if (
+      selectedDist !== null &&
+      matching.some((task) => task.usesDist === true) &&
+      !existsSync(join(selectedDist, "index.html"))
+    ) {
+      usage(`MANIFOLD_GATE_DIST has no index.html: ${selectedDist}`);
+    }
+    const regular = matching.filter((task) => task.phase !== "post-static");
+    results.push(
+      ...(await runLimited(
+        6,
+        regular.map(
+          (task) => () => runWithRetry(task, task.usesDist === true ? selectedDist : null),
+        ),
+      )),
+    );
+    for (const task of matching.filter((candidate) => candidate.phase === "post-static")) {
+      results.push(await runWithRetry(task, task.usesDist === true ? selectedDist : null));
+    }
+  }
+  return report(results);
+}
+
+async function localGate(): Promise<number> {
+  const prepare = tasks.find((task) => task.phase === "prepare");
+  const build = tasks.find((task) => task.phase === "build");
+  if (prepare === undefined || build === undefined)
+    throw new Error("gate registry lacks build tasks");
+
+  // Generated history is imported by both the web typecheck and the bundle.
+  const generated = await run(prepare, null);
+  if (!generated.ok) return report([generated]);
+
+  const sharedDist = dist();
+  const building = run(build, sharedDist);
+  const staticChecks = runLimited(
+    6,
+    tasks
+      .filter((task) => task.phase === "static")
+      .map((task) => () => run(task, task.usesDist === true ? sharedDist : null)),
+  );
+
+  const built = await building;
+  // Hard drain before Chromium: browser processes beside six compilers exceed the local ceiling.
+  const statics = await staticChecks;
+  let postStatics: TaskResult[] = [];
+  let convergence: TaskResult[] = [];
+  let browsers: TaskResult[] = [];
+  if (built.ok) {
+    const postStaticTask = tasks.find((task) => task.phase === "post-static");
+    if (postStaticTask === undefined) throw new Error("gate registry lacks post-static");
+    postStatics = [await run(postStaticTask, sharedDist)];
+    const convergenceTask = tasks.find((task) => task.phase === "convergence");
+    if (convergenceTask === undefined) throw new Error("gate registry lacks convergence");
+    convergence = [await runWithRetry(convergenceTask, sharedDist)];
+    browsers = await runLimited(
+      2,
+      tasks.filter((task) => task.phase === "browser").map((task) => () => run(task, sharedDist)),
+    );
+  }
+  return report([built, ...statics, ...postStatics, ...convergence, ...browsers]);
+}
+
+let exitCode: number;
+try {
+  exitCode = options.only === null ? await localGate() : await selected(options.only);
+} finally {
+  if (createdDistParent !== null) rmSync(createdDistParent, { recursive: true, force: true });
+}
+process.exit(exitCode);
