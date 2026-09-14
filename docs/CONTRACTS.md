@@ -3146,10 +3146,14 @@ provider handling and postconditions belong to plugins, never the common floor.
   with `cachedInputTokens` named inside it, the way every usage total states it; `cacheWrite` is
   read by nothing, because a policy has no price column for it. Unreadable usage on a 2xx is
   `service_response_invalid`, counts as a call and latches that job's metered lane closed so
-  missing usage cannot evade token or cost ceilings — and on `pi-native-usage`, where a stream
-  without a usage frame is a turn that did not complete, the journaled call carries that refusal's
-  status rather than the 2xx the provider began with, so no such call reads as a success that
-  happened to cost nothing.
+  missing usage cannot evade token or cost ceilings. On `pi-native-usage` two shapes are turns that
+  did not complete, and neither is journaled as the 2xx the provider began the stream with: a
+  stream that ends with no usage frame carries that refusal's own status, and an `error` terminal
+  frame — which is how that wire states every upstream failure and every abort, after bytes the
+  caller has already read — carries the status that frame states (`errorStatus`) or a bad gateway
+  when it states none, with whatever usage it states still counted and the job's lane left open,
+  because a failure the provider stated is an answer it gave rather than a body nothing can read.
+  So no such call reads as a success that happened to cost nothing.
   Prices are policy content in integer micro-dollars, pinned by the policy's `revision`; ceilings
   are the job's `limits.inference`, and an operation's declared ceiling can be lowered by a request
   but never dropped (`limit_exceeded`). The owner serializes metered calls across every service

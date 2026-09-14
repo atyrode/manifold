@@ -752,6 +752,83 @@ test("a pi-native stream that ends with no usage frame is a refused call, not a 
   }
 });
 
+test("a pi-native turn the provider failed is journaled with that failure's own status", async () => {
+  // This wire's canonical `error` terminal, which is how the gateway the kind exists for projects
+  // every upstream failure and every abort: on a stream it has already answered 200, after
+  // deltas the caller has already read. The first states what the failed turn cost and no status;
+  // the second states the provider's own status with the zeroed usage the gateway sends.
+  const billed = [
+    ...piFrames.slice(0, 2),
+    `data: ${JSON.stringify({ type: "error", reason: "error", error: { role: "assistant", content: [], model: "m-1", stopReason: "error", errorMessage: "upstream_error", usage: { input: 1000, output: 500, cacheRead: 400, cacheWrite: 250, totalTokens: 2150 } } })}\n\n`,
+    "data: [DONE]\n\n",
+  ];
+  const projected = [
+    ...piFrames.slice(0, 1),
+    `data: ${JSON.stringify({ type: "error", reason: "error", error: { role: "assistant", content: [], model: "m-1", stopReason: "error", errorStatus: 529, errorMessage: "gateway_unavailable", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 } } })}\n\n`,
+    "data: [DONE]\n\n",
+  ];
+  const streams = [billed, projected];
+  const source = await upstream(async (_request, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    for (const frame of streams.shift() ?? []) await writeFlushed(response, frame);
+    response.end();
+  });
+  const owner = ledger();
+  const proxy = await proxyFor(source.origin, owner.metering);
+  try {
+    const failure = await send(proxy, { path: "/v1/pi/stream", body: piAsked });
+    // The caller reads the failure the provider sent, byte for byte. The journal does not read
+    // that stream's opening 200 as the turn's outcome, and keeps what the turn stated it cost.
+    expect(failure.status).toBe(200);
+    expect(failure.body).toBe(billed.join(""));
+    expect(owner.calls[0]).toMatchObject({
+      serviceId: binding.serviceId,
+      operationId: "stream",
+      model: "m-1",
+      inputTokens: 1400,
+      outputTokens: 500,
+      cachedInputTokens: 400,
+      costMicros: 11700,
+      status: 502,
+    });
+    // A failure the provider stated is an answer it gave: the lane is not latched, so the next
+    // call is admitted and reaches the provider.
+    const overloaded = await send(proxy, { path: "/v1/pi/stream", body: piAsked });
+    expect(overloaded.status).toBe(200);
+    expect(overloaded.body).toBe(projected.join(""));
+    expect(owner.calls[1]).toMatchObject({
+      model: "m-1",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      costMicros: 0,
+      status: 529,
+    });
+    expect(
+      JobEventSchema.safeParse({
+        type: "inference_call",
+        jobId: "job-1",
+        requestDigest: "b".repeat(64),
+        ownerId: "owner-1",
+        ownerGeneration: 3,
+        ...owner.calls[1],
+      }).success,
+    ).toBe(true);
+    expect(source.calls).toBe(2);
+    expect(owner.ceilings).toEqual([]);
+    expect(owner.usage).toEqual({
+      calls: 2,
+      inputTokens: 1400,
+      outputTokens: 500,
+      cachedInputTokens: 400,
+      costMicros: 11700,
+    });
+  } finally {
+    await proxy.close();
+    await source.close();
+  }
+});
+
 test("a pi-native call names its model as that wire spells it, or never reaches the provider", async () => {
   const source = await upstream((_request, response) => {
     response.writeHead(200, { "content-type": "application/json" });

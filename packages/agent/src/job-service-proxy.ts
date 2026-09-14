@@ -222,6 +222,9 @@ type MeteredUsage = {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  /** Set when the wire's own terminal frame states the turn failed: the numbers are still the
+   * bill, but the status to journal is this one, never the 2xx such a stream began with. */
+  failedStatus?: number;
 };
 function tokenCount(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
@@ -262,23 +265,37 @@ function readUsage(value: unknown): MeteredUsage | undefined {
  * answer - never on a delta's rolling `partial`, which is not the turn's bill. `input` is the
  * fresh input bucket and `cacheRead` the cached one, where OpenAI's `prompt_tokens` is already
  * their sum: the protocol counts one input total with the cached part named inside it, so the two
- * are added back. `cacheWrite` is read by nobody - the policy has no price column for it. */
+ * are added back. `cacheWrite` is read by nobody - the policy has no price column for it.
+ * An `error` terminal is a turn that failed or was aborted - which is how this wire projects every
+ * upstream failure, on a stream it has already begun with a 2xx - so its numbers are read like any
+ * other turn's and the call is marked failed: what it cost is still spent, but it did not
+ * complete. */
 function readPiNativeUsage(value: unknown): MeteredUsage | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const body = value as Record<string, unknown>;
-  const terminal =
+  const answer =
     typeof body.message === "object" && body.message !== null
       ? (body.message as Record<string, unknown>)
-      : typeof body.error === "object" && body.error !== null
-        ? (body.error as Record<string, unknown>)
-        : undefined;
-  const reported = body.usage ?? terminal?.usage;
+      : undefined;
+  const failed =
+    !answer && typeof body.error === "object" && body.error !== null
+      ? (body.error as Record<string, unknown>)
+      : undefined;
+  const reported = body.usage ?? answer?.usage ?? failed?.usage;
   if (typeof reported !== "object" || reported === null) return undefined;
   const usage = reported as Record<string, unknown>;
   const input = tokenCount(usage.input);
   const output = tokenCount(usage.output);
   if (input === undefined || output === undefined) return undefined;
   const cached = tokenCount(usage.cacheRead) ?? 0;
+  // A failed turn is journaled with the status that message states - `errorStatus` is the
+  // provider's own, set by every provider's catch block on this wire - and with a bad gateway
+  // when it states none or states a success, which is not an outcome a failure may report.
+  const stated = failed?.errorStatus;
+  const failedStatus =
+    typeof stated === "number" && Number.isInteger(stated) && stated >= 400 && stated <= 599
+      ? stated
+      : UNREADABLE_USAGE;
   return {
     // The model is the one the request named: this wire reports no model id of its own, and the
     // operator who chose it must read back what they chose.
@@ -286,6 +303,7 @@ function readPiNativeUsage(value: unknown): MeteredUsage | undefined {
     inputTokens: input + cached,
     outputTokens: output,
     cachedInputTokens: cached,
+    ...(failed ? { failedStatus } : {}),
   };
 }
 /** One reader per kind, exhaustive by construction: a new kind is a new entry here, never a
@@ -1072,16 +1090,19 @@ export async function createJobServiceProxy(
             cachedInputTokens: counted?.cachedInputTokens ?? 0,
             costMicros: counted ? callCost(priceOf(entry.policy, requestModel), counted) : 0,
             elapsedMs: Date.now() - startedAt,
-            // The pi-native wire states a turn's usage in the terminal frame it always sends, so
-            // a 2xx that ends without one did not complete a turn: it is reported as the refusal
-            // the caller was answered with, never as a success that happened to cost nothing.
-            // The OpenAI kind keeps reporting the provider's own status, where a missing frame is
-            // a provider ignoring the `stream_options` the proxy added and the 2xx it sent is the
-            // fact to record.
+            // Two shapes of the pi-native wire are turns that did not complete, and neither is
+            // journaled as the 2xx the provider began the stream with: a terminal frame that
+            // states a failure carries that failure's own status, and a stream that ends with no
+            // terminal frame at all carries the refusal the caller was answered with. A failure
+            // the provider states is still an answer it gave, so it does not latch the lane the
+            // way an unreadable body does. The OpenAI kind keeps reporting the provider's own
+            // status, where a missing frame is a provider ignoring the `stream_options` the proxy
+            // added and the 2xx it sent is the fact to record.
             status:
-              !counted && answered && metering.kind === "pi-native-usage"
+              counted?.failedStatus ??
+              (!counted && answered && metering.kind === "pi-native-usage"
                 ? UNREADABLE_USAGE
-                : meteredStatus,
+                : meteredStatus),
           });
         }
       } finally {

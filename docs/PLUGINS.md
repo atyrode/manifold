@@ -1813,10 +1813,10 @@ response or from the final usage frame of an SSE stream. Nothing else of the req
 response is read, kept or logged, and the bytes reach the caller unchanged. The `kind` says which
 wire the operation speaks, and it is the wire the upstream actually speaks, not a preference:
 
-| `kind`            | The request must name                        | Tokens are read from                                                                                                                               | The owner amends                                          |
-| ----------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| `openai-usage`    | `model`                                      | `prompt_tokens`/`completion_tokens` or `input_tokens`/`output_tokens`, with `prompt_tokens_details.cached_tokens`                                  | `stream_options.include_usage` on a streamed chat request |
-| `pi-native-usage` | `modelId`, beside a `context.messages` array | `usage.input`, `usage.output`, `usage.cacheRead` on the terminal frame (`done`'s `message`, `error`'s `error`, or a non-streamed body's `message`) | nothing                                                   |
+| `kind`            | The request must name                        | Tokens are read from                                                                                                                                                | The owner amends                                          |
+| ----------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `openai-usage`    | `model`                                      | `prompt_tokens`/`completion_tokens` or `input_tokens`/`output_tokens`, with `prompt_tokens_details.cached_tokens`                                                   | `stream_options.include_usage` on a streamed chat request |
+| `pi-native-usage` | `modelId`, beside a `context.messages` array | `usage.input`, `usage.output`, `usage.cacheRead` on the terminal frame (`done`'s `message`, a failed or aborted turn's `error`, or a non-streamed body's `message`) | nothing                                                   |
 
 `pi-native-usage` is pi-ai's own wire (`POST /v1/pi/stream`), where `input` is the fresh input
 bucket and `cacheRead` the cached one: the call is reported with their sum as `inputTokens` and
@@ -1829,6 +1829,12 @@ A 2xx response on a metered operation whose usage the meter cannot read is
 makes every later metered call in the job return the same. On `pi-native-usage`, where the wire
 always ends a turn with its usage, that call is journaled with the refusal's own status rather
 than the 2xx the provider began with, so it cannot be read as a call that simply cost nothing.
+An `error` terminal frame is that same wire stating the turn failed or was aborted — which is how
+a gateway projects every upstream failure, on a stream it has already answered 200 and after
+deltas the caller has already read. The usage that frame states is counted and priced like any
+other turn's, the call is journaled with the status the frame states (`errorStatus`) or 502 when
+it states none, and the job's lane stays open: a failure the provider stated is an answer it gave,
+not a body nothing can read.
 
 Prices are the owner's, not the caller's: the policy carries
 `prices: { models: { "<model id>": { inputPerMillion, outputPerMillion, cachedInputPerMillion? } }, default? }`
