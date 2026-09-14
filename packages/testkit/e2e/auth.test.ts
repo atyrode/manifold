@@ -658,6 +658,7 @@ test("a revoked preview browser identity returns through production admission wi
         source: `(() => {
           const fetch = window.fetch.bind(window);
           window.__protectedIdentityRequests = 0;
+          window.__protectedIdentityStatuses = [];
           window.fetch = async (input, init) => {
             const path = new URL(input, location.href).pathname;
             if (path === '/api/plugins') window.__protectedIdentityRequests++;
@@ -670,7 +671,9 @@ test("a revoked preview browser identity returns through production admission wi
                 code: 'unavailable', message: 'Admission temporarily unavailable'
               } }, { status: 503 });
             }
-            return fetch(input, init);
+            const response = await fetch(input, init);
+            if (path === '/api/plugins') window.__protectedIdentityStatuses.push(response.status);
+            return response;
           };
         })()`,
       });
@@ -700,6 +703,7 @@ test("a revoked preview browser identity returns through production admission wi
             identityName: boolean;
             identityPresent: boolean;
             protectedIdentityRequests: number | null;
+            protectedIdentityStatuses: number[] | null;
           }>(`({
             origin: location.origin,
             pathname: location.pathname,
@@ -712,6 +716,10 @@ test("a revoked preview browser identity returns through production admission wi
             protectedIdentityRequests:
               typeof window.__protectedIdentityRequests === 'number'
                 ? window.__protectedIdentityRequests
+                : null,
+            protectedIdentityStatuses:
+              Array.isArray(window.__protectedIdentityStatuses)
+                ? window.__protectedIdentityStatuses
                 : null
           })`);
           throw new Error(
