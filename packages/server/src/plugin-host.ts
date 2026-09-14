@@ -1,5 +1,6 @@
 import {
   AssemblyError,
+  ENGINE_AUTHOR_ACTION,
   ENGINE_DEVELOPER_MODE_EVENT,
   ENGINE_INSTALLED_EVENT,
   ENGINE_UNINSTALLED_EVENT,
@@ -147,7 +148,12 @@ import {
   type IsolateRunner,
 } from "./isolate/contract.ts";
 import { localActionDef } from "./isolate/proxy-def.ts";
-import { normalizeAgentDeclaration, redactFields, type Logger } from "./log.ts";
+import {
+  normalizeAgentDeclaration,
+  projectPluginAuthorFacts,
+  redactFields,
+  type Logger,
+} from "./log.ts";
 import type { PlaceExecutor } from "./placement.ts";
 import {
   openPluginDatabase,
@@ -973,15 +979,18 @@ function traceContainer(auth: AuthContext, rawArgs: unknown): string | null {
 const RESERVED_TRACE_KEYS = ["origin", "parentTrace", "agentDeclaration"] as const;
 
 /**
- * The arguments as the ledger keeps them: redacted by the one field rule the log already
- * applies (`redactFields`), stripped of the reserved attribution names, then bounded.
+ * The arguments as the ledger keeps them. The authoring door is projected to bounded audit
+ * facts before anything durable sees it: its `files` values are executable source, not audit
+ * data. Every other door retains the shared recursive secret/terminal field redaction, reserved
+ * provenance stripping, and oversize shaping.
  *
  * A body that is not an object records as empty rather than as itself. Every door's input is a
  * `z.strictObject`, so a non-object body is a malformed request the `invalid_args` rung is
  * about to name — and the ledger's payload column is a map of a door's named arguments, not a
  * place to keep whatever JSON a stranger posted.
  */
-function tracePayload(rawArgs: unknown): Record<string, unknown> {
+function tracePayload(door: string, rawArgs: unknown): Record<string, unknown> {
+  if (door === ENGINE_AUTHOR_ACTION) return projectPluginAuthorFacts(rawArgs);
   if (rawArgs === null || typeof rawArgs !== "object" || Array.isArray(rawArgs)) return {};
   // `redactFields` answers with a fresh object, so this drops nothing a caller can observe.
   const redacted = redactFields(rawArgs as Record<string, unknown>);
@@ -3365,7 +3374,7 @@ export class PluginHost {
       entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap)) ||
       entry.def.delegates?.some((cap) => GOVERNED_CAPS.includes(cap)) === true;
     const payload: Record<string, unknown> = {
-      ...(opaque ? {} : tracePayload(rawArgs)),
+      ...(opaque ? {} : tracePayload(fullName, rawArgs)),
       ...traceOrigin(options.origin),
     };
     const attribution: TraceAttribution = {

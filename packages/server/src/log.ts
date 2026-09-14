@@ -1,5 +1,6 @@
 import {
   AGENT_JUSTIFICATION_MAX_LENGTH,
+  PluginIdSchema,
   type LogEvent,
   type RuntimeDeps,
 } from "@manifold/protocol";
@@ -22,23 +23,43 @@ export interface Logger {
 }
 
 /**
- * THE ONE REDACTION RULE, by field name.
+ * THE GENERIC REDACTION RULE, by field name.
  *
  * It was written for the JSONL stream and is now also what the trace ledger writes an
- * argument object through (axiom A6, ADR 0018 §5): both are durable records of what a
- * principal did, and "which fields may never leave the process" is one question with one
- * answer (docs/CONTRACTS.md §One authoritative implementation). `SECRET_FIELD` is docs/CONTRACTS.md §Data and credential boundaries — no owner key, no token, no
- * bearer secret, anywhere — and `TERMINAL_FIELD` is docs/CONTRACTS.md §Data and credential boundaries: terminal bytes are never
- * persisted, so an argument carrying them cannot be persisted either.
+ * ordinary argument object through (axiom A6, ADR 0018 §5): both are durable records of what a
+ * principal did, and generic secrets need one shared answer. `SECRET_FIELD` is
+ * docs/CONTRACTS.md §Data and credential boundaries — no owner key, token or bearer secret,
+ * anywhere — and `TERMINAL_FIELD` applies the same law to terminal bytes. A door with a typed
+ * sensitive body, such as authored source, must project its explicit safe facts before this
+ * generic boundary rather than teaching this name matcher a second action vocabulary.
  *
  * Matching by NAME rather than by declaration is deliberate. A per-action `redact` list would
- * be a second vocabulary a door author must remember to fill in, and the failure mode of
+ * be another vocabulary a door author must remember to fill in, and the failure mode of
  * forgetting is a secret in the ledger; a name rule fails the other way — an innocent field
  * called `key` is dropped from a record — which costs an auditor one field and costs nobody a
  * credential.
  */
 const SECRET_FIELD = /(token|key|authorization|secret|password|passwd|credential|passphrase)/i;
 const TERMINAL_FIELD = /^(data|env|payload|terminalData)$/i;
+
+/**
+ * The facts a durable record may retain about one authoring request. Source values and
+ * attacker-controlled file names are never inspected: the plugin id and changed-file count
+ * are enough to attribute the operation, and preserve the existing `plugin_authored` shape.
+ */
+export function projectPluginAuthorFacts(rawArgs: unknown): Record<string, unknown> {
+  if (rawArgs === null || typeof rawArgs !== "object" || Array.isArray(rawArgs)) return {};
+  const plugin = PluginIdSchema.safeParse(Reflect.get(rawArgs, "id"));
+  const rawFiles: unknown = Reflect.get(rawArgs, "files");
+  const files =
+    rawFiles !== null && typeof rawFiles === "object" && !Array.isArray(rawFiles)
+      ? Object.keys(rawFiles).length
+      : 0;
+  return {
+    ...(plugin.success ? { plugin: plugin.data } : {}),
+    files,
+  };
+}
 
 /**
  * A bounded, untrusted agent claim suitable for the existing trace payload and its readers.
