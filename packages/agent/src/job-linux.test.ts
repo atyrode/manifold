@@ -242,7 +242,10 @@ test("a bound input must be a readonly directory at its own /inputs name, never 
       expect(() => preflightLinuxJob({ ...f.spec, boundInputs: [bind] })).toThrow();
     }
     expect(() =>
-      preflightLinuxJob({ ...f.spec, boundInputs: [{ fd: source.fd, target: "/inputs", writable: false }] }),
+      preflightLinuxJob({
+        ...f.spec,
+        boundInputs: [{ fd: source.fd, target: "/inputs", writable: false }],
+      }),
     ).toThrow("unsafe-bound-input");
     // One `/inputs/<name>` namespace: an input file and a bound input cannot claim one name.
     expect(() =>

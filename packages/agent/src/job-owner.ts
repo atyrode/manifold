@@ -2271,8 +2271,7 @@ export class MachineJobOwner {
       // charge every binding against one aggregate budget rather than each against the whole.
       let inputBudget = request.limits.inputBytes ?? request.limits.outputBytes;
       for (const binding of request.inputs ?? []) {
-        if (!(operation.inputs ?? []).includes(binding.name))
-          throw new Error("undeclared_input");
+        if (!(operation.inputs ?? []).includes(binding.name)) throw new Error("undeclared_input");
         if (job.boundInputs.some((input) => input.name === binding.name))
           throw new Error("duplicate_input");
         const store = this.options.boundInputs;

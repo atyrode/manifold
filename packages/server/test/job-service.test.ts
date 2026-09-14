@@ -5270,7 +5270,11 @@ describe("a job input bound to an earlier job's sealed output", () => {
       pluginId: plugin,
       installationRevision: "r1",
       artifactSha256: hash,
-      node: formatManifoldUri({ kind: "operation", machineId: f.machineId, operationId: operation }),
+      node: formatManifoldUri({
+        kind: "operation",
+        machineId: f.machineId,
+        operationId: operation,
+      }),
       cap,
       enabled,
     });
@@ -5368,7 +5372,9 @@ describe("a job input bound to an earlier job's sealed output", () => {
     const f = bound();
     try {
       seal(f);
-      const job = consume(f, [{ name: "material", from: { jobId: "producer", output: "material" } }]);
+      const job = consume(f, [
+        { name: "material", from: { jobId: "producer", output: "material" } },
+      ]);
       expect(job.state).toBe("start-committed");
       expect(job.request.inputs).toEqual([
         { name: "material", from: { jobId: "producer", output: "material" } },

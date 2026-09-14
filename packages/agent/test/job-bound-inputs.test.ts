@@ -19,30 +19,33 @@ function fixture(run: (context: { root: string; store: JobBoundInputStore }) => 
   }
 }
 
-linuxTest("an extraction root a group could read is refused, and residue never survives open", () => {
-  const root = mkdtempSync(join(tmpdir(), "job-bound-inputs-"));
-  try {
-    mkdirSync(join(root, "shared"), { mode: 0o750 });
-    const shared = HeldDirectory.openAbsolute(join(root, "shared"));
+linuxTest(
+  "an extraction root a group could read is refused, and residue never survives open",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "job-bound-inputs-"));
     try {
-      expect(() => JobBoundInputStore.open(shared)).toThrow("input_store_not_private");
+      mkdirSync(join(root, "shared"), { mode: 0o750 });
+      const shared = HeldDirectory.openAbsolute(join(root, "shared"));
+      try {
+        expect(() => JobBoundInputStore.open(shared)).toThrow("input_store_not_private");
+      } finally {
+        shared.close();
+      }
+      // A crash leaves a tree belonging to a job that will never run again.
+      mkdirSync(join(root, "inputs", "stale", "nested"), { recursive: true, mode: 0o700 });
+      writeFileSync(join(root, "inputs/stale/nested/left-behind"), "orphan");
+      const directory = HeldDirectory.openAbsolute(join(root, "inputs"), { private: true });
+      try {
+        JobBoundInputStore.open(directory);
+        expect(directory.names()).toEqual([]);
+      } finally {
+        directory.close();
+      }
     } finally {
-      shared.close();
+      rmSync(root, { recursive: true, force: true });
     }
-    // A crash leaves a tree belonging to a job that will never run again.
-    mkdirSync(join(root, "inputs", "stale", "nested"), { recursive: true, mode: 0o700 });
-    writeFileSync(join(root, "inputs/stale/nested/left-behind"), "orphan");
-    const directory = HeldDirectory.openAbsolute(join(root, "inputs"), { private: true });
-    try {
-      JobBoundInputStore.open(directory);
-      expect(directory.names()).toEqual([]);
-    } finally {
-      directory.close();
-    }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+  },
+);
 
 linuxTest("a staged input is owner-only, and release takes its whole tree with it", () => {
   fixture(({ root, store }) => {

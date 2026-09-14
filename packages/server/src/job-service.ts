@@ -3522,8 +3522,7 @@ export class JobService {
     }
     // An input ceiling defaults to what this operation may itself produce, and only lowers.
     const inputCeiling = ceiling.inputBytes ?? ceiling.outputBytes;
-    if (limits.inputBytes !== undefined && limits.inputBytes > inputCeiling)
-      fail("limit_exceeded");
+    if (limits.inputBytes !== undefined && limits.inputBytes > inputCeiling) fail("limit_exceeded");
     const inputs = args.inputs ?? [];
     const inputReason = this.inputRefusal(auth, pluginId, args.machineId, op, inputs);
     if (inputReason) fail(inputReason);

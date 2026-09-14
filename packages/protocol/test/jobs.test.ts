@@ -254,9 +254,9 @@ test("a bound input is declared beside the input files it shares a namespace wit
     exports: ["report"],
   });
   // `/inputs/config.json` is already an input file; the same name cannot also be a directory.
-  expect(
-    MachineOperationSchema.safeParse({ ...operation, inputs: ["config.json"] }).success,
-  ).toBe(false);
+  expect(MachineOperationSchema.safeParse({ ...operation, inputs: ["config.json"] }).success).toBe(
+    false,
+  );
   expect(
     MachineOperationSchema.safeParse({ ...operation, inputs: ["material", "material"] }).success,
   ).toBe(false);
@@ -331,9 +331,9 @@ test("a request binds a named input to one sealed output of one job, and the inp
       })),
     }).success,
   ).toBe(false);
-  expect(JobRequestSchema.safeParse({ ...request, limits: { ...perJob, inputBytes: 0 } }).success).toBe(
-    false,
-  );
+  expect(
+    JobRequestSchema.safeParse({ ...request, limits: { ...perJob, inputBytes: 0 } }).success,
+  ).toBe(false);
   // An operation's own `inputBytes` is a per-job ceiling, so no invocation edge aggregates it.
   expect(jobLimits({ ...perJob, inputBytes: 2048 })).toEqual({ ...perJob, inputBytes: 2048 });
 });

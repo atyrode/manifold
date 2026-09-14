@@ -112,8 +112,7 @@ function header(path: string, size: number): Buffer {
 function parseHeader(block: Buffer): { path: string; size: number } | null {
   if (block.every((byte) => byte === 0)) return null;
   let sum = 0;
-  for (let index = 0; index < 512; index++)
-    sum += index >= 148 && index < 156 ? 32 : block[index]!;
+  for (let index = 0; index < 512; index++) sum += index >= 148 && index < 156 ? 32 : block[index]!;
   const text = (offset: number, length: number) =>
     block
       .subarray(offset, offset + length)
