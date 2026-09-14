@@ -457,9 +457,22 @@ try {
   browser = new Browser();
   await browser.launch();
   await browser.goto(`${origin}/#key=${ownerKey}`);
+  await until(
+    () =>
+      browser!.evaluate<boolean>(
+        "document.querySelector('input') !== null || document.querySelector('.workspace') !== null",
+      ),
+    10_000,
+    "owner admission rendered",
+  );
   if (await browser.evaluate<boolean>("document.querySelector('input') !== null")) {
     await browser.typeInto("input", "tile-drop-gate");
     await browser.clickTestId("identity-enter");
+    await until(
+      () => browser!.evaluate<boolean>("document.querySelector('.workspace') !== null"),
+      10_000,
+      "owner admission completed",
+    );
   }
   await browser.goto(`${origin}/p/${containerId}`);
   await until(
