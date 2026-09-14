@@ -111,6 +111,7 @@ test.skipIf(!realBackend)(
           JSON.stringify(
             PluginBundleSchema.parse({
               format: 1,
+              hardenedContract: 2,
               manifest: {
                 id: pluginId,
                 version: "1.0.0",
