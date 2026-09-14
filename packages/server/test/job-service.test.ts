@@ -303,8 +303,8 @@ test("v35 strict owner parser receives compatible operations only and bound-inpu
     consent(f, "machines:run");
     prove(f);
     const described = f.service.describe(f.root, { machineId: f.machineId, pluginId });
-    expect(described.operations[operationId]).toMatchObject({ ready: true, reason: null });
-    expect(described.operations[consumerId]).toMatchObject({
+    expect(described.operations?.[operationId]).toMatchObject({ ready: true, reason: null });
+    expect(described.operations?.[consumerId]).toMatchObject({
       ready: false,
       reason: "bound_inputs_protocol_unsupported",
     });
@@ -350,7 +350,7 @@ test("v35 owner refuses deferred bound-input operations without waiting for an i
       f.commands.filter((command) => command.type === "install" || command.type === "start"),
     ).toEqual([]);
     expect(
-      f.service.describe(f.root, { machineId: f.machineId, pluginId }).operations[operationId],
+      f.service.describe(f.root, { machineId: f.machineId, pluginId }).operations?.[operationId],
     ).toMatchObject({ ready: false, reason: "bound_inputs_protocol_unsupported" });
   } finally {
     f.store.close();

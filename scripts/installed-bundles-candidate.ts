@@ -29,7 +29,19 @@ export function restoreInstalledSnapshot(
       const bundlePath = join(dataDir, row.bundlePath);
       mkdirSync(join(dataDir, "plugins", row.pluginId), { recursive: true });
       writeFileSync(bundlePath, decoded, { flag: "wx", mode: 0o600 });
-      store.putPluginInstall({ ...row, bundlePath, source: bundlePath });
+      store.putPluginInstall({
+        pluginId: row.pluginId,
+        sha256: row.sha256,
+        source: bundlePath,
+        bundlePath,
+        grantedCaps: row.grantedCaps,
+        installedBy: row.installedBy,
+        installedAt: row.installedAt,
+        actions: row.actions,
+        ...(row.hardened === undefined ? {} : { hardened: row.hardened }),
+        ...(row.builtAgainst === undefined ? {} : { builtAgainst: row.builtAgainst }),
+        ...(row.mode === undefined ? {} : { mode: row.mode }),
+      });
       store.setPluginEnabled(row.pluginId, enabled, "installed-bundles", row.installedAt);
     }
     store.setDeveloperMode(parsed.developerMode);

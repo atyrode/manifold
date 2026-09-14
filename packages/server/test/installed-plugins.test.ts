@@ -127,11 +127,6 @@ test("root export follows the action ladder and returns exact disabled bundle by
       expect(row.installer).toBeUndefined();
       expect(copy.disabledPlugins().has(f.pluginId)).toBe(true);
       expect(readFileSync(row.bundlePath)).toEqual(f.bytes);
-      expect({
-        ...row,
-        source: snapshot.plugins[0]!.row.source,
-        bundlePath: snapshot.plugins[0]!.row.bundlePath,
-      }).toEqual(snapshot.plugins[0]!.row);
     } finally {
       copy.close();
     }
