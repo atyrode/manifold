@@ -904,8 +904,17 @@ function traceContainer(auth: AuthContext, rawArgs: unknown): string | null {
 }
 
 /**
+ * THE TWO PAYLOAD NAMES THE LEDGER KEEPS FOR ITSELF (ADR 0041 §5). `traceOrigin` is their one
+ * writer, and `tracePayload` drops them from every door's arguments, so a row carrying them
+ * always means a plugin opened that door — a client typing them into its own request body
+ * cannot attribute its dispatch to a plugin, on a loose door's committed row or on a strict
+ * door's write-ahead one.
+ */
+const RESERVED_TRACE_KEYS = ["origin", "parentTrace"] as const;
+
+/**
  * The arguments as the ledger keeps them: redacted by the one field rule the log already
- * applies (`redactFields`), then bounded.
+ * applies (`redactFields`), stripped of the reserved attribution names, then bounded.
  *
  * A body that is not an object records as empty rather than as itself. Every door's input is a
  * `z.strictObject`, so a non-object body is a malformed request the `invalid_args` rung is
@@ -914,7 +923,9 @@ function traceContainer(auth: AuthContext, rawArgs: unknown): string | null {
  */
 function tracePayload(rawArgs: unknown): Readonly<Record<string, unknown>> {
   if (rawArgs === null || typeof rawArgs !== "object" || Array.isArray(rawArgs)) return {};
+  // `redactFields` answers with a fresh object, so this drops nothing a caller can observe.
   const redacted = redactFields(rawArgs as Record<string, unknown>);
+  for (const reserved of RESERVED_TRACE_KEYS) delete redacted[reserved];
   const text = JSON.stringify(redacted);
   if (text.length <= TRACE_PAYLOAD_MAX_CHARS) return redacted;
   return { oversize: text.length, keys: Object.keys(redacted) };
@@ -953,10 +964,10 @@ interface DispatchOptions {
 }
 
 /**
- * The two keys a plugin-originated dispatch adds to its ledger row's payload. They are
- * attribution rather than arguments, which is why they are written AFTER the redacted body
- * and win a collision: a door that happens to take an `origin` argument must not be able to
- * make the ledger say a different plugin opened it.
+ * The two keys a plugin-originated dispatch adds to its ledger row's payload, and their ONE
+ * writer. They are attribution rather than arguments: {@link RESERVED_TRACE_KEYS} keeps them
+ * out of every redacted body, so neither a client nor a calling handler can make the ledger
+ * say a plugin opened a door it did not.
  */
 function traceOrigin(origin: DispatchOrigin | undefined): Readonly<Record<string, unknown>> {
   if (origin === undefined) return {};
@@ -2827,9 +2838,22 @@ export class PluginHost {
           its staged emissions flushing on ITS success — all of it is the existing path, which
           is why this verb adds no rung and cannot be a second denial ladder.
         */
-        const outcome = await this.dispatch(auth, door, request.input, session, {
-          origin: { plugin: caller, parentTrace, stack },
-        });
+        let outcome: ActionOutcome;
+        try {
+          outcome = await this.dispatch(auth, door, request.input, session, {
+            origin: { plugin: caller, parentTrace, stack },
+          });
+        } catch {
+          /*
+            A BROKEN CALLEE IS NOT A REFUSAL, and its error text is not the caller's to
+            publish. The callee's own row already settled `failed` and the host already logged
+            the throw with its message; what crosses the edge is the edge and the outcome, so a
+            SQLite constraint or a stack sentence from another plugin's internals can never
+            reach this caller's client — in realm or through the proxy, which is the whole
+            reason this is caught here rather than left to the two boundaries.
+          */
+          throw new ActionCallRefused("refused", `${caller} -> ${door} (failed)`);
+        }
         if (outcome.ok) return outcome.result;
         const { rule, message } = outcome.denial;
         if (rule === "unknown_action") throw new ActionCallRefused("unknown_action", door);

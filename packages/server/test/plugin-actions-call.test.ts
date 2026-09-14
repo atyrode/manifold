@@ -133,6 +133,15 @@ function pair(): readonly ServerPluginDef[] {
         input: z.strictObject({}),
         result: z.strictObject({}),
       }),
+      defineAction({
+        name: "loose",
+        title: "Accept any argument at all",
+        caps: [],
+        // The one door in the fixture that does NOT refuse unknown keys, so a forged
+        // attribution reaches a COMMITTED row rather than only a refused rung's.
+        input: z.looseObject({ word: z.string().min(1) }),
+        result: z.strictObject({ word: z.string() }),
+      }),
     ],
     handlers: {
       relay: async (ctx: ActionCtx, args: { word: string }) =>
@@ -156,6 +165,7 @@ function pair(): readonly ServerPluginDef[] {
         await ctx.actions.call({ plugin: CALLEE, action: "echo", input: { word: "staged" } });
         return { refused: "the caller changed its mind" };
       },
+      loose: async (_ctx: ActionCtx, args: { word: string }) => ({ word: args.word }),
     },
   };
   const callee: ServerPluginDef = {
@@ -188,6 +198,13 @@ function pair(): readonly ServerPluginDef[] {
         input: z.strictObject({}),
         result: z.strictObject({}),
       }),
+      defineAction({
+        name: "boom",
+        title: "Break, rather than refuse",
+        caps: [],
+        input: z.strictObject({}),
+        result: z.strictObject({}),
+      }),
     ],
     handlers: {
       echo: async (ctx: ActionCtx, args: { word: string }) => {
@@ -195,6 +212,9 @@ function pair(): readonly ServerPluginDef[] {
         return { word: args.word, principal: ctx.principal.id };
       },
       sulk: async () => ({ refused: "the callee says no" }),
+      boom: async () => {
+        throw new Error("secret: the callee's own table is missing");
+      },
     },
   };
   const stranger: ServerPluginDef = {
@@ -323,6 +343,67 @@ describe("a declared dependency's door", () => {
       origin: CALLER,
       parentTrace: caller.id,
     });
+    base.store.close();
+  });
+
+  test("a client cannot forge the reserved attribution keys, on a committed row or a refused one", async () => {
+    const base = await fixture();
+
+    // A LOOSE door, so the forged pair survives argument parsing and reaches a committed row.
+    expect(
+      await base.host.dispatch(base.owner, `${CALLER}.loose`, {
+        word: "hi",
+        origin: "test.evil",
+        parentTrace: 42,
+      }),
+    ).toEqual({ ok: true, result: { word: "hi" } });
+    // And a STRICT door, whose write-ahead row is written before the arguments are graded.
+    expect(
+      denial(
+        await base.host.dispatch(base.owner, `${CALLER}.relay`, {
+          word: "hi",
+          origin: "test.evil",
+          parentTrace: 42,
+        }),
+      ).rule,
+    ).toBe("invalid_args");
+
+    /*
+      `origin` and `parentTrace` are the LEDGER's names, not a door's: a reader auditing
+      `core.events.list` must be able to take a row carrying them as proof that a plugin opened
+      that door. Stripping them from every redacted body is what makes `traceOrigin` their one
+      writer, so a client typing them into its own request attributes nothing to anybody.
+    */
+    for (const door of [`${CALLER}.loose`, `${CALLER}.relay`]) {
+      const payload = JSON.parse(rowFor(base, door).payload) as Record<string, unknown>;
+      expect(payload).toEqual({ word: "hi" });
+    }
+    base.store.close();
+  });
+
+  test("a callee that THROWS is not a refusal, and its error text never reaches the caller", async () => {
+    const base = await fixture();
+
+    for (const proxy of [false, true]) {
+      const outcome = await base.host.dispatch(base.owner, `${CALLER}.probe`, {
+        plugin: CALLEE,
+        action: "boom",
+        input: {},
+        proxy,
+      });
+
+      // The edge and the outcome, and nothing of the callee's internals: another plugin's
+      // sentence — a constraint, a stack message — is not this caller's to publish, and the
+      // class stays one a client can switch on. Identical in realm and through the proxy.
+      expect(denial(outcome)).toEqual({
+        rule: "refused",
+        message: `refused: ${CALLER} -> ${CALLEE}.boom (failed)`,
+      });
+      expect(denial(outcome).message).not.toContain("secret");
+    }
+    // The two rows still tell the truth apart: the callee broke, the caller refused.
+    expect(rowFor(base, `${CALLEE}.boom`).outcome).toBe("failed");
+    expect(rowFor(base, `${CALLER}.probe`).outcome).toBe("refused");
     base.store.close();
   });
 

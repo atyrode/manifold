@@ -1241,10 +1241,14 @@ handler does not catch refuses the CALLER's dispatch with that same sentence on 
 `refused` rung, and the caller's staged emissions are dropped as any refusal drops them. The
 closed set and the depth bound are published at `GET /api/protocol` under
 `pluginContract.actionCall` (`actionCall.refusals`, `actionCall.maxDepth`, `actionCall.member`,
-`actionCall.args`); the ctx member also appears in `isolateContract.ctxMethods`. The callee's
-ledger row is an ordinary trace with the caller's principal as its actor and two reserved payload
-keys — `origin`, the calling plugin, and `parentTrace`, the row of the dispatch it was serving —
-written after the redacted arguments so a door taking an `origin` argument cannot overwrite them.
+`actionCall.args`); the ctx member also appears in `isolateContract.ctxMethods`. A callee that
+THROWS is not a refusal: its own row settles `failed` and the caller is told
+`refused: <caller> -> <callee>.<door> (failed)` — never the callee's error text, in realm or
+through the proxy. The callee's ledger row is an ordinary trace with the caller's principal as its
+actor and two reserved payload keys — `origin`, the calling plugin, and `parentTrace`, the row of
+the dispatch it was serving. They are the ledger's alone: `tracePayload` strips both names from
+every door's arguments (`RESERVED_TRACE_KEYS`), so a client cannot attribute its own dispatch to a
+plugin by typing them into a request body, on a committed row or on a refused rung's write-ahead one.
 
 **Disable RETAINS. Destruction is a separate verb.** Disabling gates a plugin's active surface and
 destroys nothing: scene records, `plugin_kv` rows, panel leaves in stored layouts, section slots and

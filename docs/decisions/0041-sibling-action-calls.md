@@ -83,6 +83,18 @@ surface.
    off is a composition refusal), and the caller stays enabled either way: there is no cascade
    (§5 rule 5).
 
+   **Open at the time of writing: the admissible-callee rule for engine builtins is pending the
+   operator's ruling (PR #576 review, finding 2).** The engine's own rows compose as manifests, so
+   as written a third-party plugin may declare `engine.plugins` (or `core.access`) a dependency and
+   open its administrative doors whenever an owner opens any of its own — under that owner's
+   principal, which the owner could exercise directly, but through a surface the install
+   affordance (ADR 0016 §5) does not show. The three options on the table are: accept as written
+   and have the install affordance list a row's declared edges as door access; refuse `engine.*`
+   (and/or `core.access`) callees regardless of the manifest, keeping the engine's own doors
+   client-only; or intersect the callee's caps with the caller's install grant (rejected below for
+   ordinary plugins). Nothing in this section is ratified until that ruling lands; §Context's
+   "adds no new consent surface" is the claim it decides.
+
 4. **Bounded by the trace, not by taste.** Each dispatch carries the plugin frames of its trace,
    caller last. A callee already on that stack is `dispatch_cycle` — including the caller itself,
    so a plugin reaching for its own door is refused rather than re-entering its own ladder — and a
@@ -97,8 +109,10 @@ surface.
    dispatch writes its own write-ahead trace (ADR 0018 §3) with the caller's principal as `actor`,
    the callee's full name as `door`, and two reserved payload keys — `origin`, the calling plugin,
    and `parentTrace`, the ledger row of the dispatch it was serving. They are attribution rather
-   than arguments, so they are written after the redacted body and win a collision: a door that
-   happens to take an `origin` argument cannot make the ledger say a different plugin opened it.
+   than arguments, and `tracePayload` drops both names from every door's redacted body
+   (`RESERVED_TRACE_KEYS`), so `traceOrigin` is their one writer: neither a client typing them
+   into its own request nor a calling handler can make the ledger say a plugin opened a door it
+   did not, on a committed row or on a refused rung's write-ahead one.
    One trace per frame, chained, with no second audit table — the ledger's one-writer rule
    (`scripts/verify-trace.ts` T1) is untouched.
 
@@ -111,6 +125,15 @@ surface.
    `capability: test.a -> test.b.echo (terminals:write capability required)`). A refusal the calling
    handler does not catch refuses the CALLER's dispatch with that same sentence, so a client learns
    which edge failed instead of reading a broken door, and nothing the caller staged goes out.
+
+   **A sibling's FAILURE is not a refusal.** A callee whose handler throws settles its own row
+   `failed` and the host logs the throw with its message; the caller is told
+   `refused: <caller> -> <callee>.<door> (failed)` and never the callee's error text, because
+   another plugin's internal sentence — a SQLite constraint, a stack message from its own
+   `ctx.database` — is not this caller's to publish to its client. The conversion happens in
+   `actionCalls` rather than at either boundary, so the in-realm and hardened answers are the same
+   sentence, and the two rows still tell the truth apart: the callee's `failed`, the caller's
+   `refused`.
 
 7. **The callee's dispatch is whole.** It is one ordinary dispatch, so its staged emissions flush on
    ITS success and the caller's stay staged until the caller returns (`plugin-host.ts` `run`); its
