@@ -620,9 +620,8 @@ The archive contains the owner key and preview-identity signing key — store it
 
 ## Replicate the database (optional)
 
-The image ships [Litestream](https://litestream.io) and runs it only when you ask.
-Four variables in `.env`, all required together, and any S3-compatible store works —
-a bucket at a cloud object store, MinIO on another box, anything speaking the S3 API:
+The image ships [Litestream](https://litestream.io) and runs it only when you ask. Four
+variables in `.env`, all required together, point it at an S3-compatible store:
 
 ```sh
 MANIFOLD_REPLICA_BUCKET=<bucket>
@@ -630,6 +629,26 @@ MANIFOLD_REPLICA_ENDPOINT=https://<s3 endpoint host>
 LITESTREAM_ACCESS_KEY_ID=<key id>
 LITESTREAM_SECRET_ACCESS_KEY=<secret>
 ```
+
+Treat the replica as a sensitive, authority-bearing backup, not as ordinary application data.
+`manifold.db` includes principals, grants and other authorization state, token and share hashes,
+installed-plugin state, and raw outbound `dials.secret` bearers when this hub connects to another
+instance. A storage administrator who can read the replica can recover those dial bearers; one
+who can replace it can replace authority and installed-plugin state on the next restore. Deleting
+the only replica before a volume-less boot makes the entrypoint start a new empty hub, which then
+becomes the new replica history.
+
+Use a dedicated bucket for each hub; the shipped config fixes the object path to `manifold.db`.
+If you maintain a custom Litestream config with a prefix, isolate that prefix to one hub instead.
+Give its credential only the object-list/read/write/delete permissions Litestream requires at that
+location; do not reuse a fleet-wide or general object-storage credential, and keep the secret with
+the hub's other deployment secrets. Its ordinary object deletes support Litestream's configured
+retention, but it should not be able to delete protected versions, bypass retention, or change
+bucket versioning, lifecycle, lock, or access policy. Put those administrative controls under a
+separate identity. Enable provider-appropriate versioning or immutable retention, deletion
+protection and recovery retention, then rehearse a restore. Transport security and encryption at
+rest are properties you must configure and verify with the chosen provider or endpoint:
+S3-compatible means API-compatible, not encrypted.
 
 With them set, the container's entrypoint (`infra/entrypoint.sh`) does two things and
 nothing else: if `/data/manifold.db` is absent, it restores the newest replica before the
@@ -649,10 +668,19 @@ store on a new host):
 docker compose exec manifold litestream restore -config /app/infra/litestream.yml -o /tmp/copy.db /data/manifold.db
 ```
 
-With replication on AND `MANIFOLD_OWNER_KEY` pinned in `.env`, the container needs no
-volume at all: a host with an ephemeral disk rebuilds `/data` from the replica on every
-boot. Note what the replica is not: it holds `manifold.db` only, never `owner.key`, so a
-pinned key is the one copy of that secret — keep it where you keep secrets.
+With replication on **and** `MANIFOLD_OWNER_KEY` pinned in `.env`, the container can rebuild its
+database on an ephemeral disk. The replica is `manifold.db` only: it does not contain `owner.key`,
+the preview-identity signing key, the agent token, installed plugin bundle files, per-plugin
+`plugins/<id>/data.db` databases, or adjacent `manifold.db.pre-vN.bak` migration snapshots.
+Preserve those separately as applicable; the [full `/data` archive](#backup) covers the files
+Litestream omits and is itself secret-bearing. A replica-only rebuild therefore cannot recover
+plugin-owned rows.
+
+Replica restore assumes the bucket or prefix is trusted for integrity. Protect the replica
+credential and storage write path as access to the hub's persisted authority, use one writer per
+replica, and restrict administrative write access accordingly. If your requirements include
+restoring from storage writable by an untrusted party, add an authenticity check whose
+verification secret lives outside that store; Manifold does not provide that mechanism.
 
 ## Rotating the owner key
 
