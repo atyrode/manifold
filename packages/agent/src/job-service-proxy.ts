@@ -24,6 +24,8 @@ import type { AuthorizeServiceCall, ResolveServiceCredential } from "./job-servi
 
 type ProxyOperation = Extract<ServicePolicy["operations"][string], { kind: "http-proxy" }>;
 type ModelPrice = NonNullable<ServicePolicy["prices"]>["models"][string];
+/** Which provider wire a metered operation speaks; the policy states it, the proxy never guesses. */
+type MeterKind = NonNullable<ProxyOperation["meter"]>["kind"];
 /** Totals and ceilings as the protocol states them; the proxy owns neither, it reads both. */
 export type JobInferenceUsage = NonNullable<NonNullable<JobResult["usage"]>["inference"]>;
 export type JobInferenceLimits = NonNullable<JobRequest["limits"]["inference"]>;
@@ -212,6 +214,9 @@ function contentType(value: string | undefined): string | undefined {
  * response limit the policy already states. */
 const METER_FRAME_BYTES = 4194304;
 const DATA_FIELD = Buffer.from("data:");
+/** What the caller is answered, and what the call is reported as, when a metered 2xx states no
+ * usage the meter can read: a refusal, not a success that happened to cost nothing. */
+const UNREADABLE_USAGE = 502;
 type MeteredUsage = {
   model: string | undefined;
   inputTokens: number;
@@ -252,6 +257,43 @@ function readUsage(value: unknown): MeteredUsage | undefined {
     cachedInputTokens: Math.min(cached ?? 0, inputTokens),
   };
 }
+/** Pi-ai's own wire, where a turn's numbers live on the canonical assistant message the terminal
+ * frame carries - `done`'s `message`, `error`'s `error`, or the whole body of a non-streamed
+ * answer - never on a delta's rolling `partial`, which is not the turn's bill. `input` is the
+ * fresh input bucket and `cacheRead` the cached one, where OpenAI's `prompt_tokens` is already
+ * their sum: the protocol counts one input total with the cached part named inside it, so the two
+ * are added back. `cacheWrite` is read by nobody - the policy has no price column for it. */
+function readPiNativeUsage(value: unknown): MeteredUsage | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const body = value as Record<string, unknown>;
+  const terminal =
+    typeof body.message === "object" && body.message !== null
+      ? (body.message as Record<string, unknown>)
+      : typeof body.error === "object" && body.error !== null
+        ? (body.error as Record<string, unknown>)
+        : undefined;
+  const reported = body.usage ?? terminal?.usage;
+  if (typeof reported !== "object" || reported === null) return undefined;
+  const usage = reported as Record<string, unknown>;
+  const input = tokenCount(usage.input);
+  const output = tokenCount(usage.output);
+  if (input === undefined || output === undefined) return undefined;
+  const cached = tokenCount(usage.cacheRead) ?? 0;
+  return {
+    // The model is the one the request named: this wire reports no model id of its own, and the
+    // operator who chose it must read back what they chose.
+    model: undefined,
+    inputTokens: input + cached,
+    outputTokens: output,
+    cachedInputTokens: cached,
+  };
+}
+/** One reader per kind, exhaustive by construction: a new kind is a new entry here, never a
+ * silent fallthrough to another provider's spelling. */
+const USAGE_READERS: Record<MeterKind, (value: unknown) => MeteredUsage | undefined> = {
+  "openai-usage": readUsage,
+  "pi-native-usage": readPiNativeUsage,
+};
 /** Relays every byte the instant it arrives and keeps only what a usage read needs: an event
  * stream's current frame, or a JSON body already bounded by `maxResponseBytes`. A 2xx whose
  * usage it cannot read ends the caller's stream: an unreadable frame is not a free call. */
@@ -265,6 +307,7 @@ class UsageMeter extends Transform {
   private skipping = false;
   private overflowed = false;
   constructor(
+    private readonly reader: (value: unknown) => MeteredUsage | undefined,
     private readonly stream: boolean,
     private readonly limit: number,
     private readonly required: boolean,
@@ -289,14 +332,18 @@ class UsageMeter extends Transform {
       this.endFrame();
     } else if (this.whole.length) {
       try {
-        this.usage = readUsage(JSON.parse(Buffer.concat(this.whole).toString("utf8")));
+        this.usage = this.reader(JSON.parse(Buffer.concat(this.whole).toString("utf8")));
       } catch {
         this.usage = undefined;
       }
     }
     this.buffer = EMPTY_BYTES;
     this.whole = [];
-    done(this.required && !this.usage ? new ProxyFailure(502, "service_response_invalid") : null);
+    done(
+      this.required && !this.usage
+        ? new ProxyFailure(UNREADABLE_USAGE, "service_response_invalid")
+        : null,
+    );
   }
   private frames(chunk: Buffer): void {
     let bytes = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : chunk;
@@ -338,7 +385,7 @@ class UsageMeter extends Transform {
     const payload = lines.join("\n");
     if (payload === "[DONE]") return;
     try {
-      this.usage = readUsage(JSON.parse(payload)) ?? this.usage;
+      this.usage = this.reader(JSON.parse(payload)) ?? this.usage;
     } catch {
       /* A frame that is not JSON carries no usage; the last one that does is the answer. */
     }
@@ -354,11 +401,14 @@ async function readRequestBody(request: IncomingMessage, limit: number): Promise
   }
   return Buffer.concat(chunks);
 }
-/** A metered call names its model in the request, and a streamed chat completion is made to
- * ask for the usage frame: a ceiling evaded by setting `stream` is not a ceiling. Only the
- * chat shape needs it - a responses request streams its usage in `response.completed`, and
- * takes no `stream_options` - so every other body is forwarded byte for byte. */
-function meteredRequest(body: Buffer): { model: string; forward: Buffer } {
+/** A metered call names its model in the request - `model` in the OpenAI shape, `modelId` beside
+ * a `context.messages` array in the pi-native one, which is the shape that wire's own parser
+ * checks - and a streamed chat completion is additionally made to ask for the usage frame: a
+ * ceiling evaded by setting `stream` is not a ceiling. Only the OpenAI chat shape needs that; a
+ * responses request streams its usage in `response.completed` and takes no `stream_options`, and
+ * the pi-native wire states the turn's usage in the terminal frame it always sends. So every
+ * other body is forwarded byte for byte. */
+function meteredRequest(body: Buffer, kind: MeterKind): { model: string; forward: Buffer } {
   const invalid = () => new ProxyFailure(400, "service_input_invalid");
   let parsed: unknown;
   try {
@@ -368,6 +418,18 @@ function meteredRequest(body: Buffer): { model: string; forward: Buffer } {
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw invalid();
   const call = parsed as Record<string, unknown>;
+  if (kind === "pi-native-usage") {
+    const model = modelName(call.modelId);
+    const context = call.context;
+    if (
+      model === undefined ||
+      typeof context !== "object" ||
+      context === null ||
+      !Array.isArray((context as Record<string, unknown>).messages)
+    )
+      throw invalid();
+    return { model, forward: body };
+  }
   const model = modelName(call.model);
   if (model === undefined) throw invalid();
   if (call.stream !== true || !Array.isArray(call.messages)) return { model, forward: body };
@@ -740,7 +802,12 @@ export async function createJobServiceProxy(
     let secret: string | undefined;
     let runtimeSocket: Duplex | undefined;
     let runtimeAgent: Agent | undefined;
-    const metering = operation.meter ? options.inference : undefined;
+    // The wire a metered route speaks and the job's ledger are present together or not at all:
+    // the kind decides which spelling the reader understands, the ledger holds the totals.
+    const metering =
+      operation.meter && options.inference
+        ? { kind: operation.meter.kind, lane: options.inference }
+        : undefined;
     let meter: UsageMeter | undefined;
     let requestModel = "";
     let meteredStatus = 0;
@@ -771,16 +838,18 @@ export async function createJobServiceProxy(
         // and a call the job may no longer make must not reach the provider at all.
         const parsed = meteredRequest(
           await boundedWait(readRequestBody(request, operation.maxRequestBytes), controller.signal),
+          metering.kind,
         );
         requestModel = parsed.model;
         forward = parsed.forward;
-        releaseMetering = await metering.enter();
+        releaseMetering = await metering.lane.enter();
         controller.signal.throwIfAborted();
-        if (!metering.valid()) throw new ProxyFailure(502, "service_response_invalid");
-        const reached = { ...metering.usage() };
-        const ceiling = reachedCeiling(reached, metering.limits);
+        if (!metering.lane.valid())
+          throw new ProxyFailure(UNREADABLE_USAGE, "service_response_invalid");
+        const reached = { ...metering.lane.usage() };
+        const ceiling = reachedCeiling(reached, metering.lane.limits);
         if (ceiling) {
-          metering.onInferenceCeiling({
+          metering.lane.onInferenceCeiling({
             serviceId: entry.policy.serviceId,
             operationId,
             ceiling,
@@ -790,7 +859,7 @@ export async function createJobServiceProxy(
         }
         // A ceiling in money is meaningless without a price, and refusing is the answer
         // the operator can act on.
-        if (metering.limits?.costMicros !== undefined && !priceOf(entry.policy, requestModel))
+        if (metering.lane.limits?.costMicros !== undefined && !priceOf(entry.policy, requestModel))
           throw new ProxyFailure(422, "service_price_unknown", { model: requestModel });
       }
       const headers: Record<string, string> = {
@@ -957,6 +1026,7 @@ export async function createJobServiceProxy(
       const bounded = new BoundedBody(operation.maxResponseBytes, secret);
       if (metering)
         meter = new UsageMeter(
+          USAGE_READERS[metering.kind],
           mime === "text/event-stream",
           operation.maxResponseBytes,
           status >= 200 && status < 300,
@@ -989,10 +1059,11 @@ export async function createJobServiceProxy(
       // Release even if reporting fails, otherwise every later metered call would deadlock.
       try {
         if (metering && meteredStatus) {
-          const counted = meteredStatus >= 200 && meteredStatus < 300 ? meter?.usage : undefined;
+          const answered = meteredStatus >= 200 && meteredStatus < 300;
+          const counted = answered ? meter?.usage : undefined;
           const model = counted?.model ?? requestModel;
-          if (!counted && meteredStatus >= 200 && meteredStatus < 300) metering.onInvalidUsage();
-          metering.onInferenceCall({
+          if (!counted && answered) metering.lane.onInvalidUsage();
+          metering.lane.onInferenceCall({
             serviceId: entry.policy.serviceId,
             operationId,
             model,
@@ -1001,7 +1072,16 @@ export async function createJobServiceProxy(
             cachedInputTokens: counted?.cachedInputTokens ?? 0,
             costMicros: counted ? callCost(priceOf(entry.policy, requestModel), counted) : 0,
             elapsedMs: Date.now() - startedAt,
-            status: meteredStatus,
+            // The pi-native wire states a turn's usage in the terminal frame it always sends, so
+            // a 2xx that ends without one did not complete a turn: it is reported as the refusal
+            // the caller was answered with, never as a success that happened to cost nothing.
+            // The OpenAI kind keeps reporting the provider's own status, where a missing frame is
+            // a provider ignoring the `stream_options` the proxy added and the 2xx it sent is the
+            // fact to record.
+            status:
+              !counted && answered && metering.kind === "pi-native-usage"
+                ? UNREADABLE_USAGE
+                : meteredStatus,
           });
         }
       } finally {
