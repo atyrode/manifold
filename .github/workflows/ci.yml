@@ -247,6 +247,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/bun-workspace
+        with:
+          changelog: "true"
       - uses: ./.github/actions/gate-slice
         with:
           task: axioms
