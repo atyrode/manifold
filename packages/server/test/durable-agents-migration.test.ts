@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AuthService } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 
@@ -467,6 +468,195 @@ describe("migration 37: durable agents", () => {
         ).toHaveLength(1);
       } finally {
         store.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a migrated child retains ordinary authority through its renewed parent without rewriting attribution", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-durable-agents-renewed-parent-"));
+    const path = join(dir, "manifold.db");
+    const parentCaps = ["containers:read", "agents:delegate"];
+    const originalExpiry = now + 90_000;
+    const renewedAt = now + 1_000;
+    try {
+      seedV36(path);
+      const fixture = new Database(path, { strict: true });
+      try {
+        // Renewal in v36 replaced the parent's token and grant, not the child's historical
+        // authorizer. Keep the pre-cutover schema and the child's still-live credential.
+        fixture.query("UPDATE tokens SET caps=? WHERE principal_id IN ('sponsor','agent-a')").run(
+          JSON.stringify(parentCaps),
+        );
+        fixture.query("UPDATE grants SET caps=? WHERE principal_id IN ('sponsor','agent-a')").run(
+          JSON.stringify(parentCaps),
+        );
+        fixture.query("UPDATE agent_runs SET caps=?,authorizer_caps=? WHERE id='root'").run(
+          JSON.stringify(parentCaps),
+          JSON.stringify(parentCaps),
+        );
+        fixture.query(
+          `UPDATE agent_runs SET state='active',cleanup_revoked_credentials=0,
+          cleanup_revoked_grants=0,finished_at=NULL,cleanup_failure=NULL WHERE id IN ('root','child')`,
+        ).run();
+        fixture.query("UPDATE agent_runs SET authorizer_expires_at=? WHERE id='root'").run(expiry);
+        fixture.query(
+          `UPDATE agent_runs SET authorizer_caps=?,authorizer_container_scope='room',
+          authorizer_expires_at=?,expires_at=?,renewals=0 WHERE id='child'`,
+        ).run(JSON.stringify(parentCaps), originalExpiry, originalExpiry);
+        fixture.query(
+          `UPDATE tokens SET revoked_at=NULL,grant_id='child-grant',container_id='room',
+          created_at=?,expires_at=? WHERE id='child-token'`,
+        ).run(now, originalExpiry);
+        fixture.query(
+          `INSERT INTO grants SELECT 'child-grant','principal','agent-b',node,?,effect,reach,
+          'agent-a',? FROM grants WHERE id='root-grant'`,
+        ).run(JSON.stringify(["containers:read"]), now);
+        fixture.query(
+          `INSERT INTO grants SELECT 'root-renewed-grant',principal_kind,principal_id,node,caps,
+          effect,reach,created_by,? FROM grants WHERE id='root-grant'`,
+        ).run(renewedAt);
+        fixture.query(
+          `INSERT INTO tokens SELECT 'root-renewed',?,principal_id,caps,'room',?,NULL,minted_by,
+          'root-renewed-grant',expires_at FROM tokens WHERE id='root-token'`,
+        ).run(sha256Hex("root-renewed"), renewedAt);
+        fixture.query(
+          `UPDATE tokens SET revoked_at=?,grant_id=NULL,container_id='room',expires_at=?
+          WHERE id='root-token'`,
+        ).run(renewedAt, originalExpiry);
+        fixture.exec("DELETE FROM grants WHERE id='root-grant'");
+      } finally {
+        fixture.close();
+      }
+      const store = new ServerStore(openDatabase(path));
+      try {
+        let nextId = 0;
+        const auth = new AuthService(store, "e".repeat(64), {
+          newId: () => `migration-${++nextId}`,
+          now: () => renewedAt + 1,
+        });
+        const parent = auth.authenticate("root-renewed");
+        const child = auth.authenticate("child-token");
+        for (const actor of [parent, child]) {
+          const policy = auth.agentPolicyChallenge(actor);
+          auth.acknowledgeAgentPolicy(
+            {
+              revision: policy.revision,
+              acknowledgements: policy.required.map(({ id, digest }) => ({ id, digest })),
+            },
+            actor,
+          );
+        }
+        expect(() => auth.authenticate("root-token")).toThrow("revoked");
+        expect(auth.allows(parent, "containers:read", "room")).toBe(true);
+        expect(auth.allows(child, "containers:read", "room")).toBe(true);
+        const historicalCredential = {
+          tokenId: "root-token",
+          grantId: "root-grant",
+          caps: parentCaps,
+          containerScope: "room",
+          expiresAt: originalExpiry,
+        };
+        expect(store.getAgent("agent-b")).toMatchObject({
+          sponsorPrincipalId: "agent-a",
+          authorizationCredential: historicalCredential,
+        });
+        expect(store.getAgentRun("child")).toMatchObject({
+          parentRunId: "root",
+          authorizedByPrincipalId: "agent-a",
+          authorizationCredential: historicalCredential,
+        });
+        store.revokeTokensByAgentRun("root", renewedAt + 2);
+        expect(auth.allows(child, "containers:read", "room")).toBe(false);
+      } finally {
+        store.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("reopening migration 37 retains runs and history without repeating principal backfill", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-durable-agents-reopen-"));
+    const path = join(dir, "manifold.db");
+    try {
+      seedV36(path);
+      let store = new ServerStore(openDatabase(path));
+      try {
+        const root = store.getAgentRun("root")!;
+        store.createAgentRun(
+          {
+            ...root,
+            id: "later-run",
+            rootRunId: "later-run",
+            session: { harness: "external", sessionId: "later-session", machineId: "machine" },
+          },
+          {
+            runId: "later-run",
+            revision,
+            bundles: store.getAgentPolicySnapshot("root", revision)!.bundles,
+            issuedAt: now + 1,
+          },
+        );
+        store.createToken({
+          ...store.getToken("root-token")!,
+          id: "later-runner",
+          hash: sha256Hex("later-runner"),
+          grantId: null,
+        });
+        store.bindAgentRunnerCredential("agent-a", "later-runner");
+        const agents = store.listAgents();
+        const runs = agents.flatMap((agent) => store.listAgentRuns(agent.agentId));
+        const history = store.agentRunInspectionFacts("root", { runId: "root", limit: 20 }, now, []);
+        store.close();
+        store = new ServerStore(openDatabase(path));
+        expect(store.listAgents()).toEqual(agents);
+        expect(agents.flatMap((agent) => store.listAgentRuns(agent.agentId))).toEqual(runs);
+        expect(store.getAgentByRunnerToken("later-runner")?.agentId).toBe("agent-a");
+        expect(store.getAgentRunByToken("later-runner")).toBeNull();
+        expect(
+          store.agentRunInspectionFacts("root", { runId: "root", limit: 20 }, now, []),
+        ).toEqual(history);
+        expect(store.getAgentPolicySnapshot("root", priorRevision)?.acknowledgedAt).toBe(now - 9);
+        expect(store.getAgentPolicySnapshot("later-run", revision)?.issuedAt).toBe(now + 1);
+      } finally {
+        store.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects partial typed SessionRef inserts after migration", () => {
+    const dir = mkdtempSync(join(tmpdir(), "manifold-durable-agents-session-binding-"));
+    const path = join(dir, "manifold.db");
+    try {
+      seedV36(path);
+      const db = openDatabase(path);
+      try {
+        const insert = db.query(`INSERT INTO agent_runs(
+          id,principal_id,root_run_id,authorized_by_principal_id,authorization_path,authorizer_caps,
+          purpose,target,reach,caps,created_at,expires_at,renewals,max_depth,max_descendants,depth,
+          cleanup_owner_principal_id,state,policy_revision,agent_id,activity,
+          session_harness,session_id,session_machine_id
+        ) SELECT 'partial-session',principal_id,root_run_id,authorized_by_principal_id,
+          authorization_path,authorizer_caps,purpose,target,reach,caps,created_at,expires_at,
+          renewals,max_depth,max_descendants,depth,cleanup_owner_principal_id,state,policy_revision,
+          agent_id,activity,?,?,? FROM agent_runs WHERE id='root'`);
+        for (const binding of [
+          ["external", null, null],
+          [null, "session", null],
+          [null, null, "machine"],
+          ["external", "session", null],
+          ["external", null, "machine"],
+          [null, "session", "machine"],
+        ] as const) {
+          expect(() => insert.run(...binding)).toThrow("CHECK constraint failed");
+        }
+        expect(db.query("SELECT id FROM agent_runs WHERE id='partial-session'").get()).toBeNull();
+      } finally {
+        db.close();
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
