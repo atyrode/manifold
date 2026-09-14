@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { readlinkSync } from "node:fs";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Terminal as HeadlessTerminal } from "@xterm/headless";
 import {
@@ -24,6 +25,10 @@ import { LinuxJobRefusal, type LinuxJobHandle, type LinuxJobTerminal } from "./j
 
 /** Default ring cap: buffers output produced while the server socket is down (CONTRACTS.md). */
 export const DEFAULT_RING_CAP_BYTES = 2 * 1024 * 1024;
+
+/** Idle shells still publish a directory change within five seconds, without spawning probes. */
+export const CWD_SAMPLE_INTERVAL_MS = 4_000;
+const CWD_OUTPUT_IDLE_MS = 100;
 
 /**
  * Mirror scrollback in lines. A snapshot can only render what the mirror still retains, so
@@ -179,6 +184,12 @@ export interface PtyTerminalOptions {
   readonly cwd?: string;
   /** Extra environment for the shell; merged over a credential-free process environment. */
   readonly env?: Record<string, string>;
+  /** Exact previously filtered environment for an owner-local restart. */
+  readonly environment?: Readonly<Record<string, string>>;
+  /** Invoked only when the process directory was observed to change. */
+  readonly onCwd?: (cwd: string) => void;
+  /** Owner-only preferred directory for a freshly admitted native sandbox. */
+  readonly restartCwd?: string;
   /** Invoked for every output chunk, in emission order, with its assigned seq. */
   readonly onOutput: (output: PtyOutput) => void;
   /** Ring cap in bytes; defaults to {@link DEFAULT_RING_CAP_BYTES}. Tests pass a tiny cap. */
@@ -200,6 +211,12 @@ export interface PtyTerminalOptions {
 export class PtyTerminal {
   /** Opaque terminal id, assigned by the server. */
   readonly terminalId: string;
+  /** Resolved original launch, never reconstructed from a later transport's recipe. */
+  readonly originalCommand: readonly string[] | undefined;
+  readonly originalEnvironment: Readonly<Record<string, string>> | undefined;
+  readonly originalCwd: string | undefined;
+  launchCwd: string | undefined;
+  restartFallback: "original" | "home" | undefined;
 
   private readonly proc: Bun.Subprocess | undefined;
   readonly runtimeHandle: Promise<LinuxJobHandle> | undefined;
@@ -212,6 +229,12 @@ export class PtyTerminal {
   private readonly continuation: TerminalParserContinuation;
   private readonly ring: OutputRing;
   private readonly onOutput: (output: PtyOutput) => void;
+  private readonly onCwd: ((cwd: string) => void) | undefined;
+  private processId: number | undefined;
+  private cwdValue: string | undefined;
+  private cwdInterval: Timer | undefined;
+  private cwdIdle: Timer | undefined;
+  private lastOutputAt = 0;
 
   /** Highest output seq emitted so far; assigned AT EMISSION and strictly monotonic. */
   private currentSeq = 0;
@@ -234,6 +257,13 @@ export class PtyTerminal {
     this.colsValue = opts.cols;
     this.rowsValue = opts.rows;
     this.onOutput = opts.onOutput;
+    this.onCwd = opts.onCwd;
+    this.originalCommand = opts.runtime ? undefined : [...command];
+    this.originalEnvironment = opts.runtime
+      ? undefined
+      : (opts.environment ?? buildPtyEnvironment(opts.env));
+    this.originalCwd = opts.runtime ? undefined : (opts.cwd ?? homedir());
+    this.launchCwd = this.originalCwd;
     this.ring = new OutputRing(opts.ringCapBytes ?? DEFAULT_RING_CAP_BYTES);
 
     // Headless mirror: parses the same byte stream the PTY produces so snapshots reflect the
@@ -278,6 +308,15 @@ export class PtyTerminal {
             setOutputHandler: (handler) => {
               outputHandler = handler;
             },
+            ...(opts.restartCwd !== undefined ? { restartCwd: opts.restartCwd } : {}),
+            setProcessId: (pid) => {
+              this.processId = pid;
+              this.startCwdTracking();
+            },
+            setWorkingDirectory: (cwd, fallback) => {
+              this.launchCwd = cwd;
+              this.restartFallback = fallback;
+            },
           }),
         );
         this.exited = this.runtimeHandle.then(
@@ -287,6 +326,7 @@ export class PtyTerminal {
             if (result.empty !== true) throw new PtyError("native workload empty proof required");
             this.emptyObserved = true;
             this.aliveFlag = false;
+            this.stopCwdTracking();
             this.exitCodeValue = result.exitCode;
             return { exitCode: result.exitCode };
           },
@@ -295,6 +335,7 @@ export class PtyTerminal {
               this.startupFailure = error;
               this.emptyObserved = error.workloadEmpty;
               if (this.emptyObserved) this.aliveFlag = false;
+              if (this.emptyObserved) this.stopCwdTracking();
             }
             throw error;
           },
@@ -304,8 +345,8 @@ export class PtyTerminal {
         return;
       }
       proc = Bun.spawn([...command], {
-        cwd: opts.cwd ?? homedir(),
-        env: buildPtyEnvironment(opts.env),
+        ...(this.originalCwd === undefined ? {} : { cwd: this.originalCwd }),
+        ...(this.originalEnvironment === undefined ? {} : { env: this.originalEnvironment }),
         terminal: {
           cols: opts.cols,
           rows: opts.rows,
@@ -320,6 +361,8 @@ export class PtyTerminal {
       this.proc = proc;
       this.pty = pty;
       this.exited = this.trackExit();
+      this.processId = proc.pid;
+      this.startCwdTracking();
     } catch (error) {
       proc?.kill("SIGKILL");
       const pty = proc?.terminal;
@@ -337,18 +380,78 @@ export class PtyTerminal {
    * the ring, feeds the mirror, and hands it to the emit callback.
    */
   private ingest(chunk: Uint8Array): void {
+    if (this.disposed) return;
     const bytes = new Uint8Array(chunk);
     this.currentSeq += 1;
     const seq = this.currentSeq;
     this.ring.push(seq, bytes);
     this.mirror.write(bytes);
     this.onOutput({ seq, bytes });
+    if (this.processId !== undefined && process.platform === "linux" && this.aliveFlag) {
+      this.lastOutputAt = performance.now();
+      if (this.cwdIdle === undefined) {
+        this.cwdIdle = setTimeout(() => this.onOutputIdle(), CWD_OUTPUT_IDLE_MS);
+        this.cwdIdle.unref();
+      }
+    }
+  }
+
+  private onOutputIdle(): void {
+    const remaining = CWD_OUTPUT_IDLE_MS - (performance.now() - this.lastOutputAt);
+    if (remaining > 0 && this.aliveFlag && !this.disposed) {
+      this.cwdIdle = setTimeout(() => this.onOutputIdle(), remaining);
+      this.cwdIdle.unref();
+    } else {
+      this.cwdIdle = undefined;
+      this.sampleCwd();
+    }
+  }
+
+  private startCwdTracking(): void {
+    if (process.platform !== "linux" || this.disposed) return;
+    this.cwdInterval = setInterval(() => this.sampleCwd(), CWD_SAMPLE_INTERVAL_MS);
+    this.cwdInterval.unref();
+    // Defer the first notification until the host has installed this terminal's identity.
+    this.cwdIdle = setTimeout(() => {
+      this.cwdIdle = undefined;
+      this.sampleCwd();
+    }, 0);
+    this.cwdIdle.unref();
+  }
+
+  private stopCwdTracking(): void {
+    clearInterval(this.cwdInterval);
+    clearTimeout(this.cwdIdle);
+    this.cwdInterval = undefined;
+    this.cwdIdle = undefined;
+  }
+
+  /** Linux's PTY session leader is authoritative; no shell hooks or subprocess probes. */
+  sampleCwd(): string | undefined {
+    if (process.platform !== "linux" || !this.aliveFlag || this.processId === undefined)
+      return this.cwdValue;
+    try {
+      const cwd = readlinkSync(`/proc/${this.processId}/cwd`);
+      // procfs appends this marker for an unlinked directory: retain its usable prior name.
+      if (cwd.startsWith("/") && !cwd.endsWith(" (deleted)") && cwd !== this.cwdValue) {
+        this.cwdValue = cwd;
+        this.onCwd?.(cwd);
+      }
+    } catch {
+      // Exit races and inaccessible procfs mean unknown, never an invented home directory.
+    }
+    return this.cwdValue;
+  }
+
+  get cwd(): string | undefined {
+    return this.cwdValue;
   }
 
   private async trackExit(): Promise<PtyExit> {
     await this.proc!.exited;
     this.emptyObserved = true;
     this.aliveFlag = false;
+    this.stopCwdTracking();
     // `exitCode` is null for signal deaths (signalCode is set instead); the wire schema
     // (exited.exitCode) is nullable, so we ref the true code and null for signals.
     this.exitCodeValue = this.proc!.exitCode;
@@ -512,6 +615,7 @@ export class PtyTerminal {
     if (this.runtimeHandle && !this.emptyObserved)
       throw new PtyError("native workload empty proof required before disposal");
     this.disposed = true;
+    this.stopCwdTracking();
     if (!this.pty.closed) this.pty.close();
     this.pasteMode.dispose();
     this.graphics.dispose();
@@ -556,6 +660,7 @@ export class PtyTerminal {
       rows: this.rowsValue,
       alive: this.aliveFlag,
       seq: this.currentSeq,
+      ...(this.cwdValue !== undefined ? { cwd: this.cwdValue } : {}),
       ...(!this.aliveFlag ? { exitCode: this.exitCodeValue ?? null } : {}),
     };
   }

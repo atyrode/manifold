@@ -817,13 +817,15 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
           },
         });
         const terminalEvents: TerminalHostEvent[] = [];
-        const terminalExit = Promise.withResolvers<void>();
+        let terminalExit = Promise.withResolvers<void>();
+        const terminalRestarted = Promise.withResolvers<TerminalHostEvent>();
         let terminalRefused = Promise.withResolvers<void>();
         const seat = host.open({
           write(event) {
             terminalEvents.push(event);
             if (event.type === "exited") terminalExit.resolve();
             if (event.type === "create_error") terminalRefused.resolve();
+            if (event.type === "terminal_restarted") terminalRestarted.resolve(event);
             return true;
           },
           close() {},
@@ -957,6 +959,61 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
             type: "create_error",
             message: "terminal_admission_reused",
           });
+          seat.deliver({
+            type: "terminal_restart",
+            terminalId: "native-terminal",
+            create: { cols: create.cols, rows: create.rows, env: {}, runtime: boundCommand },
+          });
+          expect(terminalEvents.at(-1)).toMatchObject({
+            type: "terminal_restart_error",
+            reason: "terminal_runtime_changed",
+          });
+          expect(host.status().terminals).toMatchObject([
+            { terminalId: "native-terminal", alive: false, exitCode: 0 },
+          ]);
+          const restartBody = {
+            ...boundBody,
+            jobId: "terminal-fresh-admission",
+          };
+          const restartRequest = { ...restartBody, requestDigest: jobDigest(restartBody) };
+          const restartIssuedAt = Date.now();
+          const restartPermit = {
+            ...boundPermit,
+            jobId: restartRequest.jobId,
+            permitId: "terminal-fresh-permit",
+            requestDigest: restartRequest.requestDigest,
+            issuedAt: restartIssuedAt,
+            expiresAt: restartIssuedAt + 30_000,
+          };
+          terminalExit = Promise.withResolvers<void>();
+          seat.deliver({
+            type: "terminal_restart",
+            terminalId: "native-terminal",
+            cwd: "/tmp/previous-generation",
+            create: {
+              cols: create.cols,
+              rows: create.rows,
+              env: {},
+              runtime: {
+                type: "start",
+                request: restartRequest,
+                permit: {
+                  ...restartPermit,
+                  signature: sign(
+                    null,
+                    Buffer.from(canonicalJobJson(restartPermit)),
+                    keys.privateKey,
+                  ).toString("base64"),
+                },
+              },
+            },
+          });
+          expect(await terminalRestarted.promise).toMatchObject({
+            type: "terminal_restarted",
+            terminalId: "native-terminal",
+            cwd: "/home/job",
+          });
+          await terminalExit.promise;
           seat.detach();
           const successor = host.open({
             write(event) {

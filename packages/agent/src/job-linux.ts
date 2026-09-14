@@ -53,6 +53,10 @@ export interface LinuxJobOutput {
 export interface LinuxJobTerminal {
   pty: Bun.Terminal;
   onOutput(bytes: Uint8Array): void;
+  /** Owner-only restart preference; never adds a mount or executable authority. */
+  restartCwd?: string;
+  setProcessId?(pid: number): void;
+  setWorkingDirectory?(cwd: string, fallback?: "original" | "home"): void;
   setOutputHandler(handler: (bytes: Uint8Array) => void): void;
 }
 export interface LinuxJobSpec {
@@ -518,6 +522,55 @@ function childExit(child: ChildProcess): Promise<{ code: number | null; signal: 
   child.once("exit", (code, signal) => resolve({ code, signal }));
   return promise;
 }
+/**
+ * A terminal may return to a directory inside an already admitted location. Walk retained
+ * descriptors without symlinks or mount escapes; a stale/transient directory falls back to
+ * the manifest's original cwd. This never broadens the sandbox's filesystem authority.
+ */
+export function resolveTerminalWorkingDirectory(
+  spec: Pick<LinuxJobSpec, "workingDirectory" | "locations">,
+  preferred: string | undefined,
+): { cwd: string; fallback?: "original" | "home" } {
+  const original = spec.workingDirectory ?? "/home/job";
+  let cwd = original;
+  if (preferred === "/home/job") cwd = preferred;
+  else if (preferred !== undefined) {
+    for (const bind of spec.locations) {
+      if (preferred !== bind.target && !preferred.startsWith(`${bind.target}/`)) continue;
+      let fd = bind.fd;
+      try {
+        if (!fstatSync(fd).isDirectory()) continue;
+        const mountId = fdMountId(fd);
+        const relative = preferred.slice(bind.target.length);
+        for (const part of relative.split("/").filter(Boolean)) {
+          safeComponent(part);
+          const next = openSync(
+            `/proc/self/fd/${fd}/${part}`,
+            0x200000 | constants.O_DIRECTORY | constants.O_NOFOLLOW | 0x80000,
+          );
+          if (fd !== bind.fd) closeSync(fd);
+          fd = next;
+          if (fdMountId(fd) !== mountId) throw new Error("mount_escape");
+        }
+        cwd = preferred;
+      } catch {
+        // Missing/renamed subdirectories and symlinks cannot become a new authority path.
+      } finally {
+        if (fd !== bind.fd) closeSync(fd);
+      }
+      break;
+    }
+  }
+  return {
+    cwd,
+    ...(preferred !== undefined && cwd !== preferred
+      ? {
+          fallback: spec.workingDirectory !== undefined ? ("original" as const) : ("home" as const),
+        }
+      : {}),
+  };
+}
+
 async function sandboxPid(stream: Readable, exited: Promise<unknown>): Promise<number> {
   const { promise: info, resolve, reject } = Promise.withResolvers<number>();
   let text = "";
@@ -756,9 +809,13 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
       bind(groups.workloads.fd, "/sys/fs/cgroup/workloads", true);
       args.push("--setenv", "MANIFOLD_JOB_CGROUP_ROOT", "/sys/fs/cgroup/workloads");
     }
+    const directory = spec.terminal
+      ? resolveTerminalWorkingDirectory(spec, spec.terminal.restartCwd)
+      : { cwd: spec.workingDirectory ?? "/home/job" };
+    spec.terminal?.setWorkingDirectory?.(directory.cwd, directory.fallback);
     args.push(
       "--chdir",
-      spec.workingDirectory ?? "/home/job",
+      directory.cwd,
       "--remount-ro",
       "/",
       "--",
@@ -863,6 +920,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
       refuse("cgroup-attachment-failed");
     // EOF also releases bubblewrap's gate: never close it on a failed launch until killed.
     if (reason !== "exited" || fatal) refuse("sandbox-setup-failed");
+    spec.terminal?.setProcessId?.(pid);
     gate.end(Buffer.from([1]));
   } catch (error) {
     settled = true;

@@ -119,6 +119,7 @@ function deriveMachineWsUrl(serverUrl: string): string {
 interface Seat {
   readonly link: TerminalHostLink;
   readonly terminalHostId: string;
+  terminalRestart: boolean;
 }
 
 export class Agent {
@@ -291,7 +292,7 @@ export class Agent {
       case "attached": {
         if (this.pendingSeatLink !== link) return;
         this.pendingSeatLink = null;
-        this.seat = { link, terminalHostId: event.terminalHostId };
+        this.seat = { link, terminalHostId: event.terminalHostId, terminalRestart: false };
         this.seatAttempts = 0;
         this.log("info", "terminal_host_attached", {
           terminalHostId: event.terminalHostId,
@@ -322,6 +323,9 @@ export class Agent {
       case "output":
       case "snapshot":
       case "exited":
+      case "terminal_cwd":
+      case "terminal_restarted":
+      case "terminal_restart_error":
       case "drain_status":
         this.bridgeToHub(event);
         return;
@@ -452,6 +456,7 @@ export class Agent {
     if (socket.readyState !== WebSocket.OPEN) return;
     const seat = this.seat;
     if (seat === null) return;
+    seat.terminalRestart = status.terminalRestart === true;
     this.advertisedDeadTerminalIds = [];
     for (const terminal of status.terminals) {
       if (!terminal.alive) this.advertisedDeadTerminalIds.push(terminal.terminalId);
@@ -467,6 +472,7 @@ export class Agent {
       ...(status.terminalExecution === undefined
         ? {}
         : { terminalExecution: status.terminalExecution }),
+      ...(status.terminalRestart !== undefined ? { terminalRestart: status.terminalRestart } : {}),
       ...(this.jobOwnerLink ? { jobOwner: this.jobOwnerLink.identity } : {}),
     });
     this.helloSent = socket;
@@ -572,6 +578,15 @@ export class Agent {
             });
           });
         return;
+      case "terminal_restart":
+        if (this.seat?.terminalRestart) this.seat.link.send(msg);
+        else
+          this.send(socket, {
+            type: "terminal_restart_error",
+            terminalId: msg.terminalId,
+            reason: "unsupported",
+          });
+        return;
       case "create":
       case "input":
       case "resize":
@@ -591,7 +606,18 @@ export class Agent {
   private bridgeToHub(
     event: Extract<
       TerminalHostEvent,
-      { type: "created" | "create_error" | "output" | "snapshot" | "exited" | "drain_status" }
+      {
+        type:
+          | "created"
+          | "create_error"
+          | "output"
+          | "snapshot"
+          | "exited"
+          | "drain_status"
+          | "terminal_cwd"
+          | "terminal_restarted"
+          | "terminal_restart_error";
+      }
     >,
   ): void {
     const socket = this.socket;
