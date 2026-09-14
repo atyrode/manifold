@@ -909,8 +909,8 @@ and reason and records both in the step summary. HTTP errors (including a generi
 authentication failures, other refusals and candidate failures still fail closed. When the
 door exists, the flag has no effect: the ordinary candidate gate always runs.
 
-For production, dispatch `deploy-hub.yml` with the published `tag` introducing the door and
-`bootstrap_gate=true`. For development, dispatch `deploy-dev.yml` from `main` with
+For production, `bun run promote vX.Y.Z --bootstrap-gate` dispatches `deploy-hub.yml` with the
+published `tag` introducing the door and `bootstrap_gate=true`. For development, dispatch `deploy-dev.yml` from `main` with
 `operation=deploy`, the full `target_sha`, a non-secret reason, acknowledged
 `compatibility_reviewed`, and `bootstrap_gate=true`. The forward operation uses the existing
 monotone receiver; it does not require `expected_current_sha`. Direction is independent of
