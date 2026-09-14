@@ -3533,13 +3533,24 @@ export class ServerStore {
    * its PTYs (#278) — the hello's `terminalHostId`, or null for an agent that is its own
    * owner. Written at admission and nowhere else, so `owner_host_id` always describes a
    * connection the hub actually accepted, which is what a later newcomer is judged against.
+   *
+   * The name claim is part of the write rather than a preceding lookup: the unique name
+   * constraint is an admission decision, not an exception that may escape the socket boundary.
    */
-  touchMachine(machineId: string, name: string, at: number, ownerHostId: string | null): void {
-    this.db
-      .query<void, [string, number, string | null, string]>(
-        "UPDATE machines SET name = ?, last_seen = ?, owner_host_id = ? WHERE id = ?",
-      )
-      .run(name, at, ownerHostId, machineId);
+  touchMachine(machineId: string, name: string, at: number, ownerHostId: string | null): boolean {
+    return (
+      this.db
+        .query<void, [string, number, string | null, string, string]>(
+          `UPDATE machines
+           SET name = ?, last_seen = ?, owner_host_id = ?
+           WHERE id = ?
+             AND NOT EXISTS (
+               SELECT 1 FROM machines AS incumbent
+               WHERE incumbent.name = ? AND incumbent.id <> machines.id
+             )`,
+        )
+        .run(name, at, ownerHostId, machineId, name).changes === 1
+    );
   }
 
   createTerminal(terminal: NewStoredTerminal): void {

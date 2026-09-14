@@ -387,14 +387,20 @@ export class MachineGateway {
       connection.socket.close(4003, "supersession damped");
       return;
     }
-    connection.channel = channel;
     connection.cancelHelloTimeout?.();
     connection.cancelHelloTimeout = null;
+    if (!this.store.touchMachine(authenticated.id, message.name, now, terminalHostId)) {
+      this.logger.warn("machine_name_conflict", {
+        machineId: authenticated.id,
+        machineName: message.name,
+      });
+      connection.socket.close(4003, "machine name already in use");
+      return;
+    }
+    connection.channel = channel;
     // A changed owner on a vacant seat cannot adopt processes belonging to its predecessor.
     if (older === null && authenticated.ownerHostId !== terminalHostId)
       this.broker.onOwnerLost(authenticated.id);
-    // Its admitted identity is the owner of record from here on.
-    this.store.touchMachine(authenticated.id, message.name, now, terminalHostId);
     if (
       !channel.send({
         type: "welcome",
