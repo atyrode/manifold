@@ -189,10 +189,10 @@ one finite backing with named outputs, and that is an explicit sizing instructio
   default to be.
 - The owner wire gains fields that cross its strict parser — `inputs`/`exports` inside the whole
   `MachineHalf` of an `install` frame, and `inputs`/`limits.inputBytes` in a `start` frame — so
-  `JOB_OWNER_PROTOCOL_VERSION` moves to 35 and 34 joins the bounded retirement set `{30, 31, 32,
-33, 34}`, exactly as `concurrentJobs` took 31 and metered inference took 32. A drained owner at 34
-  can still be challenged to finish and retire its retained work; it is never an execution owner
-  for this hub.
+  `JOB_OWNER_PROTOCOL_VERSION` moves to 36 and 35 joins the bounded retirement set
+  `{30, 31, 32, 33, 34, 35}`, exactly as `concurrentJobs` took 31 and metered inference took 32. A
+  drained owner at 35 can still be challenged to finish and retire its retained work; it is never
+  an execution owner for this hub.
 
 ## Evidence
 

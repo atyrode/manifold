@@ -450,8 +450,8 @@ test("private launches refuse older transports and owners before disclosure and 
     const bound = await f.launch(pending.run.id);
     const unlaunched = await f.create();
     for (const [transport, owner] of [
-      [31, 35],
-      [32, 34],
+      [31, JOB_OWNER_PROTOCOL_VERSION],
+      [32, JOB_OWNER_PROTOCOL_VERSION - 1],
     ] as const) {
       f.connect(transport, owner);
       const refused = await f.host.dispatch(f.root, "core.access.launchRun", {
@@ -472,7 +472,7 @@ test("private launches refuse older transports and owners before disclosure and 
       expect(f.sent.filter((message) => message.type === "create")).toEqual([]);
     }
     // Compatibility refusal does not consume an otherwise valid one-use launch binding.
-    f.connect(32, 35);
+    f.connect(32, JOB_OWNER_PROTOCOL_VERSION);
     await f.open(bound.runtime);
     const create = f.sent.find((message) => message.type === "create");
     expect(create?.runtime?.privateEnv?.MANIFOLD_RUN_ID).toBe(pending.run.id);

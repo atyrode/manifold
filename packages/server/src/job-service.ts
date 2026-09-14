@@ -159,7 +159,7 @@ function fail(code = "governed_authority_refused"): never {
 const active = new Set(["queued", "admitted", "start-committed", "started"]);
 // Each current RPC must opt into its audited retirement-only predecessors; a future bump defaults closed.
 const legacyRetirementProtocols = new Map<number, ReadonlySet<number>>([
-  [35, new Set([30, 31, 32, 33, 34])],
+  [36, new Set([30, 31, 32, 33, 34, 35])],
 ]);
 const runCursorSchema = z.strictObject({
   filter: z.strictObject({
