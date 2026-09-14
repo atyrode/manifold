@@ -251,7 +251,7 @@ See [the operating contract](../packages/sdk/README.md) before launching.
 ### Agent run inspection and declarations
 
 `core.access.inspectRun` is the one headless projection used by the Agents Run drill-down
-([ADR 0041](decisions/0041-agent-run-inspection.md), as narrowed by
+([ADR 0043](decisions/0043-agent-run-inspection.md), as narrowed by
 [ADR 0042](decisions/0042-durable-agents.md)). Name a `runId`; principal lookup is not a Run
 selector because concurrent Runs share an Agent principal. Optionally name a decimal
 `traceId`, or page older attempts using `beforeTraceId` and `limit` (default 50, maximum 100).

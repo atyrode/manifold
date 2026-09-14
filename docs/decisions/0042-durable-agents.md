@@ -19,7 +19,7 @@ and cleanup. A harness session and model selection describe execution; neither i
 This record supersedes **the one-fresh-principal-per-Run identity and sponsor-directed renewal decisions
 in ADR 0039** and **the model-visible startup/admission portion of ADR 0040**. It retains their live
 authority intersection, exact policy acknowledgement, bounded delegation, action transport and teardown
-obligations. ADR 0041's
+obligations. ADR 0043's
 safe inspection allowlist remains, with Run-only lookup and self/direct-child visibility replacing the
 broader ancestor/descendant reading. The normative contracts are
 [Automation credential lifecycle](../CONTRACTS.md#automation-credential-lifecycle) and

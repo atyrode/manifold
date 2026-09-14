@@ -965,13 +965,10 @@ function traceContainer(auth: AuthContext, rawArgs: unknown): string | null {
 }
 
 /**
- * THE TWO PAYLOAD NAMES THE LEDGER KEEPS FOR ITSELF (ADR 0041 §5). `traceOrigin` is their one
- * writer, and `tracePayload` drops them from every door's arguments, so a row carrying them
- * always means a plugin opened that door — a client typing them into its own request body
- * cannot attribute its dispatch to a plugin, on a loose door's committed row or on a strict
- * door's write-ahead one.
+ * The ledger's provenance names come from host dispatch state, never door arguments.
+ * `traceOrigin` owns plugin lineage (ADR 0041 §5); admission owns the Agent declaration.
  */
-const RESERVED_TRACE_KEYS = ["origin", "parentTrace"] as const;
+const RESERVED_TRACE_KEYS = ["origin", "parentTrace", "agentDeclaration"] as const;
 
 /**
  * The arguments as the ledger keeps them: redacted by the one field rule the log already
@@ -987,8 +984,6 @@ function tracePayload(rawArgs: unknown): Record<string, unknown> {
   // `redactFields` answers with a fresh object, so this drops nothing a caller can observe.
   const redacted = redactFields(rawArgs as Record<string, unknown>);
   for (const reserved of RESERVED_TRACE_KEYS) delete redacted[reserved];
-  // Only the dispatch options may supply this claim, never an argument impersonating it.
-  delete redacted.agentDeclaration;
   const text = JSON.stringify(redacted);
   if (text.length <= TRACE_PAYLOAD_MAX_CHARS) return redacted;
   return { oversize: text.length, keys: Object.keys(redacted) };
@@ -1169,6 +1164,8 @@ export class PluginHost {
     base: ActionCtx,
     actor: AuthContext,
     id: string,
+    session: string | null,
+    stack: readonly string[],
     invoke: (harness: ServerHarness<ActionCtx>, ctx: ActionCtx, pluginId: string) => Promise<T>,
   ): Promise<T> {
     const def = this.harnessDefinition(id);
@@ -1202,6 +1199,7 @@ export class PluginHost {
         {
           ...shared,
           pluginId,
+          actions: this.actionCalls(pluginId, current, session, base.traceId, [...stack, pluginId]),
           credential: this.authService.credentialReference(nativeAuth),
           jobs: jobContext(service, nativeAuth, pluginId, base.traceId),
           services: serviceContext(
@@ -1230,6 +1228,8 @@ export class PluginHost {
     base: ActionCtx,
     actor: AuthContext,
     input: LaunchRunRequest,
+    session: string | null,
+    stack: readonly string[],
   ): Promise<LaunchRunResult> {
     if (this.launchingRuns.has(input.runId))
       throw new ServiceError("conflict", "run launch already in progress");
@@ -1256,6 +1256,8 @@ export class PluginHost {
         base,
         actor,
         claim.agent.harness,
+        session,
+        stack,
         async (harness, ctx, pluginId) => {
           const prepared = await harness.launch(ctx, claim.run, claim.agent, target.data);
           const runtime = TerminalRuntimeSchema.parse(prepared.runtime);
@@ -3531,6 +3533,7 @@ export class PluginHost {
     }
     const database = lease.database;
     let guestAdmitted = false;
+    const actionStack = [...(options.origin?.stack ?? []), pluginId];
     const ctx: ActionCtx = {
       traceId,
       pluginId,
@@ -3585,10 +3588,7 @@ export class PluginHost {
         The stack is this trace's frames plus this plugin, so a callee already on it is a
         cycle and a chain that never repeats an id still stops at the depth bound.
       */
-      actions: this.actionCalls(pluginId, auth, session, traceId, [
-        ...(options.origin?.stack ?? []),
-        pluginId,
-      ]),
+      actions: this.actionCalls(pluginId, auth, session, traceId, actionStack),
       streams: {
         open: (kind, node) => {
           if (!streamAdmissionOpen) throw new Error("stream open requires an active action");
@@ -3673,19 +3673,25 @@ export class PluginHost {
               ],
             }),
           ),
-        launchRun: (input) => identityCallAsync(() => this.launchHarnessRun(ctx, auth, input)),
+        launchRun: (input) =>
+          identityCallAsync(() => this.launchHarnessRun(ctx, auth, input, session, actionStack)),
         sendRunInput: (input) =>
           identityCallAsync(async () => {
             const { run, agent } = this.authService.authorizeRunInput(input.runId, auth);
             const actor = this.authService.runHarnessActor(input.runId, auth);
-            await this.withHarness(ctx, actor, agent.harness, (harness, bound) =>
-              harness.send(bound, run, input.input),
+            await this.withHarness(
+              ctx,
+              actor,
+              agent.harness,
+              session,
+              actionStack,
+              (harness, bound) => harness.send(bound, run, input.input),
             );
             return {};
           }),
         listHarnessSessions: (id, target) =>
           identityCallAsync(() =>
-            this.withHarness(ctx, auth, id, async (harness, bound) => {
+            this.withHarness(ctx, auth, id, session, actionStack, async (harness, bound) => {
               const sessions = await harness.sessions(bound, HarnessTargetSchema.parse(target));
               return {
                 sessions: sessions.slice(0, 100).map((value) => {
@@ -3700,18 +3706,25 @@ export class PluginHost {
           ),
         resolveHarnessSession: (ref) =>
           identityCallAsync(async () => ({
-            session: await this.withHarness(ctx, auth, ref.harness, async (harness, bound) => {
-              const session = await harness.resolveSession(bound, SessionRefSchema.parse(ref));
-              if (session === null) return null;
-              const resolved = SessionRefSchema.parse(session);
-              if (
-                resolved.harness !== ref.harness ||
-                resolved.machineId !== ref.machineId ||
-                resolved.sessionId !== ref.sessionId
-              )
-                throw new ServiceError("forbidden", "harness session reference mismatch");
-              return resolved;
-            }),
+            session: await this.withHarness(
+              ctx,
+              auth,
+              ref.harness,
+              session,
+              actionStack,
+              async (harness, bound) => {
+                const session = await harness.resolveSession(bound, SessionRefSchema.parse(ref));
+                if (session === null) return null;
+                const resolved = SessionRefSchema.parse(session);
+                if (
+                  resolved.harness !== ref.harness ||
+                  resolved.machineId !== ref.machineId ||
+                  resolved.sessionId !== ref.sessionId
+                )
+                  throw new ServiceError("forbidden", "harness session reference mismatch");
+                return resolved;
+              },
+            ),
           })),
         createPrincipal: (input) =>
           identityCall(() => this.authService.bootstrapPrincipal(input, auth)),

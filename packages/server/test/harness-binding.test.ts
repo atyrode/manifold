@@ -2,6 +2,7 @@ import "../src/shared-modules.ts";
 import { expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { z } from "zod";
+import { defineAction } from "@manifold/plugin";
 import {
   canonicalJobJson,
   CreateRunResultSchema,
@@ -9,6 +10,7 @@ import {
   LaunchRunResultSchema,
   ListHarnessesResultSchema,
   ListHarnessSessionsResultSchema,
+  SessionRefSchema,
   type ActionOutcome,
   type JobCommand,
   type JobOwner,
@@ -19,7 +21,7 @@ import {
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { JobService } from "../src/job-service.ts";
 import { silentLogger } from "../src/log.ts";
-import type { ServerPluginDef } from "../src/plugin-host.ts";
+import type { ActionCtx, ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
@@ -69,7 +71,7 @@ function result(outcome: ActionOutcome): unknown {
   return outcome.result;
 }
 
-async function fixture() {
+async function fixture(dependency?: ServerPluginDef) {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -99,6 +101,9 @@ async function fixture() {
       title: "Test harness",
       description: "Binding boundary fixture",
       capabilities: ["machines:run", "jobs:read", "jobs:input"],
+      ...(dependency
+        ? { dependencies: { [dependency.manifest.id]: { type: "required" as const } } }
+        : {}),
       machine,
       contributes: {
         panels: [],
@@ -160,7 +165,7 @@ async function fixture() {
     testTileTrees,
   );
   const host = await testPluginHost(store, auth, rooms, broker, runtime, {
-    settingsPlugins: [definition],
+    settingsPlugins: dependency ? [definition, dependency] : [definition],
   });
   const service = new JobService(store, auth, runtime);
   host.setJobs(service);
@@ -473,6 +478,73 @@ test("private launches refuse older transports and owners before disclosure and 
     expect(create?.runtime?.privateEnv?.MANIFOLD_RUN_ID).toBe(pending.run.id);
     const current = await f.launch(unlaunched.run.id);
     expect(current.runtime.launchBinding).not.toBe(bound.runtime.launchBinding);
+  } finally {
+    f.close();
+  }
+});
+
+test("harness dependency calls retain the owning plugin and the incoming call chain", async () => {
+  const catalog = "test.harness-catalog";
+  const inventory = z.strictObject({ sessions: SessionRefSchema.array() });
+  let returnToAccess = false;
+  const dependency: ServerPluginDef = {
+    manifest: {
+      id: catalog,
+      version: "1.0.0",
+      title: "Harness catalog",
+      description: "Resolves retained harness conversations",
+      capabilities: [],
+      dependencies: { "core.access": { type: "required" } },
+      contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+    },
+    actions: [
+      defineAction({
+        name: "sessions",
+        title: "Resolve conversations",
+        caps: [],
+        input: z.strictObject({ machineId: z.string() }),
+        result: inventory,
+      }),
+    ],
+    handlers: {
+      async sessions(ctx: ActionCtx, input: { machineId: string }) {
+        if (returnToAccess) {
+          // A lost incoming frame must fail the assertion, not recurse without a bound.
+          returnToAccess = false;
+          return ctx.actions.call({
+            plugin: "core.access",
+            action: "listHarnessSessions",
+            input: { harness: "test-harness", target: input },
+          });
+        }
+        return {
+          sessions: [
+            { harness: "test-harness", machineId: input.machineId, sessionId: "retained" },
+          ],
+        };
+      },
+    },
+  };
+  const f = await fixture(dependency);
+  try {
+    f.definition.harness!.sessions = async (ctx, target) =>
+      inventory.parse(
+        await ctx.actions.call({ plugin: catalog, action: "sessions", input: target }),
+      ).sessions;
+    const request = { harness: "test-harness", target: { machineId: f.descriptor.machineId } };
+    const listed = ListHarnessSessionsResultSchema.parse(
+      result(await f.host.dispatch(f.root, "core.access.listHarnessSessions", request)),
+    );
+    expect(listed.sessions).toEqual([
+      { harness: "test-harness", machineId: f.descriptor.machineId, sessionId: "retained" },
+    ]);
+    returnToAccess = true;
+    expect(await f.host.dispatch(f.root, "core.access.listHarnessSessions", request)).toMatchObject(
+      {
+        ok: false,
+        denial: { rule: "refused", message: expect.stringContaining("dispatch_cycle:") },
+      },
+    );
   } finally {
     f.close();
   }
