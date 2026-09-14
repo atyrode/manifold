@@ -3252,7 +3252,7 @@ describe("PluginHost install doors", () => {
 });
 
 /** Real install/dispatch/native services; only the native owner's transport is simulated. */
-async function retainedServiceFixture() {
+async function retainedServiceFixture(dataVersion?: PluginManifest["dataVersion"]) {
   const generations = new Map<string, number>();
   const fixture: InstallFixture = await installFixture((ref) => {
     const generation = (generations.get(ref.pluginId) ?? 0) + 1;
@@ -3310,7 +3310,11 @@ async function retainedServiceFixture() {
       },
       locations: {},
     };
-    const manifest: PluginManifest = { ...SAMPLE_MANIFEST, machine };
+    const manifest: PluginManifest = {
+      ...SAMPLE_MANIFEST,
+      machine,
+      ...(dataVersion ? { dataVersion } : {}),
+    };
     const first = fixture.drop(manifest);
     expect((await host.dispatch(fixture.owner, ENGINE_INSTALL_ACTION, first)).ok).toBe(true);
     const commands: JobCommand[] = [];
@@ -3521,6 +3525,8 @@ async function retainedServiceFixture() {
       first,
       start,
       commands,
+      channel,
+      owner,
       readService,
       hub: { url: http.url.origin, ownerKey: OWNER_KEY },
       close: () => {
@@ -3538,6 +3544,236 @@ async function retainedServiceFixture() {
 }
 
 describe("enabled bundle replacement retains native execution", () => {
+  test("boot holds preserve native enablement and release readmits the same installation", async () => {
+    const f = await retainedServiceFixture({ major: 1, minor: 0 });
+    try {
+      const before = f.jobs.jobs.installation(f.machineId, SAMPLE_ID)!;
+      const configuration = f.jobs.describeInstanceService(f.fixture.owner, {
+        serviceId: f.policy.serviceId,
+      }).configuration;
+      const storage = f.fixture.store.pluginStorage(SAMPLE_ID);
+      await storage.stampDataVersion({ major: 99, minor: 0 });
+      const rebooted = await customHost(f.fixture, [], { isolates: f.fixture.isolates });
+      rebooted.setJobs(f.jobs);
+      expect(installedRow(rebooted, SAMPLE_ID).held).toBeDefined();
+      expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toEqual({ ...before, ready: false });
+      expect(f.jobs.jobs.cancellation(f.start.request.jobId)).not.toBeNull();
+      expect(
+        f.jobs.describeInstanceService(f.fixture.owner, { serviceId: f.policy.serviceId }),
+      ).toMatchObject({ state: "stopping", configuration });
+      f.jobs.event(f.channel, {
+        type: "installed",
+        pluginId: SAMPLE_ID,
+        installationRevision: before.revision,
+        artifactSha256: before.artifact,
+      });
+      expect(
+        f.jobs.describe(f.fixture.owner, {
+          machineId: f.machineId,
+          pluginId: SAMPLE_ID,
+        }).installation,
+      ).toMatchObject({ revision: before.revision, enabled: true, ready: false });
+      const fact = {
+        jobId: f.start.request.jobId,
+        requestDigest: f.start.request.requestDigest,
+        ownerId: f.owner.ownerId,
+        ownerGeneration: f.owner.generation,
+      };
+      f.jobs.event(f.channel, {
+        type: "result",
+        result: {
+          ...fact,
+          state: "cancelled",
+          reason: "plugin_held",
+          exitCode: null,
+          startedAt: f.fixture.runtime.now(),
+          finishedAt: f.fixture.runtime.now(),
+          usage: null,
+          limits: f.start.request.limits,
+          outputs: [],
+        },
+      });
+      f.jobs.event(f.channel, { type: "workload_empty", ...fact });
+      f.commands.length = 0;
+      f.jobs.tick();
+      expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+      expect(
+        f.jobs.describeInstanceService(f.fixture.owner, { serviceId: f.policy.serviceId }),
+      ).toMatchObject({ state: "unavailable", configuration });
+      await storage.stampDataVersion(f.manifest.dataVersion ?? { major: 1, minor: 0 });
+      const recovered = await customHost(f.fixture, [], { isolates: f.fixture.isolates });
+      recovered.setJobs(f.jobs);
+      expect(installedRow(recovered, SAMPLE_ID).held).toBeUndefined();
+      const install = f.commands.findLast((command) => command.type === "install");
+      expect(install).toMatchObject({ installationRevision: before.revision });
+      expect(install && "action" in install ? install.action : undefined).toBeUndefined();
+      // A disabled owner's same-revision resource report can already be in flight at release.
+      f.jobs.event(f.channel, {
+        type: "installed",
+        pluginId: SAMPLE_ID,
+        installationRevision: before.revision,
+        artifactSha256: before.artifact,
+        resources: {
+          artifactAvailable: true,
+          tools: [],
+          operations: [
+            {
+              operationId: f.operationId,
+              available: false,
+              reason: "operation_not_installed",
+            },
+          ],
+        },
+      });
+      f.jobs.tick();
+      expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+      f.jobs.event(f.channel, {
+        type: "installed",
+        pluginId: SAMPLE_ID,
+        installationRevision: before.revision,
+        artifactSha256: before.artifact,
+        resources: {
+          artifactAvailable: true,
+          tools: [],
+          operations: [{ operationId: f.operationId, available: true }],
+        },
+      });
+      f.jobs.tick();
+      const start = f.commands.findLast((command) => command.type === "start");
+      expect(start).toBeDefined();
+      if (!start) throw new Error("released native service was not readmitted");
+      f.jobs.event(f.channel, {
+        type: "state",
+        jobId: start.request.jobId,
+        requestDigest: start.request.requestDigest,
+        ownerId: f.owner.ownerId,
+        ownerGeneration: f.owner.generation,
+        state: "started",
+      });
+      f.jobs.event(f.channel, {
+        type: "service_ready",
+        jobId: start.request.jobId,
+        service: start.request.service!,
+      });
+      expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toEqual(before);
+      expect(
+        f.jobs.describeInstanceService(f.fixture.owner, { serviceId: f.policy.serviceId }),
+      ).toMatchObject({ state: "ready", configuration });
+    } finally {
+      f.close();
+    }
+  });
+
+  test.each(["disable-and-purge", "uninstall"] as const)(
+    "held native %s revokes installation intent without resurrection on reinstall",
+    async (operation) => {
+      const f = await retainedServiceFixture();
+      try {
+        const lifecycle: string[] = [];
+        const runner = new FakeRunner((ref) => {
+          const loaded = sampleLoad(ref);
+          return {
+            ...loaded,
+            def: { ...loaded.def, actions: [...loaded.def.actions, ...loaded.def.actions] },
+            lifecycle: {
+              onEnable: () => {
+                lifecycle.push("enable");
+              },
+              onDisable: () => {
+                lifecycle.push("disable");
+              },
+              onPurge: () => {
+                lifecycle.push("purge");
+              },
+            },
+          };
+        });
+        const held = await customHost(f.fixture, [], {
+          isolates: { runner, dataDir: f.fixture.dataDir },
+        });
+        held.setJobs(f.jobs);
+        expect(installedRow(held, SAMPLE_ID).held).toBeDefined();
+        const native = f.jobs.jobs.installation(f.machineId, SAMPLE_ID)!;
+        const fact = {
+          jobId: f.start.request.jobId,
+          requestDigest: f.start.request.requestDigest,
+          ownerId: f.owner.ownerId,
+          ownerGeneration: f.owner.generation,
+        };
+        f.jobs.event(f.channel, {
+          type: "result",
+          result: {
+            ...fact,
+            state: "cancelled",
+            reason: "plugin_held",
+            exitCode: null,
+            startedAt: f.fixture.runtime.now(),
+            finishedAt: f.fixture.runtime.now(),
+            usage: null,
+            limits: f.start.request.limits,
+            outputs: [],
+          },
+        });
+        f.jobs.event(f.channel, { type: "workload_empty", ...fact });
+        f.commands.length = 0;
+        if (operation === "disable-and-purge") {
+          expect(
+            await held.setEnabled(SAMPLE_ID, true, f.fixture.owner.principal.id),
+          ).toHaveProperty("refused");
+          expect(await held.setEnabled(SAMPLE_ID, false, f.fixture.owner.principal.id)).toEqual({
+            ok: true,
+          });
+          expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toMatchObject({
+            revision: native.revision,
+            enabled: false,
+          });
+          expect(await held.purge(SAMPLE_ID, f.fixture.owner.principal.id)).not.toHaveProperty(
+            "refused",
+          );
+        }
+        expect(await held.uninstall(SAMPLE_ID, f.fixture.owner.principal.id, false)).toEqual({
+          ok: true,
+        });
+        expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toMatchObject({
+          revision: native.revision,
+          enabled: false,
+        });
+        expect(lifecycle).toEqual([]);
+        const reinstall = await customHost(f.fixture, [], { isolates: f.fixture.isolates });
+        reinstall.setJobs(f.jobs);
+        expect(
+          (
+            await reinstall.dispatch(
+              f.fixture.owner,
+              ENGINE_INSTALL_ACTION,
+              f.fixture.drop(f.manifest),
+            )
+          ).ok,
+        ).toBe(true);
+        f.jobs.event(f.channel, {
+          type: "installed",
+          pluginId: SAMPLE_ID,
+          installationRevision: native.revision,
+          artifactSha256: native.artifact,
+        });
+        f.jobs.tick();
+        expect(f.jobs.jobs.installation(f.machineId, SAMPLE_ID)).toMatchObject({
+          revision: native.revision,
+          enabled: false,
+          ready: false,
+        });
+        expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+        expect(
+          f.commands
+            .filter((command) => command.type === "install")
+            .every((command) => command.action === "disable" || command.action === "purge"),
+        ).toBe(true);
+      } finally {
+        f.close();
+      }
+    },
+  );
+
   test("the supported installer replaces a parent without changing its usable broker or enabled dependent", async () => {
     const f = await retainedServiceFixture();
     try {

@@ -893,9 +893,45 @@ cannot hide a load failure. No production data volume, network, installer creden
 key is mounted into the candidate. Any held, missing, unverified or load-failed bundle refuses
 deployment by plugin id with the candidate's minimum SDK contract.
 
-Configure root-authorized export credentials as `DEV_INSTALLED_BUNDLES_TOKEN` and
+Container health is only the switch's transport check, not a successful deployment. Both
+workflows snapshot the running target immediately before switching and require the separate
+**`verify-live`** job afterwards. The safe, one-day Actions artifact contains build identity,
+machine/plugin identifiers, installation revisions and enablement, and instance-service state;
+it contains no bundles, authored source, environment, credentials or policy bodies. A missing
+credential, inventory door or unambiguous previous build refuses the switch.
+
+Using the same root credentials as `installed-bundles`, live verification has one **five-minute
+deadline**, including requests and retries. It checks the expected `/healthz` build, requires
+every previously ready native installation to retain its revision and enablement and become
+ready again, and requires every previously enabled instance service to remain enabled and reach
+`ready`. Every installed plugin must also answer a declared read door with valid arguments and
+results. Discovery selects only read-capability doors accepting an empty object, never invents
+resource identifiers or calls a write, and fails closed by plugin id if none exists. Disabled
+installed plugins are not silently excluded from this check.
+
+The first unresolved divergence is named in the failing job and step summary. A failed switch
+or verification automatically restores the snapshotted application revision: development uses
+the existing compare-and-swap `dev-rollback <candidate> <previous>` receiver operation;
+production restores its prior release build settings and restarts that exact commit through
+its existing deployment provider. Recovering a failed explicit backward development move uses
+the receiver's forward operation to restore its newer incumbent. The previous build is then
+checked against the same snapshot. The workflow remains failed even when recovery succeeds;
+failed recovery stays visible rather than claiming that the previous revision is serving.
+Rollback restores application code, **not the database or other shared data**, and never
+restarts the native execution owner. Manual compatibility review and the receiver's existing
+ordering and retained-container safety holds still apply.
+
+An enabled native installation's revision and enablement are durable intent: a hub restart
+or data-only record rewrite is not a new deployment. Enabled instance services on proved
+owners are re-admitted after restart without an operator call, including when their previous
+job finished while the hub was absent. A compatibility hold can make a plugin unavailable
+without silently changing its durable native enablement; lifting that hold reuses the
+installation's existing revision.
+
+Configure root-authorized credentials as `DEV_INSTALLED_BUNDLES_TOKEN` and
 `HUB_INSTALLED_BUNDLES_TOKEN` in repository secrets, scoped operationally to their respective
-target origins (`DEV_DEPLOY_URL` and `MANIFOLD_HUB_ORIGIN`). The export door returns no
+target origins (`DEV_DEPLOY_URL` and `MANIFOLD_HUB_ORIGIN`). Both gates reuse these credentials.
+The export door returns no
 credential lineage or source URL credentials. Missing credentials and a target returning
 `unknown_action` for `engine.plugins.exportInstalled` fail closed by default, never mean an
 empty installed set.
@@ -908,6 +944,7 @@ job to pass without checking inventory. It emits an Actions `::warning::` naming
 and reason and records both in the step summary. HTTP errors (including a generic 404),
 authentication failures, other refusals and candidate failures still fail closed. When the
 door exists, the flag has no effect: the ordinary candidate gate always runs.
+`bootstrap_gate` never bypasses the pre-switch live snapshot, `verify-live`, or automatic rollback.
 
 For production, `bun run promote vX.Y.Z --bootstrap-gate` dispatches `deploy-hub.yml` with the
 published `tag` introducing the door and `bootstrap_gate=true`. For development, dispatch `deploy-dev.yml` from `main` with
@@ -925,6 +962,10 @@ Self-hosted automation can run the same `scripts/installed-bundles.ts IMAGE` wit
 `INSTALLED_BUNDLES_ORIGIN` and `INSTALLED_BUNDLES_TOKEN` supplied through its secret environment.
 Its equivalent explicit opt-in is `INSTALLED_BUNDLES_BOOTSTRAP_GATE=true`; when
 `GITHUB_STEP_SUMMARY` names a file, the same bootstrap receipt is appended there.
+The live equivalent is `scripts/verify-live.ts snapshot PATH` before the switch, then
+`scripts/verify-live.ts verify PATH EXPECTED_BUILD` afterwards, with `VERIFY_LIVE_ORIGIN`
+and `VERIFY_LIVE_TOKEN` supplied through the environment. Replacement automation owns its
+rollback operation when verification exits nonzero.
 
 **Release.** `bun run release -- <major|minor|patch|x.y.z>` publishes versioned artifacts from an
 exact `main` revision with successful full `main` CI — the GitHub Release, the fleet binaries, the
@@ -949,7 +990,7 @@ Production is the GitHub Environment `production`; its deployment
 history is the ledger of what production ran, and protection rules attach there. Promotion is
 never a side effect of a release or of a different green `main` revision.
 
-**Fleet pin after promotion.** Once the hub answers with the promoted build, `deploy-hub.yml`
+**Fleet pin after promotion.** Once `verify-live` proves the promoted build and live state, `deploy-hub.yml`
 dispatches `update-pins.yml` in atyrode/dotfiles so the spokes follow the hub in that order
 (invariant 10) instead of racing it on the pin cron. The step runs only when the repository
 secret `DOTFILES_DISPATCH_TOKEN` exists; absent or expired, it is skipped and the dotfiles cron
@@ -970,8 +1011,10 @@ is allowed. The workflow verifies the exact full SHA against the latest eligible
 same-commit CI run from this repository's `main` (push or dispatch), including its unique
 successful `gate` job. It does not success-filter the query: a newer failed, cancelled, queued
 or running proof cannot be hidden by an older success. It then hands the request to the host
-over a forced-command SSH key and fails unless `/healthz` answers with the build derived by
-the one `scripts/build-identity.ts` implementation. The SSH-bearing deployment steps execute
+over a forced-command SSH key and requires `verify-live` to prove both the build derived by
+the one `scripts/build-identity.ts` implementation and native/product parity. Failed or skipped
+live verification cannot produce a green deployment or dispatch an owner pin, including on the
+automatic path. The SSH-bearing deployment steps execute
 trusted default-branch code; for an older target it passes the explicit revision to that trusted
 identity helper rather than checking out or executing the target's script.
 
@@ -1008,7 +1051,7 @@ build/configuration validation, without terminal retirement/resume, recursive da
 changes or spoke rebuild/restart. The native execution-only profile remains separately declared
 and supervised. Numbered previews retain their explicitly disposable development-image lifecycle.
 
-After the successful development health check, `deploy-dev.yml` dispatches dotfiles'
+After successful development `verify-live`, `deploy-dev.yml` dispatches dotfiles'
 `update-preview-owner.yml` with `target=preview-owner` and `revision=<deployed SHA>`, using
 `DOTFILES_DISPATCH_TOKEN`. The receiver updates only the preview-owner pin and must no-op
 when that exact revision is already pinned; the operator's next apply or scheduled fleet
@@ -1041,7 +1084,8 @@ skip this tier entirely.
 gated on repository variables so a fork never runs them (ADR 0022). Yours consume the same
 releases: `docker compose pull` a tag, or build a commit and stamp it as above. Preserve the same
 boundary in replacement automation: record successful full proof for the exact revision and
-pass the installed-bundle candidate gate before deploying it. Whatever you run, `/healthz` tells you what it is —
+pass the installed-bundle candidate gate before deploying it, then verify live parity and
+automatically restore the previous revision on failure. Whatever you run, `/healthz` tells you what it is —
 `curl -fsS https://<your-domain>/healthz` answers
 `{ ok, version, build, channel, protocolVersion }`, and the sidebar's rev line prints the same
 `build`, so the client you are looking at and the instance it looks at can be compared by eye.

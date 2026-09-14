@@ -1337,6 +1337,11 @@ export class PluginHost {
       void this.jobSettled(delivery);
     });
     this.jobs = jobs;
+    jobs.setHeldPlugins(
+      this.assembled.roster
+        .filter((entry) => entry.held !== undefined)
+        .map((entry) => entry.manifest.id),
+    );
     this.streams.reconcile();
   }
 
@@ -1765,12 +1770,14 @@ export class PluginHost {
         return this.reassemble();
       }
     }
+    this.jobs?.setHeldPlugins(
+      assembly.roster.filter((entry) => entry.held !== undefined).map((entry) => entry.manifest.id),
+    );
     for (const entry of assembly.roster) {
       if (entry.held === undefined) continue;
       const id = entry.manifest.id;
       this.handlers.delete(id);
       this.guestInputPlugins.delete(id);
-      this.jobs?.disablePlugin(id);
       this.retireDatabase(id);
       if (this.installed.get(id)?.row.hardened === true) await this.isolates?.runner.unload(id);
     }
@@ -2206,9 +2213,13 @@ export class PluginHost {
   ): Promise<ActionRefused | { ok: true }> {
     const entry = this.assembled.roster.find((candidate) => candidate.manifest.id === id);
     if (entry === undefined) return refused("unknown_plugin", [id]);
-    if (entry.held !== undefined) return { refused: entry.held.reason };
+    if (entry.held !== undefined && enabled) return { refused: entry.held.reason };
     if (this.assembled.builtin(id)) return refused("builtin", [id]);
-    if (entry.enabled === enabled) return { ok: true };
+    if (
+      entry.enabled === enabled &&
+      (entry.held === undefined || this.store.disabledPlugins().has(id))
+    )
+      return { ok: true };
 
     if (!enabled) {
       if (entry.manifest.essential === true) return refused("essential");
@@ -2280,10 +2291,10 @@ export class PluginHost {
       this.assembled.roster.filter((row) => row.enabled).map((row) => row.manifest.id),
     );
     this.store.setPluginEnabled(id, enabled, changedBy, this.runtime.now());
+    if (!enabled) this.jobs?.disablePlugin(id);
     // COMMIT FIRST, then tell people. A lifecycle hook has no vote (ADR 0013 §2): the roster
     // every client will render is already the truth by the time any plugin hears about it.
     this.assembled = await this.reassemble();
-    if (!enabled) this.jobs?.disablePlugin(id);
     this.streams.reconcile();
     const delta: AssemblyDelta = {
       enabled: this.assembled.order.filter(
@@ -2897,6 +2908,9 @@ export class PluginHost {
         );
       }
     }
+    // Removing a held plugin is an explicit revocation, not recovery from its runtime hold.
+    // Revoke native intent before reassembly can remove that hold's disable projection.
+    this.jobs?.disablePlugin(id);
     if (entry.row.hardened === true) await this.isolates.runner.unload(id);
     removeInstall(entry.row);
     this.store.deletePluginInstall(id);

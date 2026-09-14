@@ -196,3 +196,34 @@ test("an unrecognized manual operation is not treated as a rollback or deploymen
     admit({ dispatch: true, inputs: { DISPATCH_OPERATION: "unknown" } }),
   ).rejects.toThrow();
 });
+
+test("deployment completion refuses failed or skipped live verification before pinning", async () => {
+  for (const [file, job] of [
+    ["deploy-dev.yml", "owner-pin"],
+    ["deploy-hub.yml", "fleet-pin"],
+  ] as const) {
+    const source = Bun.YAML.parse(
+      await Bun.file(new URL(`../.github/workflows/${file}`, import.meta.url)).text(),
+    ) as { jobs: Record<string, { steps: { name?: string; run?: string }[] }> };
+    const guard = source.jobs[job]?.steps.find(
+      (step) => step.name === "Require successful switch and live verification",
+    )?.run;
+    if (!guard) throw new Error(`${file} has no deployment completion guard`);
+    const complete = (switchResult: string, verifyResult: string) =>
+      Bun.spawnSync(["bash", "-e", "-c", guard], {
+        env: {
+          ...process.env,
+          SWITCH_RESULT: switchResult,
+          VERIFY_RESULT: verifyResult,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    expect(complete("success", "success").exitCode).toBe(0);
+    const skipped = complete("success", "skipped");
+    expect(skipped.exitCode).toBe(1);
+    expect(skipped.stdout.toString()).toContain("verify-live");
+    expect(complete("success", "failure").exitCode).toBe(1);
+    expect(complete("failure", "success").exitCode).toBe(1);
+  }
+});

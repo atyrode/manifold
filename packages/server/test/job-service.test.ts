@@ -37,6 +37,7 @@ import { AuthService, type AuthContext } from "../src/auth.ts";
 import { openDatabase } from "../src/db.ts";
 import { JobService, type JobRecord, type SettledJobDelivery } from "../src/job-service.ts";
 import { jobContext } from "../src/job-doors.ts";
+import { projectPluginAuthorFacts } from "../src/log.ts";
 import { ServerStore } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
 
@@ -228,6 +229,186 @@ async function instanceFixture(path = ":memory:", protocolVersion = JOB_OWNER_PR
   if (!start || !configured.configuration) throw new Error("instance runtime was not admitted");
   return { f, policy, provider, start, revision: configured.configuration.revision };
 }
+
+test.each(["running", "exited", "awaiting-empty", "awaiting-result"] as const)(
+  "hub restart preserves enabled instance identity and recovers a %s workload",
+  async (workload) => {
+    const dir = mkdtempSync(join(tmpdir(), "job-instance-restart-"));
+    const path = join(dir, "hub.sqlite");
+    const { f, policy, provider, start, revision } = await instanceFixture(path);
+    const fact = {
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+    };
+    const result: Extract<JobEvent, { type: "result" }> = {
+      type: "result",
+      result: {
+        ...fact,
+        state: "exited",
+        exitCode: 0,
+        reason: null,
+        outputs: [],
+        startedAt: f.runtime.now(),
+        usage: null,
+        limits: start.request.limits,
+        finishedAt: f.runtime.now(),
+      },
+    };
+    try {
+      f.service.event(f.channel, { type: "state", ...fact, state: "started" });
+      f.service.event(f.channel, {
+        type: "service_ready",
+        jobId: start.request.jobId,
+        service: start.request.service!,
+      });
+      const installation = f.service.describe(f.root, {
+        machineId: f.machineId,
+        pluginId,
+      }).installation;
+      const configuration = f.service.describeInstanceService(f.root, {
+        serviceId: policy.serviceId,
+      }).configuration;
+      expect(installation).toMatchObject({ revision: "r1", enabled: true, ready: true });
+      expect(configuration).toMatchObject({ revision, enabled: true });
+      if (workload !== "running") {
+        if (workload !== "awaiting-result") f.service.event(f.channel, result);
+        if (workload !== "awaiting-empty")
+          f.service.event(f.channel, { type: "workload_empty", ...fact });
+      }
+      f.service.offline(f.channel);
+      f.store.close();
+      f.store = new ServerStore(openDatabase(path));
+      f.auth = new AuthService(f.store, key, f.runtime);
+      f.root = f.auth.authenticate(key);
+      f.service = new JobService(f.store, f.auth, f.runtime);
+      f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
+      f.service.setManifestResolver((id) => (id === pluginId ? provider : null));
+      f.commands.length = 0;
+      f.service.tick();
+      expect(f.commands).toEqual([]);
+      prove(f);
+      f.service.tick();
+      if (workload === "awaiting-empty" || workload === "awaiting-result") {
+        expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+        f.service.event(
+          f.channel,
+          workload === "awaiting-empty" ? { type: "workload_empty", ...fact } : result,
+        );
+        f.service.tick();
+      }
+      const starts = f.commands.filter((command) => command.type === "start");
+      expect(starts).toHaveLength(workload === "running" ? 0 : 1);
+      const current = workload === "running" ? start : starts[0]!;
+      if (workload !== "running") {
+        expect(current.request.jobId).not.toBe(start.request.jobId);
+        f.service.event(f.channel, {
+          type: "state",
+          jobId: current.request.jobId,
+          requestDigest: current.request.requestDigest,
+          ownerId: current.permit.ownerId,
+          ownerGeneration: current.permit.ownerGeneration,
+          state: "started",
+        });
+      }
+      f.service.event(f.channel, {
+        type: "service_ready",
+        jobId: current.request.jobId,
+        service: current.request.service!,
+      });
+      expect(
+        f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }),
+      ).toMatchObject({ state: "ready", configuration });
+      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId }).installation).toEqual(
+        installation,
+      );
+      f.service.tick();
+      expect(f.commands.filter((command) => command.type === "start")).toEqual(starts);
+    } finally {
+      f.store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test("data-only credential migration and author audit projection preserve enabled native identity", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "job-instance-migration-"));
+  const path = join(dir, "hub.sqlite");
+  const { f, policy, provider, start } = await instanceFixture(path);
+  try {
+    f.service.event(f.channel, {
+      type: "state",
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+      state: "started",
+    });
+    const installationQuery =
+      "SELECT revision,artifact,manifest,resource_bindings FROM machine_job_installations";
+    const before = f.store.db.query(installationQuery).all();
+    const configuration = f.service.describeInstanceService(f.root, {
+      serviceId: policy.serviceId,
+    }).configuration;
+    const authorPayload = { id: pluginId, files: { "worker.ts": "export const fixture = true;" } };
+    const trace = f.store.appendTrace({
+      actor: f.root.principal.id,
+      authority: "root",
+      door: "engine.plugins.author",
+      containerId: null,
+      session: null,
+      ts: f.runtime.now(),
+      outcome: "ok",
+      targets: [],
+      payload: authorPayload,
+    });
+    // #608 changed new author trace projection, not the schema or installation records.
+    // Replaying its projection on an elder trace must remain independent of native identity.
+    f.store.db
+      .query("UPDATE events SET payload=? WHERE id=?")
+      .run(JSON.stringify(projectPluginAuthorFacts(authorPayload)), trace);
+    // The real v37 -> v38 data-only migration classifies this existing service principal.
+    f.store.db
+      .query("UPDATE principals SET kind='agent' WHERE id=?")
+      .run(start.request.credential.principalId);
+    f.store.db.exec(`
+ALTER TABLE terminals DROP COLUMN cwd;
+ALTER TABLE terminals DROP COLUMN launch_recipe;
+UPDATE meta SET value='37' WHERE key='schema_version';
+`);
+    f.service.offline(f.channel);
+    f.store.close();
+    f.store = new ServerStore(openDatabase(path));
+    f.auth = new AuthService(f.store, key, f.runtime);
+    f.root = f.auth.authenticate(key);
+    f.service = new JobService(f.store, f.auth, f.runtime);
+    f.service.setLifecycleRecorder((record) => f.store.appendTrace(record));
+    f.service.setManifestResolver((id) => (id === pluginId ? provider : null));
+    expect(f.store.db.query(installationQuery).all()).toEqual(before);
+    expect(f.store.getPrincipal(start.request.credential.principalId)?.kind).toBe("service");
+    f.commands.length = 0;
+    prove(f);
+    f.service.tick();
+    f.service.event(f.channel, {
+      type: "service_ready",
+      jobId: start.request.jobId,
+      service: start.request.service!,
+    });
+    expect(
+      f.service.describe(f.root, { machineId: f.machineId, pluginId }).installation,
+    ).toMatchObject({ revision: start.request.installationRevision, enabled: true, ready: true });
+    expect(
+      f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }),
+    ).toMatchObject({ state: "ready", configuration });
+    expect(
+      f.commands.some((command) => command.type === "start" || command.type === "cancel"),
+    ).toBe(false);
+  } finally {
+    f.store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test.each([34, 35])(
   "accepted v%s owner keeps instance services and ordinary jobs across reconnect",

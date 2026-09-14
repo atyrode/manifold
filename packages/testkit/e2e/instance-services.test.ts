@@ -473,6 +473,8 @@ test.skipIf(!realBackend)(
       await run("transport-recovered");
       const port = hub().port;
       const dataDir = hub().dataDir;
+      const nativeBeforeRestart = (await describe(source.machineId, PROVIDER)).installation;
+      const serviceBeforeRestart = (await instance()).configuration;
       await hub().stop("SIGKILL");
       server = await startServer({ dataDir, port, env: { MANIFOLD_PLUGIN_DEV_PATHS: "1" } });
       await ready(true);
@@ -481,7 +483,11 @@ test.skipIf(!realBackend)(
         20000,
         20,
       );
-      expect((await instance()).configuration!.revision).toBe(configured.configuration!.revision);
+      expect((await describe(source.machineId, PROVIDER)).installation).toEqual(
+        nativeBeforeRestart,
+      );
+      expect((await instance()).configuration).toEqual(serviceBeforeRestart);
+      expect((await instance()).configuration!.enabled).toBe(true);
       await run("hub-recovered");
       const denial = GrantSchema.parse(
         await ownerAction(hub(), "core.access.grant", {
