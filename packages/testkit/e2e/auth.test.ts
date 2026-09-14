@@ -680,14 +680,50 @@ test("a revoked preview browser identity returns through production admission wi
           await browser.evaluate("window.__admissionAttemptSeen = false");
           await browser.reload();
         }
-        await waitFor(
-          () =>
-            browser.evaluate<boolean>(
-              "window.__admissionAttemptSeen === true && document.querySelector('.gate-screen') !== null",
-            ),
-          20_000,
-          50,
-        );
+        try {
+          await waitFor(
+            () =>
+              browser.evaluate<boolean>(
+                "window.__admissionAttemptSeen === true && document.querySelector('.gate-screen') !== null",
+              ),
+            20_000,
+            50,
+          );
+        } catch (error) {
+          const state = await browser.evaluate<{
+            origin: string;
+            pathname: string;
+            readyState: string;
+            admissionAttemptSeen: boolean;
+            gateScreen: boolean;
+            workspace: boolean;
+            identityName: boolean;
+            identityPresent: boolean;
+            protectedIdentityRequests: number | null;
+          }>(`({
+            origin: location.origin,
+            pathname: location.pathname,
+            readyState: document.readyState,
+            admissionAttemptSeen: window.__admissionAttemptSeen === true,
+            gateScreen: document.querySelector('.gate-screen') !== null,
+            workspace: document.querySelector('.workspace') !== null,
+            identityName: document.querySelector('#identity-name') !== null,
+            identityPresent: localStorage.getItem('manifold.identity') !== null,
+            protectedIdentityRequests:
+              typeof window.__protectedIdentityRequests === 'number'
+                ? window.__protectedIdentityRequests
+                : null
+          })`);
+          throw new Error(
+            `admission gate did not appear: ${JSON.stringify({
+              admission: scenario.admission,
+              expired: scenario.expired,
+              reload,
+              ...state,
+            })}`,
+            { cause: error },
+          );
+        }
         expect(
           await browser.evaluate<boolean>(
             "document.querySelector('#identity-name') === null && document.querySelector('.workspace') === null",
