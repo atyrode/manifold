@@ -3914,6 +3914,16 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- layout:<principalId>
 ```
 
+An object-store replica of `manifold.db` is a sensitive, authority-bearing backup. It contains
+principal and grant state, token and share hashes, plugin-install state, and the raw outbound
+`dials.secret` values a guest must present to another hub. Anyone who can read it can recover
+those dial bearers; anyone who can replace it can replace persisted authority and installed-plugin
+state on the next restore. Replica read/write administration is therefore trusted access to the
+hub, not ordinary storage administration. The supported posture assumes a trusted store isolated
+to this hub with least-privilege credentials and provider-appropriate integrity and recovery
+controls. Restoring from storage writable by an untrusted party requires an authenticity mechanism
+whose verification secret is kept outside that store; Manifold does not currently provide one.
+
 Schema version 38 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
 — `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
 `grants` substrate; 14 is the trace ledger — five nullable columns on `events`; 15 is credential
