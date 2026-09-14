@@ -43,6 +43,7 @@ export interface DependencyGraph {
   readonly importers: ReadonlyMap<string, ReadonlySet<string>>;
   readonly holes: readonly string[];
   readonly directImporters?: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly provenanceImporters?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 interface PlannerOptions {
   readonly base?: string;
@@ -72,7 +73,7 @@ const BOUNDARIES: readonly {
   {
     name: "authorization boundary",
     pattern:
-      /^packages\/server\/src\/(?:auth|http|session-ws|machine-ws|service-doors|machine-doors|migrate-grants)\.ts$|^packages\/plugins\/access\/src\/server\.ts$|^packages\/web\/src\/(?:api|http)\.ts$|^packages\/web\/src\/identity\.tsx$|^packages\/server\/test\/(?:auth|grant-parity|identity-posture|access-door|machine-grants)\.test\.ts$/i,
+      /^packages\/server\/src\/(?:auth|http|session-ws|machine-ws|service-doors|machine-doors|migrate-grants)\.ts$|^packages\/plugins\/access\/src\/server\.ts$|^packages\/web\/src\/(?:api|http)\.ts$|^packages\/web\/src\/identity\.tsx$|^packages\/sdk\/src\/(?:action-http|action-runner|action-runner-main)\.ts$|^packages\/server\/test\/(?:auth|grant-parity|identity-posture|access-door|machine-grants)\.test\.ts$/i,
     checks: ["trace", "unit", "e2e-rest", "axioms"],
   },
   {
@@ -84,7 +85,7 @@ const BOUNDARIES: readonly {
   {
     name: "execution boundary",
     pattern:
-      /^packages\/(?:agent|server)\/src\/(?:.*(?:job|terminal|isolate|spawn|plugin-host|runtime).*)$|^packages\/plugins\/(?:terminals|shell|plugin-manager)\/src\/server\.ts$|^packages\/(?:agent|server)\/(?:src|test)\/[^/]*(?:job|terminal|isolate|spawn|runtime)[^/]*\.test\.ts$/i,
+      /^packages\/(?:agent|server)\/src\/(?:.*(?:job|terminal|isolate|spawn|plugin-host|runtime).*)$|^packages\/sdk\/src\/(?:action-runner|action-runner-main)\.ts$|^packages\/plugins\/(?:terminals|shell|plugin-manager)\/src\/server\.ts$|^packages\/(?:agent|server)\/(?:src|test)\/[^/]*(?:job|terminal|isolate|spawn|runtime)[^/]*\.test\.ts$/i,
     checks: [
       "trace",
       "unit",
@@ -293,17 +294,17 @@ export async function buildDependencyGraph(): Promise<DependencyGraph> {
     noEmit: true,
     target: ts.ScriptTarget.ES2024,
   };
-  const program = ts.createProgram(
-    roots.map((path) => resolve(repoRoot, path)),
-    options,
-  );
+  const resolutionCache = ts.createModuleResolutionCache(repoRoot, (path) => path, options);
   const sources = new Map<string, ts.SourceFile>();
-  for (const source of program.getSourceFiles()) {
-    const path = repoPath(source.fileName);
-    if (path !== null && !path.startsWith("node_modules/")) sources.set(path, source);
+  for (const path of roots) {
+    const filename = resolve(repoRoot, path);
+    const text = ts.sys.readFile(filename);
+    if (text === undefined) continue;
+    sources.set(path, ts.createSourceFile(filename, text, ts.ScriptTarget.ES2024, true));
   }
   const importers = new Map<string, Set<string>>();
   const directImporters = new Map<string, Set<string>>();
+  const provenanceImporters = new Map<string, Set<string>>();
   const holes = new Set<string>();
   const addEdge = (graph: Map<string, Set<string>>, dependency: string, importer: string): void => {
     const dependents = graph.get(dependency) ?? new Set<string>();
@@ -313,8 +314,8 @@ export async function buildDependencyGraph(): Promise<DependencyGraph> {
   const resolveImport = (specifier: string, source: ts.SourceFile): string | null => {
     const resolvedFile =
       workspaceModules.get(specifier) ??
-      ts.resolveModuleName(specifier, source.fileName, options, ts.sys).resolvedModule
-        ?.resolvedFileName;
+      ts.resolveModuleName(specifier, source.fileName, options, ts.sys, resolutionCache)
+        .resolvedModule?.resolvedFileName;
     if (resolvedFile === undefined) return null;
     const dependency = repoPath(resolvedFile);
     return dependency === null || dependency.startsWith("node_modules/") ? null : dependency;
@@ -330,16 +331,33 @@ export async function buildDependencyGraph(): Promise<DependencyGraph> {
     return parsed;
   };
 
+  const bindingCache = new Map<string, ReadonlySet<string> | null>();
+  const bindingModuleCache = new Map<string, ReadonlySet<string>>();
+  const nonCacheableBindings = new Set<string>();
   const bindingDependencies = (
     modulePath: string,
     exportedName: string,
     seen = new Set<string>(),
   ): ReadonlySet<string> | null => {
     const key = `${modulePath}\u0000${exportedName}`;
-    if (seen.has(key)) return new Set();
+    if (seen.has(key)) {
+      for (const active of seen) nonCacheableBindings.add(active);
+      return new Set();
+    }
+    if (bindingCache.has(key)) return bindingCache.get(key) ?? null;
+    const usedModules = new Set<string>();
+    const finish = (result: ReadonlySet<string> | null): ReadonlySet<string> | null => {
+      seen.delete(key);
+      if (!nonCacheableBindings.has(key) || seen.size === 0) {
+        bindingCache.set(key, result);
+        nonCacheableBindings.delete(key);
+      }
+      bindingModuleCache.set(key, usedModules);
+      return result;
+    };
     seen.add(key);
     const source = sourceAt(modulePath);
-    if (source === undefined) return null;
+    if (source === undefined) return finish(null);
     const imports = new Map<
       string,
       { readonly dependency: string; readonly importedName: string | null }
@@ -350,7 +368,11 @@ export async function buildDependencyGraph(): Promise<DependencyGraph> {
       if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
         const dependency = resolveImport(statement.moduleSpecifier.text, source);
         const clause = statement.importClause;
-        if (dependency === null || clause === undefined) continue;
+        if (dependency === null) continue;
+        if (clause === undefined) {
+          usedModules.add(dependency);
+          continue;
+        }
         if (clause.name !== undefined) {
           imports.set(clause.name.text, { dependency, importedName: "default" });
         }
@@ -361,6 +383,12 @@ export async function buildDependencyGraph(): Promise<DependencyGraph> {
               importedName: (element.propertyName ?? element.name).text,
             });
           }
+        }
+        if (clause.namedBindings !== undefined && ts.isNamespaceImport(clause.namedBindings)) {
+          imports.set(clause.namedBindings.name.text, {
+            dependency,
+            importedName: null,
+          });
         }
       }
       if (ts.isVariableStatement(statement)) {
@@ -402,10 +430,11 @@ export async function buildDependencyGraph(): Promise<DependencyGraph> {
             statement.moduleSpecifier === undefined ||
             !ts.isStringLiteral(statement.moduleSpecifier)
           ) {
-            return null;
+            return finish(null);
           }
           const dependency = resolveImport(statement.moduleSpecifier.text, source);
-          return dependency === null ? new Set() : new Set([dependency]);
+          if (dependency !== null) usedModules.add(dependency);
+          return finish(dependency === null ? new Set() : new Set([dependency]));
         }
         const element = statement.exportClause.elements.find(
           (candidate) => candidate.name.text === exportedName,
@@ -416,13 +445,15 @@ export async function buildDependencyGraph(): Promise<DependencyGraph> {
           ts.isStringLiteral(statement.moduleSpecifier)
         ) {
           const dependency = resolveImport(statement.moduleSpecifier.text, source);
-          if (dependency === null) return new Set();
-          const nested = bindingDependencies(
-            dependency,
-            (element.propertyName ?? element.name).text,
-            seen,
-          );
-          return new Set([dependency, ...(nested ?? [])]);
+          if (dependency === null) return finish(new Set());
+          usedModules.add(dependency);
+          const nestedName = (element.propertyName ?? element.name).text;
+          const nested = bindingDependencies(dependency, nestedName, seen);
+          for (const used of bindingModuleCache.get(`${dependency}\u0000${nestedName}`) ?? []) {
+            usedModules.add(used);
+          }
+          if (nested === null) return finish(null);
+          return finish(new Set([dependency, ...nested]));
         }
         exported = declarations.get((element.propertyName ?? element.name).text);
       }
@@ -439,22 +470,44 @@ export async function buildDependencyGraph(): Promise<DependencyGraph> {
         }
         const dependency = resolveImport(statement.moduleSpecifier.text, source);
         if (dependency === null) continue;
+        usedModules.add(dependency);
         const nested = bindingDependencies(dependency, exportedName, seen);
-        if (nested !== null) return new Set([dependency, ...nested]);
+        for (const used of bindingModuleCache.get(`${dependency}\u0000${exportedName}`) ?? []) {
+          usedModules.add(used);
+        }
+        if (nested !== null) return finish(new Set([dependency, ...nested]));
       }
-      return null;
+      return finish(null);
     }
     const dependencies = new Set<string>();
+    let complete = true;
     const localSeen = new Set<ts.Node>();
     const visit = (node: ts.Node): void => {
       if (localSeen.has(node)) return;
       localSeen.add(node);
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        node.arguments.length === 1 &&
+        node.arguments[0] !== undefined &&
+        ts.isStringLiteral(node.arguments[0])
+      ) {
+        const dependency = resolveImport(node.arguments[0].text, source);
+        if (dependency !== null) usedModules.add(dependency);
+      }
       if (ts.isIdentifier(node)) {
         const imported = imports.get(node.text);
         if (imported !== undefined) {
+          usedModules.add(imported.dependency);
           if (imported.importedName !== null) {
             const nested = bindingDependencies(imported.dependency, imported.importedName, seen);
-            for (const dependency of nested ?? []) dependencies.add(dependency);
+            for (const used of bindingModuleCache.get(
+              `${imported.dependency}\u0000${imported.importedName}`,
+            ) ?? []) {
+              usedModules.add(used);
+            }
+            if (nested === null) complete = false;
+            else for (const dependency of nested) dependencies.add(dependency);
           }
           return;
         }
@@ -467,7 +520,7 @@ export async function buildDependencyGraph(): Promise<DependencyGraph> {
       ts.forEachChild(node, visit);
     };
     visit(exported);
-    return dependencies;
+    return finish(complete ? dependencies : null);
   };
 
   for (const [from, source] of sources) {
@@ -508,9 +561,11 @@ export async function buildDependencyGraph(): Promise<DependencyGraph> {
           for (const semanticDependency of semantic) {
             addEdge(importers, semanticDependency, from);
           }
+          for (const usedModule of bindingModuleCache.get(`${dependency}\u0000${importedName}`) ??
+            []) {
+            addEdge(provenanceImporters, usedModule, from);
+          }
         }
-      } else if (bindings !== undefined && ts.isNamespaceImport(bindings)) {
-        addEdge(directImporters, dependency, from);
       } else {
         addEdge(importers, dependency, from);
       }
@@ -534,7 +589,7 @@ export async function buildDependencyGraph(): Promise<DependencyGraph> {
       }
     }
   }
-  return { importers, directImporters, holes: [...holes].sort() };
+  return { importers, directImporters, provenanceImporters, holes: [...holes].sort() };
 }
 function impactedPaths(
   changedFiles: readonly string[],
@@ -553,6 +608,7 @@ function impactedPaths(
     const importers = [
       ...(graph.importers.get(dependency) ?? []),
       ...(initial.has(dependency) ? (graph.directImporters?.get(dependency) ?? []) : []),
+      ...(initial.has(dependency) ? (graph.provenanceImporters?.get(dependency) ?? []) : []),
     ];
     for (const importer of importers) {
       if (paths.has(importer)) continue;
@@ -705,13 +761,11 @@ export function planFromEvidence(input: {
     for (const check of boundary.checks) selected.add(check);
     reasons.push(`${boundary.name}: ${dependencyReason(hit, changedSet, impact.via)}`);
   }
-
-  const impacted = [...impact.paths].filter((path) => !TEST.test(path));
-  if (impacted.some((path) => path.startsWith("packages/server/"))) {
+  if (changedFiles.some((path) => path.startsWith("packages/server/"))) {
     selected.add("unit");
     selected.add("e2e-rest");
   }
-  if (impacted.some((path) => /^packages\/(?:protocol|scene|sdk)\//.test(path))) {
+  if (changedFiles.some((path) => /^packages\/(?:protocol|scene|sdk)\//.test(path))) {
     selected.add("unit");
     selected.add("e2e-rest");
     selected.add("convergence");
@@ -774,21 +828,37 @@ export async function createPlan(options: PlannerOptions): Promise<CiPlan> {
 
   await requireAnalyzedCheckout(base, head);
   const changes = await changed(options, base, head);
+  const changedFiles = changes.map((change) => change.path);
+  const graphIndependent =
+    changes.some((change) => change.status.startsWith("D") || change.status.startsWith("R")) ||
+    changedFiles.some((path) => FULL_PATH.test(path) || NORMATIVE.test(path)) ||
+    changedFiles.some((path) => !SOURCE.test(path) && !CSS.test(path) && !DOC_STYLE.test(path)) ||
+    changedFiles.some((path) => SOURCE.test(path) && !KNOWN_SOURCE_ROOT.test(path)) ||
+    changedFiles.some((path) => SOURCE.test(path) && !existsSync(resolve(repoRoot, path))) ||
+    changedFiles.every((path) => !SOURCE.test(path));
+  if (graphIndependent) {
+    return planFromEvidence({
+      base,
+      head,
+      changes,
+      graph: { importers: new Map(), holes: [] },
+    });
+  }
   await prepareGeneratedSources();
   const graph = await buildDependencyGraph();
   return planFromEvidence({ base, head, changes, graph });
 }
-
 interface CliOptions extends PlannerOptions {
   readonly json: boolean;
   readonly githubOutput: boolean;
   readonly run: boolean;
   readonly runTargeted: boolean;
+  readonly unitPathsJson?: string;
 }
 
 function usage(message: string): never {
   console.error(
-    `ci-plan: ${message}\nusage: bun scripts/ci-plan.ts [--base <git-rev>] [--head <git-rev>] [--full] [--json | --github-output | --run | --run-targeted]`,
+    `ci-plan: ${message}\nusage: bun scripts/ci-plan.ts [--base <git-rev>] [--head <git-rev>] [--full] [--json | --github-output | --run | --run-targeted [--unit-paths-json <json>]]`,
   );
   process.exit(2);
 }
@@ -796,6 +866,7 @@ function usage(message: string): never {
 function parseArgs(argv: readonly string[]): CliOptions {
   let base: string | undefined;
   let head: string | undefined;
+  let unitPathsJson: string | undefined;
   let full = false;
   let json = false;
   let githubOutput = false;
@@ -820,13 +891,33 @@ function parseArgs(argv: readonly string[]): CliOptions {
     else if (argument === "--github-output") githubOutput = true;
     else if (argument === "--run") run = true;
     else if (argument === "--run-targeted") runTargeted = true;
-    else usage(`unknown argument ${JSON.stringify(argument)}`);
+    else if (argument === "--unit-paths-json") {
+      if (unitPathsJson !== undefined) usage("--unit-paths-json may be specified only once");
+      const value = argv[index + 1];
+      if (value === undefined || value.startsWith("--"))
+        usage("--unit-paths-json requires a JSON array");
+      unitPathsJson = value;
+      index += 1;
+    } else usage(`unknown argument ${JSON.stringify(argument)}`);
   }
   const modes = [json, githubOutput, run, runTargeted].filter(Boolean).length;
   if (modes > 1) usage("choose only one output or run mode");
+  if (
+    unitPathsJson !== undefined &&
+    (!runTargeted ||
+      base !== undefined ||
+      head !== undefined ||
+      full ||
+      json ||
+      githubOutput ||
+      run)
+  ) {
+    usage("--unit-paths-json is internal to standalone --run-targeted");
+  }
   return {
     ...(base === undefined ? {} : { base }),
     ...(head === undefined ? {} : { head }),
+    ...(unitPathsJson === undefined ? {} : { unitPathsJson }),
     full,
     includeWorkingTree: base === undefined && head === undefined,
     json,
@@ -835,7 +926,6 @@ function parseArgs(argv: readonly string[]): CliOptions {
     runTargeted,
   };
 }
-
 function summary(plan: CiPlan): string {
   return [
     `CI plan: ${plan.risk} risk`,
@@ -863,15 +953,59 @@ async function runCommand(
   if (exitCode !== 0) fail(`${command.join(" ")} exited ${exitCode}`);
 }
 
-async function runTargeted(plan: CiPlan): Promise<void> {
-  await runCommand(["bun", "test", ...plan.unitPaths]);
+function validatedUnitPaths(value: string): readonly string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    fail("--unit-paths-json must be valid JSON");
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 256) {
+    fail("--unit-paths-json must be a nonempty array of at most 256 paths");
+  }
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of parsed) {
+    if (
+      typeof candidate !== "string" ||
+      candidate.length > 512 ||
+      !candidate.startsWith("packages/") ||
+      candidate.includes("\\") ||
+      candidate
+        .split("/")
+        .some((component) => component === "" || component === "." || component === "..")
+    ) {
+      fail(`unsafe targeted test path ${JSON.stringify(candidate)}`);
+    }
+    const packageRoot = /^packages\/(?:plugins\/[^/]+|[^/]+)$/.test(candidate);
+    const packageTests = /^packages\/(?:plugins\/[^/]+|[^/]+)\/test$/.test(candidate);
+    if (!packageRoot && !packageTests && !TEST.test(candidate)) {
+      fail(`targeted path is not a package or runnable test: ${candidate}`);
+    }
+    const absolute = resolve(repoRoot, candidate);
+    if (!existsSync(absolute) || repoPath(realpathSync(absolute)) !== candidate) {
+      fail(`targeted test path does not exist in this checkout: ${candidate}`);
+    }
+    if (seen.has(candidate)) fail(`duplicate targeted test path: ${candidate}`);
+    seen.add(candidate);
+    paths.push(candidate);
+  }
+  return paths;
+}
+
+async function runTargeted(unitPaths: readonly string[]): Promise<void> {
+  await runCommand(["bun", "test", ...unitPaths]);
 }
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
+  if (options.unitPathsJson !== undefined) {
+    await runTargeted(validatedUnitPaths(options.unitPathsJson));
+    return;
+  }
   const plan = await createPlan(options);
   if (options.runTargeted) {
-    await runTargeted(plan);
+    await runTargeted(plan.unitPaths);
     return;
   }
   if (options.run) {
@@ -883,7 +1017,7 @@ async function main(): Promise<void> {
           MANIFOLD_GATE_DIST: dist,
         });
       }
-      await runTargeted(plan);
+      await runTargeted(plan.unitPaths);
     } finally {
       rmSync(parent, { recursive: true, force: true });
     }
@@ -898,7 +1032,10 @@ async function main(): Promise<void> {
     const stepSummary = process.env["GITHUB_STEP_SUMMARY"];
     if (output === undefined || stepSummary === undefined)
       fail("--github-output requires GITHUB_OUTPUT and GITHUB_STEP_SUMMARY");
-    appendFileSync(output, `checks=${JSON.stringify(plan.checks)}\nrisk=${plan.risk}\n`);
+    appendFileSync(
+      output,
+      `checks=${JSON.stringify(plan.checks)}\nrisk=${plan.risk}\nunitPaths=${JSON.stringify(plan.unitPaths)}\n`,
+    );
     appendFileSync(stepSummary, `## CI impact plan\n\n${summary(plan).replaceAll("\n", "  \n")}\n`);
     return;
   }

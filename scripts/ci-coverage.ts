@@ -369,6 +369,8 @@ export const ciCoverageErrors = (
       const outputs = childMap(plan, "outputs", "plan outputs");
       if (String(outputs["checks"] ?? "") !== "${{ steps.plan.outputs.checks }}")
         errors.push("plan job must expose the exact checks JSON output");
+      if (String(outputs["unitPaths"] ?? "") !== "${{ steps.plan.outputs.unitPaths }}")
+        errors.push("plan job must expose the exact unitPaths JSON output");
       const steps = sequence(plan["steps"], "plan steps");
       const workspaceStep = steps
         .map((step, index) => map(step, `plan step ${index + 1}`))
@@ -376,7 +378,8 @@ export const ciCoverageErrors = (
       if (!workspaceStep) errors.push("plan job must install frozen workspace dependencies");
       const script = collectKey(plan["steps"], "run").map(String).join("\n");
       for (const argument of [
-        '--base "$BASE_SHA" --head "$HEAD_SHA" --github-output',
+        'MERGE_BASE_SHA=$(git merge-base "$BASE_SHA" "$HEAD_SHA")',
+        '--base "$MERGE_BASE_SHA" --head "$HEAD_SHA" --github-output',
         "--full --github-output",
       ]) {
         if (!script.includes(argument))
@@ -405,12 +408,18 @@ export const ciCoverageErrors = (
     }
     const targeted = optionalChildMap(jobs, "targeted", "targeted job");
     if (targeted) {
-      const script = collectKey(targeted["steps"], "run").map(String).join("\n");
-      if (
-        !script.includes('--base "$BASE_SHA" --head "$HEAD_SHA" --run-targeted') ||
-        !script.includes("--full --run-targeted")
-      )
-        errors.push("targeted job must run the planner against the exact revision pair");
+      const targetedStep = sequence(targeted["steps"], "targeted steps")
+        .map((step, index) => map(step, `targeted step ${index + 1}`))
+        .find((step) => typeof step["run"] === "string" && step["run"].includes("--run-targeted"));
+      const expectedCommand =
+        'bun scripts/ci-plan.ts --run-targeted --unit-paths-json "$UNIT_PATHS"';
+      if (!targetedStep || targetedStep["run"] !== expectedCommand) {
+        errors.push("targeted job must consume only the planned unitPaths JSON");
+      } else {
+        const environment = optionalChildMap(targetedStep, "env", "targeted environment");
+        if (environment?.["UNIT_PATHS"] !== "${{ needs.plan.outputs.unitPaths }}")
+          errors.push("targeted job must receive the exact planned unitPaths JSON");
+      }
     }
     for (const id of EXTRA_CHECKS) {
       const job = optionalChildMap(jobs, id, `workflow job ${id}`);

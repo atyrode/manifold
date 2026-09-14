@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ALL_CHECKS,
+  buildDependencyGraph,
   MANDATORY_CHECKS,
   planFromEvidence,
   type Change,
@@ -105,6 +108,23 @@ describe("CI impact policy", () => {
     );
   });
 
+  test("flattened binding provenance reaches the consumer from the original dependency", () => {
+    const graph: DependencyGraph = {
+      holes: [],
+      importers: new Map([
+        ["packages/ui/src/change.ts", new Set(["packages/ui/src/intermediate.ts"])],
+      ]),
+      provenanceImporters: new Map([
+        ["packages/ui/src/change.ts", new Set(["packages/server/src/auth.ts"])],
+      ]),
+    };
+    const selected = plan([{ status: "M", path: "packages/ui/src/change.ts" }], graph);
+    expect(selected.risk).toBe("high");
+    expect(selected.checks).toEqual(
+      expect.arrayContaining(["trace", "unit", "e2e-rest", "axioms"]),
+    );
+  });
+
   test("transitively affected consumer tests are included in focused regressions", () => {
     const graph: DependencyGraph = {
       holes: [],
@@ -174,6 +194,30 @@ describe("CI impact policy", () => {
     };
     const selected = plan([{ status: "M", path: "packages/web/src/credential-helper.ts" }], graph);
     expect(selected.risk).toBe("high");
+  });
+
+  test("the real access manifest remains high risk through assembly binding provenance", async () => {
+    const graph = await buildDependencyGraph();
+    const selected = plan([{ status: "M", path: "packages/plugins/access/src/index.ts" }], graph);
+    expect(selected.risk).toBe("high");
+    expect(selected.checks).toEqual(
+      expect.arrayContaining(["trace", "unit", "e2e-rest", "axioms"]),
+    );
+    expect(selected.reasons.some((reason) => reason.startsWith("authorization boundary"))).toBe(
+      true,
+    );
+  });
+
+  test.each([
+    "packages/sdk/src/action-http.ts",
+    "packages/sdk/src/action-runner.ts",
+    "packages/sdk/src/action-runner-main.ts",
+  ])("SDK credential and action execution root %s is high risk", (path) => {
+    const selected = plan([{ status: "M", path }]);
+    expect(selected.risk).toBe("high");
+    expect(selected.checks).toEqual(
+      expect.arrayContaining(["trace", "unit", "e2e-rest", "axioms"]),
+    );
   });
 
   test("affected runnable tests are targeted without treating fixtures or tests as production risk", () => {
@@ -284,5 +328,86 @@ describe("ci-plan CLI", () => {
     expect(exitCode).not.toBe(0);
     expect(stdout).toBe("");
     expect(stderr).toContain("is not the analyzed checkout");
+  });
+
+  test("precomputed targeted paths execute without recomputing a plan", async () => {
+    const root = mkdtempSync(join(tmpdir(), "manifold-ci-targeted-"));
+    const bin = join(root, "bin");
+    const log = join(root, "args.json");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "bun"),
+      `#!${process.execPath}
+await Bun.write(Bun.env["TARGET_LOG"], JSON.stringify(Bun.argv.slice(2)));
+`,
+      { mode: 0o755 },
+    );
+    try {
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          executable,
+          "--run-targeted",
+          "--unit-paths-json",
+          JSON.stringify(["packages/protocol/test"]),
+        ],
+        {
+          cwd: join(import.meta.dir, ".."),
+          env: { ...process.env, PATH: bin, TARGET_LOG: log },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      const [stderr, exitCode] = await Promise.all([
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(JSON.parse(readFileSync(log, "utf8"))).toEqual(["test", "packages/protocol/test"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    ["[]", "nonempty array"],
+    [JSON.stringify(["../outside.test.ts"]), "unsafe targeted test path"],
+    [JSON.stringify(["packages/server/src/main.ts"]), "not a package or runnable test"],
+    [JSON.stringify(["packages/no-such-package"]), "does not exist"],
+  ])("rejects unsafe precomputed targeted input %#", async (json, diagnostic) => {
+    const child = Bun.spawn(
+      [process.execPath, executable, "--run-targeted", "--unit-paths-json", json],
+      { cwd: join(import.meta.dir, ".."), stdout: "pipe", stderr: "pipe" },
+    );
+    const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain(diagnostic);
+  });
+
+  test("--github-output exports targeted paths from the same plan", async () => {
+    const root = mkdtempSync(join(tmpdir(), "manifold-ci-output-"));
+    const output = join(root, "output");
+    const summary = join(root, "summary");
+    try {
+      const child = Bun.spawn(
+        [process.execPath, executable, "--base", "HEAD", "--head", "HEAD", "--github-output"],
+        {
+          cwd: join(import.meta.dir, ".."),
+          env: { ...process.env, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      const [stderr, exitCode] = await Promise.all([
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(readFileSync(output, "utf8")).toContain('unitPaths=["packages/protocol/test"]');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

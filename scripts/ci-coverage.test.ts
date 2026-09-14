@@ -39,10 +39,7 @@ describe("risk-selected CI topology coverage", () => {
   });
 
   test("reports malformed workflow mappings instead of throwing", () => {
-    const malformed = ci.replace(
-      "    outputs:\n      checks: ${{ steps.plan.outputs.checks }}\n      risk: ${{ steps.plan.outputs.risk }}",
-      "    outputs: malformed",
-    );
+    const malformed = "jobs:\n  plan:\n    outputs: malformed\n";
     expect(ciCoverageErrors(registry, malformed)).toContain("plan outputs must be a mapping");
   });
 
@@ -53,6 +50,47 @@ describe("risk-selected CI topology coverage", () => {
     );
     expect(ciCoverageErrors(registry, missingDependencies)).toContain(
       "plan job must install frozen workspace dependencies",
+    );
+  });
+
+  test("plans pull requests from the tested heads' common ancestor", () => {
+    const baseTip = ci.replace(
+      'MERGE_BASE_SHA=$(git merge-base "$BASE_SHA" "$HEAD_SHA")',
+      'MERGE_BASE_SHA="$BASE_SHA"',
+    );
+    expect(ciCoverageErrors(registry, baseTip)).toContain(
+      'plan job missing fail-closed invocation: MERGE_BASE_SHA=$(git merge-base "$BASE_SHA" "$HEAD_SHA")',
+    );
+
+    const bypassed = ci.replace(
+      '--base "$MERGE_BASE_SHA" --head "$HEAD_SHA" --github-output',
+      '--base "$BASE_SHA" --head "$HEAD_SHA" --github-output',
+    );
+    expect(ciCoverageErrors(registry, bypassed)).toContain(
+      'plan job missing fail-closed invocation: --base "$MERGE_BASE_SHA" --head "$HEAD_SHA" --github-output',
+    );
+  });
+
+  test("requires targeted CI to consume the plan's exact unitPaths output", () => {
+    const missingOutput = ci.replace("      unitPaths: ${{ steps.plan.outputs.unitPaths }}\n", "");
+    expect(ciCoverageErrors(registry, missingOutput)).toContain(
+      "plan job must expose the exact unitPaths JSON output",
+    );
+
+    const recomputed = ci.replace(
+      'bun scripts/ci-plan.ts --run-targeted --unit-paths-json "$UNIT_PATHS"',
+      'bun scripts/ci-plan.ts --base "$BASE_SHA" --head "$HEAD_SHA" --run-targeted',
+    );
+    expect(ciCoverageErrors(registry, recomputed)).toContain(
+      "targeted job must consume only the planned unitPaths JSON",
+    );
+
+    const wrongOutput = ci.replace(
+      "UNIT_PATHS: ${{ needs.plan.outputs.unitPaths }}",
+      "UNIT_PATHS: []",
+    );
+    expect(ciCoverageErrors(registry, wrongOutput)).toContain(
+      "targeted job must receive the exact planned unitPaths JSON",
     );
   });
 

@@ -815,7 +815,7 @@ the honest answer for an unstamped image. A development build also says so in th
 sidebar's rev line reads `development · v<build>`, and the tab title gains ` · development`
 unless you chose a `VITE_MANIFOLD_SITE_TITLE` of your own (§Choose the browser identity).
 Repository deployment starts only after successful **full** CI for its exact source revision.
-Integrated development requires a `main` push result at that SHA. Release publication starts from
+Integrated development requires a full `main` push or manual-dispatch result at that SHA. Release publication starts from
 an exact successful full-`main` predecessor; because the release process writes the tagged release
 commit, promotion separately requires a full `main` push or manual-dispatch result for that exact
 tagged revision. A numbered PR preview instead may use a full manual dispatch at that exact branch
@@ -838,10 +838,11 @@ or a different main tree stops publication without a tag; interrupted-merge reco
 in the script header. `bun run release --dry-run` remains read-only from any branch.
 
 **Promote.** `bun run promote vX.Y.Z` puts one PUBLISHED release on the operator's production
-instance only after successful full CI for the resolved tag commit. It refuses a tag that is not a
-published GitHub Release or lacks exact-revision full `main` push/manual-dispatch evidence, then
-dispatches `.github/workflows/deploy-hub.yml` with that tag, watches the run to completion and ends
-with the fleet-pin reminder. Production is the GitHub Environment `production`; its deployment
+instance only after successful full CI for the resolved tag commit. The command refuses an
+unpublished tag, dispatches `.github/workflows/deploy-hub.yml`, and watches it to completion.
+That workflow separately refuses missing or unsuccessful exact-tag full `main` push/manual-dispatch
+evidence before any provider operation. Successful promotion ends with the fleet-pin reminder.
+Production is the GitHub Environment `production`; its deployment
 history is the ledger of what production ran, and protection rules attach there. Promotion is
 never a side effect of a release or of a different green `main` revision.
 

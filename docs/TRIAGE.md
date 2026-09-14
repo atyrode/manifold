@@ -263,8 +263,10 @@ which remain explicitly authorized actions under [`AGENTS.md`](../AGENTS.md) Bou
 starts asynchronous full `main` proof. Do not wait before continuing unrelated safe work; use
 `bun run ci:status -- --sha <merge-sha>` when its state is needed. Trusted feedback files a `p1`
 repair issue with a named triage owner for a failed or timed-out full run. Deployment/release work
-must wait for the exact-revision full result, and development deployment failure tracking remains
-separate and `p0`.
+must wait for the exact-revision full result. Development deployment failure tracking remains
+separate and `p0`: the agent that merged the revision owns recording a failed `deploy-dev.yml` run
+with its SHA, run link and named repair owner. Delegating monitoring does not leave that failure
+unowned or require unrelated safe work to stop.
 
 ## Exit
 

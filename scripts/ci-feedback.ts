@@ -9,6 +9,7 @@ const MAX_PRS = 10;
 const MAX_ISSUES = 10;
 const MAX_TEXT = 120;
 const MARKER_PREFIX = "ci-feedback";
+const AUTOMATION_CREATOR = "github-actions[bot]";
 const REPAIR_LABELS = ["p1", "bug", "area:infra", "needs-triage"] as const;
 const READY_LABELS = ["p1", "bug", "area:infra", "agent-ready"] as const;
 const FAILURE_CONCLUSIONS: Readonly<Record<string, true>> = {
@@ -80,6 +81,7 @@ export interface CiStatus {
 
 export interface RepairIssueState {
   readonly number: number;
+  readonly creator: string;
   readonly title?: string;
   readonly state?: "open" | "closed";
   readonly body: string;
@@ -293,7 +295,9 @@ export function decideRepairIssue(
 ): RepairIssueDecision {
   const marker = issueMarker(runId);
   const matches = issues.filter(
-    (issue) => issue.body.includes(marker) || issue.title?.endsWith(`(run ${String(runId)})`),
+    (issue) =>
+      issue.creator === AUTOMATION_CREATOR &&
+      (issue.body.includes(marker) || issue.title?.endsWith(`(run ${String(runId)})`)),
   );
   if (matches.length > 1)
     throw new Error(`multiple repair issues contain marker for run ${String(runId)}`);
@@ -530,6 +534,7 @@ function repairIssue(value: unknown): RepairIssue {
   if (state !== "open" && state !== "closed") throw new Error("repair issue.state is invalid");
   return {
     number: requiredNumber(issue["number"], "repair issue.number"),
+    creator: bounded(record(issue["user"], "repair issue.user")["login"], 100),
     title: bounded(issue["title"], 300),
     state,
     body: typeof issue["body"] === "string" ? issue["body"].slice(0, 100_000) : "",
@@ -568,6 +573,7 @@ async function searchIssues(
   return values
     .filter((value) => record(value, "repair issue")["pull_request"] === undefined)
     .map(repairIssue)
+    .filter((issue) => issue.creator === AUTOMATION_CREATOR)
     .filter(
       (issue) =>
         issue.body.includes(marker) ||

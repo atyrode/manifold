@@ -31,6 +31,7 @@ jobs:
     outputs:
       checks: ${{ steps.plan.outputs.checks }}
       risk: ${{ steps.plan.outputs.risk }}
+      unitPaths: ${{ steps.plan.outputs.unitPaths }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -47,7 +48,8 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           if [[ $EVENT_NAME == pull_request ]]; then
-            bun scripts/ci-plan.ts --base "$BASE_SHA" --head "$HEAD_SHA" --github-output
+            MERGE_BASE_SHA=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+            bun scripts/ci-plan.ts --base "$MERGE_BASE_SHA" --head "$HEAD_SHA" --github-output
           else
             bun scripts/ci-plan.ts --full --github-output
           fi
@@ -155,16 +157,8 @@ jobs:
       - name: Run exact-diff focused tests
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          if [[ $EVENT_NAME == pull_request ]]; then
-            bun scripts/ci-plan.ts --base "$BASE_SHA" --head "$HEAD_SHA" --run-targeted
-          else
-            # Full runs retain a bounded core target here; the complete unit registry runs separately.
-            bun scripts/ci-plan.ts --full --run-targeted
-          fi
+          UNIT_PATHS: ${{ needs.plan.outputs.unitPaths }}
+        run: bun scripts/ci-plan.ts --run-targeted --unit-paths-json "$UNIT_PATHS"
 
   trace:
     name: trace

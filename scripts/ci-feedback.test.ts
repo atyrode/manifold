@@ -115,6 +115,7 @@ describe("repair issue routing", () => {
       decideRepairIssue(77, desiredBody, "maintainer", true, [
         {
           number: 9,
+          creator: "github-actions[bot]",
           body: desiredBody,
           labels: initialLabels,
           assignees: ["maintainer"],
@@ -134,6 +135,7 @@ describe("repair issue routing", () => {
     const held = decideRepairIssue(77, desiredBody, "maintainer", true, [
       {
         number: 9,
+        creator: "github-actions[bot]",
         body: heldBody,
         labels: ["p1", "bug", "area:web", "needs-operator", "security"],
         assignees: ["operator"],
@@ -147,6 +149,7 @@ describe("repair issue routing", () => {
     const crlf = decideRepairIssue(77, desiredBody, "maintainer", true, [
       {
         number: 9,
+        creator: "github-actions[bot]",
         body: crlfBody,
         labels: initialLabels,
         assignees: ["maintainer"],
@@ -161,6 +164,7 @@ describe("repair issue routing", () => {
       decideRepairIssue(77, desiredBody, "maintainer", true, [
         {
           number: 9,
+          creator: "github-actions[bot]",
           body: editedManagedBody,
           labels: initialLabels,
           assignees: ["maintainer"],
@@ -179,6 +183,7 @@ describe("repair issue routing", () => {
       decideRepairIssue(77, desiredBody, "maintainer", true, [
         {
           number: 9,
+          creator: "github-actions[bot]",
           title: "CI repair: main 0123456789ab (run 77)",
           body: replacedBody,
           labels: ["p1", "bug", "area:web", "needs-operator"],
@@ -197,6 +202,7 @@ describe("repair issue routing", () => {
       decideRepairIssue(77, desiredBody, "maintainer", true, [
         {
           number: 9,
+          creator: "github-actions[bot]",
           state: "closed",
           body: desiredBody,
           labels: initialLabels,
@@ -231,11 +237,38 @@ describe("repair issue routing", () => {
     ).toBe(false);
   });
 
+  test("ignores forged public markers from non-automation issue creators", () => {
+    expect(
+      decideRepairIssue(77, desiredBody, "maintainer", true, [
+        {
+          number: 8,
+          creator: "unrelated-user",
+          title: "CI repair: main 0123456789ab (run 77)",
+          body: desiredBody,
+          labels: initialLabels,
+          assignees: ["maintainer"],
+        },
+      ]),
+    ).toEqual({ action: "create", body: desiredBody, promote: true });
+  });
+
   test("fails when duplicate run markers already exist", () => {
     expect(() =>
       decideRepairIssue(77, desiredBody, "maintainer", true, [
-        { number: 9, body: desiredBody, labels: initialLabels, assignees: ["maintainer"] },
-        { number: 10, body: desiredBody, labels: initialLabels, assignees: ["maintainer"] },
+        {
+          number: 9,
+          creator: "github-actions[bot]",
+          body: desiredBody,
+          labels: initialLabels,
+          assignees: ["maintainer"],
+        },
+        {
+          number: 10,
+          creator: "github-actions[bot]",
+          body: desiredBody,
+          labels: initialLabels,
+          assignees: ["maintainer"],
+        },
       ]),
     ).toThrow("multiple repair issues");
   });
