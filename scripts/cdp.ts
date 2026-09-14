@@ -508,8 +508,12 @@ export class Browser {
           `no drag started at (${String(from.x)}, ${String(from.y)}): nothing under the pointer is a drag source`,
         );
       }
-      // dragEnter arms the target, dragOver is the frame it resolves its aim on, drop commits.
-      for (const type of ["dragEnter", "dragOver", "drop"]) {
+      // The first over paints the preview. If it replaces the element under the pointer,
+      // Chromium spends the next over delivering enter/leave to the new target; that target
+      // still needs its own over to accept the carry before release. Keep these native
+      // frames at the same point, like a hand resting over the preview, rather than dropping
+      // against the acceptance of a DOM element the preview has already replaced.
+      for (const type of ["dragEnter", "dragOver", "dragOver", "dragOver", "drop"]) {
         await this.send("Input.dispatchDragEvent", { type, x: to.x, y: to.y, data });
         await sleep(stepMs);
       }

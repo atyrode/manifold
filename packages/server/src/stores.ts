@@ -16,7 +16,20 @@ import {
   AgentRunCapSchema,
   AgentRunAuthorizationPathSchema,
   AgentRunStateSchema,
+  TRACED_DENIAL_RULES,
+  AgentSchema,
+  AgentRunAuthorizationCredentialSchema,
+  SessionRefSchema,
+  RunModelSchema,
+  RunActivitySchema,
+  type Agent,
+  type SessionRef,
+  type RunModel,
+  type RunActivity,
   ActionSummarySchema,
+  AgentRunTraceSummarySchema,
+  type AgentRunInspection,
+  type InspectRunRequest,
   AuthoredCapSchema,
   MAX_MIGRATION_STORAGE_OPERATIONS,
   BindingOverridesSchema,
@@ -54,6 +67,7 @@ import {
 import { Y } from "@manifold/scene";
 import { z } from "zod";
 import type { CredentialReference } from "./auth.ts";
+import { normalizeAgentDeclaration } from "./log.ts";
 
 export const EVENTS_RETENTION_DAYS = 30;
 export const EVENTS_MAX_PER_CONTAINER = 10_000;
@@ -65,6 +79,7 @@ export const EVENTS_MAX_PER_CONTAINER = 10_000;
 export const EVENTS_MAX_WORKSPACE = 100_000;
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1_000;
+const TRACED_DENIAL_RULES_JSON = JSON.stringify(TRACED_DENIAL_RULES);
 
 /** Workspace-global plugin enablement and per-principal shells live in `meta`. */
 const PLUGINS_DISABLED_META = "plugins:disabled";
@@ -173,9 +188,38 @@ interface TokenRow {
   expires_at: number | null;
 }
 
+interface AgentRow {
+  agent_id: string;
+  principal_id: string;
+  sponsor_principal_id: string;
+  name: string;
+  purpose: string;
+  harness: string;
+  grant_json: string;
+  context_json: string;
+  policy_revision_acknowledged: string | null;
+  status: AgentRecord["status"];
+  authorization_path: string;
+  authorization_credential: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface AgentRecord extends Omit<Agent, "state" | "activeRuns"> {
+  readonly status: "enabled" | "disabled" | "retired";
+  readonly authorizationPath: AgentRunAuthorizationPath;
+  readonly authorizationCredential: AgentRunAuthorizationCredential;
+}
+
 interface AgentRunRow {
   id: string;
   principal_id: string;
+  agent_id: string;
+  session_harness: string | null;
+  session_id: string | null;
+  session_machine_id: string | null;
+  model: string | null;
+  activity: string;
   root_run_id: string;
   parent_run_id: string | null;
   authorized_by_principal_id: string;
@@ -217,6 +261,10 @@ interface AgentPolicySnapshotRow {
 export interface AgentRunRecord {
   readonly id: string;
   readonly principalId: string;
+  readonly agentId: string;
+  readonly session: SessionRef | null;
+  readonly model?: RunModel;
+  readonly activity: RunActivity;
   readonly rootRunId: string;
   readonly parentRunId: string | null;
   readonly authorizedByPrincipalId: string;
@@ -595,6 +643,9 @@ export interface TraceAttribution {
   readonly payload: Readonly<Record<string, unknown>>;
   /** The session channel the dispatch arrived on; null means the HTTP action door. */
   readonly session: string | null;
+  /** Credential-specific run attribution; principal identity alone is no longer unique. */
+  readonly runId?: string;
+  readonly credentialId?: string;
 }
 
 /** An attribution plus how it ended: the settled row a reader sees. */
@@ -648,10 +699,62 @@ function toToken(row: TokenRow): TokenRecord {
   };
 }
 
+const AGENT_SELECT = `SELECT agent_id,principal_id,sponsor_principal_id,name,purpose,harness,
+  grant_json,context_json,policy_revision_acknowledged,status,authorization_path,
+  authorization_credential,created_at,updated_at FROM agents`;
+
+const AGENT_RUN_SELECT = `SELECT id,principal_id,agent_id,
+  session_harness,session_id,session_machine_id,model,activity,
+  root_run_id,parent_run_id,authorized_by_principal_id,
+  authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
+  authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
+  created_at,expires_at,renewals,max_depth,max_descendants,depth,
+  cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
+  cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure FROM agent_runs`;
+
+const StoredAgentSchema = AgentSchema.omit({ state: true, activeRuns: true });
+
+function toAgent(row: AgentRow): AgentRecord {
+  const agent = StoredAgentSchema.parse({
+    agentId: row.agent_id,
+    principalId: row.principal_id,
+    sponsorPrincipalId: row.sponsor_principal_id,
+    name: row.name,
+    purpose: row.purpose,
+    harness: row.harness,
+    grant: JSON.parse(row.grant_json),
+    context: JSON.parse(row.context_json),
+    ...(row.policy_revision_acknowledged === null
+      ? {}
+      : { policyRevisionAcknowledged: row.policy_revision_acknowledged }),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+  return {
+    ...agent,
+    status: row.status,
+    authorizationPath: AgentRunAuthorizationPathSchema.parse(row.authorization_path),
+    authorizationCredential: AgentRunAuthorizationCredentialSchema.parse(
+      JSON.parse(row.authorization_credential),
+    ),
+  };
+}
+
 function toAgentRun(row: AgentRunRow): AgentRunRecord {
   return {
     id: row.id,
     principalId: row.principal_id,
+    agentId: row.agent_id,
+    session:
+      row.session_harness === null && row.session_id === null && row.session_machine_id === null
+        ? null
+        : SessionRefSchema.parse({
+            harness: row.session_harness,
+            sessionId: row.session_id,
+            machineId: row.session_machine_id,
+          }),
+    ...(row.model === null ? {} : { model: RunModelSchema.parse(JSON.parse(row.model)) }),
+    activity: RunActivitySchema.parse(row.activity),
     rootRunId: row.root_run_id,
     parentRunId: row.parent_run_id,
     authorizedByPrincipalId: row.authorized_by_principal_id,
@@ -1880,6 +1983,143 @@ export class ServerStore {
       .map((row) => ({ principal: toPrincipal(row), createdAt: row.created_at }));
   }
 
+  createAgent(record: AgentRecord): void {
+    this.db
+      .query(
+        `INSERT INTO agents(
+      agent_id,principal_id,sponsor_principal_id,name,purpose,harness,grant_json,context_json,
+      policy_revision_acknowledged,status,authorization_path,authorization_credential,created_at,updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        record.agentId,
+        record.principalId,
+        record.sponsorPrincipalId,
+        record.name,
+        record.purpose,
+        record.harness,
+        JSON.stringify(record.grant),
+        JSON.stringify(record.context),
+        record.policyRevisionAcknowledged ?? null,
+        record.status,
+        record.authorizationPath,
+        JSON.stringify(record.authorizationCredential),
+        record.createdAt,
+        record.updatedAt,
+      );
+  }
+
+  getAgent(id: string): AgentRecord | null {
+    const row = this.db.query<AgentRow, [string]>(`${AGENT_SELECT} WHERE agent_id=?`).get(id);
+    return row === null ? null : toAgent(row);
+  }
+
+  getAgentBySponsorName(sponsorPrincipalId: string, name: string): AgentRecord | null {
+    const row = this.db
+      .query<AgentRow, [string, string]>(`${AGENT_SELECT} WHERE sponsor_principal_id=? AND name=?`)
+      .get(sponsorPrincipalId, name);
+    return row === null ? null : toAgent(row);
+  }
+
+  listAgents(): AgentRecord[] {
+    return this.db
+      .query<AgentRow, []>(`${AGENT_SELECT} ORDER BY created_at DESC,agent_id`)
+      .all()
+      .map(toAgent);
+  }
+
+  updateAgent(record: AgentRecord): void {
+    this.db
+      .query(
+        `UPDATE agents SET principal_id=?,sponsor_principal_id=?,name=?,purpose=?,
+      harness=?,grant_json=?,context_json=?,policy_revision_acknowledged=?,status=?,
+      authorization_path=?,authorization_credential=?,created_at=?,updated_at=? WHERE agent_id=?`,
+      )
+      .run(
+        record.principalId,
+        record.sponsorPrincipalId,
+        record.name,
+        record.purpose,
+        record.harness,
+        JSON.stringify(record.grant),
+        JSON.stringify(record.context),
+        record.policyRevisionAcknowledged ?? null,
+        record.status,
+        record.authorizationPath,
+        JSON.stringify(record.authorizationCredential),
+        record.createdAt,
+        record.updatedAt,
+        record.agentId,
+      );
+  }
+
+  bindAgentRunnerCredential(agentId: string, tokenId: string): void {
+    // RETURNING excludes grant-revision trigger writes from the binding's success proof.
+    const result = this.db
+      .query<{ id: string }, [string, string, string]>(
+        `UPDATE tokens SET runner_agent_id=?
+      WHERE id=? AND runner_agent_id IS NULL AND run_id IS NULL
+        AND principal_id=(SELECT principal_id FROM agents WHERE agent_id=?) RETURNING id`,
+      )
+      .get(agentId, tokenId, agentId);
+    if (result === null) throw new Error("agent runner credential binding failed");
+  }
+
+  getAgentByRunnerToken(tokenId: string): AgentRecord | null {
+    const row = this.db
+      .query<AgentRow, [string]>(
+        `${AGENT_SELECT} WHERE agent_id=(SELECT runner_agent_id FROM tokens WHERE id=?)`,
+      )
+      .get(tokenId);
+    return row === null ? null : toAgent(row);
+  }
+
+  bindAgentRunCredential(runId: string, tokenId: string): void {
+    const result = this.db
+      .query<{ id: string }, [string, string, string]>(
+        `UPDATE tokens SET run_id=?
+      WHERE id=? AND runner_agent_id IS NULL AND run_id IS NULL
+        AND principal_id=(SELECT principal_id FROM agent_runs WHERE id=?) RETURNING id`,
+      )
+      .get(runId, tokenId, runId);
+    if (result === null) throw new Error("agent run credential binding failed");
+  }
+
+  listAgentRuns(agentId: string): AgentRunRecord[] {
+    return this.db
+      .query<AgentRunRow, [string]>(
+        `${AGENT_RUN_SELECT} WHERE agent_id=? ORDER BY created_at DESC,id DESC`,
+      )
+      .all(agentId)
+      .map(toAgentRun);
+  }
+
+  runTraceCounts(runId: string): { actionCount: number; refusalCount: number } {
+    return this.db
+      .query<{ actionCount: number; refusalCount: number }, [string, string]>(
+        `
+      SELECT COUNT(*) AS actionCount,
+        COALESCE(SUM(outcome IN (SELECT value FROM json_each(?))),0) AS refusalCount
+      FROM events WHERE type='trace' AND run_id=?`,
+      )
+      .get(TRACED_DENIAL_RULES_JSON, runId)!;
+  }
+
+  updateAgentRunSession(runId: string, session: SessionRef | null): void {
+    const ref = session === null ? null : SessionRefSchema.parse(session);
+    this.db
+      .query<void, [string | null, string | null, string | null, string]>(
+        "UPDATE agent_runs SET session_harness=?,session_id=?,session_machine_id=? WHERE id=?",
+      )
+      .run(ref?.harness ?? null, ref?.sessionId ?? null, ref?.machineId ?? null, runId);
+  }
+
+  updateAgentRunActivity(runId: string, activity: RunActivity): void {
+    this.db
+      .query<void, [string, string]>("UPDATE agent_runs SET activity=? WHERE id=?")
+      .run(RunActivitySchema.parse(activity), runId);
+  }
+
   createAgentRun(record: AgentRunRecord, snapshot: AgentPolicySnapshotRecord): void {
     this.db
       .query(
@@ -1889,8 +2129,9 @@ export class ServerStore {
            authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
            created_at,expires_at,renewals,max_depth,max_descendants,depth,
            cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
-           cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure
-         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure,
+           agent_id,session_harness,session_id,session_machine_id,model,activity
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         record.id,
@@ -1923,6 +2164,12 @@ export class ServerStore {
         record.cleanupRevokedGrants,
         record.finishedAt ?? null,
         record.cleanupFailure ?? null,
+        record.agentId,
+        record.session?.harness ?? null,
+        record.session?.sessionId ?? null,
+        record.session?.machineId ?? null,
+        record.model === undefined ? null : JSON.stringify(record.model),
+        record.activity,
       );
     this.issueAgentPolicySnapshot(snapshot);
   }
@@ -1948,60 +2195,55 @@ export class ServerStore {
   }
 
   getAgentRun(id: string): AgentRunRecord | null {
-    const row = this.db
-      .query<AgentRunRow, [string]>(
-        `SELECT id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
-                authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
-                authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
-                created_at,expires_at,renewals,max_depth,max_descendants,depth,
-                cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
-                cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure
-         FROM agent_runs WHERE id=?`,
-      )
-      .get(id);
+    const row = this.db.query<AgentRunRow, [string]>(`${AGENT_RUN_SELECT} WHERE id=?`).get(id);
     return row === null ? null : toAgentRun(row);
   }
 
-  getAgentRunByPrincipal(principalId: string): AgentRunRecord | null {
+  getAgentRunByToken(tokenId: string): AgentRunRecord | null {
     const row = this.db
       .query<AgentRunRow, [string]>(
-        `SELECT id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
-                authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
-                authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
-                created_at,expires_at,renewals,max_depth,max_descendants,depth,
-                cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
-                cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure
-         FROM agent_runs WHERE principal_id=?`,
+        `${AGENT_RUN_SELECT} WHERE id=(SELECT run_id FROM tokens WHERE id=?)`,
       )
-      .get(principalId);
+      .get(tokenId);
     return row === null ? null : toAgentRun(row);
   }
 
   listAgentRunTree(rootRunId: string): AgentRunRecord[] {
     return this.db
-      .query<AgentRunRow, [string]>(
-        `SELECT id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
-                authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
-                authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
-                created_at,expires_at,renewals,max_depth,max_descendants,depth,
-                cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
-                cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure
-         FROM agent_runs WHERE root_run_id=? ORDER BY depth,id`,
-      )
+      .query<AgentRunRow, [string]>(`${AGENT_RUN_SELECT} WHERE root_run_id=? ORDER BY depth,id`)
       .all(rootRunId)
       .map(toAgentRun);
+  }
+
+  /** Candidate roots narrow scanning only; AuthService still authorizes every returned run. */
+  *agentRunInspectionCandidates(principalId: string, root: boolean): Iterable<AgentRunRecord> {
+    // Each consumer owns its cursor: bounded discovery can stop before SQLite exhausts it.
+    const statement = this.db.prepare<AgentRunRow, [number, string]>(
+      `WITH RECURSIVE sponsored_principals(id) AS (
+         SELECT ?2 WHERE ?1=0
+         UNION
+         SELECT a.principal_id FROM agents a
+           JOIN sponsored_principals sponsor ON a.sponsor_principal_id=sponsor.id
+       )
+       ${AGENT_RUN_SELECT}
+       WHERE ?1=1 OR root_run_id IN (
+         SELECT root_run_id FROM agent_runs
+           WHERE principal_id IN (SELECT id FROM sponsored_principals)
+             OR authorized_by_principal_id IN (SELECT id FROM sponsored_principals)
+       )
+       ORDER BY created_at DESC,id DESC`,
+    );
+    try {
+      for (const row of statement.iterate(root ? 1 : 0, principalId)) yield toAgentRun(row);
+    } finally {
+      statement.finalize();
+    }
   }
 
   listOpenAgentRuns(now: number): AgentRunRecord[] {
     return this.db
       .query<AgentRunRow, [number]>(
-        `SELECT id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
-                authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
-                authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
-                created_at,expires_at,renewals,max_depth,max_descendants,depth,
-                cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
-                cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure
-         FROM agent_runs
+        `${AGENT_RUN_SELECT}
          WHERE state IN ('pending_policy','active','policy_stale') AND expires_at>?
          ORDER BY created_at,id`,
       )
@@ -2012,13 +2254,7 @@ export class ServerStore {
   listExpiredAgentRuns(now: number): AgentRunRecord[] {
     return this.db
       .query<AgentRunRow, [number]>(
-        `SELECT id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
-                authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
-                authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
-                created_at,expires_at,renewals,max_depth,max_descendants,depth,
-                cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
-                cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure
-         FROM agent_runs
+        `${AGENT_RUN_SELECT}
          WHERE state IN ('pending_policy','active','policy_stale') AND expires_at<=?
          ORDER BY depth,created_at,id`,
       )
@@ -2037,21 +2273,37 @@ export class ServerStore {
   }
 
   acknowledgeAgentPolicy(runId: string, revision: string, at: number): boolean {
-    const snapshot = this.db
-      .query<void, [number, string, string]>(
-        `UPDATE agent_run_policy_snapshots SET acknowledged_at=?
-         WHERE run_id=? AND revision=? AND acknowledged_at IS NULL`,
-      )
-      .run(at, runId, revision);
-    const run = this.db
-      .query<void, [string, string, string]>(
-        `UPDATE agent_runs
-         SET acknowledged_policy_revision=?,state='active'
-         WHERE id=? AND policy_revision=?
-           AND state IN ('pending_policy','policy_stale')`,
-      )
-      .run(revision, runId, revision);
-    return snapshot.changes === 1 && run.changes === 1;
+    return this.transaction(() => {
+      const eligible = this.db
+        .query<ExistsRow, [string, string]>(
+          `SELECT 1 AS found
+        FROM agent_runs r JOIN agent_run_policy_snapshots s ON s.run_id=r.id AND s.revision=r.policy_revision
+        WHERE r.id=? AND r.policy_revision=? AND r.state IN ('pending_policy','policy_stale')
+          AND s.acknowledged_at IS NULL`,
+        )
+        .get(runId, revision);
+      if (eligible === null) return false;
+      this.db
+        .query<void, [number, string, string]>(
+          `UPDATE agent_run_policy_snapshots
+        SET acknowledged_at=? WHERE run_id=? AND revision=?`,
+        )
+        .run(at, runId, revision);
+      this.db
+        .query<void, [string, string]>(
+          `UPDATE agent_runs
+        SET acknowledged_policy_revision=?,state='active' WHERE id=?`,
+        )
+        .run(revision, runId);
+      this.db
+        .query<void, [string, number, string]>(
+          `UPDATE agents
+        SET policy_revision_acknowledged=?,updated_at=?
+        WHERE agent_id=(SELECT agent_id FROM agent_runs WHERE id=?)`,
+        )
+        .run(revision, at, runId);
+      return true;
+    });
   }
 
   updateAgentRunPolicy(
@@ -2190,6 +2442,21 @@ export class ServerStore {
       )
       .all(principalId)
       .map(toToken);
+  }
+
+  listTokensForAgentRun(runId: string): TokenRecord[] {
+    return this.db
+      .query<TokenRow, [string]>(
+        `SELECT id,hash,principal_id,minted_by,caps,
+      container_id,created_at,revoked_at,grant_id,expires_at
+      FROM tokens WHERE run_id=? ORDER BY created_at,id`,
+      )
+      .all(runId)
+      .map(toToken);
+  }
+
+  revokeTokensByAgentRun(runId: string, at: number): TokenRevocation {
+    return this.revokeTokensWhere("run_id = ?", [runId], at);
   }
 
   /** Whether this actor originally issued a token while creating the target identity. */
@@ -2574,6 +2841,8 @@ export class ServerStore {
       readonly targets: readonly string[];
       readonly outcome: TraceOutcome | null;
       readonly session: string | null;
+      readonly runId?: string;
+      readonly credentialId?: string;
     } | null,
   ): number {
     const inserted = this.transaction(
@@ -2597,11 +2866,13 @@ export class ServerStore {
                 string | null,
                 string | null,
                 string | null,
+                string | null,
+                string | null,
               ]
             >(
               `INSERT INTO events(container_id, ts, principal_id, type, payload,
-                                door, authority, targets, outcome, session)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                door, authority, targets, outcome, session, run_id, credential_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             )
             .run(
               containerId,
@@ -2614,6 +2885,8 @@ export class ServerStore {
               trace === null ? null : JSON.stringify(trace.targets),
               trace === null ? null : trace.outcome,
               trace === null ? null : trace.session,
+              trace?.runId ?? null,
+              trace?.credentialId ?? null,
             ).lastInsertRowid,
         );
         this.db
@@ -2714,6 +2987,8 @@ export class ServerStore {
         targets: record.targets,
         outcome: record.outcome,
         session: record.session,
+        ...(record.runId === undefined ? {} : { runId: record.runId }),
+        ...(record.credentialId === undefined ? {} : { credentialId: record.credentialId }),
       },
     );
   }
@@ -2801,6 +3076,288 @@ export class ServerStore {
       outcome: row.outcome,
       session: row.session,
     }));
+  }
+
+  /**
+   * Payload-free read projection for an ALREADY AUTHORIZED run. Select every field
+   * explicitly: neither the journal payload nor a native request/result leaves SQLite.
+   * Retention remains insertJournalRow's policy; this method creates no durable state.
+   */
+  agentRunInspectionFacts(
+    runId: string,
+    input: InspectRunRequest,
+    now: number,
+    liveConnectionIds: readonly string[],
+  ): Pick<
+    AgentRunInspection,
+    | "credentials"
+    | "connections"
+    | "traces"
+    | "nextBeforeTraceId"
+    | "requestedTrace"
+    | "history"
+    | "jobs"
+    | "terminals"
+    | "nativeTruncated"
+  > {
+    const safeText = (value: string): string => normalizeAgentDeclaration(value) ?? "[redacted]";
+    // This known native-id form is safe only as a selected job reference, never free text.
+    const safeJobId = (value: string): string =>
+      /^schedule-[a-f0-9]{64}$/.test(value) ? value : safeText(value);
+    // Migration 36 is the only initializer. Never infer trust from retained rows or
+    // repair an absent/corrupt boundary on read or reopen. SQLite's decimal round-trip
+    // rejects noncanonical or out-of-INT64-range metadata without JS number coercion.
+    const traceRows = this.db
+      .query<
+        {
+          id: string;
+          ts: number;
+          principal_id: string;
+          door: string;
+          authority: string;
+          targets: string;
+          outcome: TraceOutcome | null;
+          session: string | null;
+          declaration: unknown;
+        },
+        [string, string | null, string | null, string | null, string | null, number]
+      >(
+        `WITH declaration_cutover AS (
+        SELECT CAST(value AS INTEGER) AS id FROM meta
+         WHERE key='agent-runs:declarations-after-event-id'
+          AND value=CAST(CAST(value AS INTEGER) AS TEXT) AND CAST(value AS INTEGER)>=0
+       )
+       SELECT CAST(id AS TEXT) AS id,ts,principal_id,door,authority,targets,outcome,session,
+        CASE WHEN id>(SELECT id FROM declaration_cutover) AND json_valid(payload)
+          THEN json_extract(payload,'$.agentDeclaration') END AS declaration
+       FROM events WHERE type='trace' AND run_id=?
+        AND (? IS NULL OR id=?) AND (? IS NULL OR id<?)
+       ORDER BY events.id DESC LIMIT ?`,
+      )
+      .all(
+        runId,
+        input.traceId ?? null,
+        input.traceId ?? null,
+        input.beforeTraceId ?? null,
+        input.beforeTraceId ?? null,
+        input.limit + 1,
+      );
+    const traces = traceRows.slice(0, input.limit).map((row) => {
+      const declaration =
+        row.outcome === "invalid_args" || typeof row.declaration !== "string"
+          ? null
+          : normalizeAgentDeclaration(row.declaration);
+      return AgentRunTraceSummarySchema.parse({
+        traceId: row.id,
+        at: row.ts,
+        actor: row.principal_id,
+        action: safeText(row.door),
+        authority: safeText(row.authority),
+        targets: parseTargets(row.targets).slice(0, 128).map(safeText),
+        outcome: row.outcome,
+        settlement: row.outcome === null ? "pending_or_crashed" : "settled",
+        connectionId: row.session,
+        origin: row.session === null ? "http" : "connection",
+        ...(declaration === null ? {} : { agentDeclaration: declaration }),
+      });
+    });
+    const credentials = this.db
+      .query<
+        {
+          createdAt: number;
+          expiresAt: number | null;
+          revokedAt: number | null;
+          node: string | null;
+          caps: string | null;
+          reach: GrantReach | null;
+          effect: "allow" | "deny" | null;
+        },
+        [string]
+      >(
+        `SELECT t.created_at AS createdAt,t.expires_at AS expiresAt,t.revoked_at AS revokedAt,
+        g.node,g.caps,g.reach,g.effect FROM tokens t LEFT JOIN grants g ON g.id=t.grant_id
+       WHERE t.run_id=? ORDER BY t.created_at DESC,t.id DESC LIMIT 100`,
+      )
+      .all(runId)
+      .map((row): AgentRunInspection["credentials"][number] => ({
+        createdAt: row.createdAt,
+        expiresAt: row.expiresAt,
+        revokedAt: row.revokedAt,
+        state:
+          row.revokedAt !== null
+            ? "revoked"
+            : row.expiresAt !== null && row.expiresAt <= now
+              ? "expired"
+              : "live",
+        grant:
+          row.node === null || row.caps === null || row.reach === null || row.effect === null
+            ? null
+            : {
+                node: safeText(row.node),
+                caps: AuthoredCapSchema.array().parse(JSON.parse(row.caps)),
+                reach: row.reach,
+                effect: row.effect,
+              },
+      }));
+    const observed = this.db
+      .query<
+        {
+          connectionId: string;
+          firstObservedAt: number;
+          lastObservedAt: number;
+        },
+        [string]
+      >(
+        `SELECT session AS connectionId,MIN(ts) AS firstObservedAt,MAX(ts) AS lastObservedAt
+       FROM events WHERE type='trace' AND run_id=? AND session IS NOT NULL
+       GROUP BY session ORDER BY MAX(ts) DESC,session LIMIT 100`,
+      )
+      .all(runId);
+    const live = new Set(liveConnectionIds);
+    const connections: AgentRunInspection["connections"] = liveConnectionIds
+      .slice(0, 100)
+      .map((connectionId) => {
+        const row = observed.find((entry) => entry.connectionId === connectionId);
+        return {
+          connectionId,
+          state: "live",
+          firstObservedAt: row?.firstObservedAt ?? null,
+          lastObservedAt: row?.lastObservedAt ?? null,
+        };
+      });
+    for (const row of observed) {
+      if (!live.has(row.connectionId) && connections.length < 100) {
+        connections.push({ ...row, state: "closed_or_unavailable" });
+      }
+    }
+    const jobRows = this.db
+      .query<
+        {
+          jobId: string;
+          machineId: string;
+          pluginId: string;
+          operationId: string;
+          installationRevision: string;
+          artifactSha256: string;
+          state: AgentRunInspection["jobs"][number]["state"];
+          createdAt: number;
+          startedAt: number | null;
+          finishedAt: number | null;
+          exitCode: number | null;
+          traceId: string;
+          retained: number;
+          parentJobId: string | null;
+          terminalId: string | null;
+          ownerClosed: number;
+        },
+        [string]
+      >(
+        // A broker-bound terminal run wins over its sponsor's credential and trace.
+        // Otherwise legacy attribution, then the exact credential, owns the projection.
+        `WITH candidates AS (
+        SELECT job_id,machine_id,plugin_id,request,state,created_at,result,owner_closed
+          FROM machine_jobs j WHERE COALESCE(json_extract(j.request,'$.terminal.runId'),j.run_id,
+            (SELECT run_id FROM tokens WHERE id=json_extract(j.request,'$.credential.tokenId')),
+            (SELECT run_id FROM events WHERE type='trace' AND id=json_extract(j.request,'$.traceId')))=?1
+        UNION ALL
+        SELECT o.job_id,json_extract(o.request,'$.machineId'),json_extract(o.request,'$.pluginId'),
+          o.request,o.state,o.nominal,NULL,0 FROM job_schedule_occurrences o
+          WHERE COALESCE(json_extract(o.request,'$.terminal.runId'),o.run_id,
+            (SELECT run_id FROM tokens WHERE id=json_extract(o.request,'$.credential.tokenId')),
+            (SELECT run_id FROM events WHERE type='trace' AND id=json_extract(o.request,'$.traceId')))=?1
+            AND NOT EXISTS(SELECT 1 FROM machine_jobs j WHERE j.job_id=o.job_id)
+       )
+       SELECT j.job_id AS jobId,j.machine_id AS machineId,j.plugin_id AS pluginId,
+        json_extract(j.request,'$.operationId') AS operationId,
+        json_extract(j.request,'$.installationRevision') AS installationRevision,
+        json_extract(j.request,'$.artifactSha256') AS artifactSha256,
+        j.state,j.created_at AS createdAt,json_extract(j.result,'$.startedAt') AS startedAt,
+        json_extract(j.result,'$.finishedAt') AS finishedAt,json_extract(j.result,'$.exitCode') AS exitCode,
+        json_extract(j.request,'$.traceId') AS traceId,
+        EXISTS(SELECT 1 FROM events e WHERE e.type='trace' AND e.id=json_extract(j.request,'$.traceId')
+          AND (e.run_id=?1 OR (json_extract(j.request,'$.terminal.runId')=?1
+            AND e.principal_id=json_extract(j.request,'$.credential.principalId')))) AS retained,
+        json_extract(j.request,'$.parent.parentJobId') AS parentJobId,
+        json_extract(j.request,'$.terminal.terminalId') AS terminalId,j.owner_closed AS ownerClosed
+       FROM candidates j
+       ORDER BY j.created_at DESC,j.job_id DESC LIMIT 101`,
+      )
+      .all(runId);
+    const jobs: AgentRunInspection["jobs"] = jobRows.slice(0, 100).map((row) => ({
+      jobId: safeJobId(row.jobId),
+      machineId: safeText(row.machineId),
+      pluginId: safeText(row.pluginId),
+      operationId: safeText(row.operationId),
+      installationRevision: safeText(row.installationRevision),
+      artifactSha256: row.artifactSha256,
+      state: row.state,
+      createdAt: row.createdAt,
+      startedAt: row.startedAt,
+      finishedAt: row.finishedAt,
+      exitCode: row.exitCode,
+      traceId: safeText(row.traceId),
+      origin: row.retained === 1 && /^[1-9][0-9]*$/.test(row.traceId) ? "retained" : "unavailable",
+      parentJobId: row.parentJobId === null ? null : safeJobId(row.parentJobId),
+      terminalId: row.terminalId === null ? null : safeText(row.terminalId),
+      ownerState: row.ownerClosed === 1 ? "closed" : "unconfirmed",
+    }));
+    const terminalRows = this.db
+      .query<
+        {
+          terminalId: string;
+          machineId: string;
+          containerId: string;
+          createdAt: number;
+          state: "running" | "exited";
+          exitCode: number | null;
+          traceId: string | null;
+        },
+        [string]
+      >(
+        `WITH run_jobs AS (
+        SELECT request FROM machine_jobs j
+          WHERE COALESCE(json_extract(j.request,'$.terminal.runId'),j.run_id,
+            (SELECT run_id FROM tokens WHERE id=json_extract(j.request,'$.credential.tokenId')),
+            (SELECT run_id FROM events WHERE type='trace' AND id=json_extract(j.request,'$.traceId')))=?1
+       )
+       SELECT t.id AS terminalId,t.machine_id AS machineId,t.container_id AS containerId,
+        t.created_at AS createdAt,t.status AS state,t.exit_code AS exitCode,
+        (SELECT CAST(e.id AS TEXT) FROM run_jobs j JOIN events e ON e.id=json_extract(j.request,'$.traceId')
+          WHERE e.type='trace' AND (e.run_id=?1 OR (json_extract(j.request,'$.terminal.runId')=?1
+            AND e.principal_id=json_extract(j.request,'$.credential.principalId')))
+            AND json_extract(j.request,'$.terminal.terminalId')=t.id
+          ORDER BY e.id DESC LIMIT 1) AS traceId
+       FROM terminals t WHERE t.run_id=?1
+         OR EXISTS(SELECT 1 FROM run_jobs j WHERE json_extract(j.request,'$.terminal.terminalId')=t.id)
+       ORDER BY t.created_at DESC,t.id DESC LIMIT 101`,
+      )
+      .all(runId);
+    const terminals: AgentRunInspection["terminals"] = terminalRows.slice(0, 100).map((row) => ({
+      terminalId: safeText(row.terminalId),
+      machineId: safeText(row.machineId),
+      containerId: safeText(row.containerId),
+      createdAt: row.createdAt,
+      state: row.state,
+      exitCode: row.exitCode,
+      traceId: row.traceId,
+      retention: "retained",
+    }));
+    return {
+      credentials,
+      connections,
+      traces,
+      jobs,
+      terminals,
+      nextBeforeTraceId: traceRows.length > input.limit ? (traces.at(-1)?.traceId ?? null) : null,
+      requestedTrace:
+        input.traceId === undefined
+          ? "not_requested"
+          : traces.length === 0
+            ? "unavailable"
+            : "available",
+      history: "retained_only",
+      nativeTruncated: jobRows.length > 100 || terminalRows.length > 100,
+    };
   }
 
   createMachine(machine: MachineRecord): void {

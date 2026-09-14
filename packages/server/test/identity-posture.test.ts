@@ -14,6 +14,7 @@ import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import { createExternalRun } from "./agent-fixtures.ts";
 
 /**
  * THE IDENTITY POSTURE'S NOW ITEMS (ADR 0019 §2-§4), at the boundary that decides them.
@@ -160,19 +161,16 @@ describe("session expiry (ADR 0019 §2)", () => {
 
   test("an agent run publishes the exact last-valid and first-expired boundary", async () => {
     const fix = await fixture();
-    const created = fix.auth.createAgentRun(
-      {
-        name: "bounded automation",
-        purpose: "Exercise the credential expiry boundary.",
-        target: "manifold://",
-        reach: "subtree",
-        caps: ["scenes:write"],
-        lifetimeMs: AUTOMATED_TOKEN_TTL_MS,
-        maxDepth: 4,
-        maxDescendants: 32,
-      },
-      fix.owner,
-    );
+    const created = createExternalRun(fix, {
+      name: "bounded automation",
+      purpose: "Exercise the credential expiry boundary.",
+      target: "manifold://",
+      reach: "subtree",
+      caps: ["scenes:write"],
+      lifetimeMs: AUTOMATED_TOKEN_TTL_MS,
+      maxDepth: 4,
+      maxDescendants: 32,
+    });
     const expiresAt = fix.runtime.time + AUTOMATED_TOKEN_TTL_MS;
 
     expect(created.credential.expiresAt).toBe(expiresAt);
@@ -524,7 +522,7 @@ describe("the credential list (ADR 0019 §3)", () => {
     fix.store.close();
   });
 
-  test("`tokens:mint` is the authority, so a plain reader is refused at the door", async () => {
+  test("a plain reader without revocable identities or sponsored runs cannot enumerate credentials", async () => {
     const fix = await fixture();
     const reader = fix.auth.authenticate(mint(fix, ["containers:read"]).token);
 

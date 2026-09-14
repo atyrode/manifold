@@ -5,6 +5,7 @@ import {
   DIAL_PING_INTERVAL_MS,
   MAX_SESSION_CHANNELS_PER_CONNECTION,
   PROTOCOL_VERSION,
+  CreateRunCredentialResultSchema,
   type Container,
 } from "@manifold/protocol";
 import { LOCAL_ORIGIN, Y, createSceneDoc, encodeUpdate, writeElement } from "@manifold/scene";
@@ -41,6 +42,7 @@ interface GatewayFixture {
   readonly rooms: RoomManager;
   readonly gateway: SessionGateway;
   readonly events: EventHub;
+  readonly plugins: PluginHost;
 }
 
 async function gatewayFixture(): Promise<GatewayFixture> {
@@ -119,6 +121,7 @@ async function gatewayFixture(): Promise<GatewayFixture> {
     rooms,
     gateway,
     events,
+    plugins,
   };
 }
 
@@ -631,6 +634,148 @@ describe("SessionGateway liveness", () => {
 
     fixture.gateway.shutdown();
     fixture.store.close();
+  });
+
+  test("durable Agent runs isolate trace and socket identities; generic revocation fences a cross-Agent child", async () => {
+    const fixture = await gatewayFixture();
+    try {
+      const owner = fixture.auth.authenticate(fixture.ownerKey);
+      const registered = fixture.auth.registerAgent(
+        {
+          name: "socket analyst",
+          purpose: "Inspect one container",
+          harness: "external",
+          context: { profile: {} },
+          grant: {
+            caps: ["containers:read", "agents:delegate"],
+            targets: ["manifold://"],
+            reach: "subtree",
+            maxRunLifetimeMs: 600_000,
+            delegation: { maxDepth: 1, maxDescendants: 1 },
+            expiresAt: 3_600_000,
+          },
+        },
+        owner,
+      );
+      const runner = fixture.auth.authenticate(registered.credential!.token);
+      const runs = ["first", "second"].map((sessionId) =>
+        CreateRunCredentialResultSchema.parse(
+          fixture.auth.createRun(
+            {
+              agentId: registered.agent.agentId,
+              lifetimeMs: 120_000,
+              session: { harness: "external", sessionId, machineId: "machine" },
+            },
+            runner,
+          ),
+        ),
+      );
+      const actors = runs.map(({ credential }) => fixture.auth.authenticate(credential.token));
+      for (const actor of actors) {
+        const policy = fixture.auth.agentPolicyChallenge(actor);
+        fixture.auth.acknowledgeAgentPolicy(
+          {
+            revision: policy.revision,
+            acknowledgements: policy.required.map(({ id, digest }) => ({ id, digest })),
+          },
+          actor,
+        );
+      }
+      const firstSocket = new FakeSocket();
+      const secondSocket = new FakeSocket();
+      join(
+        fixture.gateway,
+        "agent-first",
+        firstSocket,
+        fixture.container.id,
+        runs[0]!.credential.token,
+      );
+      join(
+        fixture.gateway,
+        "agent-second",
+        secondSocket,
+        fixture.container.id,
+        runs[1]!.credential.token,
+      );
+      for (const actor of actors)
+        expect((await fixture.plugins.dispatch(actor, "core.machines.list", {})).ok).toBe(true);
+      const first = fixture.auth.inspectRun({ runId: runs[0]!.run.id, limit: 50 }, owner);
+      const second = fixture.auth.inspectRun({ runId: runs[1]!.run.id, limit: 50 }, owner);
+      expect(
+        first.connections
+          .filter((connection) => connection.state === "live")
+          .map((connection) => connection.connectionId),
+      ).toEqual(["agent-first"]);
+      expect(
+        second.connections
+          .filter((connection) => connection.state === "live")
+          .map((connection) => connection.connectionId),
+      ).toEqual(["agent-second"]);
+      expect(first.traces.map((trace) => trace.action)).toEqual(["core.machines.list"]);
+      expect(second.traces.map((trace) => trace.action)).toEqual(["core.machines.list"]);
+      expect(first.traces[0]!.traceId).not.toBe(second.traces[0]!.traceId);
+      const renewed = fixture.auth.renewAgentRun(
+        { runId: runs[0]!.run.id, lifetimeMs: 180_000 },
+        runner,
+      );
+      expect(firstSocket.closed).toEqual({ code: 4403, reason: "revoked" });
+      expect(secondSocket.closed).toBeNull();
+      const replacementSocket = new FakeSocket();
+      join(
+        fixture.gateway,
+        "agent-replacement",
+        replacementSocket,
+        fixture.container.id,
+        renewed.credential.token,
+      );
+      const childAgent = fixture.auth.registerAgent(
+        {
+          name: "socket reviewer",
+          purpose: "Review the delegated container",
+          harness: "external",
+          context: { profile: {} },
+          grant: registered.agent.grant,
+        },
+        owner,
+      );
+      const child = fixture.auth.createChildRun(
+        { runId: runs[1]!.run.id, agentId: childAgent.agent.agentId },
+        owner,
+      );
+      expect(child.run.principal.id).not.toBe(runs[1]!.run.principal.id);
+      expect(child.run.parentRunId).toBe(runs[1]!.run.id);
+      const childToken = fixture.auth.claimRunLaunch(child.run.id, owner).token;
+      const childActor = fixture.auth.authenticate(childToken);
+      const childPolicy = fixture.auth.agentPolicyChallenge(childActor);
+      fixture.auth.acknowledgeAgentPolicy(
+        {
+          revision: childPolicy.revision,
+          acknowledgements: childPolicy.required.map(({ id, digest }) => ({ id, digest })),
+        },
+        childActor,
+      );
+      const childSocket = new FakeSocket();
+      join(fixture.gateway, "agent-child", childSocket, fixture.container.id, childToken);
+      expect(childSocket.closed).toBeNull();
+      expect(
+        (
+          await fixture.plugins.dispatch(owner, "core.access.revoke", {
+            principalId: registered.agent.principalId,
+          })
+        ).ok,
+      ).toBe(true);
+      expect(replacementSocket.closed).toEqual({ code: 4403, reason: "revoked" });
+      expect(secondSocket.closed).toEqual({ code: 4403, reason: "revoked" });
+      expect(childSocket.closed).toEqual({ code: 4403, reason: "revoked" });
+      for (const token of [renewed.credential.token, runs[1]!.credential.token, childToken])
+        expect(() => fixture.auth.authenticate(token)).toThrow("revoked");
+      expect(fixture.store.getAgentRun(runs[0]!.run.id)?.state).toBe("revoked");
+      expect(fixture.store.getAgentRun(runs[1]!.run.id)?.state).toBe("revoked");
+      expect(fixture.store.getAgentRun(child.run.id)?.state).toBe("revoked");
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
   });
 
   test("an expiring browser credential fences an already-open session socket", async () => {

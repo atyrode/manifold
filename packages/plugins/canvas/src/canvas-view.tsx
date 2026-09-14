@@ -1385,6 +1385,8 @@ export function CanvasView({
           case "job":
           case "output":
           case "principal":
+          case "agent":
+          case "run":
           case "plugin":
           case "action":
             return;

@@ -1,34 +1,29 @@
 import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
 import { GrantNodeSchema, GrantReachSchema } from "./grants.ts";
-import { AuthoredCapSchema } from "./plugin.ts";
+import {
+  AgentIdSchema,
+  AgentRunCapsSchema,
+  AgentCredentialSchema,
+  AgentDelegationSchema,
+  HarnessTargetSchema,
+  SessionRefSchema,
+  RunModelSchema,
+  RunActivitySchema,
+  AGENT_RUN_MAX_DEPTH,
+  AGENT_RUN_MAX_DESCENDANTS,
+  AGENT_RUN_MAX_RENEWALS,
+  AGENT_RUN_MAX_LIFETIME_MS,
+  AGENT_RUN_MAX_PURPOSE_LENGTH,
+  AGENT_RUN_MAX_TASK_REFERENCE_LENGTH,
+  AGENT_RUN_MAX_POLICY_BUNDLES,
+  AGENT_RUN_MAX_POLICY_BODY_BYTES,
+} from "./agents.ts";
+import { TerminalRuntimeSchema } from "./jobs.ts";
 import { PrincipalSchema } from "./principal.ts";
-
-export const AGENT_RUN_MAX_DEPTH = 4;
-export const AGENT_RUN_MAX_DESCENDANTS = 32;
-export const AGENT_RUN_MAX_RENEWALS = 24;
-export const AGENT_RUN_MAX_LIFETIME_MS = 60 * 60 * 1_000;
-export const AGENT_RUN_MAX_PURPOSE_LENGTH = 512;
-export const AGENT_RUN_MAX_TASK_REFERENCE_LENGTH = 256;
-export const AGENT_RUN_MAX_POLICY_BUNDLES = 8;
-export const AGENT_RUN_MAX_POLICY_BODY_BYTES = 65_536;
 
 const AgentRunIdSchema = z.string().min(1).max(128);
 const PolicyDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
-
-/** Authority an ordinary autonomous run may hold. Legacy token and fleet administration stay separate. */
-export const AgentRunCapSchema = AuthoredCapSchema.refine(
-  (cap) =>
-    cap !== "*" && cap !== "tokens:mint" && cap !== "machines:mint" && cap !== "plugins:manage",
-  "agent run capability cannot grant wildcard, legacy token, fleet, or plugin administration",
-);
-export type AgentRunCap = z.infer<typeof AgentRunCapSchema>;
-
-const AgentRunCapsSchema = z
-  .array(AgentRunCapSchema)
-  .min(1)
-  .max(64)
-  .refine((caps) => new Set(caps).size === caps.length, "duplicate agent run capability");
 
 export const AGENT_RUN_STATES = [
   "pending_policy",
@@ -76,6 +71,10 @@ export type AgentRunCleanup = z.infer<typeof AgentRunCleanupSchema>;
 export const AgentRunSchema = z
   .strictObject({
     id: AgentRunIdSchema,
+    agentId: AgentIdSchema,
+    session: SessionRefSchema.nullable(),
+    model: RunModelSchema.optional(),
+    activity: RunActivitySchema,
     principal: PrincipalSchema,
     rootRunId: AgentRunIdSchema,
     parentRunId: AgentRunIdSchema.nullable(),
@@ -90,8 +89,8 @@ export const AgentRunSchema = z
     createdAt: z.number().int().nonnegative(),
     expiresAt: z.number().int().positive(),
     renewals: z.number().int().min(0).max(AGENT_RUN_MAX_RENEWALS),
-    maxDepth: z.number().int().min(1).max(AGENT_RUN_MAX_DEPTH),
-    maxDescendants: z.number().int().min(1).max(AGENT_RUN_MAX_DESCENDANTS),
+    maxDepth: z.number().int().min(0).max(AGENT_RUN_MAX_DEPTH),
+    maxDescendants: z.number().int().min(0).max(AGENT_RUN_MAX_DESCENDANTS),
     depth: z.number().int().min(0).max(AGENT_RUN_MAX_DEPTH),
     cleanupOwnerPrincipalId: z.string().min(1).max(128),
     state: AgentRunStateSchema,
@@ -113,44 +112,58 @@ export const AgentRunSchema = z
   });
 export type AgentRun = z.infer<typeof AgentRunSchema>;
 
-export const CreateAgentRunRequestSchema = z.strictObject({
-  name: z.string().min(1).max(64),
-  color: z
-    .string()
-    .regex(/^#[0-9a-f]{6}$/i)
-    .optional(),
-  purpose: z.string().min(1).max(AGENT_RUN_MAX_PURPOSE_LENGTH),
+export const CreateRunRequestSchema = z.strictObject({
+  agentId: AgentIdSchema,
+  session: SessionRefSchema.optional(),
+  caps: AgentRunCapsSchema.optional(),
+  target: z.union([GrantNodeSchema, HarnessTargetSchema]).optional(),
+  reach: GrantReachSchema.optional(),
+  lifetimeMs: z.number().int().min(60_000).max(AGENT_RUN_MAX_LIFETIME_MS).optional(),
+  delegation: AgentDelegationSchema.optional(),
+  model: RunModelSchema.optional(),
+  /** Free-form references belong only to the explicit bring-your-own external harness. */
   taskRef: z.string().min(1).max(AGENT_RUN_MAX_TASK_REFERENCE_LENGTH).optional(),
-  target: GrantNodeSchema,
-  reach: GrantReachSchema,
-  caps: AgentRunCapsSchema,
-  lifetimeMs: z
-    .number()
-    .int()
-    .min(60_000)
-    .max(AGENT_RUN_MAX_LIFETIME_MS)
-    .default(AGENT_RUN_MAX_LIFETIME_MS),
-  maxDepth: z.number().int().min(1).max(AGENT_RUN_MAX_DEPTH).default(AGENT_RUN_MAX_DEPTH),
-  maxDescendants: z
-    .number()
-    .int()
-    .min(1)
-    .max(AGENT_RUN_MAX_DESCENDANTS)
-    .default(AGENT_RUN_MAX_DESCENDANTS),
 });
-export type CreateAgentRunRequest = z.infer<typeof CreateAgentRunRequestSchema>;
+export type CreateRunRequest = z.infer<typeof CreateRunRequestSchema>;
+export const CreateChildRunRequestSchema = CreateRunRequestSchema.omit({ agentId: true }).extend({
+  runId: AgentRunIdSchema,
+  agentId: AgentIdSchema.optional(),
+});
+export type CreateChildRunRequest = z.infer<typeof CreateChildRunRequestSchema>;
+export const CreateRunResultSchema = z.strictObject({
+  run: AgentRunSchema,
+  credential: AgentCredentialSchema.optional(),
+});
+export type CreateRunResult = z.infer<typeof CreateRunResultSchema>;
+export const CreateRunCredentialResultSchema = CreateRunResultSchema.required({ credential: true });
+export type CreateRunCredentialResult = z.infer<typeof CreateRunCredentialResultSchema>;
+export const LaunchRunRequestSchema = z.strictObject({
+  runId: AgentRunIdSchema,
+  target: HarnessTargetSchema.optional(),
+});
+export type LaunchRunRequest = z.infer<typeof LaunchRunRequestSchema>;
+export const LaunchRunResultSchema = z.strictObject({
+  runtime: TerminalRuntimeSchema,
+  destination: z.strictObject({ machineId: z.string().min(1).max(128) }),
+  session: SessionRefSchema,
+  reviewDigest: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type LaunchRunResult = z.infer<typeof LaunchRunResultSchema>;
+export const SendRunInputRequestSchema = z.strictObject({
+  runId: AgentRunIdSchema,
+  input: z.string().min(1).max(65_536),
+});
+export type SendRunInputRequest = z.infer<typeof SendRunInputRequestSchema>;
+export const SendRunInputResultSchema = z.strictObject({});
+export type SendRunInputResult = z.infer<typeof SendRunInputResultSchema>;
+export const ReportRunActivityResultSchema = z.strictObject({ run: AgentRunSchema });
+export type ReportRunActivityResult = z.infer<typeof ReportRunActivityResultSchema>;
 
 export const AgentRunCredentialSchema = z.strictObject({
   token: z.string().min(1),
   expiresAt: z.number().int().positive(),
 });
 export type AgentRunCredential = z.infer<typeof AgentRunCredentialSchema>;
-
-export const CreateAgentRunResultSchema = z.strictObject({
-  run: AgentRunSchema,
-  credential: AgentRunCredentialSchema,
-});
-export type CreateAgentRunResult = z.infer<typeof CreateAgentRunResultSchema>;
 
 export const AGENT_POLICY_SOURCES = ["builtin", "operator"] as const;
 export const AgentPolicySourceSchema = z.enum(AGENT_POLICY_SOURCES);

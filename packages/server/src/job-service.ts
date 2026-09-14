@@ -89,6 +89,7 @@ import {
   type AuthService,
   type CredentialReference,
   type AuthorityRequirement,
+  type AuthorityEvidence,
   type GovernedAdmissionRequest,
   type GovernedAdmissionDecision,
 } from "./auth.ts";
@@ -118,6 +119,8 @@ interface JobReplay {
 }
 interface JobChannel {
   machineId: string;
+  /** Absent on legacy in-process channels; new private launch carriers fail closed. */
+  readonly protocolVersion?: number;
   send(message: { type: "job_command"; command: JobCommand }): boolean;
 }
 interface LiveJobOwner {
@@ -154,7 +157,7 @@ function fail(code = "governed_authority_refused"): never {
 const active = new Set(["queued", "admitted", "start-committed", "started"]);
 // Each current RPC must opt into its audited retirement-only predecessors; a future bump defaults closed.
 const legacyRetirementProtocols = new Map<number, ReadonlySet<number>>([
-  [34, new Set([30, 31, 32, 33])],
+  [35, new Set([30, 31, 32, 33, 34])],
 ]);
 const runCursorSchema = z.strictObject({
   filter: z.strictObject({
@@ -1860,6 +1863,7 @@ export class JobService {
     traceId: string,
     args: JobExecution & Omit<JobScheduleSpec, "request">,
     callerPluginId = pluginId,
+    beforeEffect?: () => void,
   ): JobScheduleSpec {
     const {
       scheduleId,
@@ -1912,7 +1916,7 @@ export class JobService {
         fail("schedule_owner_mismatch");
       const refusal = this.reauthorizeDeferred(request);
       if (refusal) fail(refusal);
-      this.jobSchedules.putSchedule(spec);
+      this.jobSchedules.putSchedule(spec, beforeEffect);
       this.store.db
         .query(
           "UPDATE job_schedules SET audit_origin=COALESCE(audit_origin,?) WHERE schedule_id=? AND revision=?",
@@ -2937,12 +2941,13 @@ export class JobService {
   decide(
     request: GovernedAdmissionRequest,
     refusal: string | null = null,
+    beforeEffect?: () => void,
   ): GovernedAdmissionDecision & { decisionId: string; policyRevision: string } {
     return this.store.transaction(() => {
       const context = this.auth.restoreCredential(request.credential);
       let allowed = context !== null && request.evidence.length > 0 && refusal === null;
       const consents: { node: string; revision: string; artifactSha256: string }[] = [];
-      const evidence: unknown[] = [];
+      const evidence: AuthorityEvidence[] = [];
       const servicePolicies = new Map<string, ServicePolicy[]>();
       for (const prior of request.evidence) {
         const { cap, ref } = prior.requirement;
@@ -2976,13 +2981,15 @@ export class JobService {
           requirement: prior.requirement,
           winner: fresh.winner,
           allowed: discharged,
-          revision: this.jobs.revision(
-            "grant",
-            fresh.winner?.id ?? "missing",
-            digest(fresh.winner),
-          ),
         });
       }
+      // The complete native verdict precedes every revision/decision/job write.
+      // A denied native admission retains its own answer, regardless of declaration.
+      if (allowed) beforeEffect?.();
+      const recordedEvidence = evidence.map((entry) => ({
+        ...entry,
+        revision: this.jobs.revision("grant", entry.winner?.id ?? "missing", digest(entry.winner)),
+      }));
       const credentialRevision = this.jobs.revision(
         "credential",
         request.credential.tokenId ?? request.credential.principalId,
@@ -2997,7 +3004,7 @@ export class JobService {
       const verdict = {
         allowed,
         refusal: allowed ? null : (refusal ?? "authority_or_consent_refused"),
-        requirements: evidence,
+        requirements: recordedEvidence,
       };
       const policyRevision = String(
         this.jobs.revision(
@@ -3448,37 +3455,50 @@ export class JobService {
     };
     return JobRequestSchema.parse({ ...unsigned, requestDigest: digest(unsigned) });
   }
-  execute(auth: AuthContext, pluginId: string, traceId: string, args: JobExecution): JobRecord {
+  execute(
+    auth: AuthContext,
+    pluginId: string,
+    traceId: string,
+    args: JobExecution,
+    beforeEffect?: () => void,
+  ): JobRecord {
     if ("terminal" in args) fail("native_terminal_admission_required");
     if ("service" in args) fail("native_service_admission_required");
     const context = this.auth.restoreCredential(this.auth.credentialReference(auth));
     if (!context) fail("credential_revoked_or_expired");
     const request = this.build(context, pluginId, traceId, args);
     const job = this.store.transaction(() => {
-      const reserved = this.jobs.reserve(request, this.runtime.now());
-      if (reserved.state !== "queued")
-        return this.authorizedJob(
+      const previous = this.jobs.reservation(request);
+      if (previous !== null && previous.state !== "queued") {
+        const existing = this.authorizedJob(
           context,
           {
             kind: "job",
-            machineId: reserved.request.machineId,
-            operationId: reserved.request.operationId,
-            jobId: reserved.request.jobId,
+            machineId: previous.request.machineId,
+            operationId: previous.request.operationId,
+            jobId: previous.request.jobId,
           },
           "jobs:read",
           pluginId,
         );
+        beforeEffect?.();
+        return existing;
+      }
       const decision = this.decide(
         {
           credential: request.credential,
           pluginId,
-          action: reserved.auditOrigin?.door ?? "engine.jobs.execute",
+          action:
+            (previous === null ? this.jobs.origin(request) : previous.auditOrigin)?.door ??
+            "engine.jobs.execute",
           evidence: this.requirements(request).map((requirement) =>
             this.auth.explain(context, requirement),
           ),
         },
         this.concurrencyRefusal(request),
+        beforeEffect,
       );
+      const reserved = this.jobs.reserve(request, this.runtime.now());
       this.jobs.decision(request.jobId, decision.decisionId);
       const allowed = decision.allowed;
       if (!allowed) {
@@ -3491,6 +3511,34 @@ export class JobService {
     if (job.state === "queued") this.start(job);
     return this.jobs.get(request.jobId)!;
   }
+  /** Read the durable native association, never a caller-selected terminal or job id. */
+  runTerminal(
+    auth: AuthContext,
+    runId: string,
+    pluginId: string,
+  ): Extract<ManifoldRef, { kind: "job" }> {
+    this.auth.authorizeRunInput(runId, auth);
+    const job = this.jobs
+      .active()
+      .find((job) => job.request.terminal?.runId === runId && job.request.pluginId === pluginId);
+    if (!job) throw new ServiceError("not_found", "run terminal unavailable");
+    const node = {
+      kind: "job" as const,
+      jobId: job.request.jobId,
+      machineId: job.request.machineId,
+      operationId: job.request.operationId,
+    };
+    this.authorizedJob(auth, node, "jobs:read", pluginId);
+    return node;
+  }
+
+  assertRunLaunchSupported(machineId: string): void {
+    const live = this.channels.get(machineId);
+    if (!live || (live.channel.protocolVersion ?? 0) < 32 || live.owner.protocolVersion < 35)
+      fail("run_launch_protocol_unsupported");
+    if (!live.proved || live.retirementOnly) fail("run_launch_owner_unavailable");
+  }
+
   /** Immediate native admission; unavailable/refused terminals never become retryable jobs. */
   admitTerminal(
     auth: AuthContext,
@@ -3498,8 +3546,11 @@ export class JobService {
     machineId: string,
     terminal: NonNullable<JobRequest["terminal"]>,
     traceId: number,
+    privateEnv?: Extract<JobCommand, { type: "start" }>["privateEnv"],
   ): Extract<JobCommand, { type: "start" }> {
     if (runtime.machineId !== machineId) fail("terminal_runtime_destination_changed");
+    if (privateEnv || runtime.launchBinding !== undefined || terminal.runId !== undefined)
+      this.assertRunLaunchSupported(machineId);
     const live = this.channels.get(machineId);
     const install = this.jobs.installation(machineId, runtime.pluginId);
     if (
@@ -3542,7 +3593,7 @@ export class JobService {
       fail("terminal_runtime_admission_refused");
     }
     this.changed(pinned);
-    return command;
+    return privateEnv ? { ...command, privateEnv } : command;
   }
   private start(
     job: JobRecord,
@@ -4587,8 +4638,8 @@ export class JobService {
     if (reason) fail(reason);
     if (
       job.state !== "started" ||
+      (job.request.terminal !== undefined && job.request.terminal.runId === undefined) ||
       job.stdinClosed ||
-      job.request.terminal ||
       !this.jobs.installation(
         job.request.machineId,
         job.request.pluginId,
@@ -4608,6 +4659,7 @@ export class JobService {
     traceId = "native-input",
   ): Promise<void> {
     const job = this.authorizedJob(auth, node, "jobs:input", callerPluginId);
+    if (job.request.terminal?.runId) this.auth.authorizeRunInput(job.request.terminal.runId, auth);
     this.inputAuthority(job);
     const live = this.channels.get(job.request.machineId);
     if (!live || !this.inputOwner(job, live.channel)) fail("job_input_owner_unavailable");

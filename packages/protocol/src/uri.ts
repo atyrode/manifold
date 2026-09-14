@@ -13,6 +13,8 @@ import { z } from "zod";
  *   manifold://container/<containerId>/element/<elementId>
  *   manifold://container/<containerId>/tile/<tileId>
  *   manifold://principal/<principalId>
+ *   manifold://agent/<agentId>
+ *   manifold://run/<runId>
  *   manifold://plugin/<pluginId>
  *   manifold://action/<actionName>
  *   manifold://machine/<machineId>
@@ -75,6 +77,8 @@ export const ManifoldRefSchema = z.discriminatedUnion("kind", [
     serviceId: RefIdSchema,
     operationId: RefIdSchema.optional(),
   }),
+  z.strictObject({ kind: z.literal("agent"), agentId: RefIdSchema }),
+  z.strictObject({ kind: z.literal("run"), runId: RefIdSchema }),
 ]);
 export type ManifoldRef = z.infer<typeof ManifoldRefSchema>;
 
@@ -96,6 +100,10 @@ export function formatManifoldUri(ref: ManifoldRef): string {
       return `${MANIFOLD_URI_SCHEME}container/${encodeURIComponent(ref.containerId)}/tile/${encodeURIComponent(ref.tileId)}`;
     case "principal":
       return `${MANIFOLD_URI_SCHEME}principal/${encodeURIComponent(ref.principalId)}`;
+    case "agent":
+      return `${MANIFOLD_URI_SCHEME}agent/${encodeURIComponent(ref.agentId)}`;
+    case "run":
+      return `${MANIFOLD_URI_SCHEME}run/${encodeURIComponent(ref.runId)}`;
     case "plugin":
       return `${MANIFOLD_URI_SCHEME}plugin/${encodeURIComponent(ref.pluginId)}`;
     case "action":
@@ -169,6 +177,10 @@ export function parseManifoldUri(text: string): ManifoldRef | null {
         return { kind: "container", containerId: first };
       case "principal":
         return { kind: "principal", principalId: first };
+      case "agent":
+        return { kind: "agent", agentId: first };
+      case "run":
+        return { kind: "run", runId: first };
       case "plugin":
         return { kind: "plugin", pluginId: first };
       case "action":

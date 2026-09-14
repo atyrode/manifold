@@ -1,8 +1,11 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { defineAction } from "@manifold/plugin";
 import { EventsListResponseSchema } from "@manifold-plugin/events";
 import {
-  CreateAgentRunResultSchema,
+  AgentPolicyChallengeSchema,
   ManifoldRefSchema,
   ContainerResponseSchema,
   PlaceResponseSchema,
@@ -24,6 +27,7 @@ import { PluginHost, type ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { TRACE_ROW_TYPE, type ServerStore, type StoredEvent } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
+import { createExternalRun } from "./agent-fixtures.ts";
 import {
   FakeClock,
   FakeRuntime,
@@ -47,6 +51,11 @@ import {
 
 const OWNER_KEY = "b".repeat(64);
 const TEST_ORIGIN = "http://localhost:7777";
+const policyDirectories = new Set<string>();
+afterEach(() => {
+  for (const directory of policyDirectories) rmSync(directory, { recursive: true, force: true });
+  policyDirectories.clear();
+});
 
 /**
  * What the ledger keeps instead of an oversize argument list: the shape, never the bytes.
@@ -67,11 +76,11 @@ interface Fixture {
   readonly host: PluginHost;
 }
 
-async function fixture(): Promise<Fixture> {
+async function fixture(policyFile?: string): Promise<Fixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
-  const auth = new AuthService(store, OWNER_KEY, runtime);
+  const auth = new AuthService(store, OWNER_KEY, runtime, undefined, policyFile);
   const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
   const broker = new TerminalBroker(
     store,
@@ -466,7 +475,11 @@ describe("the trace ledger records every exercise of authority", () => {
   });
 
   test("EVERY refusal rung above the handler leaves a settled row naming its rung", async () => {
-    const base = await fixture();
+    const directory = mkdtempSync(join(tmpdir(), "manifold-trace-policy-"));
+    policyDirectories.add(directory);
+    const policyFile = join(directory, "operator.txt");
+    writeFileSync(policyFile, "Trace policy revision one.\n");
+    const base = await fixture(policyFile);
     const created = await base.host.dispatch(base.owner, "core.index.createContainer", {
       name: "rungs",
     });
@@ -499,23 +512,80 @@ describe("the trace ledger records every exercise of authority", () => {
     const argRow = newestTrace(base);
     expect(argRow.outcome).toBe("invalid_args");
     expect(JSON.parse(argRow.payload)).toEqual({ nonsense: true });
-    const runCreated = await base.host.dispatch(base.owner, "core.access.createAgentRun", {
+    const run = createExternalRun(base, {
       name: "trace-policy-rungs",
       purpose: "Exercise both policy refusal rungs in the trace ledger.",
       target: "manifold://",
       reach: "subtree",
-      caps: ["containers:read"],
+      caps: ["agents:delegate", "containers:read"],
     });
-    if (!runCreated.ok) throw new Error("fixture agent run was refused");
-    const run = CreateAgentRunResultSchema.parse(runCreated.result);
     const pendingRun = base.auth.authenticate(run.credential.token);
     const policyRequired = await base.host.dispatch(pendingRun, "core.machines.list", {});
     expect(policyRequired.ok).toBeFalse();
     expect(newestTrace(base).outcome).toBe("policy_required");
-    base.store.updateAgentRunPolicy(run.run.id, "0".repeat(64), "policy_stale");
+    const initialChallengeOutcome = await base.host.dispatch(
+      pendingRun,
+      "core.access.getAgentPolicy",
+      {},
+    );
+    if (!initialChallengeOutcome.ok)
+      throw new Error("fixture initial policy challenge was refused");
+    const initialChallenge = AgentPolicyChallengeSchema.parse(initialChallengeOutcome.result);
+    expect(
+      (
+        await base.host.dispatch(pendingRun, "core.access.acknowledgeAgentPolicy", {
+          revision: initialChallenge.revision,
+          acknowledgements: initialChallenge.required.map(({ id, digest }) => ({ id, digest })),
+        })
+      ).ok,
+    ).toBeTrue();
+    writeFileSync(policyFile, "Trace policy revision two.\n");
+    expect(
+      (await base.host.dispatch(base.owner, "core.access.reloadAgentPolicy", {})).ok,
+    ).toBeTrue();
     const policyStale = await base.host.dispatch(pendingRun, "core.machines.list", {});
     expect(policyStale.ok).toBeFalse();
     expect(newestTrace(base).outcome).toBe("policy_stale");
+    const challengeOutcome = await base.host.dispatch(pendingRun, "core.access.getAgentPolicy", {});
+    if (!challengeOutcome.ok) throw new Error("fixture policy challenge was refused");
+    const challenge = AgentPolicyChallengeSchema.parse(challengeOutcome.result);
+    const acknowledged = await base.host.dispatch(
+      pendingRun,
+      "core.access.acknowledgeAgentPolicy",
+      {
+        revision: challenge.revision,
+        acknowledgements: challenge.required.map(({ id, digest }) => ({ id, digest })),
+      },
+    );
+    expect(acknowledged.ok).toBeTrue();
+    const childArgs = {
+      runId: run.run.id,
+      target: "manifold://",
+      reach: "subtree",
+      caps: ["containers:read"],
+    };
+    const missingDeclaration = await base.host.dispatch(
+      pendingRun,
+      "core.access.createChildRun",
+      childArgs,
+    );
+    expect(missingDeclaration).toMatchObject({
+      ok: false,
+      denial: { rule: "justification_required" },
+    });
+    expect(newestTrace(base).outcome).toBe("justification_required");
+    const invalidDeclaration = await base.host.dispatch(
+      pendingRun,
+      "core.access.createChildRun",
+      childArgs,
+      null,
+      { agentJustification: " " },
+    );
+    expect(invalidDeclaration).toMatchObject({
+      ok: false,
+      denial: { rule: "invalid_justification" },
+    });
+    expect(newestTrace(base).outcome).toBe("invalid_justification");
 
     /*
       Rung 2, PLUGIN DISABLED: a door whose plugin is off answers, and the answer is recorded.

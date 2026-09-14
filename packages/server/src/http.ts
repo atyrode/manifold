@@ -932,6 +932,14 @@ export class HttpApp {
         const principal = this.store.getPrincipal(ref.principalId);
         return { exists: principal !== null, title: principal?.name ?? null };
       }
+      case "agent": {
+        const { agent } = this.auth.getAgent({ agentId: ref.agentId }, context);
+        return { exists: true, title: agent.name };
+      }
+      case "run": {
+        const inspected = this.auth.inspectRun({ runId: ref.runId, limit: 1 }, context);
+        return { exists: true, title: inspected.run.name };
+      }
       case "plugin": {
         const entry = this.plugins
           .roster()

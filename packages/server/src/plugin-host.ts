@@ -32,6 +32,7 @@ import {
   type PluginStorage,
   type PluginStorageAdmin,
   type PluginStoredData,
+  type ServerHarness,
 } from "@manifold/plugin";
 import type { SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
 import type { ServerMigration as GuestMigration } from "@manifold/plugin-kit/server";
@@ -51,14 +52,28 @@ import {
   type TerminalExecution,
   PLUGIN_BUNDLE_STYLES_FILE,
   formatManifoldUri,
+  parseManifoldUri,
   canonicalJobJson,
   TRACE_AUTHORITY_OPEN,
   TRACE_AUTHORITY_ROOT,
+  SessionRefSchema,
+  TerminalRuntimeSchema,
+  HarnessTargetSchema,
+  LaunchRunResultSchema,
+  ListHarnessesResultSchema,
 } from "@manifold/protocol";
 import type {
   ActionCallRefusal,
   ActionDenialRule,
   ActionOutcome,
+  AgentRun,
+  HarnessDefinition,
+  HarnessTarget,
+  SessionRef,
+  LaunchRunRequest,
+  LaunchRunResult,
+  ListHarnessSessionsResult,
+  SendRunInputRequest,
   BootstrapPrincipalRequest,
   AcknowledgeAgentPolicyRequest,
   AcknowledgeAgentPolicyResult,
@@ -66,8 +81,16 @@ import type {
   AskableCap,
   AuthoredCap,
   Cap,
-  CreateAgentRunRequest,
-  CreateAgentRunResult,
+  RegisterAgentRequest,
+  RegisterAgentResult,
+  AgentRequest,
+  GetAgentResult,
+  ListAgentsResult,
+  UpdateAgentRequest,
+  CreateRunRequest,
+  CreateChildRunRequest,
+  CreateRunResult,
+  ReportRunActivityRequest,
   CreateGrantRequest,
   Dial,
   DialShareRequest,
@@ -77,6 +100,10 @@ import type {
   Grant,
   ListGrantsRequest,
   FinishAgentRunRequest,
+  InspectRunRequest,
+  InspectRunResult,
+  ListRunsRequest,
+  ListRunsResult,
   FinishAgentRunResult,
   ManifoldRef,
   MintShareRequest,
@@ -119,7 +146,7 @@ import {
   type IsolateRunner,
 } from "./isolate/contract.ts";
 import { localActionDef } from "./isolate/proxy-def.ts";
-import { redactFields, type Logger } from "./log.ts";
+import { normalizeAgentDeclaration, redactFields, type Logger } from "./log.ts";
 import type { PlaceExecutor } from "./placement.ts";
 import {
   openPluginDatabase,
@@ -200,8 +227,26 @@ export interface IdentityDoor {
   createPrincipal(input: BootstrapPrincipalRequest): IdentityResult<TokenGrant>;
   /** Mints authority no broader than the caller's own, within the caller's container scope. */
   mintToken(input: MintTokenRequest): IdentityResult<TokenGrant>;
-  /** Creates a fresh sponsor-bound autonomous identity in pending-policy state. */
-  createAgentRun(input: CreateAgentRunRequest): IdentityResult<CreateAgentRunResult>;
+  registerAgent(input: RegisterAgentRequest): IdentityResult<RegisterAgentResult>;
+  getAgent(input: AgentRequest): IdentityResult<GetAgentResult>;
+  listAgents(): IdentityResult<ListAgentsResult>;
+  updateAgent(input: UpdateAgentRequest): IdentityResult<GetAgentResult>;
+  disableAgent(input: AgentRequest): IdentityResult<GetAgentResult>;
+  enableAgent(input: AgentRequest): IdentityResult<GetAgentResult>;
+  retireAgent(input: AgentRequest): IdentityResult<GetAgentResult>;
+  createRun(input: CreateRunRequest): IdentityResult<CreateRunResult>;
+  createChildRun(input: CreateChildRunRequest): IdentityResult<CreateRunResult>;
+  inspectRun(input: InspectRunRequest): IdentityResult<InspectRunResult>;
+  listRuns(input: ListRunsRequest): IdentityResult<ListRunsResult>;
+  reportRunActivity(input: ReportRunActivityRequest): IdentityResult<{ run: AgentRun }>;
+  listHarnesses(): IdentityResult<{ harnesses: HarnessDefinition[] }>;
+  launchRun(input: LaunchRunRequest): Promise<IdentityResult<LaunchRunResult>>;
+  sendRunInput(input: SendRunInputRequest): Promise<IdentityResult<Record<string, never>>>;
+  listHarnessSessions(
+    harness: string,
+    target: HarnessTarget,
+  ): Promise<IdentityResult<ListHarnessSessionsResult>>;
+  resolveHarnessSession(ref: SessionRef): Promise<IdentityResult<{ session: SessionRef | null }>>;
   /** Returns the exact server-selected policy bytes this run must acknowledge. */
   agentPolicyChallenge(): IdentityResult<AgentPolicyChallenge>;
   /** Activates this run only after every exact policy digest is acknowledged. */
@@ -567,11 +612,14 @@ export interface MachineAdmission {
 export interface ActionCtx {
   /** The write-ahead ledger row's id, as returned by `core.events.list`. */
   readonly traceId: number;
+  readonly pluginId: string;
   readonly principal: Principal;
   readonly auth: ActionAuth;
   /** Host-bound lineage and durable admission evidence; never caller supplied. */
   readonly credential: CredentialReference;
   readonly admission: GovernedAdmissionDecision | null;
+  /** Host-only continuation after the isolate's real input parse; not a guest ctx slice. */
+  readonly admitPrepared?: (targets: readonly unknown[]) => void;
   readonly streams: PluginStreamContext;
   readonly jobs: JobContext;
   readonly services: PluginServiceContext;
@@ -715,7 +763,20 @@ export type ActionHandler = (ctx: ActionCtx, args: never) => Promise<unknown>;
 /** A plugin's server half: what it declares, plus a handler per declared action. */
 export type ServerPluginDef = PluginDef & {
   readonly handlers: Readonly<Record<string, ActionHandler>>;
+  readonly harness?: ServerHarness<ActionCtx>;
+  /** Set only by the isolate bridge: real parsing precedes the host admission continuation. */
+  readonly inputValidation?: "guest";
 };
+
+class ActionAdmissionDenial extends Error {
+  constructor(
+    readonly rule: Exclude<ActionDenialRule, typeof UNTRACED_DENIAL_RULE>,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ActionAdmissionDenial";
+  }
+}
 
 /**
  * The slice the engine's own doors touch: identity, the credential the two admitting doors
@@ -904,13 +965,10 @@ function traceContainer(auth: AuthContext, rawArgs: unknown): string | null {
 }
 
 /**
- * THE TWO PAYLOAD NAMES THE LEDGER KEEPS FOR ITSELF (ADR 0041 §5). `traceOrigin` is their one
- * writer, and `tracePayload` drops them from every door's arguments, so a row carrying them
- * always means a plugin opened that door — a client typing them into its own request body
- * cannot attribute its dispatch to a plugin, on a loose door's committed row or on a strict
- * door's write-ahead one.
+ * The ledger's provenance names come from host dispatch state, never door arguments.
+ * `traceOrigin` owns plugin lineage (ADR 0041 §5); admission owns the Agent declaration.
  */
-const RESERVED_TRACE_KEYS = ["origin", "parentTrace"] as const;
+const RESERVED_TRACE_KEYS = ["origin", "parentTrace", "agentDeclaration"] as const;
 
 /**
  * The arguments as the ledger keeps them: redacted by the one field rule the log already
@@ -921,7 +979,7 @@ const RESERVED_TRACE_KEYS = ["origin", "parentTrace"] as const;
  * about to name — and the ledger's payload column is a map of a door's named arguments, not a
  * place to keep whatever JSON a stranger posted.
  */
-function tracePayload(rawArgs: unknown): Readonly<Record<string, unknown>> {
+function tracePayload(rawArgs: unknown): Record<string, unknown> {
   if (rawArgs === null || typeof rawArgs !== "object" || Array.isArray(rawArgs)) return {};
   // `redactFields` answers with a fresh object, so this drops nothing a caller can observe.
   const redacted = redactFields(rawArgs as Record<string, unknown>);
@@ -1006,6 +1064,7 @@ export class PluginHost {
   private defs: readonly ServerPluginDef[];
   private readonly firstParty: readonly ServerPluginDef[];
   private readonly handlers = new Map<string, Readonly<Record<string, ActionHandler>>>();
+  private readonly guestInputPlugins = new Set<string>();
   /** Installed plugins by id: the row, the verified bundle, and the def the runner produced. */
   private readonly installed = new Map<string, InstalledPlugin>();
   private readonly installedDefs = new Map<string, ServerPluginDef>();
@@ -1055,6 +1114,185 @@ export class PluginHost {
     (plugin, node) => this.ownsStreamNode(plugin, node),
   );
   private jobs: JobService | null = null;
+
+  private assertHarnessDefinitions(defs: readonly ServerPluginDef[]): void {
+    const owners = new Map<string, string>([["external", "engine"]]);
+    for (const def of defs) {
+      const declaration = def.manifest.contributes.harness;
+      if (!declaration) {
+        if (def.harness) throw new AssemblyError([`${def.manifest.id}: undeclared harness`]);
+        continue;
+      }
+      const owner = owners.get(declaration.id);
+      if (owner !== undefined)
+        throw new AssemblyError([
+          `duplicate harness "${declaration.id}" (${owner}, ${def.manifest.id})`,
+        ]);
+      owners.set(declaration.id, def.manifest.id);
+      if (
+        def.harness &&
+        (typeof def.harness.profileSchema?.safeParse !== "function" ||
+          typeof def.harness.launch !== "function" ||
+          typeof def.harness.sessions !== "function" ||
+          typeof def.harness.resolveSession !== "function" ||
+          typeof def.harness.send !== "function")
+      )
+        throw new AssemblyError([`${def.manifest.id}: invalid harness implementation`]);
+    }
+  }
+
+  private harnessDefinition(id: string): ServerPluginDef & { harness: ServerHarness<ActionCtx> } {
+    const def = this.defs.find((def) => def.manifest.contributes.harness?.id === id);
+    if (
+      !def?.harness ||
+      !this.assembled.enabled(def.manifest.id) ||
+      this.replacing === def.manifest.id
+    )
+      throw new ServiceError("forbidden", "harness unavailable");
+    return { ...def, harness: def.harness };
+  }
+
+  private validateAgentProfile(harness: string, profile: unknown): void {
+    // External is explicit bring-your-own inventory, not an executable installed adapter.
+    if (harness === "external") return;
+    if (!this.harnessDefinition(harness).harness.profileSchema.safeParse(profile).success)
+      throw new ServiceError("forbidden", "harness profile invalid");
+  }
+
+  /** Borrow the dispatch's identity and trace, but bind native resources to the owning plugin. */
+  private async withHarness<T>(
+    base: ActionCtx,
+    actor: AuthContext,
+    id: string,
+    session: string | null,
+    stack: readonly string[],
+    invoke: (harness: ServerHarness<ActionCtx>, ctx: ActionCtx, pluginId: string) => Promise<T>,
+  ): Promise<T> {
+    const def = this.harnessDefinition(id);
+    const pluginId = def.manifest.id;
+    const install = this.installed.get(pluginId);
+    const current = this.authService.restoreCredential(this.authService.credentialReference(actor));
+    if (!current) throw new ServiceError("forbidden", "harness caller unavailable");
+    const nativeAuth = {
+      ...current,
+      caps: CAPS.filter(
+        (cap) =>
+          withinCeiling(cap, current.caps) &&
+          withinCeiling(cap, def.manifest.capabilities) &&
+          (!install || GOVERNED_CAPS.includes(cap) || withinCeiling(cap, install.row.grantedCaps)),
+      ),
+    };
+    const lease = this.dataLease(pluginId);
+    const settled = Promise.withResolvers<void>();
+    let active = this.activeDispatches.get(pluginId);
+    if (!active) this.activeDispatches.set(pluginId, (active = new Set()));
+    active.add(settled.promise);
+    const service = () => {
+      if (!this.jobs) throw new ServiceError("forbidden", "job service unavailable");
+      return this.jobs;
+    };
+    const shared = { ...base };
+    delete shared.database;
+    try {
+      return await invoke(
+        def.harness,
+        {
+          ...shared,
+          pluginId,
+          actions: this.actionCalls(pluginId, current, session, base.traceId, [...stack, pluginId]),
+          credential: this.authService.credentialReference(nativeAuth),
+          jobs: jobContext(service, nativeAuth, pluginId, base.traceId),
+          services: serviceContext(
+            service,
+            nativeAuth,
+            pluginId,
+            base.traceId,
+            withinCeiling("services:invoke", nativeAuth.caps) ? "invoke" : "read",
+          ),
+          storage: lease.storage,
+          ...(lease.database ? { database: lease.database } : {}),
+        },
+        pluginId,
+      );
+    } finally {
+      lease.close();
+      settled.resolve();
+      active.delete(settled.promise);
+      if (active.size === 0) this.activeDispatches.delete(pluginId);
+    }
+  }
+
+  private readonly launchingRuns = new Set<string>();
+
+  private async launchHarnessRun(
+    base: ActionCtx,
+    actor: AuthContext,
+    input: LaunchRunRequest,
+    session: string | null,
+    stack: readonly string[],
+  ): Promise<LaunchRunResult> {
+    if (this.launchingRuns.has(input.runId))
+      throw new ServiceError("conflict", "run launch already in progress");
+    this.launchingRuns.add(input.runId);
+    try {
+      const claim = this.authService.claimRunLaunch(input.runId, actor);
+      const target = HarnessTargetSchema.safeParse(input.target ?? claim.target);
+      if (!target.success) throw new ServiceError("forbidden", "harness launch target required");
+      const declaredTarget = parseManifoldUri(claim.run.target);
+      if (
+        (declaredTarget &&
+          "machineId" in declaredTarget &&
+          declaredTarget.machineId !== target.data.machineId) ||
+        (declaredTarget?.kind === "container" &&
+          declaredTarget.containerId !== target.data.containerId) ||
+        (claim.target?.containerId !== undefined &&
+          claim.target.containerId !== target.data.containerId)
+      )
+        throw new ServiceError("forbidden", "harness launch target changed");
+      if (!this.jobs) throw new ServiceError("forbidden", "run_launch_owner_unavailable");
+      this.jobs.assertRunLaunchSupported(target.data.machineId);
+      this.validateAgentProfile(claim.agent.harness, claim.agent.context.profile);
+      return await this.withHarness(
+        base,
+        actor,
+        claim.agent.harness,
+        session,
+        stack,
+        async (harness, ctx, pluginId) => {
+          const prepared = await harness.launch(ctx, claim.run, claim.agent, target.data);
+          const runtime = TerminalRuntimeSchema.parse(prepared.runtime);
+          const session = SessionRefSchema.parse(prepared.session);
+          if (
+            runtime.pluginId !== pluginId ||
+            runtime.machineId !== target.data.machineId ||
+            session.machineId !== target.data.machineId ||
+            session.harness !== claim.agent.harness
+          )
+            throw new ServiceError("forbidden", "harness launch destination mismatch");
+          const descriptor = LaunchRunResultSchema.parse({
+            runtime,
+            session,
+            reviewDigest: prepared.reviewDigest,
+            destination: { machineId: target.data.machineId },
+          });
+          this.harnessDefinition(claim.agent.harness);
+          this.authService.bindRunSession(input.runId, session, actor);
+          return {
+            ...descriptor,
+            runtime: this.broker.bindRunLaunch(
+              runtime,
+              claim.run,
+              claim.token,
+              actor,
+              target.data.containerId,
+            ),
+          };
+        },
+      );
+    } finally {
+      this.launchingRuns.delete(input.runId);
+    }
+  }
 
   /** Trusted runtime composition; registered doors refuse until the durable service is ready. */
   setJobs(jobs: JobService): void {
@@ -1143,7 +1381,7 @@ export class PluginHost {
             this.isolates.pack,
           );
     this.lifecycleTimeoutMs = options.lifecycleTimeoutMs ?? LIFECYCLE_TIMEOUT_MS;
-    for (const def of this.defs) this.handlers.set(def.manifest.id, def.handlers);
+    this.syncDefs();
   }
 
   /**
@@ -1209,6 +1447,14 @@ export class PluginHost {
       if (types.length > 0) store.claimElementTypes(def.manifest.id, types);
     }
     if (migrated) host.assembled = await host.reassemble();
+    authService.setAgentProfileValidator((harness, profile) =>
+      host.validateAgentProfile(harness, profile),
+    );
+    authService.setAgentChangeListener((agentId, runId) => {
+      events.emit("core.access", { kind: "agent", agentId }, "agent_changed", null, {});
+      if (runId !== undefined)
+        events.emit("core.access", { kind: "run", runId }, "run_changed", null, {});
+    });
     return host;
   }
 
@@ -1363,8 +1609,13 @@ export class PluginHost {
   /** Rebuilds the live def list and the handler index after an install lands or leaves. */
   private syncDefs(): void {
     this.defs = [...this.firstParty, ...this.installedDefs.values()];
+    this.assertHarnessDefinitions(this.defs);
     this.handlers.clear();
-    for (const def of this.defs) this.handlers.set(def.manifest.id, def.handlers);
+    this.guestInputPlugins.clear();
+    for (const def of this.defs) {
+      this.handlers.set(def.manifest.id, def.handlers);
+      if (def.inputValidation === "guest") this.guestInputPlugins.add(def.manifest.id);
+    }
   }
 
   /**
@@ -2317,6 +2568,7 @@ export class PluginHost {
   private preflightInstall(id: string, candidate: ServerPluginDef, env: AssemblyEnv): Assembly {
     const defs = new Map(this.installedDefs);
     defs.set(id, candidate);
+    this.assertHarnessDefinitions([...this.firstParty, ...defs.values()]);
     const assembly = assembleRoster(
       [...this.firstParty, ...defs.values()],
       this.store.disabledPlugins(),
@@ -3022,14 +3274,20 @@ export class PluginHost {
       entry.def.trace === "opaque" ||
       entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap)) ||
       entry.def.delegates?.some((cap) => GOVERNED_CAPS.includes(cap)) === true;
+    const payload: Record<string, unknown> = {
+      ...(opaque ? {} : tracePayload(rawArgs)),
+      ...traceOrigin(options.origin),
+    };
     const attribution: TraceAttribution = {
       ts: this.runtime.now(),
       actor: auth.principal.id,
       authority: traceAuthority(auth, entry.def.caps),
       door: fullName,
       containerId: opaque ? auth.containerScope : traceContainer(auth, rawArgs),
-      payload: { ...(opaque ? {} : tracePayload(rawArgs)), ...traceOrigin(options.origin) },
+      payload,
       session,
+      ...(auth.agentRunId === undefined ? {} : { runId: auth.agentRunId }),
+      ...(auth.tokenId === null ? {} : { credentialId: auth.tokenId }),
     };
     /*
       EVERY REFUSAL BELOW THIS LINE GOES THROUGH HERE — one constructor for the traced rungs,
@@ -3051,14 +3309,57 @@ export class PluginHost {
     };
     const pluginId = entry.plugin.id;
     const runAccess = pluginId === "core.access" ? entry.def.runAccess : undefined;
+    if (
+      auth.agentRunnerId !== undefined &&
+      runAccess !== "runner" &&
+      runAccess !== "inspect" &&
+      runAccess !== "teardown" &&
+      runAccess !== "delegate"
+    ) {
+      return refuse("forbidden", "agent runner credentials cannot invoke ordinary actions");
+    }
     const runPolicyState = this.authService.agentRunPolicyState(auth);
+    const declaration = options?.agentJustification;
+    const activeRun = auth.agentRunId !== undefined && runPolicyState === "active";
+    const normalizedDeclaration =
+      activeRun && typeof declaration === "string" ? normalizeAgentDeclaration(declaration) : null;
+    if (normalizedDeclaration !== null) payload.agentDeclaration = normalizedDeclaration;
+    const declarationDenial = !activeRun
+      ? null
+      : declaration === undefined
+        ? entry.def.agentJustification === "required"
+          ? new ActionAdmissionDenial("justification_required", "agent declaration required")
+          : null
+        : normalizedDeclaration === null
+          ? new ActionAdmissionDenial("invalid_justification", "agent declaration is invalid")
+          : null;
+    const enforceDeclaration = (): void => {
+      if (declarationDenial !== null) throw declarationDenial;
+    };
+    const guestInput = this.guestInputPlugins.has(pluginId);
+    const nativeEffectAdmission =
+      fullName === "core.access.createRun" ||
+      fullName === "core.access.createChildRun" ||
+      fullName === "core.access.renewAgentRun" ||
+      fullName === "engine.jobs.execute" ||
+      fullName === "engine.jobs.schedule";
     if (runPolicyState === "expired") {
       return refuse("forbidden", "agent run expired");
     }
-    if (runPolicyState === "pending_policy" && runAccess !== "policy" && runAccess !== "teardown") {
+    if (
+      runPolicyState === "pending_policy" &&
+      runAccess !== "policy" &&
+      runAccess !== "teardown" &&
+      runAccess !== "inspect"
+    ) {
       return refuse("policy_required", "agent policy acknowledgement required");
     }
-    if (runPolicyState === "policy_stale" && runAccess !== "policy" && runAccess !== "teardown") {
+    if (
+      runPolicyState === "policy_stale" &&
+      runAccess !== "policy" &&
+      runAccess !== "teardown" &&
+      runAccess !== "inspect"
+    ) {
       return refuse("policy_stale", "agent policy changed; acknowledgement required");
     }
     if (!this.assembled.enabled(pluginId) && entry.def.cleanup !== true) {
@@ -3108,7 +3409,9 @@ export class PluginHost {
       for (const cap of entry.def.caps) {
         if (
           cap === "agents:delegate" &&
-          (fullName === "core.access.createAgentRun" || fullName === "core.access.renewAgentRun")
+          (fullName === "core.access.createRun" ||
+            fullName === "core.access.createChildRun" ||
+            fullName === "core.access.renewAgentRun")
         )
           continue;
         if (GOVERNED_CAPS.includes(cap))
@@ -3127,33 +3430,50 @@ export class PluginHost {
         .join("; ");
       return refuse("invalid_args", detail);
     }
-    const requirements: AuthorityRequirement[] = [];
-    for (const declared of entry.def.requirements ?? []) {
-      let value: unknown = parsed.data;
-      for (const segment of declared.target) {
-        value =
-          value !== null && typeof value === "object" && Object.hasOwn(value, segment)
-            ? Reflect.get(value, segment)
-            : undefined;
-      }
-      const ref = ManifoldRefSchema.safeParse(value);
-      if (!ref.success) return refuse("invalid_args", "invalid authority target");
-      if (!this.authService.allowsRef(auth, declared.cap, ref.data))
-        return refuse("forbidden", `${declared.cap} capability required at target`);
-      /*
-        THE GOVERNED LIST IS THE ENGINE'S VOCABULARY (ADR 0035). Every declared requirement is
-        discharged above, at its own target, through the one evaluator — that is the whole check
-        for a plugin's own capability, because governed admission binds a capability to an
-        artifact or resource REVISION and a namespaced name has none to bind. So a plugin cap
-        passes the door and never enters a job's admission evidence, where every entry has to be
-        re-dischargeable against consent at each deferred effect.
-      */
-      if (isEngineCap(declared.cap)) requirements.push({ cap: declared.cap, ref: ref.data });
-    }
     let admission: GovernedAdmissionDecision | null = null;
-    if (entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap))) {
-      admission = this.authService.admitGoverned(auth, pluginId, fullName, requirements);
-      if (!admission.allowed) return refuse("forbidden", "explicit version-bound consent required");
+    const admitInput = (
+      args: unknown,
+      preparedTargets?: readonly unknown[],
+    ): ActionAdmissionDenial | null => {
+      const declaredRequirements = entry.def.requirements ?? [];
+      if (preparedTargets !== undefined && preparedTargets.length !== declaredRequirements.length)
+        return new ActionAdmissionDenial("invalid_args", "invalid authority targets");
+      const requirements: AuthorityRequirement[] = [];
+      for (const [index, declared] of declaredRequirements.entries()) {
+        let value: unknown = args;
+        if (preparedTargets === undefined) {
+          for (const segment of declared.target) {
+            value =
+              value !== null && typeof value === "object" && Object.hasOwn(value, segment)
+                ? Reflect.get(value, segment)
+                : undefined;
+          }
+        } else {
+          value = preparedTargets[index];
+        }
+        const ref = ManifoldRefSchema.safeParse(value);
+        if (!ref.success)
+          return new ActionAdmissionDenial("invalid_args", "invalid authority target");
+        if (!this.authService.allowsRef(auth, declared.cap, ref.data))
+          return new ActionAdmissionDenial(
+            "forbidden",
+            `${declared.cap} capability required at target`,
+          );
+        // Only engine capabilities have native revision-bound admission evidence.
+        if (isEngineCap(declared.cap)) requirements.push({ cap: declared.cap, ref: ref.data });
+      }
+      if (entry.def.caps.some((cap) => GOVERNED_CAPS.includes(cap))) {
+        admission = this.authService.admitGoverned(auth, pluginId, fullName, requirements);
+        if (!admission.allowed)
+          return new ActionAdmissionDenial("forbidden", "explicit version-bound consent required");
+      }
+      return null;
+    };
+    if (!guestInput) {
+      const denial = admitInput(parsed.data);
+      if (denial !== null) return refuse(denial.rule, denial.message);
+      if (!nativeEffectAdmission && declarationDenial !== null)
+        return refuse(declarationDenial.rule, declarationDenial.message);
     }
     /*
       THE STAGING BUFFER, one per dispatch. `ctx.emit` appends here and nothing leaves until
@@ -3212,10 +3532,26 @@ export class PluginHost {
       throw error;
     }
     const database = lease.database;
+    let guestAdmitted = false;
+    const actionStack = [...(options.origin?.stack ?? []), pluginId];
     const ctx: ActionCtx = {
       traceId,
+      pluginId,
       credential: this.authService.credentialReference(auth),
-      admission,
+      get admission() {
+        return admission;
+      },
+      ...(guestInput
+        ? {
+            admitPrepared: (targets: readonly unknown[]): void => {
+              if (guestAdmitted) throw new IsolateDenial("unavailable", "isolate admitted twice");
+              const denial = admitInput(undefined, targets);
+              if (denial !== null) throw denial;
+              enforceDeclaration();
+              guestAdmitted = true;
+            },
+          }
+        : {}),
       jobs: jobContext(
         () => {
           if (this.jobs === null) throw new ServiceError("forbidden", "job service unavailable");
@@ -3224,6 +3560,7 @@ export class PluginHost {
         nativeAuth,
         pluginId,
         traceId,
+        nativeEffectAdmission ? enforceDeclaration : undefined,
       ),
       services: serviceContext(
         () => {
@@ -3251,10 +3588,7 @@ export class PluginHost {
         The stack is this trace's frames plus this plugin, so a callee already on it is a
         cycle and a chain that never repeats an id still stops at the depth bound.
       */
-      actions: this.actionCalls(pluginId, auth, session, traceId, [
-        ...(options.origin?.stack ?? []),
-        pluginId,
-      ]),
+      actions: this.actionCalls(pluginId, auth, session, traceId, actionStack),
       streams: {
         open: (kind, node) => {
           if (!streamAdmissionOpen) throw new Error("stream open requires an active action");
@@ -3267,7 +3601,15 @@ export class PluginHost {
             throw new Error("stream producer authority refused");
           const uri = formatManifoldUri(node);
           // Retain scalar attribution only, never handler-owned node/argument graphs.
-          const { actor, authority, door, containerId, session: streamSession } = attribution;
+          const {
+            actor,
+            authority,
+            door,
+            containerId,
+            runId,
+            credentialId,
+            session: streamSession,
+          } = attribution;
           const producer = this.streams.open(pluginId, kind, node, (phase, epoch) => {
             this.store.appendTrace({
               actor,
@@ -3275,6 +3617,8 @@ export class PluginHost {
               door,
               containerId,
               session: streamSession,
+              ...(runId === undefined ? {} : { runId }),
+              ...(credentialId === undefined ? {} : { credentialId }),
               ts: this.runtime.now(),
               payload: { streamLifecycle: phase, parentTrace: traceId, kind, epoch },
               outcome: "ok",
@@ -3308,14 +3652,103 @@ export class PluginHost {
       placement: this.placement,
       host: this,
       identity: {
+        listHarnesses: () =>
+          identityCall(() =>
+            ListHarnessesResultSchema.parse({
+              harnesses: [
+                {
+                  id: "external",
+                  title: "External",
+                  profileSchema: { type: "object" },
+                  sessionRef: "typed",
+                },
+                ...this.defs.flatMap((def) =>
+                  def.harness &&
+                  this.assembled.enabled(def.manifest.id) &&
+                  this.replacing !== def.manifest.id &&
+                  def.manifest.contributes.harness
+                    ? [def.manifest.contributes.harness]
+                    : [],
+                ),
+              ],
+            }),
+          ),
+        launchRun: (input) =>
+          identityCallAsync(() => this.launchHarnessRun(ctx, auth, input, session, actionStack)),
+        sendRunInput: (input) =>
+          identityCallAsync(async () => {
+            const { run, agent } = this.authService.authorizeRunInput(input.runId, auth);
+            const actor = this.authService.runHarnessActor(input.runId, auth);
+            await this.withHarness(
+              ctx,
+              actor,
+              agent.harness,
+              session,
+              actionStack,
+              (harness, bound) => harness.send(bound, run, input.input),
+            );
+            return {};
+          }),
+        listHarnessSessions: (id, target) =>
+          identityCallAsync(() =>
+            this.withHarness(ctx, auth, id, session, actionStack, async (harness, bound) => {
+              const sessions = await harness.sessions(bound, HarnessTargetSchema.parse(target));
+              return {
+                sessions: sessions.slice(0, 100).map((value) => {
+                  const ref = SessionRefSchema.parse(value);
+                  if (ref.harness !== id || ref.machineId !== target.machineId)
+                    throw new ServiceError("forbidden", "harness session destination mismatch");
+                  return ref;
+                }),
+                truncated: sessions.length > 100,
+              };
+            }),
+          ),
+        resolveHarnessSession: (ref) =>
+          identityCallAsync(async () => ({
+            session: await this.withHarness(
+              ctx,
+              auth,
+              ref.harness,
+              session,
+              actionStack,
+              async (harness, bound) => {
+                const session = await harness.resolveSession(bound, SessionRefSchema.parse(ref));
+                if (session === null) return null;
+                const resolved = SessionRefSchema.parse(session);
+                if (
+                  resolved.harness !== ref.harness ||
+                  resolved.machineId !== ref.machineId ||
+                  resolved.sessionId !== ref.sessionId
+                )
+                  throw new ServiceError("forbidden", "harness session reference mismatch");
+                return resolved;
+              },
+            ),
+          })),
         createPrincipal: (input) =>
           identityCall(() => this.authService.bootstrapPrincipal(input, auth)),
         mintToken: (input) => identityCall(() => this.authService.mintToken(input, auth)),
-        createAgentRun: (input) => identityCall(() => this.authService.createAgentRun(input, auth)),
+        registerAgent: (input) => identityCall(() => this.authService.registerAgent(input, auth)),
+        getAgent: (input) => identityCall(() => this.authService.getAgent(input, auth)),
+        listAgents: () => identityCall(() => this.authService.listAgents(auth)),
+        updateAgent: (input) => identityCall(() => this.authService.updateAgent(input, auth)),
+        disableAgent: (input) => identityCall(() => this.authService.disableAgent(input, auth)),
+        enableAgent: (input) => identityCall(() => this.authService.enableAgent(input, auth)),
+        retireAgent: (input) => identityCall(() => this.authService.retireAgent(input, auth)),
+        createRun: (input) =>
+          identityCall(() => this.authService.createRun(input, auth, enforceDeclaration)),
+        createChildRun: (input) =>
+          identityCall(() => this.authService.createChildRun(input, auth, enforceDeclaration)),
+        inspectRun: (input) => identityCall(() => this.authService.inspectRun(input, auth)),
+        listRuns: (input) => identityCall(() => this.authService.listRuns(input, auth)),
+        reportRunActivity: (input) =>
+          identityCall(() => this.authService.reportRunActivity(input, auth)),
         agentPolicyChallenge: () => identityCall(() => this.authService.agentPolicyChallenge(auth)),
         acknowledgeAgentPolicy: (input) =>
           identityCall(() => this.authService.acknowledgeAgentPolicy(input, auth)),
-        renewAgentRun: (input) => identityCall(() => this.authService.renewAgentRun(input, auth)),
+        renewAgentRun: (input) =>
+          identityCall(() => this.authService.renewAgentRun(input, auth, enforceDeclaration)),
         finishAgentRun: (input) => identityCall(() => this.authService.finishAgentRun(input, auth)),
         reloadAgentPolicy: () => identityCall(() => this.authService.reloadAgentPolicy(auth)),
         revokePrincipal: (principalId) =>
@@ -3364,11 +3797,16 @@ export class PluginHost {
         if (!opaque) targets.push(ref);
       },
     };
-    const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
     let produced: unknown;
     const admitted = async (): Promise<unknown> => {
       try {
-        return await invoke(ctx, parsed.data);
+        const handler = this.handlers.get(pluginId)?.[entry.def.name];
+        if (handler === undefined) throw new Error(`action "${fullName}" has no server handler`);
+        const invoke = handler as (ctx: ActionCtx, args: unknown) => Promise<unknown>;
+        const answer = await invoke(ctx, parsed.data);
+        if (guestInput && !guestAdmitted)
+          throw new IsolateDenial("unavailable", "isolate returned before admission");
+        return answer;
       } finally {
         lease.close();
       }
@@ -3378,14 +3816,9 @@ export class PluginHost {
     } catch (error) {
       streamAdmissionOpen = false;
       for (const producer of openedStreams) producer.close();
-      if (error instanceof IsolateDenial) {
-        /*
-          THE CHILD'S OWN RUNGS (ADR 0016 §6). An isolated handler grades `invalid_args`
-          itself — its zod schema lives where its code lives — and the supervisor answers
-          `unavailable` for a child that is not running or did not answer in time. Both arrive
-          as a throw from the proxy and are settled here as the rung they name, traced exactly
-          as an in-realm rung is; they are answers, never failures.
-        */
+      if (error instanceof IsolateDenial || error instanceof ActionAdmissionDenial) {
+        // Guest parsing, host post-parse admission, and native pre-effect declarations all
+        // settle the existing write-ahead trace as refusals, never as handler failures.
         this.store.settleTrace(traceId, error.rule, traceTargets(targets));
         return { ok: false, denial: { rule: error.rule, message: error.message } };
       }
@@ -3452,6 +3885,7 @@ export class PluginHost {
    * revokes outstanding logical leases; retained callbacks cannot reopen a retired file.
    */
   close(): void {
+    this.broker.clearRunLaunches();
     for (const database of this.databases.values()) database.close();
     this.databases.clear();
   }

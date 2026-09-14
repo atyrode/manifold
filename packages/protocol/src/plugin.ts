@@ -4,6 +4,8 @@ import { EventKindSchema } from "./events.ts";
 import { ContainerDisciplineSchema } from "./layout.ts";
 import { MAX_STREAM_DESCRIPTORS, StreamDescriptorSchema, streamVocabulary } from "./stream.ts";
 import { MachineHalfSchema } from "./jobs.ts";
+import { HarnessDefinitionSchema } from "./agents.ts";
+import { ManifoldRefSchema } from "./uri.ts";
 import {
   DEFAULT_ELEMENT_PLACEMENT_TRAITS,
   DisciplineDefSchema,
@@ -265,6 +267,10 @@ export const SectionDefSchema = z.strictObject({
   presentation: SectionPresentationSchema.optional(),
   cluster: LocalNameSchema.optional(),
   setting: LocalNameSchema.optional(),
+  /** A reference reveals its owning section without hard-coded plugin names in the shell. */
+  refKinds: z
+    .array(z.enum(ManifoldRefSchema.options.map((option) => option.shape.kind.value)))
+    .optional(),
 });
 export type SectionDef = z.infer<typeof SectionDefSchema>;
 
@@ -394,6 +400,7 @@ export type RouteDef = z.infer<typeof RouteDefSchema>;
  * {@link RouteDefSchema}).
  */
 const ContributesSchema = z.strictObject({
+  harness: z.lazy(() => HarnessDefinitionSchema).optional(),
   panels: z.array(PanelDefSchema).max(8).default([]),
   streams: z.lazy(() => z.array(StreamDescriptorSchema).max(MAX_STREAM_DESCRIPTORS)).optional(),
   /**
@@ -780,7 +787,13 @@ export const ActionRequirementSchema = z.strictObject({
 export type ActionRequirement = z.infer<typeof ActionRequirementSchema>;
 export const ActionRequirementsSchema = z.array(ActionRequirementSchema).min(1).max(64);
 export const ActionTracePolicySchema = z.enum(["redacted", "opaque"]);
-export const ActionRunAccessSchema = z.enum(["policy", "teardown", "delegate"]);
+export const ActionRunAccessSchema = z.enum([
+  "policy",
+  "teardown",
+  "delegate",
+  "inspect",
+  "runner",
+]);
 export type ActionRunAccess = z.infer<typeof ActionRunAccessSchema>;
 
 /** Only native job/resource/service APIs can discharge these at concrete targets. */
@@ -828,12 +841,14 @@ export const ActionSummarySchema = z.strictObject({
    */
   cleanup: z.boolean().optional(),
   /**
-   * A reserved core identity action's autonomous-run lifecycle exception. `policy` and
-   * `teardown` remain reachable while ordinary authority is suspended; `delegate` publishes
-   * target-relative authority that the identity mechanism re-evaluates against the requested
-   * child envelope. Assembly refuses this metadata outside `core.access`.
+   * A reserved core identity action's autonomous-run lifecycle exception. `policy`,
+   * `teardown` and `inspect` remain reachable while ordinary authority is suspended;
+   * `delegate` publishes target-relative authority that the identity mechanism re-evaluates
+   * against the requested child envelope. Assembly refuses this metadata outside `core.access`.
    */
   runAccess: ActionRunAccessSchema.optional(),
+  /** A declaration required from active autonomous callers, never authority or reasoning. */
+  agentJustification: z.literal("required").optional(),
   /**
    * The authority grade this door is written for. Published (defaulted, so an older reader
    * that never saw the field reads the conservative answer) because "may my container-scoped
@@ -1089,8 +1104,8 @@ export function rosterDisciplines(
  * Why a dispatch was refused. The ladder is MONOTONIC and evaluated in this order, so a
  * caller learns the FIRST thing wrong rather than a summary: the action must exist, its
  * plugin must be enabled, the caller must be allowed to reach the door at all, the caller
- * must hold every declared cap, the arguments must parse, and only then may the handler
- * itself refuse on state it alone can see (`refused`).
+ * must hold every declared cap, the arguments must parse, and any required autonomous
+ * declaration must be safe before the handler may refuse on state it alone can see (`refused`).
  *
  * `unavailable` is the LAST rung and the isolation runner's alone (ADR 0016 §6): the door
  * exists, its plugin is on, the caller is allowed and the arguments would have been graded —
@@ -1105,6 +1120,8 @@ export const ACTION_DENIAL_RULES = [
   "policy_stale",
   "forbidden",
   "invalid_args",
+  "justification_required",
+  "invalid_justification",
   "refused",
   "unavailable",
 ] as const;

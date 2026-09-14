@@ -6,6 +6,15 @@ import type {
   ServiceConfigurationRead,
   ServiceDescription,
 } from "@manifold/plugin";
+import type { ServerHarness } from "@manifold/plugin";
+export type {
+  ServerHarness,
+  Agent,
+  AgentRun,
+  HarnessTarget,
+  SessionRef,
+  TerminalRuntime,
+} from "@manifold/plugin";
 import {
   EventKindSchema,
   EventPayloadSchema,
@@ -98,7 +107,7 @@ const connectDescriptor = connect as unknown as (options: { readonly fd: number 
  *
  * Two rungs of the denial ladder are the child's (`ISOLATE_GUEST_DENIAL_RULES`): it parses
  * arguments against the action's own zod input, and its handler may refuse on domain grounds.
- * Every other rung is graded by the host before a dispatch ever reaches this process.
+ * The host grades authority and declarations after `prepared`, before admitting the handler.
  */
 
 // ---------------------------------------------------------------------------- the definition
@@ -129,6 +138,7 @@ export interface ServerActionDef<In = unknown, Out = unknown> {
   readonly cleanup?: boolean | undefined;
   /** Reserved core identity lifecycle metadata; host assembly refuses it outside `core.access`. */
   readonly runAccess?: ActionRunAccess | undefined;
+  readonly agentJustification?: ActionSummary["agentJustification"];
   readonly input: z.ZodType<In>;
   readonly result: z.ZodType<Out>;
 }
@@ -274,6 +284,7 @@ export interface GuestJobs {
   }): Promise<JobDeploymentDescription>;
   execute(args: GuestJobRequest): Promise<GuestJobStatus>;
   status(node: GuestJobNode): Promise<GuestJobStatus>;
+  runTerminal(runId: string): Promise<GuestJobNode>;
   listRuns(args: ListJobRunsArgs): Promise<ListJobRunsResult>;
   input(args: {
     node: GuestJobNode;
@@ -420,6 +431,7 @@ export interface ServerPluginDef {
   readonly handlers: Readonly<Record<string, ServerHandler>>;
   readonly lifecycle?: GuestLifecycle | undefined;
   readonly migrations?: readonly ServerMigration[] | undefined;
+  readonly harness?: ServerHarness<GuestCtx>;
 }
 
 // ---------------------------------------------------------------------------- the transport
@@ -801,6 +813,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     string,
     { readonly method: IsolateCtxMethod; resolve(value: unknown): void; reject(error: Error): void }
   >();
+  const admissions = new Map<string, (allowed: boolean) => void>();
   const actions = new Map(def.actions.map((action) => [action.name, action] as const));
   const migrations = new Map(
     (def.migrations ?? []).map((migration) => [migration.name, migration]),
@@ -999,6 +1012,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       ),
     execute: async (args) => (await call("jobs.execute", [args])) as GuestJobStatus,
     status: async (node) => (await call("jobs.status", [node])) as GuestJobStatus,
+    runTerminal: async (runId) =>
+      ManifoldRefSchema.options[10].parse(await call("jobs.runTerminal", [runId])),
     listRuns: async (args) =>
       ListJobRunsResultSchema.parse(
         await call("jobs.listRuns", [ListJobRunsArgsSchema.parse(args)]),
@@ -1257,6 +1272,9 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         ...(action.delegates === undefined ? {} : { delegates: [...action.delegates] }),
         ...(action.cleanup === undefined ? {} : { cleanup: action.cleanup }),
         ...(action.runAccess === undefined ? {} : { runAccess: action.runAccess }),
+        ...(action.agentJustification === undefined
+          ? {}
+          : { agentJustification: action.agentJustification }),
         scope: action.scope ?? "workspace",
         ...(action.requirements === undefined ? {} : { requirements: [...action.requirements] }),
         ...(action.trace === undefined ? {} : { trace: action.trace }),
@@ -1317,6 +1335,22 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       refuse("invalid_args", issueText(parsed.error));
       return;
     }
+    // Keep the real parsed value here: transforms/refinements run once, never on replay.
+    const admission = Promise.withResolvers<boolean>();
+    admissions.set(frame.id, admission.resolve);
+    const targets = (action.requirements ?? []).map((requirement) => {
+      let value: unknown = parsed.data;
+      for (const segment of requirement.target) {
+        value =
+          value !== null && typeof value === "object" && Object.hasOwn(value, segment)
+            ? Reflect.get(value, segment)
+            : undefined;
+      }
+      const target = ManifoldRefSchema.safeParse(value);
+      return target.success ? target.data : null;
+    });
+    post({ t: "prepared", id: frame.id, targets });
+    if (!(await admission.promise)) return;
     const requests = callsFor(frame.id);
     const staged: Emission[] = [];
     const ctx = dispatchCtx(requests.call, frame.ctx, staged);
@@ -1450,6 +1484,10 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       case "dispatch":
         void onDispatch(host);
         return;
+      case "admitted":
+        admissions.get(host.id)?.(host.allowed);
+        admissions.delete(host.id);
+        return;
       case "hook":
         void onHook(host);
         return;
@@ -1477,6 +1515,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         }
         observers.clear();
         producerCalls.close();
+        for (const resolve of admissions.values()) resolve(false);
+        admissions.clear();
         for (const waiting of pending.values()) waiting.reject(new Error("isolate shutting down"));
         pending.clear();
         transport.exit(0);

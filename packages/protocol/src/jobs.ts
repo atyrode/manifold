@@ -12,7 +12,7 @@ import { ServiceTunnelFrameSchema } from "./services.ts";
 import { JobResourceBindingsSchema, JobResourceInventorySchema } from "./job-resources.ts";
 
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = 34;
+export const JOB_OWNER_PROTOCOL_VERSION = 35;
 
 const id = z.string().min(1).max(128);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -358,7 +358,9 @@ export const JobRequestSchema = z.strictObject({
   traceId: id,
   requestDigest: hash,
   /** Native terminal admission only; never accepted by ordinary job execute input. */
-  terminal: z.strictObject({ terminalId: id, terminalHostId: id, containerId: id }).optional(),
+  terminal: z
+    .strictObject({ terminalId: id, terminalHostId: id, containerId: id, runId: id.optional() })
+    .optional(),
   /** Native durable-service admission only; no browser or worker can choose this origin. */
   service: z
     .strictObject({ serviceId: component, revision: component, policySha256: hash })
@@ -431,7 +433,11 @@ export const TerminalRuntimeSchema = JobRequestSchema.pick({
   installationRevision: true,
   artifactSha256: true,
   input: true,
-}).extend({ resourceBindingDigest: hash });
+}).extend({
+  resourceBindingDigest: hash,
+  /** Host-minted one-use admission reference, never execution or credential authority. */
+  launchBinding: id.optional(),
+});
 export type TerminalRuntime = z.infer<typeof TerminalRuntimeSchema>;
 export const JobPermitSchema = z.strictObject({
   permitId: id,
@@ -664,6 +670,14 @@ export const JobStartCommandSchema = z.strictObject({
   type: z.literal("start"),
   request: JobRequestSchema,
   permit: JobPermitSchema,
+  /** Private native launch carrier: excluded from the durable request, runtime and journal. */
+  privateEnv: z
+    .strictObject({
+      MANIFOLD_RUN_TOKEN: z.string().min(1).max(4096),
+      MANIFOLD_RUN_ID: id,
+      MANIFOLD_ORIGIN: z.url().max(4096),
+    })
+    .optional(),
 });
 export const JobCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({

@@ -9,6 +9,14 @@
  */
 export { defineAction, type ActionDef, type AnyActionDef } from "./action.ts";
 export type {
+  ServerHarness,
+  Agent,
+  AgentRun,
+  HarnessTarget,
+  SessionRef,
+  TerminalRuntime,
+} from "./harness.ts";
+export type {
   JobExecution,
   JobScheduleTiming,
   PublicJobSchedule,

@@ -14,6 +14,14 @@ export {
   IsolateSliceUnavailable,
   PluginDatabaseError,
 } from "./errors.ts";
+export type {
+  ServerHarness,
+  Agent,
+  AgentRun,
+  HarnessTarget,
+  SessionRef,
+  TerminalRuntime,
+} from "@manifold/plugin";
 export {
   ui,
   type BoxOptions,

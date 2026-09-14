@@ -13,7 +13,11 @@ import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
 import type { Socket } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
-import { MachineLocationSchema, MachineOperationSchema } from "@manifold/protocol";
+import {
+  MachineLocationSchema,
+  MachineOperationSchema,
+  JobStartCommandSchema,
+} from "@manifold/protocol";
 import {
   ownsWorkloadLoopbackConnection,
   ownsWorkloadLoopbackListener,
@@ -65,6 +69,12 @@ export interface LinuxJobSpec {
   /** Exact directory mount selected by the reviewed operation, not a caller path. */
   workingDirectory?: string;
   environment?: Readonly<Record<string, string>>;
+  /** Hub-only environment, never represented by argv or a durable job request. */
+  privateEnv?: {
+    MANIFOLD_RUN_TOKEN: string;
+    MANIFOLD_RUN_ID: string;
+    MANIFOLD_ORIGIN: string;
+  };
   outputs: readonly LinuxJobBind[];
   /** Dedicated, empty cgroup-v2 delegation with memory and pids enabled. */
   delegatedCgroup: HeldDirectory;
@@ -291,6 +301,8 @@ export function preflightLinuxJob(spec: LinuxJobSpec): number {
     refuse("invalid-limits");
   if (!MachineOperationSchema.shape.environment.safeParse(spec.environment).success)
     refuse("invalid-fixed-environment");
+  if (!JobStartCommandSchema.shape.privateEnv.safeParse(spec.privateEnv).success)
+    refuse("invalid-private-environment");
   if (spec.network !== "none" && spec.network !== "host") refuse("unsupported-network");
   if (
     spec.argv.length > 1024 ||
@@ -545,6 +557,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
   let seccompFd: number;
   try {
     namedOutputCapacity = preflightLinuxJob(spec);
+    if (spec.privateEnv && !spec.terminal) refuse("private-environment-requires-terminal");
     seccompFd = privateByteFile(jobSeccompFilter(spec.providesService === true));
   } catch (error) {
     throw observedStartRefusal(error);
@@ -600,7 +613,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     ...(spec.terminal ? [] : ["--new-session"]),
     "--cap-drop",
     "ALL",
-    "--clearenv",
+    ...(spec.privateEnv ? [] : ["--clearenv"]),
     "--block-fd",
     "4",
     "--info-fd",
@@ -693,7 +706,16 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     }
   });
   const inputFds: number[] = [];
+  let harnessControl: PrivateSocketPair | undefined;
   try {
+    if (spec.privateEnv && spec.terminal && spec.bidirectional) {
+      harnessControl = privateSocketPair();
+      const slot = stdio.length;
+      stdio.push(harnessControl.childFd);
+      args.push("--setenv", "MANIFOLD_HARNESS_CONTROL_FD", String(slot));
+      stdin = harnessControl.socket;
+      stdin.on("error", () => {});
+    }
     for (const file of spec.inputFiles ?? []) {
       // --ro-bind-fd resolves a host pathname and cannot mount an anonymous memfd.
       // Give --ro-bind-data its own offset-zero descriptor so repeated launches never
@@ -728,7 +750,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
           ...stdio.slice(3).map((fd) => (typeof fd === "number" ? fd : "ignore")),
         ],
         terminal: spec.terminal.pty,
-        env: {},
+        env: spec.privateEnv ?? {},
         cwd: "/",
       });
       child = proc;
@@ -750,6 +772,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     }
   } catch (error) {
     gate.destroy();
+    harnessControl?.socket.destroy();
     metadata.destroy();
     closeGroups(groups);
     throw observedStartRefusal(error);
@@ -757,6 +780,8 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     closeSync(control.childFd);
     closeSync(report.childFd);
     closeSync(seccompFd);
+    if (harnessControl) closeSync(harnessControl.childFd);
+    delete spec.privateEnv;
     for (const fd of inputFds) closeSync(fd);
   }
   // Avoid an unhandled rejection while the launch gate is being attached.

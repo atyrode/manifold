@@ -2,10 +2,12 @@ import type {
   AcknowledgeAgentPolicyRequest,
   AcknowledgeAgentPolicyResult,
   AgentPolicyChallenge,
+  AgentRequest,
   BootstrapPrincipalRequest,
   CreateGrantRequest,
-  CreateAgentRunRequest,
-  CreateAgentRunResult,
+  CreateChildRunRequest,
+  CreateRunRequest,
+  CreateRunResult,
   Dial,
   DialShareRequest,
   DialTicket,
@@ -14,20 +16,42 @@ import type {
   ListGrantsRequest,
   FinishAgentRunRequest,
   FinishAgentRunResult,
+  GetAgentResult,
+  HarnessTarget,
+  InspectRunRequest,
+  InspectRunResult,
+  LaunchRunRequest,
+  LaunchRunResult,
+  ListAgentsResult,
+  ListHarnessesResult,
+  ListHarnessSessionsRequest,
+  ListHarnessSessionsResult,
+  ListRunsRequest,
+  ListRunsResult,
   MintShareRequest,
   MintTokenRequest,
   OpenDialRequest,
   PrincipalCredentials,
+  RegisterAgentRequest,
+  RegisterAgentResult,
+  ReportRunActivityRequest,
+  ReportRunActivityResult,
+  ResolveHarnessSessionRequest,
+  ResolveHarnessSessionResult,
   RevokeGrantRequest,
   RevokeResult,
   ReloadAgentPolicyResult,
   RenewAgentRunRequest,
   RenewAgentRunResult,
   RevokeShareRequest,
+  SendRunInputRequest,
+  SendRunInputResult,
+  SessionRef,
   Share,
   ShareGrant,
   ShareInventory,
   TokenGrant,
+  UpdateAgentRequest,
 } from "@manifold/protocol";
 
 /**
@@ -51,7 +75,28 @@ interface AccessCtx {
   readonly identity: {
     createPrincipal(input: BootstrapPrincipalRequest): IdentityAnswer<TokenGrant>;
     mintToken(input: MintTokenRequest): IdentityAnswer<TokenGrant>;
-    createAgentRun(input: CreateAgentRunRequest): IdentityAnswer<CreateAgentRunResult>;
+    registerAgent(input: RegisterAgentRequest): IdentityAnswer<RegisterAgentResult>;
+    listAgents(): IdentityAnswer<ListAgentsResult>;
+    getAgent(input: AgentRequest): IdentityAnswer<GetAgentResult>;
+    updateAgent(input: UpdateAgentRequest): IdentityAnswer<GetAgentResult>;
+    disableAgent(input: AgentRequest): IdentityAnswer<GetAgentResult>;
+    enableAgent(input: AgentRequest): IdentityAnswer<GetAgentResult>;
+    retireAgent(input: AgentRequest): IdentityAnswer<GetAgentResult>;
+    createRun(input: CreateRunRequest): IdentityAnswer<CreateRunResult>;
+    createChildRun(input: CreateChildRunRequest): IdentityAnswer<CreateRunResult>;
+    launchRun(input: LaunchRunRequest): Promise<IdentityAnswer<LaunchRunResult>>;
+    listHarnesses(): IdentityAnswer<ListHarnessesResult>;
+    listHarnessSessions(
+      harness: string,
+      target: HarnessTarget,
+    ): Promise<IdentityAnswer<ListHarnessSessionsResult>>;
+    resolveHarnessSession(
+      session: SessionRef,
+    ): Promise<IdentityAnswer<ResolveHarnessSessionResult>>;
+    sendRunInput(input: SendRunInputRequest): Promise<IdentityAnswer<SendRunInputResult>>;
+    reportRunActivity(input: ReportRunActivityRequest): IdentityAnswer<ReportRunActivityResult>;
+    inspectRun(input: InspectRunRequest): IdentityAnswer<InspectRunResult>;
+    listRuns(input: ListRunsRequest): IdentityAnswer<ListRunsResult>;
     agentPolicyChallenge(): IdentityAnswer<AgentPolicyChallenge>;
     acknowledgeAgentPolicy(
       input: AcknowledgeAgentPolicyRequest,
@@ -64,8 +109,8 @@ interface AccessCtx {
       The credential READ (ADR 0019 §3), on the identity door because a credential is what
       this door hands out: the list and the revoke it aims are the same concept read and
       written, and a `credentials` surface beside `identity` would say otherwise. The
-      mechanism narrows the answer to what THIS caller could revoke, so the handler below has
-      nothing to filter and deliberately does not try.
+      mechanism narrows the answer to this caller's revocable identities. Run-chain readers
+      use listRuns instead; they never inherit this credential-reference inventory.
     */
     listCredentials(): IdentityAnswer<readonly PrincipalCredentials[]>;
     /*
@@ -104,15 +149,11 @@ type Outcome<T> = { refused: string } | T;
 /**
  * These are thin action bodies over the identity mechanism.
  *
- * Every refusal the mechanism can produce is relayed VERBATIM — "root capability required",
- * "cannot mint capability terminals:write", "cannot widen container scope", "principal not found",
- * "cannot revoke another principal". The wording was the route's 403/404 body and it is the
- * part a human reads, so it travels unchanged; what changed is the envelope, exactly as it
- * did when the terminal routes' 404 became a refusal (`terminal not found`).
- *
- * Nothing here logs, and nothing here formats a secret into a message. The raw token exists
- * in one place — the result handed to the caller who asked for it — and the dispatcher logs
- * an action's NAME, principal and outcome, never its arguments or its result (docs/CONTRACTS.md §Data and credential boundaries).
+ * Expected refusals retain the identity mechanism's message, including named Agent admission
+ * identifiers, under the dispatcher's generic refused rung. Authorization is never re-derived
+ * here. Secrets are returned only when the bound identity door permits them; browser-created
+ * Runs carry no credential. Context, profile, inspector requests and harness input use opaque
+ * action traces, and these handlers never log arguments or results.
  */
 export const accessHandlers = {
   async createPrincipal(
@@ -134,12 +175,113 @@ export const accessHandlers = {
     return minted.ok ? minted.value : { refused: minted.message };
   },
 
-  async createAgentRun(
+  async registerAgent(
     ctx: AccessCtx,
-    args: CreateAgentRunRequest,
-  ): Promise<Outcome<CreateAgentRunResult>> {
-    const created = ctx.identity.createAgentRun(args);
+    args: RegisterAgentRequest,
+  ): Promise<Outcome<RegisterAgentResult>> {
+    const registered = ctx.identity.registerAgent(args);
+    return registered.ok ? registered.value : { refused: registered.message };
+  },
+
+  async listAgents(
+    ctx: AccessCtx,
+    _args: Record<string, never>,
+  ): Promise<Outcome<ListAgentsResult>> {
+    const listed = ctx.identity.listAgents();
+    return listed.ok ? listed.value : { refused: listed.message };
+  },
+
+  async getAgent(ctx: AccessCtx, args: AgentRequest): Promise<Outcome<GetAgentResult>> {
+    const agent = ctx.identity.getAgent(args);
+    return agent.ok ? agent.value : { refused: agent.message };
+  },
+
+  async updateAgent(ctx: AccessCtx, args: UpdateAgentRequest): Promise<Outcome<GetAgentResult>> {
+    const updated = ctx.identity.updateAgent(args);
+    return updated.ok ? updated.value : { refused: updated.message };
+  },
+
+  async disableAgent(ctx: AccessCtx, args: AgentRequest): Promise<Outcome<GetAgentResult>> {
+    const disabled = ctx.identity.disableAgent(args);
+    return disabled.ok ? disabled.value : { refused: disabled.message };
+  },
+
+  async enableAgent(ctx: AccessCtx, args: AgentRequest): Promise<Outcome<GetAgentResult>> {
+    const enabled = ctx.identity.enableAgent(args);
+    return enabled.ok ? enabled.value : { refused: enabled.message };
+  },
+
+  async retireAgent(ctx: AccessCtx, args: AgentRequest): Promise<Outcome<GetAgentResult>> {
+    const retired = ctx.identity.retireAgent(args);
+    return retired.ok ? retired.value : { refused: retired.message };
+  },
+
+  async createRun(ctx: AccessCtx, args: CreateRunRequest): Promise<Outcome<CreateRunResult>> {
+    const created = ctx.identity.createRun(args);
     return created.ok ? created.value : { refused: created.message };
+  },
+
+  async createChildRun(
+    ctx: AccessCtx,
+    args: CreateChildRunRequest,
+  ): Promise<Outcome<CreateRunResult>> {
+    const created = ctx.identity.createChildRun(args);
+    return created.ok ? created.value : { refused: created.message };
+  },
+
+  async launchRun(ctx: AccessCtx, args: LaunchRunRequest): Promise<Outcome<LaunchRunResult>> {
+    const launched = await ctx.identity.launchRun(args);
+    return launched.ok ? launched.value : { refused: launched.message };
+  },
+
+  async listHarnesses(
+    ctx: AccessCtx,
+    _args: Record<string, never>,
+  ): Promise<Outcome<ListHarnessesResult>> {
+    const listed = ctx.identity.listHarnesses();
+    return listed.ok ? listed.value : { refused: listed.message };
+  },
+
+  async listHarnessSessions(
+    ctx: AccessCtx,
+    args: ListHarnessSessionsRequest,
+  ): Promise<Outcome<ListHarnessSessionsResult>> {
+    const listed = await ctx.identity.listHarnessSessions(args.harness, args.target);
+    return listed.ok ? listed.value : { refused: listed.message };
+  },
+
+  async resolveHarnessSession(
+    ctx: AccessCtx,
+    args: ResolveHarnessSessionRequest,
+  ): Promise<Outcome<ResolveHarnessSessionResult>> {
+    const resolved = await ctx.identity.resolveHarnessSession(args.session);
+    return resolved.ok ? resolved.value : { refused: resolved.message };
+  },
+
+  async sendRunInput(
+    ctx: AccessCtx,
+    args: SendRunInputRequest,
+  ): Promise<Outcome<SendRunInputResult>> {
+    const sent = await ctx.identity.sendRunInput(args);
+    return sent.ok ? sent.value : { refused: sent.message };
+  },
+
+  async reportRunActivity(
+    ctx: AccessCtx,
+    args: ReportRunActivityRequest,
+  ): Promise<Outcome<ReportRunActivityResult>> {
+    const reported = ctx.identity.reportRunActivity(args);
+    return reported.ok ? reported.value : { refused: reported.message };
+  },
+
+  async inspectRun(ctx: AccessCtx, args: InspectRunRequest): Promise<Outcome<InspectRunResult>> {
+    const inspected = ctx.identity.inspectRun(args);
+    return inspected.ok ? inspected.value : { refused: inspected.message };
+  },
+
+  async listRuns(ctx: AccessCtx, args: ListRunsRequest): Promise<Outcome<ListRunsResult>> {
+    const inventory = ctx.identity.listRuns(args);
+    return inventory.ok ? inventory.value : { refused: inventory.message };
   },
 
   async getAgentPolicy(

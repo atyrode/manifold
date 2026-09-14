@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { createSocket } from "node:dgram";
 import {
   closeSync,
@@ -483,6 +484,66 @@ test.skipIf(!realLinux)(
           expect(result.empty).toBe(true);
           expect(result.usage.outputBytes).toBe(Buffer.byteLength(text));
           expect(terminal.alive).toBe(false);
+        } finally {
+          await handle.cancel();
+          handle.release();
+          terminal.dispose();
+        }
+      },
+    );
+  },
+);
+
+test.skipIf(!realLinux)(
+  "[real-linux] harness launch receives its private credential and keeps control input separate from the PTY",
+  async () => {
+    const token = randomBytes(32).toString("hex");
+    const digest = createHash("sha256").update(token).digest("hex");
+    await withLinux(
+      `actual=$(printf %s "$MANIFOLD_RUN_TOKEN" | /bin/busybox sha256sum); test "\${actual%% *}" = "${digest}" || exit 74; test "$MANIFOLD_RUN_ID" = bound-run && test "$MANIFOLD_ORIGIN" = https://hub.example || exit 75; unset MANIFOLD_RUN_TOKEN; test -n "$MANIFOLD_HARNESS_CONTROL_FD" || exit 76; read -r control <&"$MANIFOLD_HARNESS_CONTROL_FD"; test "$control" = private-control || exit 77; printf control-ok; read -r pty; test "$pty" = terminal-input || exit 78; printf pty-ok`,
+      async (spec) => {
+        let text = "";
+        let journalFrames = 0;
+        const controlled = Promise.withResolvers<void>();
+        const terminal = new PtyTerminal({
+          terminalId: "harness-private",
+          cols: 80,
+          rows: 24,
+          onOutput(output) {
+            text += Buffer.from(output.bytes).toString();
+            if (text.includes("control-ok")) controlled.resolve();
+          },
+          runtime: (pty) =>
+            startLinuxJob({
+              ...spec,
+              terminal: pty,
+              privateEnv: {
+                MANIFOLD_RUN_TOKEN: token,
+                MANIFOLD_RUN_ID: "bound-run",
+                MANIFOLD_ORIGIN: "https://hub.example",
+              },
+              onOutput: () => {
+                journalFrames++;
+              },
+            }),
+        });
+        const handle = await terminal.runtimeHandle!;
+        try {
+          await handle.input(Buffer.from("private-control\n"));
+          await Promise.race([
+            controlled.promise,
+            handle.result.then(() => {
+              throw new Error("harness exited before private control input");
+            }),
+          ]);
+          terminal.write("terminal-input\n");
+          const result = await handle.result;
+          expect(result.exitCode).toBe(0);
+          expect(result.empty).toBe(true);
+          expect(text).toContain("pty-ok");
+          expect(text.includes(token)).toBe(false);
+          expect(text).not.toContain("private-control");
+          expect(journalFrames).toBe(0);
         } finally {
           await handle.cancel();
           handle.release();

@@ -1,14 +1,18 @@
 import {
   ACTION_RUNNER_MAX_FRAMES,
   AcknowledgeAgentPolicyResultSchema,
+  ActionRunnerActivitySchema,
+  ActionRunnerBindSchema,
   ActionRunnerRequestSchema,
   ActionRunnerResponseSchema,
   AgentPolicyChallengeSchema,
-  CreateAgentRunResultSchema,
+  CreateRunCredentialResultSchema,
   FinishAgentRunResultSchema,
+  InspectRunResultSchema,
   MANIFOLD_ROOT_URI,
   RenewAgentRunResultSchema,
   type ActionProtocol,
+  type ActionRunnerBind,
   type ActionRunnerRequest,
   type ActionRunnerResponse,
   type AgentPolicyChallenge,
@@ -36,7 +40,7 @@ export class ActionRunnerError extends Error {
 }
 
 interface OwnedRun {
-  run: AgentRun;
+  run: Pick<AgentRun, "id" | "agentId" | "parentRunId" | "target" | "expiresAt">;
   token: string;
   policy: AgentPolicyChallenge | null;
   acknowledged: boolean;
@@ -44,7 +48,10 @@ interface OwnedRun {
 }
 
 const LIFECYCLE = {
-  create: "core.access.createAgentRun",
+  create: "core.access.createRun",
+  child: "core.access.createChildRun",
+  inspect: "core.access.inspectRun",
+  activity: "core.access.reportRunActivity",
   policy: "core.access.getAgentPolicy",
   ack: "core.access.acknowledgeAgentPolicy",
   renew: "core.access.renewAgentRun",
@@ -54,7 +61,8 @@ const LIFECYCLE = {
 /** The sole sequence executor. No bearer-bearing value is returned by its public methods. */
 export class ActionRunner {
   readonly #origin: string;
-  readonly #sponsorToken: string;
+  #launcherToken: string;
+  readonly #binding: ActionRunnerBind;
   readonly #emit: (frame: ActionRunnerResponse) => void;
   readonly #runs = new Map<string, OwnedRun>();
   readonly #ids = new Set<string>();
@@ -62,6 +70,7 @@ export class ActionRunner {
   #protocol: ActionProtocol | null = null;
   #root: OwnedRun | null = null;
   #admissionUncertain = false;
+  #activityFrames = 0;
   #closed = false;
   #cleanupConfirmed = false;
   #terminalOutcome: AgentRunTerminalOutcome | null = null;
@@ -69,7 +78,8 @@ export class ActionRunner {
 
   constructor(options: {
     origin: string;
-    sponsorToken: string;
+    token: string;
+    bind: ActionRunnerBind;
     emit: (frame: ActionRunnerResponse) => void;
   }) {
     let url: URL;
@@ -85,12 +95,16 @@ export class ActionRunner {
       url.search !== "" ||
       url.hash !== "" ||
       url.pathname !== "/" ||
-      !/^[a-f0-9]{64}$/i.test(options.sponsorToken)
+      !/^[a-f0-9]{64}$/i.test(options.token)
     )
       throw new ActionRunnerError("credential_input");
     this.#origin = url.origin;
-    this.#sponsorToken = options.sponsorToken;
-    this.#secrets.add(options.sponsorToken);
+    this.#launcherToken = options.token;
+    this.#secrets.add(options.token);
+    const binding = ActionRunnerBindSchema.safeParse(options.bind);
+    if (!binding.success) throw new ActionRunnerError("invalid_frame");
+    this.#checkInput(binding.data);
+    this.#binding = binding.data;
     this.#emit = options.emit;
   }
 
@@ -116,7 +130,7 @@ export class ActionRunner {
     } else if (value !== null && typeof value === "object") {
       for (const [key, child] of Object.entries(value)) {
         if (
-          /^(?:token|bearer|password|secret|credentials?|authorization|cookies?|privatekey|ownerkey|apikey|accesstoken|refreshtoken|sponsortoken)$/i.test(
+          /^(?:token|bearer|password|secret|credentials?|authorization|cookies?|privatekey|ownerkey|apikey|accesstoken|refreshtoken|sponsortoken|runnertoken|runtoken|manifoldrunnertoken|manifoldruntoken)$/i.test(
             key.replace(/[_-]/g, ""),
           )
         ) {
@@ -141,7 +155,7 @@ export class ActionRunner {
   #options(run?: OwnedRun): ActionHttpOptions {
     return {
       origin: this.#origin,
-      token: run?.token ?? this.#sponsorToken,
+      token: run?.token ?? this.#launcherToken,
       timeoutMs: 30_000,
       maxResponseBytes: 16 * 1_048_576,
     };
@@ -154,13 +168,13 @@ export class ActionRunner {
   }
 
   #sponsor(run: OwnedRun): OwnedRun | undefined {
-    // The owned root may itself be a server child of an external accountable launcher.
-    if (run === this.#root) return undefined;
+    // An adopted root refreshes its own bearer; Agent-mode roots retain the scoped runner.
+    if (run === this.#root) return "runId" in this.#binding ? run : undefined;
     if (run.run.parentRunId === null) throw new ActionRunnerError("invalid_state");
     return this.#owned(run.run.parentRunId);
   }
 
-  async #discover(id: string, run?: OwnedRun): Promise<ActionProtocol> {
+  async #discover(id: string | null, run?: OwnedRun): Promise<ActionProtocol> {
     this.#protocol = await discoverActions(this.#options(run));
     this.#send({ type: "discovery", id, runId: run?.run.id ?? null, ...this.#protocol });
     return this.#protocol;
@@ -216,7 +230,7 @@ export class ActionRunner {
     });
   }
 
-  async #policy(id: string, run: OwnedRun): Promise<void> {
+  async #policy(id: string | null, run: OwnedRun): Promise<void> {
     const invocation = await this.#call(run, LIFECYCLE.policy, {});
     this.#result(id, run, LIFECYCLE.policy, run.run.target, invocation);
     if (!invocation.outcome.ok) throw new ActionRunnerError("invalid_state", invocation.traceId);
@@ -244,55 +258,111 @@ export class ActionRunner {
     });
   }
 
+  #retain(run: OwnedRun["run"], token: string): OwnedRun {
+    const owned: OwnedRun = { run, token, policy: null, acknowledged: false, finished: false };
+    this.#secrets.add(token);
+    this.#runs.set(run.id, owned);
+    return owned;
+  }
+
+  /** Admission is launcher-owned and must finish before either input pipe is read. */
+  async bind(): Promise<void> {
+    if (this.#closed || this.#protocol !== null) throw new ActionRunnerError("invalid_state");
+    this.#admissionUncertain = "runId" in this.#binding;
+    const protocol = await this.#discover(null);
+    for (const door of Object.values(LIFECYCLE)) {
+      if (!protocol.actions.some((action) => action.name === door))
+        throw new ActionRunnerError("unknown_action");
+    }
+    if ("runId" in this.#binding) {
+      this.#admissionUncertain = true;
+      const invocation = await this.#call(
+        undefined,
+        LIFECYCLE.inspect,
+        { runId: this.#binding.runId },
+        undefined,
+        MANIFOLD_ROOT_URI,
+        this.#binding.runId,
+      );
+      if (!invocation.outcome.ok) {
+        this.#result(null, null, LIFECYCLE.inspect, MANIFOLD_ROOT_URI, invocation);
+        throw new ActionRunnerError("invalid_state", invocation.traceId);
+      }
+      const parsed = InspectRunResultSchema.safeParse(invocation.outcome.result);
+      if (
+        !parsed.success ||
+        parsed.data.availability !== "available" ||
+        parsed.data.run.id !== this.#binding.runId
+      )
+        throw new ActionRunnerError("invalid_response", invocation.traceId);
+      this.#root = this.#retain(parsed.data.run, this.#launcherToken);
+      this.#admissionUncertain = false;
+      this.#result(null, this.#root, LIFECYCLE.inspect, this.#root.run.target, invocation);
+      await this.#policy(null, this.#root);
+      return;
+    }
+    await this.#create(null, this.#binding);
+  }
+
   async #create(
-    frame: Extract<ActionRunnerRequest, { type: "start" | "child" }>,
+    id: string | null,
+    declaration:
+      | Exclude<ActionRunnerBind, { runId: string }>
+      | Extract<ActionRunnerRequest, { type: "child" }>["declaration"],
     parent?: OwnedRun,
+    justification?: string,
   ): Promise<void> {
     if (parent !== undefined && !parent.acknowledged) throw new ActionRunnerError("invalid_state");
     this.#admissionUncertain = parent === undefined;
+    const door = parent === undefined ? LIFECYCLE.create : LIFECYCLE.child;
+    const target =
+      "target" in declaration && typeof declaration.target === "string"
+        ? declaration.target
+        : (parent?.run.target ?? MANIFOLD_ROOT_URI);
     const invocation = await this.#call(
       parent,
-      LIFECYCLE.create,
-      frame.declaration,
-      frame.justification,
-      frame.declaration.target,
+      door,
+      parent === undefined ? declaration : { ...declaration, runId: parent.run.id },
+      justification,
+      target,
     );
     if (!invocation.outcome.ok) {
       this.#admissionUncertain = false;
-      this.#result(
-        frame.id,
-        parent ?? null,
-        LIFECYCLE.create,
-        frame.declaration.target,
-        invocation,
-      );
+      this.#result(id, parent ?? null, door, target, invocation);
       if (parent === undefined) await this.close("failed");
       else if (
         invocation.outcome.denial.rule === "policy_stale" ||
         invocation.outcome.denial.rule === "policy_required"
       )
-        await this.#policy(frame.id, parent);
+        await this.#policy(id, parent);
       return;
     }
-    const parsed = CreateAgentRunResultSchema.safeParse(invocation.outcome.result);
+    const parsed = CreateRunCredentialResultSchema.safeParse(invocation.outcome.result);
     if (!parsed.success) throw new ActionRunnerError("invalid_response", invocation.traceId);
-    const owned: OwnedRun = {
-      run: parsed.data.run,
-      token: parsed.data.credential.token,
-      policy: null,
-      acknowledged: false,
-      finished: false,
-    };
-    this.#secrets.add(owned.token);
-    this.#runs.set(owned.run.id, owned);
+    const owned = this.#retain(parsed.data.run, parsed.data.credential.token);
     if (parent === undefined) {
       this.#root = owned;
       this.#admissionUncertain = false;
     }
-    this.#result(frame.id, owned, LIFECYCLE.create, owned.run.target, invocation, {
-      expiresAt: owned.run.expiresAt,
-    });
-    await this.#policy(frame.id, owned);
+    const expectedAgent =
+      parent?.run.agentId ?? ("agentId" in this.#binding ? this.#binding.agentId : undefined);
+    if (owned.run.agentId !== expectedAgent || owned.run.parentRunId !== (parent?.run.id ?? null))
+      throw new ActionRunnerError("invalid_response", invocation.traceId);
+    this.#result(id, owned, door, owned.run.target, invocation, { expiresAt: owned.run.expiresAt });
+    await this.#policy(id, owned);
+  }
+
+  /** Only a trusted harness calls this API or writes the separate inherited activity pipe. */
+  async reportActivity(input: unknown): Promise<void> {
+    if (this.#closed || this.#root === null) throw new ActionRunnerError("invalid_state");
+    const parsed = ActionRunnerActivitySchema.safeParse(input);
+    if (!parsed.success) throw new ActionRunnerError("invalid_frame");
+    this.#checkInput(parsed.data);
+    if (++this.#activityFrames > ACTION_RUNNER_MAX_FRAMES)
+      throw new ActionRunnerError("limit_exceeded");
+    const run = this.#owned(parsed.data.runId);
+    const invocation = await this.#call(run, LIFECYCLE.activity, parsed.data);
+    this.#result(null, run, LIFECYCLE.activity, run.run.target, invocation);
   }
 
   /** Sequential frames only. A host must close on any thrown error (runActionStdio does). */
@@ -306,17 +376,6 @@ export class ActionRunner {
     if (this.#ids.has(frame.id)) throw new ActionRunnerError("invalid_frame");
     if (this.#ids.size >= ACTION_RUNNER_MAX_FRAMES) throw new ActionRunnerError("limit_exceeded");
     this.#ids.add(frame.id);
-    if (frame.type === "start") {
-      if (this.#root !== null || this.#protocol !== null)
-        throw new ActionRunnerError("invalid_state");
-      const protocol = await this.#discover(frame.id);
-      for (const door of Object.values(LIFECYCLE)) {
-        if (!protocol.actions.some((action) => action.name === door))
-          throw new ActionRunnerError("unknown_action");
-      }
-      await this.#create(frame);
-      return;
-    }
     const run = this.#owned(frame.runId);
     switch (frame.type) {
       case "discover":
@@ -355,7 +414,7 @@ export class ActionRunner {
         return;
       }
       case "child":
-        await this.#create(frame, run);
+        await this.#create(frame.id, frame.declaration, run, frame.justification);
         return;
       case "renew": {
         if (!run.acknowledged) throw new ActionRunnerError("invalid_state");
@@ -377,6 +436,7 @@ export class ActionRunner {
           run.run = result.data.run;
           run.token = result.data.credential.token;
           this.#secrets.add(run.token);
+          if (run === this.#root && "runId" in this.#binding) this.#launcherToken = run.token;
         }
         this.#result(frame.id, run, LIFECYCLE.renew, run.run.target, invocation, {
           expiresAt: run.run.expiresAt,
@@ -472,12 +532,39 @@ export class ActionRunner {
     });
   }
 
-  /** Teardown uses the retained direct sponsor, including when the run bearer has expired. */
+  /** Agent-mode teardown retains its runner credential even after the run bearer expires. */
   async close(outcome: AgentRunTerminalOutcome): Promise<boolean> {
     if (this.#closed)
       return this.#cleanupConfirmed || (this.#root === null && !this.#admissionUncertain);
-    let failed = this.#admissionUncertain;
+    let failed = this.#root === null && this.#admissionUncertain;
     try {
+      if (this.#root === null && "runId" in this.#binding) {
+        // Adoption already knows the run handle, even when inspection loses its response.
+        const invocation = await this.#call(
+          undefined,
+          LIFECYCLE.finish,
+          { runId: this.#binding.runId, outcome },
+          undefined,
+          MANIFOLD_ROOT_URI,
+          this.#binding.runId,
+        );
+        const result = invocation.outcome.ok
+          ? FinishAgentRunResultSchema.safeParse(invocation.outcome.result)
+          : null;
+        if (
+          result?.success !== true ||
+          result.data.run.id !== this.#binding.runId ||
+          result.data.run.state === "cleanup_failed" ||
+          result.data.run.cleanup.finishedAt === undefined
+        )
+          throw new ActionRunnerError("cleanup_failed", invocation.traceId);
+        this.#root = this.#retain(result.data.run, this.#launcherToken);
+        this.#root.finished = true;
+        this.#root.token = "";
+        this.#cleanupConfirmed = true;
+        failed = false;
+        this.#result(null, this.#root, LIFECYCLE.finish, this.#root.run.target, invocation);
+      }
       if (this.#root !== null && !this.#root.finished)
         await this.#finish(null, this.#root, outcome);
     } catch (error) {
@@ -491,6 +578,7 @@ export class ActionRunner {
         outcome,
         cleanup: failed ? "failed" : this.#cleanupConfirmed ? "confirmed" : "not_started",
       });
+      this.#launcherToken = "";
     }
     return !failed;
   }

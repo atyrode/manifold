@@ -1508,8 +1508,8 @@ export class MachineJobOwner {
       return;
     }
     if (
-      job.request.terminal ||
       job.result.state !== "started" ||
+      (job.request.terminal !== undefined && job.request.terminal.runId === undefined) ||
       !job.handle ||
       job.inputEnded ||
       job.inputBusy ||
@@ -1822,17 +1822,22 @@ export class MachineJobOwner {
     terminalHostId: string,
     launch: (spec: LinuxJobSpec) => Promise<LinuxJobHandle>,
   ): Promise<void> {
-    const binding = command.request.terminal;
-    if (
-      !this.ready ||
-      !binding ||
-      binding.terminalId !== terminalId ||
-      binding.terminalHostId !== terminalHostId ||
-      terminalHostId !== this.terminalHostId ||
-      command.request.parent
-    )
-      throw new Error("terminal_binding_refused");
-    await this.start(command, launch);
+    try {
+      const binding = command.request.terminal;
+      if (
+        !this.ready ||
+        !binding ||
+        binding.terminalId !== terminalId ||
+        binding.terminalHostId !== terminalHostId ||
+        terminalHostId !== this.terminalHostId ||
+        command.request.parent ||
+        binding.runId !== command.privateEnv?.MANIFOLD_RUN_ID
+      )
+        throw new Error("terminal_binding_refused");
+      await this.start(command, launch);
+    } finally {
+      delete command.privateEnv;
+    }
   }
 
   /** Signature/identity authentication is independent of admission freshness. Old permits
@@ -1936,6 +1941,7 @@ export class MachineJobOwner {
       if (!this.jobs.has(command.request.jobId)) this.rejectUnadmitted(command);
       throw error;
     } finally {
+      delete command.privateEnv;
       this.pendingStarts.delete(command.request.jobId);
       pending.resolve();
     }
@@ -1967,6 +1973,8 @@ export class MachineJobOwner {
       this.permits.has(permit.permitId)
     )
       throw new Error("start_permit_refused");
+    if (command.privateEnv && !terminalLaunch)
+      throw new Error("private_environment_requires_terminal_host");
     if (Boolean(request.terminal) !== Boolean(terminalLaunch))
       throw new Error("terminal_host_required");
     const installation = this.installs.get(
@@ -2274,6 +2282,7 @@ export class MachineJobOwner {
           ? { persistentService: true as const, retirementSignal: job.retirement.signal }
           : {}),
         ...(operation.environment ? { environment: operation.environment } : {}),
+        ...(command.privateEnv ? { privateEnv: command.privateEnv } : {}),
         network: operation.network,
         providesService: operation.providesService === true,
         bidirectional: operation.stdin,
@@ -2306,7 +2315,13 @@ export class MachineJobOwner {
       const changed = this.operationUnavailable(installation, operation);
       if (changed) throw new Error(changed);
       spawnAttempted = true;
-      job.handle = await (terminalLaunch ? terminalLaunch(spec) : startLinuxJob(spec));
+      try {
+        job.handle = await (terminalLaunch ? terminalLaunch(spec) : startLinuxJob(spec));
+      } finally {
+        // A native workload inherits the secret once; retained job/spec graphs never own it.
+        delete spec.privateEnv;
+        delete command.privateEnv;
+      }
       job.resolveLaunched();
       job.context.releaseChildFd();
       job.result = { ...job.result, state: "started", startedAt: Date.now() };

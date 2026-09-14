@@ -378,6 +378,7 @@ export function buildBrowserAssembly(
         // Carried verbatim for the same reason, and absent means "unconditional": the rule it
         // feeds is applied once, below, where this principal's values are known.
         ...(section.setting === undefined ? {} : { setting: section.setting }),
+        ...(section.refKinds === undefined ? {} : { refKinds: section.refKinds }),
         /*
           RESOLVED here, exactly as `assembleRoster` resolves it server-side: a manifest that
           declares nothing yields the default, so no reader downstream has to know what the
@@ -1343,11 +1344,9 @@ export function HostServicesGate({
    * THREE ANSWERS, and the middle one is the deep-link mechanism's inbound half:
    *
    * - a CONTAINER, or something inside one, is a browser path — go there;
-   * - a PLUGIN is shown by a surface INSIDE the workspace rather than by a route of its own,
-   *   so the shell stays exactly where it is and republishes the reference in the address
-   *   (`?ref=`) for whichever composed surface answers that form. The current path is kept
-   *   deliberately: following a link to a plugin must not evict a reader from the room they
-   *   are standing in;
+   * - a PLUGIN or a reference claimed by a declared SECTION is shown inside the workspace.
+   *   Keep the current path and republish the reference (`?ref=`) for its owning surface;
+   *   opening a record must not evict a reader from the room they are standing in;
    * - anything else goes to the deep-link route, whose job is to resolve or to name what it
    *   could not — a reference this shell cannot show is never silently swallowed.
    */
@@ -1363,14 +1362,17 @@ export function HostServicesGate({
         navigate(`/p/${encodeURIComponent(ref.containerId)}`);
         return;
       }
-      if (ref.kind === "plugin") {
+      if (
+        ref.kind === "plugin" ||
+        assembly.sections.some((section) => section.refKinds?.includes(ref.kind))
+      ) {
         const here = containerId === null ? "/" : `/p/${encodeURIComponent(containerId)}`;
         navigate(`${here}?${REQUESTED_REF_PARAM}=${encodeURIComponent(uri)}`);
         return;
       }
       navigate(`/uri/${encodeURIComponent(uri)}`);
     },
-    [containerId, navigate],
+    [assembly.sections, containerId, navigate],
   );
 
   /**
@@ -1385,7 +1387,7 @@ export function HostServicesGate({
   const composedSections = useMemo<readonly ComposedSection[]>(
     () =>
       assembly.sections.map(
-        ({ id, plugin, title, order, presentation, cluster, setting, enabled }) => ({
+        ({ id, plugin, title, order, presentation, cluster, setting, refKinds, enabled }) => ({
           id,
           plugin,
           title,
@@ -1398,6 +1400,7 @@ export function HostServicesGate({
           // this projection SURVIVED the rule; carrying the reference lets chrome say why one
           // is a preference without asking a second registry.
           ...(setting === undefined ? {} : { setting }),
+          ...(refKinds === undefined ? {} : { refKinds }),
           enabled,
         }),
       ),

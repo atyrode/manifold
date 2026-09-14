@@ -1,5 +1,5 @@
-/** Bumped only on breaking wire changes; server rejects mismatched joins (close 4409). */
-export const PROTOCOL_VERSION = 31;
+/** Wire revision; session joins require the current version (close 4409 otherwise). */
+export const PROTOCOL_VERSION = 32;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -318,8 +318,18 @@ export const PROTOCOL_VERSION = 31;
  * instead of resetting. The instance wire mentions no machine and is unchanged, so it adds
  * 31 too. No agent is restarted to gain the answer; a fleet upgrades when its operator says
  * so, and until then the door answers that the transport cannot be asked.
+ *
+ * v31 -> v32: DURABLE AGENTS (issue #578). Native terminal launch gains optional
+ * run binding and private environment carriers. Absence preserves the old launch
+ * semantics, so machine acceptance ADDS 32. The hub sends those carriers only to
+ * transports at version 32 or newer and native owners at RPC version 35 or newer;
+ * an older spoke refuses harness launch by name without receiving a credential.
+ * Existing terminals and ordinary launches keep their prior semantics. Deploy
+ * the hub first, then upgrade spokes when ready; no fleet restart is forced.
+ * Agent/Run refs and harness manifests are session/HTTP vocabulary. Federation
+ * frames are unchanged, so the instance acceptance set also adds 32.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([30, 31]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([30, 31, 32]);
 
 /**
  * The first machine protocol that carries `repository_query`/`repository_fact` (issue #529).
@@ -360,9 +370,11 @@ export const MACHINE_REPOSITORY_PROTOCOL_VERSION = 31;
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v31 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v32 leave that wire unchanged.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([27, 28, 29, 30, 31]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
+  27, 28, 29, 30, 31, 32,
+]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the

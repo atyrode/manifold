@@ -1,4 +1,8 @@
-import type { LogEvent, RuntimeDeps } from "@manifold/protocol";
+import {
+  AGENT_JUSTIFICATION_MAX_LENGTH,
+  type LogEvent,
+  type RuntimeDeps,
+} from "@manifold/protocol";
 
 /** Allowed severity labels for the server's JSONL operational stream. */
 export type LogLevel = "info" | "warn" | "error";
@@ -35,6 +39,45 @@ export interface Logger {
  */
 const SECRET_FIELD = /(token|key|authorization|secret|password|passwd|credential|passphrase)/i;
 const TERMINAL_FIELD = /^(data|env|payload|terminalData)$/i;
+
+/**
+ * A bounded, untrusted agent claim suitable for the existing trace payload and its readers.
+ * Reject the entire declaration rather than redacting fragments into a different claim.
+ */
+export function normalizeAgentDeclaration(value: string): string | null {
+  if (value.length > AGENT_JUSTIFICATION_MAX_LENGTH) return null;
+  const normalized = value
+    .normalize("NFKC")
+    .replace(/\s/gu, " ")
+    .replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, "")
+    .replace(/ +/g, " ")
+    .trim();
+  if (normalized.length === 0 || normalized.length > AGENT_JUSTIFICATION_MAX_LENGTH) return null;
+  // Detect on a skeleton, not the attributed output. Decomposing the NFKC text also
+  // exposes combining marks that normalization composed into credential keywords.
+  const detection = normalized
+    .normalize("NFKD")
+    .replace(/[\p{Default_Ignorable_Code_Point}\p{M}]/gu, "");
+  // Canonical workspace ids are references, not bearer material. Only the entropy scan
+  // ignores them; a credential assignment or Bearer prefix still rejects the whole claim.
+  const entropy = detection.replace(
+    /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+    "<id>",
+  );
+  if (
+    /\b[\w.-]*(?:token|key|password|passwd|passphrase|secret|credential|authorization|auth)[\w.-]*["']?\s*(?:[:=]|\bis\b)/i.test(
+      detection,
+    ) ||
+    /\bbearer(?:\s|[:=])/i.test(detection) ||
+    /\bbasic\s+[A-Za-z0-9+/]+={0,2}(?![A-Za-z0-9+/=])/i.test(detection) ||
+    /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/.test(detection) ||
+    /[A-Za-z0-9_+/=-]{32,}/.test(entropy) ||
+    /-----BEGIN\b/.test(detection)
+  ) {
+    return null;
+  }
+  return normalized;
+}
 
 export function redactFields(fields: Readonly<Record<string, unknown>>): Record<string, unknown> {
   const safe: Record<string, unknown> = {};

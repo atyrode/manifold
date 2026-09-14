@@ -380,6 +380,7 @@ export const ISOLATE_CTX_METHODS = [
   "jobs.describeDeployment",
   "jobs.execute",
   "jobs.status",
+  "jobs.runTerminal",
   "jobs.listRuns",
   "jobs.input",
   "jobs.cancel",
@@ -520,6 +521,12 @@ export const IsolateHostFrameSchema = z.discriminatedUnion("t", [
     args: z.unknown(),
     ctx: IsolateDispatchCtxSchema,
   }),
+  /** Resumes this same dispatch after the guest parsed and the host admitted its input. */
+  z.strictObject({
+    t: z.literal("admitted"),
+    id: frameId,
+    allowed: z.boolean(),
+  }),
   z.strictObject({
     t: z.literal("hook"),
     id: frameId,
@@ -586,6 +593,12 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
     migrations: IsolateMigrationsSchema.optional(),
   }),
   z.strictObject({ t: z.literal("load_failed"), error: errorText }),
+  /** Only declared authority targets cross; transformed handler arguments stay in the guest. */
+  z.strictObject({
+    t: z.literal("prepared"),
+    id: frameId,
+    targets: z.array(ManifoldRefSchema.nullable()).max(64),
+  }),
   z.strictObject({
     t: z.literal("dispatched"),
     id: frameId,

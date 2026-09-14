@@ -68,6 +68,8 @@ export interface PluginJobContext {
   describeDeployment(args: { machineId: string; pluginId: string }): JobDeploymentDescription;
   execute(args: JobExecution): PublicJob;
   status(node: JobNode): PublicJob;
+  /** Native terminal association, authorized by the run and this harness's installation. */
+  runTerminal(runId: string): JobNode;
   listRuns(args: ListJobRunsArgs): ListJobRunsResult;
   follow(node: JobNode, receive: (update: JobFollowUpdate) => void): JobFollow;
   input(args: {

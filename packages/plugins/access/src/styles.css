@@ -133,3 +133,230 @@
 .credential-inactive .disclosure__header:hover .credential-inactive-header {
   color: var(--text-primary-color, #dee2e6);
 }
+
+.credential-inspection-link:focus-visible,
+.credential-inspection-heading:focus-visible {
+  outline: 2px solid var(--accent-color, #91a7ff);
+  outline-offset: 2px;
+}
+
+.credential-inspection {
+  --kv-label: 5.6rem;
+
+  grid-column: 1 / -1;
+  min-width: 0;
+  max-height: 36rem;
+  overflow: auto;
+  padding: 0.55rem 0.4rem;
+  margin-bottom: 0.35rem;
+  border: 1px solid var(--border-color, #495057);
+  border-radius: var(--border-radius-md, 0.4rem);
+  background: var(--surface-color, #212529);
+  color: var(--text-primary-color, #dee2e6);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  scrollbar-gutter: stable;
+}
+
+.credential-inspection p {
+  margin: 0;
+}
+
+.credential-inspection-note {
+  display: block;
+  color: var(--text-secondary-color, #adb5bd);
+  font-size: 0.68rem;
+}
+
+.credential-inspection-heading {
+  display: flex;
+  gap: 0.3rem;
+  align-items: baseline;
+  width: 100%;
+  padding: 0.3rem 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.credential-inspection-heading::before {
+  content: "›";
+  flex: none;
+  transition: transform 0.12s ease;
+}
+
+.credential-inspection-fold[data-state="open"] > .credential-inspection-heading::before,
+.credential-inspection-trace[data-state="open"] > .credential-inspection-heading::before {
+  transform: rotate(90deg);
+}
+
+.credential-inspection-fold,
+.credential-inspection-record {
+  padding-top: 0.3rem;
+  border-top: 1px solid var(--border-color, #495057);
+}
+
+.credential-inspection-link {
+  max-width: 100%;
+  color: var(--accent-color, #91a7ff);
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.credential-inspection-link[aria-current="true"] {
+  border-color: currentcolor;
+}
+
+/* Agent profiles and their bounded executions share Access's sidebar vocabulary. */
+.credential-agents,
+.credential-agent-detail {
+  min-width: 0;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.credential-agent {
+  border: 1px solid var(--border-color, #495057);
+  border-radius: var(--border-radius-md, 0.4rem);
+}
+
+.credential-agent-heading {
+  width: 100%;
+  padding: 0.45rem;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.credential-agent-heading:hover,
+.credential-agent-heading[data-state="open"] {
+  background: rgb(134 142 150 / 8%);
+}
+
+.credential-agent-summary,
+.credential-agent-run {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.credential-agent-title,
+.credential-agent-toolbar,
+.credential-agent-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.credential-agent-title {
+  justify-content: space-between;
+  font-size: 0.78rem;
+}
+
+.credential-agent-state[data-state="running"] {
+  color: #8ce99a;
+}
+
+.credential-agent-state[data-state="disabled"] {
+  color: #ffd43b;
+}
+
+.credential-agent-state[data-state="retired"] {
+  color: #adb5bd;
+}
+
+.credential-agent-detail {
+  --kv-label: 5.2rem;
+
+  padding: 0.45rem;
+  border-top: 1px solid var(--border-color, #495057);
+}
+
+.credential-agent-detail pre {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.credential-agent-control {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border-color, #495057);
+  border-radius: var(--border-radius-md, 0.4rem);
+  background: var(--surface-color, #212529);
+  color: var(--text-primary-color, #dee2e6);
+  font: inherit;
+  cursor: pointer;
+}
+
+.credential-agent-control:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.credential-agent-control[data-confirming="true"] {
+  border-color: #ff8787;
+  color: #ffa8a8;
+}
+
+.credential-agent-form label,
+.credential-agent-field {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.credential-agent-form input,
+.credential-agent-form textarea,
+.credential-agent-form select,
+.credential-agent-field input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 0.35rem;
+  border: 1px solid var(--border-color, #495057);
+  border-radius: var(--border-radius-md, 0.4rem);
+  background: var(--surface-color, #212529);
+  color: var(--text-primary-color, #dee2e6);
+  font: inherit;
+}
+
+.credential-run-tree {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.credential-run-tree .credential-run-tree {
+  padding-left: 0.65rem;
+  margin-top: 0.4rem;
+  border-left: 1px solid var(--border-color, #495057);
+}
+
+.credential-agent-run {
+  width: 100%;
+  padding: 0.35rem;
+  border: 1px solid var(--border-color, #495057);
+  border-radius: var(--border-radius-md, 0.4rem);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.credential-agent-run[aria-expanded="true"] {
+  border-color: var(--accent-color, #91a7ff);
+}
+
+.credential-agent-heading:focus-visible,
+.credential-agent-control:focus-visible,
+.credential-agent-run:focus-visible {
+  outline: 2px solid var(--accent-color, #91a7ff);
+  outline-offset: 2px;
+}

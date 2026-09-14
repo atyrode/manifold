@@ -121,38 +121,81 @@ prose roster, owns which plugins exist.
 
 ### Automation credential lifecycle
 
-On a persistent instance, every generic autonomous task enters through
-`core.access.createAgentRun`: one fresh, clearly named, run-owned `kind: "agent"` principal,
-one sponsor, one purpose, one optional task reference, and one bounded capability/target/reach
-ceiling. `core.access.createPrincipal` and `core.access.mint` are human-only admission; they
-cannot create or reissue an agent identity. Machine, native-service, federated-ticket and
-terminal-lifecycle identities retain their separately named internal paths.
+An **Agent** is a durable, sponsor-owned identity; a **Run** is one bounded invocation of it
+([ADR 0042](decisions/0042-durable-agents.md), #578). `core.access.registerAgent` accepts
+`{name,purpose,harness,grant,context}`. The standing grant names capability ceilings, target
+URIs, reach, maximum Run lifetime, delegation budgets and expiry; context contains optional
+instructions and the selected harness's validated profile. Registration requires a human or root
+sponsor; Run, runner and legacy agent credentials are refused. It returns `{agent,credential?,created}`:
+the first registration issues a trusted runner credential, including to a browser sponsor, while
+repeating the same sponsor/name returns the existing Agent without another credential.
+The runner credential admits Runs for that Agent; it is not ordinary action authority.
+`listAgents`, `getAgent`, `updateAgent`, `disableAgent`, `enableAgent` and `retireAgent` use the
+same actor-bound identity mechanism. Get and mutation results are `{agent,canManage}`. Disabling
+withdraws active Runs; enabling does not resurrect them. Retirement blocks new Run admission
+without rewriting retained history. Agent context/profile and inspection requests have opaque
+traces. `createPrincipal` and `mint` remain human-only; machine, native-service,
+federated-ticket and terminal-lifecycle identities keep their named internal lifecycles.
+
+`core.access.createRun` accepts a registered `agentId` with optional target URI or
+`{machineId,containerId?}`, capability/reach/lifetime/delegation narrowing, typed session and
+model selection. It reuses the Agent principal and creates a separately credential-bound Run.
+Only the matching Agent runner receives `{run,credential}`; an owner/browser receives
+`{run}` with no bearer. A raw Run is keyed by `id`, carries `agentId`, nullable
+`session: {harness,sessionId,machineId}`, optional `model: {provider,model}`, and separate
+`activity`, rather than treating the principal as the Run id. Typed sessions are harness
+bindings, not free-form task labels. `taskRef` remains explicitly supported only for the
+`external` harness as a **legacy external task reference**, including migrated history;
+it is never evidence of a resolved harness session.
+
+For browser-created Runs, `core.access.launchRun` returns a secret-free terminal runtime,
+destination, typed session and review digest. Trusted terminal admission injects
+`MANIFOLD_RUN_TOKEN`, `MANIFOLD_RUN_ID` and `MANIFOLD_ORIGIN` only through the private machine
+launch seam, never through public runtime/environment fields, browser results or traces.
+`listHarnesses` publishes profile schemas; `listHarnessSessions` and `resolveHarnessSession`
+use the host's authorized typed session interface. Enumeration returns at most 100 bindings plus
+`truncated`, rather than failing when additional transcripts exist. `sendRunInput` relays to that harness
+with an opaque trace; `reportRunActivity` accepts trusted runner/own-Run reports of `working`,
+`blocked`, `done`, `idle` or `unknown`. Activity is observation, not authority or settlement:
+reporting `done` does not finish a Run.
 
 A run authenticates immediately but begins `pending_policy`. Until it fetches
 `core.access.getAgentPolicy` and sends every exact bundle id and digest to
 `core.access.acknowledgeAgentPolicy`, the dispatch ladder permits only policy and teardown
-doors. The required bytes are the built-in action-plane contract plus the optional operator
+doors, scoped inspection and explicitly admitted runner lifecycle operations; none bypasses
+the identity mechanism's current-Run checks. The required bytes are the built-in action-plane contract plus the optional operator
 file selected by `MANIFOLD_AGENT_POLICY_FILE`. A changed revision moves active runs to
 `policy_stale`; startup and the root-only `core.access.reloadAgentPolicy` apply the same
 reconciliation, and only exact re-acknowledgement restores ordinary actions.
 
-Effective authority is always the live permission waterfall intersected with the run's caps,
-target/reach, expiry and policy state. The authorizing credential is retained as non-secret
-lineage, and each child action is also intersected with every sponsor run's live authority at
-the actual node: a node-only grant or a deeper deny cannot be laundered through a fresh
-principal. An active run may create a child only with `agents:delegate`, strict
-cap/target/reach/expiry attenuation, maximum depth four and at most 32 descendants under one
-root. A direct sponsor may renew an active policy-current run at most 24 times; renewal binds
-the current sponsor credential, each replacement lasts at most one hour and never outlives its
-parent.
+Effective authority is the live permission waterfall intersected with the Agent's current
+standing grant, the Run's caps/target/reach/expiry and policy state, and every sponsor Run's
+live authority at the actual node. Non-secret authorization lineage does not freeze a
+sponsor's authority. `core.access.createChildRun` names the actor's own parent `runId`,
+defaults to the same Agent and requires `agents:delegate` plus bounded justification. An
+explicit different registered Agent additionally requires `agents:run` authority for that
+Agent. Child caps, target, reach, lifetime and delegation budgets must attenuate both the
+parent and standing grant: maximum depth four, at most 32 descendants under a root, and any
+lower ancestor budget still applies. Browser/root child admission also returns no bearer.
 
-On success and failure, call `core.access.finishAgentRun` with the truthful outcome. It revokes
-every live credential and token-bound grant in that subtree and records cleanup counts.
-Expiry performs the same transitive withdrawal as a backstop, never as successful teardown.
-Supplied operator credentials and unrelated principals are never cleanup targets. A cleanup
-failure is a failed run: report the instance, non-secret resource IDs and failed operation,
-never call it clean. Tests whose entire throwaway server and data directory are destroyed
-need no additional credential revocation.
+`core.access.renewAgentRun` permits only the Run's own credential or its matching Agent runner
+to renew an active policy-current Run within the current Agent grant. Browser sponsors and root
+are refused with `run_renewal_requires_harness` without minting or revoking credentials; a parent
+Run has no renewal authority over its child merely by being its parent. The door declares `caps: []`
+and `runAccess: "runner"` because the identity mechanism evaluates actual Run and grant authority,
+not a workspace-wide delegation check. Renewal must extend the lease, may
+happen at most 24 times, lasts at most one hour and never outlives the standing grant or
+parent. Replacement revokes only that Run's prior credentials and grants, never every
+credential of the shared Agent principal.
+
+On success and failure, call `core.access.finishAgentRun` with the truthful outcome. It
+withdraws only the selected Run and its descendants by Run/credential binding and records
+cleanup counts; concurrent sibling Runs and the durable Agent runner remain separate.
+Expiry performs transitive withdrawal as a backstop, never as successful teardown. Supplied
+operator credentials and unrelated work are never cleanup targets. A cleanup failure is a
+failed run: report the instance, non-secret resource IDs and failed operation, never call it
+clean. Tests whose entire throwaway server and data directory are destroyed need no
+additional credential revocation.
 
 #### External action runner
 
@@ -168,18 +211,27 @@ The optional `x-manifold-agent-justification` header uses the protocol's reversi
 and passes decoded Unicode through the dispatch option reserved for #557's semantic normalization. Shared HTTP deadlines and
 response ceilings are opt-in; the bounded runner explicitly supplies its own limits.
 
-The executable `manifold-action-runner` lives in the SDK; its trusted launcher supplies
-`MANIFOLD_ORIGIN` and process-owned `MANIFOLD_SPONSOR_TOKEN`, never credentials in argv or
-JSONL. It creates one root run, delivers live schemas and exact server-selected policy,
-requires an explicit exact acknowledgement, and retains every child/replacement bearer
-internally. `child`, `renew`, `policy`, `ack`, `discover`, `invoke` and `finish` frames consume
-the existing lifecycle/action doors. An ordinary `invoke` cannot impersonate a lifecycle
-frame. A policy-stale refusal is returned with its durable id and followed by fresh policy;
-the caller must acknowledge explicitly before retrying. The server remains the one argument
-validator and authorization decision; discovery never creates an alternate policy engine.
-The runner's owned root may itself be a server child of an accountable-agent launcher;
-renewal and teardown select that retained launcher credential by owned-root identity, not
-by an assumption that its server `parentRunId` is null.
+The executable `manifold-action-runner` lives in the SDK. Its trusted launcher supplies
+`MANIFOLD_ORIGIN` and exactly one environment binding: `MANIFOLD_RUNNER_TOKEN` plus
+`MANIFOLD_AGENT_ID` to create a run inside the Agent's standing grant, or `MANIFOLD_RUN_TOKEN`
+plus `MANIFOLD_RUN_ID` to adopt a run already admitted by a harness. Agent mode optionally
+accepts trusted `MANIFOLD_AGENT_SESSION` and `MANIFOLD_AGENT_MODEL` JSON. Every binding entry
+is withdrawn before either input pipe is read; credentials never travel in argv, model JSONL,
+prompts or logs. Mixed modes and the former sponsor-token carrier are refused.
+
+Admission delivers live schemas and exact server-selected policy before model input. There is
+no `start` or `bind` model frame. Explicit exact acknowledgement remains required; `child`,
+`renew`, `policy`, `ack`, `discover`, `invoke` and `finish` name owned run ids. Children narrow
+the same Agent and cannot bind a session or model through their declaration. Every child and
+replacement bearer remains private. An ordinary `invoke` cannot impersonate a lifecycle or
+activity frame. A policy-stale refusal is followed by fresh policy, never automatic assent.
+The server remains the one argument validator and authority decision.
+
+A trusted harness reports activity through `ActionRunner.reportActivity` or a separate inherited
+`MANIFOLD_ACTIVITY_FD` pipe (descriptor at least 3), using `{runId,activity}` with
+`working | blocked | done | idle`. It cannot share model stdin. Reports use the same
+`core.access.reportRunActivity` door and owned run credential, not terminal-output inference;
+both pipes share the serialized executor and process lifetime.
 
 JSONL results publish only mechanical success or the server's refusal rule, door, caller-declared
 target, run id, trace id and bounded lifecycle facts. They do not publish raw action results,
@@ -187,12 +239,92 @@ free-form refusal messages, arguments, environment/terminal/output bytes, creden
 credential hashes. Policy digests are public acknowledgement identifiers, not credential hashes.
 The target is a declaration, not a claim that the caller has reconstructed resolved ledger targets.
 Frames reject credential fields and bearer-shaped input even inside opaque action arguments.
-The runner bounds frames to 64 KiB, requests to 1024, idle time to five minutes, process lifetime
-to one hour and each HTTP request to 30 seconds. EOF abandons unfinished work; malformed input
-fails it; interruption cancels it. Teardown attempts the same finish door with the retained direct
-sponsor, including when the child's bearer has expired. Lost creation responses, network failure
-and uncatchable termination cannot guarantee cleanup: report failure and rely on server expiry
-only as the backstop. See [the operating contract](../packages/sdk/README.md) before launching.
+The runner bounds each pipe's frames to 64 KiB and frame count to 1024, model idle time to
+five minutes, process lifetime to one hour and each HTTP request to 30 seconds. Model EOF
+abandons unfinished work; malformed input fails it; interruption cancels it. Closing only the
+activity pipe does not finish the run. Teardown attempts the same finish door: Agent mode
+retains the scoped runner credential even after run expiry, while Run mode uses its current
+run bearer. Lost responses, network failure and uncatchable termination cannot guarantee
+cleanup: report failure and rely on server expiry only as the backstop.
+See [the operating contract](../packages/sdk/README.md) before launching.
+
+### Agent run inspection and declarations
+
+`core.access.inspectRun` is the one headless projection used by the Agents Run drill-down
+([ADR 0043](decisions/0043-agent-run-inspection.md), as narrowed by
+[ADR 0042](decisions/0042-durable-agents.md)). Name a `runId`; principal lookup is not a Run
+selector because concurrent Runs share an Agent principal. Optionally name a decimal
+`traceId`, or page older attempts using `beforeTraceId` and `limit` (default 50, maximum 100).
+A trace reference is the durable event-row id reported by action invocation, not a new
+request id. The retired `createAgentRun`, `listAgentRuns` and `inspectAgentRun` action names
+have no aliases.
+
+Authorization is identity-relative in `AuthService`: root may inspect any Run; an authenticated
+Run may inspect **only itself and direct children**, never ancestors, grandchildren or
+siblings. A sponsor may inspect descendants reached through verified durable authorization
+edges; a matching Agent runner has that Agent's Run inventory. Every returned lineage link
+is checked against the viewer, not inferred from a shared principal id. Expired or revoked
+credentials cannot inspect. A denied Run and a nonexistent Run produce the same refusal; an
+unrelated trace id and a pruned/missing trace id both produce `unavailable` within an
+authorized Run. `core.events.list` remains the root-only workspace journal door.
+
+The projection reads existing Agent/Run rows, policy snapshots, Run-bound token/grant rows,
+the `events` trace family, `machine_jobs`, schedule occurrences (including ones refused
+before launch), retained terminals and the live session gateway. Correlation uses the Run
+and its credentials, never all work by the shared Agent principal. The explicit allowlist
+contains Agent/session/model/activity, sponsor/purpose/legacy external task reference,
+scope and capability ceilings, expiry and policy acknowledgement, credential/grant
+lifecycle summaries, observed connections, action/target/authority/outcome/timestamp/trace
+ids, native job revision/artifact pins, terminal references, lineage and cleanup counts.
+It never returns bearers, credential ids, hashes or prefixes, arbitrary trace payloads,
+action arguments, Agent context/profile, native input/environment, terminal bytes, retained
+output, raw policy bodies or cleanup exception text. Free-text declarations and labels are
+normalized and credential-like text is withheld. Artifact and policy revision digests are
+non-credential pins and remain inspectable.
+
+History is explicitly `retained_only`. A null trace outcome is `pending_or_crashed`, not
+success and not proof of a crash. A disconnected connection is `closed_or_unavailable`;
+its first/last trace observation is not a fabricated open/close timestamp. A pruned native
+origin stays unavailable, and retained terminals are not called cleaned up. Expiry may be
+observable before cleanup; the projection reports expired authority separately from pending
+cleanup without mutating the Run. Legacy external task references remain labeled as such,
+never promoted into typed sessions. No audit table, journal writer, retention policy or
+output-retention path is added.
+
+An action may publish `agentJustification: "required"`. The initial set is
+`core.access.createChildRun`, `core.access.renewAgentRun`, `engine.jobs.execute`, and
+`engine.jobs.schedule`: delegation, extended authority, immediate native execution and
+deferred native execution. Ordinary reads and cleanup are not in this set. An accountable
+active run may supply `x-manifold-agent-justification` through the shared action transport.
+The dispatcher checks the optional text after existing policy, scope, capability and real input/
+target-relative/native admission. Isolated input transforms/refinements run exactly once before
+host admission; enforcement immediately precedes effects. Raw and normalized text are bounded to
+512 characters. A detection-only Unicode skeleton rejects obfuscated credential assignments and
+Basic/Bearer material without echoing or persisting it. Missing required text
+produces traced `justification_required`; invalid supplied text produces traced
+`invalid_justification`. The accepted declaration lives only in the existing trace payload's
+reserved `agentDeclaration` field; an action argument cannot populate it. Humans and
+non-accountable lifecycle identities receive the same mechanical traces with no invented
+declaration. A declaration is visibly an **agent's claim**, never authorization, hidden
+reasoning, verified intention or proof of compliance.
+Metadata-only migration 36 atomically records the last pre-cutover event id in
+`meta["agent-runs:declarations-after-event-id"]`, using retained and SQLite sequence maxima.
+Only later trace rows may carry trusted declarations. Legacy caller-supplied fields never become
+reasoning; missing/corrupt metadata fails closed and reopening does not reset the boundary.
+
+`core.access.listCredentials` retains its administrator-only fields and
+root/revocable-principal audience for the Sessions section. `core.access.listRuns({agentId?})`
+supplies the separately bounded newest 100 inspectable Run summaries, `observedAt` and a
+truncation flag. Summaries include Agent/session/model/activity, normalized name/purpose,
+creation/expiry, parent and action/refusal counts without credential references. Both
+inventories revalidate credentials at point of use. `runAccess: "inspect"` permits
+pending/stale and container-scoped inspection without restoring ordinary effect authority.
+The Agents section is separate from human Sessions and owns `agent`/`run` reference
+navigation. Row opening, lineage navigation and exact trace references use the same
+inspection action, not a browser history store. Replacing client/viewer authority must
+remove privileged snapshots before an old async response can restore them. Native jobs
+retain their stable ids as plain text because they are not navigable places; terminal/place
+links and exact trace expansion use existing doors.
 
 ## Topology
 
@@ -350,10 +482,11 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   single-operator path MUST work offline, in one command, without an external service,
   DNS record or OAuth app registration. Any additional identity layer sits above that path,
   never replaces it.
-- Agent-run credentials remain non-interactive: their sponsor receives a one-time bearer from
-  `core.access.createAgentRun`, and the run acknowledges server-selected policy through the
-  action plane rather than a human login flow. Machine enrollment and terminal-lifecycle
-  credentials retain their internal non-interactive paths. Owner-key rotation is a file swap
+- Agent-run credentials remain non-interactive: a harness runner uses the Agent's standing grant
+  through `core.access.createRun`, and the run acknowledges server-selected policy through the
+  action plane rather than a human login flow ([ADR 0042](decisions/0042-durable-agents.md)).
+  Machine enrollment and terminal-lifecycle credentials retain their internal non-interactive paths.
+  Owner-key rotation is a file swap
   followed by interactive-browser re-bootstrap; it MUST NOT disturb enrolled machines, whose
   credentials are independent (procedure: `docs/SELF-HOST.md`).
 - Principal and device inventory with credential revocation is a standing requirement, not
@@ -378,7 +511,7 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   `terminals:spawn`, `terminals:write`, `tokens:mint`, `machines:mint`, `machines:read` and
   `plugins:manage`. Reads of scene and presence come with `containers:read`.
   `terminals:write` covers input+resize+kill+take on terminals in scope. `agents:delegate`
-  authorizes target-relative child-run creation and sponsor renewal; admission checks the
+  authorizes target-relative child-run creation and human/root standing-grant registration; admission checks the
   requested target, and the retained credential lineage keeps the sponsor waterfall as a live
   ceiling at every descendant node. `plugins:manage` authorizes plugin
   administration only — the engine doors `engine.plugins.setEnabled` and
@@ -1565,12 +1698,21 @@ lets any principal render the same badge.
 attenuation, the revocation fence) stays floor and unchanged. The three doors, plus the five
 cross-instance ones below:
 
-| Action                        | Caps          | Scope     | Args → Result                                                                |
-| ----------------------------- | ------------- | --------- | ---------------------------------------------------------------------------- |
-| `core.access.createPrincipal` | `*`           | workspace | `{ name, color?, kind? }` → `TokenGrant` (caps `["*"]`, `containerId: null`) |
-| `core.access.mint`            | `tokens:mint` | container | `{ principal \| principalId, caps, containerId? }` → `TokenGrant`            |
-| `core.access.revoke`          | `tokens:mint` | container | `{ principalId }` → `{ revoked: <count> }` — **`cleanup: true`**             |
-| `core.access.listCredentials` | `tokens:mint` | workspace | `{}` → `{ principals: PrincipalCredentials[] }`                              |
+| Action                        | Caps              | Scope                              | Args → Result                                                                                        |
+| ----------------------------- | ----------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `core.access.createPrincipal` | `*`               | workspace                          | `{ name, color?, kind? }` → `TokenGrant` (caps `["*"]`, `containerId: null`)                         |
+| `core.access.mint`            | `tokens:mint`     | container                          | `{ principal \| principalId, caps, containerId? }` → `TokenGrant`                                    |
+| `core.access.revoke`          | `tokens:mint`     | container                          | `{ principalId }` → `{ revoked: <count> }` — **`cleanup: true`**                                     |
+| `core.access.listCredentials` | `tokens:mint`     | workspace                          | `{}` → `{ principals: PrincipalCredentials[] }`                                                      |
+| `core.access.listAgents`      | identity-relative | workspace / `runAccess: "inspect"` | `{}` → `{ agents, truncated, canRegister }`                                                          |
+| `core.access.getAgent`        | identity-relative | workspace / `runAccess: "inspect"` | `{ agentId }` → `{ agent, canManage }`                                                               |
+| `core.access.listRuns`        | identity-relative | workspace / `runAccess: "inspect"` | `{ agentId? }` → `ListRunsResult` (at most 100 safe Run summaries, including authorized descendants) |
+| `core.access.inspectRun`      | identity-relative | workspace / `runAccess: "inspect"` | `{ runId, traceId?, beforeTraceId?, limit? }` → `InspectRunResult`                                   |
+
+`canRegister` evaluates the caller's current delegation authority independently of room attendance,
+including target-scoped grants. `canManage` comes from the verified sponsor chain, not a browser
+comparison of principal labels. These control-eligibility hints never replace admission checks on
+the submitted grant or mutation.
 
 `createPrincipal` demands `*` because `requireRoot` did; the other two demand `tokens:mint`
 because the mechanism did. Both of those are `scope: "container"` (§Actions rung 3) because

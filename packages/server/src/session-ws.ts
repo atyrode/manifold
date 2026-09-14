@@ -74,6 +74,8 @@ const DENIAL_ERROR_CODES: Readonly<Record<ActionDenialRule, ErrorCode>> = {
   policy_stale: "forbidden",
   forbidden: "forbidden",
   invalid_args: "invalid",
+  justification_required: "forbidden",
+  invalid_justification: "invalid",
   refused: "conflict",
   unavailable: "forbidden",
 };
@@ -226,6 +228,18 @@ export class SessionGateway {
     private readonly runtime: RuntimeDeps,
     private readonly events: EventHub,
   ) {
+    auth.setRunConnectionReader((runId) => {
+      const ids: string[] = [];
+      for (const connection of this.connections.values()) {
+        if (connection.closed) continue;
+        for (const { peer } of connection.channels.values()) {
+          if (peer.auth.agentRunId !== runId) continue;
+          ids.push(connection.id);
+          break;
+        }
+      }
+      return ids;
+    });
     this.removeRevocationListener = auth.onRevoked((principalId, containerId) => {
       this.revokePrincipal(principalId, containerId);
     });
@@ -1038,8 +1052,8 @@ export class SessionGateway {
   }
 
   /**
-   * Fences every live tab belonging to a newly revoked principal. A connection carries
-   * one credential's channels (the SDK pools by token), and a dead credential
+   * Fences every live tab whose exact credential was revoked, not its concurrent sibling runs.
+   * A connection carries one credential's channels (the SDK pools by token), and its loss
    * invalidates all of them, so this is a socket-level close by nature.
    */
   revokePrincipal(principalId: string, containerId: string | null = null): void {
@@ -1049,6 +1063,8 @@ export class SessionGateway {
         const peer = channel.peer;
         if (peer.auth.principal.id !== principalId) continue;
         if (containerId !== null && peer.auth.containerScope !== containerId) continue;
+        if (this.auth.restoreCredential(this.auth.credentialReference(peer.auth)) !== null)
+          continue;
         fenced = true;
         break;
       }
@@ -1062,6 +1078,7 @@ export class SessionGateway {
   shutdown(): void {
     this.removeRevocationListener();
     this.removeRosterListener();
+    this.auth.setRunConnectionReader(() => []);
     this.plugins.streams.shutdown();
     for (const [id, connection] of [...this.connections]) {
       connection.cancelJoinTimeout?.();

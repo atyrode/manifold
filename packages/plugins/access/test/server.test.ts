@@ -138,6 +138,9 @@ function recorder(options: {
   const calls: Call[] = [];
   const answer = <T>(given: Answer<T> | undefined, fallback: T): Answer<T> =>
     given ?? { ok: true, value: fallback };
+  const unused = (): never => {
+    throw new Error("unused Agent lifecycle fixture");
+  };
   return {
     calls,
     ctx: {
@@ -146,24 +149,28 @@ function recorder(options: {
           calls.push({ kind: "create", payload: input });
           return answer(options.create, grant);
         },
-        createAgentRun: () => {
-          throw new Error("unused agent run fixture");
-        },
-        agentPolicyChallenge: () => {
-          throw new Error("unused agent policy fixture");
-        },
-        acknowledgeAgentPolicy: () => {
-          throw new Error("unused agent policy fixture");
-        },
-        renewAgentRun: () => {
-          throw new Error("unused agent run fixture");
-        },
-        finishAgentRun: () => {
-          throw new Error("unused agent run fixture");
-        },
-        reloadAgentPolicy: () => {
-          throw new Error("unused agent policy fixture");
-        },
+        registerAgent: unused,
+        listAgents: unused,
+        getAgent: unused,
+        updateAgent: unused,
+        disableAgent: unused,
+        enableAgent: unused,
+        retireAgent: unused,
+        createRun: unused,
+        createChildRun: unused,
+        listRuns: unused,
+        inspectRun: unused,
+        listHarnesses: unused,
+        listHarnessSessions: unused,
+        resolveHarnessSession: unused,
+        launchRun: unused,
+        sendRunInput: unused,
+        reportRunActivity: unused,
+        agentPolicyChallenge: unused,
+        acknowledgeAgentPolicy: unused,
+        renewAgentRun: unused,
+        finishAgentRun: unused,
+        reloadAgentPolicy: unused,
         mintToken: (input) => {
           calls.push({ kind: "mint", payload: input });
           return answer(options.mint, grant);

@@ -1,50 +1,99 @@
 #!/usr/bin/env bun
+import { createReadStream, type ReadStream } from "node:fs";
 import {
   ACTION_RUNNER_IDLE_TIMEOUT_MS,
   ACTION_RUNNER_MAX_FRAME_BYTES,
   AGENT_RUN_MAX_LIFETIME_MS,
+  ActionRunnerBindSchema,
+  type ActionRunnerBind,
   type AgentRunTerminalOutcome,
 } from "@manifold/protocol";
 import { ActionRunner, ActionRunnerError } from "./action-runner.ts";
 
-/** Bounded JSONL framing shared by the executable and pipe-level lifecycle tests. */
-export async function runActionStdio(options: {
+const LAUNCH_KEYS = [
+  "MANIFOLD_RUNNER_TOKEN",
+  "MANIFOLD_AGENT_ID",
+  "MANIFOLD_AGENT_SESSION",
+  "MANIFOLD_AGENT_MODEL",
+  "MANIFOLD_RUN_TOKEN",
+  "MANIFOLD_RUN_ID",
+  "MANIFOLD_ORIGIN",
+  "MANIFOLD_ACTIVITY_FD",
+  "MANIFOLD_SPONSOR_TOKEN",
+] as const;
+
+/** Withdraw every launcher carrier even when configuration is invalid; none reaches input. */
+export function readActionRunnerEnvironment(environment: Record<string, string | undefined>): {
   origin: string;
-  sponsorToken: string;
-  input: AsyncIterable<Uint8Array>;
-  output: (line: string) => void;
-  signal?: AbortSignal;
-}): Promise<number> {
-  const runner = new ActionRunner({
-    origin: options.origin,
-    sponsorToken: options.sponsorToken,
-    emit: (frame) => options.output(`${JSON.stringify(frame)}\n`),
-  });
+  token: string;
+  bind: ActionRunnerBind;
+  activityFd?: number;
+} {
+  const values = Object.fromEntries(LAUNCH_KEYS.map((key) => [key, environment[key]]));
+  for (const key of LAUNCH_KEYS) delete environment[key];
+  if (values["MANIFOLD_SPONSOR_TOKEN"] !== undefined)
+    throw new ActionRunnerError("credential_input");
+  const agentMode = [
+    "MANIFOLD_RUNNER_TOKEN",
+    "MANIFOLD_AGENT_ID",
+    "MANIFOLD_AGENT_SESSION",
+    "MANIFOLD_AGENT_MODEL",
+  ].some((key) => values[key] !== undefined);
+  const runMode = ["MANIFOLD_RUN_TOKEN", "MANIFOLD_RUN_ID"].some(
+    (key) => values[key] !== undefined,
+  );
+  if (agentMode === runMode) throw new ActionRunnerError("invalid_frame");
+  const json = (key: string): unknown => {
+    const value = values[key];
+    if (value === undefined) return undefined;
+    if (Buffer.byteLength(value) > ACTION_RUNNER_MAX_FRAME_BYTES)
+      throw new ActionRunnerError("limit_exceeded");
+    try {
+      return JSON.parse(value);
+    } catch {
+      throw new ActionRunnerError("invalid_frame");
+    }
+  };
+  const parsed = ActionRunnerBindSchema.safeParse(
+    agentMode
+      ? {
+          agentId: values["MANIFOLD_AGENT_ID"],
+          ...(values["MANIFOLD_AGENT_SESSION"] === undefined
+            ? {}
+            : { session: json("MANIFOLD_AGENT_SESSION") }),
+          ...(values["MANIFOLD_AGENT_MODEL"] === undefined
+            ? {}
+            : { model: json("MANIFOLD_AGENT_MODEL") }),
+        }
+      : { runId: values["MANIFOLD_RUN_ID"] },
+  );
+  if (!parsed.success) throw new ActionRunnerError("invalid_frame");
+  const descriptor = values["MANIFOLD_ACTIVITY_FD"];
+  if (descriptor !== undefined && (!/^[0-9]{1,6}$/.test(descriptor) || Number(descriptor) < 3))
+    throw new ActionRunnerError("invalid_frame");
+  return {
+    origin: values["MANIFOLD_ORIGIN"] ?? "",
+    token: values[agentMode ? "MANIFOLD_RUNNER_TOKEN" : "MANIFOLD_RUN_TOKEN"] ?? "",
+    bind: parsed.data,
+    ...(descriptor === undefined ? {} : { activityFd: Number(descriptor) }),
+  };
+}
+
+/** The same byte bound applies to the model pipe and the separately inherited harness pipe. */
+async function frames(
+  input: AsyncIterable<Uint8Array>,
+  signal: AbortSignal,
+  accept: (value: unknown) => Promise<void>,
+): Promise<void> {
   let wake: (() => void) | null = null;
-  let outcome: AgentRunTerminalOutcome = "abandoned";
-  let interrupted = false;
-  let stopping = false;
-  const stop = () => {
-    stopping = true;
-    wake?.();
-  };
-  const interrupt = () => {
-    interrupted = true;
-    outcome = "cancelled";
-    stop();
-  };
-  options.signal?.addEventListener("abort", interrupt, { once: true });
-  if (options.signal?.aborted) interrupt();
-  let idle = setTimeout(stop, ACTION_RUNNER_IDLE_TIMEOUT_MS);
-  const lifetime = setTimeout(stop, AGENT_RUN_MAX_LIFETIME_MS);
-  const iterator = options.input[Symbol.asyncIterator]();
+  const stop = () => wake?.();
+  signal.addEventListener("abort", stop);
+  const iterator = input[Symbol.asyncIterator]();
   const pending = new Uint8Array(ACTION_RUNNER_MAX_FRAME_BYTES);
-  let pendingLength = 0;
+  let length = 0;
   const decoder = new TextDecoder("utf-8", { fatal: true });
-  let success = false;
   try {
-    while (!runner.closed && !stopping) {
-      // One removable wake slot, not a never-settled Promise.race subscription per chunk.
+    while (!signal.aborted) {
       const next = await new Promise<IteratorResult<Uint8Array> | null>((resolve, reject) => {
         wake = () => resolve(null);
         void iterator.next().then(resolve, reject);
@@ -55,114 +104,172 @@ export async function runActionStdio(options: {
       for (let index = 0; index < next.value.byteLength; index += 1) {
         if (next.value[index] !== 10) continue;
         const part = next.value.subarray(start, index);
-        if (pendingLength + part.byteLength > pending.byteLength)
+        if (length + part.byteLength > pending.byteLength)
           throw new ActionRunnerError("limit_exceeded");
-        pending.set(part, pendingLength);
-        const line = pending.subarray(0, pendingLength + part.byteLength);
-        pendingLength = 0;
-        let input: unknown;
+        pending.set(part, length);
+        let value: unknown;
         try {
-          input = JSON.parse(decoder.decode(line));
+          value = JSON.parse(decoder.decode(pending.subarray(0, length + part.byteLength)));
         } catch {
           throw new ActionRunnerError("invalid_frame");
         }
-        clearTimeout(idle);
-        await runner.accept(input);
-        idle = setTimeout(stop, ACTION_RUNNER_IDLE_TIMEOUT_MS);
+        length = 0;
+        await accept(value);
         start = index + 1;
-        if (runner.closed || stopping) break;
+        if (signal.aborted) return;
       }
-      if (runner.closed || stopping) break;
       const remainder = next.value.subarray(start);
-      if (pendingLength + remainder.byteLength > pending.byteLength)
+      if (length + remainder.byteLength > pending.byteLength)
         throw new ActionRunnerError("limit_exceeded");
-      pending.set(remainder, pendingLength);
-      pendingLength += remainder.byteLength;
+      pending.set(remainder, length);
+      length += remainder.byteLength;
     }
-    if (!runner.closed && !stopping && pendingLength > 0)
-      throw new ActionRunnerError("invalid_frame");
+    if (!signal.aborted && length > 0) throw new ActionRunnerError("invalid_frame");
+  } finally {
+    signal.removeEventListener("abort", stop);
+  }
+}
+
+/** Both pipes are serialized through one run owner; EOF on the model pipe ends the run. */
+export async function runActionStdio(options: {
+  origin: string;
+  token: string;
+  bind: ActionRunnerBind;
+  input: AsyncIterable<Uint8Array>;
+  activityInput?: AsyncIterable<Uint8Array>;
+  output: (line: string) => void;
+  signal?: AbortSignal;
+}): Promise<number> {
+  const runner = new ActionRunner({
+    origin: options.origin,
+    token: options.token,
+    bind: options.bind,
+    emit: (frame) => options.output(`${JSON.stringify(frame)}\n`),
+  });
+  const stopping = new AbortController();
+  let outcome: AgentRunTerminalOutcome = "abandoned";
+  let interrupted = false;
+  const stop = () => stopping.abort();
+  const interrupt = () => {
+    interrupted = true;
+    outcome = "cancelled";
+    stop();
+  };
+  options.signal?.addEventListener("abort", interrupt, { once: true });
+  if (options.signal?.aborted) interrupt();
+  let idle = setTimeout(stop, ACTION_RUNNER_IDLE_TIMEOUT_MS);
+  const lifetime = setTimeout(stop, AGENT_RUN_MAX_LIFETIME_MS);
+  let active = Promise.resolve();
+  const enqueue = (operation: () => Promise<void>) => {
+    active = active.then(async () => {
+      if (stopping.signal.aborted) return;
+      await operation();
+      if (runner.closed) stop();
+    });
+    return active;
+  };
+  let success = false;
+  const pumps: Promise<void>[] = [];
+  try {
+    // Adopted work already exists and needs teardown; cancelled Agent admission creates nothing.
+    // Once admission starts, signals wait for its response rather than losing the run handle.
+    if (!stopping.signal.aborted || "runId" in options.bind) await runner.bind();
+    if (!stopping.signal.aborted && !runner.closed) {
+      const model = frames(options.input, stopping.signal, (value) =>
+        enqueue(async () => {
+          clearTimeout(idle);
+          await runner.accept(value);
+          idle = setTimeout(stop, ACTION_RUNNER_IDLE_TIMEOUT_MS);
+        }),
+      ).finally(stop);
+      pumps.push(model);
+      if (options.activityInput !== undefined)
+        pumps.push(
+          frames(options.activityInput, stopping.signal, (value) =>
+            enqueue(() => runner.reportActivity(value)),
+          ).catch((error: unknown) => {
+            stop();
+            throw error;
+          }),
+        );
+      await Promise.all(pumps);
+    }
     success = runner.successful;
   } catch (error) {
     outcome = "failed";
-    // An output pipe failure must not prevent the finally block from reaching the finish door.
     try {
       runner.report(error);
     } catch {
-      /* The reader may have gone away; teardown still runs. */
+      /* A broken output pipe still reaches teardown. */
     }
   } finally {
+    stop();
+    await Promise.allSettled(pumps);
     clearTimeout(idle);
     clearTimeout(lifetime);
     options.signal?.removeEventListener("abort", interrupt);
     try {
       if (!(await runner.close(outcome))) success = false;
     } catch {
-      success = false; /* A broken output pipe cannot undo an attempted teardown. */
+      success = false;
     }
   }
   return success ? 0 : interrupted ? 130 : 1;
 }
 
-const HELP = `manifold-action-runner — bounded action-plane JSONL runner
+const HELP = `manifold-action-runner — harness-bound action-plane JSONL runner
 
-Usage: bun packages/sdk/src/action-runner-main.ts
-       manifold-action-runner
+Usage: manifold-action-runner (or bun packages/sdk/src/action-runner-main.ts)
 
-The trusted launcher sets MANIFOLD_ORIGIN and MANIFOLD_SPONSOR_TOKEN in the process
- environment. Never supply a credential in argv, a JSON frame, a prompt or a log.
-No command-line arguments are accepted except --help. Stdout is JSONL only.
+The trusted launcher supplies MANIFOLD_ORIGIN and exactly one environment binding:
+Agent: MANIFOLD_RUNNER_TOKEN + MANIFOLD_AGENT_ID, optionally MANIFOLD_AGENT_SESSION
+       and MANIFOLD_AGENT_MODEL (JSON). Creates a run under that Agent's standing grant.
+Run:   MANIFOLD_RUN_TOKEN + MANIFOLD_RUN_ID. Adopts an already admitted harness run.
+Every carrier is deleted before input is read. Credentials never belong in argv,
+JSONL, prompts, logs or files. No command arguments are accepted except --help.
 
-Send start {id,version:1,declaration:{name,purpose,target,reach,caps,lifetimeMs}}.
-Read discovery and policy frames, then ack {id,runId,policy:{revision,
-acknowledgements:[{id,digest}]}} using every exact delivered bundle.
-Invoke {id,runId,door,target,args,justification?}; target is a caller declaration,
-not a claim about resolved trace targets. Read discovered schemas; the server door
-validates arguments. Results contain only outcome/refusal rule and durable traceId,
-never raw results, refusal messages, credentials, arguments or terminal output.
-Use child {id,runId,declaration,justification?}, renew {id,runId,lifetimeMs,
-justification?}, policy {id,runId}, discover {id,runId}, and finish {id,runId,
-outcome:"completed"|"failed"|"cancelled"|"abandoned"}. Child runId is returned by
-its create result; all child bearers remain here. A stale-policy refusal delivers
-new exact bytes: acknowledge explicitly before retrying; no automatic assent.
+Admission delivers discovery, a result with runId, and exact policy automatically.
+There is no start or bind model frame. Ack the exact delivered policy before invoke.
+Model frames: discover, policy, ack, invoke, child, renew, finish; each needs a unique
+id and an owned runId. Child declarations narrow the same Agent, never bind a session.
+Read discovered schemas. Results contain only mechanical outcome/refusal, traceId
+and lifecycle facts, not raw results, arguments, credentials or terminal output.
 
-Unique ids, sequential UTF-8 JSONL frames <=64 KiB; at most 1024 requests,
-five minutes idle, one hour process lifetime, 30 seconds per HTTP request.
-EOF abandons unfinished work; malformed input fails it; SIGINT/SIGTERM/SIGHUP
-cancel it. Every path attempts finish through the same action door. Read closed:
-cleanup=failed is not clean; expiry is the backstop, including SIGKILL or a lost
-creation response. Effects use discovered actions, never browser controls;
-use browser interaction only to verify the human-facing UX itself.
-See packages/sdk/README.md for the trusted-launcher and policy contract.
+A trusted harness may inherit a separate pipe at MANIFOLD_ACTIVITY_FD (>=3).
+It carries {runId,activity:"working"|"blocked"|"done"|"idle"} JSONL, never model stdin.
+Both pipes are UTF-8 JSONL <=64 KiB/frame and <=1024 frames each. Model idle limit:
+five minutes; total lifetime: one hour; each HTTP request: 30 seconds. Stdout: JSONL.
+EOF abandons; malformed input fails; SIGINT/SIGTERM/SIGHUP cancel. Every exit attempts
+finish; cleanup=failed is unconfirmed, and expiry is only the backstop. Effects use
+action doors, never browser controls. See packages/sdk/README.md.
 `;
 
 if (import.meta.main) {
-  // Read and withdraw the inherited secret before processing any untrusted input.
-  const sponsorToken = process.env["MANIFOLD_SPONSOR_TOKEN"] ?? "";
-  delete process.env["MANIFOLD_SPONSOR_TOKEN"];
   const args = process.argv.slice(2);
-  if (args.length === 1 && args[0] === "--help") {
-    process.stdout.write(HELP);
-  } else if (args.length !== 0) {
-    process.stdout.write(
-      `${JSON.stringify({ type: "error", id: null, door: null, target: null, runId: null, code: "invalid_frame", traceId: null })}\n`,
-    );
+  let activity: ReadStream | undefined;
+  const controller = new AbortController();
+  const interrupt = () => controller.abort();
+  const outputFailed = () => {
     process.exitCode = 1;
-  } else {
-    const controller = new AbortController();
-    const interrupt = () => controller.abort();
-    const outputFailed = () => {
-      process.exitCode = 1;
-      controller.abort();
-    };
-    process.on("SIGINT", interrupt);
-    process.on("SIGTERM", interrupt);
-    process.on("SIGHUP", interrupt);
-    process.stdout.on("error", outputFailed);
-    try {
+    controller.abort();
+  };
+  try {
+    if (args.length === 1 && args[0] === "--help") {
+      for (const key of LAUNCH_KEYS) delete process.env[key];
+      process.stdout.write(HELP);
+    } else {
+      const configuration = readActionRunnerEnvironment(process.env);
+      if (args.length !== 0) throw new ActionRunnerError("invalid_frame");
+      if (configuration.activityFd !== undefined)
+        activity = createReadStream("", { fd: configuration.activityFd, autoClose: false });
+      process.on("SIGINT", interrupt);
+      process.on("SIGTERM", interrupt);
+      process.on("SIGHUP", interrupt);
+      process.stdout.on("error", outputFailed);
       process.exitCode = await runActionStdio({
-        origin: process.env["MANIFOLD_ORIGIN"] ?? "",
-        sponsorToken,
+        ...configuration,
         input: process.stdin,
+        ...(activity === undefined ? {} : { activityInput: activity }),
         signal: controller.signal,
         output: (line) => {
           if (process.stdout.destroyed || process.stdout.writableLength > 16 * 1_048_576)
@@ -170,24 +277,25 @@ if (import.meta.main) {
           process.stdout.write(line);
         },
       });
-    } catch {
-      if (!process.stdout.destroyed)
-        process.stdout.write(
-          `${JSON.stringify({ type: "error", id: null, door: null, target: null, runId: null, code: "invalid_frame", traceId: null })}\n`,
-        );
-      process.exitCode = 1;
-    } finally {
-      process.off("SIGINT", interrupt);
-      process.off("SIGTERM", interrupt);
-      process.off("SIGHUP", interrupt);
-      process.stdin.destroy();
-      if (process.stdout.writableLength > 0) {
-        const drainDeadline = setTimeout(() => {
-          process.exitCode = 1;
-          process.stdout.destroy();
-        }, 30_000);
-        drainDeadline.unref();
-      }
+    }
+  } catch {
+    if (!process.stdout.destroyed)
+      process.stdout.write(
+        `${JSON.stringify({ type: "error", id: null, door: null, target: null, runId: null, code: "invalid_frame", traceId: null })}\n`,
+      );
+    process.exitCode = 1;
+  } finally {
+    process.off("SIGINT", interrupt);
+    process.off("SIGTERM", interrupt);
+    process.off("SIGHUP", interrupt);
+    activity?.destroy();
+    process.stdin.destroy();
+    if (process.stdout.writableLength > 0) {
+      const drainDeadline = setTimeout(() => {
+        process.exitCode = 1;
+        process.stdout.destroy();
+      }, 30_000);
+      drainDeadline.unref();
     }
   }
 }

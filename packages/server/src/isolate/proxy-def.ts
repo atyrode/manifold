@@ -98,6 +98,9 @@ export function localActionDef(pluginId: string, summary: ActionSummary): AnyAct
     ...(summary.trace === undefined ? {} : { trace: summary.trace }),
     ...(summary.cleanup === true ? { cleanup: true } : {}),
     ...(summary.runAccess === undefined ? {} : { runAccess: summary.runAccess }),
+    ...(summary.agentJustification === undefined
+      ? {}
+      : { agentJustification: summary.agentJustification }),
     input: z.unknown().meta({ ...summary.input }),
     result: z.unknown().meta({ ...summary.result }),
   };
@@ -159,6 +162,7 @@ export function buildIsolateDef(
   return {
     def: {
       manifest,
+      inputValidation: "guest",
       actions,
       handlers,
       lifecycle,
@@ -209,6 +213,7 @@ const JOB_METHODS = [
   "jobs.describeDeployment",
   "jobs.execute",
   "jobs.status",
+  "jobs.runTerminal",
   "jobs.listRuns",
   "jobs.input",
   "jobs.cancel",
@@ -237,6 +242,8 @@ function serveJobsCall(
       return jobs.execute(JobExecuteArgsSchema.parse(args[0]));
     case "jobs.status":
       return jobs.status(jobDoorSchemas.status.parse({ node: args[0] }).node);
+    case "jobs.runTerminal":
+      return jobs.runTerminal(stringArg(args, 0, method));
     case "jobs.listRuns":
       return jobs.listRuns(ListJobRunsArgsSchema.parse(args[0]));
     case "jobs.input":
@@ -464,6 +471,7 @@ export async function serveCtxCall(
     case "jobs.describeDeployment":
     case "jobs.execute":
     case "jobs.status":
+    case "jobs.runTerminal":
     case "jobs.listRuns":
     case "jobs.input":
     case "jobs.cancel":
@@ -526,6 +534,7 @@ export async function serveCtxCall(
     case "jobs.describeDeployment":
     case "jobs.execute":
     case "jobs.status":
+    case "jobs.runTerminal":
     case "jobs.listRuns":
     case "jobs.input":
     case "jobs.cancel":
