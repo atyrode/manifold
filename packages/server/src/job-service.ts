@@ -1265,11 +1265,17 @@ export class JobService {
       request.operationId
     ]?.limits.concurrentJobs;
     if (limit === undefined) return null;
+    // A bound in-place restart transfers this terminal's slot. The owner stops its previous
+    // process before using the new permit; other terminals still count against the limit.
+    const replacing =
+      request.terminal &&
+      this.jobs.dispatchOrigin(request.traceId)?.door === "core.terminals.restart";
     const running = this.jobs.activeOperationJobs(
       request.machineId,
       request.pluginId,
       request.operationId,
       request.jobId,
+      replacing ? request.terminal!.terminalId : null,
     );
     return running >= limit ? "concurrency_limit" : null;
   }
@@ -1947,12 +1953,13 @@ export class JobService {
         ? this.effectiveConfiguration(request.machineId).policies
         : [];
       for (const { cap, ref } of requirements) {
-        const terminalSpawn = cap === "terminals:spawn" && ref.kind === "container";
+        const terminalAuthority =
+          (cap === "terminals:spawn" || cap === "terminals:write") && ref.kind === "container";
         const install = ref.kind === "service" ? null : this.resolve(ref);
         if (
           (!context.caps.includes("*") && !context.caps.includes(cap)) ||
           !this.auth.allowsRef(context, cap, ref) ||
-          (!terminalSpawn &&
+          (!terminalAuthority &&
             !(
               this.serviceConsent(ref, cap, policies) ??
               (install ? this.consentFor(install, ref, cap) : null)
@@ -3072,7 +3079,8 @@ export class JobService {
             servicePolicies.set(ref.machineId, policies);
           }
         }
-        const terminalSpawn = cap === "terminals:spawn" && ref.kind === "container";
+        const terminalAuthority =
+          (cap === "terminals:spawn" || cap === "terminals:write") && ref.kind === "container";
         const install = ref.kind === "service" ? null : this.resolve(ref);
         const fresh = context
           ? this.auth.explain(context, prior.requirement)
@@ -3082,10 +3090,10 @@ export class JobService {
           (install ? this.consentFor(install, ref, cap) : null);
         const discharged =
           context !== null &&
-          (terminalSpawn || install !== null || (ref.kind === "service" && consent !== null)) &&
+          (terminalAuthority || install !== null || (ref.kind === "service" && consent !== null)) &&
           (context.caps.includes("*") || context.caps.includes(cap)) &&
           fresh.allowed &&
-          (terminalSpawn || consent !== null);
+          (terminalAuthority || consent !== null);
         if (!discharged) allowed = false;
         const observedConsent =
           consent ?? (install ? this.consentFor(install, ref, cap, false) : null);
@@ -3385,11 +3393,14 @@ export class JobService {
     const terminalOrigin = request.terminal
       ? (this.jobs.get(request.jobId)?.auditOrigin ?? this.jobs.dispatchOrigin(request.traceId))
       : null;
+    const restarting = terminalOrigin?.door === "core.terminals.restart";
     if (
       request.terminal &&
-      (!terminalOrigin?.containerId ||
-        terminalOrigin.door !== "core.terminals.open" ||
-        terminalOrigin.actor !== request.credential.principalId)
+      (terminalOrigin?.actor !== request.credential.principalId ||
+        (restarting
+          ? this.store.getTerminal(request.terminal.terminalId)?.containerId !==
+            request.terminal.containerId
+          : !terminalOrigin?.containerId || terminalOrigin.door !== "core.terminals.open"))
     )
       fail("terminal_spawn_origin_missing");
     const invocation: AuthorityRequirement[] = [];
@@ -3420,8 +3431,13 @@ export class JobService {
       ...(request.terminal
         ? [
             {
-              cap: "terminals:spawn" as const,
-              ref: { kind: "container" as const, containerId: terminalOrigin!.containerId! },
+              cap: restarting ? ("terminals:write" as const) : ("terminals:spawn" as const),
+              ref: {
+                kind: "container" as const,
+                containerId: restarting
+                  ? request.terminal.containerId
+                  : terminalOrigin!.containerId!,
+              },
             },
           ]
         : []),
@@ -3671,6 +3687,22 @@ export class JobService {
     if (runtime.machineId !== machineId) fail("terminal_runtime_destination_changed");
     if (privateEnv || runtime.launchBinding !== undefined || terminal.runId !== undefined)
       this.assertRunLaunchSupported(machineId);
+    if (this.jobs.dispatchOrigin(String(traceId))?.door === "core.terminals.restart") {
+      const stored = this.store.getTerminal(terminal.terminalId);
+      const target = this.store.db
+        .query<{ terminalId: string | null }, [number]>(
+          "SELECT json_extract(payload, '$.terminalId') AS terminalId FROM events WHERE id=? AND type='trace'",
+        )
+        .get(traceId);
+      if (
+        target?.terminalId !== terminal.terminalId ||
+        stored?.machineId !== machineId ||
+        stored.containerId !== terminal.containerId ||
+        !stored.launchRecipe?.runtime ||
+        digest(stored.launchRecipe.runtime) !== digest(runtime)
+      )
+        fail("terminal_restart_recipe_changed");
+    }
     const live = this.channels.get(machineId);
     const install = this.jobs.installation(machineId, runtime.pluginId);
     if (
@@ -4865,9 +4897,12 @@ export class JobService {
   cancel(auth: AuthContext, node: ManifoldRef, callerPluginId = "engine.jobs"): void {
     this.cancelRecord(this.authorizedJob(auth, node, "jobs:cancel", callerPluginId), "requested");
   }
-  cancelTerminal(terminalId: string): void {
+  cancelTerminal(terminalId: string, jobId?: string): void {
     for (const job of this.jobs.active())
-      if (job.request.terminal?.terminalId === terminalId)
+      if (
+        job.request.terminal?.terminalId === terminalId &&
+        (jobId === undefined || job.request.jobId === jobId)
+      )
         this.cancelRecord(job, "terminal_closed");
   }
   private dispatchCancellation(job: JobRecord, cancellation: JobCancellation): boolean {

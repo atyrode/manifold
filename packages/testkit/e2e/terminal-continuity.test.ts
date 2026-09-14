@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { tileIdForRef } from "@manifold/scene";
 import type { SessionClient } from "@manifold/sdk";
 import {
   connect,
@@ -131,10 +132,11 @@ test("a workload survives a transport crash and replacement with the same proces
   }
 }, 60_000);
 
-test("a transport stopped by SIGTERM ends no terminal; a stopped host does", async () => {
+test("transport replacement preserves the process; owner loss keeps a restartable tile and cwd", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];
   const clients: SessionClient[] = [];
+  const captures: TerminalCapture[] = [];
   try {
     const server = await startServer();
     servers.push(server);
@@ -158,6 +160,17 @@ test("a transport stopped by SIGTERM ends no terminal; a stopped host does", asy
       portalAt: { x: 0, y: 0 },
     });
     clients.push(homeClient);
+    const leafBefore = tileIdForRef(homeClient.layout(), {
+      kind: "terminal",
+      terminalId: terminal.id,
+    });
+    homeClient.sendTerminalInput(terminal.id, `cd ${JSON.stringify(server.dataDir)}\n`);
+    await waitFor(() => homeClient.terminals.get(terminal.id)?.cwd === server.dataDir, 6_000, 20);
+    const renamed = await homeClient.action("core.terminals.rename", {
+      terminalId: terminal.id,
+      name: "Retained work",
+    });
+    expect(renamed.ok).toBe(true);
 
     // The routine activation path: SIGTERM the transport, replace it. Nothing exits.
     await agent.restartTransport("SIGTERM");
@@ -171,23 +184,56 @@ test("a transport stopped by SIGTERM ends no terminal; a stopped host does", asy
       ),
     ).toBe(false);
 
-    // The DELIBERATE destructive stop is the host's, and only the host's: its SIGTERM kills
-    // the shell with grace, the transport reports its exit, and the hub removes its placement.
-    const departed = nextMessage(
+    // A killed owner cannot report an exit; the transport's explicit owner-loss close is proof.
+    const exited = nextMessage(
       homeClient,
       "terminal_event",
       15_000,
-      (message) => message.terminalId === terminal.id && message.kind === "parked",
+      (message) => message.terminalId === terminal.id && message.kind === "exited",
     );
-    agent.host.kill("SIGTERM");
+    agent.host.kill("SIGKILL");
     await agent.host.exited;
-    expect((await departed).kind).toBe("parked");
-    await waitFor(() => !homeClient.terminals.has(terminal.id), 15_000, 50);
-    await waitFor(() => !client.elements.has("el-lifetimes-terminal"), 10_000, 20);
-    expect(await listTerminals(server)).toEqual([]);
+    expect((await exited).kind).toBe("exited");
+    await waitFor(() => homeClient.terminals.get(terminal.id)?.status === "exited", 15_000, 50);
+    expect(client.elements.has("el-lifetimes-terminal")).toBe(true);
+    expect((await listTerminals(server)).find((entry) => entry.id === terminal.id)).toMatchObject({
+      status: "exited",
+      homeId: terminal.containerId,
+    });
+    expect(homeClient.terminals.get(terminal.id)?.exitCode).toBeNull();
+    await agent.stop();
+    const replacement = await startAgent({
+      serverUrl: server.url,
+      machineToken: enrolled.machineToken,
+      name: "lifetimes-agent",
+    });
+    agents.push(replacement);
+    const restarted = nextMessage(
+      homeClient,
+      "terminal_event",
+      15_000,
+      (message) => message.terminalId === terminal.id && message.kind === "restarted",
+    );
+    const result = await homeClient.action("core.terminals.restart", { terminalId: terminal.id });
+    expect(result.ok).toBe(true);
+    expect((await restarted).cwd).toBe(server.dataDir);
+    expect(homeClient.terminals.get(terminal.id)).toMatchObject({
+      status: "running",
+      name: "Retained work",
+      containerId: terminal.containerId,
+      cwd: server.dataDir,
+    });
+    expect(tileIdForRef(homeClient.layout(), { kind: "terminal", terminalId: terminal.id })).toBe(
+      leafBefore,
+    );
+    const capture = await attachedCapture(homeClient, terminal.id);
+    captures.push(capture);
+    homeClient.sendTerminalInput(terminal.id, "printf 'RESTART_DIRECTORY_%s_END\\n' \"$PWD\"\n");
+    await waitForTerminalText(capture, `RESTART_DIRECTORY_${server.dataDir}_END`, 10_000);
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {
+    for (const capture of captures) capture.stop();
     closeClients(clients);
     await stopProcesses([...servers, ...agents]);
   }

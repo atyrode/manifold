@@ -186,15 +186,24 @@ export class JobStore {
     pluginId: string,
     operationId: string,
     exceptJobId: string,
+    replacingTerminalId: string | null = null,
   ): number {
     return (
       this.store.db
-        .query<{ count: number }, [string, string, string, string]>(
+        .query<{ count: number }, [string, string, string, string, string | null, string | null]>(
           `SELECT COUNT(*) AS count FROM machine_jobs
        WHERE machine_id=? AND plugin_id=? AND json_extract(request,'$.operationId')=?
-         AND job_id!=? AND state IN ('queued','admitted','start-committed','started')`,
+         AND job_id!=? AND state IN ('queued','admitted','start-committed','started')
+         AND (? IS NULL OR json_extract(request,'$.terminal.terminalId') IS NOT ?)`,
         )
-        .get(machineId, pluginId, operationId, exceptJobId)?.count ?? 0
+        .get(
+          machineId,
+          pluginId,
+          operationId,
+          exceptJobId,
+          replacingTerminalId,
+          replacingTerminalId,
+        )?.count ?? 0
     );
   }
   /** A sent permit without a confirmed outcome still owns its service lifetime. */

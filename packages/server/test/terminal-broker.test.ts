@@ -15,6 +15,7 @@ import { FakeClock, FakeRuntime, FakeSocket, testStore, testTileTrees } from "./
 
 class FakeMachine implements MachineChannel {
   readonly sent: ServerToAgentMessage[] = [];
+  readonly terminalRestart = true;
 
   constructor(
     readonly machineId: string,
@@ -374,7 +375,10 @@ describe("TerminalBroker controller lease", () => {
       }),
     ).toBeFalse();
 
-    expect(fixture.store.getTerminal(fixture.create.terminalId)).toBeNull();
+    expect(fixture.store.getTerminal(fixture.create.terminalId)).toMatchObject({
+      status: "exited",
+      exitCode: 23,
+    });
     expect(
       fixture.store
         .listEvents({ type: "terminal_exited", limit: 10 })
@@ -567,9 +571,19 @@ describe("TerminalBroker lifecycle cleanup", () => {
       fixture.broker.reconcileMachineHello(fixture.machine.machineId, [advertised]);
       fixture.broker.reconcileMachineHello(fixture.machine.machineId, [advertised]);
       fixture.broker.onExited(fixture.machine.machineId, fixture.create.terminalId, exitCode);
-      expect(fixture.store.getTerminal(fixture.create.terminalId)).toBeNull();
-      expect(fixture.store.getContainer(fixture.container.id)).toBeNull();
-      expect(fixture.broker.listForContainer(fixture.container.id)).toEqual([]);
+      if (exitCode === 0) {
+        expect(fixture.store.getTerminal(fixture.create.terminalId)).toBeNull();
+        expect(fixture.store.getContainer(fixture.container.id)).toBeNull();
+        expect(fixture.broker.listForContainer(fixture.container.id)).toEqual([]);
+      } else {
+        expect(fixture.store.getTerminal(fixture.create.terminalId)).toMatchObject({
+          status: "exited",
+          exitCode,
+        });
+        expect(
+          fixture.rooms.get(fixture.container.id)?.homesTerminal(fixture.create.terminalId),
+        ).toBe(true);
+      }
       expect(() => fixture.auth.authenticate(token)).toThrow(ServiceError);
       expect(
         fixture.store
@@ -1073,5 +1087,217 @@ describe("TerminalBroker drain (issue #278)", () => {
     expect((await setup.broker.drain(setup.machine.machineId, false)).ok).toBe(false);
     expect(setup.broker.isMachineDraining(setup.machine.machineId)).toBe(false);
     setup.store.close();
+  });
+});
+
+describe("TerminalBroker restart in place", () => {
+  test("replacement owner uses persisted launch intent while retaining identity and cwd", async () => {
+    const f = brokerSetup();
+    f.broker.open(f.opener, {
+      type: "terminal_open",
+      elementId: "original",
+      placement: "tile",
+      cols: 110,
+      rows: 35,
+      cwd: "/original",
+      program: { argv: ["/bin/sh", "-l"] },
+      env: { PROJECT: "kept" },
+    });
+    const create = f.machine.sent.find((message) => message.type === "create");
+    if (!create || create.type !== "create") throw new Error("missing create");
+    const terminalId = create.terminalId;
+    f.broker.onCreated(f.machine.machineId, terminalId);
+    f.broker.rename(terminalId, "kept name");
+    f.broker.onCwd(f.machine.machineId, terminalId, "/last/observed");
+    const before = f.store.getTerminal(terminalId);
+    expect(JSON.stringify(before)).not.toContain(sessionToken(create));
+    f.broker.onOwnerLost(f.machine.machineId);
+    const replacement = new FakeMachine(f.machine.machineId, "replacement");
+    const broker = new TerminalBroker(
+      f.store,
+      f.auth,
+      f.rooms,
+      f.runtime,
+      f.clock,
+      silentLogger,
+      () => "http://localhost:7777",
+      testTileTrees,
+    );
+    broker.setMachineOnline(replacement);
+    const result = broker.restartById(terminalId, f.root.principal.id);
+    const command = replacement.sent.find((message) => message.type === "terminal_restart");
+    if (!command || command.type !== "terminal_restart" || !command.create)
+      throw new Error("missing restart");
+    expect(command.cwd).toBe("/last/observed");
+    expect(command.create).toMatchObject({
+      cwd: "/original",
+      program: create.program,
+      env: { PROJECT: "kept", MANIFOLD_CONTAINER: before!.containerId },
+    });
+    const freshToken = command.create.env.MANIFOLD_TOKEN!;
+    expect(f.auth.authenticate(freshToken).containerScope).toBe(before!.containerId);
+    expect(() => f.auth.authenticate(sessionToken(create))).toThrow(ServiceError);
+    broker.onRestarted(f.machine.machineId, {
+      type: "terminal_restarted",
+      terminalId,
+      cwd: "/last/observed",
+    });
+    expect(await result).toBe("ok");
+    expect(f.store.getTerminal(terminalId)).toMatchObject({
+      id: terminalId,
+      name: "kept name",
+      containerId: before!.containerId,
+      createdAt: before!.createdAt,
+      createdBy: before!.createdBy,
+      cwd: "/last/observed",
+      status: "running",
+    });
+    expect(f.rooms.get(before!.containerId)?.homesTerminal(terminalId)).toBe(true);
+    f.store.close();
+  });
+
+  test("running restart resets sequence numbers and snapshots before new output", async () => {
+    const f = brokerFixture();
+    const terminalId = f.create.terminalId;
+    f.rooms.get(f.container.id)?.join(f.opener);
+    f.broker.attach(f.opener, { type: "terminal_attach", terminalId });
+    f.broker.onSnapshot(f.machine.machineId, {
+      type: "snapshot",
+      terminalId,
+      seq: 50,
+      data: encoded("old"),
+    });
+    f.broker.onOutput(f.machine.machineId, {
+      type: "output",
+      terminalId,
+      seq: 51,
+      data: encoded("old tail"),
+    });
+    f.socket.clear();
+    const result = f.broker.restartById(terminalId, f.root.principal.id);
+    expect(f.auth.authenticate(sessionToken(f.create)).principal.kind).toBe("agent");
+    f.broker.onRestarted(f.machine.machineId, {
+      type: "terminal_restarted",
+      terminalId,
+      cwd: "/original",
+      fallback: "original",
+    });
+    expect(await result).toBe("ok");
+    expect(() => f.auth.authenticate(sessionToken(f.create))).toThrow(ServiceError);
+    f.broker.onOutput(f.machine.machineId, {
+      type: "output",
+      terminalId,
+      seq: 1,
+      data: encoded("new"),
+    });
+    f.broker.onSnapshot(f.machine.machineId, {
+      type: "snapshot",
+      terminalId,
+      seq: 0,
+      data: encoded("fresh"),
+    });
+    expect(
+      f.socket
+        .messages()
+        .filter(
+          (message) =>
+            message.type === "terminal_event" ||
+            message.type === "terminal_snapshot" ||
+            message.type === "terminal_output",
+        ),
+    ).toEqual([
+      {
+        type: "terminal_event",
+        terminalId,
+        kind: "restarted",
+        controllerId: f.root.principal.id,
+        cwd: "/original",
+        fallback: "original",
+      },
+      { type: "terminal_snapshot", terminalId, seq: 0, data: encoded("fresh") },
+      { type: "terminal_output", terminalId, seq: 1, data: encoded("new") },
+    ]);
+    f.store.close();
+  });
+
+  test("bounded refusal revokes only the new credential and preserves the original process", async () => {
+    const f = brokerFixture();
+    const terminalId = f.create.terminalId;
+    const pending = f.broker.restartById(terminalId, f.root.principal.id);
+    expect(await f.broker.restartById(terminalId, f.root.principal.id)).toBe("restart_pending");
+    const command = f.machine.sent.find((message) => message.type === "terminal_restart");
+    if (command?.type !== "terminal_restart") throw new Error("missing restart");
+    const token = command.create!.env.MANIFOLD_TOKEN!;
+    f.broker.onRestartError("another-machine", terminalId, "wrong-owner");
+    f.clock.advance(10_000);
+    expect(await pending).toBe("restart_timeout");
+    expect(() => f.auth.authenticate(token)).toThrow(ServiceError);
+    expect(f.auth.authenticate(sessionToken(f.create)).principal.kind).toBe("agent");
+    const refused = f.broker.restartById(terminalId, f.root.principal.id);
+    f.broker.onRestartError(f.machine.machineId, terminalId, "restart_failed");
+    expect(await refused).toBe("restart_failed");
+    expect(f.store.getTerminal(terminalId)?.status).toBe("running");
+    f.broker.setMachineOnline({
+      machineId: f.machine.machineId,
+      terminalHostId: null,
+      terminalExecution: "unconfined",
+      send: (message) => f.machine.send(message),
+    });
+    f.machine.clear();
+    expect(await f.broker.restartById(terminalId, f.root.principal.id)).toBe("unsupported");
+    expect(f.machine.sent).toEqual([]);
+    f.broker.setMachineOnline(f.machine);
+    await f.broker.drain(f.machine.machineId, true);
+    expect(await f.broker.restartById(terminalId, f.root.principal.id)).toBe("machine_draining");
+    f.store.close();
+  });
+
+  test("legacy rows restart as an explicitly reported shell only on unconfined owners", async () => {
+    const f = brokerSetup();
+    const terminalId = "legacy";
+    f.store.createTerminal({
+      id: terminalId,
+      machineId: f.machine.machineId,
+      containerId: f.container.id,
+      createdBy: f.root.principal.id,
+      agentPrincipalId: null,
+      createdAt: 0,
+      cwd: "/legacy/work",
+    });
+    f.store.markTerminalExited(terminalId, null);
+    const broker = new TerminalBroker(
+      f.store,
+      f.auth,
+      f.rooms,
+      f.runtime,
+      f.clock,
+      silentLogger,
+      () => "http://localhost:7777",
+      testTileTrees,
+    );
+    broker.setMachineOnline(f.machine);
+    const result = broker.restartById(terminalId, f.root.principal.id);
+    const command = f.machine.sent.find((message) => message.type === "terminal_restart");
+    expect(command).toMatchObject({
+      type: "terminal_restart",
+      terminalId,
+      noRecipe: true,
+      cwd: "/legacy/work",
+    });
+    if (command?.type !== "terminal_restart") throw new Error("missing restart");
+    expect(command.create?.program).toBeUndefined();
+    expect(f.auth.authenticate(command.create!.env.MANIFOLD_TOKEN!).containerScope).toBe(
+      f.container.id,
+    );
+    broker.onRestarted(f.machine.machineId, {
+      type: "terminal_restarted",
+      terminalId,
+      cwd: "/legacy/work",
+      fallback: "no_recipe",
+    });
+    expect(await result).toBe("ok");
+    broker.setMachineOnline(new FakeMachine(f.machine.machineId, null, "governed"));
+    expect(await broker.restartById(terminalId, f.root.principal.id)).toBe("no_recipe");
+    f.store.close();
   });
 });

@@ -265,7 +265,7 @@ test("terminal lifecycle enforces attach contiguity, controller authority, resiz
   }
 }, 90_000);
 
-test("nested exit preserves the shell; root failure removes the terminal for every viewer", async () => {
+test("nested exit preserves the shell; root failure retains the terminal for every viewer", async () => {
   const servers: TestServer[] = [];
   const agents: TestAgent[] = [];
   const clients: SessionClient[] = [];
@@ -314,23 +314,33 @@ test("nested exit preserves the shell; root failure removes the terminal for eve
     expect(client.terminals.get(terminal.id)?.status).toBe("running");
     expect(observer.terminals.get(terminal.id)?.status).toBe("running");
 
-    const departed = [client, observer].map((viewer) =>
+    const exited = [client, observer].map((viewer) =>
       nextMessage(
         viewer,
         "terminal_event",
         10_000,
-        (message) => message.terminalId === terminal.id && message.kind === "parked",
+        (message) => message.terminalId === terminal.id && message.kind === "exited",
       ),
     );
     client.sendTerminalInput(terminal.id, "exit 130\n");
-    await Promise.all(departed);
+    await Promise.all(exited);
     await waitFor(
-      () => !client.terminals.has(terminal.id) && !observer.terminals.has(terminal.id),
+      () =>
+        client.terminals.get(terminal.id)?.status === "exited" &&
+        observer.terminals.get(terminal.id)?.status === "exited",
       10_000,
       20,
     );
-    await waitFor(() => !canvas.elements.has("el-exited-gates"), 10_000, 20);
-    expect(await listTerminals(server)).toEqual([]);
+    expect(client.terminals.get(terminal.id)?.exitCode).toBe(130);
+    expect(canvas.elements.has("el-exited-gates")).toBe(true);
+    expect(
+      tileIdForRef(client.layout(), { kind: "terminal", terminalId: terminal.id }),
+    ).not.toBeNull();
+    expect((await listTerminals(server)).find((entry) => entry.id === terminal.id)).toMatchObject({
+      status: "exited",
+      exitCode: 130,
+      homeId: terminal.containerId,
+    });
   } catch (error) {
     throw e2eFailure(error, [...servers, ...agents]);
   } finally {

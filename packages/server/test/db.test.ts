@@ -2215,6 +2215,7 @@ CREATE TABLE terminals(id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT,
   created_by TEXT, status TEXT, exit_code INTEGER, created_at INTEGER,
   agent_principal_id TEXT, name TEXT);
 INSERT INTO meta VALUES ('schema_version', '26');
+CREATE TABLE terminals(id TEXT PRIMARY KEY);
 CREATE TABLE machine_job_installs(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, enabled INTEGER NOT NULL, ready INTEGER NOT NULL DEFAULT 0, purge_requested INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(machine_id,plugin_id));
 CREATE TABLE machine_job_installations(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, PRIMARY KEY(machine_id,plugin_id,revision));
 CREATE TABLE machine_job_inputs(job_id TEXT NOT NULL, request_id TEXT NOT NULL, seq INTEGER NOT NULL, actor TEXT NOT NULL, trace_id TEXT NOT NULL, decision_id TEXT, state TEXT NOT NULL, reason TEXT, PRIMARY KEY(job_id,request_id));
@@ -2324,6 +2325,7 @@ CREATE TABLE native_instance_services(
   service_id TEXT PRIMARY KEY,revision TEXT NOT NULL,machine_id TEXT NOT NULL,
   plugin_id TEXT NOT NULL,configuration TEXT NOT NULL,credential TEXT,job_id TEXT,
   configured_by TEXT NOT NULL,configured_at INTEGER NOT NULL);
+CREATE TABLE terminals(id TEXT PRIMARY KEY);
 ${LEGACY_PLUGIN_INSTALLS}
 ${JOB_SCHEDULE_SCHEMA_SQL}
 INSERT INTO machine_jobs(job_id, machine_id, plugin_id, digest, request, state, created_at, cancel_reason) VALUES
@@ -2383,6 +2385,8 @@ ALTER TABLE job_schedule_occurrences DROP COLUMN run_id;
 ALTER TABLE terminals DROP COLUMN run_id;
 DROP TABLE agents;
 DELETE FROM meta WHERE key='agent-runs:declarations-after-event-id';
+ALTER TABLE terminals DROP COLUMN cwd;
+ALTER TABLE terminals DROP COLUMN launch_recipe;
 UPDATE meta SET value='33' WHERE key='schema_version';
 `);
     const authority = db
@@ -2425,6 +2429,62 @@ UPDATE meta SET value='33' WHERE key='schema_version';
     expect(db.query("SELECT revision FROM job_invocation_edges ORDER BY caller").all()).toEqual(
       revisions,
     );
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("migration 36 leaves legacy cwd unknown and persists new launch intent across reopening", () => {
+  const dir = mkdtempSync(join(tmpdir(), "manifold-db-terminal-restart-"));
+  const path = join(dir, "manifold.db");
+  let db = new Database(path);
+  try {
+    db.exec(`
+CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO meta VALUES ('schema_version', '35');
+CREATE TABLE events(id INTEGER PRIMARY KEY, container_id TEXT, ts INTEGER NOT NULL);
+CREATE TABLE terminals(
+  id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT, created_by TEXT,
+  agent_principal_id TEXT, name TEXT, status TEXT, exit_code INTEGER, created_at INTEGER
+);
+INSERT INTO terminals VALUES ('legacy','machine','home','author',NULL,'kept','exited',NULL,1);
+`);
+    db.close();
+    db = openDatabase(path);
+    const store = new ServerStore(db);
+    expect(store.getTerminal("legacy")).toMatchObject({
+      id: "legacy",
+      containerId: "home",
+      name: "kept",
+      status: "exited",
+      exitCode: null,
+    });
+    expect(store.getTerminal("legacy")?.cwd).toBeUndefined();
+    expect(store.getTerminal("legacy")?.launchRecipe).toBeUndefined();
+    const launchRecipe = {
+      cols: 80,
+      rows: 24,
+      cwd: "/original",
+      env: { PROJECT: "kept" },
+      program: { argv: ["/bin/sh", "-l"] satisfies [string, ...string[]] },
+    };
+    store.createTerminal({
+      id: "new",
+      machineId: "machine",
+      containerId: "home",
+      createdBy: "author",
+      agentPrincipalId: null,
+      createdAt: 2,
+      launchRecipe,
+    });
+    store.updateTerminalCwd("new", "/last/observed");
+    db.close();
+    db = openDatabase(path);
+    expect(new ServerStore(db).getTerminal("new")).toMatchObject({
+      cwd: "/last/observed",
+      launchRecipe,
+    });
   } finally {
     db.close();
     rmSync(dir, { recursive: true, force: true });

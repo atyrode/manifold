@@ -332,10 +332,18 @@ describe("core.terminals.listAll", () => {
     const running = openTerminal(fixture);
     const exited = openTerminal(fixture);
     fixture.broker.onExited(fixture.machine.machineId, exited.terminalId, 3);
+    fixture.broker.onCwd(fixture.machine.machineId, exited.terminalId, "/workspace/restart");
 
     const terminals = await indexRows(fixture);
-    // An observed exit removes the row from the same inventory every viewer reads.
-    expect(terminals.map((terminal) => terminal.id)).toEqual([running.terminalId]);
+    expect(terminals.map((terminal) => terminal.id).sort()).toEqual(
+      [running.terminalId, exited.terminalId].sort(),
+    );
+    expect(terminals.find((terminal) => terminal.id === exited.terminalId)).toMatchObject({
+      status: "exited",
+      exitCode: 3,
+      homeId: exited.homeId,
+      cwd: "/workspace/restart",
+    });
     expect(terminals.find((terminal) => terminal.id === running.terminalId)).toEqual({
       id: running.terminalId,
       machineId: fixture.machine.machineId,

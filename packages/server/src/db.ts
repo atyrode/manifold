@@ -9,7 +9,7 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 38;
+export const SCHEMA_VERSION = 39;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -891,6 +891,11 @@ WHERE kind='agent' AND id IN (
   END
 );
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','38');
+`,
+  39: `
+ALTER TABLE terminals ADD COLUMN cwd TEXT;
+ALTER TABLE terminals ADD COLUMN launch_recipe TEXT;
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','39');
 `,
 };
 
