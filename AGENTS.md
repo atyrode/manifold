@@ -15,8 +15,8 @@ maintenance PRs with required CI and maintainer holds. Details are in dotfiles'
 Effects on a live Manifold use actions discovered from `GET /api/protocol`, never DOM
 controls as an administrative fallback. Use the SDK-backed
 [`manifold-action-runner`](packages/sdk/README.md) for external automation: the trusted
-launcher owns the sponsor secret, the runner owns child credentials, and the agent explicitly
-acknowledges the exact delivered policy before invoking ordinary actions. Retain the returned
+launcher owns an Agent-scoped runner or run credential, the runner owns child credentials,
+and the agent explicitly acknowledges the exact delivered policy before invoking ordinary actions. Retain the returned
 door, declared target, outcome/refusal and trace id. Finish on every terminal path and report
 unconfirmed cleanup. Browser automation remains required when the human-facing interaction
 itself is under verification, not as a substitute for the action plane.
