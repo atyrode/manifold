@@ -1,8 +1,8 @@
 # ADR 0041: A plugin calls a declared dependency's door, and gains no authority by it
 
 Date: 2026-09-14
-Status: proposed
-Ratified: —
+Status: accepted
+Ratified: 2026-09-14, by the operator (the rule: caller's principal AND caller's ceiling; PR #576 review, finding 2)
 
 ## Context
 
