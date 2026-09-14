@@ -1618,8 +1618,8 @@ describe("the event plane", () => {
   const CONTAINER: ManifoldRef = { kind: "container", containerId: "container1" };
   const MACHINES: ManifoldRef = { kind: "plugin", pluginId: "core.machines" };
 
-  const event = (topic: ManifoldRef, kind: string) =>
-    JSON.stringify({ type: "event", topic, kind, at: 1, actor: "p1", payload: {} });
+  const event = (plugin: string, topic: ManifoldRef, kind: string) =>
+    JSON.stringify({ type: "event", topic, plugin, kind, at: 1, actor: "p1", payload: {} });
 
   test("subscribe declares structured topics on the SOCKET, with no channel", () => {
     const { client, socket } = connected();
@@ -1641,11 +1641,30 @@ describe("the event plane", () => {
     client.subscribe([CONTAINER], (frame) => mine.push(frame.kind));
     client.subscribe([MACHINES], (frame) => theirs.push(frame.kind));
 
-    socket.receive(event(CONTAINER, "container_renamed"));
-    socket.receive(event(MACHINES, "machine_online"));
+    socket.receive(event("core.index", CONTAINER, "container_renamed"));
+    socket.receive(event("core.machines", MACHINES, "machine_online"));
 
     expect(mine).toEqual(["container_renamed"]);
     expect(theirs).toEqual(["machine_online"]);
+  });
+
+  test("same-kind events on one node preserve their origin for consumer qualification", () => {
+    const { client, socket } = connected();
+    const origins: string[] = [];
+    const babelRuns: string[] = [];
+    client.subscribe([CONTAINER], (frame) => {
+      origins.push(frame.plugin);
+      if (frame.plugin === "atyrode.babel" && frame.kind === "run_changed") {
+        babelRuns.push(frame.kind);
+      }
+    });
+
+    socket.receive(event("core.access", CONTAINER, "run_changed"));
+    socket.receive(event("atyrode.babel", CONTAINER, "run_changed"));
+
+    expect(origins).toEqual(["core.access", "atyrode.babel"]);
+    expect(babelRuns).toEqual(["run_changed"]);
+    expect(client.status).toBe("open");
   });
 
   test("a container subscription hears its own leaves, because the grammar nests them", () => {
@@ -1654,12 +1673,22 @@ describe("the event plane", () => {
     client.subscribe([CONTAINER], (frame) => seen.push(frame.kind));
 
     socket.receive(
-      event({ kind: "element", containerId: "container1", elementId: "e1" }, "element_placed"),
+      event(
+        "core.space",
+        { kind: "element", containerId: "container1", elementId: "e1" },
+        "element_placed",
+      ),
     );
-    socket.receive(event({ kind: "tile", containerId: "container1", tileId: "t1" }, "tile_split"));
+    socket.receive(
+      event("core.space", { kind: "tile", containerId: "container1", tileId: "t1" }, "tile_split"),
+    );
     // A different container is a different node, however similar the id looks.
     socket.receive(
-      event({ kind: "element", containerId: "container2", elementId: "e1" }, "element_placed"),
+      event(
+        "core.space",
+        { kind: "element", containerId: "container2", elementId: "e1" },
+        "element_placed",
+      ),
     );
 
     expect(seen).toEqual(["element_placed", "tile_split"]);
@@ -1671,7 +1700,7 @@ describe("the event plane", () => {
     const element: ManifoldRef = { kind: "element", containerId: "container1", elementId: "e1" };
     client.subscribe([CONTAINER, element], (frame) => seen.push(frame.kind));
 
-    socket.receive(event(element, "element_placed"));
+    socket.receive(event("core.space", element, "element_placed"));
 
     // A handler asked about a SET of nodes, not about a set of matches.
     expect(seen).toEqual(["element_placed"]);
@@ -1679,7 +1708,7 @@ describe("the event plane", () => {
 
   test("nothing is replayed: a handler that subscribes afterwards hears nothing", () => {
     const { client, socket } = connected();
-    socket.receive(event(CONTAINER, "container_renamed"));
+    socket.receive(event("core.index", CONTAINER, "container_renamed"));
 
     const seen: string[] = [];
     client.subscribe([CONTAINER], (frame) => seen.push(frame.kind));
@@ -1705,7 +1734,7 @@ describe("the event plane", () => {
     expect(framesOfType(socket, "unsubscribe")).toHaveLength(0);
     const stillDelivered: string[] = [];
     const off = client.subscribe([CONTAINER], (frame) => stillDelivered.push(frame.kind));
-    socket.receive(event(CONTAINER, "container_renamed"));
+    socket.receive(event("core.index", CONTAINER, "container_renamed"));
     expect(stillDelivered).toEqual(["container_renamed"]);
     off();
   });
@@ -1752,7 +1781,7 @@ describe("the event plane", () => {
     });
     const revBefore = client.rev;
 
-    socket.receive(event(CONTAINER, "container_renamed"));
+    socket.receive(event("core.index", CONTAINER, "container_renamed"));
 
     expect(messages).toEqual([]);
     expect(client.rev).toBe(revBefore);

@@ -1049,6 +1049,8 @@ export const PluginRosterEntrySchema = z.strictObject({
   lifecycle: PluginLifecycleStateSchema.optional(),
   /** Why this row cannot be toggled right now — a lock in the UI, not a hidden failure. */
   refusal: PluginRefusalReasonSchema.optional(),
+  /** A structurally incompatible plugin is discoverable but contributes nothing at runtime. */
+  held: z.strictObject({ reason: z.string().min(1), by: PluginIdSchema.optional() }).optional(),
   changedBy: z.string().min(1).max(128).nullish(),
   changedAt: z.number().int().min(0).nullish(),
   /**
@@ -1093,6 +1095,7 @@ export function rosterDisciplines(
 ): ReadonlyMap<string, DisciplineDeclaration> {
   const disciplines = new Map<string, DisciplineDeclaration>();
   for (const entry of roster) {
+    if (entry.held !== undefined) continue;
     for (const discipline of entry.manifest.contributes.disciplines ?? []) {
       disciplines.set(discipline.id, discipline);
     }

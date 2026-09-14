@@ -400,6 +400,22 @@ describe("the plugin roster", () => {
     expect(PluginRosterSchema.parse([])).toEqual([]);
   });
 
+  test("a held plugin publishes the named problem and its required dependency", () => {
+    const held = { reason: "held_by_dependency:vendor.babel", by: "vendor.babel" };
+    const parsed = PluginRosterEntrySchema.parse({ ...entry, actions: [], held });
+    expect(parsed.held).toEqual(held);
+    expect(parsed.enabled).toBe(false);
+    expect(PluginRosterEntrySchema.safeParse({ ...entry, held: { reason: "" } }).success).toBe(
+      false,
+    );
+    expect(
+      PluginRosterEntrySchema.safeParse({
+        ...entry,
+        held: { reason: held.reason, by: "not-a-plugin" },
+      }).success,
+    ).toBe(false);
+  });
+
   test("`source` tells an ENGINE door from a plugin, and admits nothing else", () => {
     // The mechanism that turns plugins on cannot be a plugin that can be turned off, so
     // enablement is published as a builtin row: same manifest, same action schemas, same

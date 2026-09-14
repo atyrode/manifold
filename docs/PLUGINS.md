@@ -421,9 +421,9 @@ Rules worth knowing before you write one:
 - **`purges` is a declaration for audit, never a trigger.** It says which of the closed purge
   targets (`storage`, `elements`, `ownership`) you hold, so a human can see what
   `engine.plugins.purge` would cost before pressing it. Nothing about disable reads it.
-- **`events` declares the event kinds you originate** (§6b). The id is `snake_case` and globally
-  unique: a kind belongs to one plugin, and the engine refuses an emission of a kind another
-  manifest declared. `entry` is still reserved — write it if you like; nothing reads it this wave.
+- **`events` declares the event kinds you originate** (§6b). The id is `snake_case` and local to
+  your plugin: two plugins may declare the same kind, but one manifest cannot declare it twice.
+  The host supplies your id as `event.plugin` and refuses kinds you did not declare.
 
 ### Disciplines
 
@@ -2486,7 +2486,7 @@ in the tree names an assembled action.
 
 ## 6b. Events: telling the workspace something happened
 
-The fourth plane (ADR 0012). Use it when something happened that another plugin wants to know
+The fourth plane (ADR 0012, amended by ADR 0045). Use it when something happened that another plugin wants to know
 about and nobody is editing anything: a container created, a machine enrolled, a terminal gone.
 It is not for continuous streams (PTY bytes, cursor motion, live drags — those are channel
 traffic), and it is not a way to change the world.
@@ -2517,13 +2517,13 @@ async createContainer(ctx, args) {
 }
 ```
 
-Five rules, and they are all mechanized:
+These rules are mechanized:
 
-- **A kind is `snake_case`, global, and owned by one plugin.** `^[a-z][a-z0-9]*(_[a-z0-9]+)*$`,
-  max 48 characters. It is never qualified by your id — `container_created` says WHAT happened
-  and the topic says to WHOM, so a subscriber's match does not depend on which plugin currently
-  implements the concept. Two manifests declaring one kind is an `AssemblyError`, and emitting a
-  kind you did not declare is refused by name.
+- **A kind is `snake_case` and scoped to its declaring plugin.** `^[a-z][a-z0-9]*(_[a-z0-9]+)*$`,
+  max 48 characters. Keep the local name bare: both `core.access` and `atyrode.babel` may declare
+  `run_changed`. The index is keyed by `(pluginId, kind)`, and the frame carries the origin as
+  `plugin`. A duplicate within one manifest is refused; emitting a kind only another plugin
+  declared is also refused. The topic still names the node whose state changed.
 - **`ctx.emit` takes a REF, never a string.** `formatManifoldUri` is the one joiner in the tree,
   so the address is compiler-joined and there is no topic-string namespace to police.
 - **Address the most specific node that exists both before AND after the event.** When the
@@ -2556,6 +2556,20 @@ unchanged one re-renders nobody, and falls back to a cadence in exactly two stat
 is down, or the feed named no topics at all (the roomless workspace root). A timer never runs
 beside a live subscription.
 
+When interpreting a particular kind rather than invalidating by topic, match its origin too:
+
+```ts
+const stop = client.subscribe([{ kind: "plugin", pluginId: "atyrode.babel" }], (event) => {
+  if (event.plugin !== "atyrode.babel" || event.kind !== "run_changed") return;
+  refreshRuns();
+});
+```
+
+`ServerEvent` is `{ type: "event", topic, plugin, kind, at, actor, payload }`; `plugin` is the
+host-authenticated emitter, not a payload field and not inferred from the topic. In particular,
+subscriptions to shared container nodes can hear different plugins. `usePolledResource` remains
+topic-only and does not need this filter. Subscription topics and collection fan-out are unchanged.
+
 **What you may not do.** No request/response over events, no "command topics", no handler whose
 contract is "publish here to make something happen" — if it changes the world it is an action.
 And there are no offsets, acknowledgements or replay: an event reaches the sockets subscribed at
@@ -2570,14 +2584,23 @@ oracle.
 ## 7. Assembly rules
 
 Assembly happens at boot and on every enable/disable, on both the server and the web side.
-It either produces a roster or throws an `AssemblyError` naming every offender. The word is
+Strict install and replacement validation throws an `AssemblyError` naming every offender.
+At boot, problems attributable to non-core manifests instead hold those plugins aside, so the
+hub and its recovery UI remain available. Core-manifest problems are still fatal. The word is
 deliberate: **assembly** is the plugin-roster join, while a **composition** is a container whose
 discipline is tiled. One word per concept (`AXIOMS.md` §Lexicon law, `REGISTRY.md` §Lexicon).
 
 - **Collisions refuse; nothing ever shadows.** Duplicate plugin ids, action full names, panel
-  ids, element types, tool ids, binding ids or binding KEYS fail assembly loudly. There is no
-  last-write-wins, no load-order precedence, and no silent override — a shadowed capability name
-  is an authority bypass, so the answer is always a refusal that names both sides.
+  ids, element types, tool ids, binding ids or binding KEYS are named problems. There is no
+  last-write-wins, no load-order precedence, and no silent override. Non-core manifests with
+  assembly problems are quarantined, not allowed to displace core or another claimant.
+- **Held is visible, not uninstalled.** A held manifest remains on the roster with
+  `enabled: false` and `held: { reason, by? }`, but contributes no serving registries or lifecycle
+  hooks. Its reason is the assembly problem text. Required dependents are held transitively as
+  `held_by_dependency:<pluginId>`, with `by` naming that dependency. The manager and
+  `GET /api/plugins` expose the reason; enabling refuses with the same reason until compatible
+  replacement clears it. Data and install metadata are retained. Install/replace preflight
+  still refuses conflicting candidate bundles rather than admitting them held.
 - **Action caps must be a subset of manifest capabilities**, checked at assembly, not at
   dispatch.
 - **Enable/disable is hot, workspace-global, and an ENGINE door.**
@@ -2597,8 +2620,8 @@ discipline is tiled. One word per concept (`AXIOMS.md` §Lexicon law, `REGISTRY.
   attachable and killable. Users are never locked out of removing things.
 - **Dependencies are resolved at assembly**, and the resulting order — topological, ties broken
   by id — is the order lifecycle hooks fire in. Missing `required` dependencies, `incompatible`
-  peers, cycles, data-version mismatches and element-type squatting are all named refusals, never
-  warnings.
+  peers, cycles, data-version mismatches and element-type squatting are named problems, never
+  warnings. A held required dependency excludes its dependents from the serving order.
 - **A three-segment id without its proof is refused.** `example.notes.tags` claims a home under
   `example.notes`; a manifest that says so without `dependencies: { "example.notes": { type: "required" } }`
   fails assembly as `orphan_child`, naming the plugin and the parent (§1). It sits with the
@@ -2707,7 +2730,7 @@ beside them. Its list is three collapsible bands — **Installed** (rows carryin
 by publisher), **Built-in** (`core.*`) and **Engine** (builtin rows, not toggleable) — and a plugin
 FAMILY (ADR 0023: a three-segment id whose parent is composed and declared `required`) is one row
 with a chevron, its parts nested under it, the parent's switch being the family's. Every row wears
-a STATUS chip in plain words (On / Off / Starting / Crashed / Refused / Not ready, with the reason on
+a STATUS chip in plain words (On / Off / Starting / Crashed / Refused / Not ready / Held, with the reason on
 hover — never a refusal class) and a PERMISSIONS chip counting what the row holds (for an installed
 row, its grant; the sheet greys what the installer withheld). Pressing a row opens a detail sheet:
 status, permissions with each cap's meaning, doors, contributions, family, relations (as links),

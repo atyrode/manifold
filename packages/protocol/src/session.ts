@@ -10,7 +10,7 @@ import {
   PresencePayloadSchema,
   PresenceStateSchema,
 } from "./presence.ts";
-import { PluginRosterSchema } from "./plugin.ts";
+import { PluginIdSchema, PluginRosterSchema } from "./plugin.ts";
 import { PrincipalSchema } from "./principal.ts";
 import { ManifoldRefSchema } from "./uri.ts";
 import { STREAM_CLIENT_BODIES, STREAM_SERVER_BODIES } from "./stream.ts";
@@ -25,7 +25,7 @@ import { STREAM_CLIENT_BODIES, STREAM_SERVER_BODIES } from "./stream.ts";
  *                      client → server  {"type":"subscribe","topics":[…]}
  *                      server → client  {"type":"ping"}
  *                      server → client  {"type":"plugins","roster":[…]}
- *                      server → client  {"type":"event","topic":{…},"kind":"…",…}
+ *                      server → client  {"type":"event","topic":{…},"plugin":"…","kind":"…",…}
  *   channel-level      both ways        {"ch":"<channelId>", "type":"…", …}
  *
  * A CHANNEL is one client-chosen handle onto one room. `ch` is opaque to the server,
@@ -572,11 +572,12 @@ export const CONNECTION_BODIES = {
    * ONE thing happened to ONE node, emitted at the door that committed it — once, at the
    * commit point, never per frame of the gesture that led there.
    *
-   * `topic` is the node it happened to and `kind` is what happened: the pair is the whole
-   * addressing story, which is why no kind is ever qualified by its emitter. The two `kind`
-   * words in this frame are one canon word at two depths — `topic.kind` discriminates the
-   * ADDRESS FORM (the closed union in `uri.ts`), `kind` names the event class exactly as
-   * `terminal_event.kind` already does for a PTY.
+   * `topic` is the node it happened to, `plugin` is the originating plugin, and `kind` is what
+   * happened within that plugin's declared vocabulary. Subscriptions match only topic nodes;
+   * consumers matching a kind also match its plugin. The two `kind` words in this frame are
+   * one canon word at two depths — `topic.kind` discriminates the ADDRESS FORM (the closed
+   * union in `uri.ts`), `kind` names the event class exactly as `terminal_event.kind` does
+   * for a PTY.
    *
    * `actor` is the principal whose action committed the change, or null when the engine acted
    * with no principal behind it (an agent socket dying, a migration, a timer). It is stated
@@ -590,6 +591,7 @@ export const CONNECTION_BODIES = {
   event: z.strictObject({
     type: z.literal("event"),
     topic: ManifoldRefSchema,
+    plugin: PluginIdSchema,
     kind: EventKindSchema,
     /** Server clock, ms since epoch — the same stamp `saved.at` carries. */
     at: z.number().int().nonnegative(),

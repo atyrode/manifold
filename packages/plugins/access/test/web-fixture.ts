@@ -307,7 +307,7 @@ export class AccessBrowser {
         leaveRoom: () => { host = { ...host, containerId: null, client: client([]) }; flushSync(render); },
         answer: (id, outcome) => { const resolve = pending.get(id); if (!resolve) throw new Error("No pending action " + id); pending.delete(id); resolve(outcome); },
         pending: () => requests.filter(request => pending.has(request.id)),
-        emitAccess: () => { for (const listener of eventListeners) listener({ pluginId: "core.access", kind: "run_changed", payload: {} }); },
+        emitAccess: () => { for (const listener of eventListeners) listener({ type: "event", topic: { kind: "plugin", pluginId: "core.access" }, plugin: "core.access", kind: "run_changed", actor: null, at: Date.now(), payload: {} }); },
       };
       render();
     `,

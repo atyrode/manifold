@@ -10,7 +10,7 @@ import type { Assembly } from "./assemble.ts";
  * THE EMISSION BOUNDARY (ADR 0012).
  *
  * The event plane has exactly one mechanism and it is closed: the ENGINE emits, at the doors
- * it already owns, and it may only emit a kind some manifest DECLARED. Everything else about
+ * it already owns, and it may only emit a kind its own manifest DECLARED. Everything else about
  * the plane is open — any node is a topic, any plugin may declare a vocabulary — because the
  * failure mode this file exists to prevent is not "too few events", it is a general-purpose
  * bus growing beside the action door until publishing becomes the easy way to change the
@@ -40,9 +40,9 @@ export type EmitEvent = (ref: ManifoldRef, kind: EventKind, payload?: EventPaylo
  *
  * Two rules, and no more:
  *
- *   THE KIND IS DECLARED BY THIS EMITTER. Not merely declared by somebody: `terminal_exited`
- *   belongs to whoever claimed it, and an emitter borrowing another plugin's kind would publish
- *   under a vocabulary it does not own, which makes the roster's declaration a lie.
+ *   THE KIND IS DECLARED BY THIS EMITTER. Not merely declared by somebody: kinds are local to
+ *   each plugin, and emitting a word absent from its own manifest would publish under a
+ *   vocabulary it does not own, which makes the roster's declaration a lie.
  *
  *   A PLUGIN NODE IS ITS OWNER'S. Collection-level facts (a container born, a machine
  *   enrolled) have no node of their own, so they ride the declaring plugin's node — which makes
@@ -57,12 +57,8 @@ export function emissionRefusal(
   ref: ManifoldRef,
   kind: string,
 ): string | null {
-  const declared = assembly.events.get(kind);
-  if (declared === undefined) {
-    return `plugin "${pluginId}" emitted event kind "${kind}", which no manifest declares in contributes.events`;
-  }
-  if (declared.plugin !== pluginId) {
-    return `plugin "${pluginId}" emitted event kind "${kind}", which is declared by "${declared.plugin}"`;
+  if (assembly.events.get(pluginId)?.get(kind) === undefined) {
+    return `plugin "${pluginId}" emitted event kind "${kind}", which it does not declare in contributes.events`;
   }
   if (ref.kind === "plugin" && ref.pluginId !== pluginId) {
     return `plugin "${pluginId}" emitted "${kind}" on ${formatManifoldUri(ref)}, which is another plugin's node`;

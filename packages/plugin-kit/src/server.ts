@@ -241,6 +241,7 @@ export type GuestRepositoryOutcome =
   | { readonly ok: true; readonly fact: MachineRepositoryFact }
   | { readonly ok: false; readonly reason: string };
 
+/** Stages a plugin-local kind; the host supplies this plugin's identity as the frame's origin. */
 export type GuestEmit = (ref: ManifoldRef, kind: EventKind, payload?: EventPayload) => void;
 
 /**

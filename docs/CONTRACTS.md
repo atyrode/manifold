@@ -72,6 +72,11 @@ does not authorize a hub upgrade, promotion or fleet change.
 Preserve the production compatibility hold for a development-only release; the explicit
 promotion procedure is [SELF-HOST.md §Environments](SELF-HOST.md#environments).
 
+Session revision 34 adds the required event-frame `plugin` origin (#601, ADR 0045), after
+#584's revision 33. Update SDK/plugin clients together: any consumer interpreting an event
+kind must qualify it by its declaring origin. Topics and machine/instance frames are unchanged;
+their compatibility sets only add the shared revision, retaining previously admitted versions.
+
 ### Producer-neutral behavior
 
 **Identity is data, never a branch** (multiplayer-first, operator-ratified 2026-08-30).
@@ -1191,6 +1196,7 @@ rides the connection-level `plugins` frame the same way:
   lifecycle?: "ok" | "enable_failed" | "disable_failed"
            | "isolate_starting" | "isolate_crashed",   // absent ≡ ok; the isolate_ pair is the runner's
   refusal?: PluginRefusalReason,              // why this row cannot be toggled right now
+  held?: { reason: string, by?: string },     // assembly quarantine; enabled is false
   changedBy?: string | null, changedAt?: number | null,    // who last flipped it, and when
   install?: { sha256, source, grantedCaps, installedBy, installedAt, hardened?, builtAgainst?, mode?, refusal? }  // present iff INSTALLED (§Hardened plugins)
 }
@@ -1199,6 +1205,16 @@ rides the connection-level `plugins` frame the same way:
 `install.mode` is `"bundle" | "unpacked"` (`PLUGIN_INSTALL_MODES`, absent ≡ `bundle`): who packed
 the bytes — an installer with the kit, or the hub itself from `<data>/authored/<id>/` (§Unpacked
 plugins below).
+
+Assembly problems attributable to non-core manifests quarantine those plugins at boot rather
+than refusing the hub. A held row retains its manifest, install metadata and data, but contributes
+no serving registries or lifecycle hooks. `held.reason` is the assembly problem text. Required
+dependents are held transitively with `reason: "held_by_dependency:<pluginId>"` and `by` naming
+that dependency. The plugin manager displays the same reason as `GET /api/plugins`, and enabling
+a held plugin refuses with that reason. Compatible replacement clears holds on reassembly.
+Core-manifest problems remain fatal with the named `AssemblyError`. Install and replacement
+preflight still reject conflicting candidate bundles before admission; holding is not a second
+installation mode (ADR 0045).
 
 `GET /api/protocol` embeds the same vocabulary beside the wire schemas, plus a `pluginContract`
 block — `engineNamespace`, `sources`, `dependencyTypes`, `dormantModes`, `defaultDormantMode`,
@@ -2361,15 +2377,19 @@ demultiplexes connection frames to pool-level listeners (`SessionClient.onPlugin
 developerMode)`, which replays the latest pair to a late subscriber) instead of dropping them as
 frames for an unknown channel.
 
-**The event plane (v17, ADR 0012).** `subscribe`/`unsubscribe { topics: ManifoldRef[] }` declare
-and withdraw interest; `event { topic, kind, at, actor, payload }` is one notification. All three
+**The event plane (v17; owner-scoped origins in v34, ADR 0045 amending ADR 0012).**
+`subscribe`/`unsubscribe { topics: ManifoldRef[] }` declare and withdraw interest;
+`event { topic, plugin, kind, at, actor, payload }` is one notification. All three
 are connection-level because a TOPIC IS A NODE — routinely a node no channel on this socket has
 joined — and topics travel as structured refs rather than `manifold://` strings, so the wire has
 nowhere to carry a hand-typed address and the namespace needs no registry
 (`REGISTRY.md` §Runtime-joined namespaces). `kind` is snake_case (`EventKindSchema`) and must be
-DECLARED by the emitting plugin's `contributes.events`; the assembly indexes those declarations
-and refuses an undeclared emission by name, so the vocabulary a live workspace emits is closed
-and published while the vocabulary a build may declare stays open. Subscribing is a READ of the
+DECLARED by the emitting plugin's `contributes.events`. The index is keyed by `(pluginId, kind)`:
+two plugins may declare the same kind, while a duplicate within one manifest is refused.
+`plugin` is the originating plugin id, stamped by the host, not inferred from the topic or
+accepted from the payload. Emitting a kind declared only by another plugin is refused by name.
+Consumers interpreting a kind qualify by `event.plugin`; topic-only invalidation remains
+unchanged. `GET /api/protocol` publishes the origin field and each kind's owner. Subscribing is a READ of the
 topic's node, discharged with the same authority the resolve door uses; a topic this credential
 may not read is simply not subscribed, because a per-topic refusal frame would make the plane a
 permission oracle. There are no offsets, acknowledgements or replay: an event reaches the sockets

@@ -42,6 +42,7 @@ export function itemNoun(kind: string, roster: PluginRoster): string {
   const floor = FLOOR_NOUNS[kind];
   if (floor !== undefined) return floor;
   for (const entry of roster) {
+    if (entry.held !== undefined) continue;
     for (const discipline of entry.manifest.contributes.disciplines ?? []) {
       if (discipline.id === kind) return discipline.title.toLowerCase();
     }

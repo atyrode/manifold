@@ -510,44 +510,25 @@ describe("assembleRoster", () => {
     }
   });
 
-  test("two plugins reserving the same EVENT topic refuse, before anything can consume it", () => {
-    const alpha: PluginDef = {
+  test("core and independent plugins declare the same local event kind", () => {
+    const publisher = (id: string): PluginDef => ({
       manifest: manifest({
-        id: "vendor.alpha",
-        contributes: { events: [{ id: "opened", title: "Opened" }] },
+        id,
+        contributes: { events: [{ id: "run_changed", title: id }] },
       }),
       actions: [],
-    };
-    const beta: PluginDef = {
-      manifest: manifest({
-        id: "vendor.beta",
-        contributes: { events: [{ id: "opened", title: "Opened, differently" }] },
-      }),
-      actions: [],
-    };
-
-    /*
-      `contributes.events` has no consumer this wave — ADR 0012 lands the plane in wave 2 —
-      and that is exactly why uniqueness covers it NOW. An event id is a TOPIC a subscriber
-      will address, so two plugins reserving one topic is D5's collision with its damage
-      deferred rather than avoided: refusing while the namespace is still empty costs an
-      author one rename, while refusing after the plane ships would break every subscriber
-      already listening to whichever claimant happened to register first.
-     */
-    let thrown: unknown = null;
-    try {
-      assembleRoster([alpha, beta], NONE);
-    } catch (reason) {
-      thrown = reason;
-    }
-    const error = thrown as AssemblyError;
-    expect(error).toBeInstanceOf(AssemblyError);
-    expect(error.problems).toEqual([
-      'duplicate event "opened" claimed by: vendor.alpha, vendor.beta',
-    ]);
-    // BOTH offenders named: an author shown one side of a collision cannot fix it.
-    expect(error.message).toContain("vendor.alpha");
-    expect(error.message).toContain("vendor.beta");
+    });
+    const assembly = assembleRoster([publisher("vendor.babel"), publisher("core.access")], NONE);
+    expect(assembly.events.get("vendor.babel")?.get("run_changed")).toEqual({
+      plugin: "vendor.babel",
+      title: "vendor.babel",
+    });
+    expect(assembly.events.get("core.access")?.get("run_changed")).toEqual({
+      plugin: "core.access",
+      title: "core.access",
+    });
+    expect(assembly.enabled("vendor.babel")).toBe(true);
+    expect(assembly.enabled("core.access")).toBe(true);
   });
 
   test("two plugins claiming one ROUTE SEGMENT refuse: there is one URL space", () => {
@@ -682,39 +663,21 @@ describe("assembleRoster", () => {
     expect(backward).toEqual(["core.ccc", "core.bbb", "core.aaa"]);
   });
 
-  test("two plugins claiming one EVENT id refuse, even though nothing consumes events yet", () => {
-    const publisher = (id: string): PluginDef => ({
+  test("a duplicate local event inside one manifest refuses strict assembly even disabled", () => {
+    const publisher: PluginDef = {
       manifest: manifest({
-        id,
-        contributes: { events: [{ id: "spotlighted", title: "Spotlight moved" }] },
+        id: "vendor.babel",
+        contributes: {
+          events: [
+            { id: "run_changed", title: "Run" },
+            { id: "run_changed", title: "Duplicate" },
+          ],
+        },
       }),
       actions: [],
-    });
-
-    /*
-      `contributes.events` is reserved for the wave-2 event plane (ADR 0012), so this refusal
-      protects nothing that runs today — deliberately. An event id is a GLOBAL topic name the
-      moment it is declared, and topics are nodes; letting two plugins register one now would
-      mean the wave that starts delivering events has to break somebody to fix it. D5 refuses
-      at declaration time, which is the only time it is free.
-     */
-    let thrown: unknown = null;
-    try {
-      assembleRoster([publisher("core.presence"), publisher("vendor.watcher")], NONE);
-    } catch (reason) {
-      thrown = reason;
-    }
-    expect(thrown).toBeInstanceOf(AssemblyError);
-    expect((thrown as AssemblyError).problems).toEqual([
-      'duplicate event "spotlighted" claimed by: core.presence, vendor.watcher',
-    ]);
-
-    // One plugin declaring the id is fine, and it stays purely declarative: an event
-    // contributes no registry entry this wave, only the reservation.
-    const solo = assembleRoster([publisher("core.presence")], NONE);
-    expect(solo.roster[0]?.manifest.contributes.events).toEqual([
-      { id: "spotlighted", title: "Spotlight moved" },
-    ]);
+    };
+    expect(() => assembleRoster([publisher], NONE)).toThrow(AssemblyError);
+    expect(() => assembleRoster([publisher], new Set(["vendor.babel"]))).toThrow(AssemblyError);
   });
 });
 
@@ -1211,5 +1174,143 @@ describe("assembleRoster action scope", () => {
     // The registry keeps the DEFINITION, so the dispatcher reads the declared scope directly.
     expect(assembly.actions.get("core.index.read")?.def.scope).toBe("container");
     expect(assembly.actions.get("core.index.createContainer")?.def.scope).toBeUndefined();
+  });
+});
+
+describe("assembleRoster quarantine", () => {
+  const hold = { problemPolicy: "hold" } as const;
+  const dependency = (
+    id: string,
+    target: string,
+    type: "required" | "optional" = "required",
+  ): PluginDef => ({
+    manifest: { ...manifest({ id }), dependencies: { [target]: { type } } },
+    actions: [],
+  });
+
+  test("a conflict holds the non-core claimant and transitive required dependents only", () => {
+    const bad: PluginDef = {
+      manifest: manifest({
+        id: "vendor.babel",
+        contributes: {
+          elements: [{ type: "draw", title: "Not core drawing" }],
+          panels: [{ id: "home", title: "Home" }],
+          events: [{ id: "run_changed", title: "Run" }],
+        },
+      }),
+      actions: [],
+    };
+    // Last registration must not let the held claimant shadow the healthy core owner.
+    const assembly = assembleRoster(
+      [
+        shell,
+        dependency("vendor.leaf", "vendor.babel"),
+        dependency("vendor.descendant", "vendor.leaf"),
+        dependency("vendor.optional", "vendor.babel", "optional"),
+        bad,
+      ],
+      NONE,
+      hold,
+    );
+    const row = (id: string) => assembly.roster.find((entry) => entry.manifest.id === id);
+    expect(row("vendor.babel")).toMatchObject({ manifest: bad.manifest, enabled: false });
+    expect(row("vendor.babel")?.held?.reason).toContain('duplicate element type "draw"');
+    expect(row("vendor.leaf")?.held).toEqual({
+      reason: "held_by_dependency:vendor.babel",
+      by: "vendor.babel",
+    });
+    expect(row("vendor.descendant")?.held).toEqual({
+      reason: "held_by_dependency:vendor.leaf",
+      by: "vendor.leaf",
+    });
+    expect(assembly.order).toEqual(["core.shell", "vendor.optional"]);
+    expect(assembly.enabled("vendor.babel")).toBe(false);
+    expect(assembly.enabled("vendor.optional")).toBe(true);
+    expect(assembly.elements.get("draw")?.plugin).toBe("core.shell");
+    expect(assembly.panels.has("vendor.babel.home")).toBe(false);
+    expect(assembly.events.has("vendor.babel")).toBe(false);
+  });
+
+  test("capability and malformed declaration problems are attributed without parsing their text", () => {
+    const cap: PluginDef = {
+      manifest: manifest({ id: "vendor.cap" }),
+      actions: [RENAME],
+    };
+    const malformed: PluginDef = {
+      manifest: {
+        ...manifest({ id: "vendor.malformed" }),
+        contributes: {
+          ...manifest({ id: "vendor.malformed" }).contributes,
+          events: [{ id: "NOT_A_LOCAL_EVENT", title: "Broken" }],
+        },
+      },
+      actions: [],
+    };
+    const assembly = assembleRoster(
+      [shell, cap, malformed, dependency("vendor.child", "vendor.malformed")],
+      NONE,
+      hold,
+    );
+    expect(assembly.roster.find((row) => row.manifest.id === "vendor.cap")?.held?.reason).toContain(
+      "outside its manifest capabilities",
+    );
+    expect(
+      assembly.roster.find((row) => row.manifest.id === "vendor.malformed")?.held?.reason,
+    ).toContain("invalid manifest");
+    expect(assembly.roster.find((row) => row.manifest.id === "vendor.child")?.held).toEqual({
+      reason: "held_by_dependency:vendor.malformed",
+      by: "vendor.malformed",
+    });
+    expect(assembly.actions.has("vendor.cap.rename")).toBe(false);
+  });
+
+  test("cycles hold their actual members, not healthy optional followers", () => {
+    const assembly = assembleRoster(
+      [
+        dependency("vendor.alpha", "vendor.beta", "optional"),
+        dependency("vendor.beta", "vendor.alpha", "optional"),
+        dependency("vendor.leaf", "vendor.alpha"),
+        dependency("core.observer", "vendor.alpha", "optional"),
+      ],
+      NONE,
+      hold,
+    );
+    expect(
+      assembly.roster.find((row) => row.manifest.id === "vendor.alpha")?.held?.reason,
+    ).toContain("dependency cycle");
+    expect(
+      assembly.roster.find((row) => row.manifest.id === "vendor.beta")?.held?.reason,
+    ).toContain("dependency cycle");
+    expect(assembly.roster.find((row) => row.manifest.id === "vendor.leaf")?.held?.by).toBe(
+      "vendor.alpha",
+    );
+    expect(assembly.order).toEqual(["core.observer"]);
+    expect(assembly.enabled("core.observer")).toBe(true);
+  });
+
+  test("core conflicts remain fatal, including a core-only cycle beside a non-core cycle", () => {
+    const duplicate = { ...shell, manifest: { ...shell.manifest, id: "core.other" } };
+    let strict: unknown;
+    try {
+      assembleRoster([shell, duplicate], NONE);
+    } catch (error) {
+      strict = error;
+    }
+    expect(strict).toBeInstanceOf(AssemblyError);
+    expect(() => assembleRoster([shell, duplicate], NONE, hold)).toThrow(
+      (strict as AssemblyError).message,
+    );
+    expect(() =>
+      assembleRoster(
+        [
+          dependency("core.alpha", "core.beta"),
+          dependency("core.beta", "core.alpha"),
+          dependency("vendor.alpha", "vendor.beta"),
+          dependency("vendor.beta", "vendor.alpha"),
+        ],
+        NONE,
+        hold,
+      ),
+    ).toThrow(AssemblyError);
   });
 });

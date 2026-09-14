@@ -351,6 +351,8 @@ export function buildBrowserAssembly(
     const { manifest, enabled } = entry;
     const def = byId.get(manifest.id);
     titles.set(manifest.id, manifest.title);
+    // A server-held row remains discoverable, but none of its claims enter the composition.
+    if (entry.held !== undefined) continue;
     if (enabled) enabledIds.add(manifest.id);
 
     // Hardening is the installer's choice, never inferred from installation provenance.
@@ -496,9 +498,9 @@ export function buildBrowserAssembly(
     facet are browser registrations, and a route's manifest row is re-checked for the reason
     `assembleRoster` is re-runnable at all: the browser composes a roster too.
 
-    Claims come from the WHOLE roster, disabled entries included, exactly as `assembleRoster`
-    checks names: turning a plugin off may never mask a collision that turning it back on
-    would resurrect.
+    Claims come from every admitted row, disabled entries included: turning a plugin off may
+    never mask a collision that turning it back on would resurrect. Server-held rows are
+    excluded above, rather than having their server verdict recomputed in the browser.
    */
   const problems: string[] = [];
   reportDuplicates(routeSegments, "route", problems);
@@ -683,7 +685,7 @@ function EssentialRecovery({
         change. A handful of rows is a handful of round trips.
       */
       for (const entry of roster) {
-        if (entry.enabled) continue;
+        if (entry.enabled || entry.held !== undefined) continue;
         await dispatchAction(identity.token, ENGINE_SET_ENABLED_ACTION, {
           id: entry.manifest.id,
           enabled: true,
@@ -974,7 +976,9 @@ export function AssemblyProvider({ identity, children }: AssemblyProviderProps):
       const offSettings = client.subscribe(
         [{ kind: "plugin", pluginId: "engine.plugins" }],
         (event) => {
-          if (event.kind === "plugin_setting_changed") setValuesEpoch((epoch) => epoch + 1);
+          if (event.plugin === "engine.plugins" && event.kind === "plugin_setting_changed") {
+            setValuesEpoch((epoch) => epoch + 1);
+          }
         },
       );
       const offStatus = client.on("status", () => setValuesEpoch((epoch) => epoch + 1));

@@ -5,7 +5,6 @@ import {
   emissionRefusal,
   emitterMayEmit,
   type Assembly,
-  type AssemblyError,
   type PluginDef,
 } from "../src/index.ts";
 
@@ -58,24 +57,12 @@ const assembly = (): Assembly => assembleRoster([terminals, index], NONE);
 describe("the declared-topics index", () => {
   test("every declared kind names its owner, and nothing else appears", () => {
     const events = assembly().events;
-    expect([...events.keys()]).toEqual(["container_created", "terminal_exited", "terminal_opened"]);
-    expect(events.get("terminal_exited")).toEqual({
+    expect([...events.keys()]).toEqual(["core.index", "core.terminals"]);
+    expect(events.get("core.terminals")?.get("terminal_exited")).toEqual({
       plugin: "core.terminals",
       title: "Terminal exited",
     });
-    expect(events.get("machine_online")).toBeUndefined();
-  });
-
-  test("the index is sorted by kind, so registration order cannot show up in a diff", () => {
-    /*
-      This index is PUBLISHED vocabulary. Assembling the same plugins in the opposite order is
-      the same workspace, and a reader diffing two builds' event surfaces should see what
-      changed rather than where somebody moved a registration line.
-    */
-    const forward = [...assembleRoster([terminals, index], NONE).events.keys()];
-    const backward = [...assembleRoster([index, terminals], NONE).events.keys()];
-    expect(backward).toEqual(forward);
-    expect(forward).toEqual([...forward].sort());
+    expect(events.get("core.terminals")?.get("machine_online")).toBeUndefined();
   });
 
   test("a disabled plugin keeps its declarations, exactly as its panels and elements do", () => {
@@ -83,28 +70,29 @@ describe("the declared-topics index", () => {
     // its plugin is off is that door's question (D12), asked one rung earlier in the ladder.
     const disabled = assembleRoster([terminals, index], new Set(["core.terminals"]));
     expect(disabled.enabled("core.terminals")).toBe(false);
-    expect(disabled.events.get("terminal_exited")?.plugin).toBe("core.terminals");
+    expect(disabled.events.get("core.terminals")?.get("terminal_exited")?.plugin).toBe(
+      "core.terminals",
+    );
     expect(emitterMayEmit(disabled, "core.terminals", CONTAINER, "terminal_exited")).toBe(true);
   });
 
-  test("two plugins claiming ONE kind is refused with both names (D5)", () => {
-    const impostor: PluginDef = {
+  test("two plugins may declare and emit the same local kind", () => {
+    const other: PluginDef = {
       manifest: manifest({
         id: "third.party",
         events: [{ id: "terminal_exited", title: "Something else entirely" }],
       }),
       actions: [],
     };
-    let refused: AssemblyError | null = null;
-    try {
-      assembleRoster([terminals, impostor], NONE);
-    } catch (error) {
-      refused = error as AssemblyError;
-    }
-    expect(refused).not.toBeNull();
-    expect(refused?.problems.join("\n")).toContain("terminal_exited");
-    expect(refused?.problems.join("\n")).toContain("core.terminals");
-    expect(refused?.problems.join("\n")).toContain("third.party");
+    const live = assembleRoster([terminals, other], NONE);
+    expect(live.events.get("core.terminals")?.get("terminal_exited")?.title).toBe(
+      "Terminal exited",
+    );
+    expect(live.events.get("third.party")?.get("terminal_exited")?.title).toBe(
+      "Something else entirely",
+    );
+    expect(emitterMayEmit(live, "core.terminals", CONTAINER, "terminal_exited")).toBe(true);
+    expect(emitterMayEmit(live, "third.party", CONTAINER, "terminal_exited")).toBe(true);
   });
 });
 
@@ -131,13 +119,13 @@ describe("emission is refused unless it was declared", () => {
     );
   });
 
-  test("borrowing ANOTHER plugin's kind is refused, and the refusal names the owner", () => {
-    // Declaring is a claim of ownership, not a shared dictionary: an emitter publishing under
-    // a vocabulary it does not own makes the roster's declaration a lie about who originates
-    // what, which is the one thing the index exists to answer.
-    const refusal = emissionRefusal(assembly(), "core.index", CONTAINER, "terminal_exited");
+  test("another plugin's declaration does not authorize an undeclared local kind", () => {
+    const live = assembly();
+    expect(emitterMayEmit(live, "core.terminals", CONTAINER, "terminal_exited")).toBe(true);
+    expect(emitterMayEmit(live, "core.index", CONTAINER, "terminal_exited")).toBe(false);
+    const refusal = emissionRefusal(live, "core.index", CONTAINER, "terminal_exited");
     expect(refusal).toContain("core.index");
-    expect(refusal).toContain('declared by "core.terminals"');
+    expect(refusal).toContain("terminal_exited");
   });
 
   test("a plugin may emit on its OWN node and never on another plugin's", () => {
@@ -160,7 +148,6 @@ describe("emission is refused unless it was declared", () => {
     // The reserved field with no rows is not an open door: before wave 2 nothing was
     // emittable, and a build whose manifests declare nothing is still in exactly that state.
     const bare = assembleRoster([{ manifest: manifest({ id: "core.bare" }), actions: [] }], NONE);
-    expect(bare.events.size).toBe(0);
     expect(emitterMayEmit(bare, "core.bare", CONTAINER, "container_created")).toBe(false);
   });
 });

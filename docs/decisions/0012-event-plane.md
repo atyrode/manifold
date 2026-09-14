@@ -9,6 +9,10 @@ cites moved in the lexicon cut. The sidebar section it names "Views" is the **In
 (`core.index`), and the topics it designs are `manifold://container/<id>` addresses rather than
 `manifold://pad/<id>`. Canon is `REGISTRY.md` §Lexicon.
 
+Amended 2026-09-14 by [ADR 0045](0045-owner-scoped-events.md): D5's global event-kind claim
+becomes owner-scoped, the event frame carries its origin, and non-core manifest conflicts are
+held aside at boot. The original decision text below remains historical.
+
 ## Context
 
 manifold has three planes and each one has a rule (the plane rule, `AXIOMS.md` §Axioms):

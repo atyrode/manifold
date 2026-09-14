@@ -26,9 +26,9 @@ import { ManifoldRefSchema, formatManifoldUri, type ManifoldRef } from "./uri.ts
  *   goes through the door that performs the authority check.
  *
  *   THE VOCABULARY IS DECLARED, NOT INVENTED. A kind is a manifest contribution; the assembly
- *   indexes it and refuses an emission whose kind nobody declared (@manifold/plugin's
- *   `emitterMayEmit`). So the set of kinds a live workspace can emit is closed and published,
- *   while the set a build can DECLARE stays open.
+ *   indexes it by owner and refuses an emission whose kind its emitter did not declare
+ *   (@manifold/plugin's `emitterMayEmit`). So the set of kinds a live workspace can emit is
+ *   closed and published, while the set a build can DECLARE stays open.
  */
 
 /**
@@ -51,10 +51,9 @@ export const MAX_EVENT_KIND_LENGTH = 48;
  * audit log; the alternative was a wire kind that differed from the stored kind of the same
  * event by a punctuation mark, which is the §Lexicon failure with extra steps.
  *
- * A kind is GLOBAL and claimed by exactly one plugin at assembly (D5), so it is never
- * qualified by its owner's id: `terminal_exited` says what happened, and the topic says to
- * whom. Prefixing the owner would make a subscriber's match depend on which plugin currently
- * implements a concept.
+ * A kind is LOCAL to its declaring plugin. Two plugins may declare the same word; the frame's
+ * required `plugin` identifies the origin, independently of its topic. Consumers matching a
+ * kind qualify it by `plugin`; subscriptions still name only nodes.
  */
 export const EVENT_KIND_PATTERN = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
 export const EventKindSchema = z.string().regex(EVENT_KIND_PATTERN).max(MAX_EVENT_KIND_LENGTH);
@@ -133,6 +132,11 @@ export function eventVocabulary(): Record<string, unknown> {
     maxTopicsPerFrame: MAX_SUBSCRIBE_TOPICS,
     maxSubscriptionsPerConnection: MAX_SUBSCRIPTIONS_PER_CONNECTION,
     topic: z.toJSONSchema(ManifoldRefSchema),
+    origin: {
+      field: "plugin",
+      description:
+        "Required originating plugin id. The emitting plugin must declare kind in contributes.events; kinds are local to that plugin. Subscriptions match topic nodes, not plugin or kind.",
+    },
     kind: z.toJSONSchema(EventKindSchema),
     payload: z.toJSONSchema(EventPayloadSchema),
   };

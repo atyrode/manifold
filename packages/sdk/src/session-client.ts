@@ -646,6 +646,8 @@ export class SessionClient {
    * same door a fresh client uses, because there is no offset to resume from and nothing is
    * replayed. That is the whole contract, and it is why a feed can trade its timer for a
    * subscription without changing what it does when it wakes up.
+   * The frame's `plugin` is the origin, independent of its topic. A handler selecting an
+   * event kind must qualify it by `plugin`, since different plugins may declare the same kind.
    *
    * The wire declaration is refcounted onto the SOCKET one layer down, so two panels watching
    * one container cost one `subscribe`, and neither can cancel the other by releasing first.

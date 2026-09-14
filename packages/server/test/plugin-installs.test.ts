@@ -10,8 +10,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ActionOutcomeSchema, type PluginManifest } from "@manifold/protocol";
+import {
+  ActionOutcomeSchema,
+  PluginsResponseSchema,
+  type PluginManifest,
+} from "@manifold/protocol";
 import { loadConfig } from "../src/config.ts";
+import { openDatabase } from "../src/db.ts";
 import { silentLogger } from "../src/log.ts";
 import { startServer, type RunningServer } from "../src/main.ts";
 import {
@@ -22,7 +27,7 @@ import {
   removeInstall,
   verifyInstalledBundle,
 } from "../src/plugin-installs.ts";
-import { sha256Hex, type PluginInstallRow } from "../src/stores.ts";
+import { ServerStore, sha256Hex, type PluginInstallRow } from "../src/stores.ts";
 
 /**
  * THE ARTIFACT'S JOURNEY, fail-closed at every step (ADR 0016 R8). What these cases defend is
@@ -417,6 +422,195 @@ describe("GET /api/plugins/:id/web.js", () => {
     for (const path of temporaryDirectories.splice(0)) {
       rmSync(path, { recursive: true, force: true });
     }
+  });
+
+  test("installed manifest drift boots held, refuses enable, and a compatible replacement recovers dependents", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "manifold-held-boot-"));
+    temporaryDirectories.push(cwd);
+    const config = loadConfig(
+      {
+        MANIFOLD_PORT: "0",
+        MANIFOLD_DATA_DIR: "data",
+        MANIFOLD_OWNER_KEY: OWNER_KEY,
+        MANIFOLD_SPAWN_AGENT: "0",
+      },
+      cwd,
+    );
+    const uploads = join(config.dataDir, PLUGIN_UPLOADS_DIR);
+    mkdirSync(uploads, { recursive: true });
+    const loaded = join(cwd, "dependent-loaded");
+    const heldManifest: PluginManifest = {
+      ...MANIFEST,
+      id: "vendor.babel",
+      contributes: {
+        ...MANIFEST.contributes,
+        // Matching core.access's local event is legal. The element conflict is real drift.
+        events: [{ id: "run_changed", title: "Run changed" }],
+        elements: [{ type: "draw", title: "Conflicting drawing" }],
+      },
+    };
+    const dependent: PluginManifest = {
+      ...MANIFEST,
+      id: "vendor.dependent",
+      dependencies: { "vendor.babel": { type: "required" } },
+    };
+    const unrelated: PluginManifest = {
+      ...MANIFEST,
+      id: "vendor.unrelated",
+      contributes: {
+        ...MANIFEST.contributes,
+        events: [
+          { id: "changed", title: "One" },
+          { id: "changed", title: "Two" },
+        ],
+      },
+    };
+    const writeBundle = (
+      manifest: PluginManifest,
+      server = "export default {actions:[],handlers:{}};",
+    ) => {
+      const bytes = bundleBytes(manifest, { "server.js": server, "web.js": "export {};" });
+      const source = join(uploads, `${manifest.id}-${manifest.version}.manifold-plugin.json`);
+      writeFileSync(source, bytes);
+      return { source, sha256: sha256Hex(bytes) };
+    };
+    // Seed the install ledger, as an earlier compatible distribution would have left it.
+    const store = new ServerStore(openDatabase(join(config.dataDir, "manifold.db")));
+    try {
+      for (const manifest of [heldManifest, dependent, unrelated]) {
+        const request = writeBundle(
+          manifest,
+          manifest.id === dependent.id
+            ? `import {writeFileSync} from "node:fs"; writeFileSync(${JSON.stringify(loaded)}, "loaded"); export default {actions:[],handlers:{}};`
+            : undefined,
+        );
+        const artifact = await installArtifact({ ...request, dataDir: config.dataDir });
+        store.putPluginInstall({
+          pluginId: manifest.id,
+          ...request,
+          bundlePath: artifact.bundlePath,
+          grantedCaps: [...manifest.capabilities],
+          installedBy: "p-owner",
+          installedAt: 1,
+          actions: [],
+        });
+      }
+    } finally {
+      store.close();
+    }
+    const running = await startServer({ config, logger: silentLogger, announce: false });
+    runningServers.push(running);
+    const headers = { authorization: `Bearer ${OWNER_KEY}`, "content-type": "application/json" };
+    const roster = async () =>
+      PluginsResponseSchema.parse(
+        await (await fetch(`${running.publicUrl}/api/plugins`, { headers })).json(),
+      ).plugins;
+    const door = async (name: string, body: unknown) =>
+      ActionOutcomeSchema.parse(
+        await (
+          await fetch(`${running.publicUrl}/api/actions/${name}`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(body),
+          })
+        ).json(),
+      );
+    const before = await roster();
+    const held = before.find((entry) => entry.manifest.id === heldManifest.id);
+    expect(held).toMatchObject({ enabled: false, manifest: heldManifest, actions: [] });
+    expect(held?.held?.reason).toContain('duplicate element type "draw"');
+    expect(before.find((entry) => entry.manifest.id === dependent.id)).toMatchObject({
+      enabled: false,
+      held: { reason: "held_by_dependency:vendor.babel", by: "vendor.babel" },
+    });
+    expect(existsSync(loaded)).toBe(false);
+    expect(
+      (await fetch(`${running.publicUrl}/api/plugins/vendor.babel/web.js`, { headers })).status,
+    ).toBe(404);
+    for (const id of [heldManifest.id, dependent.id]) {
+      expect(await door("engine.plugins.setEnabled", { id, enabled: true })).toMatchObject({
+        ok: false,
+        denial: { message: before.find((entry) => entry.manifest.id === id)?.held?.reason },
+      });
+    }
+    const compatible = {
+      ...heldManifest,
+      version: "1.2.4",
+      contributes: { ...heldManifest.contributes, elements: [] },
+    };
+    expect(
+      await door("engine.plugins.install", { ...writeBundle(compatible), replace: true }),
+    ).toMatchObject({ ok: true, result: { id: heldManifest.id, version: "1.2.4" } });
+    const after = await roster();
+    for (const id of [heldManifest.id, dependent.id]) {
+      const row = after.find((entry) => entry.manifest.id === id);
+      expect(row?.enabled).toBe(true);
+      expect(row?.held).toBeUndefined();
+    }
+    expect(existsSync(loaded)).toBe(true);
+    expect(after.find((entry) => entry.manifest.id === unrelated.id)?.held).toBeDefined();
+    expect(
+      (await fetch(`${running.publicUrl}/api/plugins/vendor.babel/web.js`, { headers })).status,
+    ).toBe(200);
+  });
+
+  test("install and replacement refuse duplicate local events without changing the install", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "manifold-event-install-"));
+    temporaryDirectories.push(cwd);
+    const config = loadConfig(
+      {
+        MANIFOLD_PORT: "0",
+        MANIFOLD_DATA_DIR: "data",
+        MANIFOLD_OWNER_KEY: OWNER_KEY,
+        MANIFOLD_SPAWN_AGENT: "0",
+      },
+      cwd,
+    );
+    const uploads = join(config.dataDir, PLUGIN_UPLOADS_DIR);
+    mkdirSync(uploads, { recursive: true });
+    const running = await startServer({ config, logger: silentLogger, announce: false });
+    runningServers.push(running);
+    const headers = { authorization: `Bearer ${OWNER_KEY}`, "content-type": "application/json" };
+    const install = async (duplicate: boolean, replace = false) => {
+      const event = { id: "run_changed", title: "Run changed" };
+      const bytes = bundleBytes(
+        {
+          ...MANIFEST,
+          version: duplicate ? "2.0.0" : "1.2.3",
+          entry: { web: "web.js" },
+          contributes: { ...MANIFEST.contributes, events: duplicate ? [event, event] : [event] },
+        },
+        { "web.js": "export {};" },
+      );
+      const source = join(uploads, `candidate-${String(duplicate)}.manifold-plugin.json`);
+      writeFileSync(source, bytes);
+      return ActionOutcomeSchema.parse(
+        await (
+          await fetch(`${running.publicUrl}/api/actions/engine.plugins.install`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ source, sha256: sha256Hex(bytes), replace }),
+          })
+        ).json(),
+      );
+    };
+    expect(await install(true)).toMatchObject({ ok: false, denial: { rule: "refused" } });
+    expect(
+      PluginsResponseSchema.parse(
+        await (await fetch(`${running.publicUrl}/api/plugins`, { headers })).json(),
+      ).plugins.some((entry) => entry.manifest.id === MANIFEST.id),
+    ).toBe(false);
+    expect(await install(false)).toMatchObject({ ok: true });
+    const refused = await install(true, true);
+    expect(refused).toMatchObject({ ok: false, denial: { rule: "refused" } });
+    if (!refused.ok) expect(refused.denial.message).toContain('duplicate event "run_changed"');
+    const roster = PluginsResponseSchema.parse(
+      await (await fetch(`${running.publicUrl}/api/plugins`, { headers })).json(),
+    ).plugins;
+    expect(roster.find((entry) => entry.manifest.id === MANIFEST.id)).toMatchObject({
+      enabled: true,
+      manifest: { version: "1.2.3" },
+    });
   });
 
   test("serves the enabled plugin's module with the pin as its ETag, and 404 otherwise", async () => {
