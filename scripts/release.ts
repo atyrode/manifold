@@ -195,9 +195,7 @@ const green =
     .quiet()
     .text();
 if ((JSON.parse(green) as readonly unknown[]).length === 0) {
-  throw new Error(
-    `main@${head.slice(0, 7)} has no green ci.yml run; wait for CI before releasing`,
-  );
+  throw new Error(`main@${head.slice(0, 7)} has no green ci.yml run; wait for CI before releasing`);
 }
 
 if (fragments.length === 0) throw new Error("changes/ has no fragments; nothing to release");
