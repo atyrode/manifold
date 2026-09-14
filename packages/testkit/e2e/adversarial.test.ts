@@ -54,7 +54,7 @@ async function closeSockets(
   if (failure?.status === "rejected") throw failure.reason;
 }
 
-test("raw adversarial frames prove join ordering and frame-classification policy", async () => {
+test("raw adversarial frames prove handshake ordering and frame-classification policy", async () => {
   const servers: TestServer[] = [];
   const sockets: AdversarialSessionSocket[] = [];
   try {
@@ -72,7 +72,7 @@ test("raw adversarial frames prove join ordering and frame-classification policy
     wrongFirst.sendRaw(JSON.stringify({ type: "pong" }));
     const wrongFirstClose = await waitFor(() => wrongFirst.closeInfo, 5_000, 20);
     expect(wrongFirstClose.code).toBe(4002);
-    expect(wrongFirstClose.reason).toBe("first frame must be join");
+    expect(wrongFirstClose.reason).toBe("first frame must be join or observe");
     expect(wrongFirstClose.initiatedBy).toBe("REMOTE");
 
     const malformedKnown = await rawSessionSocket(server);
