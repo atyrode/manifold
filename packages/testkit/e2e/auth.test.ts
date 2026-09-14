@@ -698,7 +698,7 @@ test("a revoked preview browser identity returns through production admission wi
           };
         })()`,
       });
-      await browser.reload();
+      await browser.goto(`${previewOrigin}/`);
       for (const reload of [false, true]) {
         if (reload) {
           await browser.evaluate("window.__admissionAttemptSeen = false");
