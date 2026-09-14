@@ -1859,12 +1859,21 @@ receipt, so merely writing more calls cannot hide an unread reply backlog:
 | host→child | `hook`        | `id`, `hook: "onEnable" \| "onDisable" \| "onAssemblyChanged"`, `delta?: { enabled, disabled }`                                                                            |
 | host→child | `reply`       | `id`, `ok: true, result` or `ok: false, error` — the answer to a child's `call`                                                                                            |
 | host→child | `shutdown`    | orderly exit; also what idle eviction sends                                                                                                                                |
-| child→host | `loaded`      | `actions: ActionSummary[]` (input/result as JSON Schema from the child's own zod), `hooks: { onEnable, onDisable, onAssemblyChanged }` booleans                            |
+| child→host | `loaded`      | `actions: ActionSummary[]` (input/result as JSON Schema from the child's own zod), `hooks: { onEnable, onDisable, onAssemblyChanged, onJobSettled }` booleans              |
 | child→host | `load_failed` | `error`                                                                                                                                                                    |
 | child→host | `dispatched`  | `id`, `outcome: { ok: true, result, emits: { ref, kind, payload }[] } \| { ok: false, rule: "invalid_args" \| "refused", message }` — the only two rungs a child may grade |
 | child→host | `hooked`      | `id`, `ok`, `error?`                                                                                                                                                       |
 | child→host | `received`    | unpredictable receipt from one consumed host envelope; receipts are FIFO and cannot be guessed from outgoing calls                                                         |
 | child→host | `call`        | `id`, `method: IsolateCtxMethod`, `args: unknown[]`                                                                                                                        |
+
+The bounded receipt socket and strict frames introduced by #536 are the minimum supported hardened
+runner generation. A bundle packed before that boundary waits on Bun IPC instead of reading fd 3;
+the hub does not restore that unbounded deserialization path and refuses a silent or exiting load
+with guidance to repack using a current plugin kit. Because `traceId` already belongs to this
+supported generation's exact context, a missing future capability handshake cannot mean the
+pre-#312 five-field shape. Any later additive context field must first gain an explicit child
+capability in `loaded`; the host sends it only after advertisement, while both sides remain strict
+about the negotiated frame.
 
 The ctx slices served over `call` are exactly `ISOLATE_CTX_METHODS`: `storage.get` / `set` /
 `compareAndSet` / `delete` / `keys` (namespaced by plugin id), `auth.allows` (graded as the dispatching principal,

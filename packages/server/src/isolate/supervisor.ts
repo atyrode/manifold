@@ -62,6 +62,11 @@ import {
 
 /** How long a child gets between `shutdown` and `SIGKILL`. */
 const SHUTDOWN_GRACE_MS = 2_000;
+const LEGACY_BUNDLE_REPACK =
+  "hardened bundles must use the bounded runner transport introduced by #536; repack with a current plugin kit";
+function withLegacyRepackHint(message: string, firstLoad: boolean): string {
+  return firstLoad ? `${message}; ${LEGACY_BUNDLE_REPACK}` : message;
+}
 
 type LoadedFrame = Extract<IsolateChildFrame, { t: "loaded" }>;
 type AnsweredFrame = Extract<IsolateChildFrame, { t: "dispatched" | "hooked" | "migrated" }>;
@@ -425,7 +430,10 @@ export class IsolateSupervisor implements IsolateRunner {
         const deadline = setTimeout(() => {
           reject(
             new IsolateLoadError(
-              `isolate did not answer load within ${String(this.dispatchDeadlineMs)}ms`,
+              withLegacyRepackHint(
+                `isolate did not answer load within ${String(this.dispatchDeadlineMs)}ms`,
+                !respawn,
+              ),
             ),
           );
         }, this.dispatchDeadlineMs);
@@ -433,7 +441,9 @@ export class IsolateSupervisor implements IsolateRunner {
           clearTimeout(deadline);
         };
         if (!child.send({ t: "load", pluginId, manifest, dir })) {
-          reject(new IsolateLoadError("isolate exited before load"));
+          reject(
+            new IsolateLoadError(withLegacyRepackHint("isolate exited before load", !respawn)),
+          );
         }
       });
       if (isolate.loaded === null) isolate.loaded = loaded;
@@ -486,7 +496,11 @@ export class IsolateSupervisor implements IsolateRunner {
     this.clearIdle(isolate);
     const detail = signal === null ? `exit code ${String(code)}` : `signal ${signal}`;
     this.failAll(isolate, new IsolateDenial("unavailable", `isolate exited (${detail})`));
-    isolate.handshake?.reject(new IsolateLoadError(`isolate exited before load (${detail})`));
+    isolate.handshake?.reject(
+      new IsolateLoadError(
+        withLegacyRepackHint(`isolate exited before load (${detail})`, isolate.loaded === null),
+      ),
+    );
     /*
       An exit before the FIRST `loaded` is the load's failure to report, not a crash: the
       record is discarded by `load` and there is no budget to spend. A respawn that dies

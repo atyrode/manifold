@@ -116,6 +116,7 @@ onFrame(async (frame) => {
       });
       return;
     case "dispatch": {
+      if (!Object.hasOwn(frame.ctx, "traceId")) return;
       const outcome = await handlers[frame.action](frame.id, frame.args);
       if (outcome !== null) send({ t: "dispatched", id: frame.id, outcome });
       return;
