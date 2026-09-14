@@ -443,7 +443,7 @@ test("revoking a viewer during PENDING terminal attach closes it before terminal
       5_000,
       (message) => message.terminalId === terminal.id && message.kind === "parked",
     );
-    machine.send({ type: "exited", terminalId: terminal.id, exitCode: 7 });
+    machine.send({ type: "exited", terminalId: terminal.id, exitCode: 0 });
     expect((await departed).kind).toBe("parked");
     await waitFor(() => !openerHome.terminals.has(terminal.id), 5_000, 20);
     expect(viewer.frames).toHaveLength(viewerFrameCountAtClose);

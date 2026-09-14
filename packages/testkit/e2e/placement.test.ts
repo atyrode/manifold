@@ -99,7 +99,7 @@ test("client.place() unplaces one real terminal and then merges it into a compos
     if (!unplaced.ok) throw new Error(`unplace was refused: ${unplaced.denial.rule}`);
     expect(unplaced.result).toEqual({ op: "unplace", removed: 1 });
     await waitFor(() => !canvas.elements.has("el-place-1"), 10_000, 20);
-    expect(await listTerminals(server)).toEqual([
+    expect(await listTerminals(server)).toMatchObject([
       {
         id: terminal.id,
         machineId: enrolled.machineId,

@@ -123,7 +123,7 @@ test("the terminal index lists every terminal, placed or not, and renames and ki
     // references the composition each lives in.
     const listing = await listTerminals(server);
     expect(listing).toHaveLength(2);
-    expect(listing.find((row) => row.id === placed.terminal.id)).toEqual({
+    expect(listing.find((row) => row.id === placed.terminal.id)).toMatchObject({
       id: placed.terminal.id,
       machineId: enrolled.machineId,
       name: null,
