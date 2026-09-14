@@ -2533,6 +2533,38 @@ try {
     });
   });
 
+  /*
+    Pack the stranger before the browser arrives, but install it only while that browser is
+    standing at `/`: issue #354 is specifically the root's live roster transport, and a
+    post-navigation check would let the old disconnected root pass.
+  */
+  const STRANGER_PLUGIN_ID = "example.counter";
+  const STRANGER_BUMP_ACTION = `${STRANGER_PLUGIN_ID}.bump`;
+  const STRANGER_PANEL = panelRefId(STRANGER_PLUGIN_ID, "counter");
+  const STRANGER_LEAF = "r11-counter";
+  const kit = join(repoRoot, "packages/plugin-kit");
+  const uploads = join(dataDir, "plugin-uploads");
+  mkdirSync(uploads, { recursive: true });
+  const bundlePath = join(uploads, `${STRANGER_PLUGIN_ID}.manifold-plugin.json`);
+  const pack = Bun.spawn(
+    [
+      "bun",
+      join(kit, "src/pack.ts"),
+      join(kit, "test/fixtures/sample"),
+      "--out",
+      bundlePath,
+      "--self-contained",
+    ],
+    { cwd: kit, stdout: "pipe", stderr: "pipe" },
+  );
+  const [packOut, packErr, packCode] = await Promise.all([
+    new Response(pack.stdout).text(),
+    new Response(pack.stderr).text(),
+    pack.exited,
+  ]);
+  if (packCode !== 0) throw new Error(`R11 pack exited ${String(packCode)}: ${packErr}`);
+  const strangerSha256 = String(Reflect.get(JSON.parse(packOut) as object, "sha256"));
+
   // ─────────────────────────────────────────── the browser
 
   browser = new Browser();
@@ -2543,6 +2575,64 @@ try {
     await browser.typeInto("input", "axiom-gate");
     await browser.clickTestId("identity-enter");
   }
+
+  /*
+    ROOT LIVE ROSTER (issue #354). The browser now holds its newly bootstrapped human identity,
+    while these mutations use the owner credential: a different principal changes the
+    authoritative roster and the root must repaint without navigation or reload.
+  */
+  await browser.goto(`${origin}/`);
+  const absentBeforeInstall = await browser.evaluate<boolean>(
+    `document.querySelector('[data-plugin="${STRANGER_PLUGIN_ID}"]') === null`,
+  );
+  const admitted = ActionOutcomeSchema.parse(
+    await dispatch(ENGINE_INSTALL_ACTION, {
+      source: bundlePath,
+      sha256: strangerSha256,
+      hardened: true,
+    }),
+  );
+  const appearedAtRoot = await settles(async () => {
+    if (!(await openPluginManager())) return false;
+    return await browser!.evaluate<boolean>(
+      `document.querySelector('[data-testid="plugin-manager"] [data-plugin="${STRANGER_PLUGIN_ID}"]') !== null`,
+    );
+  }, 20_000);
+  const disabledAtRoot =
+    (await setEnabled(STRANGER_PLUGIN_ID, false)) &&
+    (await settles(
+      () =>
+        browser!.evaluate<boolean>(
+          `document.querySelector(${JSON.stringify(
+            managerToggle(STRANGER_PLUGIN_ID),
+          )})?.getAttribute('aria-checked') === 'false'`,
+        ),
+      10_000,
+    ));
+  const rootShot = await browser.send("Page.captureScreenshot", { format: "png" });
+  const rootShotPath = join(tmpdir(), "manifold-axi-root-live-roster.png");
+  writeFileSync(rootShotPath, Buffer.from(String(rootShot.result?.["data"] ?? ""), "base64"));
+  console.log(`INFO  root live-roster screenshot: ${rootShotPath}`);
+  const enabledAtRoot =
+    (await setEnabled(STRANGER_PLUGIN_ID, true)) &&
+    (await settles(
+      () =>
+        browser!.evaluate<boolean>(
+          `document.querySelector(${JSON.stringify(
+            managerToggle(STRANGER_PLUGIN_ID),
+          )})?.getAttribute('aria-checked') === 'true'`,
+        ),
+      10_000,
+    ));
+  check(
+    "R1 workspace root receives live plugin install and disable transitions",
+    absentBeforeInstall && admitted.ok && appearedAtRoot && disabledAtRoot && enabledAtRoot,
+    absentBeforeInstall && admitted.ok && appearedAtRoot && disabledAtRoot && enabledAtRoot
+      ? "a second principal installed, disabled, and re-enabled example.counter while `/` repainted every transition without reload"
+      : `absent: ${String(absentBeforeInstall)}, install: ${String(admitted.ok)}, appeared: ${String(appearedAtRoot)}, disabled: ${String(disabledAtRoot)}, enabled: ${String(enabledAtRoot)}`,
+  );
+  await closePluginManager();
+
   await browser.goto(`${origin}/p/${terminalContainerId}`);
   /** Only the id: the stored grant carries this device's TOKEN and must never leave the page. */
   const viewerPrincipalId = await browser.evaluate<string>(
@@ -5509,60 +5599,28 @@ try {
    * reader looks. Its path is printed as an INFO line.
    */
   {
-    const PLUGIN_ID = "example.counter";
-    const BUMP_ACTION = `${PLUGIN_ID}.bump`;
-    const COUNTER_PANEL = panelRefId(PLUGIN_ID, "counter");
-    const COUNTER_LEAF = "r11-counter";
-    const kit = join(repoRoot, "packages/plugin-kit");
-    const uploads = join(dataDir, "plugin-uploads");
-    mkdirSync(uploads, { recursive: true });
-    const bundlePath = join(uploads, `${PLUGIN_ID}.manifold-plugin.json`);
-
-    /* Packed by the kit's own command, as an author packs: a real second process. */
-    const pack = Bun.spawn(
-      [
-        "bun",
-        join(kit, "src/pack.ts"),
-        join(kit, "test/fixtures/sample"),
-        "--out",
-        bundlePath,
-        "--self-contained",
-      ],
-      { cwd: kit, stdout: "pipe", stderr: "pipe" },
-    );
-    const [packOut, packErr, packCode] = await Promise.all([
-      new Response(pack.stdout).text(),
-      new Response(pack.stderr).text(),
-      pack.exited,
-    ]);
-    if (packCode !== 0) throw new Error(`R11 pack exited ${String(packCode)}: ${packErr}`);
-    const sha256 = String(Reflect.get(JSON.parse(packOut) as object, "sha256"));
-
-    const admitted = ActionOutcomeSchema.parse(
-      await dispatch(ENGINE_INSTALL_ACTION, { source: bundlePath, sha256, hardened: true }),
-    );
     const installedRow = PluginsResponseSchema.parse(await getJson("/api/plugins")).plugins.find(
-      (entry) => entry.manifest.id === PLUGIN_ID,
+      (entry) => entry.manifest.id === STRANGER_PLUGIN_ID,
     );
     const seatedOnRoster =
       admitted.ok &&
       installedRow !== undefined &&
       installedRow.enabled &&
       installedRow.lifecycle === undefined &&
-      installedRow.install?.sha256 === sha256 &&
-      installedRow.actions.some((action) => action.name === BUMP_ACTION);
+      installedRow.install?.sha256 === strangerSha256 &&
+      installedRow.actions.some((action) => action.name === STRANGER_BUMP_ACTION);
     check(
       "R11 an out-of-tree bundle is admitted from the drop box",
       seatedOnRoster,
       !admitted.ok
         ? admitted.denial.message
         : seatedOnRoster
-          ? `${PLUGIN_ID} on the roster with install.sha256 pinned, enabled, ${BUMP_ACTION} published`
+          ? `${STRANGER_PLUGIN_ID} on the roster with install.sha256 pinned, enabled, ${STRANGER_BUMP_ACTION} published`
           : `the row reads ${JSON.stringify({ enabled: installedRow?.enabled, lifecycle: installedRow?.lifecycle, refusal: installedRow?.install?.refusal })}`,
     );
 
     /* The server half, through the HTTP door: the count lives in host-served storage. */
-    const bumpedByHttp = ActionOutcomeSchema.parse(await dispatch(BUMP_ACTION, { by: 1 }));
+    const bumpedByHttp = ActionOutcomeSchema.parse(await dispatch(STRANGER_BUMP_ACTION, { by: 1 }));
     const httpCount = bumpedByHttp.ok
       ? Number(Reflect.get(bumpedByHttp.result as object, "count"))
       : Number.NaN;
@@ -5571,7 +5629,7 @@ try {
       httpCount === 1,
       bumpedByHttp.ok
         ? `one dispatch, count ${String(httpCount)}`
-        : `${BUMP_ACTION} refused: ${bumpedByHttp.denial.message}`,
+        : `${STRANGER_BUMP_ACTION} refused: ${bumpedByHttp.denial.message}`,
     );
 
     /*
@@ -5583,11 +5641,11 @@ try {
     const before = LayoutResponseSchema.parse(await getJson("/api/layout", viewer.token)).layout;
     const root = before[ROOT_TILE_ID];
     const counterLeaf: Tile = {
-      id: COUNTER_LEAF,
+      id: STRANGER_LEAF,
       dir: null,
       ratios: [],
       children: [],
-      ref: { kind: "panel", panelId: COUNTER_PANEL },
+      ref: { kind: "panel", panelId: STRANGER_PANEL },
     };
     const seated: TileLayout =
       root !== undefined && root.dir !== null && root.children.length < MAX_TILE_CHILDREN
@@ -5595,21 +5653,21 @@ try {
             ...before,
             [ROOT_TILE_ID]: {
               ...root,
-              children: [...root.children, COUNTER_LEAF],
+              children: [...root.children, STRANGER_LEAF],
               ratios: [...root.ratios, 1],
             },
-            [COUNTER_LEAF]: counterLeaf,
+            [STRANGER_LEAF]: counterLeaf,
           }
         : {
             [ROOT_TILE_ID]: {
               id: ROOT_TILE_ID,
               dir: "row",
               ratios: [1, 1],
-              children: ["r11-shell", COUNTER_LEAF],
+              children: ["r11-shell", STRANGER_LEAF],
               ref: null,
             },
             "r11-shell": { ...(root ?? counterLeaf), id: "r11-shell" },
-            [COUNTER_LEAF]: counterLeaf,
+            [STRANGER_LEAF]: counterLeaf,
           };
     if (!validateTileLayout(seated)) throw new Error("R11 composed an invalid workspace tree");
     const seatedOutcome = ActionOutcomeSchema.parse(
@@ -5619,7 +5677,7 @@ try {
       throw new Error(`R11 setLayout refused: ${seatedOutcome.denial.message}`);
 
     await browser.goto(`${origin}/p/${canvasContainerId}`);
-    const panelSelector = `[data-tile-id="${COUNTER_LEAF}"]`;
+    const panelSelector = `[data-tile-id="${STRANGER_LEAF}"]`;
     const vocabIn = (selector: string): string =>
       `(() => { const leaf = document.querySelector(${JSON.stringify(panelSelector)});
         return leaf === null ? null : leaf.querySelector(${JSON.stringify(selector)}); })()`;
@@ -5649,7 +5707,7 @@ try {
       `${vocabIn(".mf-vocab-text")}?.textContent ?? null`,
     );
     const kindsBefore = await kindsPainted();
-    const bumpButton = `${panelSelector} button[data-action="${BUMP_ACTION}"]`;
+    const bumpButton = `${panelSelector} button[data-action="${STRANGER_BUMP_ACTION}"]`;
     const buttonNamesDoor = await browser.evaluate<boolean>(
       `document.querySelector(${JSON.stringify(bumpButton)}) !== null`,
     );
@@ -5661,12 +5719,12 @@ try {
         : greeting !== `Hello, ${viewerName}.`
           ? `the guest's init did not carry the viewer as data: text reads ${JSON.stringify(greeting)}`
           : buttonNamesDoor
-            ? `heading, greeting for "${viewerName}", and a button carrying data-action="${BUMP_ACTION}" — ${String(kindsBefore.length)} kinds on screen before any press`
-            : `no button under the leaf carries data-action="${BUMP_ACTION}"`,
+            ? `heading, greeting for "${viewerName}", and a button carrying data-action="${STRANGER_BUMP_ACTION}" — ${String(kindsBefore.length)} kinds on screen before any press`
+            : `no button under the leaf carries data-action="${STRANGER_BUMP_ACTION}"`,
     );
 
     /* One press, one dispatch, one repaint: the count the HTTP dispatch left, plus one. */
-    const bumpsBefore = actionLog.filter((entry) => entry.name === BUMP_ACTION).length;
+    const bumpsBefore = actionLog.filter((entry) => entry.name === STRANGER_BUMP_ACTION).length;
     const pressed = await browser.evaluate<boolean>(
       `(() => { const hit = document.querySelector(${JSON.stringify(bumpButton)});
         if (!(hit instanceof HTMLElement)) return false; hit.click(); return true; })()`,
@@ -5674,14 +5732,15 @@ try {
     const repainted =
       pressed && (await settles(async () => (await badgeText()) === "count 2", 10_000));
     const kindsAfter = await kindsPainted();
-    const bumps = actionLog.filter((entry) => entry.name === BUMP_ACTION).length - bumpsBefore;
+    const bumps =
+      actionLog.filter((entry) => entry.name === STRANGER_BUMP_ACTION).length - bumpsBefore;
     check(
       "R11 a press in the Worker's panel is one dispatch at the same door",
       repainted && bumps === 1,
       !pressed
         ? "the bump button could not be pressed"
         : repainted
-          ? `the badge reads "count 2" after ${String(bumps)} ${BUMP_ACTION} dispatch(es) for one press`
+          ? `the badge reads "count 2" after ${String(bumps)} ${STRANGER_BUMP_ACTION} dispatch(es) for one press`
           : `the badge reads ${JSON.stringify(await badgeText())} after ${String(bumps)} dispatch(es); "count 2" was owed`,
     );
 
@@ -5707,9 +5766,9 @@ try {
       it is nothing the finally should try to switch back on.
     */
     await dispatch("core.space.setLayout", { layout: before }, viewer.token);
-    await setEnabled(PLUGIN_ID, false);
+    await setEnabled(STRANGER_PLUGIN_ID, false);
     const retained = ActionOutcomeSchema.parse(
-      await dispatch(ENGINE_UNINSTALL_ACTION, { id: PLUGIN_ID }),
+      await dispatch(ENGINE_UNINSTALL_ACTION, { id: STRANGER_PLUGIN_ID }),
     );
     check(
       "R11 uninstall refuses while the mod's storage is retained",
@@ -5717,17 +5776,17 @@ try {
       retained.ok ? "uninstall succeeded with storage retained" : retained.denial.message,
     );
     const removed = ActionOutcomeSchema.parse(
-      await dispatch(ENGINE_UNINSTALL_ACTION, { id: PLUGIN_ID, purge: true }),
+      await dispatch(ENGINE_UNINSTALL_ACTION, { id: STRANGER_PLUGIN_ID, purge: true }),
     );
-    disabledHere.delete(PLUGIN_ID);
+    disabledHere.delete(STRANGER_PLUGIN_ID);
     const rosterAfter = PluginRosterSchema.parse(
       PluginsResponseSchema.parse(await getJson("/api/plugins")).plugins,
     );
     check(
       "R11 uninstall takes the row and the doors away",
-      removed.ok && !rosterAfter.some((entry) => entry.manifest.id === PLUGIN_ID),
+      removed.ok && !rosterAfter.some((entry) => entry.manifest.id === STRANGER_PLUGIN_ID),
       removed.ok
-        ? `${PLUGIN_ID} off the roster; ${ENGINE_PLUGINS_ID} keeps ${String(rosterAfter.length)} rows`
+        ? `${STRANGER_PLUGIN_ID} off the roster; ${ENGINE_PLUGINS_ID} keeps ${String(rosterAfter.length)} rows`
         : removed.denial.message,
     );
   }

@@ -547,10 +547,40 @@ describe("SessionGateway channel multiplexing", () => {
     expect(socket.frames()).toEqual([]);
     expect(socket.closed).toBeNull();
 
-    // A socket carrying no rooms is closed exactly like one that never joined.
+    // A socket carrying neither rooms nor an observer must complete another handshake.
     send(fixture.gateway, "tab", "b", { type: "leave" });
     fixture.clock.advance(10_000);
-    expect(socket.closed).toEqual({ code: 4002, reason: "join timeout" });
+    expect(socket.closed).toEqual({ code: 4002, reason: "handshake timeout" });
+
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("a roomless observer authenticates once and keeps connection state live", async () => {
+    const fixture = await gatewayFixture();
+    const socket = new FakeSocket();
+    fixture.gateway.open("tab", socket);
+    socket.clear();
+
+    fixture.gateway.message(
+      "tab",
+      JSON.stringify({
+        type: "observe",
+        token: fixture.ownerKey,
+        protocolVersion: PROTOCOL_VERSION,
+      }),
+    );
+    expect(socket.frames()).toEqual([{ type: "observed" }]);
+    expect(fixture.rooms.live(fixture.container.id)).toBeNull();
+
+    fixture.clock.advance(10_000);
+    expect(socket.closed).toBeNull();
+
+    joinChannel(fixture, "tab", socket);
+    socket.clear();
+    send(fixture.gateway, "tab", CH, { type: "leave" });
+    fixture.clock.advance(10_000);
+    expect(socket.closed).toBeNull();
 
     fixture.gateway.shutdown();
     fixture.store.close();
@@ -660,12 +690,12 @@ describe("SessionGateway channel multiplexing", () => {
     expect(socket.frames()).toEqual([{ type: "ping" }]);
     fixture.gateway.message("tab", JSON.stringify({ type: "pong" }));
 
-    // A socket that has joined nothing must still join first — and it is never pinged,
-    // because the ten-second join deadline already answers for a connection with no room.
+    // A socket that has completed neither handshake is never pinged, because the ten-second
+    // deadline already answers for it.
     const fresh = new FakeSocket();
     fixture.gateway.open("fresh", fresh);
     fixture.gateway.message("fresh", JSON.stringify({ type: "pong" }));
-    expect(fresh.closed).toEqual({ code: 4002, reason: "first frame must be join" });
+    expect(fresh.closed).toEqual({ code: 4002, reason: "first frame must be join or observe" });
 
     fixture.gateway.shutdown();
     fixture.store.close();

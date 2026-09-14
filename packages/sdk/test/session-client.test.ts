@@ -234,6 +234,45 @@ describe("handshake", () => {
     expect(client.selfConnId).toBe("conn-me");
     expect(client.status).toBe("open");
   });
+
+  test("a roomless observer authenticates without room state and receives live rosters", async () => {
+    FakeSocket.instances = [];
+    const client = new SessionClient({
+      url: "ws://test/ws/session",
+      containerId: null,
+      token: "tok",
+      reconnect: false,
+      webSocketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    const rosters: number[] = [];
+    client.onPlugins((roster) => rosters.push(roster.length));
+    const connection = client.connect();
+    const socket = FakeSocket.instances.at(-1);
+    if (!socket) throw new Error("no socket dialed");
+    socket.open();
+
+    expect(JSON.parse(socket.sent[0] ?? "{}")).toEqual({
+      type: "observe",
+      token: "tok",
+      protocolVersion: PROTOCOL_VERSION,
+    });
+    socket.receive(JSON.stringify({ type: "session", connectionId: "observer-socket" }));
+    socket.receive(JSON.stringify({ type: "plugins", roster: [] }));
+    socket.receive(JSON.stringify({ type: "observed" }));
+    await connection;
+
+    expect(client.status).toBe("open");
+    expect(client.connectionId).toBe("observer-socket");
+    expect(client.channelId).toBeNull();
+    expect(client.selfCaps()).toEqual([]);
+    expect(client.layout()).toBeNull();
+    expect(rosters).toEqual([0]);
+
+    socket.receive(JSON.stringify({ type: "plugins", roster: [], developerMode: true }));
+    expect(rosters).toEqual([0, 0]);
+    client.close();
+    expect(socket.closedWith).toEqual({ code: 1000, reason: "" });
+  });
 });
 
 describe("shared transport", () => {
@@ -306,6 +345,36 @@ describe("shared transport", () => {
     await Promise.all([firstConnect, secondConnect]);
     first.close();
     second.close();
+  });
+
+  test("a roomless observer keeps the pooled socket alive after its last room leaves", async () => {
+    FakeSocket.instances = [];
+    const factory = (url: string): WebSocket => new FakeSocket(url) as unknown as WebSocket;
+    const options = {
+      url: "ws://test/ws/session",
+      token: "tok",
+      reconnect: false,
+      webSocketFactory: factory,
+    } as const;
+    const observer = new SessionClient({ ...options, containerId: null });
+    const room = new SessionClient({ ...options, containerId: "container1" });
+    const observerConnect = observer.connect();
+    const roomConnect = room.connect();
+    const socket = FakeSocket.instances.at(-1);
+    if (!socket) throw new Error("no socket dialed");
+
+    socket.open();
+    expect(sentTypes(socket).slice(0, 2)).toEqual(["observe", "join"]);
+    socket.receive(JSON.stringify({ type: "observed" }));
+    receiveOn(socket, room, initFor(room, "e-room", "in-room"));
+    await Promise.all([observerConnect, roomConnect]);
+    expect(observer.transportId).toBe(room.transportId);
+
+    room.close();
+    expect(socket.closedWith).toBeNull();
+    expect(framesOfType(socket, "leave")).toHaveLength(1);
+    observer.close();
+    expect(socket.closedWith).toEqual({ code: 1000, reason: "" });
   });
 
   test("a late room retains the current server correlation when it joins an open pool", async () => {
