@@ -112,27 +112,27 @@ describe("doors", () => {
     expect(refusalOf(rows, "core.index.wipe")).toBeNull();
   });
 
-  test("a door whose schema requires arguments says what it would need", () => {
+  test("a door whose schema has arguments opens a generated form", () => {
     const rows = compose({
       roster: [
         entry("core.index", [
           action({
             name: "core.index.renameContainer",
-            input: { required: ["containerId", "name"] },
+            input: {
+              type: "object",
+              properties: { containerId: { type: "string" }, name: { type: "string" } },
+              required: ["containerId", "name"],
+            },
           }),
         ]),
       ],
     });
 
-    expect(refusalOf(rows, "core.index.renameContainer")).toBe(
-      "needs containerId, name — open it where its subject is",
-    );
+    expect(rows[0]).toEqual(expect.objectContaining({ refusal: null, form: true }));
   });
 
-  test("the ladder is monotonic: disabled beats caps beats arguments", () => {
-    // A reader learns the FIRST thing wrong, exactly as the dispatcher answers it — a row that
-    // reported the missing argument while its plugin was off would send them to fix the wrong
-    // thing.
+  test("the ladder is monotonic: disabled beats caps", () => {
+    // A reader learns the FIRST thing wrong, exactly as the dispatcher answers it.
     const rows = compose({
       roster: [
         entry(

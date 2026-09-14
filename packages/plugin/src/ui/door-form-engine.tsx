@@ -1,32 +1,31 @@
-import type { ActionOutcome, ActionSummary } from "@manifold/protocol";
-import type AjvDraft7 from "ajv";
 import Form from "@rjsf/core";
 import type { RJSFSchema } from "@rjsf/utils";
 import { customizeValidator } from "@rjsf/validator-ajv8";
+import type { ActionOutcome } from "@manifold/protocol";
+import type AjvDraft7 from "ajv";
 import Ajv2020 from "ajv/dist/2020.js";
 import { useState, type ReactElement } from "react";
 
+import { actionSummary } from "./action-summary.ts";
+import type { DoorFormProps } from "./door-form.tsx";
 import "./door-form.css";
 
 /**
- * ONE DOOR, AS A FORM. The fields are GENERATED from the door's published input schema —
- * the same JSON Schema `GET /api/protocol` serves and the dispatcher validates against, so
- * the form can never disagree with the door about what the door takes
- * (docs/decisions/2026-09-01-rjsf-door-forms.md: rjsf over JSON Forms, evaluation on
- * record). No schema-walking code of ours exists here; this module is the rjsf engine, its
- * validator, and the outcome rendered as the data it is.
+ * ONE COMPOSED DOOR, AS A GENERATED FORM. The caller names only the action; the component
+ * resolves its current `ActionSummary` from the same composed protocol document exposed by
+ * `GET /api/protocol`, renders that published input schema, and dispatches through the host's
+ * one action door. Consumers cannot pair one action name with another action's schema.
  *
- * LOADED LAZILY, and this file is the seam: `door-forms.tsx` imports it through
- * `React.lazy`, so the form engine's whole chunk stays off the boot path until a reader
- * actually opens a door. Everything rjsf is confined behind this module's two exports.
+ * The public wrapper owns the lazy boundary, keeping rjsf and its validator off the boot path
+ * until a reader asks to open a form (docs/decisions/2026-09-01-rjsf-door-forms.md).
  *
  * The submit control is ours rather than rjsf's default so it can carry
- * `data-action=<door>` — the DOM names the door it opens (AXIOMS.md §Foundation law and REGISTRY.md §Foundation) — and so the
- * dispatch-in-flight state has one owner.
+ * `data-action=<door>` — the DOM names the door it opens (AXIOMS.md §Foundation law and
+ * REGISTRY.md §Foundation) — and so the dispatch-in-flight state has one owner.
  */
 
 /**
- * The validator, built once per module load. zod 4 publishes every action schema in the
+ * The validator, built once per lazy module load. zod 4 publishes every action schema in the
  * 2020-12 dialect, which is not the ajv default — `AjvClass` is rjsf's documented door for
  * exactly this. The cast states structural identity TS cannot see: `Ajv2020` is the same
  * class compiled for the newer dialect, and rjsf's type names the base class.
@@ -35,21 +34,22 @@ const validator = customizeValidator({
   AjvClass: Ajv2020 as unknown as typeof AjvDraft7,
 });
 
-export interface DoorFormProps {
-  readonly summary: ActionSummary;
-  /** THE action door, handed in: `host.client.action` bound to this door's full name. */
-  readonly dispatch: (args: unknown) => Promise<ActionOutcome>;
-}
-
-export function DoorForm({ summary, dispatch }: DoorFormProps): ReactElement {
+export function DoorFormEngine({ action, host }: DoorFormProps): ReactElement {
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<ActionOutcome | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  const summary = actionSummary(action, host);
+
+  if (summary === null) {
+    return <p className="door-form__refusal">The composed protocol has no {action} door.</p>;
+  }
+
   const submit = (data: unknown): void => {
     setBusy(true);
     setOutcome(null);
     setFailure(null);
-    dispatch(data)
+    host.client
+      .action(action, data)
       .then(setOutcome)
       .catch((reason: unknown) => {
         /* A transport failure is not a denial: denials arrive as data inside a 200. */
@@ -59,6 +59,7 @@ export function DoorForm({ summary, dispatch }: DoorFormProps): ReactElement {
       })
       .finally(() => setBusy(false));
   };
+
   return (
     <div className="door-form">
       <Form

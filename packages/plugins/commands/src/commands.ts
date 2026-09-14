@@ -33,6 +33,8 @@ export interface Command {
    * {@link doorRefusal}.
    */
   readonly refusal: string | null;
+  /** Whether selecting this door opens its published argument form before dispatch. */
+  readonly form: boolean;
   /** The container the viewer is already standing in reads differently from the rest. */
   readonly here: boolean;
   /**
@@ -59,25 +61,25 @@ export interface CommandsInput {
   readonly pluginTitle: (id: string) => string | null;
 }
 
-/** The properties a published input schema insists on; empty when it insists on nothing. */
-function requiredInputs(action: ActionSummary): readonly string[] {
-  const required = action.input["required"];
-  return Array.isArray(required) ? required.filter((name) => typeof name === "string") : [];
+/** Whether the published schema offers fields a reader can fill before dispatch. */
+function hasFormInputs(action: ActionSummary): boolean {
+  const properties = action.input["properties"];
+  return (
+    typeof properties === "object" && properties !== null && Object.keys(properties).length > 0
+  );
 }
 
 /**
  * WHY THIS DOOR CANNOT BE OPENED FROM HERE, in the dispatcher's own order.
  *
  * The ACTION DENIAL LADDER is monotonic and public (`ACTION_DENIAL_RULES`): the plugin must be
- * enabled, the caller must hold every declared cap, and the arguments must parse. This walks
- * the same rungs in the same order BEFORE knocking, so what a reader is told matches what the
- * server would have answered, and a row never reports the second problem while hiding the
- * first. Nothing here is a second authority check — the door still decides; this decides what
- * a list is honest to offer.
+ * enabled and the caller must hold every declared cap. This walks those rungs in the same order
+ * BEFORE knocking, so what a reader is told matches what the server would have answered, and a
+ * row never reports the second problem while hiding the first. Nothing here is a second authority
+ * check — the door still decides; this decides what a list is honest to offer.
  *
- * The last rung is the one the ladder cannot see from here and the palette cannot pass: a
- * schema with required properties needs a SUBJECT, and a list of every door in the workspace
- * is precisely the surface that has no subject in hand.
+ * Arguments are no longer a refusal: a door with published fields opens the shared generated
+ * form, which submits the schema-validated value through the same action client.
  */
 export function doorRefusal(
   action: ActionSummary,
@@ -99,8 +101,6 @@ export function doorRefusal(
     if (action.caps.includes("*") && !caps.includes("*")) return "requires full authority";
     if (missing.length > 0) return `requires ${missing.join(", ")}`;
   }
-  const needs = requiredInputs(action);
-  if (needs.length > 0) return `needs ${needs.join(", ")} — open it where its subject is`;
   return null;
 }
 
@@ -125,6 +125,7 @@ export function composeCommands(input: CommandsInput): readonly Command[] {
         target: action.name,
         stroke: null,
         refusal: doorRefusal(action, entry.enabled, owner, input.caps),
+        form: hasFormInputs(action),
         here: false,
         value: `${action.title} ${owner} door:${action.name}`,
       });
@@ -141,6 +142,7 @@ export function composeCommands(input: CommandsInput): readonly Command[] {
       target: binding.id,
       stroke: binding.key,
       refusal: null,
+      form: false,
       here: false,
       value: `${binding.label} ${owner} key:${binding.id}`,
     });
@@ -164,6 +166,7 @@ export function composeCommands(input: CommandsInput): readonly Command[] {
       target: container.id,
       stroke: null,
       refusal: null,
+      form: false,
       here: container.id === input.containerId,
       value: `${container.name} ${owner} container:${container.id}`,
     });

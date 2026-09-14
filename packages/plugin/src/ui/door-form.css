@@ -1,14 +1,14 @@
 /*
- * THE DOOR FORM'S SKIN — the generated argument form a pinned card's door opens (#128),
- * loaded with the module that paints it (`door-forms.tsx` / `door-form.tsx`), so the skin
- * ships and disappears with the seam it dresses. The `door-form` family's registry row in
- * REGISTRY.md §Lexicon `cssFamilies` names this file as its owner (S13).
+ * THE SHARED DOOR FORM'S SKIN — the generated form any plugin can open for a composed action,
+ * loaded with `@manifold/plugin/ui` so the form engine and its skin arrive together only when
+ * a consumer asks for them. The `door-form` family in REGISTRY.md names this file as its one
+ * owner (S13).
  *
  * DELIBERATELY ELEMENT-SCOPED: rjsf's emitted class vocabulary (`form-group`,
  * `form-control`, …) is an internals detail of the adopted engine
  * (docs/decisions/2026-09-01-rjsf-door-forms.md), so no rule here anchors on it and no
  * `cssFamilies` row admits it — swap the engine and this sheet restyles the same elements.
- * Everything scopes under `.door-form*`, which the wrapper and the popover layer wear.
+ * Everything scopes under `.door-form*`, the shared action-form vocabulary.
  */
 
 /* The popover layer a door opens into: wider than the default chrome, because a form's
@@ -35,13 +35,15 @@
    card's own dark ground. Element selectors only — see the header comment. */
 .door-form form {
   display: grid;
-  gap: 0.3rem;
+  gap: 0.72rem;
 }
 
 .door-form label {
   display: block;
-  color: #adb5bd;
-  font-size: 0.68rem;
+  margin-bottom: 0.24rem;
+  color: #ced4da;
+  font-size: 0.72rem;
+  font-weight: 600;
 }
 
 .door-form input,
@@ -49,19 +51,20 @@
 .door-form textarea {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid #343a40;
-  border-radius: 0.25rem;
-  background: #1f2226;
-  padding: 0.2rem 0.35rem;
-  color: #dee2e6;
-  font-size: 0.7rem;
+  border: 1px solid #868e96;
+  border-radius: 0.3rem;
+  background: #212529;
+  padding: 0.42rem 0.52rem;
+  color: #f1f3f5;
+  font-size: 0.76rem;
 }
 
 .door-form input:focus-visible,
 .door-form select:focus-visible,
 .door-form textarea:focus-visible {
-  border-color: #4c6ef5;
-  outline: none;
+  border-color: #748ffc;
+  outline: 2px solid #748ffc;
+  outline-offset: 1px;
 }
 
 .door-form fieldset {
@@ -87,23 +90,27 @@
 
 .door-form__submit {
   justify-self: start;
-  margin-top: 0.2rem;
-  border: 1px solid #343a40;
-  border-radius: 0.25rem;
-  background: #1f2226;
+  margin-top: 0.1rem;
+  border: 1px solid #748ffc;
+  border-radius: 0.35rem;
+  background: #4c6ef5;
   cursor: pointer;
-  padding: 0.15rem 0.6rem;
-  color: #dee2e6;
-  font-size: 0.68rem;
+  padding: 0.42rem 0.9rem;
+  color: #fff;
+  font-size: 0.76rem;
+  font-weight: 700;
 }
 
 .door-form__submit:hover:not(:disabled) {
-  border-color: #4c6ef5;
+  border-color: #91a7ff;
+  background: #5c7cfa;
 }
 
 .door-form__submit:disabled {
+  border-color: #495057;
+  background: #343a40;
   cursor: default;
-  color: #868e96;
+  color: #adb5bd;
 }
 
 /* The outcome, as the data it is: a result dump the reader can scroll, or the named
