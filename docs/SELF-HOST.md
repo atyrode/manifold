@@ -894,22 +894,48 @@ step skipped or failing on a promotion run, or that reads this paragraph within 
 expiry date, tells the operator to renew; the date above is updated in the same commit as the
 renewal.
 
-**Development** is the operator's second instance, and it runs each `main` revision only after a
-successful full main push or manual-dispatch CI run for that exact revision.
-`.github/workflows/deploy-dev.yml` follows the full CI
-workflow, hands its commit SHA to the host over a forced-command SSH key, derives the expected
-`build` from the same checkout with the same script, and fails unless `/healthz` on the development
-URL answers exactly that.
-It is the GitHub Environment `development`, inert unless the repository variables `DEV_DEPLOY_HOST`,
-`DEV_DEPLOY_USER` and `DEV_DEPLOY_URL` and the secret `DEV_DEPLOY_SSH_KEY` exist, and it names no
-host or provider: the receiver is `infra/previews/receiver.sh`.
-Shared development uses the ordinary application image with
-`MANIFOLD_DEV_SPAWN_AGENT=0` and a required explicit `MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID`.
-It retains the existing dev-hub Compose project, networks, loopback port and named `/data`
-volume; replacement affects only the hub after build/configuration validation, without
-terminal retirement/resume, recursive data ownership changes or spoke rebuild/restart.
-The native execution-only profile remains separately declared and supervised. Numbered
-previews retain their explicitly disposable development-image lifecycle.
+**Development** is the operator's second instance. Every green `main` normally deploys
+forward through `.github/workflows/deploy-dev.yml`; retrying the revision already running
+is allowed. The workflow verifies the exact full SHA against the latest eligible
+same-commit CI run from this repository's `main` (push or dispatch), including its unique
+successful `gate` job. It does not success-filter the query: a newer failed, cancelled, queued
+or running proof cannot be hidden by an older success. It then hands the request to the host
+over a forced-command SSH key and fails unless `/healthz` answers with the build derived by
+the one `scripts/build-identity.ts` implementation. The credential-bearing workflow executes
+trusted default-branch code; for an older target it passes the explicit revision to that trusted
+identity helper rather than checking out or executing the target's script.
+
+A backward development move is a separate `workflow_dispatch` from `main`. Supply
+`target_sha` and `expected_current_sha` as full lowercase 40-character SHAs, a non-secret
+single-line reason, and explicitly acknowledge `compatibility_reviewed`. The expected SHA is
+a compare-and-swap bound: except for a same-target safe retry, the host requires it to equal
+the actual incumbent and requires the target to be a strict ancestor. The acknowledgement
+means the operator reviewed application and retained-data compatibility. It does **not**
+restore a database or other shared data, pin the instance at that revision, suppress the next
+green forward deployment, promote production, update a fleet, or authorize native-owner
+restart.
+
+The host enforces this ordering for both new and older workflow callers under its existing
+deployment lock, before build or live mutation. Newly retained images carry an application
+provenance marker and their full Git revision as OCI metadata. Legacy images without the marker
+are accepted only when their clean canonical `MANIFOLD_BUILD` uniquely resolves to the retained
+repository; inherited base-image OCI revisions are not application evidence. Missing, dirty, divergent or
+ambiguous provenance holds the deployment. Updating the stable forced-command receiver from
+reviewed source, serialized with the deployment lock, is a separate host-tool rollout and must
+precede use of the rollback workflow; the tooling checkout remains stable rather than moving to
+the target revision. This needs no SSH key/configuration or Nix change and is not an application
+deployment.
+
+Development is the GitHub Environment `development`, inert unless the repository variables
+`DEV_DEPLOY_HOST`, `DEV_DEPLOY_USER` and `DEV_DEPLOY_URL` and the secret
+`DEV_DEPLOY_SSH_KEY` exist, and it names no host or provider: the receiver is
+`infra/previews/receiver.sh`. Shared development uses the ordinary application image with
+`MANIFOLD_DEV_SPAWN_AGENT=0` and a required explicit
+`MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID`. It retains the existing dev-hub Compose project,
+networks, loopback port and named `/data` volume; replacement affects only the hub after
+build/configuration validation, without terminal retirement/resume, recursive data ownership
+changes or spoke rebuild/restart. The native execution-only profile remains separately declared
+and supervised. Numbered previews retain their explicitly disposable development-image lifecycle.
 
 **Previews** are an optional development tier: `preview.<domain>` shows integrated `main`,
 `<N>.<domain>` serves PR N's last explicitly deployed SHA, and non-numeric `<name>.<domain>`

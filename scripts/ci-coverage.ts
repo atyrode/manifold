@@ -211,18 +211,49 @@ export const deploymentCoverageErrors = (source: string): string[] =>
       if (!condition.includes(proof))
         errors.push(`deployment condition missing trusted proof: ${proof}`);
     }
-    const script = collectKey(deploy["steps"], "run").map(String).join("\n");
-    for (const proof of [
-      "git rev-parse HEAD",
-      "actions/runs/$RUN_ID",
-      ".run_attempt == $run_attempt",
-      '.path == ".github/workflows/ci.yml"',
-      ".head_sha == $sha",
-      '.name == "gate"',
-      '.conclusion == "success"',
-    ]) {
-      if (!script.includes(proof))
-        errors.push(`deployment exact-revision verification missing: ${proof}`);
+    // Admission itself is executed against API metadata in deployment-workflow.test.ts.
+    // Here cross-check the workflow's handoff, rather than pinning proof-script spelling.
+    const steps = sequence(deploy["steps"], "deployment steps").map((step) =>
+      map(step, "deployment step"),
+    );
+    const requests = steps.filter((step) => step["id"] === "request");
+    const request = requests[0];
+    if (
+      requests.length !== 1 ||
+      !String(request?.["uses"] ?? "").startsWith("actions/github-script@") ||
+      typeof optionalChildMap(request ?? {}, "with", "deployment proof options")?.["script"] !==
+        "string"
+    ) {
+      errors.push("deployment requires one executable request admission step");
+    }
+    const handoffs = steps.filter(
+      (step) =>
+        optionalChildMap(step, "env", "deployment step environment")?.["DEV_DEPLOY_SSH_KEY"] !==
+        undefined,
+    );
+    const handoff = handoffs[0];
+    const environment = optionalChildMap(handoff ?? {}, "env", "deployment handoff environment");
+    if (
+      handoffs.length !== 1 ||
+      request === undefined ||
+      handoff === undefined ||
+      steps.indexOf(request) >= steps.indexOf(handoff) ||
+      environment?.["SHA"] !== "${{ steps.request.outputs.sha }}" ||
+      environment?.["EXPECTED_CURRENT_SHA"] !==
+        "${{ steps.request.outputs.expected_current_sha }}" ||
+      environment?.["ROLLBACK"] !== "${{ steps.request.outputs.rollback }}"
+    ) {
+      errors.push("deployment credentials must consume the admitted request after its proof");
+    }
+    const checkout = steps.find((step) =>
+      String(step["uses"] ?? "").startsWith("actions/checkout@"),
+    );
+    const checkoutOptions = optionalChildMap(checkout ?? {}, "with", "deployment checkout options");
+    if (
+      checkoutOptions?.["ref"] !== "${{ github.sha }}" ||
+      checkoutOptions?.["persist-credentials"] !== false
+    ) {
+      errors.push("deployment must execute trusted workflow code without persisted credentials");
     }
     return errors;
   });

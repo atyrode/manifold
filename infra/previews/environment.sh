@@ -136,7 +136,9 @@ build_retained_hub() {
     build_arguments+=(--build-arg "$argument")
   done < <(jq -jr '.services.manifold.build.args | to_entries[] | "\(.key)=\(.value)", "\u0000"' "$configuration")
   git -C "$checkout" archive --format=tar "$revision" |
-    docker build --load --file Dockerfile --tag "$image" "${build_arguments[@]}" -
+    docker build --load --file Dockerfile --tag "$image" \
+      --label "io.manifold.deployment.provenance=git-v1" \
+      --label "org.opencontainers.image.revision=$revision" "${build_arguments[@]}" -
 }
 
 # Resolve the final callback merge, reducing it immediately to a bounded public
