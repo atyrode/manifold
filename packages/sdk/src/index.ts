@@ -17,6 +17,7 @@ export {
 } from "./instance-dial.ts";
 export {
   SessionClient,
+  SessionConnectionError,
   type AccessOutcome,
   type ConnectionStatus,
   type PlaceOutcome,

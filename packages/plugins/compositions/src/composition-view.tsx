@@ -344,15 +344,20 @@ export function CompositionView({
   useEffect(() => {
     if (connectStartedRef.current) return;
     connectStartedRef.current = true;
-    void client.connect().catch((reason: unknown) => {
-      // Sticky: a composition that never connected is a degraded ref, not a passing
+    const offStatus = client.on("status", (status) => {
+      if (status !== "closed" || client.connectionError === null) return;
+      // Sticky: a composition that lost its session is a degraded ref, not a passing
       // refusal, so the notice stays until it is dismissed or a later attempt supersedes it.
-      notify(reason instanceof Error ? reason.message : "Could not connect to this composition", {
+      notify(client.connectionError.message, {
         lifetime: "sticky",
         key: "composition-connect",
       });
     });
-    return () => client.close();
+    void client.connect().catch(() => undefined);
+    return () => {
+      offStatus();
+      client.close();
+    };
     // `notify` is the notice provider's own stable callback, so naming it here is honest
     // without arming a reconnect: this effect connects exactly once per client (the ref
     // guard), and a dependency that never moves can never trip that guard.

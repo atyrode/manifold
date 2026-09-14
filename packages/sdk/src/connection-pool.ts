@@ -84,8 +84,8 @@ export interface ChannelSink {
    */
   receive(body: ChannelFrame): void;
   /**
-   * One connection-level frame: the plugin roster, or an event. Shared by every channel on
-   * the socket, so a handle treats it as workspace news rather than room state.
+   * One connection-level frame: server correlation, plugin roster, or an event. Shared by
+   * every channel on the socket, so a handle treats it as workspace news rather than room state.
    */
   connectionFrame(body: ConnectionFrame): void;
   transportPhase(phase: TransportPhase): void;
@@ -94,8 +94,14 @@ export interface ChannelSink {
    * initialization deadline) — the handle reports failure; otherwise it is rejoining.
    */
   channelClosed(code: number, reason: string, terminal: boolean): void;
-  /** The connection is gone for good; `error` is null for a deliberate close. */
-  transportClosed(error: Error | null): void;
+  /** The connection is gone for good; null means this handle deliberately released it. */
+  transportClosed(failure: ConnectionFailure | null): void;
+}
+
+/** Bounded, non-secret transport failure data handed to each channel on a dead socket. */
+export interface ConnectionFailure {
+  readonly code: number;
+  readonly reason: string;
 }
 
 export interface AcquireOptions {
@@ -140,6 +146,11 @@ const KNOWN_SERVER_TYPES: ReadonlySet<string> = new Set(SERVER_MESSAGE_TYPES);
 const TERMINAL_CLOSE_CODE_MIN = 4400;
 const TERMINAL_CLOSE_CODE_MAX = 4499;
 const PONG_FRAME = JSON.stringify({ type: "pong" });
+const MAX_CLOSE_REASON_CHARS = 120;
+const boundedCloseReason = (reason: string): string => {
+  const trimmed = reason.trim();
+  return trimmed === "" ? "transport closed" : trimmed.slice(0, MAX_CLOSE_REASON_CHARS);
+};
 
 /**
  * First-attempt reconnect ceiling for a session socket. Tighter than the instance dial's,
@@ -267,7 +278,7 @@ function pageWindow(): PageWindow | undefined {
 class PooledConnection {
   private socket: WebSocket | null = null;
   private readonly channels = new Map<string, ChannelRecord>();
-  private readonly connectionState: ConnectionState = { plugins: null };
+  private readonly connectionState: ConnectionState = { session: null, plugins: null };
   /** Live subscriptions, keyed by the ONE joined form of their address. */
   private readonly topics = new Map<string, TopicRecord>();
   private readonly streams = new Map<string, { state: StreamState; count: number }>();
@@ -344,16 +355,21 @@ class PooledConnection {
       }),
     };
     this.channels.set(id, record);
-    // Caught up before its first join: the roster is workspace state a late channel needs.
+    if (this.socket !== null && this.socket.readyState === 1) {
+      sink.transportPhase("connecting");
+    } else {
+      sink.transportPhase(this.backoff.attempts === 0 ? "connecting" : "reconnecting");
+    }
+    // Replay after the phase transition: a SessionClient clears stale socket correlation
+    // when that transition arrives, so reversing these two steps would erase the current
+    // connection id from every channel attached to an already-open pooled socket.
     for (const body of Object.values(this.connectionState)) {
       if (body !== null) sink.connectionFrame(body);
     }
     if (this.socket !== null && this.socket.readyState === 1) {
-      sink.transportPhase("connecting");
       this.sendJoin(record);
-    } else {
-      sink.transportPhase(this.backoff.attempts === 0 ? "connecting" : "reconnecting");
-      if (this.socket === null && !this.backoff.pending) this.dial();
+    } else if (this.socket === null && !this.backoff.pending) {
+      this.dial();
     }
     return {
       id,
@@ -538,6 +554,7 @@ class PooledConnection {
     this.socket = null;
     previousSocket?.close(1000);
 
+    this.connectionState.session = null;
     const phase: TransportPhase = this.backoff.attempts === 0 ? "connecting" : "reconnecting";
     for (const record of this.channels.values()) {
       this.clearInit(record);
@@ -619,19 +636,17 @@ class PooledConnection {
         event.code >= TERMINAL_CLOSE_CODE_MIN &&
         event.code <= TERMINAL_CLOSE_CODE_MAX;
       if (terminalClose) {
-        const reason = event.reason.trim();
-        this.teardown(
-          null,
-          new Error(
-            reason === ""
-              ? `terminal rejected with close code ${event.code}`
-              : `terminal rejected with close code ${event.code}: ${reason}`,
-          ),
-        );
+        this.teardown(null, {
+          code: event.code,
+          reason: boundedCloseReason(event.reason),
+        });
         return;
       }
       if (!this.reconnect) {
-        this.teardown(null, null);
+        this.teardown(null, {
+          code: event.code,
+          reason: boundedCloseReason(event.reason),
+        });
         return;
       }
 
@@ -663,7 +678,7 @@ class PooledConnection {
       this.streamsById.get(frame.subscriptionId)?.receive(frame);
       return;
     }
-    if (frame.type === "plugins" || frame.type === "event") {
+    if (frame.type === "session" || frame.type === "plugins" || frame.type === "event") {
       this.acceptConnectionFrame(frame);
       return;
     }
@@ -701,7 +716,20 @@ class PooledConnection {
    * loud errors rather than a silently dropped frame.
    */
   private acceptConnectionFrame(frame: ConnectionFrame): void {
-    if (frame.type !== "event") this.connectionState[frame.type] = frame;
+    switch (frame.type) {
+      case "session":
+        this.connectionState.session = frame;
+        break;
+      case "plugins":
+        this.connectionState.plugins = frame;
+        break;
+      case "event":
+        break;
+      default: {
+        const exhaustive: never = frame;
+        void exhaustive;
+      }
+    }
     // Snapshot: a sink may release its channel while hearing this.
     for (const record of [...this.channels.values()]) record.sink.connectionFrame(frame);
   }
@@ -742,7 +770,7 @@ class PooledConnection {
    * unregisters from the pool, and tells whatever channels are left that the transport is
    * gone. A dead connection never dials again — the next `connect()` builds a new one.
    */
-  private teardown(closeCode: number | null, error: Error | null): void {
+  private teardown(closeCode: number | null, failure: ConnectionFailure | null): void {
     if (this.dead) return;
     this.dead = true;
     this.liveness.clear();
@@ -759,7 +787,7 @@ class PooledConnection {
       state.receive({
         type: "stream_closed",
         subscriptionId: state.subscriptionId,
-        reason: error?.message ?? "transport closed",
+        reason: failure?.reason ?? "transport closed",
       });
     }
     this.streams.clear();
@@ -767,7 +795,7 @@ class PooledConnection {
     for (const record of orphans) {
       record.rejoin.cancel();
       this.clearInit(record);
-      record.sink.transportClosed(error);
+      record.sink.transportClosed(failure);
     }
   }
 }
