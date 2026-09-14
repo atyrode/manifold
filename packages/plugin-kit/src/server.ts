@@ -1241,7 +1241,6 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     loaded = true;
     post({
       t: "loaded",
-      ctxExtensions: ["traceId"],
       actions: summaries,
       hooks: {
         onEnable: def.lifecycle?.onEnable !== undefined,
@@ -1257,10 +1256,6 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     const refuse = (rule: "invalid_args" | "refused", message: string): void => {
       post({ t: "dispatched", id: frame.id, outcome: { ok: false, rule, message } });
     };
-    if (!("traceId" in frame.ctx)) {
-      refuse("refused", 'dispatch ctx omitted advertised extension "traceId"');
-      return;
-    }
     const action = actions.get(frame.action);
     const handler = def.handlers[frame.action];
     if (action === undefined || handler === undefined) {

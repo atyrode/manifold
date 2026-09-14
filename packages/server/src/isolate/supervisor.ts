@@ -62,6 +62,8 @@ import {
 
 /** How long a child gets between `shutdown` and `SIGKILL`. */
 const SHUTDOWN_GRACE_MS = 2_000;
+const LEGACY_BUNDLE_REPACK =
+  "hardened bundles must use the bounded runner transport introduced by #536; repack with a current plugin kit";
 
 type LoadedFrame = Extract<IsolateChildFrame, { t: "loaded" }>;
 type AnsweredFrame = Extract<IsolateChildFrame, { t: "dispatched" | "hooked" | "migrated" }>;
@@ -226,24 +228,20 @@ export class IsolateSupervisor implements IsolateRunner {
   ): Promise<IsolateDispatchOutcome> {
     const frame = await this.request(
       pluginId,
-      (id) => {
-        const baseline = {
+      (id) => ({
+        t: "dispatch",
+        id,
+        action,
+        args,
+        ctx: {
+          traceId: ctx.traceId,
           principal: ctx.principal,
           caps: [...ctx.auth.caps],
           isRoot: ctx.auth.isRoot,
           containerScope: ctx.containerScope,
           now: ctx.now(),
-        };
-        const advertisesTraceId =
-          this.isolates.get(pluginId)?.loaded?.ctxExtensions?.includes("traceId") === true;
-        return {
-          t: "dispatch",
-          id,
-          action,
-          args,
-          ctx: advertisesTraceId ? { traceId: ctx.traceId, ...baseline } : baseline,
-        };
-      },
+        },
+      }),
       { kind: "dispatch", ctx },
     );
     if (frame.t !== "dispatched") {
@@ -429,7 +427,7 @@ export class IsolateSupervisor implements IsolateRunner {
         const deadline = setTimeout(() => {
           reject(
             new IsolateLoadError(
-              `isolate did not answer load within ${String(this.dispatchDeadlineMs)}ms`,
+              `isolate did not answer load within ${String(this.dispatchDeadlineMs)}ms; ${LEGACY_BUNDLE_REPACK}`,
             ),
           );
         }, this.dispatchDeadlineMs);
@@ -437,7 +435,7 @@ export class IsolateSupervisor implements IsolateRunner {
           clearTimeout(deadline);
         };
         if (!child.send({ t: "load", pluginId, manifest, dir })) {
-          reject(new IsolateLoadError("isolate exited before load"));
+          reject(new IsolateLoadError(`isolate exited before load; ${LEGACY_BUNDLE_REPACK}`));
         }
       });
       if (isolate.loaded === null) isolate.loaded = loaded;
@@ -490,7 +488,9 @@ export class IsolateSupervisor implements IsolateRunner {
     this.clearIdle(isolate);
     const detail = signal === null ? `exit code ${String(code)}` : `signal ${signal}`;
     this.failAll(isolate, new IsolateDenial("unavailable", `isolate exited (${detail})`));
-    isolate.handshake?.reject(new IsolateLoadError(`isolate exited before load (${detail})`));
+    isolate.handshake?.reject(
+      new IsolateLoadError(`isolate exited before load (${detail}); ${LEGACY_BUNDLE_REPACK}`),
+    );
     /*
       An exit before the FIRST `loaded` is the load's failure to report, not a crash: the
       record is discarded by `load` and there is no budget to spend. A respawn that dies

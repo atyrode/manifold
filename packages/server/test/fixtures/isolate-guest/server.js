@@ -106,7 +106,6 @@ onFrame(async (frame) => {
     case "load":
       send({
         t: "loaded",
-        ctxExtensions: ["traceId"],
         actions: Object.keys(handlers).map((name) => action(name)),
         hooks: {
           onEnable: true,

@@ -466,37 +466,20 @@ export const AssemblyDeltaSchema = z.strictObject({
 });
 export type AssemblyDelta = z.infer<typeof AssemblyDeltaSchema>;
 
-/** Additive dispatch-context fields a child may negotiate in its `loaded` frame. */
-export const ISOLATE_CTX_EXTENSIONS = ["traceId"] as const;
-export const IsolateCtxExtensionSchema = z.enum(ISOLATE_CTX_EXTENSIONS);
-export type IsolateCtxExtension = (typeof ISOLATE_CTX_EXTENSIONS)[number];
-
 /**
- * The legacy CALLER context: who asked, what they hold, and the clock. This exact baseline
- * remains valid for children whose `loaded` frame omits `ctxExtensions`.
+ * The CALLER, as one dispatch carries it into the child: who asked, what they hold, and the
+ * clock — the pieces of `ActionCtx` that are plain data. `auth.allows` is not among them
+ * because it consults grants the child never sees; it is served as a call back.
  */
-export const IsolateLegacyDispatchCtxSchema = z.strictObject({
+export const IsolateDispatchCtxSchema = z.strictObject({
+  traceId: z.number().int().positive(),
   principal: PrincipalSchema,
   caps: CapSchema.array(),
   isRoot: z.boolean(),
   containerScope: z.string().min(1).nullable(),
   now: z.number().int().min(0),
 });
-export type IsolateLegacyDispatchCtx = z.infer<typeof IsolateLegacyDispatchCtxSchema>;
-
-/** The current exact context, adding only the negotiated `traceId` extension to the baseline. */
-export const IsolateDispatchCtxSchema = z.strictObject({
-  traceId: z.number().int().positive(),
-  ...IsolateLegacyDispatchCtxSchema.shape,
-});
 export type IsolateDispatchCtx = z.infer<typeof IsolateDispatchCtxSchema>;
-
-/** A host frame accepts only the exact legacy baseline or the exact current context. */
-export const IsolateHostDispatchCtxSchema = z.union([
-  IsolateLegacyDispatchCtxSchema,
-  IsolateDispatchCtxSchema,
-]);
-export type IsolateHostDispatchCtx = z.infer<typeof IsolateHostDispatchCtxSchema>;
 
 /**
  * An answer to a `call`, in either direction on either boundary — one shape, because a
@@ -532,7 +515,7 @@ export const IsolateHostFrameSchema = z.discriminatedUnion("t", [
     /** The LOCAL action name: the child knows its own plugin id from `load`. */
     action: LocalNameSchema,
     args: z.unknown(),
-    ctx: IsolateHostDispatchCtxSchema,
+    ctx: IsolateDispatchCtxSchema,
   }),
   z.strictObject({
     t: z.literal("hook"),
@@ -597,7 +580,6 @@ export const IsolateChildFrameSchema = z.discriminatedUnion("t", [
       onAssemblyChanged: z.boolean(),
       onJobSettled: z.boolean(),
     }),
-    ctxExtensions: IsolateCtxExtensionSchema.array().max(ISOLATE_CTX_EXTENSIONS.length).optional(),
     migrations: IsolateMigrationsSchema.optional(),
   }),
   z.strictObject({ t: z.literal("load_failed"), error: errorText }),
@@ -880,7 +862,6 @@ export function isolateVocabulary(): Record<string, unknown> {
     maxUiDepth: MAX_UI_DEPTH,
     maxUiNodes: MAX_UI_NODES,
     ctxMethods: ISOLATE_CTX_METHODS,
-    ctxExtensions: ISOLATE_CTX_EXTENSIONS,
     hostMethods: WEB_HOST_METHODS,
     crashBudget: ISOLATE_CRASH_BUDGET,
     dispatchDeadlineMs: ISOLATE_DISPATCH_DEADLINE_MS,
