@@ -714,6 +714,7 @@ test("a revoked preview browser identity returns through production admission wi
             workspace: boolean;
             identityName: boolean;
             identityPresent: boolean;
+            storedIdentityIsRejected: boolean;
             protectedIdentityRequests: number | null;
             protectedIdentityStatuses: number[] | null;
             protectedIdentityUsedRejected: boolean[] | null;
@@ -726,6 +727,9 @@ test("a revoked preview browser identity returns through production admission wi
             workspace: document.querySelector('.workspace') !== null,
             identityName: document.querySelector('#identity-name') !== null,
             identityPresent: localStorage.getItem('manifold.identity') !== null,
+            storedIdentityIsRejected:
+              JSON.parse(localStorage.getItem('manifold.identity') || 'null')?.token ===
+                ${JSON.stringify(initial.token)},
             protectedIdentityRequests:
               typeof window.__protectedIdentityRequests === 'number'
                 ? window.__protectedIdentityRequests
