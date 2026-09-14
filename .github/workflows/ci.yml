@@ -6,7 +6,7 @@
 # Browser consumers download the web dist built from this exact commit. A dist is evidence, never a
 # cross-tree cache: changing the source SHA necessarily changes the artifact name.
 # Exact-tree artifacts expire after one day; rerun the whole workflow rather than reusing partial evidence.
-# The under-7-minute PR SLO assumes enough hosted-runner concurrency.
+# The 1–2-minute ordinary PR target and under-7-minute full-lane SLO assume hosted-runner capacity.
 name: CI
 
 on:

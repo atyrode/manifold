@@ -861,8 +861,9 @@ step skipped or failing on a promotion run, or that reads this paragraph within 
 expiry date, tells the operator to renew; the date above is updated in the same commit as the
 renewal.
 
-**Development** is the operator's second instance, and it runs each `main` revision only after that
-exact push completes full CI successfully. `.github/workflows/deploy-dev.yml` follows the full CI
+**Development** is the operator's second instance, and it runs each `main` revision only after a
+successful full main push or manual-dispatch CI run for that exact revision.
+`.github/workflows/deploy-dev.yml` follows the full CI
 workflow, hands its commit SHA to the host over a forced-command SSH key, derives the expected
 `build` from the same checkout with the same script, and fails unless `/healthz` on the development
 URL answers exactly that.
