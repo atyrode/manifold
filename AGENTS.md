@@ -175,6 +175,7 @@ in [`docs/PLUGINS.md`](docs/PLUGINS.md); deployment and release commands are rou
   live action and must follow its hub. Publishing or deploying development authorizes neither
   production promotion nor newer-protocol spoke installation. Released changelog sections are
   immutable; release commits, tags and publication go only through `bun run release`, never by hand.
+  The script lands its release commit through a checked, rebase-auto-merged PR before tagging main.
 
 ## Task-specific guidance
 
@@ -240,8 +241,8 @@ in [`docs/PLUGINS.md`](docs/PLUGINS.md); deployment and release commands are rou
   and intended integration target, `main`; a stacked branch without that evidence is not ready.
   Follow the common lifecycle above; squash-merge only under granted authority and checks, then
   delete your branch; the standing grant's mechanical criteria are
-  [TRIAGE.md §Merge](docs/TRIAGE.md#merge). Direct commits to `main` are reserved for
-  `bun run release`.
+  [TRIAGE.md §Merge](docs/TRIAGE.md#merge). Release commits also land through PRs:
+  `bun run release` rebase-auto-merges after required checks, then tags the merged `main` commit.
 - When configured, successful main CI deploys integrated development at `DEV_DEPLOY_URL`.
   For behavioral changes, verify that exact deployed revision there; source, merge, deployment
   and runtime evidence remain distinct. This is not a requirement to deploy unrelated docs/process work.

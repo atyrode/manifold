@@ -153,9 +153,15 @@ remains — and these sections:
 - `## Evidence` — gate output, the commands run, screenshots for anything a person looks at.
 - `## Acceptance` — the issue's criteria as a checklist.
 
-`scripts/pull-policy.ts` enforces the mechanically knowable parts on every pull request. Keep a
+`scripts/pull-policy.ts` enforces the mechanically knowable parts on ordinary pull requests. Keep a
 `needs-operator` PR draft. Mark implementation ready only after its issue is `agent-ready`,
 `bun run gate` is green on the pushed head and [`AGENTS.md`](../AGENTS.md) Delivery is satisfied.
+
+The release command's explicitly authorized PR publishes already-triaged changes, not a new issue.
+`agent-policy.yml` exempts only its lifecycle check when the title starts exactly `release: v`,
+the author is the release committer `atyrode`, and the head is `release/v…` in this repository.
+The shared engineering contract and required `gate` still run. The command's release authorization
+covers rebase auto-merge, not the ordinary squash-merge grant below; no bypass actor is needed.
 
 | Rule | Pull-request invariant                                                                          |
 | ---- | ----------------------------------------------------------------------------------------------- |

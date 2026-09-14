@@ -819,6 +819,15 @@ unless you chose a `VITE_MANIFOLD_SITE_TITLE` of your own (§Choose the browser 
 green `main` — the GitHub Release, the fleet binaries, the `ghcr.io/atyrode/manifold:<tag>` image
 stamped `version = build = <x.y.z>`, `channel = release` — and deploys nothing.
 
+The script pushes `release/vX.Y.Z`, opens a `release: vX.Y.Z` PR with its changelog and protocol
+status, and enables rebase auto-merge. The repository must allow auto-merge and rebase merges;
+required `agent-policy` and `gate` checks still apply, with no bypass. Release PRs from the
+release committer (`atyrode`) are exempt only from issue lifecycle checks. After merge, the
+script verifies that `origin/main` has the release tree, updates local main, then tags that
+merged SHA and pushes only the tag to start `release.yml`. A closed PR, a 30-minute merge timeout
+or a different main tree stops publication without a tag; interrupted-merge recovery is documented
+in the script header. `bun run release --dry-run` remains read-only from any branch.
+
 **Promote.** `bun run promote vX.Y.Z` puts one PUBLISHED release on the operator's production
 instance: it refuses a tag that is not a published GitHub Release, dispatches
 `.github/workflows/deploy-hub.yml` with that tag, watches the run to completion and ends with

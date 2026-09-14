@@ -66,7 +66,9 @@ snapshot-plus-output invariant and its e2e proof; do not weaken that proof.
 The [machine channel](#ws-wsmachine--machine-channel-json-data-fields-base64) owns the
 compatibility-set add/reset rule, coordinated fleet restart and hub-before-agent upgrade order;
 the [instance channel](#ws-wsinstance--instance-channel-json-text-frames-adr-0014) applies it to
-its own wire. Publishing a release does not authorize a hub upgrade, promotion or fleet change.
+its own wire. `bun run release` includes the protocol status in its release PR, waits for required
+checks and rebase merge, and tags only after verifying the merged main tree. Publishing a release
+does not authorize a hub upgrade, promotion or fleet change.
 Preserve the production compatibility hold for a development-only release; the explicit
 promotion procedure is [SELF-HOST.md §Environments](SELF-HOST.md#environments).
 
