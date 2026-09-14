@@ -674,7 +674,7 @@ test("a revoked preview browser identity returns through production admission wi
           };
         })()`,
       });
-      await browser.goto(`${previewOrigin}/`);
+      await browser.reload();
       for (const reload of [false, true]) {
         if (reload) {
           await browser.evaluate("window.__admissionAttemptSeen = false");
@@ -707,9 +707,9 @@ test("a revoked preview browser identity returns through production admission wi
         identifier: unavailable.result?.["identifier"],
       });
     }
-    // No admission URL shortcut: reopening the ordinary preview must complete the same
+    // No admission URL shortcut: reloading the ordinary preview must complete the same
     // production handoff after both rejected and locally expired recovery attempts.
-    await browser.goto(`${previewOrigin}/`);
+    await browser.reload();
     await waitFor(
       () =>
         browser.evaluate<boolean>(
