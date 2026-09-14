@@ -58,6 +58,7 @@
       },
       "dependencies": {
         "@manifold/protocol": "workspace:*",
+        "@manifold/sdk": "workspace:*",
         "zod": "4.4.3",
       },
       "devDependencies": {
@@ -337,6 +338,9 @@
     },
     "packages/sdk": {
       "name": "@manifold/sdk",
+      "bin": {
+        "manifold-action-runner": "./src/action-runner-main.ts",
+      },
       "dependencies": {
         "@manifold/protocol": "workspace:*",
         "@manifold/scene": "workspace:*",

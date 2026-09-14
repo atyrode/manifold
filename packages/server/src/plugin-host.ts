@@ -2688,6 +2688,7 @@ export class PluginHost {
     fullName: string,
     rawArgs: unknown,
     session: string | null = null,
+    options: { agentJustification?: string; onTrace?: (traceId: number) => void } = {},
   ): Promise<ActionOutcome> {
     const pluginId = this.assembled.actions.get(fullName)?.plugin.id;
     const settled = Promise.withResolvers<void>();
@@ -2703,7 +2704,7 @@ export class PluginHost {
     let outcome: ActionOutcome;
     try {
       try {
-        outcome = await this.run(auth, fullName, rawArgs, session);
+        outcome = await this.run(auth, fullName, rawArgs, session, options);
       } finally {
         settled.resolve();
         active?.delete(settled.promise);
@@ -2731,6 +2732,7 @@ export class PluginHost {
     fullName: string,
     rawArgs: unknown,
     session: string | null,
+    options: { agentJustification?: string; onTrace?: (traceId: number) => void },
   ): Promise<ActionOutcome> {
     const entry = this.assembled.actions.get(fullName);
     if (entry === undefined) {
@@ -2780,7 +2782,8 @@ export class PluginHost {
       rule: Exclude<ActionDenialRule, typeof UNTRACED_DENIAL_RULE>,
       message: string,
     ): ActionOutcome => {
-      this.store.appendTrace({ ...attribution, outcome: rule, targets: [] });
+      const traceId = this.store.appendTrace({ ...attribution, outcome: rule, targets: [] });
+      options.onTrace?.(traceId);
       return { ok: false, denial: { rule, message } };
     };
     const pluginId = entry.plugin.id;
@@ -2889,12 +2892,6 @@ export class PluginHost {
       admission = this.authService.admitGoverned(auth, pluginId, fullName, requirements);
       if (!admission.allowed) return refuse("forbidden", "explicit version-bound consent required");
     }
-    const handler = this.handlers.get(pluginId)?.[entry.def.name];
-    if (handler === undefined) {
-      // An assembled action with no handler is a wiring bug in `assembly.ts`, never a
-      // caller's problem: it must be reported as a server failure, not as a denial.
-      throw new Error(`action "${fullName}" has no server handler`);
-    }
     /*
       THE STAGING BUFFER, one per dispatch. `ctx.emit` appends here and nothing leaves until
       this dispatch has answered `{ ok: true }` — so a handler that mutates and then refuses,
@@ -2922,6 +2919,13 @@ export class PluginHost {
       ledger complete; §7 of the ADR carries the per-door-class table.
      */
     const traceId = this.store.appendTrace({ ...attribution, outcome: null, targets: [] });
+    options.onTrace?.(traceId);
+    const handler = this.handlers.get(pluginId)?.[entry.def.name];
+    if (handler === undefined) {
+      // An assembled door is accountable even when its handler is broken or absent.
+      this.store.settleTrace(traceId, "failed", []);
+      throw new Error(`action "${fullName}" has no server handler`);
+    }
     const targets: ManifoldRef[] = [];
     let streamAdmissionOpen = true;
     const openedStreams: StreamProducer[] = [];

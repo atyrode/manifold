@@ -1,4 +1,16 @@
 export {
+  ACTION_RUNNER_VERSION,
+  ACTION_RUNNER_MAX_FRAME_BYTES,
+  ACTION_RUNNER_MAX_FRAMES,
+  ACTION_RUNNER_IDLE_TIMEOUT_MS,
+  ActionProtocolSchema,
+  ActionRunnerRequestSchema,
+  ActionRunnerResponseSchema,
+  type ActionProtocol,
+  type ActionRunnerRequest,
+  type ActionRunnerResponse,
+} from "./action-runner.ts";
+export {
   JobDeploymentRequestSchema,
   JobDeploymentConsentSchema,
   JobDeploymentInvocationEdgeSchema,
@@ -792,6 +804,10 @@ export {
   type TicketRefusal,
 } from "./instance.ts";
 export {
+  ACTION_TRACE_ID_HEADER,
+  AGENT_JUSTIFICATION_HEADER,
+  encodeAgentJustification,
+  decodeAgentJustification,
   BootstrapPrincipalRequestSchema,
   CreateContainerRequestSchema,
   CreateIndexFolderRequestSchema,

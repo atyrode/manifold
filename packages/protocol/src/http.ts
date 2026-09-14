@@ -10,6 +10,32 @@ import { TerminalExecutionSchema } from "./machine.ts";
 
 /** REST door schemas. Auth: `Authorization: Bearer <token-or-owner-key>`. */
 
+export const ACTION_TRACE_ID_HEADER = "x-manifold-trace-id";
+export const AGENT_JUSTIFICATION_HEADER = "x-manifold-agent-justification";
+
+/** HTTP field values are ASCII; keep Unicode and line breaks exact until semantic validation. */
+export function encodeAgentJustification(value: string): string {
+  try {
+    return `v1.${encodeURIComponent(value)}`;
+  } catch {
+    throw new TypeError("invalid agent justification encoding");
+  }
+}
+
+export function decodeAgentJustification(value: string): string {
+  if (
+    !value.startsWith("v1.") ||
+    !/^(?:[A-Za-z0-9_.!~*'()-]|%[A-Fa-f0-9]{2})*$/.test(value.slice(3))
+  ) {
+    throw new TypeError("invalid agent justification encoding");
+  }
+  try {
+    return decodeURIComponent(value.slice(3));
+  } catch {
+    throw new TypeError("invalid agent justification encoding");
+  }
+}
+
 export const ContainerSchema = z.strictObject({
   id: z.string().min(1),
   name: z.string().min(1).max(120),

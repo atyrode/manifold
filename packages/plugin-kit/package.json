@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@manifold/protocol": "workspace:*",
+    "@manifold/sdk": "workspace:*",
     "zod": "4.4.3"
   },
   "devDependencies": {

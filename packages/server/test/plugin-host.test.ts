@@ -762,10 +762,19 @@ describe("PluginHost contract failures", () => {
     // The action is real vocabulary — it is in the roster and `/api/protocol` — so
     // `unknown_action` would be false, and any denial would blame the caller for a
     // registration the assembly files got wrong.
-    expect(host.assembly().actions.has("test.doors.orphan")).toBe(true);
-    await expect(host.dispatch(fixture.owner, "test.doors.orphan", {})).rejects.toThrow(
-      /no server handler/,
-    );
+    let traceId: number | null = null;
+    await expect(
+      host.dispatch(fixture.owner, "test.doors.orphan", {}, null, {
+        onTrace: (id) => {
+          traceId = id;
+        },
+      }),
+    ).rejects.toBeInstanceOf(Error);
+    expect(fixture.store.listEvents({ type: TRACE_ROW_TYPE, limit: 1 })[0]).toMatchObject({
+      id: traceId,
+      door: "test.doors.orphan",
+      outcome: "failed",
+    });
     fixture.store.close();
   });
 

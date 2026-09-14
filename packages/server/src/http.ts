@@ -8,6 +8,9 @@ import {
 import { statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import {
+  ACTION_TRACE_ID_HEADER,
+  AGENT_JUSTIFICATION_HEADER,
+  decodeAgentJustification,
   ActionOutcomeSchema,
   CAPS,
   AttendanceResponseSchema,
@@ -98,7 +101,11 @@ function errorResponse(error: RequestError): Response {
 function corsResponse(response: Response): Response {
   response.headers.set("access-control-allow-origin", "*");
   response.headers.set("access-control-allow-methods", "GET, POST, DELETE, OPTIONS");
-  response.headers.set("access-control-allow-headers", "authorization, content-type");
+  response.headers.set(
+    "access-control-allow-headers",
+    `authorization, content-type, ${AGENT_JUSTIFICATION_HEADER}`,
+  );
+  response.headers.set("access-control-expose-headers", ACTION_TRACE_ID_HEADER);
   response.headers.set("access-control-max-age", "600");
   return response;
 }
@@ -416,16 +423,20 @@ export class HttpApp {
       }
       throw new RequestError("not_found", "route not found");
     } catch (error) {
-      if (error instanceof RequestError) return errorResponse(error);
-      if (error instanceof ServiceError) {
-        return errorResponse(new RequestError(error.code, error.message));
-      }
-      this.logger.error("http_request_failed", {
-        method: request.method,
-        error: error instanceof Error ? error.message : "unknown failure",
-      });
-      return errorResponse(new RequestError("internal", "internal server error"));
+      return this.failureResponse(request, error);
     }
+  }
+
+  private failureResponse(request: Request, error: unknown): Response {
+    if (error instanceof RequestError) return errorResponse(error);
+    if (error instanceof ServiceError) {
+      return errorResponse(new RequestError(error.code, error.message));
+    }
+    this.logger.error("http_request_failed", {
+      method: request.method,
+      error: error instanceof Error ? error.message : "unknown failure",
+    });
+    return errorResponse(new RequestError("internal", "internal server error"));
   }
 
   private authenticate(request: Request): AuthContext {
@@ -586,8 +597,36 @@ export class HttpApp {
     if (actionMatch !== null && request.method === "POST") {
       const name = decodePathSegment(actionMatch[1], "action name");
       const context = this.authenticate(request);
-      const outcome = await this.plugins.dispatch(context, name, await parseJsonBody(request));
-      return jsonResponse(ActionOutcomeSchema.parse(outcome));
+      let traceId: number | undefined;
+      let response: Response;
+      try {
+        const justificationHeader = request.headers.get(AGENT_JUSTIFICATION_HEADER);
+        let agentJustification: string | undefined;
+        if (justificationHeader !== null) {
+          try {
+            agentJustification = decodeAgentJustification(justificationHeader);
+          } catch {
+            throw new RequestError("invalid", "agent justification header is invalid");
+          }
+        }
+        const outcome = await this.plugins.dispatch(
+          context,
+          name,
+          await parseJsonBody(request),
+          null,
+          {
+            ...(agentJustification === undefined ? {} : { agentJustification }),
+            onTrace: (id) => {
+              traceId = id;
+            },
+          },
+        );
+        response = jsonResponse(ActionOutcomeSchema.parse(outcome));
+      } catch (error) {
+        response = this.failureResponse(request, error);
+      }
+      if (traceId !== undefined) response.headers.set(ACTION_TRACE_ID_HEADER, String(traceId));
+      return response;
     }
 
     if (request.method === "GET" && pathname === "/api/plugins") {

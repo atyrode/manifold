@@ -6,6 +6,9 @@
     ".": "./src/index.ts",
     "./worker": "./src/worker.ts"
   },
+  "bin": {
+    "manifold-action-runner": "./src/action-runner-main.ts"
+  },
   "dependencies": {
     "@manifold/protocol": "workspace:*",
     "@manifold/scene": "workspace:*",
