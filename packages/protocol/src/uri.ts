@@ -47,6 +47,8 @@ export const ManifoldRefSchema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({ kind: z.literal("tile"), containerId: RefIdSchema, tileId: RefIdSchema }),
   z.strictObject({ kind: z.literal("principal"), principalId: RefIdSchema }),
+  z.strictObject({ kind: z.literal("agent"), agentId: RefIdSchema }),
+  z.strictObject({ kind: z.literal("run"), runId: RefIdSchema }),
   z.strictObject({ kind: z.literal("plugin"), pluginId: RefIdSchema }),
   z.strictObject({ kind: z.literal("action"), actionName: RefIdSchema }),
   z.strictObject({ kind: z.literal("machine"), machineId: RefIdSchema }),
@@ -96,6 +98,10 @@ export function formatManifoldUri(ref: ManifoldRef): string {
       return `${MANIFOLD_URI_SCHEME}container/${encodeURIComponent(ref.containerId)}/tile/${encodeURIComponent(ref.tileId)}`;
     case "principal":
       return `${MANIFOLD_URI_SCHEME}principal/${encodeURIComponent(ref.principalId)}`;
+    case "agent":
+      return `${MANIFOLD_URI_SCHEME}agent/${encodeURIComponent(ref.agentId)}`;
+    case "run":
+      return `${MANIFOLD_URI_SCHEME}run/${encodeURIComponent(ref.runId)}`;
     case "plugin":
       return `${MANIFOLD_URI_SCHEME}plugin/${encodeURIComponent(ref.pluginId)}`;
     case "action":
@@ -169,6 +175,10 @@ export function parseManifoldUri(text: string): ManifoldRef | null {
         return { kind: "container", containerId: first };
       case "principal":
         return { kind: "principal", principalId: first };
+      case "agent":
+        return { kind: "agent", agentId: first };
+      case "run":
+        return { kind: "run", runId: first };
       case "plugin":
         return { kind: "plugin", pluginId: first };
       case "action":
