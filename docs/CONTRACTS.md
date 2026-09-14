@@ -2396,9 +2396,9 @@ may not read is simply not subscribed, because a per-topic refusal frame would m
 permission oracle. There are no offsets, acknowledgements or replay: an event reaches the sockets
 subscribed AT THE INSTANT OF EMISSION and catch-up is reading state back through the ordinary
 door. Subscriptions are presence-class state — they die with the socket, and the SDK pool
-re-declares every live topic after each admission (`observed` or the first room `init`), never
-before it because the credential arrives in that handshake. Bounds: `MAX_SUBSCRIBE_TOPICS` (64)
-topics per frame, over which the frame is malformed (4002), and
+re-declares every live topic immediately after writing its handshake (`observe` or the room
+`join` frames). The wire is ordered, so the credential always reaches admission first. Bounds:
+`MAX_SUBSCRIBE_TOPICS` (64) topics per frame, over which the frame is malformed (4002), and
 `MAX_SUBSCRIPTIONS_PER_CONNECTION` (256) per socket, past which further topics are dropped and
 logged with the socket left alone.
 Event delivery shares the session channel's send bound (256 queued frames or 1 MiB per

@@ -412,6 +412,9 @@ class PooledConnection {
     }
     if (this.socket !== null && this.socket.readyState === 1) {
       this.sendObserve();
+      // Observation belongs to the socket. If a prior observer released while a room kept
+      // that socket alive, a later observer inherits the still-live admission immediately.
+      if (this.observerAdmitted) sink.observed();
     } else if (this.socket === null && !this.backoff.pending) {
       this.dial();
     }

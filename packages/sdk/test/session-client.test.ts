@@ -347,7 +347,7 @@ describe("shared transport", () => {
     second.close();
   });
 
-  test("a roomless observer keeps the pooled socket alive after its last room leaves", async () => {
+  test("observer admission survives handle replacement while a room keeps the socket alive", async () => {
     FakeSocket.instances = [];
     const factory = (url: string): WebSocket => new FakeSocket(url) as unknown as WebSocket;
     const options = {
@@ -370,10 +370,18 @@ describe("shared transport", () => {
     await Promise.all([observerConnect, roomConnect]);
     expect(observer.transportId).toBe(room.transportId);
 
+    observer.close();
+    expect(socket.closedWith).toBeNull();
+
+    const replacement = new SessionClient({ ...options, containerId: null });
+    await replacement.connect();
+    expect(replacement.status).toBe("open");
+    expect(framesOfType(socket, "observe")).toHaveLength(1);
+
     room.close();
     expect(socket.closedWith).toBeNull();
     expect(framesOfType(socket, "leave")).toHaveLength(1);
-    observer.close();
+    replacement.close();
     expect(socket.closedWith).toEqual({ code: 1000, reason: "" });
   });
 
