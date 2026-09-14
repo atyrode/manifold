@@ -12,6 +12,7 @@ export type {
   JobScheduleTiming,
   PublicJobSchedule,
   JobFollow,
+  PluginActionContext,
   PluginJobContext,
   PluginServiceContext,
   ServiceDescription,

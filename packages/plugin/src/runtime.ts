@@ -137,6 +137,24 @@ export interface PluginServiceContext {
   invokeInstance(args: InstanceServiceReadArgs): Promise<ServiceReply>;
 }
 
+/**
+ * THE ONE VERB ONTO A SIBLING (ADR 0041): a server handler opens a door of a plugin its
+ * manifest DECLARED as a `required` or `optional` dependency, and gains nothing by it. The
+ * callee runs under the principal of the request this handler is serving, its own rungs grade
+ * that principal, and the calling plugin is recorded as the origin on the callee's trace.
+ *
+ * It resolves with the callee door's own parsed result, and REJECTS with the refusal class
+ * that stopped it (`ACTION_CALL_REFUSALS`): `undeclared_dependency` for an edge nobody wrote
+ * down, `dependency_unavailable` for an optional one that is absent or off, `unknown_action`,
+ * `capability` when the principal does not hold what the callee's door demands, `refused` for
+ * the callee's own denial, and `dispatch_cycle` / `dispatch_depth` for the two bounds. A
+ * handler that lets the rejection escape refuses its OWN dispatch with the same sentence, so
+ * the caller of the caller learns which edge failed rather than reading a broken door.
+ */
+export interface PluginActionContext {
+  call(args: { plugin: string; action: string; input: unknown }): Promise<unknown>;
+}
+
 /** The producer validates each bounded body against its manifest's declared stream schema. */
 export interface StreamProducer {
   readonly epoch: string;

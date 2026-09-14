@@ -653,6 +653,46 @@ Return the result value on success, or `{ refused: <message> }` to deny. The ret
 validated against your `result` schema; a mismatch is a server error, not a denial, because it
 is your bug.
 
+### Calling a dependency's door
+
+A server handler opens a door of a plugin its manifest DECLARED as a `required` or `optional`
+dependency (ADR 0041, `docs/CONTRACTS.md` §Plugins), and gains nothing by it:
+
+```ts
+// manifest: dependencies: { "atyrode.code": { type: "required", reason: "runs the session" } }
+const session = await ctx.actions.call({
+  plugin: "atyrode.code",
+  action: "runSession",
+  input: { machineId, prompt },
+});
+```
+
+It resolves with the callee door's own result. **The callee runs under the principal of the
+request you are serving** — its capability checks grade your caller, not you — so a client that
+may not open `atyrode.code.runSession` directly cannot open it through your door either. In
+`onEnable`, `onDisable`, `onAssemblyChanged` and `onJobSettled` the slice is `ctx.actions?` on the
+same terms as `ctx.jobs?`: the installer's credential (the settled job's, for `onJobSettled`), and
+absent when it no longer restores.
+
+A refusal is a REJECTION whose message is the class then the plugins it names, caller first — the
+same `"<class>: <offenders>"` shape every plugin refusal uses. Catch it if you have something
+better to answer, or let it escape and your own dispatch refuses with that sentence:
+
+```
+dispatch_cycle: example.a -> example.a                  you are already on this trace
+dispatch_depth: example.a -> … -> example.i             8 plugin frames per trace
+undeclared_dependency: example.a -> example.b           declare the edge, or do not call it
+dependency_unavailable: example.a -> example.opt        an optional dependency absent or off
+unknown_action: example.b.ghost                         no such door there
+capability: example.a -> example.b.echo (terminals:write capability required)
+refused: example.a -> example.b.sulk (the callee says no)
+```
+
+Declare the slice you use — `{ actions: { call(args: { plugin: string; action: string; input: unknown }): Promise<unknown> } }`
+— and read the closed class list from `GET /api/protocol` under `pluginContract.actionCall` rather
+than from this file. What the verb is not: an import of another plugin's code, a shared table, or
+any kind of authority gain. A declared dependency is permission to ASK.
+
 ### Calling one
 
 ```
@@ -2975,9 +3015,11 @@ served across a process boundary (`docs/CONTRACTS.md` §Hardened plugins, `ISOLA
 - **Questions the host answers, as promises** — `ctx.auth.allows(cap, containerId?)`,
   `ctx.outsideScope(containerId)`, `ctx.newId()`, `ctx.storage.{get, set, delete, keys}`,
   `ctx.machines.{isOnline, getTerminalExecution, repository}`, `ctx.placement.place(request)`,
-  `ctx.host.{roster, enabled}`.
+  `ctx.host.{roster, enabled}`, `ctx.actions.call({ plugin, action, input })` (one declared
+  dependency's door, ADR 0041 — §3 Calling a dependency's door is the whole contract).
   Every one is a `call` frame correlated to the dispatch it belongs to, graded as that dispatch's
-  caller; a call the host refuses rejects with `HostCallError` carrying the host's own sentence.
+  caller; a call the host refuses rejects with `HostCallError` carrying the host's own sentence,
+  and a refused sibling call rejects with `ActionCallError` carrying the refusal class.
 - **`ctx.emit`** stages exactly as in-realm: the emissions ride back with the outcome and the host
   flushes them only when the dispatch is `ok`.
 
@@ -2990,9 +3032,10 @@ publishes both as JSON Schema from the `loaded` frame, generated from the zod yo
 
 A hook (`onEnable`, `onDisable`, `onAssemblyChanged`) gets storage and the clock. It does NOT get
 `emit`: the `hooked` frame has no carrier for emissions, so a hook that emits fails by name instead
-of publishing into the void. `onEnable` and `onDisable` also get `ctx.jobs` — the installer's job
-authority — whenever the host could restore it; it is `undefined` otherwise, so branch on it.
-`onJobSettled` always has one, bound to its own job's credential instead.
+of publishing into the void. `onEnable` and `onDisable` also get `ctx.jobs` and `ctx.actions` — the
+installer's job authority and the sibling verb — whenever the host could restore that credential;
+both are `undefined` otherwise, so branch on them. `onJobSettled` always has both, bound to its own
+job's credential instead.
 
 ### The web half: `web.ts`
 

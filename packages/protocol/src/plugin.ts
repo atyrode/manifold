@@ -1127,6 +1127,76 @@ export const ActionOutcomeSchema = z.union([
 export type ActionOutcome = z.infer<typeof ActionOutcomeSchema>;
 
 /**
+ * WHY ONE PLUGIN'S HANDLER COULD NOT OPEN ANOTHER PLUGIN'S DOOR (ADR 0041).
+ *
+ * `ctx.actions.call({ plugin, action, input })` is the one verb a server half has for a
+ * DECLARED dependency, and it acquires no authority: the callee runs under the principal of
+ * the request the caller is serving, so its own rungs grade that principal exactly as they
+ * grade a client's. What is left to refuse is the composition, and — like the denial ladder
+ * these sit beside — the list is MONOTONIC and published in the order it is walked, so a
+ * caller learns the first thing wrong rather than a summary:
+ *
+ *   `dispatch_cycle`         the callee is already on this trace's plugin stack, the caller
+ *                            included: a plugin reaching for its own door, and A -> B -> A one
+ *                            frame later. Asked FIRST because it is the one refusal no
+ *                            manifest edit can answer — composition refuses a self-dependency
+ *                            and a dependency cycle outright (ADR 0013 §5.3, §5.6) — so
+ *                            naming the edge here would be advice that cannot be taken.
+ *   `dispatch_depth`         the call would be the {@link MAX_ACTION_CALL_DEPTH}+1st plugin
+ *                            frame on one trace. The other bound on the trace, so it is asked
+ *                            with it.
+ *   `undeclared_dependency`  the callee is not in the caller's manifest `dependencies` as
+ *                            `required` or `optional`. Composition is declared, never
+ *                            discovered: an edge nobody wrote down is not an edge.
+ *   `dependency_unavailable` a declared dependency that is not composed, or is disabled
+ *                            right now. Reachable only for an `optional` edge — a `required`
+ *                            one absent or off is a composition refusal (ADR 0013 §5.1) —
+ *                            and the caller stays enabled either way: there is no cascade.
+ *   `unknown_action`         the callee publishes no door by that name.
+ *   `capability`             the callee's OWN scope/grant/capability rung refused this
+ *                            principal — at the callee, never admitted by the caller's
+ *                            authority. The callee's sentence is the detail.
+ *   `refused`                the callee answered a denial of its own — a handler's
+ *                            `{ refused }`, its `invalid_args`, or an isolated callee that
+ *                            did not answer — carried through with its rule and sentence.
+ *
+ * The detail after `": "` names the plugins involved, caller first (`test.a -> test.b.echo`),
+ * because a refusal a reader cannot attribute to an edge is a refusal they cannot act on.
+ */
+export const ACTION_CALL_REFUSALS = [
+  "dispatch_cycle",
+  "dispatch_depth",
+  "undeclared_dependency",
+  "dependency_unavailable",
+  "unknown_action",
+  "capability",
+  "refused",
+] as const;
+export const ActionCallRefusalSchema = z.enum(ACTION_CALL_REFUSALS);
+export type ActionCallRefusal = (typeof ACTION_CALL_REFUSALS)[number];
+
+/**
+ * How many PLUGINS one trace may carry. A client's dispatch is the first frame, so the bound
+ * admits seven nested calls under it — deeper than any composition anyone has argued for, and
+ * finite, which is the property that matters: a cycle is already refused by name, and this is
+ * what stops a long chain that never repeats an id from spending the hub's stack instead.
+ */
+export const MAX_ACTION_CALL_DEPTH = 8;
+
+/**
+ * What `ctx.actions.call` takes. `action` is the callee's LOCAL name — the door's full name is
+ * `${plugin}.${action}`, so a caller can never spell a name outside the plugin it declared a
+ * dependency on — and `input` is the callee door's own arguments, graded by the callee's
+ * published schema and by nothing here.
+ */
+export const ActionCallArgsSchema = z.strictObject({
+  plugin: PluginIdSchema,
+  action: LocalNameSchema,
+  input: z.unknown(),
+});
+export type ActionCallArgs = z.infer<typeof ActionCallArgsSchema>;
+
+/**
  * A BINDING's published name: its owning plugin's id followed by one local name
  * (`core.shell.arrange`), which is the same pair rule an action name obeys — a plugin can
  * never name a key outside its own namespace, and a full name always says who owns it.
@@ -1263,6 +1333,19 @@ export function pluginVocabulary(): Record<string, unknown> {
     install: z.toJSONSchema(PluginInstallSchema),
     denialRules: ACTION_DENIAL_RULES,
     actionScopes: ACTION_SCOPES,
+    /*
+      THE ONE VERB A SERVER HALF HAS ONTO A SIBLING (ADR 0041), published as data for the same
+      reason the ladder is: an author composing `atyrode.babel -> atyrode.code` learns the
+      member's name, the arguments it takes, every class it can be refused with and the depth
+      bound from one read, rather than from this tree. It rides the plugin vocabulary because
+      a call on a declared dependency is a fact about MANIFESTS — the edge is what admits it.
+    */
+    actionCall: {
+      member: "actions.call",
+      args: z.toJSONSchema(ActionCallArgsSchema),
+      refusals: ACTION_CALL_REFUSALS,
+      maxDepth: MAX_ACTION_CALL_DEPTH,
+    },
     defaultElementPlacement: DEFAULT_ELEMENT_PLACEMENT_TRAITS,
     sectionPresentations: SECTION_PRESENTATIONS,
     defaultSectionPresentation: DEFAULT_SECTION_PRESENTATION,

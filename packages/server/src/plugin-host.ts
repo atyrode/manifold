@@ -36,8 +36,10 @@ import {
 import type { SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
 import type { ServerMigration as GuestMigration } from "@manifold/plugin-kit/server";
 import {
+  ActionCallArgsSchema,
   GuestMigrationDeclarationsSchema,
   ISOLATE_MIGRATION_DEADLINE_MS,
+  MAX_ACTION_CALL_DEPTH,
   CAPS,
   GOVERNED_CAPS,
   hasCap,
@@ -54,6 +56,7 @@ import {
   TRACE_AUTHORITY_ROOT,
 } from "@manifold/protocol";
 import type {
+  ActionCallRefusal,
   ActionDenialRule,
   ActionOutcome,
   BootstrapPrincipalRequest,
@@ -143,7 +146,12 @@ import type {
 import type { DrainOutcome, TerminalBroker } from "./terminal-broker.ts";
 import type { MachineRepositoryOutcome } from "./machine-ws.ts";
 import { StreamService } from "./stream-service.ts";
-import type { StreamProducer, PluginStreamContext, PluginServiceContext } from "@manifold/plugin";
+import type {
+  StreamProducer,
+  PluginActionContext,
+  PluginStreamContext,
+  PluginServiceContext,
+} from "@manifold/plugin";
 import { jobContext, jobDoors, type JobContext } from "./job-doors.ts";
 import type { JobService, SettledJobDelivery } from "./job-service.ts";
 import { serviceContext, serviceDoors } from "./service-doors.ts";
@@ -438,6 +446,29 @@ function stylesheetOf(bundle: PluginBundle): Uint8Array<ArrayBuffer> | null {
 export const OUTSIDE_SCOPE_REFUSAL = "outside this token's container";
 
 /**
+ * WHY A SIBLING'S DOOR DID NOT OPEN (ADR 0041), as the rejection `ctx.actions.call` throws.
+ *
+ * A REJECTION rather than a returned union, because the resolved value is the callee door's
+ * own result and a handler must be able to use it without unwrapping: the happy path reads
+ * `const session = await ctx.actions.call(...)`, and the refusal is the exceptional one.
+ *
+ * The message is the D5 shape every other plugin refusal already uses — the class, then the
+ * offenders after `": "`, caller first — so a handler that lets it escape refuses its own
+ * dispatch with a sentence its caller can switch on (`run` settles it `refused`), and a
+ * hardened guest gets the identical sentence through the proxy, where a thrown host call
+ * arrives as `HostCallError`.
+ */
+export class ActionCallRefused extends Error {
+  readonly refusal: ActionCallRefusal;
+
+  constructor(refusal: ActionCallRefusal, offenders: string) {
+    super(`${refusal}: ${offenders}`);
+    this.name = "ActionCallRefused";
+    this.refusal = refusal;
+  }
+}
+
+/**
  * The origin a job started from a LIFECYCLE hook carries, where a dispatched one carries its
  * ledger row's id. A hook is not a door: nobody called it, there is no traced row to descend
  * from, and inventing one would put a writer nobody exercised into the ledger. The sentinel
@@ -544,6 +575,15 @@ export interface ActionCtx {
   readonly streams: PluginStreamContext;
   readonly jobs: JobContext;
   readonly services: PluginServiceContext;
+  /**
+   * THE ONE VERB ONTO A SIBLING (ADR 0041). `call({ plugin, action, input })` opens a door of
+   * a plugin this one's manifest declared as a `required` or `optional` dependency, under THE
+   * PRINCIPAL OF THE REQUEST THIS HANDLER IS SERVING — the callee's rungs grade that principal
+   * exactly as they grade a client's, so no plugin gains authority by calling another. The
+   * calling plugin is recorded as the origin on the callee's trace, and the only checks this
+   * side adds are the declared edge, the cycle and the depth.
+   */
+  readonly actions: PluginActionContext;
   /**
    * The container this dispatch is confined to, or null for a workspace-grade caller.
    *
@@ -886,6 +926,41 @@ function traceTargets(targets: readonly ManifoldRef[]): readonly string[] {
   const uris = new Set<string>();
   for (const ref of targets) uris.add(formatManifoldUri(ref));
   return [...uris];
+}
+
+/**
+ * THE CALLING PLUGIN, when a dispatch was opened by a server handler rather than by a client
+ * (ADR 0041). Written by `actionCalls` from the host's own knowledge of the dispatch already
+ * in flight, so it is attribution the caller cannot forge: a handler hands over a plugin id,
+ * an action and an input, and nothing else.
+ *
+ * `parentTrace` is the ledger row of the dispatch the caller is serving, or the
+ * `LIFECYCLE_TRACE` sentinel when the caller is a hook — the same two cases `ctx.jobs`
+ * already distinguishes. `stack` is every plugin frame on this trace, caller last.
+ */
+interface DispatchOrigin {
+  readonly plugin: string;
+  readonly parentTrace: number | string;
+  readonly stack: readonly string[];
+}
+
+/** What a caller may say about a dispatch beyond the four arguments every dispatch has. */
+interface DispatchOptions {
+  agentJustification?: string;
+  onTrace?: (traceId: number) => void;
+  /** Never a field a request carries: only `actionCalls` sets it. */
+  origin?: DispatchOrigin;
+}
+
+/**
+ * The two keys a plugin-originated dispatch adds to its ledger row's payload. They are
+ * attribution rather than arguments, which is why they are written AFTER the redacted body
+ * and win a collision: a door that happens to take an `origin` argument must not be able to
+ * make the ledger say a different plugin opened it.
+ */
+function traceOrigin(origin: DispatchOrigin | undefined): Readonly<Record<string, unknown>> {
+  if (origin === undefined) return {};
+  return { origin: origin.plugin, parentTrace: origin.parentTrace };
 }
 
 /**
@@ -2479,7 +2554,8 @@ export class PluginHost {
   }
 
   /**
-   * THE HOOK'S CTX, and the one piece of it that is not the plugin's own: `jobs`.
+   * THE HOOK'S CTX, and the two pieces of it that are not the plugin's own: `jobs` and
+   * `actions`.
    *
    * A plugin that owns a cadence has to be able to register it when it is turned ON (#514) —
    * the first dispatch or settlement may never come for a half nobody opens. The authority is
@@ -2529,6 +2605,14 @@ export class PluginHost {
               pluginId,
               LIFECYCLE_TRACE,
             ),
+            /*
+              The sibling verb rides the SAME restored credential, so a half that composes on
+              a dependency can ask it something at the transition it owns (ADR 0041). One
+              plugin frame on the stack — this one — because a hook is where a chain begins;
+              nobody dispatched it, which is also why the parent is the sentinel rather than a
+              row id.
+            */
+            actions: this.actionCalls(pluginId, auth, null, LIFECYCLE_TRACE, [pluginId]),
           }),
     };
   }
@@ -2651,6 +2735,9 @@ export class PluginHost {
         id,
         delivery.traceId,
       ),
+      // Both slices are the SETTLED JOB'S credential, not the installer's: the wake belongs
+      // to that run, so what it may ask a dependency is what that run could ask.
+      actions: this.actionCalls(id, auth, null, delivery.traceId, [id]),
     };
     let outcome: HookOutcome;
     try {
@@ -2673,6 +2760,98 @@ export class PluginHost {
   }
 
   /**
+   * The CALLER, when a dispatch was opened by another plugin's handler rather than by a
+   * client (ADR 0041). Everything in it is the host's own knowledge of the dispatch already
+   * in flight — never anything the calling handler passed — which is what lets the callee's
+   * ledger row name an origin the caller could not have forged.
+   *
+   * `stack` is the plugin frames this trace already carries, caller LAST, and it is the whole
+   * mechanism behind both bounds: a callee already on it is a cycle, and a stack at
+   * `MAX_ACTION_CALL_DEPTH` is as deep as one trace goes.
+   */
+  private actionCalls(
+    caller: string,
+    auth: AuthContext,
+    session: string | null,
+    parentTrace: number | string,
+    stack: readonly string[],
+  ): PluginActionContext {
+    return {
+      call: async (args) => {
+        // Parsed here, as every native slice parses (`jobContext`): the frame a hardened
+        // guest sends and the object an in-realm handler passes meet the same schema.
+        const request = ActionCallArgsSchema.parse(args);
+        const callee = request.plugin;
+        const door = `${callee}.${request.action}`;
+        const edge = `${caller} -> ${callee}`;
+        /*
+          THE TWO BOUNDS ON THE TRACE, asked before anything about the roster.
+
+          A cycle is first because it is the one refusal a manifest cannot answer: composition
+          refuses a self-dependency and a dependency cycle outright (ADR 0013 §5.3, §5.6), so
+          telling a plugin reaching for its own door that it never DECLARED itself would be
+          advice it cannot take. It is also why the stack, rather than a self-comparison, is
+          the mechanism: the declared-edge graph is acyclic today, and A -> B -> A is refused
+          by this same line one frame later for any caller of this verb.
+        */
+        const chain = [...stack, callee].join(" -> ");
+        if (stack.includes(callee)) throw new ActionCallRefused("dispatch_cycle", chain);
+        if (stack.length >= MAX_ACTION_CALL_DEPTH) {
+          throw new ActionCallRefused("dispatch_depth", chain);
+        }
+        /*
+          THE DECLARED EDGE, and it is the only thing this side decides about authority.
+          `dependencies` is the manifest's own statement of what it composes on (ADR 0013 §5),
+          so an `incompatible` entry — or no entry at all — is not an edge: a plugin cannot
+          discover a sibling at runtime and start using it, which is what keeps the dependency
+          graph a reader can see in the manifests the same graph the hub actually runs.
+        */
+        const declared = this.assembled.roster.find((entry) => entry.manifest.id === caller)
+          ?.manifest.dependencies?.[callee];
+        if (declared === undefined || declared.type === "incompatible") {
+          throw new ActionCallRefused("undeclared_dependency", edge);
+        }
+        /*
+          `enabled` is false for a disabled row AND for an id nothing assembled, which is
+          exactly the pair this class covers. Only an `optional` edge can reach it — a
+          `required` dependency absent or off is a composition refusal, and the toggle door
+          refuses the disable naming this caller (ADR 0013 §5.1/§5.4) — and the caller stays
+          enabled either way: there is no cascade.
+        */
+        if (!this.assembled.enabled(callee)) {
+          throw new ActionCallRefused("dependency_unavailable", edge);
+        }
+        /*
+          THE CALLEE'S OWN LADDER, unchanged and whole: the same method a client's dispatch
+          walks, under the same `auth`. Its trace, its capability checks, its declared limits,
+          its staged emissions flushing on ITS success — all of it is the existing path, which
+          is why this verb adds no rung and cannot be a second denial ladder.
+        */
+        const outcome = await this.dispatch(auth, door, request.input, session, {
+          origin: { plugin: caller, parentTrace, stack },
+        });
+        if (outcome.ok) return outcome.result;
+        const { rule, message } = outcome.denial;
+        if (rule === "unknown_action") throw new ActionCallRefused("unknown_action", door);
+        // Refused AT the callee, and named for what the caller can act on: the principal it is
+        // serving does not hold what that door demands. The callee's own sentence is the detail.
+        if (rule === "forbidden") {
+          throw new ActionCallRefused("capability", `${caller} -> ${door} (${message})`);
+        }
+        // A row that went off between the check above and the dispatch: the same class, because
+        // the fact a caller acts on is that the dependency was not there to answer.
+        if (rule === "plugin_disabled") throw new ActionCallRefused("dependency_unavailable", edge);
+        throw new ActionCallRefused(
+          "refused",
+          rule === "refused"
+            ? `${caller} -> ${door} (${message})`
+            : `${caller} -> ${door} (${rule}: ${message})`,
+        );
+      },
+    };
+  }
+
+  /**
    * One dispatch, one log line, one ledger row — whether it succeeded, was denied, or threw. A
    * denial is an ANSWER, so it logs at info with the rung that refused; only a broken handler
    * or a result that fails its own schema is an error.
@@ -2688,7 +2867,7 @@ export class PluginHost {
     fullName: string,
     rawArgs: unknown,
     session: string | null = null,
-    options: { agentJustification?: string; onTrace?: (traceId: number) => void } = {},
+    options: DispatchOptions = {},
   ): Promise<ActionOutcome> {
     const pluginId = this.assembled.actions.get(fullName)?.plugin.id;
     const settled = Promise.withResolvers<void>();
@@ -2732,7 +2911,7 @@ export class PluginHost {
     fullName: string,
     rawArgs: unknown,
     session: string | null,
-    options: { agentJustification?: string; onTrace?: (traceId: number) => void },
+    options: DispatchOptions,
   ): Promise<ActionOutcome> {
     const entry = this.assembled.actions.get(fullName);
     if (entry === undefined) {
@@ -2765,7 +2944,7 @@ export class PluginHost {
       authority: traceAuthority(auth, entry.def.caps),
       door: fullName,
       containerId: opaque ? auth.containerScope : traceContainer(auth, rawArgs),
-      payload: opaque ? {} : tracePayload(rawArgs),
+      payload: { ...(opaque ? {} : tracePayload(rawArgs)), ...traceOrigin(options.origin) },
       session,
     };
     /*
@@ -2976,6 +3155,20 @@ export class PluginHost {
           ? "invoke"
           : "read",
       ),
+      /*
+        THE SIBLING VERB, bound to the CALLER'S OWN `auth` rather than to `nativeAuth` (ADR
+        0041). The attenuation above exists for the engine's native bridges, where a plugin
+        spends its own declared ceiling; a call on a declared dependency spends nothing of the
+        plugin's — the callee grades the PRINCIPAL, and narrowing the principal's caps here
+        would refuse a client its own authority at a door it may open directly.
+
+        The stack is this trace's frames plus this plugin, so a callee already on it is a
+        cycle and a chain that never repeats an id still stops at the depth bound.
+      */
+      actions: this.actionCalls(pluginId, auth, session, traceId, [
+        ...(options.origin?.stack ?? []),
+        pluginId,
+      ]),
       streams: {
         open: (kind, node) => {
           if (!streamAdmissionOpen) throw new Error("stream open requires an active action");
@@ -3109,6 +3302,18 @@ export class PluginHost {
         */
         this.store.settleTrace(traceId, error.rule, traceTargets(targets));
         return { ok: false, denial: { rule: error.rule, message: error.message } };
+      }
+      if (error instanceof ActionCallRefused) {
+        /*
+          A SIBLING'S REFUSAL, PROPAGATED (ADR 0041). The handler called a declared
+          dependency, the dependency (or this side's edge, cycle or depth check) refused, and
+          the handler did not catch it. That is an ANSWER about the composition rather than a
+          broken door: this dispatch refuses with the class and the plugins the refusal names,
+          so the client learns which edge failed instead of `failed`, and nothing this handler
+          staged goes out.
+        */
+        this.store.settleTrace(traceId, "refused", traceTargets(targets));
+        return { ok: false, denial: { rule: "refused", message: error.message } };
       }
       // A broken door is still an exercise of authority: somebody opened it and it failed
       // half-way. The row settles `failed` and the throw continues to `dispatch`, which logs

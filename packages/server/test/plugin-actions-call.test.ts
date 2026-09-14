@@ -1,0 +1,541 @@
+import "../src/shared-modules.ts";
+import { describe, expect, test } from "bun:test";
+import { MAX_ACTION_CALL_DEPTH, type ActionOutcome, type Cap } from "@manifold/protocol";
+import { defineAction } from "@manifold/plugin";
+import { z } from "zod";
+import { AuthService, type AuthContext } from "../src/auth.ts";
+import { InstanceDialer } from "../src/instance-dialer.ts";
+import { serveCtxCall } from "../src/isolate/proxy-def.ts";
+import { silentLogger } from "../src/log.ts";
+import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
+import {
+  PluginHost,
+  type ActionCtx,
+  type MachineAdmission,
+  type ServerPluginDef,
+} from "../src/plugin-host.ts";
+import { RoomManager } from "../src/room.ts";
+import { TRACE_ROW_TYPE, type ServerStore, type StoredEvent } from "../src/stores.ts";
+import { TerminalBroker } from "../src/terminal-broker.ts";
+import { FakeClock, FakeRuntime, testEventHub, testStore, testTileTrees } from "./helpers.ts";
+
+/**
+ * `ctx.actions.call` — ONE PLUGIN'S HANDLER AT ANOTHER PLUGIN'S DOOR (ADR 0041, #575).
+ *
+ * The whole subject of this file is AUTHORITY: the callee must see the principal of the
+ * request the caller is serving and nothing more, so every case here asks the same question
+ * twice — what the callee was told about who is asking, and what the ledger recorded about
+ * who opened it. The composition rules (the declared edge, the two bounds) are asserted
+ * beside them because they are the only thing this verb adds to the ladder.
+ */
+
+const OWNER_KEY = "b".repeat(64);
+const CALLER = "test.a";
+const CALLEE = "test.b";
+const STRANGER = "test.c";
+const OPTIONAL = "test.opt";
+
+const OFFLINE_MACHINES: MachineAdmission = {
+  isOnline: () => false,
+  getTerminalExecution: () => null,
+  drain: () => Promise.resolve({ ok: false, reason: "machine is offline" }),
+  repository: () => Promise.resolve({ ok: false, reason: "machine is offline" }),
+};
+
+interface Fixture {
+  readonly store: ServerStore;
+  readonly auth: AuthService;
+  readonly owner: AuthContext;
+  readonly host: PluginHost;
+  readonly runtime: FakeRuntime;
+}
+
+/** A plugin with no dependants and one open door, so a chain can be built out of copies. */
+function relayDef(
+  id: string,
+  dependencies: Record<string, { type: "required" | "optional" | "incompatible" }>,
+  next: string | null,
+): ServerPluginDef {
+  return {
+    manifest: {
+      id,
+      version: "1.0.0",
+      title: id,
+      description: `${id} under test`,
+      capabilities: [],
+      dependencies,
+      contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+    },
+    actions: [
+      defineAction({
+        name: "relay",
+        title: "Relay",
+        caps: [],
+        input: z.strictObject({ word: z.string().min(1) }),
+        result: z.strictObject({ answer: z.unknown() }),
+      }),
+    ],
+    handlers: {
+      relay: async (ctx: ActionCtx, args: { word: string }) => {
+        if (next === null) return { answer: { word: args.word } };
+        return { answer: await ctx.actions.call({ plugin: next, action: "relay", input: args }) };
+      },
+    },
+  };
+}
+
+/**
+ * The pair the acceptance cases use: a caller that relays, probes and stages, and a callee
+ * whose `echo` demands a capability of its own. `test.opt` is declared `optional` so it can be
+ * switched off — a `required` dependency cannot be, the toggle door refuses it by name.
+ */
+function pair(): readonly ServerPluginDef[] {
+  const caller: ServerPluginDef = {
+    manifest: {
+      id: CALLER,
+      version: "1.0.0",
+      title: "Caller",
+      description: "Calls its declared dependency.",
+      capabilities: [],
+      dependencies: { [CALLEE]: { type: "required" }, [OPTIONAL]: { type: "optional" } },
+      contributes: {
+        panels: [],
+        sections: [],
+        elements: [],
+        tools: [],
+        events: [{ id: "relayed", title: "Relayed" }],
+      },
+    },
+    actions: [
+      defineAction({
+        name: "relay",
+        title: "Relay a word to the dependency",
+        caps: [],
+        input: z.strictObject({ word: z.string().min(1) }),
+        result: z.strictObject({ word: z.string(), principal: z.string() }),
+      }),
+      defineAction({
+        name: "probe",
+        title: "Call any door and answer whatever comes back",
+        caps: [],
+        input: z.strictObject({
+          plugin: z.string(),
+          action: z.string(),
+          input: z.unknown(),
+          proxy: z.boolean().optional(),
+        }),
+        result: z.strictObject({ answer: z.unknown() }),
+      }),
+      defineAction({
+        name: "stage",
+        title: "Emit, call, then refuse",
+        caps: [],
+        input: z.strictObject({}),
+        result: z.strictObject({}),
+      }),
+    ],
+    handlers: {
+      relay: async (ctx: ActionCtx, args: { word: string }) =>
+        ctx.actions.call({ plugin: CALLEE, action: "echo", input: { word: args.word } }),
+      probe: async (
+        ctx: ActionCtx,
+        args: { plugin: string; action: string; input: unknown; proxy?: boolean },
+      ) => {
+        const request = { plugin: args.plugin, action: args.action, input: args.input };
+        // `proxy` routes the identical request through the isolate boundary's own server
+        // (`serveCtxCall`), which is what a hardened guest's `call` frame reaches.
+        if (args.proxy === true) {
+          return {
+            answer: await serveCtxCall("actions.call", [request], { kind: "dispatch", ctx }),
+          };
+        }
+        return { answer: await ctx.actions.call(request) };
+      },
+      stage: async (ctx: ActionCtx) => {
+        ctx.emit({ kind: "plugin", pluginId: CALLER }, "relayed");
+        await ctx.actions.call({ plugin: CALLEE, action: "echo", input: { word: "staged" } });
+        return { refused: "the caller changed its mind" };
+      },
+    },
+  };
+  const callee: ServerPluginDef = {
+    manifest: {
+      id: CALLEE,
+      version: "1.0.0",
+      title: "Callee",
+      description: "Answers its dependants.",
+      capabilities: ["terminals:write"],
+      contributes: {
+        panels: [],
+        sections: [],
+        elements: [],
+        tools: [],
+        events: [{ id: "echoed", title: "Echoed" }],
+      },
+    },
+    actions: [
+      defineAction({
+        name: "echo",
+        title: "Echo a word",
+        caps: ["terminals:write"],
+        input: z.strictObject({ word: z.string().min(1) }),
+        result: z.strictObject({ word: z.string(), principal: z.string() }),
+      }),
+      defineAction({
+        name: "sulk",
+        title: "Refuse on domain grounds",
+        caps: [],
+        input: z.strictObject({}),
+        result: z.strictObject({}),
+      }),
+    ],
+    handlers: {
+      echo: async (ctx: ActionCtx, args: { word: string }) => {
+        ctx.emit({ kind: "plugin", pluginId: CALLEE }, "echoed");
+        return { word: args.word, principal: ctx.principal.id };
+      },
+      sulk: async () => ({ refused: "the callee says no" }),
+    },
+  };
+  const stranger: ServerPluginDef = {
+    manifest: {
+      id: STRANGER,
+      version: "1.0.0",
+      title: "Stranger",
+      description: "Nobody declared it.",
+      capabilities: [],
+      contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+    },
+    actions: [
+      defineAction({
+        name: "echo",
+        title: "Echo",
+        caps: [],
+        input: z.strictObject({ word: z.string().min(1) }),
+        result: z.strictObject({ word: z.string() }),
+      }),
+    ],
+    handlers: { echo: async (_ctx: ActionCtx, args: { word: string }) => ({ word: args.word }) },
+  };
+  return [caller, callee, stranger, relayDef(OPTIONAL, {}, null)];
+}
+
+async function fixture(defs: readonly ServerPluginDef[] = pair()): Promise<Fixture> {
+  const runtime = new FakeRuntime();
+  const clock = new FakeClock(runtime);
+  const store = testStore();
+  const auth = new AuthService(store, OWNER_KEY, runtime);
+  const rooms = new RoomManager(store, runtime, clock, silentLogger, testTileTrees);
+  const broker = new TerminalBroker(
+    store,
+    auth,
+    rooms,
+    runtime,
+    clock,
+    silentLogger,
+    () => "http://localhost:7777",
+    testTileTrees,
+  );
+  let host: PluginHost | null = null;
+  const events = testEventHub(
+    store,
+    auth,
+    broker,
+    () => {
+      if (host === null) throw new Error("the event plane read the assembly before the host");
+      return host.assembly();
+    },
+    runtime,
+  );
+  host = await PluginHost.boot(
+    defs,
+    store,
+    auth,
+    rooms,
+    broker,
+    new PlaceExecutor(
+      store,
+      rooms,
+      broker,
+      runtime,
+      assemblyPlacementVocabulary(() => []),
+      assemblyItemNouns(() => []),
+    ),
+    OFFLINE_MACHINES,
+    new InstanceDialer(store, runtime, silentLogger, () => "http://localhost:7777"),
+    runtime,
+    silentLogger,
+    events,
+    {},
+  );
+  return { store, auth, owner: auth.authenticate(OWNER_KEY), host, runtime };
+}
+
+/** A minted token, so a narrower principal is real attenuation rather than a hand-built context. */
+function guest(base: Fixture, caps: readonly Cap[]): AuthContext {
+  const grant = base.auth.mintToken(
+    { principal: { name: "guest", kind: "human" }, caps: [...caps] },
+    base.owner,
+  );
+  return base.auth.authenticate(grant.token);
+}
+
+function denial(outcome: ActionOutcome): { rule: string; message: string } {
+  if (outcome.ok) throw new Error(`expected a denial, got ${JSON.stringify(outcome)}`);
+  return outcome.denial;
+}
+
+function traces(base: Fixture): readonly StoredEvent[] {
+  return base.store.listEvents({ type: TRACE_ROW_TYPE, limit: 100 });
+}
+
+function rowFor(base: Fixture, door: string): StoredEvent {
+  const row = traces(base).find((candidate) => candidate.door === door);
+  if (row === undefined) throw new Error(`no trace row for ${door}`);
+  return row;
+}
+
+describe("a declared dependency's door", () => {
+  test("opens under the CALLER'S principal, with the calling plugin as the origin", async () => {
+    const base = await fixture();
+
+    const outcome = await base.host.dispatch(base.owner, `${CALLER}.relay`, { word: "hi" });
+
+    /*
+      THE AUTHORITY CLAIM, from the callee's own mouth: `principal` is whatever `ctx.principal`
+      said inside `test.b.echo`, and it is the client's — not a plugin identity, not the
+      installer's, not root-by-composition. A plugin that gained authority by being called
+      would show a different id here and nothing else in the system would notice.
+    */
+    expect(outcome).toEqual({
+      ok: true,
+      result: { word: "hi", principal: base.owner.principal.id },
+    });
+
+    const caller = rowFor(base, `${CALLER}.relay`);
+    const callee = rowFor(base, `${CALLEE}.echo`);
+    expect(callee.principalId).toBe(base.owner.principal.id);
+    expect(callee.outcome).toBe("ok");
+    // The ledger's own answer to "who opened this door": the calling PLUGIN, plus the row of
+    // the dispatch it was serving, so the two frames of one trace read as one chain.
+    expect(JSON.parse(callee.payload)).toEqual({
+      word: "hi",
+      origin: CALLER,
+      parentTrace: caller.id,
+    });
+    base.store.close();
+  });
+
+  test("a callee's staged emissions flush on ITS success while the caller's stay staged", async () => {
+    const base = await fixture();
+
+    // The caller emits, calls, and then refuses: one dispatch's staging must not be able to
+    // hold another dispatch's announcement, and a refusal must publish nothing of its own.
+    expect(denial(await base.host.dispatch(base.owner, `${CALLER}.stage`, {}))).toEqual({
+      rule: "refused",
+      message: "the caller changed its mind",
+    });
+
+    expect(base.store.listEvents({ type: "echoed", limit: 5 })).toHaveLength(1);
+    expect(base.store.listEvents({ type: "relayed", limit: 5 })).toHaveLength(0);
+    base.store.close();
+  });
+
+  test("a hardened guest reaches the same door through the proxy and gets the same result", async () => {
+    const base = await fixture();
+
+    const outcome = await base.host.dispatch(base.owner, `${CALLER}.probe`, {
+      plugin: CALLEE,
+      action: "echo",
+      input: { word: "through the wire" },
+      proxy: true,
+    });
+
+    expect(outcome).toEqual({
+      ok: true,
+      result: { answer: { word: "through the wire", principal: base.owner.principal.id } },
+    });
+    base.store.close();
+  });
+});
+
+describe("what a sibling call is refused by", () => {
+  test("an undeclared plugin refuses undeclared_dependency, naming both", async () => {
+    const base = await fixture();
+
+    const outcome = await base.host.dispatch(base.owner, `${CALLER}.probe`, {
+      plugin: STRANGER,
+      action: "echo",
+      input: { word: "hi" },
+    });
+
+    // `test.c` is composed, enabled and has that door: the ONLY thing wrong is that nobody
+    // wrote the edge down, which is the whole point of a declared dependency graph.
+    expect(denial(outcome)).toEqual({
+      rule: "refused",
+      message: `undeclared_dependency: ${CALLER} -> ${STRANGER}`,
+    });
+    expect(traces(base).some((row) => row.door === `${STRANGER}.echo`)).toBe(false);
+    base.store.close();
+  });
+
+  test("a declared optional dependency that is off refuses dependency_unavailable, and the caller stays enabled", async () => {
+    const base = await fixture();
+    expect(await base.host.setEnabled(OPTIONAL, false, "admin")).toEqual({ ok: true });
+
+    const outcome = await base.host.dispatch(base.owner, `${CALLER}.probe`, {
+      plugin: OPTIONAL,
+      action: "relay",
+      input: { word: "hi" },
+    });
+
+    expect(denial(outcome)).toEqual({
+      rule: "refused",
+      message: `dependency_unavailable: ${CALLER} -> ${OPTIONAL}`,
+    });
+    // No cascade (ADR 0013 §5.5): the dependant keeps serving every door that does not need
+    // the absent peer, and says so by name at the one that does.
+    expect(base.host.assembly().enabled(CALLER)).toBe(true);
+    expect(
+      await base.host.dispatch(base.owner, `${CALLER}.relay`, { word: "still here" }),
+    ).toMatchObject({ ok: true });
+    base.store.close();
+  });
+
+  test("a declared dependency nothing composed is the same class", async () => {
+    const base = await fixture([
+      relayDef(CALLER, { "test.absent": { type: "optional" } }, "test.absent"),
+    ]);
+
+    const outcome = await base.host.dispatch(base.owner, `${CALLER}.relay`, { word: "hi" });
+
+    expect(denial(outcome)).toEqual({
+      rule: "refused",
+      message: `dependency_unavailable: ${CALLER} -> test.absent`,
+    });
+    base.store.close();
+  });
+
+  test("a principal without the callee's capability is refused AT the callee, with capability", async () => {
+    const base = await fixture();
+    const reader = guest(base, ["containers:read"]);
+
+    const outcome = await base.host.dispatch(reader, `${CALLER}.relay`, { word: "hi" });
+
+    /*
+      THE CONFUSED DEPUTY, ANSWERED. `test.a.relay` declares no capability at all, so this
+      principal opens it; `test.b.echo` demands `terminals:write`, which this principal does
+      not hold. The refusal is the CALLEE's rung 4 — a plugin cannot lend its caller authority
+      it did not have — and the class says which so the caller's author asks for a grant
+      rather than editing a manifest.
+    */
+    expect(denial(outcome)).toEqual({
+      rule: "refused",
+      message: `capability: ${CALLER} -> ${CALLEE}.echo (terminals:write capability required)`,
+    });
+    expect(rowFor(base, `${CALLEE}.echo`).outcome).toBe("forbidden");
+    expect(base.store.listEvents({ type: "echoed", limit: 5 })).toHaveLength(0);
+    base.store.close();
+  });
+
+  test("a door the callee does not publish refuses unknown_action", async () => {
+    const base = await fixture();
+
+    const outcome = await base.host.dispatch(base.owner, `${CALLER}.probe`, {
+      plugin: CALLEE,
+      action: "ghost",
+      input: {},
+    });
+
+    expect(denial(outcome)).toEqual({
+      rule: "refused",
+      message: `unknown_action: ${CALLEE}.ghost`,
+    });
+    base.store.close();
+  });
+
+  test("the callee's own refusal propagates with the callee named", async () => {
+    const base = await fixture();
+
+    const outcome = await base.host.dispatch(base.owner, `${CALLER}.probe`, {
+      plugin: CALLEE,
+      action: "sulk",
+      input: {},
+    });
+
+    expect(denial(outcome)).toEqual({
+      rule: "refused",
+      message: `refused: ${CALLER} -> ${CALLEE}.sulk (the callee says no)`,
+    });
+    base.store.close();
+  });
+
+  test("a plugin already on the trace refuses dispatch_cycle", async () => {
+    const base = await fixture();
+
+    const outcome = await base.host.dispatch(base.owner, `${CALLER}.probe`, {
+      plugin: CALLER,
+      action: "relay",
+      input: { word: "hi" },
+    });
+
+    /*
+      The caller is the first frame on its own trace, so a plugin reaching for its own door
+      meets the bound rather than the edge: `undeclared_dependency` would send an author to
+      declare a self-dependency, which composition refuses outright. A -> B -> A is refused by
+      the same line, one frame later; the declared-edge graph is acyclic today, and the stack
+      is what keeps that true for any future caller of this verb.
+    */
+    expect(denial(outcome)).toEqual({
+      rule: "refused",
+      message: `dispatch_cycle: ${CALLER} -> ${CALLER}`,
+    });
+    base.store.close();
+  });
+
+  test("a chain one plugin deeper than the bound refuses dispatch_depth", async () => {
+    // A legal DAG: nine plugins, each declaring the next `required`, each relaying to it. The
+    // client's dispatch is frame 1, so the ninth plugin is the frame the bound refuses.
+    const ids = Array.from({ length: MAX_ACTION_CALL_DEPTH + 1 }, (_, index) => `test.p${index}`);
+    const base = await fixture(
+      ids.map((id, index) => {
+        const next = ids[index + 1] ?? null;
+        return relayDef(id, next === null ? {} : { [next]: { type: "required" } }, next);
+      }),
+    );
+
+    const outcome = await base.host.dispatch(base.owner, `${ids[0] ?? ""}.relay`, { word: "deep" });
+
+    const denied = denial(outcome);
+    expect(denied.rule).toBe("refused");
+    expect(denied.message).toContain(`dispatch_depth: ${ids.join(" -> ")}`);
+    // Frame 8 refused before it dispatched, so the deepest door was never opened.
+    expect(
+      traces(base).some((row) => row.door === `${ids[MAX_ACTION_CALL_DEPTH] ?? ""}.relay`),
+    ).toBe(false);
+    expect(
+      traces(base).filter((row) => row.door === `test.p${MAX_ACTION_CALL_DEPTH - 1}.relay`),
+    ).toHaveLength(1);
+    base.store.close();
+  });
+
+  test("a refusal crossing the isolate boundary is the same sentence, thrown", async () => {
+    const base = await fixture();
+
+    const outcome = await base.host.dispatch(base.owner, `${CALLER}.probe`, {
+      plugin: STRANGER,
+      action: "echo",
+      input: { word: "hi" },
+      proxy: true,
+    });
+
+    // The proxy throws, the supervisor answers `{ ok: false, error }`, the guest runtime raises
+    // `HostCallError` with this detail, and an uncaught one refuses the guest's dispatch — so a
+    // hardened caller and an in-realm caller read the identical class and offenders.
+    expect(denial(outcome)).toEqual({
+      rule: "refused",
+      message: `undeclared_dependency: ${CALLER} -> ${STRANGER}`,
+    });
+    base.store.close();
+  });
+});

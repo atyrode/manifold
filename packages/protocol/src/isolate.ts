@@ -347,10 +347,12 @@ const errorText = z.string().max(ISOLATE_ERROR_TEXT_MAX);
 /**
  * The ctx slices a child may CALL BACK into (ADR 0016 §2), each one an RPC the host serves on
  * the plugin's behalf: storage namespaced by plugin id, the plugin's own database when its
- * manifest declared one, the dispatching caller's authority, and the two host services a
- * first-party slice already reaches by method name. Everything else in `ActionCtx` is NOT
- * served in stage 1 — the guest runtime raises `IsolateSliceUnavailable(method)` and maps it
- * to `{ ok: false, rule: "refused" }`, so the absence is a named refusal at the door rather
+ * manifest declared one, the dispatching caller's authority, the two host services a
+ * first-party slice already reaches by method name, and — last, because it is the only one
+ * that reaches ANOTHER plugin — `actions.call` on a declared dependency's door (ADR 0041),
+ * which crosses as the same named refusal it is in realm. Everything else in `ActionCtx` is
+ * NOT served in stage 1 — the guest runtime raises `IsolateSliceUnavailable(method)` and maps
+ * it to `{ ok: false, rule: "refused" }`, so the absence is a named refusal at the door rather
  * than a hang or a throw.
  */
 export const ISOLATE_CTX_METHODS = [
@@ -401,6 +403,7 @@ export const ISOLATE_CTX_METHODS = [
   "services.configureInstance",
   "services.readInstance",
   "services.invokeInstance",
+  "actions.call",
 ] as const;
 export const IsolateCtxMethodSchema = z.enum(ISOLATE_CTX_METHODS);
 export type IsolateCtxMethod = (typeof ISOLATE_CTX_METHODS)[number];

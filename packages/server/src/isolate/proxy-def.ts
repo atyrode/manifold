@@ -19,6 +19,7 @@ import {
   MAX_SQL_STATEMENT_BYTES,
 } from "@manifold/plugin";
 import {
+  ActionCallArgsSchema,
   AskableCapSchema,
   GuestMigrationDeclarationsSchema,
   ManifoldRefSchema,
@@ -175,14 +176,14 @@ export function buildIsolateDef(
  * list from the caller's `ActionCtx`; a lifecycle hook has only its `LifecycleCtx`, so it
  * serves storage and the plugin's own database — a hook orders its OWN durable state, and
  * rows are as much of that as keys — and answers `slice_unavailable` for the rest, the same
- * word the guest runtime uses for a slice stage 1 does not carry, EXCEPT for `jobs.*`, which
- * it serves when and only when that ctx carries the slice (the installer's restored
- * credential, #514). `onJobSettled` sits between them: it is a hook, and it carries the job
- * slice bound to the settled job's own credential, so it serves storage, the database and
- * `jobs.*` and nothing else — a separate kind because its slice is guaranteed: the host does
- * not deliver the wake without one. A MIGRATION carries storage alone: the supervisor admits
- * only `storage.*` from a migrating guest, so a guest's tables are made where the reference
- * plugin makes them — in `onEnable`, which does carry the database.
+ * word the guest runtime uses for a slice stage 1 does not carry, EXCEPT for `jobs.*` and
+ * `actions.call`, which it serves when and only when that ctx carries them (the installer's
+ * restored credential, #514, ADR 0041). `onJobSettled` sits between them: it is a hook, and it
+ * carries both slices bound to the settled job's own credential, so it serves storage, the
+ * database, `jobs.*` and `actions.call` and nothing else — a separate kind because its slice
+ * is guaranteed: the host does not deliver the wake without one. A MIGRATION carries storage
+ * alone: the supervisor admits only `storage.*` from a migrating guest, so a guest's tables are
+ * made where the reference plugin makes them — in `onEnable`, which does carry the database.
  */
 export type ServedCtx =
   | { readonly kind: "dispatch"; readonly ctx: ActionCtx }
@@ -492,21 +493,29 @@ export async function serveCtxCall(
     case "placement.place":
     case "host.roster":
     case "host.enabled":
+    case "actions.call":
       break;
   }
   /*
-    A hook serves `jobs.*` only when its ctx carries the slice, and the ctx carries it only
-    when the installer's credential restored (`plugin-host.ts` `lifecycleCtx`). The absence is
-    therefore a REFUSAL by the same name every unserved slice uses, never a downgrade to some
-    other authority: a cadence a revoked installer can no longer authorize does not quietly
-    register under the engine's.
+    A hook serves `jobs.*` and `actions.call` only when its ctx carries them, and it carries
+    them only when the installer's credential restored (`plugin-host.ts` `lifecycleCtx`). The
+    absence is therefore a REFUSAL by the same name every unserved slice uses, never a
+    downgrade to some other authority: a cadence a revoked installer can no longer authorize
+    does not quietly register under the engine's, and neither does a call on a sibling.
    */
   if (served.kind === "hook") {
-    const { jobs } = served.ctx;
+    const { jobs, actions } = served.ctx;
+    if (method === "actions.call") {
+      if (actions === undefined) throw new Error(`slice_unavailable: ${method}`);
+      return actions.call(ActionCallArgsSchema.parse(args[0]));
+    }
     if (jobs === undefined || !jobsMethod(method)) throw new Error(`slice_unavailable: ${method}`);
     return serveJobsCall(method, args, jobs);
   }
   if (served.kind === "settled") {
+    if (method === "actions.call") {
+      return served.ctx.actions.call(ActionCallArgsSchema.parse(args[0]));
+    }
     if (!jobsMethod(method)) throw new Error(`slice_unavailable: ${method}`);
     return serveJobsCall(method, args, served.ctx.jobs);
   }
@@ -597,6 +606,15 @@ export async function serveCtxCall(
       return ctx.host.roster();
     case "host.enabled":
       return ctx.host.enabled(stringArg(args, 0, method));
+    /*
+      The SAME object an in-realm handler calls, so a hardened row reaches exactly the
+      dependencies its manifest declared and no more (ADR 0016 §2, ADR 0041). Its refusal is a
+      throw here, which the supervisor answers `{ ok: false, error }` and the guest runtime
+      raises as `HostCallError` carrying the refusal sentence verbatim — the same class and the
+      same offenders an in-realm caller reads off `ActionCallRefused`.
+    */
+    case "actions.call":
+      return ctx.actions.call(ActionCallArgsSchema.parse(args[0]));
     default: {
       const exhaustive: never = method;
       throw new Error(`unserved ctx method ${String(exhaustive)}`);
