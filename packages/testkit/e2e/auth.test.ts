@@ -632,6 +632,11 @@ test("a revoked preview browser identity returns through production admission wi
     const initial = await browser.evaluate<{ token: string; principal: Principal }>(
       "JSON.parse(localStorage.getItem('manifold.identity'))",
     );
+    const admittedRoster = await fetch(`${previewOwner.httpUrl}/api/plugins`, {
+      headers: { authorization: `Bearer ${initial.token}` },
+    });
+    expect(admittedRoster.status).toBe(200);
+    expect(admittedRoster.headers.get("cache-control")).toBe("no-store");
     await browser.evaluate(`localStorage.setItem('identity-test-content', 'keep');
       localStorage.setItem('manifold.identity@https://elsewhere.example', 'keep-foreign');
       localStorage.setItem('manifold.ownerKey', ${JSON.stringify(preview.ownerKey)})`);
