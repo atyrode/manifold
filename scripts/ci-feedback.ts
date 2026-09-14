@@ -119,7 +119,7 @@ function requiredNumber(value: unknown, context: string): number {
 function bounded(value: unknown, limit = MAX_TEXT): string {
   if (typeof value !== "string") return "";
   const clean = value
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\p{Cc}/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
   return clean.slice(0, limit);

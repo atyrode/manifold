@@ -425,7 +425,7 @@ async function localGate(): Promise<number> {
   const built = await building;
   // Hard drain before Chromium: browser processes beside six compilers exceed the local ceiling.
   const statics = await staticChecks;
-  let postStatics: TaskResult[] = [];
+  const postStatics: TaskResult[] = [];
   let convergence: TaskResult[] = [];
   let browsers: TaskResult[] = [];
   if (built.ok) {
