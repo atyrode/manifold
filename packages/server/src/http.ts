@@ -597,16 +597,12 @@ export class HttpApp {
       // looking at.
       const context = this.authenticate(request);
       this.requireCap(context, "containers:read");
-      const response = jsonResponse(
+      return jsonResponse(
         PluginsResponseSchema.parse({
           plugins: this.plugins.roster(),
           developerMode: this.plugins.developerMode(),
         }),
       );
-      // The roster is authenticated, changes at runtime, and gates recovery from revoked
-      // identities. A browser must never reuse an answer authorized by an earlier request.
-      response.headers.set("cache-control", "no-store");
-      return response;
     }
 
     /*

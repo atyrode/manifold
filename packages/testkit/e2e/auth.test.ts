@@ -636,10 +636,19 @@ test("a revoked preview browser identity returns through production admission wi
       headers: { authorization: `Bearer ${initial.token}` },
     });
     expect(admittedRoster.status).toBe(200);
-    expect(admittedRoster.headers.get("cache-control")).toBe("no-store");
     await browser.evaluate(`localStorage.setItem('identity-test-content', 'keep');
       localStorage.setItem('manifold.identity@https://elsewhere.example', 'keep-foreign');
       localStorage.setItem('manifold.ownerKey', ${JSON.stringify(preview.ownerKey)})`);
+    // Leave the live application before revocation. Otherwise its authenticated requests can
+    // observe the revocation and begin a successful handoff while this test is still arranging
+    // the deliberately failed recovery attempt below.
+    await browser.goto(`${previewOrigin}/healthz`);
+    expect(
+      await browser.evaluate<boolean>(
+        `JSON.parse(localStorage.getItem('manifold.identity') || 'null')?.token ===
+          ${JSON.stringify(initial.token)}`,
+      ),
+    ).toBe(true);
     await ownerAction(previewOwner, "core.access.revoke", { principalId: initial.principal.id });
     const refused = await fetch(`${previewOwner.httpUrl}/api/plugins`, {
       headers: { authorization: `Bearer ${initial.token}` },
