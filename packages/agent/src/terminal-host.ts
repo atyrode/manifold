@@ -98,6 +98,7 @@ export class TerminalHost {
   private readonly terminals = new Map<string, PtyTerminal>();
   private readonly recipes = new Map<string, LaunchRecipe>();
   private readonly restarting = new Set<string>();
+  private readonly failedRestarts = new WeakSet<PtyTerminal>();
   private readonly cancelledRestarts = new Set<string>();
   private readonly connections = new Set<Connection>();
   private transport: Connection | null = null;
@@ -210,7 +211,11 @@ export class TerminalHost {
 
   private inventory(): AdvertisedTerminal[] {
     const terminals: AdvertisedTerminal[] = [];
-    for (const terminal of this.terminals.values()) terminals.push(terminal.toAdvertised());
+    for (const terminal of this.terminals.values()) {
+      const advertised = terminal.toAdvertised();
+      if (this.failedRestarts.has(terminal)) advertised.exitCode = null;
+      terminals.push(advertised);
+    }
     return terminals;
   }
 
@@ -713,12 +718,16 @@ export class TerminalHost {
       )
         this.terminals.set(msg.terminalId, previous);
       this.restarting.delete(msg.terminalId);
-      if (previous && !previous.alive && this.terminals.get(msg.terminalId) === previous)
+      if (previous && !previous.alive && this.terminals.get(msg.terminalId) === previous) {
+        // A failed replacement is not the old program's natural completion. Retain unknown
+        // evidence here and in reconnect inventory, even if the requested stop exited zero.
+        this.failedRestarts.add(previous);
         connection.peer.write({
           type: "exited",
           terminalId: msg.terminalId,
-          exitCode: previous.toAdvertised().exitCode ?? null,
+          exitCode: null,
         });
+      }
       refuse(error instanceof Error ? error.message : "restart_failed");
     } finally {
       this.restarting.delete(msg.terminalId);

@@ -184,15 +184,29 @@ test("transport replacement preserves the process; owner loss keeps a restartabl
       ),
     ).toBe(false);
 
-    // A killed owner cannot report an exit; the transport's explicit owner-loss close is proof.
+    // Even an IPC-seat disconnect leaves the rows live-but-unreachable: only an admitted
+    // replacement owner's hello proves that the predecessor's PTYs cannot be recovered.
+    agent.host.kill("SIGKILL");
+    await agent.host.exited;
+    await waitFor(async () => !(await isMachineOnline(server, enrolled.machineId)), 15_000, 50);
+    expect(homeClient.terminals.get(terminal.id)?.status).toBe("running");
+    expect((await listTerminals(server)).find((entry) => entry.id === terminal.id)).toMatchObject({
+      status: "running",
+      homeId: terminal.containerId,
+    });
+    await agent.stop();
     const exited = nextMessage(
       homeClient,
       "terminal_event",
       15_000,
       (message) => message.terminalId === terminal.id && message.kind === "exited",
     );
-    agent.host.kill("SIGKILL");
-    await agent.host.exited;
+    const replacement = await startAgent({
+      serverUrl: server.url,
+      machineToken: enrolled.machineToken,
+      name: "lifetimes-agent",
+    });
+    agents.push(replacement);
     expect((await exited).kind).toBe("exited");
     await waitFor(() => homeClient.terminals.get(terminal.id)?.status === "exited", 15_000, 50);
     expect(client.elements.has("el-lifetimes-terminal")).toBe(true);
@@ -201,13 +215,6 @@ test("transport replacement preserves the process; owner loss keeps a restartabl
       homeId: terminal.containerId,
     });
     expect(homeClient.terminals.get(terminal.id)?.exitCode).toBeNull();
-    await agent.stop();
-    const replacement = await startAgent({
-      serverUrl: server.url,
-      machineToken: enrolled.machineToken,
-      name: "lifetimes-agent",
-    });
-    agents.push(replacement);
     const restarted = nextMessage(
       homeClient,
       "terminal_event",

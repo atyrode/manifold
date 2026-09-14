@@ -488,8 +488,8 @@ export class MachineGateway {
     }
   }
 
-  /** Cleans broker online state after a machine socket closes. */
-  close(id: string, code?: number): void {
+  /** A socket close removes reachability, not ownership: even IPC seat loss can leave PTYs alive. */
+  close(id: string): void {
     const connection = this.connections.get(id);
     if (connection === undefined) return;
     this.connections.delete(id);
@@ -500,8 +500,6 @@ export class MachineGateway {
     if (channel === null) return;
     if (this.activeByMachine.get(channel.machineId) === channel) {
       this.activeByMachine.delete(channel.machineId);
-      // 4010 is the transport's explicit IPC-seat loss report, not an ordinary disconnect.
-      if (code === 4010) this.broker.onOwnerLost(channel.machineId);
     }
     this.broker.setMachineOffline(channel);
     this.failPendingRepositories(channel.machineId, "machine disconnected before answering");

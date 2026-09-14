@@ -306,10 +306,13 @@ compatibility gates. A compatible transport keeps retained terminals and mainten
 reachable even when the owner's native RPC cannot admit jobs. An older owner's missing
 IPC-2 execution declaration cannot be treated as permission to create an unconfined shell.
 
-Owners with restart support retain their tiles in the hub after owner loss: nonzero or unknown
-exits show **Restart** instead of vanishing. The directory last observed on Linux is retained,
+When a replacement owner connects, its predecessor's tiles remain in the hub as exited with
+unknown exit code and show **Restart** instead of vanishing. A transport or IPC-seat disconnect
+alone is not evidence of owner death: tiles remain live but unreachable until the same owner
+reconnects or a replacement owner is admitted. The directory last observed on Linux is retained,
 and Restart creates a new PTY in the same tile; it does not preserve the process, shell history
-or running work. Clean shell exits still remove their tiles. Legacy tiles without a recorded
+or running work. Failed restarts and nonzero or unknown exits keep their tiles; clean shell
+exits still remove them. Legacy tiles without a recorded
 launch recipe can be restored as a plain interactive shell only on a currently unconfined owner;
 the UI names that fallback. Governed owners refuse such missing recipes. An older retained owner
 without restart support remains usable but refuses Restart as `unsupported`; replace it only

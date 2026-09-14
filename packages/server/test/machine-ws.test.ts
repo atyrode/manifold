@@ -622,8 +622,10 @@ describe("machine admission and terminal continuity", () => {
     if (ownerHostId !== null) {
       store.touchMachine(enrollment.machine.id, "agent", runtime.now(), ownerHostId);
     }
+    const terminalTokens = new Map<string, string>();
     for (const terminalId of runningTerminals) {
       const grant = auth.mintSessionAgentToken(terminalId, container.id, root.principal.id);
+      terminalTokens.set(terminalId, grant.token);
       store.createTerminal({
         id: terminalId,
         machineId: enrollment.machine.id,
@@ -699,6 +701,7 @@ describe("machine admission and terminal continuity", () => {
       store,
       auth,
       root,
+      terminalTokens,
       rooms,
       runtime,
       broker,
@@ -1024,10 +1027,15 @@ describe("machine admission and terminal continuity", () => {
     if (!row) throw new Error("missing fixture terminal");
     const room = fix.rooms.get(row.containerId);
     room?.placeTerminalTile("t1", null, null);
-    fix.hello("owner", { terminalHostId: "host-A", alive: ["t1", "t2"] });
+    const owner = fix.hello("owner", { terminalHostId: "host-A", alive: ["t1", "t2"] });
+    owner.close(4010, "terminal host connection lost");
     fix.gateway.close("owner");
     // Transport loss alone is not evidence the process died.
     expect(fix.status("t1")).toBe("running");
+    expect(fix.store.getMachine(fix.machineId)?.ownerHostId).toBe("host-A");
+    expect(fix.auth.authenticate(fix.terminalTokens.get("t1")!).principal.id).toBe(
+      row.agentPrincipalId!,
+    );
     const replacement = fix.hello("replacement", { terminalHostId: "host-B" });
     expect(replacement.closed).toBeNull();
     expect(fix.gateway.isOnline(fix.machineId)).toBe(true);
@@ -1038,27 +1046,57 @@ describe("machine admission and terminal continuity", () => {
       exitCode: null,
     });
     expect(fix.status("t2")).toBe("exited");
+    expect(() => fix.auth.authenticate(fix.terminalTokens.get("t1")!)).toThrow();
     expect(room?.homesTerminal("t1")).toBe(true);
     expect(fix.store.getMachine(fix.machineId)?.ownerHostId).toBe("host-B");
     fix.gateway.shutdown();
     fix.store.close();
   });
 
-  test("explicit owner seat loss retains unknown exits immediately, while stale closes cannot", () => {
-    const fix = fixture("d".repeat(64), ["t1"], "host-A");
-    const row = fix.store.getTerminal("t1")!;
-    const room = fix.rooms.get(row.containerId)!;
-    room.placeTerminalTile("t1", null, null);
-    fix.hello("old", { terminalHostId: "host-A", alive: ["t1"] });
-    fix.hello("current", { terminalHostId: "host-A", alive: ["t1"] });
-    fix.gateway.close("old", 4010);
-    expect(fix.status("t1")).toBe("running");
-    fix.gateway.close("current", 4010);
-    expect(fix.store.getTerminal("t1")).toMatchObject({ status: "exited", exitCode: null });
-    expect(room.homesTerminal("t1")).toBe(true);
-    expect(fix.store.getContainer(row.containerId)).not.toBeNull();
-    fix.gateway.shutdown();
-    fix.store.close();
+  test("an explicit 4010 IPC seat disconnect re-adopts the same owner's live terminals", () => {
+    const fix = fixture("d".repeat(64), ["t1", "t2"], "host-A");
+    try {
+      const row = fix.store.getTerminal("t1")!;
+      const room = fix.rooms.get(row.containerId)!;
+      room.placeTerminalTile("t1", null, null);
+      const old = fix.hello("old", { terminalHostId: "host-A", alive: ["t1", "t2"] });
+      const current = fix.hello("current", { terminalHostId: "host-A", alive: ["t1", "t2"] });
+      old.close(4010, "terminal host connection lost");
+      fix.gateway.close("old");
+      expect(fix.gateway.isOnline(fix.machineId)).toBe(true);
+      expect(fix.status("t1")).toBe("running");
+
+      // The IPC writer may drop a seat under backpressure while every PTY stays alive.
+      current.close(4010, "terminal host connection lost");
+      fix.gateway.close("current");
+      expect(fix.gateway.isOnline(fix.machineId)).toBe(false);
+      expect(fix.store.getMachine(fix.machineId)?.ownerHostId).toBe("host-A");
+      const disconnected = ["t1", "t2"].map((id) => fix.store.getTerminal(id));
+
+      const recovered = fix.hello("recovered", {
+        terminalHostId: "host-A",
+        alive: ["t1", "t2"],
+      });
+      expect(recovered.closed).toBeNull();
+      expect(machineMessages(recovered).filter((message) => message.type === "kill")).toEqual([]);
+      expect(fix.gateway.isOnline(fix.machineId)).toBe(true);
+      for (const terminal of disconnected) {
+        expect(terminal?.status).toBe("running");
+        expect(fix.store.getTerminal(terminal!.id)).toEqual(terminal);
+        expect(fix.auth.authenticate(fix.terminalTokens.get(terminal!.id)!).principal.id).toBe(
+          terminal!.agentPrincipalId!,
+        );
+      }
+      expect(fix.broker.listForContainer(row.containerId)).toMatchObject([
+        { id: "t1", status: "running" },
+        { id: "t2", status: "running" },
+      ]);
+      expect(room.homesTerminal("t1")).toBe(true);
+      expect(fix.store.getContainer(row.containerId)).not.toBeNull();
+    } finally {
+      fix.gateway.shutdown();
+      fix.store.close();
+    }
   });
 
   test("a vacant unnamed seat retains missing terminals while adopting surviving inventory", () => {

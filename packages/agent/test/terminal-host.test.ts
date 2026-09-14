@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { TerminalHostEvent } from "@manifold/protocol";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FrameReader, FrameTooLargeError, FrameWriter } from "../src/ipc-framing.ts";
@@ -421,6 +421,115 @@ test.skipIf(process.platform !== "linux")(
   },
   10_000,
 );
+
+test("failed restart retains unknown exit evidence across reconnect and repair retries the same terminal", async () => {
+  const root = mkdtempSync(join(tmpdir(), "manifold-terminal-restart-failure-"));
+  const executable = join(root, "program");
+  const program = [
+    `#!${BASH}`,
+    "trap 'exit 0' TERM HUP",
+    "stty -echo",
+    "printf 'READY\\n'",
+    'while IFS= read -r line; do eval "$line"; done',
+    "",
+  ].join("\n");
+  writeFileSync(executable, program, { mode: 0o700 });
+  const host = new TerminalHost();
+  const peer = openPeer(host);
+  try {
+    peer.session.deliver({ type: "attach" });
+    peer.session.deliver({
+      type: "create",
+      terminalId: "recoverable",
+      cols: 91,
+      rows: 31,
+      cwd: root,
+      env: { LAUNCH_VALUE: "preserved" },
+      program: { argv: [executable] },
+    });
+    await terminalEvent(
+      peer,
+      (event) =>
+        event.type === "output" && Buffer.from(event.data, "base64").toString().includes("READY"),
+    );
+    rmSync(executable);
+    peer.events.length = 0;
+    peer.session.deliver({ type: "terminal_restart", terminalId: "recoverable" });
+    await terminalEvent(peer, (event) => event.type === "terminal_restart_error");
+    expect(
+      peer.events.filter(
+        (event) =>
+          event.type === "exited" ||
+          event.type === "terminal_restart_error" ||
+          event.type === "terminal_restarted",
+      ),
+    ).toEqual([
+      { type: "exited", terminalId: "recoverable", exitCode: null },
+      expect.objectContaining({ type: "terminal_restart_error", terminalId: "recoverable" }),
+    ]);
+    const retained = {
+      terminalId: "recoverable",
+      cols: 91,
+      rows: 31,
+      cwd: root,
+      alive: false,
+      exitCode: null,
+    };
+    expect(host.status().terminals).toMatchObject([retained]);
+    peer.session.detach();
+    const reconnected = openPeer(host);
+    reconnected.session.deliver({ type: "attach" });
+    expect(await reconnected.next("attached")).toMatchObject({
+      terminalHostId: host.terminalHostId,
+      terminals: [retained],
+    });
+
+    writeFileSync(executable, program, { mode: 0o700 });
+    reconnected.session.deliver({ type: "terminal_restart", terminalId: "recoverable" });
+    expect(
+      await terminalEvent(reconnected, (event) => event.type === "terminal_restarted"),
+    ).toEqual({
+      type: "terminal_restarted",
+      terminalId: "recoverable",
+      cwd: root,
+    });
+    expect(host.status().terminals).toMatchObject([
+      { terminalId: "recoverable", cols: 91, rows: 31, alive: true, cwd: root },
+    ]);
+    await terminalEvent(
+      reconnected,
+      (event) =>
+        event.type === "output" && Buffer.from(event.data, "base64").toString().includes("READY"),
+    );
+    reconnected.session.deliver({
+      type: "input",
+      terminalId: "recoverable",
+      data: Buffer.from('printf "REPAIRED:%s:%s\\n" "$LAUNCH_VALUE" "$PWD"\n').toString("base64"),
+    });
+    await terminalEvent(
+      reconnected,
+      (event) =>
+        event.type === "output" &&
+        Buffer.from(event.data, "base64").toString().includes(`REPAIRED:preserved:${root}`),
+    );
+    reconnected.session.deliver({
+      type: "input",
+      terminalId: "recoverable",
+      data: Buffer.from("exit 0\n").toString("base64"),
+    });
+    expect(await terminalEvent(reconnected, (event) => event.type === "exited")).toEqual({
+      type: "exited",
+      terminalId: "recoverable",
+      exitCode: 0,
+    });
+    expect(host.status().terminals).toMatchObject([
+      { terminalId: "recoverable", alive: false, exitCode: 0 },
+    ]);
+  } finally {
+    await host.shutdown();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 10_000);
 
 test("replacement owner restores original program; explicit legacy restoration uses only the default shell", async () => {
   const host = new TerminalHost({

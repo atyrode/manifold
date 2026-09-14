@@ -2982,6 +2982,9 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
   `"original"` or `"home"` when that fallback was used. The viewer resets its byte
   watermark and obtains a fresh snapshot; output from the previous process cannot satisfy
   that new snapshot. Running titlebars require a second press before restarting.
+  If replacement startup fails after the previous process stops, the terminal remains
+  `exited` with unknown exit code, even when that previous process exited cleanly; the
+  failed restart does not remove the tile.
 - Launch recipes are retained for terminals admitted after this feature. A pre-feature row
   without a Run binding has no recoverable program recipe: on a currently **unconfined** owner Restart restores
   the owner's default interactive shell in the known cwd, or `$HOME`, with
@@ -2997,12 +3000,14 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
   and authority; no bearer or consumed launch binding is replayed from storage. An unavailable
   harness, revoked authority or expired Run refuses restart rather than substituting a shell.
   Migration 39 recovers pre-feature terminal Run bindings from matching retained job records.
-- **Owner loss retains placement.** A transport's explicit owner-loss close (4010), or an
-  admitted replacement-owner inventory missing a terminal, marks it `exited` with unknown
-  exit code and releases its controller; its row, leaf and portals remain. Ordinary transport
-  disconnect is not proof of owner loss and leaves surviving terminals running. A new owner
-  on the same machine may restart the retained identity. Dismiss remains canonical removal;
-  retaining the tile never claims that the old workload survived.
+- **Owner loss retains placement.** An admitted hello from a different `terminalHostId`
+  marks the predecessor's terminals `exited` with unknown exit code and releases their
+  controllers; their rows, leaves and portals remain. Neither a transport disconnect nor
+  IPC seat loss (**4010**) proves owner loss: terminals remain running but unreachable,
+  with credentials intact. A reconnect to the same owner re-adopts its live inventory
+  rather than killing it. A replacement owner on the same machine may restart the retained
+  identity. Dismiss remains canonical removal; retaining the tile never claims that the
+  old workload survived.
 - **Unplaced terminals.** `TerminalInfo.containerId` is the composition the terminal lives in —
   never a canvas, never null, so "unbound" is not a state a terminal can be in. There is no
   pool: what parking used to mean is now `unplaced`, which says that nothing REFERENCES that
@@ -3715,8 +3720,10 @@ The transport never spawns a fallback host or owns PTYs. Both modes require
 `MANIFOLD_TERMINAL_HOST_SOCKET`. It claims the host's single transport seat before dialing
 the hub and obtains a fresh inventory for every hello. An incumbent seat wins: a duplicate
 gets `attach_refused`, cannot mutate terminals, and retries without disturbing the owner.
-Transport shutdown releases the seat and network connection, killing nothing. Host loss
-closes the machine socket with **4010** and holds hub dialing until a seat is acquired again.
+Transport shutdown releases the seat and network connection, killing nothing. Losing the IPC
+seat closes the machine socket with **4010** and holds hub dialing until a seat is acquired
+again. Queue overflow can drop that seat while the host and its PTYs remain alive, so this
+close code is not evidence of owner death.
 
 The local protocol (`packages/protocol/src/terminal-host.ts`, version 2) is NDJSON on a
 0600 Unix socket in an owned 0700 directory. An existing non-private directory or live
