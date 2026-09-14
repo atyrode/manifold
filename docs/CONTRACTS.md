@@ -2131,7 +2131,10 @@ URLs are replaced with that path. Installer credential lineage, bearer credentia
 keys are not exported. It is a read-only declared door through the normal authority/trace
 ladder, not a database-download endpoint. Deployment automation boots the exact candidate
 image with this snapshot in disposable data directories before replacing the target hub;
-[SELF-HOST.md §Environments](SELF-HOST.md#environments) owns this mandatory gate.
+[SELF-HOST.md §Environments](SELF-HOST.md#environments) owns this mandatory gate and its
+explicit, default-off one-time bootstrap exception for an authenticated `unknown_action`
+response from a target predating the export door. The exception emits a target/reason warning
+and step-summary receipt; an existing door always runs the normal gate.
 
 **The install grant (ADR 0016 §5, R4 = option B).** `install.grantedCaps` is what the installer
 consented to. It defaults to the manifest's declared `capabilities` minus the high-risk set

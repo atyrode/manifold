@@ -1,14 +1,14 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { z } from "zod";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   HARDENED_CONTRACT_VERSION,
   PluginBundleSchema,
-  PROTOCOL_VERSION,
   type InstalledPluginsSnapshot,
 } from "../packages/protocol/src/index.ts";
 import { checkInstalledCandidate, installedBundleFailures } from "./installed-bundles-candidate.ts";
-import { fetchInstalledSnapshot } from "./installed-bundles.ts";
 
 function snapshot(source: string, contract = HARDENED_CONTRACT_VERSION): InstalledPluginsSnapshot {
   const pluginId = "example.candidate";
@@ -105,68 +105,100 @@ test("an in-realm module exiting cleanly during load cannot pass the candidate g
   );
 }, 30_000);
 
-test("legacy instances without the declared export door cannot produce a false-green empty inventory", async () => {
-  let posted = false;
+async function exportGateAttempt(bootstrap: boolean, reply: unknown, status = 200) {
+  const root = mkdtempSync(join(tmpdir(), "installed-bootstrap-"));
+  const summaryPath = join(root, "summary");
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch(request) {
-      posted ||= request.method === "POST";
-      return Response.json({ protocolVersion: PROTOCOL_VERSION, actions: [], plugins: [] });
+      if (request.headers.get("authorization") !== "Bearer test-only-token")
+        return Response.json(
+          { error: { code: "forbidden", message: "fixture credential required" } },
+          { status: 401 },
+        );
+      if (
+        request.method !== "POST" ||
+        new URL(request.url).pathname !== "/api/actions/engine.plugins.exportInstalled"
+      )
+        return new Response(null, { status: 404 });
+      return Response.json(reply, { status });
     },
   });
   try {
-    await expect(fetchInstalledSnapshot(server.url.origin, "test-only-token")).rejects.toThrow(
-      "exportInstalled is unavailable",
+    const child = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "installed-bundles.ts"), "--invalid-candidate"],
+      {
+        env: {
+          ...process.env,
+          INSTALLED_BUNDLES_ORIGIN: server.url.origin,
+          INSTALLED_BUNDLES_TOKEN: "test-only-token",
+          INSTALLED_BUNDLES_BOOTSTRAP_GATE: String(bootstrap),
+          GITHUB_STEP_SUMMARY: summaryPath,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
     );
-    expect(posted).toBe(false);
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    return {
+      code,
+      output: stdout + stderr,
+      summary: existsSync(summaryPath) ? readFileSync(summaryPath, "utf8") : "",
+      target: server.url.origin,
+    };
   } finally {
     await server.stop(true);
+    rmSync(root, { recursive: true, force: true });
   }
+}
+
+const unknownExport = {
+  ok: false,
+  denial: { rule: "unknown_action", message: 'unknown action "engine.plugins.exportInstalled"' },
+};
+
+test("a missing export door fails closed without explicit bootstrap", async () => {
+  const attempt = await exportGateAttempt(false, unknownExport);
+  expect(attempt.code).toBe(1);
+  expect(attempt.output).not.toContain("::warning::");
+  expect(attempt.summary).toBe("");
 });
 
-const WorkflowSchema = z.object({
-  jobs: z.record(
-    z.string(),
-    z.object({
-      name: z.string().optional(),
-      needs: z.union([z.string(), z.array(z.string())]).optional(),
-      if: z.string().optional(),
-      steps: z
-        .array(
-          z.object({
-            name: z.string().optional(),
-            uses: z.string().optional(),
-            run: z.string().optional(),
-            with: z.record(z.string(), z.unknown()).optional(),
-          }),
-        )
-        .optional(),
-    }),
-  ),
+test("explicit bootstrap passes only an unknown export door and records target and reason", async () => {
+  const attempt = await exportGateAttempt(true, unknownExport);
+  expect(attempt.code).toBe(0);
+  expect(attempt.output).toContain("::warning::");
+  expect(attempt.output).toContain(attempt.target);
+  expect(attempt.output).toContain("unknown_action");
+  expect(attempt.summary).toContain(attempt.target);
+  expect(attempt.summary).toContain("unknown_action");
+  expect(attempt.summary).toContain("bootstrap_gate=true");
 });
 
-test("both deployment switches require installed-bundles success at the selected checkout", async () => {
-  for (const [file, switchJob, revision] of [
-    ["deploy-dev.yml", "deploy", "${{ github.event.workflow_run.head_sha }}"],
-    ["deploy-hub.yml", "clever", "${{ needs.release.outputs.sha }}"],
+test("bootstrap does not bypass candidate validation when the export door exists", async () => {
+  const attempt = await exportGateAttempt(true, {
+    ok: true,
+    result: { format: 1, developerMode: false, plugins: [] },
+  });
+  expect(attempt.code).toBe(1);
+  expect(attempt.output).toContain("candidate image");
+  expect(attempt.output).not.toContain("::warning::");
+  expect(attempt.summary).toBe("");
+});
+
+test("bootstrap never turns authorization or HTTP failures into a missing-door exception", async () => {
+  for (const [reply, status] of [
+    [{ ok: false, denial: { rule: "forbidden", message: "root authority required" } }, 200],
+    [{ error: { code: "not_found", message: "unknown action" } }, 404],
   ] as const) {
-    const workflow = WorkflowSchema.parse(
-      Bun.YAML.parse(
-        await Bun.file(new URL(`../.github/workflows/${file}`, import.meta.url)).text(),
-      ),
-    );
-    const gate = workflow.jobs["installed-bundles"]!;
-    const deploy = workflow.jobs[switchJob]!;
-    expect(gate.name).toBe("installed-bundles");
-    expect(deploy.needs).toContain("installed-bundles");
-    expect(deploy.if ?? "").not.toMatch(/always\(|failure\(|cancelled\(/);
-    const checkout = gate.steps!.find((step) => step.uses?.startsWith("actions/checkout@"));
-    expect(checkout?.with?.ref).toBe(revision);
-    expect(
-      gate.steps!.some((step) =>
-        step.run?.includes('bun scripts/installed-bundles.ts "installed-bundles:$SHA"'),
-      ),
-    ).toBe(true);
+    const attempt = await exportGateAttempt(true, reply, status);
+    expect(attempt.code).toBe(1);
+    expect(attempt.output).not.toContain("::warning::");
+    expect(attempt.summary).toBe("");
   }
 });

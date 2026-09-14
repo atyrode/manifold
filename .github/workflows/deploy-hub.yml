@@ -14,6 +14,11 @@ on:
         description: Published release tag to promote to production
         required: true
         type: string
+      bootstrap_gate:
+        description: Permit one-time bootstrap only when the target export door returns unknown action
+        required: false
+        default: false
+        type: boolean
 
 # The job token reads the repository, releases and exact-revision full CI evidence. The
 # Environment record is Actions' own bookkeeping and needs no `deployments` grant.
@@ -98,6 +103,7 @@ jobs:
         env:
           INSTALLED_BUNDLES_ORIGIN: ${{ vars.MANIFOLD_HUB_ORIGIN }}
           INSTALLED_BUNDLES_TOKEN: ${{ secrets.HUB_INSTALLED_BUNDLES_TOKEN }}
+          INSTALLED_BUNDLES_BOOTSTRAP_GATE: ${{ inputs.bootstrap_gate }}
         run: bun scripts/installed-bundles.ts "installed-bundles:$SHA"
 
   clever:

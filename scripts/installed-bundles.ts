@@ -1,18 +1,20 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   InstalledPluginsSnapshotSchema,
   type InstalledPluginsSnapshot,
 } from "../packages/protocol/src/index.ts";
-import { discoverActions, invokeAction } from "../packages/sdk/src/index.ts";
+import { invokeAction } from "../packages/sdk/src/index.ts";
 
 const EXPORT_DOOR = "engine.plugins.exportInstalled";
 
 export async function fetchInstalledSnapshot(
   origin: string,
   token: string,
-): Promise<InstalledPluginsSnapshot> {
+  bootstrapGate = false,
+  summaryPath = process.env.GITHUB_STEP_SUMMARY,
+): Promise<InstalledPluginsSnapshot | null> {
   const url = new URL(origin);
   if (url.username || url.password || url.search || url.hash || url.pathname !== "/") {
     throw new Error(
@@ -35,17 +37,25 @@ export async function fetchInstalledSnapshot(
     timeoutMs: 60_000,
     maxResponseBytes: 512 * 1024 * 1024,
   };
-  const protocol = await discoverActions(options);
-  if (!protocol.actions.some((action) => action.name === EXPORT_DOOR)) {
-    throw new Error(
-      `${EXPORT_DOOR} is unavailable on the running instance; deploy the export-door prerequisite before using this gate (an absent export is never an empty inventory)`,
-    );
-  }
   const { outcome, traceId } = await invokeAction(options, EXPORT_DOOR, {});
-  if (!outcome.ok)
+  if (!outcome.ok) {
+    if (bootstrapGate && outcome.denial.rule === "unknown_action") {
+      const reason = `${EXPORT_DOOR} returned unknown_action`;
+      console.warn(
+        `::warning::installed-bundles bootstrap for ${url.origin}: ${reason}; the installed inventory was not checked for this one-time deployment`,
+      );
+      if (summaryPath) {
+        appendFileSync(
+          summaryPath,
+          `### Installed-bundles bootstrap\n\n- Target: ${url.origin}\n- Reason: ${reason}\n- Explicit bootstrap_gate=true: installed inventory verification skipped for this one-time deployment to a target predating the export door.\n\n`,
+        );
+      }
+      return null;
+    }
     throw new Error(
       `${EXPORT_DOOR} refused: ${outcome.denial.message} (trace ${traceId ?? "unavailable"})`,
     );
+  }
   const snapshot = InstalledPluginsSnapshotSchema.parse(outcome.result);
   console.log(
     `${EXPORT_DOOR}: ${snapshot.plugins.length} installed bundle(s), trace ${traceId ?? "unavailable"}`,
@@ -132,7 +142,12 @@ if (import.meta.main) {
       throw new Error(
         "usage: INSTALLED_BUNDLES_ORIGIN=... INSTALLED_BUNDLES_TOKEN=... bun scripts/installed-bundles.ts IMAGE",
       );
-    await runInstalledBundleGate(image, await fetchInstalledSnapshot(origin, token));
+    const snapshot = await fetchInstalledSnapshot(
+      origin,
+      token,
+      process.env.INSTALLED_BUNDLES_BOOTSTRAP_GATE === "true",
+    );
+    if (snapshot !== null) await runInstalledBundleGate(image, snapshot);
   } catch (error) {
     console.error(error instanceof Error ? error.message : "installed-bundles failed");
     process.exitCode = 1;

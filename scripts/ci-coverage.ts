@@ -197,8 +197,17 @@ export const deploymentCoverageErrors = (source: string): string[] =>
     const jobs = childMap(workflow, "jobs", "deployment jobs");
     const deploy = childMap(jobs, "deploy", "deployment job");
     const installed = childMap(jobs, "installed-bundles", "installed-bundles job");
+    const requestJob = childMap(jobs, "request", "deployment admission job");
     if (!strings(deploy["needs"], "deployment prerequisites").includes("installed-bundles"))
       errors.push("deployment must require installed-bundles success");
+    if (
+      ![deploy, installed].every(
+        (job) =>
+          strings(job["needs"], "deployment request prerequisites").includes("request") &&
+          job["if"] === undefined,
+      )
+    )
+      errors.push("deployment and installed-bundles must require request success");
     for (const proof of [
       "workflow_run.status == 'completed'",
       "workflow_run.conclusion == 'success'",
@@ -207,7 +216,7 @@ export const deploymentCoverageErrors = (source: string): string[] =>
       "workflow_run.event == 'push'",
       "workflow_run.event == 'workflow_dispatch'",
     ]) {
-      if (![deploy, installed].every((job) => String(job["if"] ?? "").includes(proof)))
+      if (!String(requestJob["if"] ?? "").includes(proof))
         errors.push(`deployment condition missing trusted proof: ${proof}`);
     }
     // Admission itself is executed against API metadata in deployment-workflow.test.ts.
@@ -215,7 +224,10 @@ export const deploymentCoverageErrors = (source: string): string[] =>
     const steps = sequence(deploy["steps"], "deployment steps").map((step) =>
       map(step, "deployment step"),
     );
-    const requests = steps.filter((step) => step["id"] === "request");
+    const requestSteps = sequence(requestJob["steps"], "deployment admission steps").map((step) =>
+      map(step, "deployment admission step"),
+    );
+    const requests = requestSteps.filter((step) => step["id"] === "request");
     const request = requests[0];
     if (
       requests.length !== 1 ||
@@ -224,6 +236,11 @@ export const deploymentCoverageErrors = (source: string): string[] =>
         "string"
     ) {
       errors.push("deployment requires one executable request admission step");
+    }
+    const outputs = childMap(requestJob, "outputs", "admitted request outputs");
+    for (const field of ["sha", "expected_current_sha", "rollback"]) {
+      if (outputs[field] !== `\${{ steps.request.outputs.${field} }}`)
+        errors.push(`deployment request must forward its admitted ${field}`);
     }
     const handoffs = steps.filter(
       (step) =>
@@ -236,11 +253,10 @@ export const deploymentCoverageErrors = (source: string): string[] =>
       handoffs.length !== 1 ||
       request === undefined ||
       handoff === undefined ||
-      steps.indexOf(request) >= steps.indexOf(handoff) ||
-      environment?.["SHA"] !== "${{ steps.request.outputs.sha }}" ||
+      environment?.["SHA"] !== "${{ needs.request.outputs.sha }}" ||
       environment?.["EXPECTED_CURRENT_SHA"] !==
-        "${{ steps.request.outputs.expected_current_sha }}" ||
-      environment?.["ROLLBACK"] !== "${{ steps.request.outputs.rollback }}"
+        "${{ needs.request.outputs.expected_current_sha }}" ||
+      environment?.["ROLLBACK"] !== "${{ needs.request.outputs.rollback }}"
     ) {
       errors.push("deployment credentials must consume the admitted request after its proof");
     }

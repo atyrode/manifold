@@ -5,8 +5,8 @@ const target = "a".repeat(40);
 const incumbent = "b".repeat(40);
 const workflow = Bun.YAML.parse(
   await Bun.file(new URL("../.github/workflows/deploy-dev.yml", import.meta.url)).text(),
-) as { jobs: { deploy: { steps: { id?: string; with?: { script?: string } }[] } } };
-const admission = workflow.jobs.deploy.steps.find((step) => step.id === "request")?.with?.script;
+) as { jobs: { request: { steps: { id?: string; with?: { script?: string } }[] } } };
+const admission = workflow.jobs.request.steps.find((step) => step.id === "request")?.with?.script;
 if (typeof admission !== "string") throw new Error("Deployment admission script is missing");
 
 interface CIRun {
@@ -56,7 +56,7 @@ interface Request {
   runs?: CIRun[];
   jobs?: CIJob[];
   trigger?: CIRun;
-  rollback?: boolean;
+  dispatch?: boolean;
   ref?: string;
   inputs?: Record<string, string>;
   confirmed?: CIRun;
@@ -66,7 +66,7 @@ async function admit(request: Request = {}): Promise<Record<string, string>> {
   const outputs: Record<string, string> = {};
   const execution: unknown = runInNewContext(`(async () => {\n${admission}\n})()`, {
     context: {
-      eventName: request.rollback ? "workflow_dispatch" : "workflow_run",
+      eventName: request.dispatch ? "workflow_dispatch" : "workflow_run",
       ref: request.ref ?? "refs/heads/main",
       repo: { owner: "owner", repo: "manifold" },
       payload: {
@@ -129,7 +129,7 @@ test("development admits the latest exact main proof, not newer foreign or PR ru
 test("a newer unsuccessful exact proof cannot fall back to an older success", async () => {
   await expect(
     admit({
-      rollback: true,
+      dispatch: true,
       runs: [{ ...currentProof, status: "in_progress", conclusion: null }, oldProof],
     }),
   ).rejects.toThrow();
@@ -161,7 +161,7 @@ test("a rerun beginning during gate inspection invalidates that attempt", async 
 });
 
 test("explicit rollback admits a full-main proof with acknowledged compatibility", async () => {
-  expect(await admit({ rollback: true })).toMatchObject({
+  expect(await admit({ dispatch: true })).toMatchObject({
     sha: target,
     expected_current_sha: incumbent,
     rollback: "true",
@@ -170,7 +170,7 @@ test("explicit rollback admits a full-main proof with acknowledged compatibility
 });
 
 test("rollback cannot execute from an untrusted branch", async () => {
-  await expect(admit({ rollback: true, ref: "refs/heads/unreviewed" })).rejects.toThrow();
+  await expect(admit({ dispatch: true, ref: "refs/heads/unreviewed" })).rejects.toThrow();
 });
 
 test.each([
@@ -178,5 +178,21 @@ test.each([
   ["unacknowledged compatibility", { DISPATCH_COMPATIBILITY_REVIEWED: "false" }],
   ["multiline reason", { DISPATCH_REASON: "restore\ninjected log row" }],
 ] as const)("rollback refuses %s", async (_name, inputs) => {
-  await expect(admit({ rollback: true, inputs })).rejects.toThrow();
+  await expect(admit({ dispatch: true, inputs })).rejects.toThrow();
+});
+
+test("explicit deployment uses forward ordering without borrowing a workflow-run callback", async () => {
+  expect(
+    await admit({
+      dispatch: true,
+      trigger: { ...currentProof, run_attempt: 1 },
+      inputs: { DISPATCH_OPERATION: "deploy", DISPATCH_EXPECTED_CURRENT_SHA: "" },
+    }),
+  ).toMatchObject({ sha: target, rollback: "false", expected_current_sha: "" });
+});
+
+test("an unrecognized manual operation is not treated as a rollback or deployment", async () => {
+  await expect(
+    admit({ dispatch: true, inputs: { DISPATCH_OPERATION: "unknown" } }),
+  ).rejects.toThrow();
 });

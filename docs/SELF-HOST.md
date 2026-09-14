@@ -885,7 +885,7 @@ or production evidence. Fast pull-request `gate` success and artifacts from anot
 cross these boundaries.
 
 Both `deploy-dev.yml` and `deploy-hub.yml` also require the `installed-bundles` job before
-the switch. It builds the candidate image for that exact revision, discovers and invokes the
+the switch. It builds the candidate image for that exact revision, invokes the
 running target's root-only `engine.plugins.exportInstalled` door, then boots the candidate
 against copies of the returned bundles and safe install rows in temporary data directories.
 It checks original enablement and a second disposable all-enabled copy so a disabled module
@@ -896,12 +896,35 @@ deployment by plugin id with the candidate's minimum SDK contract.
 Configure root-authorized export credentials as `DEV_INSTALLED_BUNDLES_TOKEN` and
 `HUB_INSTALLED_BUNDLES_TOKEN` in repository secrets, scoped operationally to their respective
 target origins (`DEV_DEPLOY_URL` and `MANIFOLD_HUB_ORIGIN`). The export door returns no
-credential lineage or source URL credentials. Missing credentials or a target too old to
-advertise `engine.plugins.exportInstalled` fail closed, never mean an empty installed set.
-Introducing this gate to an older target therefore requires deploying the export-door
-prerequisite first under an explicitly authorized bootstrap procedure; the gate has no bypass.
+credential lineage or source URL credentials. Missing credentials and a target returning
+`unknown_action` for `engine.plugins.exportInstalled` fail closed by default, never mean an
+empty installed set.
+
+For a target predating the export door, both workflows accept an explicit
+`workflow_dispatch` input **`bootstrap_gate=true`**, defaulting to **false**. This is the
+one-time bootstrap for the upgrade that introduces the door: only an authenticated export
+invocation returning the structured `unknown_action` refusal permits the installed-bundles
+job to pass without checking inventory. It emits an Actions `::warning::` naming the target
+and reason and records both in the step summary. HTTP errors (including a generic 404),
+authentication failures, other refusals and candidate failures still fail closed. When the
+door exists, the flag has no effect: the ordinary candidate gate always runs.
+
+For production, dispatch `deploy-hub.yml` with the published `tag` introducing the door and
+`bootstrap_gate=true`. For development, dispatch `deploy-dev.yml` from `main` with
+`operation=deploy`, the full `target_sha`, a non-secret reason, acknowledged
+`compatibility_reviewed`, and `bootstrap_gate=true`. The forward operation uses the existing
+monotone receiver; it does not require `expected_current_sha`. Direction is independent of
+the bootstrap flag: `operation=rollback` remains the default and retains its compare-and-swap
+guard. Exact-revision full CI, deployment ordering and environment approval remain required.
+Automatic development deployments never opt into bootstrap.
+
+Use the exception only for that first upgrade, then leave it false. A bootstrap receipt is
+not a successful installed-bundle check; stale bundles may need the repack named by the new
+hub's held roster before a later ordinary deployment can pass the gate.
 Self-hosted automation can run the same `scripts/installed-bundles.ts IMAGE` with
 `INSTALLED_BUNDLES_ORIGIN` and `INSTALLED_BUNDLES_TOKEN` supplied through its secret environment.
+Its equivalent explicit opt-in is `INSTALLED_BUNDLES_BOOTSTRAP_GATE=true`; when
+`GITHUB_STEP_SUMMARY` names a file, the same bootstrap receipt is appended there.
 
 **Release.** `bun run release -- <major|minor|patch|x.y.z>` publishes versioned artifacts from an
 exact `main` revision with successful full `main` CI — the GitHub Release, the fleet binaries, the
@@ -948,13 +971,14 @@ same-commit CI run from this repository's `main` (push or dispatch), including i
 successful `gate` job. It does not success-filter the query: a newer failed, cancelled, queued
 or running proof cannot be hidden by an older success. It then hands the request to the host
 over a forced-command SSH key and fails unless `/healthz` answers with the build derived by
-the one `scripts/build-identity.ts` implementation. The credential-bearing workflow executes
+the one `scripts/build-identity.ts` implementation. The SSH-bearing deployment steps execute
 trusted default-branch code; for an older target it passes the explicit revision to that trusted
 identity helper rather than checking out or executing the target's script.
 
-A backward development move is a separate `workflow_dispatch` from `main`. Supply
-`target_sha` and `expected_current_sha` as full lowercase 40-character SHAs, a non-secret
-single-line reason, and explicitly acknowledge `compatibility_reviewed`. The expected SHA is
+A backward development move is a separate `workflow_dispatch` from `main` with
+`operation=rollback` (the default). Supply `target_sha` and `expected_current_sha` as full
+lowercase 40-character SHAs, a non-secret single-line reason, and explicitly acknowledge
+`compatibility_reviewed`. The expected SHA is
 a compare-and-swap bound: except for a same-target safe retry, the host requires it to equal
 the actual incumbent and requires the target to be a strict ancestor. The acknowledgement
 means the operator reviewed application and retained-data compatibility. It does **not**
