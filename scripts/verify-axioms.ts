@@ -726,10 +726,11 @@ for (const row of registries.floor) {
 
 {
   /**
-   * The packages a plugin may name: the four engine packages, the engine's browser subpath
+   * The packages a plugin may name: the four engine packages, the engine's browser subpaths
    * `/hooks` (plane mechanism: carry, drop, element host, polling, the tile tree, view state)
-   * and the design system `@manifold/ui` (how a plugin LOOKS like manifold: glyphs, the
-   * titlebar, the layout algebra, tokens — ADR 0025 §8, #240). See `REGISTRY.md` §Plugin layer.
+   * and `/ui` (the shared generated action form), plus the design system `@manifold/ui`
+   * (how a plugin LOOKS like manifold: glyphs, the titlebar, the layout algebra, tokens —
+   * ADR 0025 §8, #240). See `REGISTRY.md` §Plugin layer.
    */
   const ENGINE: Readonly<Record<string, true>> = {
     "@manifold/protocol": true,
@@ -737,6 +738,7 @@ for (const row of registries.floor) {
     "@manifold/sdk": true,
     "@manifold/plugin": true,
     "@manifold/plugin/hooks": true,
+    "@manifold/plugin/ui": true,
     "@manifold/ui": true,
   };
   /**
@@ -808,7 +810,10 @@ for (const row of registries.floor) {
         }
         if (
           isContract &&
-          (ENGINE[text] !== true || text === "@manifold/plugin/hooks" || text === "@manifold/ui")
+          (ENGINE[text] !== true ||
+            text === "@manifold/plugin/hooks" ||
+            text === "@manifold/plugin/ui" ||
+            text === "@manifold/ui")
         ) {
           directionOffenders.push(`${path}:${String(specifier.line)} contract imports ${text}`);
         } else if (targetOwner === owner || ownSpecifier) {
@@ -2623,6 +2628,147 @@ try {
         ? `the SDK observes "${terminalClient.terminals.get(terminal.id)?.name ?? "nothing"}"`
         : "the rename affordance never opened",
     );
+  }
+
+  {
+    /*
+      The command palette is the SECOND plugin consumer that triggered #168's promotion. Open it
+      through its real key binding, choose a door with required arguments, type into the form
+      generated from that door's published schema, and observe the same SDK state change R2 reads.
+      A source-level import check could prove sharing but not that the lazy chunk renders or submits.
+    */
+    await browser.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: "Control",
+      code: "ControlLeft",
+      modifiers: 2,
+    });
+    await browser.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: "k",
+      code: "KeyK",
+      modifiers: 2,
+      windowsVirtualKeyCode: 75,
+    });
+    await browser.send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: "k",
+      code: "KeyK",
+      modifiers: 2,
+      windowsVirtualKeyCode: 75,
+    });
+    await browser.send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: "Control",
+      code: "ControlLeft",
+    });
+    const opened = await settles(
+      () =>
+        browser!.evaluate<boolean>(
+          `document.querySelector('dialog[aria-label="Commands"][open]') !== null`,
+        ),
+      5_000,
+    );
+    const selected =
+      opened &&
+      (await browser.evaluate<boolean>(
+        `(() => {
+          const row = document.querySelector('[cmdk-item][data-action="core.terminals.rename"]');
+          if (!(row instanceof HTMLElement)) return false;
+          row.click();
+          return true;
+        })()`,
+      ));
+    const generated =
+      selected &&
+      (await settles(
+        () =>
+          browser!.evaluate<boolean>(
+            `document.querySelector('.commands-door-card .door-form input[id$="_terminalId"]') !== null &&
+             document.querySelector('.commands-door-card .door-form input[id$="_name"]') !== null`,
+          ),
+        10_000,
+      ));
+    const formFocused =
+      generated &&
+      (await settles(
+        () =>
+          browser!.evaluate<boolean>(
+            `document.activeElement?.matches('.commands-door-back') === true`,
+          ),
+        2_000,
+      ));
+    if (generated) {
+      await browser.evaluate(
+        `document.querySelector('.commands-door-card .door-form input[id$="_terminalId"]')?.focus()`,
+      );
+      const formShot = await browser.send("Page.captureScreenshot", { format: "png" });
+      const formShotPath = join(tmpdir(), "manifold-axi-r1-door-form.png");
+      writeFileSync(formShotPath, Buffer.from(String(formShot.result?.["data"] ?? ""), "base64"));
+      console.log(`INFO  R1 door-form screenshot: ${formShotPath}`);
+      await browser.typeInto(
+        '.commands-door-card .door-form input[id$="_terminalId"]',
+        terminal.id,
+      );
+      await browser.typeInto('.commands-door-card .door-form input[id$="_name"]', "form-named");
+      await browser.evaluate(
+        `document.querySelector('.commands-door-card .door-form__submit')?.click()`,
+      );
+    }
+    const dispatched =
+      generated &&
+      (await settles(
+        () =>
+          terminalClient?.terminals.get(terminal.id)?.name === "form-named" &&
+          browser!.evaluate<boolean>(
+            `document.querySelector('.commands-door-card .door-form__result') !== null`,
+          ),
+        10_000,
+      ));
+    const returned =
+      dispatched &&
+      (await browser.evaluate<boolean>(
+        `(() => {
+          const back = document.querySelector('.commands-door-back');
+          if (!(back instanceof HTMLButtonElement)) return false;
+          back.click();
+          return true;
+        })()`,
+      )) &&
+      (await settles(
+        () =>
+          browser!.evaluate<boolean>(`document.activeElement?.matches('[cmdk-input]') === true`),
+        2_000,
+      ));
+    check(
+      "R1 shared generated action form",
+      opened && selected && generated && formFocused && dispatched && returned,
+      !opened
+        ? "Mod+k did not open core.commands"
+        : !selected
+          ? "the required-argument door was not selectable"
+          : !generated
+            ? "@manifold/plugin/ui painted no fields from core.terminals.rename"
+            : !formFocused
+              ? "opening the form dropped keyboard focus out of the dialog"
+              : !dispatched
+                ? "the generated form submit did not reach the action door"
+                : returned
+                  ? "core.commands lazily rendered and submitted the shared protocol form, then restored list focus"
+                  : "Back did not restore focus to the command search",
+    );
+    await browser.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: "Escape",
+      code: "Escape",
+      windowsVirtualKeyCode: 27,
+    });
+    await browser.send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: "Escape",
+      code: "Escape",
+      windowsVirtualKeyCode: 27,
+    });
   }
 
   // ─────────────────────────────────────────── R5: view presence and spotlight

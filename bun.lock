@@ -36,6 +36,10 @@
         "@manifold/scene": "workspace:*",
         "@manifold/sdk": "workspace:*",
         "@manifold/ui": "workspace:*",
+        "@rjsf/core": "6.8.0",
+        "@rjsf/utils": "6.8.0",
+        "@rjsf/validator-ajv8": "6.8.0",
+        "ajv": "8.20.0",
         "zod": "4.4.3",
       },
       "devDependencies": {
@@ -164,10 +168,6 @@
         "@manifold/plugin": "workspace:*",
         "@manifold/protocol": "workspace:*",
         "@manifold/ui": "workspace:*",
-        "@rjsf/core": "6.8.0",
-        "@rjsf/utils": "6.8.0",
-        "@rjsf/validator-ajv8": "6.8.0",
-        "ajv": "8.20.0",
         "react": "19.2.8",
         "zod": "4.4.3",
       },
@@ -421,7 +421,7 @@
     },
     "packages/web": {
       "name": "@manifold/web",
-      "version": "0.14.0",
+      "version": "0.15.0",
       "dependencies": {
         "@manifold-plugin/access": "workspace:*",
         "@manifold-plugin/arrange": "workspace:*",

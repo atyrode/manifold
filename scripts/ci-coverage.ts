@@ -1,35 +1,78 @@
+import { ALL_CHECKS, EXTRA_CHECKS, MANDATORY_CHECKS } from "./ci-plan.ts";
+
 type Registry = ReadonlyMap<string, ReadonlySet<string>>;
+type YamlMap = { [key: string]: unknown };
 
-interface WorkflowJob {
-  readonly id: string;
-  readonly lines: readonly string[];
-}
-
-const groupName = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
-const selectorName = /^[A-Za-z0-9][A-Za-z0-9 ._:/()-]*$/;
-const requiredJobSelectors: Readonly<Record<string, string>> = {
+const expectedChecks = [
+  "build",
+  "types",
+  "style",
+  "smoke",
+  "targeted",
+  "trace",
+  "unit",
+  "e2e-rest",
+  "e2e-preview-recovery",
+  "convergence",
+  "terminal-selection",
+  "terminal-mirror",
+  "tile-drop",
+  "budgets",
+  "pwa",
+  "axioms",
+  "runtime-jobs",
+  "runtime-browser",
+  "preview-environment",
+] as const;
+const expectedMandatory = ["build", "types", "style", "smoke", "targeted"] as const;
+const e2eSelectors: Readonly<Record<string, string>> = {
   "e2e-rest": "e2e (testkit except preview recovery)",
   "e2e-preview-recovery": "e2e (preview recovery)",
 };
 
-const unquote = (value: string): string => {
-  const trimmed = value.trim();
-  if (
-    trimmed.length >= 2 &&
-    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-      (trimmed.startsWith("'") && trimmed.endsWith("'")))
-  ) {
-    return trimmed.slice(1, -1);
-  }
-  return trimmed;
+const isMap = (value: unknown): value is YamlMap =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+const map = (value: unknown, description: string): YamlMap => {
+  if (!isMap(value)) throw new Error(`${description} must be a mapping`);
+  return value;
 };
 
-const literal = (value: string, description: string): string => {
-  const parsed = unquote(value);
-  if (!selectorName.test(parsed)) {
-    throw new Error(`${description} must be a literal name, got: ${value.trim() || "<empty>"}`);
+const childMap = (parent: YamlMap, key: string, description: string): YamlMap =>
+  map(parent[key], description);
+
+const optionalChildMap = (
+  parent: YamlMap,
+  key: string,
+  description: string,
+): YamlMap | undefined => {
+  const value = parent[key];
+  return value === undefined ? undefined : map(value, description);
+};
+
+const sequence = (value: unknown, description: string): unknown[] => {
+  if (!Array.isArray(value)) throw new Error(`${description} must be a sequence`);
+  return value;
+};
+
+const strings = (value: unknown, description: string): string[] => {
+  const values: unknown[] = Array.isArray(value) ? value : [value];
+  if (values.length === 0) throw new Error(`${description} must be a non-empty string or sequence`);
+  const result: string[] = [];
+  for (const item of values) {
+    if (typeof item !== "string")
+      throw new Error(`${description} must be a non-empty string or sequence`);
+    result.push(item);
   }
-  return parsed;
+  return result;
+};
+
+const workflowErrors = (source: string, inspect: (workflow: YamlMap) => string[]): string[] => {
+  try {
+    return inspect(parseWorkflow(source));
+  } catch (error) {
+    return [error instanceof Error ? error.message : String(error)];
+  }
 };
 
 export const parseGateList = (output: string): Registry => {
@@ -37,199 +80,396 @@ export const parseGateList = (output: string): Registry => {
   for (const [index, line] of output.split(/\r?\n/).entries()) {
     if (line === "") continue;
     const fields = line.split("\t");
-    if (fields.length !== 2) {
+    if (fields.length !== 2 || !fields[0] || !fields[1] || fields[1] !== fields[1].trim())
       throw new Error(`gate --list line ${index + 1} must be <group>\\t<task>`);
-    }
-    const group = literal(fields[0] ?? "", `gate --list group on line ${index + 1}`);
-    if (!groupName.test(group)) {
-      throw new Error(`gate --list group on line ${index + 1} must be a selector name`);
-    }
-    const task = fields[1] ?? "";
-    if (task === "" || task !== task.trim()) {
-      throw new Error(`gate --list task on line ${index + 1} must be a non-empty exact name`);
-    }
-    const tasks = groups.get(group) ?? new Set<string>();
-    tasks.add(task);
-    groups.set(group, tasks);
+    const tasks = groups.get(fields[0]) ?? new Set<string>();
+    tasks.add(fields[1]);
+    groups.set(fields[0], tasks);
   }
   if (groups.size === 0) throw new Error("gate --list returned no groups");
   return groups;
 };
 
-const indentation = (line: string): number => line.length - line.trimStart().length;
+const parseWorkflow = (source: string): YamlMap => map(Bun.YAML.parse(source), "workflow");
 
-const workflowJobs = (source: string): WorkflowJob[] => {
-  const lines = source.split(/\r?\n/);
-  const jobsLine = lines.findIndex((line) => /^jobs:\s*(?:#.*)?$/.test(line));
-  if (jobsLine < 0) throw new Error("workflow is missing jobs");
-
-  const jobs: WorkflowJob[] = [];
-  let current: { id: string; lines: string[] } | undefined;
-  for (const line of lines.slice(jobsLine + 1)) {
-    if (line.trim() !== "" && indentation(line) === 0) break;
-    const header = /^ {2}([A-Za-z0-9_-]+):\s*(?:#.*)?$/.exec(line);
-    if (header) {
-      if (current) jobs.push(current);
-      current = { id: header[1]!, lines: [] };
-    } else if (current) {
-      current.lines.push(line);
+const collectKey = (value: unknown, key: string, found: unknown[] = []): unknown[] => {
+  if (Array.isArray(value)) {
+    const items: unknown[] = value;
+    for (const item of items) collectKey(item, key, found);
+  } else if (isMap(value)) {
+    for (const [childKey, child] of Object.entries(value)) {
+      if (childKey === key) found.push(child);
+      collectKey(child, key, found);
     }
   }
-  if (current) jobs.push(current);
-  if (jobs.length === 0) throw new Error("workflow jobs mapping is empty");
-  return jobs;
+  return found;
 };
 
-const parseSequenceValue = (value: string, description: string): string[] => {
-  const trimmed = value.trim();
-  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
-    return [literal(trimmed, description)];
-  }
-  const body = trimmed.slice(1, -1).trim();
-  if (body === "") throw new Error(`${description} must not be empty`);
-  return body.split(",").map((item) => literal(item, description));
-};
-
-const keySelections = (
-  lines: readonly string[],
-  key: string,
-  description: string,
-  exactIndent?: number,
-): string[] => {
-  const selections: string[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (exactIndent !== undefined && indentation(line) !== exactIndent) continue;
-    const match = new RegExp(`^\\s*(?:-\\s+)?${key}:\\s*(.*?)\\s*$`).exec(line);
-    if (!match) continue;
-    const value = match[1]!.replace(/\s+#.*$/, "").trim();
-    if (value !== "") {
-      selections.push(...parseSequenceValue(value, description));
-      continue;
-    }
-
-    const keyIndent = indentation(line);
-    let found = false;
-    for (let child = index + 1; child < lines.length; child += 1) {
-      const childLine = lines[child]!;
-      if (childLine.trim() === "") continue;
-      if (indentation(childLine) <= keyIndent) break;
-      const item = /^\s*-\s+(.+?)\s*$/.exec(childLine);
-      if (!item) {
-        throw new Error(`${description} must be a literal scalar or sequence`);
+const callArguments = (source: string, callee: string): string[] => {
+  const calls: string[] = [];
+  let offset = 0;
+  while ((offset = source.indexOf(`${callee}(`, offset)) !== -1) {
+    const start = offset + callee.length + 1;
+    let depth = 1;
+    let quote = "";
+    let escaped = false;
+    for (let index = start; index < source.length; index++) {
+      const character = source[index] ?? "";
+      if (quote) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === quote) quote = "";
+      } else if (character === '"' || character === "'" || character === "`") {
+        quote = character;
+      } else if (character === "(") {
+        depth++;
+      } else if (character === ")" && --depth === 0) {
+        calls.push(source.slice(start, index));
+        offset = index + 1;
+        break;
       }
-      selections.push(literal(item[1]!.replace(/\s+#.*$/, ""), description));
-      found = true;
+      if (index === source.length - 1) offset = source.length;
     }
-    if (!found) throw new Error(`${description} must not be empty`);
   }
-  return selections;
+  return calls;
 };
 
-const scalarJobKey = (job: WorkflowJob, key: string): string | undefined => {
-  const prefix = `    ${key}:`;
-  const lines = job.lines.filter((line) => line.startsWith(prefix));
-  if (lines.length === 0) return undefined;
-  if (lines.length > 1) throw new Error(`job ${job.id} has duplicate ${key} keys`);
-  return lines[0]!
-    .slice(prefix.length)
-    .replace(/\s+#.*$/, "")
-    .trim();
-};
+const compact = (source: string): string => source.replace(/\s+/g, "");
 
-const jobNeeds = (job: WorkflowJob): string[] => {
-  const direct = scalarJobKey(job, "needs");
-  if (direct === undefined) return [];
-  if (direct !== "") return parseSequenceValue(direct, `gate job needs`);
-  return keySelections(job.lines, "needs", "gate job needs", 4);
-};
+const jobNeeds = (job: YamlMap): string[] =>
+  job["needs"] === undefined ? [] : strings(job["needs"], "job needs");
 
-export const ciCoverageErrors = (gateListOutput: string, workflowSource: string): string[] => {
-  const registry = parseGateList(gateListOutput);
-  const jobs = workflowJobs(workflowSource);
-  const errors: string[] = [];
+const sorted = (values: readonly string[]): string[] => [...values].sort();
+const same = (left: readonly string[], right: readonly string[]): boolean =>
+  JSON.stringify(sorted(left)) === JSON.stringify(sorted(right));
 
-  let selectors: string[] = [];
+const staticStringArray = (source: string): string[] | undefined => {
+  const normalized = source.trim().replace(/,\s*]$/, "]");
+  if (!normalized.startsWith("[") || !normalized.endsWith("]")) return undefined;
   try {
-    selectors = keySelections(
-      jobs.flatMap((job) => job.lines),
-      "task",
-      "workflow task selector",
-    );
-  } catch (error) {
-    errors.push(error instanceof Error ? error.message : String(error));
+    const parsed: unknown = JSON.parse(normalized);
+    return strings(parsed, "static string array");
+  } catch {
+    return undefined;
   }
+};
 
-  const knownTasks = new Set([...registry.values()].flatMap((tasks) => [...tasks]));
-  const selected = new Set(selectors);
-  for (const selector of selected) {
-    if (!registry.has(selector) && !knownTasks.has(selector)) {
-      errors.push(`unknown workflow selector: ${selector}`);
-    }
-  }
-  for (const [group, tasks] of registry) {
-    if (!selected.has(group) && ![...tasks].every((task) => selected.has(task))) {
-      errors.push(`uncovered gate group: ${group}`);
-    }
-  }
-
-  const byId = new Map(jobs.map((job) => [job.id, job]));
-  for (const required of ["runtime-jobs", "runtime-browser"]) {
-    if (!byId.has(required)) errors.push(`missing required workflow job: ${required}`);
-  }
-  for (const [jobId, expectedSelector] of Object.entries(requiredJobSelectors)) {
-    const job = byId.get(jobId);
-    if (!job) {
-      errors.push(`missing required workflow job: ${jobId}`);
+const workflowJobDisplayNames = (workflow: YamlMap): string[] => {
+  const jobs = childMap(workflow, "jobs", "CI workflow jobs");
+  const displayNames: string[] = [];
+  for (const [id, value] of Object.entries(jobs)) {
+    const job = map(value, `CI workflow job ${id}`);
+    const name = job["name"];
+    if (typeof name !== "string") throw new Error(`CI workflow job ${id} name must be a string`);
+    const strategy = optionalChildMap(job, "strategy", `CI workflow job ${id} strategy`);
+    const matrix = strategy
+      ? optionalChildMap(strategy, "matrix", `CI workflow job ${id} matrix`)
+      : undefined;
+    if (!matrix) {
+      if (name.includes("${{"))
+        throw new Error(`CI workflow job ${id} has an unsupported dynamic display name`);
+      displayNames.push(name);
       continue;
     }
-    try {
-      const jobSelectors = keySelections(job.lines, "task", `workflow job ${jobId} task selector`);
-      if (jobSelectors.length !== 1 || jobSelectors[0] !== expectedSelector) {
-        errors.push(`workflow job ${jobId} must select only: ${expectedSelector}`);
+    const axes = Object.entries(matrix);
+    if (axes.length !== 1) throw new Error(`CI workflow job ${id} must use one static matrix axis`);
+    const [axis, rawValues] = axes[0] ?? [];
+    if (!axis || !/^[a-z][a-z0-9-]*$/.test(axis))
+      throw new Error(`CI workflow job ${id} has an unsupported matrix axis`);
+    const placeholder = `\${{ matrix.${axis} }}`;
+    if (!name.includes(placeholder))
+      throw new Error(`CI workflow job ${id} name must include its matrix axis`);
+    for (const rawValue of sequence(rawValues, `CI workflow job ${id} matrix ${axis}`)) {
+      if (typeof rawValue !== "string" && typeof rawValue !== "number")
+        throw new Error(`CI workflow job ${id} matrix ${axis} values must be strings or numbers`);
+      const expanded = name.replaceAll(placeholder, String(rawValue));
+      if (expanded.includes("${{"))
+        throw new Error(`CI workflow job ${id} has an unsupported dynamic display name`);
+      displayNames.push(expanded);
+    }
+  }
+  return displayNames;
+};
+
+export const deploymentCoverageErrors = (source: string): string[] =>
+  workflowErrors(source, (workflow) => {
+    const errors: string[] = [];
+    const deploy = childMap(
+      childMap(workflow, "jobs", "deployment jobs"),
+      "deploy",
+      "deployment job",
+    );
+    const condition = String(deploy["if"] ?? "");
+    for (const proof of [
+      "workflow_run.status == 'completed'",
+      "workflow_run.conclusion == 'success'",
+      "workflow_run.head_repository.full_name == github.repository",
+      "workflow_run.head_branch == 'main'",
+      "workflow_run.event == 'push'",
+      "workflow_run.event == 'workflow_dispatch'",
+    ]) {
+      if (!condition.includes(proof))
+        errors.push(`deployment condition missing trusted proof: ${proof}`);
+    }
+    const script = collectKey(deploy["steps"], "run").map(String).join("\n");
+    for (const proof of [
+      "git rev-parse HEAD",
+      "actions/runs/$RUN_ID",
+      ".run_attempt == $run_attempt",
+      '.path == ".github/workflows/ci.yml"',
+      ".head_sha == $sha",
+      '.name == "gate"',
+      '.conclusion == "success"',
+    ]) {
+      if (!script.includes(proof))
+        errors.push(`deployment exact-revision verification missing: ${proof}`);
+    }
+    return errors;
+  });
+
+export const previewDeploymentCoverageErrors = (
+  source: string,
+  ciWorkflowSource: string,
+): string[] =>
+  workflowErrors(source, (workflow) => {
+    const preview = childMap(
+      childMap(workflow, "jobs", "preview deployment jobs"),
+      "preview",
+      "preview deployment job",
+    );
+    const steps = sequence(preview["steps"], "preview deployment steps");
+    const proofStep = steps
+      .map((step, index) => map(step, `preview deployment step ${index + 1}`))
+      .find((step) => step["name"] === "Recheck state and select the exact current head");
+    if (!proofStep) throw new Error("preview deployment proof step is missing");
+    if (
+      typeof proofStep["uses"] !== "string" ||
+      !proofStep["uses"].startsWith("actions/github-script@")
+    ) {
+      throw new Error("preview deployment proof step must use actions/github-script");
+    }
+    const withInputs = childMap(proofStep, "with", "preview deployment proof inputs");
+    const script = withInputs["script"];
+    if (typeof script !== "string")
+      throw new Error("preview deployment proof script must be a string");
+
+    const errors: string[] = [];
+    const ciQueries = callArguments(script, "github.rest.actions.listWorkflowRuns").filter(
+      (query) => compact(query).includes('workflow_id:"ci.yml"'),
+    );
+    const ciQuery = ciQueries.length === 1 ? compact(ciQueries[0] ?? "") : "";
+    if (!ciQuery.includes('workflow_id:"ci.yml"'))
+      errors.push('preview deployment full-proof check missing: workflow_id: "ci.yml"');
+    if (!ciQuery.includes('event:"workflow_dispatch"'))
+      errors.push('preview deployment full-proof check missing: event: "workflow_dispatch"');
+    if (ciQuery.includes('status:"success"'))
+      errors.push("preview deployment must inspect the latest exact run before its conclusion");
+
+    const expectedJobsMarker = "const expectedJobs = ";
+    const expectedJobsOffset = script.indexOf(expectedJobsMarker);
+    const expectedJobsCall =
+      expectedJobsOffset < 0
+        ? undefined
+        : callArguments(script.slice(expectedJobsOffset + expectedJobsMarker.length), "new Set")[0];
+    const expectedJobs =
+      expectedJobsCall === undefined ? undefined : staticStringArray(expectedJobsCall);
+    if (!expectedJobs) {
+      errors.push("preview deployment expected job inventory must be a static string list");
+    } else {
+      const ciJobNames = workflowJobDisplayNames(parseWorkflow(ciWorkflowSource));
+      if (!same(expectedJobs, ciJobNames))
+        errors.push(
+          "preview deployment expected job inventory must exactly match CI display names",
+        );
+    }
+
+    const proofPredicates = callArguments(script, "data.workflow_runs.find");
+    const expectedPredicate = compact(`(run) =>
+      run.head_sha === pr.head.sha &&
+      run.head_branch === pr.head.ref &&
+      run.head_repository?.full_name === \`\${context.repo.owner}/\${context.repo.repo}\` &&
+      run.path === ".github/workflows/ci.yml" &&
+      run.event === "workflow_dispatch"`);
+    if (proofPredicates.length !== 1 || compact(proofPredicates[0] ?? "") !== expectedPredicate) {
+      errors.push("preview deployment full-proof check missing: exact latest CI proof predicate");
+    }
+
+    for (const proof of [
+      'proof?.status === "completed"',
+      'proof.conclusion === "success"',
+      "jobs.length === expectedJobs.size",
+      "expectedJobs.size === successful.size",
+      "[...expectedJobs].every((name) => successful.has(name))",
+      "gh workflow run ci.yml --ref",
+    ]) {
+      if (!script.includes(proof))
+        errors.push(`preview deployment full-proof check missing: ${proof}`);
+    }
+    return errors;
+  });
+
+export const ciCoverageErrors = (
+  gateListOutput: string,
+  workflowSource: string,
+  plannerChecks: readonly string[] = ALL_CHECKS,
+): string[] => {
+  const registry = parseGateList(gateListOutput);
+  return workflowErrors(workflowSource, (workflow) => {
+    const errors: string[] = [];
+    const jobs = childMap(workflow, "jobs", "workflow jobs");
+    const jobIds = Object.keys(jobs);
+
+    if (!same(plannerChecks, expectedChecks))
+      errors.push(`planner check inventory mismatch: ${JSON.stringify(sorted(plannerChecks))}`);
+    if (!same(MANDATORY_CHECKS, expectedMandatory))
+      errors.push(
+        `planner mandatory inventory mismatch: ${JSON.stringify(sorted(MANDATORY_CHECKS))}`,
+      );
+    if (!same([...MANDATORY_CHECKS, ...EXTRA_CHECKS], ALL_CHECKS))
+      errors.push("planner mandatory/extra inventories do not partition ALL_CHECKS");
+
+    const expectedJobs = ["plan", ...expectedChecks, "gate"];
+    for (const id of expectedJobs) {
+      if (!jobs[id]) errors.push(`missing required workflow job: ${id}`);
+    }
+    for (const id of jobIds) {
+      if (!expectedJobs.includes(id))
+        errors.push(`workflow job is outside planner inventory: ${id}`);
+    }
+
+    const selectors = new Set(
+      collectKey(jobs, "task").flatMap((value) => strings(value, "workflow task selector")),
+    );
+    const knownTasks = new Set([...registry.values()].flatMap((tasks) => [...tasks]));
+    for (const selector of selectors) {
+      if (!registry.has(selector) && !knownTasks.has(selector))
+        errors.push(`unknown workflow selector: ${selector}`);
+    }
+    for (const [group, tasks] of registry) {
+      const dedicatedCommand = group === "types" || group === "smoke";
+      if (
+        !dedicatedCommand &&
+        !selectors.has(group) &&
+        ![...tasks].every((task) => selectors.has(task))
+      )
+        errors.push(`uncovered gate group: ${group}`);
+    }
+
+    for (const [id, selector] of Object.entries(e2eSelectors)) {
+      const job = optionalChildMap(jobs, id, `workflow job ${id}`);
+      const selected = job
+        ? collectKey(job, "task").flatMap((value) => strings(value, `${id} task`))
+        : [];
+      if (job && (selected.length !== 1 || selected[0] !== selector))
+        errors.push(`workflow job ${id} must select only: ${selector}`);
+    }
+
+    const plan = optionalChildMap(jobs, "plan", "plan job");
+    if (plan) {
+      const outputs = childMap(plan, "outputs", "plan outputs");
+      if (String(outputs["checks"] ?? "") !== "${{ steps.plan.outputs.checks }}")
+        errors.push("plan job must expose the exact checks JSON output");
+      if (String(outputs["unitPaths"] ?? "") !== "${{ steps.plan.outputs.unitPaths }}")
+        errors.push("plan job must expose the exact unitPaths JSON output");
+      const steps = sequence(plan["steps"], "plan steps");
+      const workspaceStep = steps
+        .map((step, index) => map(step, `plan step ${index + 1}`))
+        .find((step) => step["uses"] === "./.github/actions/bun-workspace");
+      if (!workspaceStep) errors.push("plan job must install frozen workspace dependencies");
+      const script = collectKey(plan["steps"], "run").map(String).join("\n");
+      for (const argument of [
+        'MERGE_BASE_SHA=$(git merge-base "$BASE_SHA" "$HEAD_SHA")',
+        '--base "$MERGE_BASE_SHA" --head "$HEAD_SHA" --github-output',
+        "--full --github-output",
+      ]) {
+        if (!script.includes(argument))
+          errors.push(`plan job missing fail-closed invocation: ${argument}`);
       }
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error));
     }
-  }
 
-  const preview = byId.get("preview-environment");
-  if (!preview) {
-    errors.push("missing required preview job");
-  } else {
-    let modes: string[] = [];
-    try {
-      modes = keySelections(preview.lines, "mode", `preview job ${preview.id} matrix mode`);
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error));
+    for (const id of expectedMandatory) {
+      const job = optionalChildMap(jobs, id, `workflow job ${id}`);
+      if (!job) continue;
+      if (job["if"] !== undefined)
+        errors.push(`mandatory workflow job must not be conditional: ${id}`);
+      if (!jobNeeds(job).includes("plan"))
+        errors.push(`mandatory workflow job must need plan: ${id}`);
     }
-    for (const mode of ["plain", "integrated"]) {
-      if (!modes.includes(mode))
-        errors.push(`preview job ${preview.id} missing matrix mode: ${mode}`);
-    }
-  }
 
-  const gate = byId.get("gate");
-  if (!gate) {
-    errors.push("missing final gate job");
-  } else {
-    const condition = unquote(scalarJobKey(gate, "if") ?? "");
-    if (condition !== "always()") errors.push("gate job must have if: always()");
-    let needs: string[] = [];
-    try {
-      needs = jobNeeds(gate);
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error));
+    const smoke = optionalChildMap(jobs, "smoke", "smoke job");
+    if (smoke) {
+      if (!jobNeeds(smoke).includes("build")) errors.push("smoke job must need the exact build");
+      const script = JSON.stringify(smoke["steps"]);
+      if (
+        !script.includes("manifold-web-dist-${{ github.sha }}") ||
+        !script.includes("bun scripts/verify-ci-smoke.ts")
+      )
+        errors.push("smoke job must consume the exact-SHA build artifact");
     }
-    const needed = new Set(needs);
-    for (const job of jobs) {
-      if (job.id !== "gate" && !needed.has(job.id)) {
-        errors.push(`gate job needs missing verification job: ${job.id}`);
+    const targeted = optionalChildMap(jobs, "targeted", "targeted job");
+    if (targeted) {
+      const targetedStep = sequence(targeted["steps"], "targeted steps")
+        .map((step, index) => map(step, `targeted step ${index + 1}`))
+        .find((step) => typeof step["run"] === "string" && step["run"].includes("--run-targeted"));
+      const expectedCommand =
+        'bun scripts/ci-plan.ts --run-targeted --unit-paths-json "$UNIT_PATHS"';
+      if (!targetedStep || targetedStep["run"] !== expectedCommand) {
+        errors.push("targeted job must consume only the planned unitPaths JSON");
+      } else {
+        const environment = optionalChildMap(targetedStep, "env", "targeted environment");
+        if (environment?.["UNIT_PATHS"] !== "${{ needs.plan.outputs.unitPaths }}")
+          errors.push("targeted job must receive the exact planned unitPaths JSON");
       }
     }
-  }
+    for (const id of EXTRA_CHECKS) {
+      const job = optionalChildMap(jobs, id, `workflow job ${id}`);
+      if (!job) continue;
+      const condition = String(job["if"] ?? "");
+      const expected = `contains(fromJSON(needs.plan.outputs.checks), '${id}')`;
+      if (condition !== expected)
+        errors.push(`workflow job ${id} must use planner condition: ${expected}`);
+    }
 
-  return errors;
+    const types = optionalChildMap(jobs, "types", "types job");
+    const shards = types
+      ? childMap(childMap(types, "strategy", "types strategy"), "matrix", "types matrix")["shard"]
+      : undefined;
+    if (!Array.isArray(shards) || !same(shards.map(String), ["1", "2", "3", "4"]))
+      errors.push("types job must use the complete 1/4 through 4/4 matrix");
+    const typesScript = types ? collectKey(types["steps"], "run").map(String).join("\n") : "";
+    if (!typesScript.includes('--only types --shard "${{ matrix.shard }}/4"'))
+      errors.push("types job must execute its selected four-way shard");
+
+    const preview = optionalChildMap(jobs, "preview-environment", "preview job");
+    const modes = preview
+      ? childMap(childMap(preview, "strategy", "preview strategy"), "matrix", "preview matrix")[
+          "mode"
+        ]
+      : undefined;
+    if (!Array.isArray(modes) || !same(modes.map(String), ["plain", "integrated"]))
+      errors.push("preview job must retain plain and integrated matrix modes");
+
+    const gate = optionalChildMap(jobs, "gate", "gate job");
+    if (gate) {
+      if (String(gate["if"] ?? "") !== "always()") errors.push("gate job must have if: always()");
+      if (!same(jobNeeds(gate), ["plan", ...expectedChecks]))
+        errors.push("gate job needs must exactly cover plan and every check");
+      const gateScript = collectKey(gate["steps"], "run").map(String).join("\n");
+      for (const semantic of ["EXPECTED_CHECKS", "main/dispatch proof", "result == skipped"]) {
+        if (!gateScript.includes(semantic))
+          errors.push(`gate aggregator missing planned-skip semantic: ${semantic}`);
+      }
+    }
+
+    const concurrency = childMap(workflow, "concurrency", "workflow concurrency");
+    const concurrencyGroup =
+      "ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}";
+    if (String(concurrency["group"]) !== concurrencyGroup)
+      errors.push("CI concurrency must coalesce pending full proofs per ref");
+    if (String(concurrency["cancel-in-progress"]) !== "${{ github.event_name == 'pull_request' }}")
+      errors.push("only superseded pull-request CI may cancel in progress");
+    return errors;
+  });
 };
 
 if (import.meta.main) {
@@ -245,7 +485,15 @@ if (import.meta.main) {
   }
   const registry = new TextDecoder().decode(listed.stdout);
   const workflow = await Bun.file(new URL(".github/workflows/ci.yml", repoRoot)).text();
-  const errors = ciCoverageErrors(registry, workflow);
+  const deployment = await Bun.file(new URL(".github/workflows/deploy-dev.yml", repoRoot)).text();
+  const previewDeployment = await Bun.file(
+    new URL(".github/workflows/deploy-preview.yml", repoRoot),
+  ).text();
+  const errors = [
+    ...ciCoverageErrors(registry, workflow),
+    ...deploymentCoverageErrors(deployment),
+    ...previewDeploymentCoverageErrors(previewDeployment, workflow),
+  ];
   if (errors.length > 0) {
     console.error(`ci coverage: RED\n${errors.map((error) => ` - ${error}`).join("\n")}`);
     process.exit(1);

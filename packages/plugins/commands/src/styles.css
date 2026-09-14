@@ -154,6 +154,53 @@
   visibility: visible;
 }
 
+.commands-door-card {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.commands-door-head {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  border-bottom: 1px solid #2b3036;
+  padding: 0.75rem 1rem;
+}
+
+.commands-door-head > span {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.commands-door-head strong {
+  font-size: 0.9rem;
+}
+
+.commands-door-head code {
+  overflow: hidden;
+  color: #868e96;
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+}
+
+.commands-door-back {
+  border: 1px solid #495057;
+  border-radius: 0.35rem;
+  padding: 0.24rem 0.48rem;
+  color: #adb5bd;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.7rem;
+}
+
+.commands-door-back:hover {
+  border-color: #4c6ef5;
+}
+
+.commands-door-body {
+  padding: 0.85rem 1rem 1rem;
+}
+
 .commands-foot {
   display: flex;
   align-items: center;

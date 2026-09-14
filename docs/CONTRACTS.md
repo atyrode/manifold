@@ -66,7 +66,9 @@ snapshot-plus-output invariant and its e2e proof; do not weaken that proof.
 The [machine channel](#ws-wsmachine--machine-channel-json-data-fields-base64) owns the
 compatibility-set add/reset rule, coordinated fleet restart and hub-before-agent upgrade order;
 the [instance channel](#ws-wsinstance--instance-channel-json-text-frames-adr-0014) applies it to
-its own wire. Publishing a release does not authorize a hub upgrade, promotion or fleet change.
+its own wire. `bun run release` includes the protocol status in its release PR, waits for required
+checks and rebase merge, and tags only after verifying the merged main tree. Publishing a release
+does not authorize a hub upgrade, promotion or fleet change.
 Preserve the production compatibility hold for a development-only release; the explicit
 promotion procedure is [SELF-HOST.md §Environments](SELF-HOST.md#environments).
 
@@ -3815,6 +3817,24 @@ build target and nothing branches on which instance is being looked at.
   green does not prove the UI works. Gate green does not prove a surface feels finished:
   UI-touching changes require vision-model inspection of real screenshots from a real browser
   before shipping.
+- **Risk-selected CI proof**: `bun run ci:plan` is the one impact classification for local work
+  and pull requests. Agents inspect its changed files, risk and reasons before editing, run
+  `bun run ci:check` for build/types/style/smoke/targeted baseline coverage, and add direct
+  affected-behavior proof. Pull-request CI repeats that baseline and every selected extra;
+  unknown dependency impact fails closed to conservative/full selection. Ordinary readiness does
+  not require the full local gate or a wait for asynchronous full `main` CI.
+- **Full-boundary proof**: every `main` push and manual CI dispatch exercises the complete gate
+  registry. Release publication consumes successful full evidence for its exact starting `main`
+  revision. Every deployment consumes successful full evidence for the exact revision it will run;
+  production therefore proves the resolved release tag commit separately. A numbered PR preview
+  may consume a full manual CI dispatch for that exact branch head only; that evidence is not
+  integrated-`main`, release or production evidence. None of these boundaries infer proof from
+  fast PR green, another tree's artifact or a later unrelated run. Source, CI, deployment and
+  runtime observations remain distinct.
+- **Failure ownership**: a failed or timed-out full `main` run remains red and creates or updates
+  one bounded repair issue from trusted default-branch automation. Its assigned merged-PR author
+  is the triage owner, not a proven culprit; repair or safe revert has priority without freezing
+  unrelated safe work. Later green evidence neither auto-closes that issue nor auto-reverts code.
 
 - **Preview admission coverage** (#332): `packages/server/test/preview-identity.test.ts`
   exercises two real servers, an initial handoff, then authority key rotation while the same

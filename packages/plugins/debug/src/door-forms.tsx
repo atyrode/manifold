@@ -1,7 +1,7 @@
 import type { HostServices } from "@manifold/plugin";
+import { DoorForm, actionSummary } from "@manifold/plugin/ui";
 import { Chip, Popover } from "@manifold/ui";
-import type { ActionSummary } from "@manifold/protocol";
-import { Suspense, lazy, useState, type ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 
 /**
  * THE DOOR-INVOCATION SECTION (#128, #131 item 6): the pinned card's doors, each one
@@ -13,25 +13,10 @@ import { Suspense, lazy, useState, type ReactElement } from "react";
  * rendered as unreachable instead of hidden. Submission goes through `host.client.action`,
  * THE action door, and a refusal comes back as data into the same popover.
  *
- * The FORM ENGINE ARRIVES ONLY ON DEMAND: `door-form.tsx` (rjsf and its validator) is
- * behind `React.lazy`, so its chunk is fetched the first time a reader opens a door, and
- * an idle workspace never loads it. That seam is the ADR's lazy-loading consequence made
- * structural.
+ * The shared component owns the lazy boundary, so its rjsf chunk is fetched the first time a
+ * reader opens a door and an idle workspace never loads it. That seam is the ADR's
+ * lazy-loading consequence made structural.
  */
-/* Not a runtime-selected module: the ONE deliberate code-split seam (vite chunks on the
-   dynamic import), keeping the form engine off the boot path per the ADR. */
-const LazyDoorForm = lazy(() =>
-  import("./door-form.tsx").then((module) => ({ default: module.DoorForm })),
-);
-
-/** The roster's summary for a declared door, when the assembly composed one. */
-function summaryOf(door: string, host: HostServices): ActionSummary | null {
-  for (const entry of host.assembly.roster()) {
-    const found = entry.actions.find((action) => action.name === door);
-    if (found !== undefined) return found;
-  }
-  return null;
-}
 
 export function DoorForms({
   doors,
@@ -45,7 +30,7 @@ export function DoorForms({
   return (
     <span className="inspector-doors">
       {doors.map((door) => {
-        const summary = summaryOf(door, host);
+        const summary = actionSummary(door, host);
         if (summary === null) {
           return (
             <Chip key={door} className="inspector-door">
@@ -70,12 +55,7 @@ export function DoorForms({
             <header className="door-form__head">
               <strong>{summary.title}</strong> <code>{summary.name}</code>
             </header>
-            <Suspense fallback={<p className="door-form__loading">loading the form engine…</p>}>
-              <LazyDoorForm
-                summary={summary}
-                dispatch={(args) => host.client.action(summary.name, args)}
-              />
-            </Suspense>
+            <DoorForm action={summary.name} host={host} />
           </Popover>
         );
       })}

@@ -10,6 +10,9 @@
     "bun": ">=1.4.2"
   },
   "scripts": {
+    "ci:plan": "bun scripts/ci-plan.ts",
+    "ci:check": "bun scripts/ci-plan.ts --run",
+    "ci:status": "bun scripts/ci-feedback.ts --status",
     "check": "bun run changelog:generate && tsc -p packages/protocol && tsc -p packages/ui && tsc -p packages/plugin && tsc -p packages/plugin-kit && tsc -p packages/scene && tsc -p packages/sdk && tsc -p packages/server && tsc -p packages/agent && tsc -p packages/testkit && tsc -p packages/web && bun scripts/check-plugins.ts && tsc -p tsconfig.scripts.json",
     "test": "bun test scripts/*.test.ts packages/protocol packages/ui packages/plugin packages/plugin-kit packages/scene packages/sdk packages/server packages/agent packages/web packages/plugins",
     "e2e": "bun test packages/testkit --timeout 60000",

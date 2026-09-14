@@ -149,6 +149,23 @@ when the operator explicitly asks to inspect a deployed PR preview. Do not reque
 ordinary docs/internal-only changes with nothing useful to inspect. Source checkpoint, CI and
 merge rules still apply; pushing is not a deployment request.
 
+A numbered preview is a shared, persistent deployment, not an exemption from full verification.
+First obtain successful **full CI** for the exact current PR head. The fast `pull_request`
+gate is never deployment evidence; dispatching `CI` on the PR's branch runs the full suite
+without granting that branch deployment credentials. Resolve `BRANCH` and `SHA` from
+`gh pr view NUMBER --json headRefName,headRefOid`, then:
+
+```sh
+gh workflow run ci.yml --repo atyrode/manifold --ref BRANCH
+gh run list --repo atyrode/manifold --workflow ci.yml --event workflow_dispatch --branch BRANCH --commit SHA --limit 10
+gh run view FULL_RUN_ID --repo atyrode/manifold
+```
+
+Inspect the matching run until its full `gate` succeeds; a later push needs new exact-head
+proof. Only then request deployment below. Missing, failed, incomplete or mismatched evidence
+is refused before SSH. This branch proof authorizes neither integrated-main deployment nor
+release, which require their own full main evidence. Stopping a preview never waits for CI.
+
 From an authenticated GitHub CLI with permission to run this repository's workflow, replace
 `NUMBER` with a positive canonical PR number (for example `123`, never `0123`):
 

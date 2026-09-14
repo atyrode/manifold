@@ -1,6 +1,0 @@
----
-section: Added
-issue: 504
----
-
-A plugin whose data is rows rather than settings can now declare `database` in its manifest and keep its own SQLite file, reachable as `ctx.database` with `query`, `run` and `batch` — one contract for in-realm and hardened plugins alike, bounded by stated limits and refused as rejections. A `batch` is the transaction: its statements commit together or roll back whole. Migrations receive the database beside storage, the plugin keeps one data version and one ledger, a disable retains the file, an uninstall refuses while it still holds pages, and a purge deletes it and reports the bytes it removed. Database migrations share the real guest migration boundary: private image staging and request leases, with KV, ledger, version, install and element claims published through a durable server-DB journal. Boot restores the old image for prepared work and finishes committed work; unknown fingerprints refuse recovery rather than overwrite data. Replacement migrations use the candidate manifest's database declaration and byte cap. The SQL budget is cooperative between batch statements, not a progress-handler guarantee for an individual synchronous SQLite statement.

@@ -15,9 +15,10 @@ on:
         required: true
         type: string
 
-# The job token reads the repository and the release list; the Environment record is Actions'
-# own bookkeeping and needs no `deployments` grant.
+# The job token reads the repository, releases and exact-revision full CI evidence. The
+# Environment record is Actions' own bookkeeping and needs no `deployments` grant.
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -65,7 +66,14 @@ jobs:
             echo "::error::$TAG is a draft release, not a published one"
             exit 1
           fi
-          git rev-parse --verify "refs/tags/$TAG^{commit}"
+          sha="$(git rev-parse --verify "refs/tags/$TAG^{commit}")"
+          proof="$(gh run list --workflow ci.yml --branch main --commit "$sha" \
+            --limit 100 --json databaseId,event,status,conclusion \
+            --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")] | .[:1] | map(select(.status == "completed" and .conclusion == "success")) | length')"
+          if [ "$proof" -eq 0 ]; then
+            echo "::error::$TAG ($sha) has no successful latest full main CI proof (missing, pending, or failed); inspect bun run ci:status -- --sha $sha before promoting"
+            exit 1
+          fi
 
       - name: Link the application
         run: bunx clever-tools@4.10.0 link "${{ vars.CLEVER_HUB_APP_ID }}" --org "${{ vars.CLEVER_ORG_ID }}"

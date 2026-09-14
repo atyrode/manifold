@@ -5,21 +5,27 @@
 This document owns issue and pull request lifecycle: label semantics, intake, holds, priority,
 claims, review, merge and exit. [`docs/audits/README.md`](audits/README.md) owns audit briefs,
 their cadence and the ledger, and routes here for labels.
-[`AGENTS.md`](../AGENTS.md) Boundaries and Delivery remain the authority for ownership, worktrees,
-readiness and CI evidence: this document adds the mechanics those rules assume and never relaxes
-them. Where they disagree, `AGENTS.md` wins and the contradiction is a finding, not a choice.
+[`AGENTS.md`](../AGENTS.md) Boundaries and Delivery remain the authority for ownership, worktrees
+and safety; its CI section delegates the four-boundary readiness/evidence policy to this document.
+This document owns those mechanics and never relaxes irreversible-risk holds. A contradiction is a
+finding, not a choice.
 
-Three scripts make the mechanical half provable, and nothing else writes to the tracker
-automatically:
+The tracker automation boundary is narrow and provable:
 
 | Command                                                   | What it proves                                                      |
 | --------------------------------------------------------- | ------------------------------------------------------------------- |
 | `bun scripts/triage-policy.ts [--report\|--fix] [--flow]` | Rules T1–T6 below; `--fix` applies two of them                      |
 | `bun scripts/labels.ts [--check\|--apply]`                | The live labels match [`.github/labels.yml`](../.github/labels.yml) |
 | `bun scripts/dispatch.ts --next`                          | What an agent may pick up right now, in pick order                  |
+| `bun run ci:status [-- --sha <sha> --json]`               | One-shot fast/full state, failures, repair issue and next action    |
 
 [`.github/workflows/triage-policy.yml`](../.github/workflows/triage-policy.yml) runs the first two
-hourly and on every issue event.
+hourly and on issue events. The only other automatic tracker writer is trusted failed-`main`
+feedback: [`.github/workflows/ci-feedback.yml`](../.github/workflows/ci-feedback.yml) handles only
+completed same-repository `main` push/manual-dispatch CI, running default-branch code with
+read-only actions, contents and pull-request metadata plus issue write. It may create or update a
+bounded CI-repair issue from public metadata; it executes no artifacts, copies no raw logs, writes
+no other resource and cannot close arbitrary issues.
 
 ## Label model
 
@@ -150,12 +156,21 @@ remains — and these sections:
 - `## Problem` — what is wrong, in the issue's terms.
 - `## Change` — what this does about it.
 - `## Dependencies` — exactly `- None`, or `- Depends-on: #N` for its actual Git base.
-- `## Evidence` — gate output, the commands run, screenshots for anything a person looks at.
+- `## Evidence` — CI plan and risk reasons, local baseline and affected-behavior proof,
+  screenshots for anything a person looks at, and the selected PR CI result.
 - `## Acceptance` — the issue's criteria as a checklist.
 
-`scripts/pull-policy.ts` enforces the mechanically knowable parts on every pull request. Keep a
-`needs-operator` PR draft. Mark implementation ready only after its issue is `agent-ready`,
-`bun run gate` is green on the pushed head and [`AGENTS.md`](../AGENTS.md) Delivery is satisfied.
+`scripts/pull-policy.ts` enforces the mechanically knowable parts on ordinary pull requests. Keep a
+`needs-operator` PR draft. Mark implementation ready only after its issue is `agent-ready`, its
+local baseline and affected proof are recorded, the selected PR `gate` is green on the pushed head,
+and [`AGENTS.md`](../AGENTS.md) Delivery is satisfied. A full local gate is not an ordinary
+readiness condition.
+
+The release command's explicitly authorized PR publishes already-triaged changes, not a new issue.
+`agent-policy.yml` exempts only its lifecycle check when the title starts exactly `release: v`,
+the author is the release committer `atyrode`, and the head is `release/v…` in this repository.
+The shared engineering contract and required `gate` still run. The command's release authorization
+covers rebase auto-merge, not the ordinary squash-merge grant below; no bypass actor is needed.
 
 | Rule | Pull-request invariant                                                                          |
 | ---- | ----------------------------------------------------------------------------------------------- |
@@ -171,29 +186,59 @@ fail, the blocking findings. A new push invalidates every earlier verdict.
 
 ## CI evidence and performance
 
-The no-argument `bun run gate` is the memory-bounded authoritative full gate. CI may fan out work
-across runners only by selecting tasks from the [`scripts/gate.ts`](../scripts/gate.ts) registry;
-it does not own a parallel checklist. Any task addition or change must update that topology and pass
-`bun scripts/ci-coverage.ts`. Speed work preserves every check and assertion unless the operator
-explicitly accepts its removal.
+This section owns the repository's four-boundary CI policy; the planner and gate registries are its
+executable mapping.
 
-Required source-change CI operates to **under 7 minutes p95** for execution wall clock over a
-rolling window of at least ten recent clean runs, assuming sufficient hosted-runner concurrency.
-Record execution wall clock and queue delay separately alongside the run, commit SHA, event,
-attempt, per-job durations and critical path; keep retries separate. Queue growth is an explicit
-capacity incident, not permission to serialize checks or weaken coverage. Triage execution
-regressions from those receipts.
+1. **Local work.** Start with `bun run ci:plan`. Inspect changed files, risk and reasons before
+   editing, then use `bun run ci:check` for the mandatory build/types/style/smoke/targeted baseline
+   and run direct proof of the affected behavior. High-risk extras remain explicit commands or CI
+   evidence; the local alias does not call them silently.
+2. **Pull-request integration.** CI always runs the baseline and impact-selected checks. The
+   always-run required `gate` verifies that exact plan and result universe. Its green result on the
+   current head and integration base permits ordinary agent merge without a local full gate or a
+   wait for post-merge full CI; the required context and current-base protection are unchanged.
+   Missing or invalid diff evidence fails closed. Unknown impact, dependency-graph holes, and
+   authentication, persistence, execution, deployment, workflow, toolchain or normative-contract
+   changes select conservative extra/full proof and retain all applicable operator holds.
+3. **Integrated `main`.** Every push to `main` and manual CI dispatch runs the complete
+   [`scripts/gate.ts`](../scripts/gate.ts) registry. A running `main` proof is not cancelled by a
+   newer push; a pending run may coalesce, but the in-progress revision finishes. Cancellation of
+   a superseded pending revision is not a bug, while the latest full failure remains visible. This
+   is asynchronous follow-through, never permission to hide a failure: `bun run ci:status` makes
+   one bounded query and names failed jobs, the repair issue and next action; it does not poll.
+   Trusted feedback creates/updates the bounded `p1` CI-repair issue with `bug`, `area:infra` and
+   initially `needs-triage`, assigns a resolvable merged-PR author as triage/repair owner rather
+   than alleging fault, and gives safe reproduce/repair/revert guidance. The standing operator
+   scope permits `agent-ready` only after complete acceptance criteria are present. That owner
+   treats repair or revert as priority; unrelated safe work need not freeze while the full run
+   completes.
+4. **Deployment and release.** Integrated development requires successful full `main` push or
+   manual-dispatch CI evidence for its exact revision. Release starts from an exact full-`main`
+   predecessor, and promotion separately
+   requires full evidence for the tagged release commit. A numbered PR preview may instead use a
+   successful full manual CI dispatch at that exact branch head, valid only for that preview.
+   Fast PR green, stale artifacts and a later unrelated green revision are insufficient. Release,
+   promotion, deployment and runtime verification retain separate authorization and evidence.
 
-Build consumers may use only an artifact built from the exact source tree under test. Exact-tree
-artifacts expire after one day; when one has expired, rerun the whole workflow so it is rebuilt,
-never replay only a failed job against the missing artifact. Every required job has a bounded
-timeout, and the final aggregation job runs unconditionally and fails for any required failure or
-unexpected skip. Plain-preview and integrated-preview runtime proofs remain concurrent rather than
-becoming a serial critical path.
+`bun run gate` remains the memory-bounded authoritative full local gate. Changes to this policy,
+the planner, workflow, toolchain or gate registry require full cutover proof. Any gate-task addition
+or change must update CI topology and pass `bun scripts/ci-coverage.ts`; no check or assertion may
+be removed or weakened for speed without explicit operator acceptance. Full CI partitions types
+into four disjoint shards while no-argument local `bun run gate` retains complete unsharded
+behavior. Build consumers may use only a SHA-named artifact from the exact source tree under test.
+Exact-tree artifacts expire after one day; after expiry rerun the whole workflow. Required jobs
+have bounded timeouts, and the final aggregator rejects required failures and unexpected skips.
+Full CI retains concurrent plain-preview and integrated-preview runtime proof.
 
-Strict/current-base protection is an accepted merge-tax decision: it protects against semantic
-conflicts between the reviewed head and its integration base. Improve scheduling and task topology;
-do not weaken current-base integration evidence to meet the SLO.
+Fast pull-request feedback targets **1–2 minutes**. Separately, the complete suite operates to
+**under 7 minutes p95** execution wall clock over at least ten recent clean runs with sufficient
+hosted-runner concurrency. Record wall clock and queue delay separately with revision, event,
+attempt, per-job duration and critical path; keep retries separate. Queue growth is a capacity
+incident, not permission to weaken proof.
+
+Optional local pre-commit diff or formatting checks may shorten feedback. Repository automation
+must not install hooks, change Git configuration or put the full gate in a hook; hooks are
+convenience only, never security or merge enforcement.
 
 ## Merge
 
@@ -201,8 +246,8 @@ An agent squash-merges with branch deletion, without an additional waiting perio
 these hold:
 
 1. The pull request closes an issue carrying `agent-ready` and a priority label.
-2. Required CI is green on the current head: `gh pr checks <n> --required` exits 0 and
-   `gh run list --workflow ci.yml --commit <head> --status success --json databaseId` is non-empty.
+2. The required PR `gate` is green on the current head and integration base:
+   `gh pr checks <n> --required` exits 0.
 3. The newest `## Verdict:` comment is `pass` and is dated after the head commit was pushed.
 4. Neither the pull request nor its issue carries `needs-operator`, `design` or `area:infra`.
 5. The pull request touches none of: `.github/workflows/**`, `infra/**`, `Dockerfile*`,
@@ -215,9 +260,14 @@ identify a concrete operator decision or protected scope: the ship runbook label
 hold any pull request by adding `needs-operator`.
 
 This grant is bounded and mechanical; it does not touch `bun run release` or `bun run promote`,
-which remain explicitly authorized actions under [`AGENTS.md`](../AGENTS.md) Boundaries. After each
-merge, watch the `deploy-dev.yml` run for the merge commit; if it fails, open a `bug` `p0` issue
-naming the run.
+which remain explicitly authorized actions under [`AGENTS.md`](../AGENTS.md) Boundaries. A merge
+starts asynchronous full `main` proof. Do not wait before continuing unrelated safe work; use
+`bun run ci:status -- --sha <merge-sha>` when its state is needed. Trusted feedback files a `p1`
+repair issue with a named triage owner for a failed or timed-out full run. Deployment/release work
+must wait for the exact-revision full result. Development deployment failure tracking remains
+separate and `p0`: the agent that merged the revision owns recording a failed `deploy-dev.yml` run
+with its SHA, run link and named repair owner. Delegating monitoring does not leave that failure
+unowned or require unrelated safe work to stop.
 
 ## Exit
 
@@ -228,9 +278,10 @@ Closing as not planned requires a comment beginning `Disposition:` and naming on
 - `superseded by #N` — after preserving anything unique to the closed issue
 - `invalid` — with the reason
 
-No automation closes anything. `aging` is a signal that an issue has gone quiet, applied and
-removed from human activity alone; it is never grounds for a close, and a stale-bot is not a
-triage system.
+No automation closes arbitrary issues. Trusted failed-`main` feedback may create and update its
+bounded CI-repair issue, but a later green run does not auto-close it or auto-revert code. `aging`
+is a signal that an issue has gone quiet, applied and removed from human activity alone; it is
+never grounds for a close, and a stale-bot is not a triage system.
 
 ## Runbooks
 
@@ -263,30 +314,35 @@ supports skills, or by saying "follow docs/TRIAGE.md §Runbooks › <name>".
    **ship**, correct the PR, or route its operator hold; do not claim new work. Otherwise take items
    up to the two-claim limit.
 2. For each: post the `Claim:` comment, create a worktree from `origin/main` — or the declared
-   dependency PR's head for a real stack — implement to the acceptance criteria, run
-   `bun run gate`, push, open the single draft per §Pull requests, mark it ready once pushed-head CI
-   is green, then run **review** and **ship** without returning to dispatch.
+   dependency PR's head for a real stack — inspect `bun run ci:plan`, implement to the acceptance
+   criteria, run `bun run ci:check` plus direct affected-behavior proof, push, and open the single
+   draft per §Pull requests. Mark it ready once the selected pushed-head PR `gate` is green, then
+   run **review** and **ship** without returning to dispatch. Do not wait for full post-merge CI for
+   ordinary work.
 3. If implementing reveals a decision is needed, post `Release: needs decision`, relabel the issue
    `needs-operator`, write the decision block, keep any PR draft and stop. A guess is not a decision.
 
 ### review
 
-Read the issue's acceptance criteria, the diff, the gate and CI evidence, and the contract sections
-the change touches. Post the single `## Verdict:` comment described in §Pull requests. Review reads
-and writes one comment; it does not push to the branch. A pass hands the same head directly to
-**ship**; it never starts another dispatch.
+Read the issue's acceptance criteria, the diff, planner risk/reasons, local affected proof, selected
+PR CI evidence and the contract sections the change touches. Post the single `## Verdict:` comment
+described in §Pull requests. Review reads and writes one comment; it does not push to the branch.
+A pass hands the same head directly to **ship**; it never starts another dispatch.
 
 ### ship
 
 For each open non-draft pull request, evaluate §Merge mechanically —
-`gh pr view <n> --json labels,files,headRefOid,closingIssuesReferences,comments,isDraft`,
-`gh pr checks <n> --required`, `gh run list` — and either merge with
+`gh pr view <n> --json labels,files,headRefOid,closingIssuesReferences,comments,isDraft` and
+`gh pr checks <n> --required` — then either merge with
 `gh pr merge <n> --squash --delete-branch` or report which criterion failed. For a pull request
 excluded by criteria 4 or 5, label it `needs-operator`, make it draft and write a decision block.
-After each merge, watch `deploy-dev.yml` for the merge commit, then list dependent open PRs.
-Rebase and reverify branches you own; for another owner, comment the merged revision and required
-base update. Close an empty or superseded draft only after preserving unique work and recording its
-destination. Do not return to dispatch until this reconciliation is complete.
+After each merge, record the merge SHA and let full `main` CI continue asynchronously; do not block
+independent safe work on it. Trusted feedback assigns any failed full run to its repair owner.
+Deployment or release operators must query that exact SHA and wait for its successful full proof.
+Then list dependent open PRs. Rebase and reverify branches you own; for another owner, comment the
+merged revision and required base update. Close an empty or superseded draft only after preserving
+unique work and recording its destination. Do not return to dispatch until this reconciliation is
+complete.
 
 ## Flow
 
