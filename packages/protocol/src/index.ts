@@ -338,13 +338,9 @@ export {
   AgentRunInventorySchema,
   AgentRunInspectionSchema,
   AgentRunTraceSummarySchema,
-  InspectAgentRunRequestSchema,
-  InspectAgentRunResultSchema,
   type AgentRunInspection,
   type AgentRunInventory,
   type AgentRunTraceSummary,
-  type InspectAgentRunRequest,
-  type InspectAgentRunResult,
 } from "./agent-run-inspection.ts";
 export {
   CreateRunRequestSchema, CreateRunResultSchema, CreateRunCredentialResultSchema,

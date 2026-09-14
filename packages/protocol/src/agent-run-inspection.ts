@@ -15,23 +15,6 @@ const traceId = z
   .max(20);
 const text = z.string().max(512);
 
-/** No credential references or open-ended payloads belong in this projection. */
-export const InspectAgentRunRequestSchema = z
-  .strictObject({
-    runId: id.optional(),
-    principalId: id.optional(),
-    beforeTraceId: traceId.optional(),
-    traceId: traceId.optional(),
-    limit: z.number().int().min(1).max(100).default(50),
-  })
-  .refine((input) => (input.runId === undefined) !== (input.principalId === undefined), {
-    message: "name exactly one run or principal",
-  })
-  .refine((input) => input.beforeTraceId === undefined || input.traceId === undefined, {
-    message: "name a trace or page cursor, not both",
-  });
-export type InspectAgentRunRequest = z.infer<typeof InspectAgentRunRequestSchema>;
-
 const runSummary = z.strictObject({
   id,
   principalId: id,
@@ -180,12 +163,6 @@ export const AgentRunInspectionSchema = z.strictObject({
   nativeTruncated: z.boolean(),
 });
 export type AgentRunInspection = z.infer<typeof AgentRunInspectionSchema>;
-export const InspectAgentRunResultSchema = z.union([
-  AgentRunInspectionSchema,
-  z.strictObject({ availability: z.literal("origin_unavailable"), principalId: id }),
-]);
-export type InspectAgentRunResult = z.infer<typeof InspectAgentRunResultSchema>;
-
 export const ListRunsRequestSchema = z.strictObject({ agentId: AgentIdSchema.optional() });
 export type ListRunsRequest = z.infer<typeof ListRunsRequestSchema>;
 export const ListRunsResultSchema = AgentRunInventorySchema;
