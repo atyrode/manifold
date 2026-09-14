@@ -664,9 +664,16 @@ test("a revoked preview browser identity returns through production admission wi
           const fetch = window.fetch.bind(window);
           window.__protectedIdentityRequests = 0;
           window.__protectedIdentityStatuses = [];
+          window.__protectedIdentityUsedRejected = [];
           window.fetch = async (input, init) => {
             const path = new URL(input, location.href).pathname;
-            if (path === '/api/plugins') window.__protectedIdentityRequests++;
+            if (path === '/api/plugins') {
+              window.__protectedIdentityRequests++;
+              const headers = new Headers(input instanceof Request ? input.headers : init?.headers);
+              window.__protectedIdentityUsedRejected.push(
+                headers.get('authorization') === ${JSON.stringify(`Bearer ${initial.token}`)}
+              );
+            }
             if (path === '/api/identity/preview-start') {
               window.__admissionAttemptSeen = true;
               if (${JSON.stringify(scenario.admission)} === 'interrupted') {
@@ -709,6 +716,7 @@ test("a revoked preview browser identity returns through production admission wi
             identityPresent: boolean;
             protectedIdentityRequests: number | null;
             protectedIdentityStatuses: number[] | null;
+            protectedIdentityUsedRejected: boolean[] | null;
           }>(`({
             origin: location.origin,
             pathname: location.pathname,
@@ -725,6 +733,10 @@ test("a revoked preview browser identity returns through production admission wi
             protectedIdentityStatuses:
               Array.isArray(window.__protectedIdentityStatuses)
                 ? window.__protectedIdentityStatuses
+                : null,
+            protectedIdentityUsedRejected:
+              Array.isArray(window.__protectedIdentityUsedRejected)
+                ? window.__protectedIdentityUsedRejected
                 : null
           })`);
           throw new Error(
