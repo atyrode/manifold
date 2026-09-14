@@ -1,5 +1,5 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 34;
+export const PROTOCOL_VERSION = 35;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -342,8 +342,16 @@ export const PROTOCOL_VERSION = 34;
  * originating plugin id, and clients interpreting a kind qualify it by that origin.
  * Machine and instance frames are unchanged; their acceptance sets add the shared
  * revision without dropping compatible transports or requiring a fleet restart.
+ *
+ * v34 -> v35: ROOMLESS SESSION OBSERVATION (issue #354). The session wire adds the
+ * `observe`/`observed` handshake so a workspace-root browser can authenticate the existing
+ * pooled socket, receive roster changes and hold event subscriptions without inventing a
+ * room. Machine and instance frames are byte-identical, so both compatibility sets add 35.
+ * The browser session remains strictly current and upgrades with the served SPA.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([30, 31, 32, 33, 34]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
+  30, 31, 32, 33, 34, 35,
+]);
 
 /**
  * The first machine protocol that carries `repository_query`/`repository_fact` (issue #529).
@@ -387,10 +395,10 @@ export const TERMINAL_RESTART_PROTOCOL_VERSION = 33;
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v34 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v35 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33, 34,
+  27, 28, 29, 30, 31, 32, 33, 34, 35,
 ]);
 
 /**

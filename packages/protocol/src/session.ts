@@ -18,12 +18,15 @@ import { STREAM_CLIENT_BODIES, STREAM_SERVER_BODIES } from "./stream.ts";
 /**
  * Session channel (`/ws/session`): browsers, SDKs, tools. JSON text frames.
  *
- * FRAME GRAMMAR (v19) — one socket per tab, many rooms. Every frame is either
- * connection-level or channel-level:
+ * FRAME GRAMMAR (v33) — one socket per tab, many rooms or one roomless observer. Every
+ * frame is either connection-level or channel-level:
  *
- *   connection-level   client → server  {"type":"pong"}
+ *   connection-level   client → server  {"type":"observe","token":"…","protocolVersion":33}
+ *                      client → server  {"type":"pong"}
  *                      client → server  {"type":"subscribe","topics":[…]}
+ *                      server → client  {"type":"observed"}
  *                      server → client  {"type":"ping"}
+ *                      server → client  {"type":"session","connectionId":"…"}
  *                      server → client  {"type":"plugins","roster":[…]}
  *                      server → client  {"type":"event","topic":{…},"plugin":"…","kind":"…",…}
  *   channel-level      both ways        {"ch":"<channelId>", "type":"…", …}
@@ -40,19 +43,21 @@ import { STREAM_CLIENT_BODIES, STREAM_SERVER_BODIES } from "./stream.ts";
  * something no channel on this socket has joined (see CONNECTION_BODIES and
  * CLIENT_CONNECTION_BODIES).
  *
- * Handshake: the FIRST client frame on a connection MUST be `join` (ten-second
- * deadline, re-armed whenever the last channel leaves); the server answers `init` on
- * that channel. Per-channel epoch/rev resume hints ride each channel's own `join`, so a
- * reconnect redials ONE socket and rejoins every channel on it.
+ * Handshake: the FIRST client frame on a connection MUST be `join` or `observe` (ten-second
+ * deadline). `join` binds a room channel and earns `init`; `observe` authenticates a
+ * connection that deliberately holds no room and earns `observed`. Per-channel epoch/rev
+ * resume hints ride each channel's own `join`, so a reconnect redials ONE socket and
+ * re-establishes every observer and channel.
  *
  * REFUSAL SCOPE (CONTRACTS-ready). A refusal closes the whole SOCKET when it invalidates
  * the credential or the framing itself: 4401 bad token · 4403 forbidden/revoked · 4409
- * protocol mismatch · 4002 malformed frame, non-join first frame, duplicate `ch`, or an
- * idle connection holding no channels. It closes ONE CHANNEL — a `channel_closed` frame,
- * socket untouched — when it concerns one room: 4404 unknown or deleted container · 4429
- * channel cap reached · 1009 that room's state exceeding the transport ceiling · 1013
- * that channel's outbound queue overflowing. Killing a whole tab because one portal
- * pointed at a deleted container is precisely the blast radius multiplexing exists to remove.
+ * protocol mismatch · 4002 malformed frame, non-handshake first frame, duplicate `observe`,
+ * duplicate `ch`, or a connection holding neither an observer nor a channel. It closes ONE
+ * CHANNEL — a `channel_closed` frame, socket untouched — when it concerns one room: 4404
+ * unknown or deleted container · 4429 channel cap reached · 1009 that room's state exceeding
+ * the transport ceiling · 1013 that channel's outbound queue overflowing. Killing a whole
+ * tab because one portal pointed at a deleted container is precisely the blast radius
+ * multiplexing exists to remove.
  */
 
 /** Every base64 field on this wire, bounded once: doc updates and terminal bytes alike. */
@@ -319,12 +324,17 @@ const ClientPongSchema = z.strictObject({ type: z.literal("pong") });
  * plane into an oracle answering "does this node exist and may I read it?" one probe at a
  * time. A client learns its authority from `selfCaps`, never by subscribing.
  *
- * Ordering is the socket's: the credential arrives on `join`, so a `subscribe` before the
- * first join has nothing to authorize against and is refused with the frame grammar's
- * existing 4002. A socket holding subscriptions is NOT idle, however many channels it has
- * left.
+ * Ordering is the socket's: the credential arrives on `join` or `observe`, so a
+ * `subscribe` before the first handshake has nothing to authorize against and is refused
+ * with the frame grammar's existing 4002. A roomless observer may hold subscriptions.
  */
 export const CLIENT_CONNECTION_BODIES = {
+  /** Authenticates a connection that needs workspace frames and event subscriptions, but no room. */
+  observe: z.strictObject({
+    type: z.literal("observe"),
+    token: z.string().min(1),
+    protocolVersion: z.number().int().positive(),
+  }),
   ...STREAM_CLIENT_BODIES,
   subscribe: z.strictObject({
     type: z.literal("subscribe"),
@@ -356,6 +366,7 @@ export const ClientMessageBodySchema = z.discriminatedUnion("type", [
   CLIENT_BODIES.terminal_resize,
   CLIENT_BODIES.terminal_take,
   CLIENT_BODIES.terminal_kill,
+  CLIENT_CONNECTION_BODIES.observe,
   ClientPongSchema,
   CLIENT_CONNECTION_BODIES.subscribe,
   CLIENT_CONNECTION_BODIES.unsubscribe,
@@ -380,6 +391,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   channelized(CLIENT_BODIES.terminal_resize),
   channelized(CLIENT_BODIES.terminal_take),
   channelized(CLIENT_BODIES.terminal_kill),
+  CLIENT_CONNECTION_BODIES.observe,
   ClientPongSchema,
   // Connection-level: identical in both unions, because a frame with no `ch` IS its body.
   CLIENT_CONNECTION_BODIES.subscribe,
@@ -552,6 +564,8 @@ const ServerPingSchema = z.strictObject({ type: z.literal("ping") });
  * bare literal beside it rather than joining the table: it has no body to parse.
  */
 export const CONNECTION_BODIES = {
+  /** Acknowledges a roomless observer after its credential and protocol version are accepted. */
+  observed: z.strictObject({ type: z.literal("observed") }),
   /**
    * Server-issued correlation for this physical socket. It arrives before any room join,
    * so a refusal before `init` still has an identifier the browser can show an operator.
@@ -615,6 +629,7 @@ export const ServerMessageBodySchema = z.discriminatedUnion("type", [
   SERVER_BODIES.saved,
   SERVER_BODIES.error,
   SERVER_BODIES.channel_closed,
+  CONNECTION_BODIES.observed,
   ServerPingSchema,
   CONNECTION_BODIES.session,
   CONNECTION_BODIES.plugins,
@@ -643,6 +658,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   channelized(SERVER_BODIES.saved),
   channelized(SERVER_BODIES.error),
   channelized(SERVER_BODIES.channel_closed),
+  CONNECTION_BODIES.observed,
   ServerPingSchema,
   // Connection-level: identical in both unions, because a frame with no `ch` IS its body.
   CONNECTION_BODIES.session,
@@ -680,6 +696,7 @@ export type ServerEvent = Extract<ServerMessageBody, { type: "event" }>;
  * in both directions.
  */
 export const SERVER_MESSAGE_TYPES = [
+  "observed",
   "init",
   "resync",
   "doc_update",
@@ -707,6 +724,7 @@ export const SERVER_MESSAGE_TYPES = [
 ] as const satisfies readonly ServerMessage["type"][];
 
 export const CLIENT_MESSAGE_TYPES = [
+  "observe",
   "join",
   "leave",
   "doc_update",
@@ -729,13 +747,15 @@ export const CLIENT_MESSAGE_TYPES = [
 ] as const satisfies readonly ClientMessage["type"][];
 
 /**
- * Frames that carry no `ch`: the socket's own liveness pair, plus every frame that describes
- * the CONNECTION's world rather than a room's — the plugin roster, and the event plane's
- * subscription pair and notification. Routing reads this to tell a connection-level frame
- * from a channel-level one without a second discriminator, and a channel handle is never
+ * Frames that carry no `ch`: the socket's handshake/liveness pair, plus every frame that
+ * describes the CONNECTION's world rather than a room's — the plugin roster, and the event
+ * plane's subscription pair and notification. Routing reads this to tell a connection-level
+ * frame from a channel-level one without a second discriminator, and a channel handle is never
  * handed one of these.
  */
 export const CONNECTION_LEVEL_MESSAGE_TYPES = [
+  "observe",
+  "observed",
   "ping",
   "pong",
   "session",
