@@ -358,7 +358,9 @@ export const JobRequestSchema = z.strictObject({
   traceId: id,
   requestDigest: hash,
   /** Native terminal admission only; never accepted by ordinary job execute input. */
-  terminal: z.strictObject({ terminalId: id, terminalHostId: id, containerId: id, runId: id.optional() }).optional(),
+  terminal: z
+    .strictObject({ terminalId: id, terminalHostId: id, containerId: id, runId: id.optional() })
+    .optional(),
   /** Native durable-service admission only; no browser or worker can choose this origin. */
   service: z
     .strictObject({ serviceId: component, revision: component, policySha256: hash })
@@ -669,11 +671,13 @@ export const JobStartCommandSchema = z.strictObject({
   request: JobRequestSchema,
   permit: JobPermitSchema,
   /** Private native launch carrier: excluded from the durable request, runtime and journal. */
-  privateEnv: z.strictObject({
-    MANIFOLD_RUN_TOKEN: z.string().min(1).max(4096),
-    MANIFOLD_RUN_ID: id,
-    MANIFOLD_ORIGIN: z.url().max(4096),
-  }).optional(),
+  privateEnv: z
+    .strictObject({
+      MANIFOLD_RUN_TOKEN: z.string().min(1).max(4096),
+      MANIFOLD_RUN_ID: id,
+      MANIFOLD_ORIGIN: z.url().max(4096),
+    })
+    .optional(),
 });
 export const JobCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({

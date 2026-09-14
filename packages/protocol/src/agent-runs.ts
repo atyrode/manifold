@@ -2,20 +2,28 @@ import { z } from "zod";
 import { CapSchema } from "./capabilities.ts";
 import { GrantNodeSchema, GrantReachSchema } from "./grants.ts";
 import {
-  AgentIdSchema, AgentRunCapsSchema, AgentCredentialSchema, AgentDelegationSchema,
-  HarnessTargetSchema, SessionRefSchema, RunModelSchema, RunActivitySchema,
-  AGENT_RUN_MAX_DEPTH, AGENT_RUN_MAX_DESCENDANTS, AGENT_RUN_MAX_RENEWALS,
-  AGENT_RUN_MAX_LIFETIME_MS, AGENT_RUN_MAX_PURPOSE_LENGTH,
-  AGENT_RUN_MAX_TASK_REFERENCE_LENGTH, AGENT_RUN_MAX_POLICY_BUNDLES,
+  AgentIdSchema,
+  AgentRunCapsSchema,
+  AgentCredentialSchema,
+  AgentDelegationSchema,
+  HarnessTargetSchema,
+  SessionRefSchema,
+  RunModelSchema,
+  RunActivitySchema,
+  AGENT_RUN_MAX_DEPTH,
+  AGENT_RUN_MAX_DESCENDANTS,
+  AGENT_RUN_MAX_RENEWALS,
+  AGENT_RUN_MAX_LIFETIME_MS,
+  AGENT_RUN_MAX_PURPOSE_LENGTH,
+  AGENT_RUN_MAX_TASK_REFERENCE_LENGTH,
+  AGENT_RUN_MAX_POLICY_BUNDLES,
   AGENT_RUN_MAX_POLICY_BODY_BYTES,
 } from "./agents.ts";
 import { TerminalRuntimeSchema } from "./jobs.ts";
 import { PrincipalSchema } from "./principal.ts";
 
-
 const AgentRunIdSchema = z.string().min(1).max(128);
 const PolicyDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
-
 
 export const AGENT_RUN_STATES = [
   "pending_policy",
@@ -129,7 +137,10 @@ export const CreateRunResultSchema = z.strictObject({
 export type CreateRunResult = z.infer<typeof CreateRunResultSchema>;
 export const CreateRunCredentialResultSchema = CreateRunResultSchema.required({ credential: true });
 export type CreateRunCredentialResult = z.infer<typeof CreateRunCredentialResultSchema>;
-export const LaunchRunRequestSchema = z.strictObject({ runId: AgentRunIdSchema, target: HarnessTargetSchema.optional() });
+export const LaunchRunRequestSchema = z.strictObject({
+  runId: AgentRunIdSchema,
+  target: HarnessTargetSchema.optional(),
+});
 export type LaunchRunRequest = z.infer<typeof LaunchRunRequestSchema>;
 export const LaunchRunResultSchema = z.strictObject({
   runtime: TerminalRuntimeSchema,
@@ -139,7 +150,8 @@ export const LaunchRunResultSchema = z.strictObject({
 });
 export type LaunchRunResult = z.infer<typeof LaunchRunResultSchema>;
 export const SendRunInputRequestSchema = z.strictObject({
-  runId: AgentRunIdSchema, input: z.string().min(1).max(65_536),
+  runId: AgentRunIdSchema,
+  input: z.string().min(1).max(65_536),
 });
 export type SendRunInputRequest = z.infer<typeof SendRunInputRequestSchema>;
 export const SendRunInputResultSchema = z.strictObject({});

@@ -13,7 +13,11 @@ import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
 import type { Socket } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
-import { MachineLocationSchema, MachineOperationSchema, JobStartCommandSchema } from "@manifold/protocol";
+import {
+  MachineLocationSchema,
+  MachineOperationSchema,
+  JobStartCommandSchema,
+} from "@manifold/protocol";
 import {
   ownsWorkloadLoopbackConnection,
   ownsWorkloadLoopbackListener,

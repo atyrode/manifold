@@ -235,31 +235,61 @@ describe("governed event disclosure", () => {
       const collection: ManifoldRef = { kind: "plugin", pluginId: "core.access" };
       subscribe(fixture, "agent-sponsor", [collection]);
       subscribe(fixture, "agent-stranger", [collection]);
-      const registered = fixture.auth.registerAgent({
-        name: "private profile", purpose: "Inspect", harness: "external", context: { profile: {} },
-        grant: {
-          caps: ["containers:read"], targets: ["manifold://"], reach: "subtree",
-          maxRunLifetimeMs: 60_000, delegation: { maxDepth: 0, maxDescendants: 0 }, expiresAt: 120_000,
+      const registered = fixture.auth.registerAgent(
+        {
+          name: "private profile",
+          purpose: "Inspect",
+          harness: "external",
+          context: { profile: {} },
+          grant: {
+            caps: ["containers:read"],
+            targets: ["manifold://"],
+            reach: "subtree",
+            maxRunLifetimeMs: 60_000,
+            delegation: { maxDepth: 0, maxDescendants: 0 },
+            expiresAt: 120_000,
+          },
         },
-      }, sponsor);
-      expect(eventsOn(sponsorSocket).map((event) => [event.kind, event.payload, event.actor])).toEqual([["agent_changed", {}, null]]);
+        sponsor,
+      );
+      expect(
+        eventsOn(sponsorSocket).map((event) => [event.kind, event.payload, event.actor]),
+      ).toEqual([["agent_changed", {}, null]]);
       expect(eventsOn(strangerSocket)).toEqual([]);
       const runner = fixture.auth.authenticate(registered.credential!.token);
-      const admitted = CreateRunCredentialResultSchema.parse(fixture.auth.createRun({
-        agentId: registered.agent.agentId, lifetimeMs: 60_000,
-      }, runner));
+      const admitted = CreateRunCredentialResultSchema.parse(
+        fixture.auth.createRun(
+          {
+            agentId: registered.agent.agentId,
+            lifetimeMs: 60_000,
+          },
+          runner,
+        ),
+      );
       const actor = fixture.auth.authenticate(admitted.credential.token);
       const policy = fixture.auth.agentPolicyChallenge(actor);
-      fixture.auth.acknowledgeAgentPolicy({
-        revision: policy.revision, acknowledgements: policy.required.map(({ id, digest }) => ({ id, digest })),
-      }, actor);
+      fixture.auth.acknowledgeAgentPolicy(
+        {
+          revision: policy.revision,
+          acknowledgements: policy.required.map(({ id, digest }) => ({ id, digest })),
+        },
+        actor,
+      );
       const runSocket = connect(fixture, "agent-run", { token: admitted.credential.token });
       subscribe(fixture, "agent-run", [{ kind: "run", runId: admitted.run.id }]);
-      subscribe(fixture, "agent-stranger", [{ kind: "agent", agentId: registered.agent.agentId }, { kind: "run", runId: admitted.run.id }]);
+      subscribe(fixture, "agent-stranger", [
+        { kind: "agent", agentId: registered.agent.agentId },
+        { kind: "run", runId: admitted.run.id },
+      ]);
       sponsorSocket.clear();
       fixture.auth.reportRunActivity({ runId: admitted.run.id, activity: "blocked" }, runner);
-      expect(eventsOn(sponsorSocket).map((event) => event.kind)).toEqual(["agent_changed", "run_changed"]);
-      expect(eventsOn(runSocket).map((event) => [event.kind, event.payload])).toEqual([["run_changed", {}]]);
+      expect(eventsOn(sponsorSocket).map((event) => event.kind)).toEqual([
+        "agent_changed",
+        "run_changed",
+      ]);
+      expect(eventsOn(runSocket).map((event) => [event.kind, event.payload])).toEqual([
+        ["run_changed", {}],
+      ]);
       expect(eventsOn(strangerSocket)).toEqual([]);
       runSocket.clear();
       fixture.auth.finishAgentRun({ runId: admitted.run.id, outcome: "completed" }, sponsor);

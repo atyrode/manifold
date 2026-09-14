@@ -15,16 +15,13 @@ import {
 } from "@manifold/scene";
 import { AuthService, ServiceError } from "../src/auth.ts";
 import { openDatabase, SCHEMA_VERSION } from "../src/db.ts";
+import { JOB_SCHEDULE_SCHEMA_SQL } from "../src/job-schedules.ts";
 import { migrateToGrantRows } from "../src/migrate-grants.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 import { FakeRuntime } from "./helpers.ts";
 
-const LEGACY_JOB_INVOCATION_EDGES = `
-CREATE TABLE job_invocation_edges(
- caller TEXT NOT NULL, operation_id TEXT NOT NULL, edge TEXT NOT NULL, enabled INTEGER NOT NULL,
- PRIMARY KEY(caller,operation_id)
-);
-`;
+const LEGACY_TOKEN_COLUMNS =
+  "id, hash, principal_id, caps, container_id, created_at, revoked_at, minted_by, grant_id, expires_at";
 
 test("an event write survives a competing SQLite write lock", async () => {
   const dir = mkdtempSync(join(tmpdir(), "manifold-db-busy-"));
@@ -1105,6 +1102,7 @@ describe("pre-migration snapshot retention", () => {
         "manifold.db.pre-v19.bak",
         "manifold.db.pre-v23.bak",
         "manifold.db.pre-v24.bak",
+        "manifold.db.pre-v37.bak",
         "manifold.db.pre-v9.bak",
       ]);
 
@@ -1117,6 +1115,7 @@ describe("pre-migration snapshot retention", () => {
       expect(snapshotVersion(`${path}.pre-v19.bak`)).toBe("18");
       expect(snapshotVersion(`${path}.pre-v23.bak`)).toBe("22");
       expect(snapshotVersion(`${path}.pre-v24.bak`)).toBe("23");
+      expect(snapshotVersion(`${path}.pre-v37.bak`)).toBe("36");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1163,6 +1162,7 @@ describe("pre-migration snapshot retention", () => {
         "manifold.db.pre-v19.bak",
         "manifold.db.pre-v23.bak",
         "manifold.db.pre-v24.bak",
+        "manifold.db.pre-v37.bak",
         "manifold.db.pre-v9.bak",
       ]);
       // And the survivor is the RETRY's image, not the failed attempt's — the stray table the
@@ -1224,10 +1224,15 @@ describe("migration 18: an install row's published doors", () => {
       const seed = new Database(path, { create: true, strict: true });
       seed.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER);
+CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER,
+  principal_id TEXT, type TEXT, payload TEXT,
+  door TEXT, authority TEXT, targets TEXT, outcome TEXT, session TEXT);
 CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER);
-CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT);
-CREATE TABLE terminals(agent_principal_id TEXT, status TEXT);
+CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT, name TEXT, color TEXT,
+  created_at INTEGER, origin TEXT);
+CREATE TABLE terminals(id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT,
+  created_by TEXT, status TEXT, exit_code INTEGER, created_at INTEGER,
+  agent_principal_id TEXT, name TEXT);
 CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INTEGER NOT NULL,
   ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
   PRIMARY KEY (container_id, epoch, rev));
@@ -1268,11 +1273,16 @@ describe("migration 21: the runner an install was verified against", () => {
       const seed = new Database(path, { create: true, strict: true });
       seed.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER);
+CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER,
+  principal_id TEXT, type TEXT, payload TEXT,
+  door TEXT, authority TEXT, targets TEXT, outcome TEXT, session TEXT);
 CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER,
   owner_host_id TEXT, draining INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT);
-CREATE TABLE terminals(agent_principal_id TEXT, status TEXT);
+CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT, name TEXT, color TEXT,
+  created_at INTEGER, origin TEXT);
+CREATE TABLE terminals(id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT,
+  created_by TEXT, status TEXT, exit_code INTEGER, created_at INTEGER,
+  agent_principal_id TEXT, name TEXT);
 CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INTEGER NOT NULL,
   ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
   PRIMARY KEY (container_id, epoch, rev));
@@ -1349,8 +1359,11 @@ CREATE TABLE plugin_installs(
 ) WITHOUT ROWID;
 CREATE TABLE plugin_kv(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
   PRIMARY KEY (plugin_id, key)) WITHOUT ROWID;
-CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT);
-CREATE TABLE terminals(agent_principal_id TEXT, status TEXT);
+CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT, name TEXT, color TEXT,
+  created_at INTEGER, origin TEXT);
+CREATE TABLE terminals(id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT,
+  created_by TEXT, status TEXT, exit_code INTEGER, created_at INTEGER,
+  agent_principal_id TEXT, name TEXT);
 INSERT INTO meta(key, value) VALUES ('schema_version', '18');
 `);
   seedPostV16Authority(db, path);
@@ -1723,10 +1736,16 @@ test("migration 23: canvas draw retains storage, reservations and disable attrib
   try {
     db.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER);
-CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT);
-CREATE TABLE machines(id TEXT PRIMARY KEY, token_id TEXT);
-CREATE TABLE terminals(agent_principal_id TEXT, status TEXT);
+CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER,
+  principal_id TEXT, type TEXT, payload TEXT,
+  door TEXT, authority TEXT, targets TEXT, outcome TEXT, session TEXT);
+CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT, name TEXT, color TEXT,
+  created_at INTEGER, origin TEXT);
+CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER,
+  owner_host_id TEXT, draining INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE terminals(id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT,
+  created_by TEXT, status TEXT, exit_code INTEGER, created_at INTEGER,
+  agent_principal_id TEXT, name TEXT);
 CREATE TABLE plugin_kv(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
   PRIMARY KEY (plugin_id, key)) WITHOUT ROWID;
 ${LEGACY_PLUGIN_INSTALLS}
@@ -1835,10 +1854,7 @@ CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INT
   PRIMARY KEY(container_id, epoch, rev));
 CREATE TABLE plugin_kv(plugin_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
   PRIMARY KEY(plugin_id, key)) WITHOUT ROWID;
-CREATE TABLE plugin_installs(plugin_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL,
-  source TEXT NOT NULL, granted_caps TEXT NOT NULL, installed_by TEXT NOT NULL,
-  installed_at INTEGER NOT NULL, bundle_path TEXT NOT NULL, actions TEXT NOT NULL DEFAULT '[]',
-  hardened INTEGER NOT NULL DEFAULT 0, mode TEXT NOT NULL DEFAULT 'bundle') WITHOUT ROWID;
+${LEGACY_PLUGIN_INSTALLS}
 `);
   db.query("INSERT INTO meta VALUES ('schema_version', ?)").run(String(version));
   seedPostV16Authority(db, path);
@@ -1948,7 +1964,9 @@ INSERT INTO machines(id, name, token_id, last_seen) VALUES
   ('enrolled-machine', 'two', 'enrolled-machine', 1);
 `);
       const before = db
-        .query<Record<string, unknown>, []>("SELECT * FROM tokens ORDER BY id")
+        .query<Record<string, unknown>, []>(
+          `SELECT ${LEGACY_TOKEN_COLUMNS} FROM tokens ORDER BY id`,
+        )
         .all();
       const grantsBefore = db.query("SELECT * FROM grants ORDER BY id").all();
       db.close();
@@ -1959,7 +1977,7 @@ INSERT INTO machines(id, name, token_id, last_seen) VALUES
         agent: agentDeadline,
         exited: agentDeadline,
       };
-      expect(db.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(
+      expect(db.query(`SELECT ${LEGACY_TOKEN_COLUMNS} FROM tokens ORDER BY id`).all()).toEqual(
         before.map((row) => ({
           ...row,
           expires_at: deadlines[row.id as string] ?? row.expires_at,
@@ -1968,7 +1986,9 @@ INSERT INTO machines(id, name, token_id, last_seen) VALUES
       expect(db.query("SELECT * FROM grants ORDER BY id").all()).toEqual(grantsBefore);
       const backup = new Database(`${path}.pre-v24.bak`, { readonly: true, strict: true });
       try {
-        expect(backup.query("SELECT * FROM tokens ORDER BY id").all()).toEqual(before);
+        expect(
+          backup.query(`SELECT ${LEGACY_TOKEN_COLUMNS} FROM tokens ORDER BY id`).all(),
+        ).toEqual(before);
         expect(backup.query("SELECT * FROM grants ORDER BY id").all()).toEqual(grantsBefore);
         expect(backup.query("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
           value: "23",
@@ -2076,9 +2096,9 @@ INSERT INTO containers(id, name, created_at, sort_order, discipline) VALUES
   ('composition', 'Existing composition', 4, 8, 'composition');
 INSERT INTO scene_docs VALUES ('canvas', 'epoch', 1, 5, 'retained-hash', X'01020304');
 `);
+    const tokensBefore = db.query(`SELECT ${LEGACY_TOKEN_COLUMNS} FROM tokens`).all();
     const before = {
       principals: db.query("SELECT * FROM principals").all(),
-      tokens: db.query("SELECT * FROM tokens").all(),
       grants: db.query("SELECT * FROM grants").all(),
       containers: db.query("SELECT * FROM containers").all(),
       scene_docs: db.query("SELECT * FROM scene_docs").all(),
@@ -2091,6 +2111,7 @@ INSERT INTO scene_docs VALUES ('canvas', 'epoch', 1, 5, 'retained-hash', X'01020
     for (const [table, rows] of Object.entries(before)) {
       expect(db.query(`SELECT * FROM ${table}`).all()).toEqual(rows);
     }
+    expect(db.query(`SELECT ${LEGACY_TOKEN_COLUMNS} FROM tokens`).all()).toEqual(tokensBefore);
     expect(db.query("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
       value: String(SCHEMA_VERSION),
     });
@@ -2114,7 +2135,8 @@ VALUES ('job-1', 'machine', 'vendor.worker', 'digest', '{}', 'admitted', 6,
 INSERT INTO machine_job_outputs VALUES ('manifold://job/job-1', 'job-1', 'vendor.worker', '{}', 0);
 INSERT INTO job_schedules(schedule_id, revision, spec, next_nominal)
 VALUES ('schedule-1', '1', '{}', 100);
-INSERT INTO job_schedule_occurrences VALUES ('schedule-1', '1', 100, 'job-1', '{}', 200, 'admitted', NULL);
+INSERT INTO job_schedule_occurrences(schedule_id, revision, nominal, job_id, request, deadline, state, reason)
+VALUES ('schedule-1', '1', 100, 'job-1', '{}', 200, 'admitted', NULL);
 INSERT INTO job_invocation_reservations VALUES ('parent', 'invocation', 'job-1', 'root', 1, '{}', '{}', 1);
 INSERT INTO job_invocation_edges VALUES ('vendor.worker', 'run', '{}', 1, 'edge-1');
 UPDATE tokens SET revoked_at = 7 WHERE id = 'finite';
@@ -2187,13 +2209,18 @@ CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER,
   principal_id TEXT, type TEXT, payload TEXT,
   door TEXT, authority TEXT, targets TEXT, outcome TEXT, session TEXT);
+CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT, name TEXT, color TEXT,
+  created_at INTEGER, origin TEXT);
+CREATE TABLE terminals(id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT,
+  created_by TEXT, status TEXT, exit_code INTEGER, created_at INTEGER,
+  agent_principal_id TEXT, name TEXT);
 INSERT INTO meta VALUES ('schema_version', '26');
 CREATE TABLE machine_job_installs(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, enabled INTEGER NOT NULL, ready INTEGER NOT NULL DEFAULT 0, purge_requested INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(machine_id,plugin_id));
 CREATE TABLE machine_job_installations(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, PRIMARY KEY(machine_id,plugin_id,revision));
 CREATE TABLE machine_job_inputs(job_id TEXT NOT NULL, request_id TEXT NOT NULL, seq INTEGER NOT NULL, actor TEXT NOT NULL, trace_id TEXT NOT NULL, decision_id TEXT, state TEXT NOT NULL, reason TEXT, PRIMARY KEY(job_id,request_id));
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, digest TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, permit TEXT, result TEXT, created_at INTEGER NOT NULL, audit_origin TEXT, decision_id TEXT, cancel_reason TEXT, event_seq INTEGER NOT NULL DEFAULT 0, output_seq INTEGER, next_input_seq INTEGER, stdin_closed INTEGER NOT NULL DEFAULT 0);
 ${LEGACY_PLUGIN_INSTALLS}
-${LEGACY_JOB_INVOCATION_EDGES}
+${JOB_SCHEDULE_SCHEMA_SQL}
 INSERT INTO machine_job_installs VALUES ('machine', 'vendor.worker', 'install-2', 'artifact-2', '{}', 1, 1, 0);
 INSERT INTO machine_job_installations VALUES
   ('machine', 'vendor.worker', 'install-1', 'artifact-1', '{}'),
@@ -2202,6 +2229,7 @@ INSERT INTO machine_job_inputs VALUES
   ('job', 'accepted', 1, 'actor', 'trace', 'decision', 'accepted', NULL),
   ('job', 'unknown', 2, 'actor', 'trace', 'decision', 'unknown', 'job_input_delivery_unknown');
 `);
+    seedPostV16Authority(db, path);
     const installs = db
       .query<Record<string, string | number>, []>("SELECT * FROM machine_job_installs")
       .all();
@@ -2285,24 +2313,29 @@ CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER,
   principal_id TEXT, type TEXT, payload TEXT,
   door TEXT, authority TEXT, targets TEXT, outcome TEXT, session TEXT);
+CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT, name TEXT, color TEXT,
+  created_at INTEGER, origin TEXT);
+CREATE TABLE terminals(id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT,
+  created_by TEXT, status TEXT, exit_code INTEGER, created_at INTEGER,
+  agent_principal_id TEXT, name TEXT);
 INSERT INTO meta VALUES ('schema_version', '28');
-CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, cancel_reason TEXT);
+CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, digest TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, permit TEXT, result TEXT, created_at INTEGER NOT NULL, audit_origin TEXT, decision_id TEXT, cancel_reason TEXT, event_seq INTEGER NOT NULL DEFAULT 0, output_seq INTEGER, next_input_seq INTEGER, stdin_closed INTEGER NOT NULL DEFAULT 0, owner_closed INTEGER NOT NULL DEFAULT 0 CHECK(owner_closed IN (0,1)));
 ${LEGACY_PLUGIN_INSTALLS}
-${LEGACY_JOB_INVOCATION_EDGES}
-INSERT INTO machine_jobs VALUES
-  ('legacy', 'instance_service_configuration_changed'),
-  ('active', NULL);
+${JOB_SCHEDULE_SCHEMA_SQL}
+INSERT INTO machine_jobs(job_id, machine_id, plugin_id, digest, request, state, created_at, cancel_reason) VALUES
+  ('legacy', 'machine', 'vendor.worker', 'legacy-digest', '{}', 'started', 1, 'instance_service_configuration_changed'),
+  ('active', 'machine', 'vendor.worker', 'active-digest', '{}', 'started', 2, NULL);
 `);
+    seedPostV16Authority(db, path);
+    const jobsBefore = db
+      .query<Record<string, unknown>, []>("SELECT * FROM machine_jobs ORDER BY job_id")
+      .all();
+    const legacyColumns = Object.keys(jobsBefore[0]!).join(",");
     db.close();
     db = openDatabase(path);
-    expect(db.query("SELECT * FROM machine_jobs ORDER BY job_id").all()).toEqual([
-      { job_id: "active", cancel_reason: null, cancel_mode: "cancel" },
-      {
-        job_id: "legacy",
-        cancel_reason: "instance_service_configuration_changed",
-        cancel_mode: "cancel",
-      },
-    ]);
+    expect(
+      db.query(`SELECT ${legacyColumns},cancel_mode FROM machine_jobs ORDER BY job_id`).all(),
+    ).toEqual(jobsBefore.map((row) => ({ ...row, cancel_mode: "cancel" })));
     db.close();
     db = openDatabase(path);
     expect(db.query("SELECT cancel_mode FROM machine_jobs WHERE job_id='legacy'").get()).toEqual({
@@ -2319,6 +2352,7 @@ test("migration 34 preserves edge authority and retires reviews that never displ
   const path = join(dir, "manifold.db");
   let db = openDatabase(path);
   try {
+    // Remove every post-v33 addition so migration 35 recreates the pre-v37 run schema.
     db.exec(`
 ALTER TABLE job_invocation_edges DROP COLUMN revision;
 INSERT INTO job_invocation_edges VALUES ('caller-a','callee','{"maxDepth":1}',1);
@@ -2330,6 +2364,21 @@ INSERT INTO machine_job_deployment_targets(deployment_id,machine_id,plugin_id,ph
  VALUES ('old-review','machine','plugin','pending');
 DROP TABLE agent_run_policy_snapshots;
 DROP TABLE agent_runs;
+DROP INDEX tokens_runner_agent;
+DROP INDEX tokens_agent_run;
+DROP INDEX events_agent_run;
+DROP INDEX machine_jobs_agent_run;
+DROP INDEX job_schedule_occurrences_agent_run;
+DROP INDEX terminals_agent_run;
+ALTER TABLE tokens DROP COLUMN runner_agent_id;
+ALTER TABLE tokens DROP COLUMN run_id;
+ALTER TABLE events DROP COLUMN run_id;
+ALTER TABLE events DROP COLUMN credential_id;
+ALTER TABLE machine_jobs DROP COLUMN run_id;
+ALTER TABLE job_schedule_occurrences DROP COLUMN run_id;
+ALTER TABLE terminals DROP COLUMN run_id;
+DROP TABLE agents;
+DELETE FROM meta WHERE key='agent-runs:declarations-after-event-id';
 UPDATE meta SET value='33' WHERE key='schema_version';
 `);
     const authority = db

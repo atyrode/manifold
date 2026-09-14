@@ -7,7 +7,14 @@ import type {
   ServiceDescription,
 } from "@manifold/plugin";
 import type { ServerHarness } from "@manifold/plugin";
-export type { ServerHarness, Agent, AgentRun, HarnessTarget, SessionRef, TerminalRuntime } from "@manifold/plugin";
+export type {
+  ServerHarness,
+  Agent,
+  AgentRun,
+  HarnessTarget,
+  SessionRef,
+  TerminalRuntime,
+} from "@manifold/plugin";
 import {
   EventKindSchema,
   EventPayloadSchema,

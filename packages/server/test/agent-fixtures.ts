@@ -8,7 +8,10 @@ import {
 } from "@manifold/protocol";
 import type { AuthContext, AuthService } from "../src/auth.ts";
 
-export interface ExternalRunFixtureInput extends Omit<CreateRunRequest, "agentId" | "delegation" | "target"> {
+export interface ExternalRunFixtureInput extends Omit<
+  CreateRunRequest,
+  "agentId" | "delegation" | "target"
+> {
   name: string;
   purpose: string;
   target: string;
@@ -35,28 +38,37 @@ export function createExternalRun(
     maxDepth: maxDepth ?? AGENT_RUN_MAX_DEPTH,
     maxDescendants: maxDescendants ?? AGENT_RUN_MAX_DESCENDANTS,
   };
-  const registered = fixture.auth.registerAgent({
-    name,
-    purpose,
-    harness: "external",
-    grant: {
-      caps: input.caps,
-      targets: [input.target],
-      reach: input.reach,
-      maxRunLifetimeMs: AGENT_RUN_MAX_LIFETIME_MS,
-      delegation,
-      expiresAt: Math.min(
-        fixture.runtime.now() + AGENT_RUN_MAX_LIFETIME_MS,
-        sponsor.expiresAt ?? Number.POSITIVE_INFINITY,
-      ),
+  const registered = fixture.auth.registerAgent(
+    {
+      name,
+      purpose,
+      harness: "external",
+      grant: {
+        caps: input.caps,
+        targets: [input.target],
+        reach: input.reach,
+        maxRunLifetimeMs: AGENT_RUN_MAX_LIFETIME_MS,
+        delegation,
+        expiresAt: Math.min(
+          fixture.runtime.now() + AGENT_RUN_MAX_LIFETIME_MS,
+          sponsor.expiresAt ?? Number.POSITIVE_INFINITY,
+        ),
+      },
+      context: { profile: {} },
     },
-    context: { profile: {} },
-  }, sponsor);
-  if (registered.credential === undefined) throw new Error("fixture Agent must be newly registered");
+    sponsor,
+  );
+  if (registered.credential === undefined)
+    throw new Error("fixture Agent must be newly registered");
   const runner = fixture.auth.authenticate(registered.credential.token);
-  return CreateRunCredentialResultSchema.parse(fixture.auth.createRun({
-    ...narrowing,
-    agentId: registered.agent.agentId,
-    delegation,
-  }, runner));
+  return CreateRunCredentialResultSchema.parse(
+    fixture.auth.createRun(
+      {
+        ...narrowing,
+        agentId: registered.agent.agentId,
+        delegation,
+      },
+      runner,
+    ),
+  );
 }

@@ -1063,7 +1063,8 @@ export class SessionGateway {
         const peer = channel.peer;
         if (peer.auth.principal.id !== principalId) continue;
         if (containerId !== null && peer.auth.containerScope !== containerId) continue;
-        if (this.auth.restoreCredential(this.auth.credentialReference(peer.auth)) !== null) continue;
+        if (this.auth.restoreCredential(this.auth.credentialReference(peer.auth)) !== null)
+          continue;
         fenced = true;
         break;
       }

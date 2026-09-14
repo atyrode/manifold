@@ -66,19 +66,42 @@ function restorePreCutoverSchema(f: Fixture): void {
     f.store.db.exec(`
       DELETE FROM grants WHERE id IN (SELECT grant_id FROM tokens WHERE runner_agent_id IS NOT NULL);
       DELETE FROM tokens WHERE runner_agent_id IS NOT NULL;
-      DROP INDEX agent_runs_agent;
-      DROP INDEX agent_runs_principal;
       DROP INDEX tokens_runner_agent;
       DROP INDEX tokens_agent_run;
       DROP INDEX events_agent_run;
       DROP INDEX machine_jobs_agent_run;
       DROP INDEX job_schedule_occurrences_agent_run;
       DROP INDEX terminals_agent_run;
-      ALTER TABLE agent_runs DROP COLUMN agent_id;
-      ALTER TABLE agent_runs DROP COLUMN session;
-      ALTER TABLE agent_runs DROP COLUMN model;
-      ALTER TABLE agent_runs DROP COLUMN activity;
-      CREATE UNIQUE INDEX agent_runs_legacy_principal ON agent_runs(principal_id);
+      CREATE TABLE agent_runs_v35(
+        id TEXT PRIMARY KEY,principal_id TEXT NOT NULL UNIQUE,root_run_id TEXT NOT NULL,parent_run_id TEXT,
+        authorized_by_principal_id TEXT NOT NULL,
+        authorization_path TEXT NOT NULL CHECK(authorization_path IN ('owner_key','principal')),
+        authorizer_token_id TEXT,authorizer_grant_id TEXT,authorizer_caps TEXT NOT NULL,
+        authorizer_container_scope TEXT,authorizer_expires_at INTEGER,purpose TEXT NOT NULL,task_ref TEXT,
+        target TEXT NOT NULL,reach TEXT NOT NULL CHECK(reach IN ('node','subtree')),caps TEXT NOT NULL,
+        created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,renewals INTEGER NOT NULL,
+        max_depth INTEGER NOT NULL,max_descendants INTEGER NOT NULL,depth INTEGER NOT NULL,
+        cleanup_owner_principal_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN (
+          'pending_policy','active','policy_stale','completed','failed','cancelled','abandoned',
+          'expired','revoked','cleanup_failed'
+        )),
+        policy_revision TEXT NOT NULL,acknowledged_policy_revision TEXT,
+        cleanup_revoked_credentials INTEGER NOT NULL DEFAULT 0,
+        cleanup_revoked_grants INTEGER NOT NULL DEFAULT 0,finished_at INTEGER,cleanup_failure TEXT
+      );
+      INSERT INTO agent_runs_v35 SELECT
+        id,principal_id,root_run_id,parent_run_id,authorized_by_principal_id,
+        authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,
+        authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,
+        created_at,expires_at,renewals,max_depth,max_descendants,depth,
+        cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,
+        cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure
+      FROM agent_runs;
+      DROP TABLE agent_runs;
+      ALTER TABLE agent_runs_v35 RENAME TO agent_runs;
+      CREATE INDEX agent_runs_root_depth ON agent_runs(root_run_id,depth,id);
+      CREATE INDEX agent_runs_parent ON agent_runs(parent_run_id,id);
       ALTER TABLE tokens DROP COLUMN runner_agent_id;
       ALTER TABLE tokens DROP COLUMN run_id;
       ALTER TABLE events DROP COLUMN run_id;
@@ -93,7 +116,12 @@ function restorePreCutoverSchema(f: Fixture): void {
   });
 }
 
-function seedTrace(f: Fixture, actor: AuthContext, claim: string, id: string | null = null): string {
+function seedTrace(
+  f: Fixture,
+  actor: AuthContext,
+  claim: string,
+  id: string | null = null,
+): string {
   // Historical/imported fixture bytes, not a replacement for the dispatcher. Return
   // decimal text so the precision tests do not round through lastInsertRowid.
   const row = f.store.db
@@ -123,8 +151,7 @@ describe("agent declaration provenance cutover", () => {
     let f = fixture(path);
     try {
       const run = createRun(f);
-      const forged = seedTrace(f, run.actor, "Forged approval from legacy arguments",
-      "90",);
+      const forged = seedTrace(f, run.actor, "Forged approval from legacy arguments", "90");
       // The retained maximum must protect the boundary even if the sequence was lowered.
       f.store.db.exec("UPDATE sqlite_sequence SET seq=2 WHERE name='events'");
       restorePreCutoverSchema(f);
@@ -194,10 +221,8 @@ describe("agent declaration provenance cutover", () => {
     let f = fixture(path);
     try {
       const run = createRun(f);
-      const old = seedTrace(f, run.actor, "Untrusted retained claim",
-      "9007199254740993",);
-      const pruned = seedTrace(f, run.actor, "Untrusted pruned claim",
-      "9007199254740995",);
+      const old = seedTrace(f, run.actor, "Untrusted retained claim", "9007199254740993");
+      const pruned = seedTrace(f, run.actor, "Untrusted pruned claim", "9007199254740995");
       f.store.db.query("DELETE FROM events WHERE id=?").run(pruned);
       restorePreCutoverSchema(f);
       f.store.close();
@@ -243,8 +268,12 @@ describe("agent declaration provenance cutover", () => {
     const f = fixture(path);
     try {
       const run = createRun(f);
-      const last = seedTrace(f, run.actor, "Untrusted final historical claim",
-      "9223372036854775807",);
+      const last = seedTrace(
+        f,
+        run.actor,
+        "Untrusted final historical claim",
+        "9223372036854775807",
+      );
       restorePreCutoverSchema(f);
       // Upgrade the same database without authenticating again: authentication owns an
       // audit insert, which is itself impossible once the event sequence is exhausted.

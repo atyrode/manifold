@@ -167,14 +167,16 @@ export const ListRunsRequestSchema = z.strictObject({ agentId: AgentIdSchema.opt
 export type ListRunsRequest = z.infer<typeof ListRunsRequestSchema>;
 export const ListRunsResultSchema = AgentRunInventorySchema;
 export type ListRunsResult = z.infer<typeof ListRunsResultSchema>;
-export const InspectRunRequestSchema = z.strictObject({
-  runId: id,
-  beforeTraceId: traceId.optional(),
-  traceId: traceId.optional(),
-  limit: z.number().int().min(1).max(100).default(50),
-}).refine((input) => input.beforeTraceId === undefined || input.traceId === undefined, {
-  message: "name a trace or page cursor, not both",
-});
+export const InspectRunRequestSchema = z
+  .strictObject({
+    runId: id,
+    beforeTraceId: traceId.optional(),
+    traceId: traceId.optional(),
+    limit: z.number().int().min(1).max(100).default(50),
+  })
+  .refine((input) => input.beforeTraceId === undefined || input.traceId === undefined, {
+    message: "name a trace or page cursor, not both",
+  });
 export type InspectRunRequest = z.infer<typeof InspectRunRequestSchema>;
 export const InspectRunResultSchema = AgentRunInspectionSchema;
 export type InspectRunResult = z.infer<typeof InspectRunResultSchema>;

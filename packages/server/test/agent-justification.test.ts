@@ -149,12 +149,18 @@ describe("bound agent declarations", () => {
     await acknowledge(fix, actor);
     const created = CreateRunCredentialResultSchema.parse(
       result(
-        await fix.host.dispatch(actor, "core.access.createChildRun", {
-          ...childArgs,
-          runId: parent.run.id,
-        }, null, {
-          agentJustification: " \tDelegate\nread-only work.\u202e ",
-        }),
+        await fix.host.dispatch(
+          actor,
+          "core.access.createChildRun",
+          {
+            ...childArgs,
+            runId: parent.run.id,
+          },
+          null,
+          {
+            agentJustification: " \tDelegate\nread-only work.\u202e ",
+          },
+        ),
       ),
     );
     expect(JSON.parse(latestTrace(fix).payload).agentDeclaration).toBe("Delegate read-only work.");
@@ -285,12 +291,12 @@ describe("bound agent declarations", () => {
       caps: ["containers:read"],
     });
     const options = { agentJustification: "Inspect this suspended run." };
-    expect(
-      await fix.host.dispatch(actor, "core.access.listRuns", {}, null, options),
-    ).toMatchObject({
-      ok: true,
-      result: { runs: [{ id: created.run.id, state: "pending_policy" }] },
-    });
+    expect(await fix.host.dispatch(actor, "core.access.listRuns", {}, null, options)).toMatchObject(
+      {
+        ok: true,
+        result: { runs: [{ id: created.run.id, state: "pending_policy" }] },
+      },
+    );
     expect(JSON.parse(latestTrace(fix).payload).agentDeclaration).toBeUndefined();
     expect(
       await fix.host.dispatch(actor, "core.index.readContainer", { containerId }),
@@ -301,12 +307,12 @@ describe("bound agent declarations", () => {
       denial: { rule: "forbidden" },
     });
     fix.store.updateAgentRunPolicy(created.run.id, "0".repeat(64), "policy_stale");
-    expect(
-      await fix.host.dispatch(actor, "core.access.listRuns", {}, null, options),
-    ).toMatchObject({
-      ok: true,
-      result: { runs: [{ id: created.run.id, state: "policy_stale" }] },
-    });
+    expect(await fix.host.dispatch(actor, "core.access.listRuns", {}, null, options)).toMatchObject(
+      {
+        ok: true,
+        result: { runs: [{ id: created.run.id, state: "policy_stale" }] },
+      },
+    );
     expect(JSON.parse(latestTrace(fix).payload).agentDeclaration).toBeUndefined();
     expect(
       await fix.host.dispatch(actor, "core.index.readContainer", { containerId }),

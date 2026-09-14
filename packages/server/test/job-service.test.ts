@@ -4916,11 +4916,27 @@ describe("reviewed native deployment approvals", () => {
       f.store.db
         .query("UPDATE machine_job_deployments SET approval=? WHERE deployment_id=?")
         .run(canonicalJobJson(legacy), value.deploymentId);
+      // Remove every post-v33 addition so migration 35 recreates the pre-v37 run schema.
       f.store.db.exec(`
 UPDATE machine_job_deployment_targets SET receipt=json_extract(receipt,'$.consents');
 ALTER TABLE job_invocation_edges DROP COLUMN revision;
 DROP TABLE agent_run_policy_snapshots;
 DROP TABLE agent_runs;
+DROP INDEX tokens_runner_agent;
+DROP INDEX tokens_agent_run;
+DROP INDEX events_agent_run;
+DROP INDEX machine_jobs_agent_run;
+DROP INDEX job_schedule_occurrences_agent_run;
+DROP INDEX terminals_agent_run;
+ALTER TABLE tokens DROP COLUMN runner_agent_id;
+ALTER TABLE tokens DROP COLUMN run_id;
+ALTER TABLE events DROP COLUMN run_id;
+ALTER TABLE events DROP COLUMN credential_id;
+ALTER TABLE machine_jobs DROP COLUMN run_id;
+ALTER TABLE job_schedule_occurrences DROP COLUMN run_id;
+ALTER TABLE terminals DROP COLUMN run_id;
+DROP TABLE agents;
+DELETE FROM meta WHERE key='agent-runs:declarations-after-event-id';
 UPDATE meta SET value='33' WHERE key='schema_version';
 `);
       f.store.close();

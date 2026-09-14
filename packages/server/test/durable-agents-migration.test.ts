@@ -77,43 +77,111 @@ INSERT INTO principals VALUES ('sponsor','human','Sponsor','#112233',1,NULL),
       ["peer", "agent-c", null, "sponsor", "sponsor-token", "sponsor-grant", "revoked", 0],
       ["named", "agent-d", null, "sponsor", "sponsor-token", "sponsor-grant", "pending_policy", 0],
     ] as const) {
-      insertRun.run(id, principal, parent === null ? id : "root", parent, sponsor, token, grant,
-        caps, expiry + 60_000, caps, now, expiry, depth, state, revision,
+      insertRun.run(
+        id,
+        principal,
+        parent === null ? id : "root",
+        parent,
+        sponsor,
+        token,
+        grant,
+        caps,
+        expiry + 60_000,
+        caps,
+        now,
+        expiry,
+        depth,
+        state,
+        revision,
         state === "pending_policy" ? null : revision,
-        state === "completed" ? now + 20_000 : null, state === "completed" ? "cleanup receipt retained" : null);
-      db.query("INSERT INTO agent_run_policy_snapshots VALUES (?,?,?,?,?)").run(id, revision,
-        JSON.stringify([{ id: "operator", source: "operator", digest: revision, body: "Inspect safely." }]),
-        now, state === "pending_policy" ? null : now + 1);
+        state === "completed" ? now + 20_000 : null,
+        state === "completed" ? "cleanup receipt retained" : null,
+      );
+      db.query("INSERT INTO agent_run_policy_snapshots VALUES (?,?,?,?,?)").run(
+        id,
+        revision,
+        JSON.stringify([
+          { id: "operator", source: "operator", digest: revision, body: "Inspect safely." },
+        ]),
+        now,
+        state === "pending_policy" ? null : now + 1,
+      );
     }
-    db.query("INSERT INTO agent_run_policy_snapshots VALUES (?,?,?,?,?)").run("root", priorRevision,
-      JSON.stringify([{ id: "operator", source: "operator", digest: priorRevision, body: "Prior policy." }]), now - 10, now - 9);
+    db.query("INSERT INTO agent_run_policy_snapshots VALUES (?,?,?,?,?)").run(
+      "root",
+      priorRevision,
+      JSON.stringify([
+        { id: "operator", source: "operator", digest: priorRevision, body: "Prior policy." },
+      ]),
+      now - 10,
+      now - 9,
+    );
     for (const [id, principal, minter, revoked, grant] of [
       ["sponsor-token", "sponsor", "sponsor", null, "sponsor-grant"],
       ["root-old", "agent-a", "sponsor", now - 1, null],
       ["root-token", "agent-a", "sponsor", null, "root-grant"],
       ["child-token", "agent-b", "agent-a", now + 20_000, null],
     ] as const) {
-      db.query("INSERT INTO tokens VALUES (?,?,?,?,?,?,?,?,?,?)").run(id, sha256Hex(id), principal,
-        caps, null, now - 100, revoked, minter, grant, expiry);
-      if (grant !== null) db.query("INSERT INTO grants VALUES (?,?,?,?,?,?,?,?,?)").run(grant,
-        "principal", principal, "manifold://container/room", caps, "allow", "subtree", minter, now - 100);
+      db.query("INSERT INTO tokens VALUES (?,?,?,?,?,?,?,?,?,?)").run(
+        id,
+        sha256Hex(id),
+        principal,
+        caps,
+        null,
+        now - 100,
+        revoked,
+        minter,
+        grant,
+        expiry,
+      );
+      if (grant !== null)
+        db.query("INSERT INTO grants VALUES (?,?,?,?,?,?,?,?,?)").run(
+          grant,
+          "principal",
+          principal,
+          "manifold://container/room",
+          caps,
+          "allow",
+          "subtree",
+          minter,
+          now - 100,
+        );
     }
     for (const [id, principal, declaration, session] of [
       [42, "agent-a", "untrusted old claim", "root-connection"],
       [43, "agent-b", "trusted child claim", "child-connection"],
       [44, "sponsor", "unrelated claim", null],
-    ] as const) db.query("INSERT INTO events VALUES (?,NULL,?,?,'trace',?,'core.containers.list','containers:read','[]','ok',?)")
-      .run(id, now, principal, JSON.stringify({ agentDeclaration: declaration, privateDetail: "omitted" }), session);
+    ] as const)
+      db.query(
+        "INSERT INTO events VALUES (?,NULL,?,?,'trace',?,'core.containers.list','containers:read','[]','ok',?)",
+      ).run(
+        id,
+        now,
+        principal,
+        JSON.stringify({ agentDeclaration: declaration, privateDetail: "omitted" }),
+        session,
+      );
     const request = JSON.stringify({
-      machineId: "machine", pluginId: "core.terminals", operationId: "run", installationRevision: "install",
-      artifactSha256: sha256Hex("artifact"), traceId: "40",
+      machineId: "machine",
+      pluginId: "core.terminals",
+      operationId: "run",
+      installationRevision: "install",
+      artifactSha256: sha256Hex("artifact"),
+      traceId: "40",
       credential: { principalId: "agent-a", tokenId: "already-pruned-token" },
       terminal: { terminalId: "legacy-terminal" },
     });
-    db.query(`INSERT INTO machine_jobs(job_id,machine_id,plugin_id,digest,request,state,created_at)
-      VALUES ('legacy-job','machine','core.terminals','digest',?,'finished',?)`).run(request, now);
-    db.query("INSERT INTO job_schedule_occurrences VALUES ('legacy-occurrence',?,?,'queued')").run(request, now);
-    db.query("INSERT INTO terminals VALUES ('legacy-terminal','machine','room','agent-a','exited',0,?)").run(now);
+    db.query(
+      `INSERT INTO machine_jobs(job_id,machine_id,plugin_id,digest,request,state,created_at)
+      VALUES ('legacy-job','machine','core.terminals','digest',?,'finished',?)`,
+    ).run(request, now);
+    db.query("INSERT INTO job_schedule_occurrences VALUES ('legacy-occurrence',?,?,'queued')").run(
+      request,
+      now,
+    );
+    db.query(
+      "INSERT INTO terminals VALUES ('legacy-terminal','machine','room','agent-a','exited',0,?)",
+    ).run(now);
   } finally {
     db.close();
   }
@@ -126,43 +194,93 @@ describe("migration 37: durable agents", () => {
     try {
       seedV36(path);
       const original = new Database(path, { strict: true });
-      const beforeRuns = original.query<Record<string, unknown>, []>("SELECT * FROM agent_runs ORDER BY id").all();
-      const beforeSnapshots = original.query("SELECT * FROM agent_run_policy_snapshots ORDER BY run_id,revision").all();
-      const beforeTokens = original.query<Record<string, unknown>, []>("SELECT * FROM tokens ORDER BY id").all();
-      const beforeEvents = original.query<Record<string, unknown>, []>("SELECT * FROM events ORDER BY id").all();
+      const beforeRuns = original
+        .query<Record<string, unknown>, []>("SELECT * FROM agent_runs ORDER BY id")
+        .all();
+      const beforeSnapshots = original
+        .query("SELECT * FROM agent_run_policy_snapshots ORDER BY run_id,revision")
+        .all();
+      const beforeTokens = original
+        .query<Record<string, unknown>, []>("SELECT * FROM tokens ORDER BY id")
+        .all();
+      const beforeEvents = original
+        .query<Record<string, unknown>, []>("SELECT * FROM events ORDER BY id")
+        .all();
       original.close();
       const db = openDatabase(path);
       const store = new ServerStore(db);
       try {
         expect(existsSync(`${path}.pre-v37.bak`)).toBe(true);
         expect(store.listAgents().map((agent) => [agent.agentId, agent.name])).toEqual([
-          ["agent-a", "Worker"], ["agent-b", "Child"], ["agent-c", "Worker-3"], ["agent-d", "Worker-2"],
+          ["agent-a", "Worker"],
+          ["agent-b", "Child"],
+          ["agent-c", "Worker-3"],
+          ["agent-d", "Worker-2"],
         ]);
         const agent = store.getAgent("agent-a")!;
         expect(agent).toMatchObject({
-          principalId: "agent-a", sponsorPrincipalId: "sponsor", harness: "external",
-          grant: { caps: ["containers:read"], targets: ["manifold://container/room"], reach: "subtree",
-            maxRunLifetimeMs: 180_000, expiresAt: expiry, delegation: { maxDepth: 3, maxDescendants: 9 } },
-          authorizationPath: "principal", authorizationCredential: {
-            tokenId: "sponsor-token", grantId: "sponsor-grant", expiresAt: expiry + 60_000,
-          }, policyRevisionAcknowledged: revision,
+          principalId: "agent-a",
+          sponsorPrincipalId: "sponsor",
+          harness: "external",
+          grant: {
+            caps: ["containers:read"],
+            targets: ["manifold://container/room"],
+            reach: "subtree",
+            maxRunLifetimeMs: 180_000,
+            expiresAt: expiry,
+            delegation: { maxDepth: 3, maxDescendants: 9 },
+          },
+          authorizationPath: "principal",
+          authorizationCredential: {
+            tokenId: "sponsor-token",
+            grantId: "sponsor-grant",
+            expiresAt: expiry + 60_000,
+          },
+          policyRevisionAcknowledged: revision,
         });
         expect(store.getAgent("agent-b")?.sponsorPrincipalId).toBe("agent-a");
         expect(store.getAgent("agent-c")?.status).toBe("enabled");
         expect(store.getAgentRun("peer")?.state).toBe("revoked");
-        expect(db.query("SELECT * FROM agent_runs ORDER BY id").all().map((row) => {
-          const { agent_id: _agentId, session: _session, model: _model, activity: _activity, ...legacy } = row as Record<string, unknown>;
-          return legacy;
-        })).toEqual(beforeRuns);
-        expect(db.query("SELECT * FROM agent_run_policy_snapshots ORDER BY run_id,revision").all()).toEqual(beforeSnapshots);
-        expect(db.query("SELECT * FROM tokens ORDER BY id").all().map((row) => {
-          const { run_id: _runId, runner_agent_id: _runnerAgentId, ...legacy } = row as Record<string, unknown>;
-          return legacy;
-        })).toEqual(beforeTokens);
-        expect(db.query("SELECT * FROM events ORDER BY id").all().map((row) => {
-          const { run_id: _runId, credential_id: _credentialId, ...legacy } = row as Record<string, unknown>;
-          return legacy;
-        })).toEqual(beforeEvents);
+        expect(
+          db
+            .query("SELECT * FROM agent_runs ORDER BY id")
+            .all()
+            .map((row) => {
+              const legacy = row as Record<string, unknown>;
+              delete legacy.agent_id;
+              delete legacy.session_harness;
+              delete legacy.session_id;
+              delete legacy.session_machine_id;
+              delete legacy.model;
+              delete legacy.activity;
+              return legacy;
+            }),
+        ).toEqual(beforeRuns);
+        expect(
+          db.query("SELECT * FROM agent_run_policy_snapshots ORDER BY run_id,revision").all(),
+        ).toEqual(beforeSnapshots);
+        expect(
+          db
+            .query("SELECT * FROM tokens ORDER BY id")
+            .all()
+            .map((row) => {
+              const legacy = row as Record<string, unknown>;
+              delete legacy.run_id;
+              delete legacy.runner_agent_id;
+              return legacy;
+            }),
+        ).toEqual(beforeTokens);
+        expect(
+          db
+            .query("SELECT * FROM events ORDER BY id")
+            .all()
+            .map((row) => {
+              const legacy = row as Record<string, unknown>;
+              delete legacy.run_id;
+              delete legacy.credential_id;
+              return legacy;
+            }),
+        ).toEqual(beforeEvents);
         expect(store.getMeta("agent-runs:declarations-after-event-id")).toBe("42");
         expect(store.getAgentRunByToken("root-old")?.id).toBe("root");
         expect(store.getAgentRunByToken("child-token")?.id).toBe("child");
@@ -172,38 +290,86 @@ describe("migration 37: durable agents", () => {
         expect(facts.traces[0]?.agentDeclaration).toBeUndefined();
         expect(facts.jobs.map((job) => job.jobId)).toEqual(["legacy-occurrence", "legacy-job"]);
         expect(facts.terminals.map((terminal) => terminal.terminalId)).toEqual(["legacy-terminal"]);
-        expect(store.agentRunInspectionFacts("child", { runId: "child", limit: 20 }, now, [])
-          .traces[0]?.agentDeclaration).toBe("trusted child claim");
+        expect(
+          store.agentRunInspectionFacts("child", { runId: "child", limit: 20 }, now, []).traces[0]
+            ?.agentDeclaration,
+        ).toBe("trusted child claim");
         const root = store.getAgentRun("root")!;
-        for (const id of ["next-run", "concurrent-run"]) store.createAgentRun({
-          ...root, id, rootRunId: id, session: { harness: "external", sessionId: id, machineId: "machine" },
-          model: { provider: "test-provider", model: "test-model" }, activity: "blocked",
-        }, { runId: id, revision, bundles: store.getAgentPolicySnapshot("root", revision)!.bundles, issuedAt: now });
-        expect(store.listAgentRuns("agent-a").map((run) => run.id)).toEqual(["root", "next-run", "concurrent-run"]);
-        expect(store.getAgentRun("next-run")).toMatchObject({ agentId: "agent-a", principalId: "agent-a",
+        for (const id of ["next-run", "concurrent-run"])
+          store.createAgentRun(
+            {
+              ...root,
+              id,
+              rootRunId: id,
+              session: { harness: "external", sessionId: id, machineId: "machine" },
+              model: { provider: "test-provider", model: "test-model" },
+              activity: "blocked",
+            },
+            {
+              runId: id,
+              revision,
+              bundles: store.getAgentPolicySnapshot("root", revision)!.bundles,
+              issuedAt: now,
+            },
+          );
+        expect(store.listAgentRuns("agent-a").map((run) => run.id)).toEqual([
+          "root",
+          "next-run",
+          "concurrent-run",
+        ]);
+        expect(store.getAgentRun("next-run")).toMatchObject({
+          agentId: "agent-a",
+          principalId: "agent-a",
           session: { harness: "external", sessionId: "next-run", machineId: "machine" },
-          model: { provider: "test-provider", model: "test-model" }, activity: "blocked" });
-        expect(store.agentRunInspectionFacts("next-run", { runId: "next-run", limit: 20 }, now, []))
-          .toMatchObject({ traces: [], credentials: [], jobs: [], terminals: [] });
-        const token = store.getToken("root-token")!;
-        for (const id of ["next-token", "concurrent-token", "runner-token"]) store.createToken({
-          ...token, id, hash: sha256Hex(id), grantId: null,
+          model: { provider: "test-provider", model: "test-model" },
+          activity: "blocked",
         });
+        expect(
+          store.agentRunInspectionFacts("next-run", { runId: "next-run", limit: 20 }, now, []),
+        ).toMatchObject({ traces: [], credentials: [], jobs: [], terminals: [] });
+        const token = store.getToken("root-token")!;
+        for (const id of ["next-token", "concurrent-token", "runner-token"])
+          store.createToken({
+            ...token,
+            id,
+            hash: sha256Hex(id),
+            grantId: null,
+          });
         store.bindAgentRunCredential("next-run", "next-token");
         store.bindAgentRunCredential("concurrent-run", "concurrent-token");
         store.bindAgentRunnerCredential("agent-a", "runner-token");
         expect(() => store.bindAgentRunCredential("next-run", "runner-token")).toThrow();
         expect(() => store.bindAgentRunCredential("child", "concurrent-token")).toThrow();
         const traceId = store.appendTrace({
-          ts: now + 1, actor: "agent-a", authority: "containers:read", door: "core.containers.list",
-          containerId: null, payload: {}, session: "next-connection", targets: [], outcome: "ok",
-          runId: "next-run", credentialId: "next-token",
+          ts: now + 1,
+          actor: "agent-a",
+          authority: "containers:read",
+          door: "core.containers.list",
+          containerId: null,
+          payload: {},
+          session: "next-connection",
+          targets: [],
+          outcome: "ok",
+          runId: "next-run",
+          credentialId: "next-token",
         });
-        expect(store.agentRunInspectionFacts("next-run", { runId: "next-run", limit: 20 }, now, [])
-          .traces.map((trace) => trace.traceId)).toEqual([String(traceId)]);
-        expect(store.agentRunInspectionFacts("concurrent-run", {
-          runId: "concurrent-run", traceId: String(traceId), limit: 20,
-        }, now, []).requestedTrace).toBe("unavailable");
+        expect(
+          store
+            .agentRunInspectionFacts("next-run", { runId: "next-run", limit: 20 }, now, [])
+            .traces.map((trace) => trace.traceId),
+        ).toEqual([String(traceId)]);
+        expect(
+          store.agentRunInspectionFacts(
+            "concurrent-run",
+            {
+              runId: "concurrent-run",
+              traceId: String(traceId),
+              limit: 20,
+            },
+            now,
+            [],
+          ).requestedTrace,
+        ).toBe("unavailable");
         expect(store.revokeTokensByAgentRun("next-run", now + 2)).toEqual({ tokens: 1, grants: 0 });
         expect(store.getToken("next-token")?.revokedAt).toBe(now + 2);
         expect(store.getToken("concurrent-token")?.revokedAt).toBeNull();
@@ -212,46 +378,93 @@ describe("migration 37: durable agents", () => {
         expect(store.getAgentByRunnerToken("runner-token")?.agentId).toBe("agent-a");
         expect(store.getAgentRunByToken("runner-token")).toBeNull();
         const launchedRequest = JSON.stringify({
-          machineId: "machine", pluginId: "core.terminals", operationId: "run",
-          installationRevision: "install", artifactSha256: sha256Hex("artifact"), traceId: "42",
+          machineId: "machine",
+          pluginId: "core.terminals",
+          operationId: "run",
+          installationRevision: "install",
+          artifactSha256: sha256Hex("artifact"),
+          traceId: "42",
           credential: { principalId: "agent-a", tokenId: "root-token" },
           terminal: { terminalId: "next-terminal", runId: "next-run" },
         });
-        db.query(`INSERT INTO machine_jobs(job_id,machine_id,plugin_id,digest,request,state,created_at)
-          VALUES ('next-job','machine','core.terminals','next-digest',?,'finished',?)`).run(launchedRequest, now + 1);
-        db.query(`INSERT INTO terminals(id,machine_id,container_id,created_by,status,exit_code,created_at)
-          VALUES ('next-terminal','machine','room','agent-a','exited',0,?)`).run(now + 1);
-        const launched = store.agentRunInspectionFacts("next-run", { runId: "next-run", limit: 20 }, now, []);
-        expect(launched.jobs.map((job) => [job.jobId, job.origin])).toEqual([["next-job", "retained"]]);
-        expect(launched.terminals.map((terminal) => [terminal.terminalId, terminal.traceId]))
-          .toEqual([["next-terminal", "42"]]);
-        const sponsorFacts = store.agentRunInspectionFacts("root", { runId: "root", limit: 20 }, now, []);
-        expect(sponsorFacts.jobs.map((job) => job.jobId)).toEqual(["legacy-occurrence", "legacy-job"]);
-        expect(sponsorFacts.terminals.map((terminal) => terminal.terminalId)).toEqual(["legacy-terminal"]);
-        for (const outcome of [null, "failed", "refused"] as const) store.appendTrace({
-          ts: now + 1, actor: "agent-a", authority: "containers:read", door: "core.containers.list",
-          containerId: null, payload: {}, session: null, targets: [], outcome,
-          runId: "concurrent-run", credentialId: "concurrent-token",
-        });
+        db.query(
+          `INSERT INTO machine_jobs(job_id,machine_id,plugin_id,digest,request,state,created_at)
+          VALUES ('next-job','machine','core.terminals','next-digest',?,'finished',?)`,
+        ).run(launchedRequest, now + 1);
+        db.query(
+          `INSERT INTO terminals(id,machine_id,container_id,created_by,status,exit_code,created_at)
+          VALUES ('next-terminal','machine','room','agent-a','exited',0,?)`,
+        ).run(now + 1);
+        const launched = store.agentRunInspectionFacts(
+          "next-run",
+          { runId: "next-run", limit: 20 },
+          now,
+          [],
+        );
+        expect(launched.jobs.map((job) => [job.jobId, job.origin])).toEqual([
+          ["next-job", "retained"],
+        ]);
+        expect(
+          launched.terminals.map((terminal) => [terminal.terminalId, terminal.traceId]),
+        ).toEqual([["next-terminal", "42"]]);
+        const sponsorFacts = store.agentRunInspectionFacts(
+          "root",
+          { runId: "root", limit: 20 },
+          now,
+          [],
+        );
+        expect(sponsorFacts.jobs.map((job) => job.jobId)).toEqual([
+          "legacy-occurrence",
+          "legacy-job",
+        ]);
+        expect(sponsorFacts.terminals.map((terminal) => terminal.terminalId)).toEqual([
+          "legacy-terminal",
+        ]);
+        for (const outcome of [null, "failed", "refused"] as const)
+          store.appendTrace({
+            ts: now + 1,
+            actor: "agent-a",
+            authority: "containers:read",
+            door: "core.containers.list",
+            containerId: null,
+            payload: {},
+            session: null,
+            targets: [],
+            outcome,
+            runId: "concurrent-run",
+            credentialId: "concurrent-token",
+          });
         expect(store.runTraceCounts("concurrent-run")).toEqual({ actionCount: 3, refusalCount: 1 });
         expect(store.runTraceCounts("next-run")).toEqual({ actionCount: 1, refusalCount: 0 });
         expect(store.runTraceCounts("missing-run")).toEqual({ actionCount: 0, refusalCount: 0 });
         expect(store.acknowledgeAgentPolicy("named", revision, now + 10)).toBe(true);
         expect(store.getAgent("agent-d")?.policyRevisionAcknowledged).toBe(revision);
         const descendant = store.getAgentRun("child")!;
-        store.createAgentRun({
-          ...descendant, id: "independent-descendant", rootRunId: "independent-descendant",
-          parentRunId: null, depth: 0,
-        }, {
-          runId: "independent-descendant", revision,
-          bundles: store.getAgentPolicySnapshot("child", revision)!.bundles, issuedAt: now,
-        });
-        expect([...store.agentRunInspectionCandidates("sponsor", false)]
-          .map((run) => run.id)).toContain("independent-descendant");
+        store.createAgentRun(
+          {
+            ...descendant,
+            id: "independent-descendant",
+            rootRunId: "independent-descendant",
+            parentRunId: null,
+            depth: 0,
+          },
+          {
+            runId: "independent-descendant",
+            revision,
+            bundles: store.getAgentPolicySnapshot("child", revision)!.bundles,
+            issuedAt: now,
+          },
+        );
+        expect(
+          [...store.agentRunInspectionCandidates("sponsor", false)].map((run) => run.id),
+        ).toContain("independent-descendant");
         expect([...store.agentRunInspectionCandidates("unrelated-principal", false)]).toEqual([]);
         store.updateAgent({ ...store.getAgent("agent-a")!, sponsorPrincipalId: "agent-b" });
-        expect([...store.agentRunInspectionCandidates("agent-a", false)]
-          .filter((run) => run.id === "independent-descendant")).toHaveLength(1);
+        expect(
+          [...store.agentRunInspectionCandidates("agent-a", false)].filter(
+            (run) => run.id === "independent-descendant",
+          ),
+        ).toHaveLength(1);
       } finally {
         store.close();
       }
@@ -272,11 +485,22 @@ describe("migration 37: durable agents", () => {
       expect(() => openDatabase(path)).toThrow("backfill row count mismatch");
       const restored = new Database(path, { strict: true });
       try {
-        expect(restored.query<{ value: string }, []>("SELECT value FROM meta WHERE key='schema_version'").get()?.value).toBe("36");
-        expect(restored.query("SELECT * FROM agent_run_policy_snapshots WHERE run_id='child'").all()).toHaveLength(1);
-        expect(restored.query("SELECT name FROM sqlite_master WHERE name='agents'").get()).toBeNull();
-        expect(() => restored.exec("INSERT INTO agent_runs SELECT 'duplicate',principal_id,root_run_id,parent_run_id,authorized_by_principal_id,authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,created_at,expires_at,renewals,max_depth,max_descendants,depth,cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure FROM agent_runs WHERE id='root'"))
-          .toThrow("UNIQUE constraint failed");
+        expect(
+          restored
+            .query<{ value: string }, []>("SELECT value FROM meta WHERE key='schema_version'")
+            .get()?.value,
+        ).toBe("36");
+        expect(
+          restored.query("SELECT * FROM agent_run_policy_snapshots WHERE run_id='child'").all(),
+        ).toHaveLength(1);
+        expect(
+          restored.query("SELECT name FROM sqlite_master WHERE name='agents'").get(),
+        ).toBeNull();
+        expect(() =>
+          restored.exec(
+            "INSERT INTO agent_runs SELECT 'duplicate',principal_id,root_run_id,parent_run_id,authorized_by_principal_id,authorization_path,authorizer_token_id,authorizer_grant_id,authorizer_caps,authorizer_container_scope,authorizer_expires_at,purpose,task_ref,target,reach,caps,created_at,expires_at,renewals,max_depth,max_descendants,depth,cleanup_owner_principal_id,state,policy_revision,acknowledged_policy_revision,cleanup_revoked_credentials,cleanup_revoked_grants,finished_at,cleanup_failure FROM agent_runs WHERE id='root'",
+          ),
+        ).toThrow("UNIQUE constraint failed");
       } finally {
         restored.close();
       }

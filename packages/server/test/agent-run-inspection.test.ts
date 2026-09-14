@@ -56,18 +56,31 @@ async function fixture() {
     return { created, actor: context };
   };
   const run = (actor: AuthContext, name: string) =>
-    admitted(createExternalRun({ auth, runtime, owner }, {
-      name,
-      purpose: "Read the sponsored workspace",
-      target: "manifold://",
-      reach: "subtree",
-      caps: ["agents:delegate", "containers:read"],
-      lifetimeMs: 60_000,
-    }, actor));
+    admitted(
+      createExternalRun(
+        { auth, runtime, owner },
+        {
+          name,
+          purpose: "Read the sponsored workspace",
+          target: "manifold://",
+          reach: "subtree",
+          caps: ["agents:delegate", "containers:read"],
+          lifetimeMs: 60_000,
+        },
+        actor,
+      ),
+    );
   const child = (parent: { created: CreateRunCredentialResult; actor: AuthContext }) =>
-    admitted(CreateRunCredentialResultSchema.parse(auth.createChildRun({
-      runId: parent.created.run.id,
-    }, parent.actor)));
+    admitted(
+      CreateRunCredentialResultSchema.parse(
+        auth.createChildRun(
+          {
+            runId: parent.created.run.id,
+          },
+          parent.actor,
+        ),
+      ),
+    );
   return { runtime, store, auth, host, owner, sponsor, run, child };
 }
 function result(outcome: ActionOutcome): unknown {
@@ -104,10 +117,9 @@ describe("agent run inspection", () => {
       const direct = AgentRunInspectionSchema.parse(
         result(await inspect(child.actor, grandchild.created.run.id)),
       );
-      expect(direct.lineage.map((entry) => entry.id).sort()).toEqual([
-        child.created.run.id,
-        grandchild.created.run.id,
-      ].sort());
+      expect(direct.lineage.map((entry) => entry.id).sort()).toEqual(
+        [child.created.run.id, grandchild.created.run.id].sort(),
+      );
       const invisible = denied(await inspect(child.actor, sibling.created.run.id));
       expect(denied(await inspect(child.actor, "no-such-run"))).toEqual(invisible);
       expect(denied(await inspect(child.actor, parent.created.run.id))).toEqual(invisible);
@@ -127,7 +139,12 @@ describe("agent run inspection", () => {
         result(await f.host.dispatch(sponsor, "core.access.listRuns", {})),
       );
       expect(sponsored.runs.map((entry) => entry.id).sort()).toEqual(
-        [parent.created.run.id, child.created.run.id, sibling.created.run.id, grandchild.created.run.id].sort(),
+        [
+          parent.created.run.id,
+          child.created.run.id,
+          sibling.created.run.id,
+          grandchild.created.run.id,
+        ].sort(),
       );
       const parentInventory = AgentRunInventorySchema.parse(
         result(await f.host.dispatch(parent.actor, "core.access.listRuns", {})),
@@ -154,7 +171,8 @@ describe("agent run inspection", () => {
         "forbidden",
       );
       expect(
-        f.auth.listCredentials(f.owner)
+        f.auth
+          .listCredentials(f.owner)
           .find((entry) => entry.principal.id === parent.actor.principal.id)
           ?.sessions.map((session) => session.id),
       ).toContain(parent.actor.tokenId!);
@@ -495,9 +513,7 @@ describe("agent run inspection", () => {
       });
       const pending = f.auth.authenticate(created.credential.token);
       const own = AgentRunInspectionSchema.parse(
-        result(
-          await f.host.dispatch(pending, "core.access.inspectRun", { runId: created.run.id }),
-        ),
+        result(await f.host.dispatch(pending, "core.access.inspectRun", { runId: created.run.id })),
       );
       expect(own.run.state).toBe("pending_policy");
       expect(own.run.cleanup.status).toBe("pending");
@@ -510,9 +526,7 @@ describe("agent run inspection", () => {
         "SENSITIVE_CLEANUP_DETAIL",
       );
       const failed = AgentRunInspectionSchema.parse(
-        result(
-          await f.host.dispatch(f.owner, "core.access.inspectRun", { runId: created.run.id }),
-        ),
+        result(await f.host.dispatch(f.owner, "core.access.inspectRun", { runId: created.run.id })),
       );
       expect(failed.run.cleanup.status).toBe("failed");
       expect(JSON.stringify(failed)).not.toContain("SENSITIVE_CLEANUP_DETAIL");

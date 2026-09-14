@@ -3512,10 +3512,15 @@ export class JobService {
     return this.jobs.get(request.jobId)!;
   }
   /** Read the durable native association, never a caller-selected terminal or job id. */
-  runTerminal(auth: AuthContext, runId: string, pluginId: string): Extract<ManifoldRef, { kind: "job" }> {
+  runTerminal(
+    auth: AuthContext,
+    runId: string,
+    pluginId: string,
+  ): Extract<ManifoldRef, { kind: "job" }> {
     this.auth.authorizeRunInput(runId, auth);
-    const job = this.jobs.active().find((job) =>
-      job.request.terminal?.runId === runId && job.request.pluginId === pluginId);
+    const job = this.jobs
+      .active()
+      .find((job) => job.request.terminal?.runId === runId && job.request.pluginId === pluginId);
     if (!job) throw new ServiceError("not_found", "run terminal unavailable");
     const node = {
       kind: "job" as const,

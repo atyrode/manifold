@@ -90,7 +90,9 @@ interface AccessCtx {
       harness: string,
       target: HarnessTarget,
     ): Promise<IdentityAnswer<ListHarnessSessionsResult>>;
-    resolveHarnessSession(session: SessionRef): Promise<IdentityAnswer<ResolveHarnessSessionResult>>;
+    resolveHarnessSession(
+      session: SessionRef,
+    ): Promise<IdentityAnswer<ResolveHarnessSessionResult>>;
     sendRunInput(input: SendRunInputRequest): Promise<IdentityAnswer<SendRunInputResult>>;
     reportRunActivity(input: ReportRunActivityRequest): IdentityAnswer<ReportRunActivityResult>;
     inspectRun(input: InspectRunRequest): IdentityAnswer<InspectRunResult>;
@@ -194,10 +196,7 @@ export const accessHandlers = {
     return agent.ok ? agent.value : { refused: agent.message };
   },
 
-  async updateAgent(
-    ctx: AccessCtx,
-    args: UpdateAgentRequest,
-  ): Promise<Outcome<GetAgentResult>> {
+  async updateAgent(ctx: AccessCtx, args: UpdateAgentRequest): Promise<Outcome<GetAgentResult>> {
     const updated = ctx.identity.updateAgent(args);
     return updated.ok ? updated.value : { refused: updated.message };
   },
@@ -217,10 +216,7 @@ export const accessHandlers = {
     return retired.ok ? retired.value : { refused: retired.message };
   },
 
-  async createRun(
-    ctx: AccessCtx,
-    args: CreateRunRequest,
-  ): Promise<Outcome<CreateRunResult>> {
+  async createRun(ctx: AccessCtx, args: CreateRunRequest): Promise<Outcome<CreateRunResult>> {
     const created = ctx.identity.createRun(args);
     return created.ok ? created.value : { refused: created.message };
   },
@@ -233,10 +229,7 @@ export const accessHandlers = {
     return created.ok ? created.value : { refused: created.message };
   },
 
-  async launchRun(
-    ctx: AccessCtx,
-    args: LaunchRunRequest,
-  ): Promise<Outcome<LaunchRunResult>> {
+  async launchRun(ctx: AccessCtx, args: LaunchRunRequest): Promise<Outcome<LaunchRunResult>> {
     const launched = await ctx.identity.launchRun(args);
     return launched.ok ? launched.value : { refused: launched.message };
   },
@@ -281,18 +274,12 @@ export const accessHandlers = {
     return reported.ok ? reported.value : { refused: reported.message };
   },
 
-  async inspectRun(
-    ctx: AccessCtx,
-    args: InspectRunRequest,
-  ): Promise<Outcome<InspectRunResult>> {
+  async inspectRun(ctx: AccessCtx, args: InspectRunRequest): Promise<Outcome<InspectRunResult>> {
     const inspected = ctx.identity.inspectRun(args);
     return inspected.ok ? inspected.value : { refused: inspected.message };
   },
 
-  async listRuns(
-    ctx: AccessCtx,
-    args: ListRunsRequest,
-  ): Promise<Outcome<ListRunsResult>> {
+  async listRuns(ctx: AccessCtx, args: ListRunsRequest): Promise<Outcome<ListRunsResult>> {
     const inventory = ctx.identity.listRuns(args);
     return inventory.ok ? inventory.value : { refused: inventory.message };
   },

@@ -1,4 +1,5 @@
 import { connect } from "node:net";
+import process from "node:process";
 
 const protocol = connect({ fd: 3 });
 const dispatches = new Map();

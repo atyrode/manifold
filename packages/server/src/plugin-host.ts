@@ -241,7 +241,10 @@ export interface IdentityDoor {
   listHarnesses(): IdentityResult<{ harnesses: HarnessDefinition[] }>;
   launchRun(input: LaunchRunRequest): Promise<IdentityResult<LaunchRunResult>>;
   sendRunInput(input: SendRunInputRequest): Promise<IdentityResult<Record<string, never>>>;
-  listHarnessSessions(harness: string, target: HarnessTarget): Promise<IdentityResult<{ sessions: SessionRef[] }>>;
+  listHarnessSessions(
+    harness: string,
+    target: HarnessTarget,
+  ): Promise<IdentityResult<{ sessions: SessionRef[] }>>;
   resolveHarnessSession(ref: SessionRef): Promise<IdentityResult<{ session: SessionRef | null }>>;
   /** Returns the exact server-selected policy bytes this run must acknowledge. */
   agentPolicyChallenge(): IdentityResult<AgentPolicyChallenge>;
@@ -1126,21 +1129,29 @@ export class PluginHost {
       }
       const owner = owners.get(declaration.id);
       if (owner !== undefined)
-        throw new AssemblyError([`duplicate harness "${declaration.id}" (${owner}, ${def.manifest.id})`]);
+        throw new AssemblyError([
+          `duplicate harness "${declaration.id}" (${owner}, ${def.manifest.id})`,
+        ]);
       owners.set(declaration.id, def.manifest.id);
-      if (def.harness && (
-        typeof def.harness.profileSchema?.safeParse !== "function" ||
-        typeof def.harness.launch !== "function" ||
-        typeof def.harness.sessions !== "function" ||
-        typeof def.harness.resolveSession !== "function" ||
-        typeof def.harness.send !== "function"
-      )) throw new AssemblyError([`${def.manifest.id}: invalid harness implementation`]);
+      if (
+        def.harness &&
+        (typeof def.harness.profileSchema?.safeParse !== "function" ||
+          typeof def.harness.launch !== "function" ||
+          typeof def.harness.sessions !== "function" ||
+          typeof def.harness.resolveSession !== "function" ||
+          typeof def.harness.send !== "function")
+      )
+        throw new AssemblyError([`${def.manifest.id}: invalid harness implementation`]);
     }
   }
 
   private harnessDefinition(id: string): ServerPluginDef & { harness: ServerHarness<ActionCtx> } {
     const def = this.defs.find((def) => def.manifest.contributes.harness?.id === id);
-    if (!def?.harness || !this.assembled.enabled(def.manifest.id) || this.replacing === def.manifest.id)
+    if (
+      !def?.harness ||
+      !this.assembled.enabled(def.manifest.id) ||
+      this.replacing === def.manifest.id
+    )
       throw new ServiceError("forbidden", "harness unavailable");
     return { ...def, harness: def.harness };
   }
@@ -1166,31 +1177,44 @@ export class PluginHost {
     if (!current) throw new ServiceError("forbidden", "harness caller unavailable");
     const nativeAuth = {
       ...current,
-      caps: CAPS.filter((cap) => withinCeiling(cap, current.caps) &&
-        withinCeiling(cap, def.manifest.capabilities) &&
-        (!install || GOVERNED_CAPS.includes(cap) || withinCeiling(cap, install.row.grantedCaps))),
+      caps: CAPS.filter(
+        (cap) =>
+          withinCeiling(cap, current.caps) &&
+          withinCeiling(cap, def.manifest.capabilities) &&
+          (!install || GOVERNED_CAPS.includes(cap) || withinCeiling(cap, install.row.grantedCaps)),
+      ),
     };
     const lease = this.dataLease(pluginId);
     const settled = Promise.withResolvers<void>();
     let active = this.activeDispatches.get(pluginId);
-    if (!active) this.activeDispatches.set(pluginId, active = new Set());
+    if (!active) this.activeDispatches.set(pluginId, (active = new Set()));
     active.add(settled.promise);
     const service = () => {
       if (!this.jobs) throw new ServiceError("forbidden", "job service unavailable");
       return this.jobs;
     };
-    const { database: _database, ...shared } = base;
+    const shared = { ...base };
+    delete shared.database;
     try {
-      return await invoke(def.harness, {
-        ...shared,
+      return await invoke(
+        def.harness,
+        {
+          ...shared,
+          pluginId,
+          credential: this.authService.credentialReference(nativeAuth),
+          jobs: jobContext(service, nativeAuth, pluginId, base.traceId),
+          services: serviceContext(
+            service,
+            nativeAuth,
+            pluginId,
+            base.traceId,
+            withinCeiling("services:invoke", nativeAuth.caps) ? "invoke" : "read",
+          ),
+          storage: lease.storage,
+          ...(lease.database ? { database: lease.database } : {}),
+        },
         pluginId,
-        credential: this.authService.credentialReference(nativeAuth),
-        jobs: jobContext(service, nativeAuth, pluginId, base.traceId),
-        services: serviceContext(service, nativeAuth, pluginId, base.traceId,
-          withinCeiling("services:invoke", nativeAuth.caps) ? "invoke" : "read"),
-        storage: lease.storage,
-        ...(lease.database ? { database: lease.database } : {}),
-      }, pluginId);
+      );
     } finally {
       lease.close();
       settled.resolve();
@@ -1201,7 +1225,11 @@ export class PluginHost {
 
   private readonly launchingRuns = new Set<string>();
 
-  private async launchHarnessRun(base: ActionCtx, actor: AuthContext, input: LaunchRunRequest): Promise<LaunchRunResult> {
+  private async launchHarnessRun(
+    base: ActionCtx,
+    actor: AuthContext,
+    input: LaunchRunRequest,
+  ): Promise<LaunchRunResult> {
     if (this.launchingRuns.has(input.runId))
       throw new ServiceError("conflict", "run launch already in progress");
     this.launchingRuns.add(input.runId);
@@ -1210,30 +1238,54 @@ export class PluginHost {
       const target = HarnessTargetSchema.safeParse(input.target ?? claim.target);
       if (!target.success) throw new ServiceError("forbidden", "harness launch target required");
       const declaredTarget = parseManifoldUri(claim.run.target);
-      if ((declaredTarget && "machineId" in declaredTarget && declaredTarget.machineId !== target.data.machineId) ||
-        (declaredTarget?.kind === "container" && declaredTarget.containerId !== target.data.containerId) ||
-        (claim.target?.containerId !== undefined && claim.target.containerId !== target.data.containerId))
+      if (
+        (declaredTarget &&
+          "machineId" in declaredTarget &&
+          declaredTarget.machineId !== target.data.machineId) ||
+        (declaredTarget?.kind === "container" &&
+          declaredTarget.containerId !== target.data.containerId) ||
+        (claim.target?.containerId !== undefined &&
+          claim.target.containerId !== target.data.containerId)
+      )
         throw new ServiceError("forbidden", "harness launch target changed");
       if (!this.jobs) throw new ServiceError("forbidden", "run_launch_owner_unavailable");
       this.jobs.assertRunLaunchSupported(target.data.machineId);
       this.validateAgentProfile(claim.agent.harness, claim.agent.context.profile);
-      return await this.withHarness(base, actor, claim.agent.harness, async (harness, ctx, pluginId) => {
-        const prepared = await harness.launch(ctx, claim.run, claim.agent, target.data);
-        const runtime = TerminalRuntimeSchema.parse(prepared.runtime);
-        const session = SessionRefSchema.parse(prepared.session);
-        if (runtime.pluginId !== pluginId ||
-          runtime.machineId !== target.data.machineId ||
-          session.machineId !== target.data.machineId ||
-          session.harness !== claim.agent.harness)
-          throw new ServiceError("forbidden", "harness launch destination mismatch");
-        const descriptor = LaunchRunResultSchema.parse({
-          runtime, session, reviewDigest: prepared.reviewDigest,
-          destination: { machineId: target.data.machineId },
-        });
-        this.harnessDefinition(claim.agent.harness);
-        this.authService.bindRunSession(input.runId, session, actor);
-        return { ...descriptor, runtime: this.broker.bindRunLaunch(runtime, claim.run, claim.token, actor, target.data.containerId) };
-      });
+      return await this.withHarness(
+        base,
+        actor,
+        claim.agent.harness,
+        async (harness, ctx, pluginId) => {
+          const prepared = await harness.launch(ctx, claim.run, claim.agent, target.data);
+          const runtime = TerminalRuntimeSchema.parse(prepared.runtime);
+          const session = SessionRefSchema.parse(prepared.session);
+          if (
+            runtime.pluginId !== pluginId ||
+            runtime.machineId !== target.data.machineId ||
+            session.machineId !== target.data.machineId ||
+            session.harness !== claim.agent.harness
+          )
+            throw new ServiceError("forbidden", "harness launch destination mismatch");
+          const descriptor = LaunchRunResultSchema.parse({
+            runtime,
+            session,
+            reviewDigest: prepared.reviewDigest,
+            destination: { machineId: target.data.machineId },
+          });
+          this.harnessDefinition(claim.agent.harness);
+          this.authService.bindRunSession(input.runId, session, actor);
+          return {
+            ...descriptor,
+            runtime: this.broker.bindRunLaunch(
+              runtime,
+              claim.run,
+              claim.token,
+              actor,
+              target.data.containerId,
+            ),
+          };
+        },
+      );
     } finally {
       this.launchingRuns.delete(input.runId);
     }
@@ -1392,10 +1444,13 @@ export class PluginHost {
       if (types.length > 0) store.claimElementTypes(def.manifest.id, types);
     }
     if (migrated) host.assembled = await host.reassemble();
-    authService.setAgentProfileValidator((harness, profile) => host.validateAgentProfile(harness, profile));
+    authService.setAgentProfileValidator((harness, profile) =>
+      host.validateAgentProfile(harness, profile),
+    );
     authService.setAgentChangeListener((agentId, runId) => {
       events.emit("core.access", { kind: "agent", agentId }, "agent_changed", null, {});
-      if (runId !== undefined) events.emit("core.access", { kind: "run", runId }, "run_changed", null, {});
+      if (runId !== undefined)
+        events.emit("core.access", { kind: "run", runId }, "run_changed", null, {});
     });
     return host;
   }
@@ -3545,7 +3600,15 @@ export class PluginHost {
             throw new Error("stream producer authority refused");
           const uri = formatManifoldUri(node);
           // Retain scalar attribution only, never handler-owned node/argument graphs.
-          const { actor, authority, door, containerId, runId, credentialId, session: streamSession } = attribution;
+          const {
+            actor,
+            authority,
+            door,
+            containerId,
+            runId,
+            credentialId,
+            session: streamSession,
+          } = attribution;
           const producer = this.streams.open(pluginId, kind, node, (phase, epoch) => {
             this.store.appendTrace({
               actor,
@@ -3588,43 +3651,64 @@ export class PluginHost {
       placement: this.placement,
       host: this,
       identity: {
-        listHarnesses: () => identityCall(() => ListHarnessesResultSchema.parse({
-          harnesses: [
-            { id: "external", title: "External", profileSchema: { type: "object" }, sessionRef: "typed" },
-            ...this.defs.flatMap((def) => def.harness && this.assembled.enabled(def.manifest.id) &&
-              this.replacing !== def.manifest.id && def.manifest.contributes.harness
-              ? [def.manifest.contributes.harness] : []),
-          ],
-        })),
+        listHarnesses: () =>
+          identityCall(() =>
+            ListHarnessesResultSchema.parse({
+              harnesses: [
+                {
+                  id: "external",
+                  title: "External",
+                  profileSchema: { type: "object" },
+                  sessionRef: "typed",
+                },
+                ...this.defs.flatMap((def) =>
+                  def.harness &&
+                  this.assembled.enabled(def.manifest.id) &&
+                  this.replacing !== def.manifest.id &&
+                  def.manifest.contributes.harness
+                    ? [def.manifest.contributes.harness]
+                    : [],
+                ),
+              ],
+            }),
+          ),
         launchRun: (input) => identityCallAsync(() => this.launchHarnessRun(ctx, auth, input)),
-        sendRunInput: (input) => identityCallAsync(async () => {
-          const { run, agent } = this.authService.authorizeRunInput(input.runId, auth);
-          const actor = this.authService.runHarnessActor(input.runId, auth);
-          await this.withHarness(ctx, actor, agent.harness, (harness, bound) => harness.send(bound, run, input.input));
-          return {};
-        }),
-        listHarnessSessions: (id, target) => identityCallAsync(async () => ({
-          sessions: await this.withHarness(ctx, auth, id, async (harness, bound) => {
-            const sessions = await harness.sessions(bound, HarnessTargetSchema.parse(target));
-            return sessions.map((value) => {
-              const ref = SessionRefSchema.parse(value);
-              if (ref.harness !== id || ref.machineId !== target.machineId)
-                throw new ServiceError("forbidden", "harness session destination mismatch");
-              return ref;
-            });
+        sendRunInput: (input) =>
+          identityCallAsync(async () => {
+            const { run, agent } = this.authService.authorizeRunInput(input.runId, auth);
+            const actor = this.authService.runHarnessActor(input.runId, auth);
+            await this.withHarness(ctx, actor, agent.harness, (harness, bound) =>
+              harness.send(bound, run, input.input),
+            );
+            return {};
           }),
-        })),
-        resolveHarnessSession: (ref) => identityCallAsync(async () => ({
-          session: await this.withHarness(ctx, auth, ref.harness, async (harness, bound) => {
-            const session = await harness.resolveSession(bound, SessionRefSchema.parse(ref));
-            if (session === null) return null;
-            const resolved = SessionRefSchema.parse(session);
-            if (resolved.harness !== ref.harness || resolved.machineId !== ref.machineId ||
-              resolved.sessionId !== ref.sessionId)
-              throw new ServiceError("forbidden", "harness session reference mismatch");
-            return resolved;
-          }),
-        })),
+        listHarnessSessions: (id, target) =>
+          identityCallAsync(async () => ({
+            sessions: await this.withHarness(ctx, auth, id, async (harness, bound) => {
+              const sessions = await harness.sessions(bound, HarnessTargetSchema.parse(target));
+              return sessions.map((value) => {
+                const ref = SessionRefSchema.parse(value);
+                if (ref.harness !== id || ref.machineId !== target.machineId)
+                  throw new ServiceError("forbidden", "harness session destination mismatch");
+                return ref;
+              });
+            }),
+          })),
+        resolveHarnessSession: (ref) =>
+          identityCallAsync(async () => ({
+            session: await this.withHarness(ctx, auth, ref.harness, async (harness, bound) => {
+              const session = await harness.resolveSession(bound, SessionRefSchema.parse(ref));
+              if (session === null) return null;
+              const resolved = SessionRefSchema.parse(session);
+              if (
+                resolved.harness !== ref.harness ||
+                resolved.machineId !== ref.machineId ||
+                resolved.sessionId !== ref.sessionId
+              )
+                throw new ServiceError("forbidden", "harness session reference mismatch");
+              return resolved;
+            }),
+          })),
         createPrincipal: (input) =>
           identityCall(() => this.authService.bootstrapPrincipal(input, auth)),
         mintToken: (input) => identityCall(() => this.authService.mintToken(input, auth)),
@@ -3641,7 +3725,8 @@ export class PluginHost {
           identityCall(() => this.authService.createChildRun(input, auth, enforceDeclaration)),
         inspectRun: (input) => identityCall(() => this.authService.inspectRun(input, auth)),
         listRuns: (input) => identityCall(() => this.authService.listRuns(input, auth)),
-        reportRunActivity: (input) => identityCall(() => this.authService.reportRunActivity(input, auth)),
+        reportRunActivity: (input) =>
+          identityCall(() => this.authService.reportRunActivity(input, auth)),
         agentPolicyChallenge: () => identityCall(() => this.authService.agentPolicyChallenge(auth)),
         acknowledgeAgentPolicy: (input) =>
           identityCall(() => this.authService.acknowledgeAgentPolicy(input, auth)),

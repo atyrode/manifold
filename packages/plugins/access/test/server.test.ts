@@ -138,7 +138,9 @@ function recorder(options: {
   const calls: Call[] = [];
   const answer = <T>(given: Answer<T> | undefined, fallback: T): Answer<T> =>
     given ?? { ok: true, value: fallback };
-  const unused = (): never => { throw new Error("unused Agent lifecycle fixture"); };
+  const unused = (): never => {
+    throw new Error("unused Agent lifecycle fixture");
+  };
   return {
     calls,
     ctx: {

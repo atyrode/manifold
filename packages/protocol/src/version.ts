@@ -372,7 +372,9 @@ export const MACHINE_REPOSITORY_PROTOCOL_VERSION = 31;
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
  * instance compatibility resets to protocol 27. v28 through v32 leave that wire unchanged.
  */
-export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([27, 28, 29, 30, 31, 32]);
+export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
+  27, 28, 29, 30, 31, 32,
+]);
 
 /**
  * Liveness cadence for every DIALED pipe (CONTRACTS.md): the machine channel, the

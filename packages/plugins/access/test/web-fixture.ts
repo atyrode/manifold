@@ -270,10 +270,10 @@ export class AccessBrowser {
         const id = requests.length; requests.push({ id, action, args }); pending.set(id, resolve); return promise;
       }, openTerminal: async options => { terminals.push(options); return { id: "opened-terminal" }; } });
       let host = { principal: { id: "viewer", kind: "human", name: "Viewer", color: "#74c0fc" }, client: client(["*"]), requestedRef: null, containerId: "review", navigate: uri => { navigations.push(uri); host = { ...host, requestedRef: parseManifoldUri(uri) }; render(); } };
-      let surface = new URL(location.href).searchParams.get("surface") ?? "agents";
-      const render = () => root.render(createElement(surface === "sessions" ? SessionsSection : AgentsSection, { host }));
+      let renderer = new URL(location.href).searchParams.get("surface") ?? "agents";
+      const render = () => root.render(createElement(renderer === "sessions" ? SessionsSection : AgentsSection, { host }));
       window.accessFixture = { requests, navigations, terminals,
-        mount: value => { surface = value; render(); },
+        mount: value => { renderer = value; render(); },
         replaceViewer: (id, caps) => { host = { ...host, principal: { ...host.principal, id }, client: client(caps) }; flushSync(render); },
         leaveRoom: () => { host = { ...host, containerId: null, client: client([]) }; flushSync(render); },
         answer: (id, outcome) => { const resolve = pending.get(id); if (!resolve) throw new Error("No pending action " + id); pending.delete(id); resolve(outcome); },
@@ -304,9 +304,9 @@ export class AccessBrowser {
     await this.browser.launch({ incognito: true });
   }
 
-  async reset(surface: "agents" | "sessions" = "agents"): Promise<void> {
+  async reset(renderer: "agents" | "sessions" = "agents"): Promise<void> {
     if (this.server === undefined) throw new Error("Access fixture did not start");
-    await this.browser.goto(`http://127.0.0.1:${String(this.server.port)}/?surface=${surface}`);
+    await this.browser.goto(`http://127.0.0.1:${String(this.server.port)}/?surface=${renderer}`);
     await until(
       () => this.browser.evaluate<boolean>("window.accessFixture !== undefined"),
       5_000,

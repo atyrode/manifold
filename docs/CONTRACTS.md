@@ -321,6 +321,7 @@ inspection action, not a browser history store. Replacing client/viewer authorit
 remove privileged snapshots before an old async response can restore them. Native jobs
 retain their stable ids as plain text because they are not navigable places; terminal/place
 links and exact trace expansion use existing doors.
+
 ## Topology
 
 ```
@@ -1693,16 +1694,16 @@ lets any principal render the same badge.
 attenuation, the revocation fence) stays floor and unchanged. The three doors, plus the five
 cross-instance ones below:
 
-| Action                        | Caps              | Scope                              | Args → Result                                                                            |
-| ----------------------------- | ----------------- | ---------------------------------- | ---------------------------------------------------------------------------------------- |
-| `core.access.createPrincipal` | `*`               | workspace                          | `{ name, color?, kind? }` → `TokenGrant` (caps `["*"]`, `containerId: null`)             |
-| `core.access.mint`            | `tokens:mint`     | container                          | `{ principal \| principalId, caps, containerId? }` → `TokenGrant`                        |
-| `core.access.revoke`          | `tokens:mint`     | container                          | `{ principalId }` → `{ revoked: <count> }` — **`cleanup: true`**                         |
-| `core.access.listCredentials` | `tokens:mint`     | workspace                          | `{}` → `{ principals: PrincipalCredentials[] }`                                          |
-| `core.access.listAgents` | identity-relative | workspace / `runAccess: "inspect"` | `{}` → `{ agents, truncated, canRegister }` |
-| `core.access.getAgent` | identity-relative | workspace / `runAccess: "inspect"` | `{ agentId }` → `{ agent, canManage }` |
-| `core.access.listRuns` | identity-relative | workspace / `runAccess: "inspect"` | `{ agentId? }` → `ListRunsResult` (at most 100 safe Run summaries, including authorized descendants) |
-| `core.access.inspectRun` | identity-relative | workspace / `runAccess: "inspect"` | `{ runId, traceId?, beforeTraceId?, limit? }` → `InspectRunResult` |
+| Action                        | Caps              | Scope                              | Args → Result                                                                                        |
+| ----------------------------- | ----------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `core.access.createPrincipal` | `*`               | workspace                          | `{ name, color?, kind? }` → `TokenGrant` (caps `["*"]`, `containerId: null`)                         |
+| `core.access.mint`            | `tokens:mint`     | container                          | `{ principal \| principalId, caps, containerId? }` → `TokenGrant`                                    |
+| `core.access.revoke`          | `tokens:mint`     | container                          | `{ principalId }` → `{ revoked: <count> }` — **`cleanup: true`**                                     |
+| `core.access.listCredentials` | `tokens:mint`     | workspace                          | `{}` → `{ principals: PrincipalCredentials[] }`                                                      |
+| `core.access.listAgents`      | identity-relative | workspace / `runAccess: "inspect"` | `{}` → `{ agents, truncated, canRegister }`                                                          |
+| `core.access.getAgent`        | identity-relative | workspace / `runAccess: "inspect"` | `{ agentId }` → `{ agent, canManage }`                                                               |
+| `core.access.listRuns`        | identity-relative | workspace / `runAccess: "inspect"` | `{ agentId? }` → `ListRunsResult` (at most 100 safe Run summaries, including authorized descendants) |
+| `core.access.inspectRun`      | identity-relative | workspace / `runAccess: "inspect"` | `{ runId, traceId?, beforeTraceId?, limit? }` → `InspectRunResult`                                   |
 
 `canRegister` evaluates the caller's current delegation authority independently of room attendance,
 including target-scoped grants. `canManage` comes from the verified sponsor chain, not a browser

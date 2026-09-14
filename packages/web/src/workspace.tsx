@@ -397,6 +397,21 @@ export function WorkspaceHost({
   // ------------------------------------------------------------- sidebar state
 
   const [sidebarOpen, setSidebarOpen] = useState(initialSidebarOpen);
+  const requestedRef = host.requestedRef;
+  const [revealedRef, setRevealedRef] = useState<typeof requestedRef>(null);
+  // Navigation reveals a declared rail destination at the boundary that owns openness.
+  // The effect below remains the sole publisher of that state to presence and device memory.
+  if (requestedRef !== revealedRef) {
+    setRevealedRef(requestedRef);
+    if (
+      requestedRef !== null &&
+      assembly.sections.some(
+        (section) => section.enabled && section.refKinds?.includes(requestedRef.kind),
+      )
+    ) {
+      setSidebarOpen(true);
+    }
+  }
 
   useEffect(() => {
     // Two writes, one truth: presence is what other principals and agents observe (A2),

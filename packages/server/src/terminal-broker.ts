@@ -14,7 +14,12 @@ import {
   type TerminalInfo,
   type TerminalExecution,
 } from "@manifold/protocol";
-import { ServiceError, type AuthContext, type AuthService, type CredentialReference } from "./auth.ts";
+import {
+  ServiceError,
+  type AuthContext,
+  type AuthService,
+  type CredentialReference,
+} from "./auth.ts";
 import { createHash } from "node:crypto";
 import type { EventHub } from "./event-hub.ts";
 import type { Logger } from "./log.ts";
@@ -159,17 +164,26 @@ export class TerminalBroker implements TerminalPlacementPort {
   private events: EventHub | null = null;
   private jobs: JobService | null = null;
   /** Secrets live only until native admission, expiry, or revocation, never in a descriptor. */
-  private readonly runLaunches = new Map<string, {
-    runId: string;
-    digest: string;
-    containerId: string | undefined;
-    creator: CredentialReference;
-    token: string;
-    expiresAt: number;
-    cancelExpiry: () => void;
-  }>();
+  private readonly runLaunches = new Map<
+    string,
+    {
+      runId: string;
+      digest: string;
+      containerId: string | undefined;
+      creator: CredentialReference;
+      token: string;
+      expiresAt: number;
+      cancelExpiry: () => void;
+    }
+  >();
 
-  bindRunLaunch(runtime: TerminalRuntime, run: AgentRun, token: string, actor: AuthContext, containerId?: string): TerminalRuntime {
+  bindRunLaunch(
+    runtime: TerminalRuntime,
+    run: AgentRun,
+    token: string,
+    actor: AuthContext,
+    containerId?: string,
+  ): TerminalRuntime {
     const bound = { ...runtime, launchBinding: this.runtime.newId() };
     const expiresAt = Math.min(run.expiresAt, this.runtime.now() + 60_000);
     if (!this.auth.runLaunchCredentialValid(run.id, token) || expiresAt <= this.runtime.now())
@@ -177,7 +191,10 @@ export class TerminalBroker implements TerminalPlacementPort {
     const creator = this.auth.credentialReference(actor);
     if (!this.auth.restoreCredential(creator))
       throw new ServiceError("forbidden", "run launch creator unavailable");
-    const cancelExpiry = this.timers.schedule(() => this.runLaunches.delete(bound.launchBinding), expiresAt - this.runtime.now());
+    const cancelExpiry = this.timers.schedule(
+      () => this.runLaunches.delete(bound.launchBinding),
+      expiresAt - this.runtime.now(),
+    );
     this.runLaunches.set(bound.launchBinding, {
       runId: run.id,
       digest: createHash("sha256").update(canonicalJobJson(bound)).digest("hex"),
@@ -198,17 +215,21 @@ export class TerminalBroker implements TerminalPlacementPort {
   private consumeRunLaunch(runtime: TerminalRuntime, actor: AuthContext, containerId: string) {
     if (runtime.launchBinding === undefined) return undefined;
     const binding = this.runLaunches.get(runtime.launchBinding);
-    if (!binding ||
+    if (
+      !binding ||
       binding.creator.tokenId !== actor.tokenId ||
       binding.creator.principalId !== actor.principal.id ||
       (binding.containerId !== undefined && binding.containerId !== containerId) ||
-      binding.digest !== createHash("sha256").update(canonicalJobJson(runtime)).digest("hex"))
+      binding.digest !== createHash("sha256").update(canonicalJobJson(runtime)).digest("hex")
+    )
       throw new ServiceError("forbidden", "run launch binding refused");
     this.runLaunches.delete(runtime.launchBinding);
     binding.cancelExpiry();
-    if (binding.expiresAt <= this.runtime.now() ||
+    if (
+      binding.expiresAt <= this.runtime.now() ||
       !this.auth.restoreCredential(binding.creator) ||
-      !this.auth.runLaunchCredentialValid(binding.runId, binding.token))
+      !this.auth.runLaunchCredentialValid(binding.runId, binding.token)
+    )
       throw new ServiceError("forbidden", "run launch binding expired or revoked");
     return {
       MANIFOLD_RUN_TOKEN: binding.token,
@@ -246,8 +267,11 @@ export class TerminalBroker implements TerminalPlacementPort {
   ) {
     this.auth.onRevoked(() => {
       for (const [id, binding] of this.runLaunches) {
-        if (this.auth.restoreCredential(binding.creator) &&
-          this.auth.runLaunchCredentialValid(binding.runId, binding.token)) continue;
+        if (
+          this.auth.restoreCredential(binding.creator) &&
+          this.auth.runLaunchCredentialValid(binding.runId, binding.token)
+        )
+          continue;
         binding.cancelExpiry();
         this.runLaunches.delete(id);
       }
@@ -802,7 +826,11 @@ export class TerminalBroker implements TerminalPlacementPort {
             throw new ServiceError("forbidden", "run_launch_protocol_unsupported");
           this.jobs.assertRunLaunchSupported(machine.machineId);
         }
-        const privateEnv = this.consumeRunLaunch(message.runtime, channel.auth, channel.containerId);
+        const privateEnv = this.consumeRunLaunch(
+          message.runtime,
+          channel.auth,
+          channel.containerId,
+        );
         runtime = this.jobs.admitTerminal(
           channel.auth,
           message.runtime,
@@ -820,9 +848,12 @@ export class TerminalBroker implements TerminalPlacementPort {
         channel.send({
           type: "error",
           code: "forbidden",
-          message: error instanceof ServiceError &&
-            (error.message === "run_launch_protocol_unsupported" || error.message === "run_launch_owner_unavailable")
-            ? error.message : "terminal runtime admission refused",
+          message:
+            error instanceof ServiceError &&
+            (error.message === "run_launch_protocol_unsupported" ||
+              error.message === "run_launch_owner_unavailable")
+              ? error.message
+              : "terminal runtime admission refused",
           ref: message.elementId,
         });
         return;

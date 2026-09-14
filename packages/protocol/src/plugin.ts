@@ -268,7 +268,9 @@ export const SectionDefSchema = z.strictObject({
   cluster: LocalNameSchema.optional(),
   setting: LocalNameSchema.optional(),
   /** A reference reveals its owning section without hard-coded plugin names in the shell. */
-  refKinds: z.array(z.enum(ManifoldRefSchema.options.map((option) => option.shape.kind.value))).optional(),
+  refKinds: z
+    .array(z.enum(ManifoldRefSchema.options.map((option) => option.shape.kind.value)))
+    .optional(),
 });
 export type SectionDef = z.infer<typeof SectionDefSchema>;
 
@@ -785,7 +787,13 @@ export const ActionRequirementSchema = z.strictObject({
 export type ActionRequirement = z.infer<typeof ActionRequirementSchema>;
 export const ActionRequirementsSchema = z.array(ActionRequirementSchema).min(1).max(64);
 export const ActionTracePolicySchema = z.enum(["redacted", "opaque"]);
-export const ActionRunAccessSchema = z.enum(["policy", "teardown", "delegate", "inspect", "runner"]);
+export const ActionRunAccessSchema = z.enum([
+  "policy",
+  "teardown",
+  "delegate",
+  "inspect",
+  "runner",
+]);
 export type ActionRunAccess = z.infer<typeof ActionRunAccessSchema>;
 
 /** Only native job/resource/service APIs can discharge these at concrete targets. */

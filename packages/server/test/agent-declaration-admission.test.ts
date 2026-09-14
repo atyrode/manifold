@@ -134,21 +134,40 @@ async function fixture(settingsPlugins: readonly ServerPluginDef[] = []) {
     return { actor, created };
   };
   const newRun = (sponsor: AuthContext = owner, overrides: Partial<ExternalRunFixtureInput> = {}) =>
-    admitted(createExternalRun({ auth, runtime, owner }, {
-      name: `admission ${runtime.newId()}`,
-      purpose: "Read the assigned task.",
-      target: "manifold://",
-      reach: "subtree",
-      caps: ["agents:delegate", "containers:read", "machines:run", "jobs:read", "operations:invoke"],
-      lifetimeMs: 600_000,
-      ...overrides,
-    }, sponsor));
+    admitted(
+      createExternalRun(
+        { auth, runtime, owner },
+        {
+          name: `admission ${runtime.newId()}`,
+          purpose: "Read the assigned task.",
+          target: "manifold://",
+          reach: "subtree",
+          caps: [
+            "agents:delegate",
+            "containers:read",
+            "machines:run",
+            "jobs:read",
+            "operations:invoke",
+          ],
+          lifetimeMs: 600_000,
+          ...overrides,
+        },
+        sponsor,
+      ),
+    );
   const newChildRun = (actor: AuthContext, overrides: Omit<CreateChildRunRequest, "runId">) => {
     if (actor.agentRunId === undefined) throw new Error("child fixture requires a parent run");
-    return admitted(CreateRunCredentialResultSchema.parse(auth.createChildRun({
-      ...overrides,
-      runId: actor.agentRunId,
-    }, actor)));
+    return admitted(
+      CreateRunCredentialResultSchema.parse(
+        auth.createChildRun(
+          {
+            ...overrides,
+            runId: actor.agentRunId,
+          },
+          actor,
+        ),
+      ),
+    );
   };
   const { actor, created } = newRun();
   const request = {
@@ -206,10 +225,12 @@ describe("declarations follow real first-party admission", () => {
   test("create target scope and delegated capability refusers precede a missing claim", async () => {
     const f = await fixture();
     const scoped = f.newRun(f.owner, { target: "manifold://container/inside" });
-    expect(await f.host.dispatch(scoped.actor, "core.access.createChildRun", {
-      ...child,
-      runId: scoped.created.run.id,
-    })).toEqual({
+    expect(
+      await f.host.dispatch(scoped.actor, "core.access.createChildRun", {
+        ...child,
+        runId: scoped.created.run.id,
+      }),
+    ).toEqual({
       ok: false,
       denial: { rule: "refused", message: "target_exceeds_grant" },
     });
@@ -282,10 +303,12 @@ describe("declarations follow real first-party admission", () => {
 
   test("admitted create and renewal reject declarations before creating or replacing credentials", async () => {
     const f = await fixture();
-    expect(await f.host.dispatch(f.actor, "core.access.createChildRun", {
-      ...child,
-      runId: f.created.run.id,
-    })).toMatchObject({
+    expect(
+      await f.host.dispatch(f.actor, "core.access.createChildRun", {
+        ...child,
+        runId: f.created.run.id,
+      }),
+    ).toMatchObject({
       ok: false,
       denial: { rule: "justification_required" },
     });

@@ -513,18 +513,28 @@ test.skipIf(!realLinux)(
             text += Buffer.from(output.bytes).toString();
             if (text.includes("control-ok")) controlled.resolve();
           },
-          runtime: (pty) => startLinuxJob({
-            ...spec, terminal: pty,
-            privateEnv: { MANIFOLD_RUN_TOKEN: token, MANIFOLD_RUN_ID: "bound-run", MANIFOLD_ORIGIN: "https://hub.example" },
-            onOutput: () => { journalFrames++; },
-          }),
+          runtime: (pty) =>
+            startLinuxJob({
+              ...spec,
+              terminal: pty,
+              privateEnv: {
+                MANIFOLD_RUN_TOKEN: token,
+                MANIFOLD_RUN_ID: "bound-run",
+                MANIFOLD_ORIGIN: "https://hub.example",
+              },
+              onOutput: () => {
+                journalFrames++;
+              },
+            }),
         });
         const handle = await terminal.runtimeHandle!;
         try {
           await handle.input(Buffer.from("private-control\n"));
           await Promise.race([
             controlled.promise,
-            handle.result.then(() => { throw new Error("harness exited before private control input"); }),
+            handle.result.then(() => {
+              throw new Error("harness exited before private control input");
+            }),
           ]);
           terminal.write("terminal-input\n");
           const result = await handle.result;
