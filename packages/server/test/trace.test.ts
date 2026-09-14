@@ -6,7 +6,6 @@ import { defineAction } from "@manifold/plugin";
 import { EventsListResponseSchema } from "@manifold-plugin/events";
 import {
   AgentPolicyChallengeSchema,
-  CreateAgentRunResultSchema,
   ManifoldRefSchema,
   ContainerResponseSchema,
   PlaceResponseSchema,
@@ -28,6 +27,7 @@ import { PluginHost, type ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { TRACE_ROW_TYPE, type ServerStore, type StoredEvent } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
+import { createExternalRun } from "./agent-fixtures.ts";
 import {
   FakeClock,
   FakeRuntime,
@@ -512,15 +512,13 @@ describe("the trace ledger records every exercise of authority", () => {
     const argRow = newestTrace(base);
     expect(argRow.outcome).toBe("invalid_args");
     expect(JSON.parse(argRow.payload)).toEqual({ nonsense: true });
-    const runCreated = await base.host.dispatch(base.owner, "core.access.createAgentRun", {
+    const run = createExternalRun(base, {
       name: "trace-policy-rungs",
       purpose: "Exercise both policy refusal rungs in the trace ledger.",
       target: "manifold://",
       reach: "subtree",
-      caps: ["containers:read"],
+      caps: ["agents:delegate", "containers:read"],
     });
-    if (!runCreated.ok) throw new Error("fixture agent run was refused");
-    const run = CreateAgentRunResultSchema.parse(runCreated.result);
     const pendingRun = base.auth.authenticate(run.credential.token);
     const policyRequired = await base.host.dispatch(pendingRun, "core.machines.list", {});
     expect(policyRequired.ok).toBeFalse();
@@ -561,15 +559,14 @@ describe("the trace ledger records every exercise of authority", () => {
     );
     expect(acknowledged.ok).toBeTrue();
     const childArgs = {
-      name: "trace-declaration-rungs",
-      purpose: "Exercise declaration refusal rungs before delegation.",
+      runId: run.run.id,
       target: "manifold://",
       reach: "subtree",
       caps: ["containers:read"],
     };
     const missingDeclaration = await base.host.dispatch(
       pendingRun,
-      "core.access.createAgentRun",
+      "core.access.createChildRun",
       childArgs,
     );
     expect(missingDeclaration).toMatchObject({
@@ -579,7 +576,7 @@ describe("the trace ledger records every exercise of authority", () => {
     expect(newestTrace(base).outcome).toBe("justification_required");
     const invalidDeclaration = await base.host.dispatch(
       pendingRun,
-      "core.access.createAgentRun",
+      "core.access.createChildRun",
       childArgs,
       null,
       { agentJustification: " " },

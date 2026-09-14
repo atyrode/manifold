@@ -183,6 +183,7 @@ export function jobContext(
     },
     status: (node: z.infer<typeof jobNode>) =>
       service().publicJob(service().status(auth, jobNode.parse(node), pluginId)),
+    runTerminal: (runId) => service().runTerminal(auth, id.parse(runId), pluginId),
     follow: (node, receive) => service().follow(auth, jobNode.parse(node), receive, pluginId),
     listRuns: (args) => {
       const { pluginId: requested, ...query } = args;

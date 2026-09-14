@@ -9,6 +9,7 @@
  * a real spawned engine), each its own file under `src/` (issue #319).
  */
 export { HostCallError, IsolateSliceUnavailable, PluginDatabaseError } from "./errors.ts";
+export type { ServerHarness, Agent, AgentRun, HarnessTarget, SessionRef, TerminalRuntime } from "@manifold/plugin";
 export {
   ui,
   type BoxOptions,

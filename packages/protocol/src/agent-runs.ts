@@ -169,6 +169,10 @@ export const SendRunInputRequestSchema = z.strictObject({
   runId: AgentRunIdSchema, input: z.string().min(1).max(65_536),
 });
 export type SendRunInputRequest = z.infer<typeof SendRunInputRequestSchema>;
+export const SendRunInputResultSchema = z.strictObject({});
+export type SendRunInputResult = z.infer<typeof SendRunInputResultSchema>;
+export const ReportRunActivityResultSchema = z.strictObject({ run: AgentRunSchema });
+export type ReportRunActivityResult = z.infer<typeof ReportRunActivityResultSchema>;
 
 export const AgentRunCredentialSchema = z.strictObject({
   token: z.string().min(1),

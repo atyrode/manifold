@@ -1,5 +1,8 @@
 import {
   hasCap,
+  canonicalJobJson,
+  type AgentRun,
+  type TerminalRuntime,
   type AdvertisedTerminal,
   type AgentMessage,
   type ClientMessageBody,
@@ -11,7 +14,8 @@ import {
   type TerminalInfo,
   type TerminalExecution,
 } from "@manifold/protocol";
-import type { AuthService } from "./auth.ts";
+import { ServiceError, type AuthContext, type AuthService, type CredentialReference } from "./auth.ts";
+import { createHash } from "node:crypto";
 import type { EventHub } from "./event-hub.ts";
 import type { Logger } from "./log.ts";
 import type { PlaceExecutor, TerminalPlacementPort } from "./placement.ts";
@@ -53,6 +57,7 @@ export interface MachineChannel {
    */
   readonly terminalHostId: string | null;
   readonly terminalExecution: TerminalExecution | null;
+  readonly protocolVersion?: number;
   send(message: ServerToAgentMessage): boolean;
 }
 
@@ -153,6 +158,64 @@ export class TerminalBroker implements TerminalPlacementPort {
    */
   private events: EventHub | null = null;
   private jobs: JobService | null = null;
+  /** Secrets live only until native admission, expiry, or revocation, never in a descriptor. */
+  private readonly runLaunches = new Map<string, {
+    runId: string;
+    digest: string;
+    containerId: string | undefined;
+    creator: CredentialReference;
+    token: string;
+    expiresAt: number;
+    cancelExpiry: () => void;
+  }>();
+
+  bindRunLaunch(runtime: TerminalRuntime, run: AgentRun, token: string, actor: AuthContext, containerId?: string): TerminalRuntime {
+    const bound = { ...runtime, launchBinding: this.runtime.newId() };
+    const expiresAt = Math.min(run.expiresAt, this.runtime.now() + 60_000);
+    if (!this.auth.runLaunchCredentialValid(run.id, token) || expiresAt <= this.runtime.now())
+      throw new ServiceError("forbidden", "run launch credential unavailable");
+    const creator = this.auth.credentialReference(actor);
+    if (!this.auth.restoreCredential(creator))
+      throw new ServiceError("forbidden", "run launch creator unavailable");
+    const cancelExpiry = this.timers.schedule(() => this.runLaunches.delete(bound.launchBinding), expiresAt - this.runtime.now());
+    this.runLaunches.set(bound.launchBinding, {
+      runId: run.id,
+      digest: createHash("sha256").update(canonicalJobJson(bound)).digest("hex"),
+      containerId,
+      creator,
+      token,
+      expiresAt,
+      cancelExpiry,
+    });
+    return bound;
+  }
+
+  clearRunLaunches(): void {
+    for (const binding of this.runLaunches.values()) binding.cancelExpiry();
+    this.runLaunches.clear();
+  }
+
+  private consumeRunLaunch(runtime: TerminalRuntime, actor: AuthContext, containerId: string) {
+    if (runtime.launchBinding === undefined) return undefined;
+    const binding = this.runLaunches.get(runtime.launchBinding);
+    if (!binding ||
+      binding.creator.tokenId !== actor.tokenId ||
+      binding.creator.principalId !== actor.principal.id ||
+      (binding.containerId !== undefined && binding.containerId !== containerId) ||
+      binding.digest !== createHash("sha256").update(canonicalJobJson(runtime)).digest("hex"))
+      throw new ServiceError("forbidden", "run launch binding refused");
+    this.runLaunches.delete(runtime.launchBinding);
+    binding.cancelExpiry();
+    if (binding.expiresAt <= this.runtime.now() ||
+      !this.auth.restoreCredential(binding.creator) ||
+      !this.auth.runLaunchCredentialValid(binding.runId, binding.token))
+      throw new ServiceError("forbidden", "run launch binding expired or revoked");
+    return {
+      MANIFOLD_RUN_TOKEN: binding.token,
+      MANIFOLD_RUN_ID: binding.runId,
+      MANIFOLD_ORIGIN: this.publicUrl(),
+    };
+  }
 
   setJobs(jobs: JobService): void {
     this.jobs = jobs;
@@ -181,6 +244,14 @@ export class TerminalBroker implements TerminalPlacementPort {
      */
     private readonly holdsTileTree: TileTreeDisciplines,
   ) {
+    this.auth.onRevoked(() => {
+      for (const [id, binding] of this.runLaunches) {
+        if (this.auth.restoreCredential(binding.creator) &&
+          this.auth.runLaunchCredentialValid(binding.runId, binding.token)) continue;
+        binding.cancelExpiry();
+        this.runLaunches.delete(id);
+      }
+    });
     for (const machine of store.listMachines()) {
       if (machine.draining) this.draining.add(machine.id);
     }
@@ -726,6 +797,12 @@ export class TerminalBroker implements TerminalPlacementPort {
       try {
         if (!this.jobs || !machine.terminalHostId || traceId === undefined)
           throw new Error("terminal_runtime_unsupported");
+        if (message.runtime.launchBinding !== undefined) {
+          if ((machine.protocolVersion ?? 0) < 32)
+            throw new ServiceError("forbidden", "run_launch_protocol_unsupported");
+          this.jobs.assertRunLaunchSupported(machine.machineId);
+        }
+        const privateEnv = this.consumeRunLaunch(message.runtime, channel.auth, channel.containerId);
         runtime = this.jobs.admitTerminal(
           channel.auth,
           message.runtime,
@@ -734,14 +811,18 @@ export class TerminalBroker implements TerminalPlacementPort {
             terminalId,
             terminalHostId: machine.terminalHostId,
             containerId: homeId,
+            ...(privateEnv ? { runId: privateEnv.MANIFOLD_RUN_ID } : {}),
           },
           traceId,
+          privateEnv,
         );
-      } catch {
+      } catch (error) {
         channel.send({
           type: "error",
           code: "forbidden",
-          message: "terminal runtime admission refused",
+          message: error instanceof ServiceError &&
+            (error.message === "run_launch_protocol_unsupported" || error.message === "run_launch_owner_unavailable")
+            ? error.message : "terminal runtime admission refused",
           ref: message.elementId,
         });
         return;

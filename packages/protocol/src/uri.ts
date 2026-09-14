@@ -13,6 +13,8 @@ import { z } from "zod";
  *   manifold://container/<containerId>/element/<elementId>
  *   manifold://container/<containerId>/tile/<tileId>
  *   manifold://principal/<principalId>
+ *   manifold://agent/<agentId>
+ *   manifold://run/<runId>
  *   manifold://plugin/<pluginId>
  *   manifold://action/<actionName>
  *   manifold://machine/<machineId>
@@ -47,8 +49,6 @@ export const ManifoldRefSchema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({ kind: z.literal("tile"), containerId: RefIdSchema, tileId: RefIdSchema }),
   z.strictObject({ kind: z.literal("principal"), principalId: RefIdSchema }),
-  z.strictObject({ kind: z.literal("agent"), agentId: RefIdSchema }),
-  z.strictObject({ kind: z.literal("run"), runId: RefIdSchema }),
   z.strictObject({ kind: z.literal("plugin"), pluginId: RefIdSchema }),
   z.strictObject({ kind: z.literal("action"), actionName: RefIdSchema }),
   z.strictObject({ kind: z.literal("machine"), machineId: RefIdSchema }),
@@ -77,6 +77,8 @@ export const ManifoldRefSchema = z.discriminatedUnion("kind", [
     serviceId: RefIdSchema,
     operationId: RefIdSchema.optional(),
   }),
+  z.strictObject({ kind: z.literal("agent"), agentId: RefIdSchema }),
+  z.strictObject({ kind: z.literal("run"), runId: RefIdSchema }),
 ]);
 export type ManifoldRef = z.infer<typeof ManifoldRefSchema>;
 

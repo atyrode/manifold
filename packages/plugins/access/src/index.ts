@@ -3,11 +3,12 @@ import {
   AcknowledgeAgentPolicyRequestSchema,
   AcknowledgeAgentPolicyResultSchema,
   AgentPolicyChallengeSchema,
-  AgentRunInventorySchema,
+  AgentRequestSchema,
   BootstrapPrincipalRequestSchema,
   CreateGrantRequestSchema,
-  CreateAgentRunRequestSchema,
-  CreateAgentRunResultSchema,
+  CreateChildRunRequestSchema,
+  CreateRunRequestSchema,
+  CreateRunResultSchema,
   CredentialsResponseSchema,
   DialSchema,
   DialShareRequestSchema,
@@ -16,12 +17,28 @@ import {
   GrantsSchema,
   FinishAgentRunRequestSchema,
   FinishAgentRunResultSchema,
-  InspectAgentRunRequestSchema,
-  InspectAgentRunResultSchema,
+  GetAgentResultSchema,
+  InspectRunRequestSchema,
+  InspectRunResultSchema,
+  LaunchRunRequestSchema,
+  LaunchRunResultSchema,
+  ListAgentsRequestSchema,
+  ListAgentsResultSchema,
+  ListHarnessesResultSchema,
+  ListHarnessSessionsRequestSchema,
+  ListHarnessSessionsResultSchema,
+  ListRunsRequestSchema,
+  ListRunsResultSchema,
   ListGrantsRequestSchema,
   MintShareRequestSchema,
   MintTokenRequestSchema,
   OpenDialRequestSchema,
+  RegisterAgentRequestSchema,
+  RegisterAgentResultSchema,
+  ReportRunActivityRequestSchema,
+  ReportRunActivityResultSchema,
+  ResolveHarnessSessionRequestSchema,
+  ResolveHarnessSessionResultSchema,
   RevokeGrantRequestSchema,
   RevokeRequestSchema,
   ReloadAgentPolicyResultSchema,
@@ -29,16 +46,19 @@ import {
   RenewAgentRunResultSchema,
   RevokeResultSchema,
   RevokeShareRequestSchema,
+  SendRunInputRequestSchema,
+  SendRunInputResultSchema,
   ShareGrantSchema,
   ShareInventorySchema,
   TokenGrantSchema,
+  UpdateAgentRequestSchema,
   type PluginManifest,
 } from "@manifold/protocol";
 import { z } from "zod";
 
 /**
- * Access administration as one plugin: human credential admission, sponsor-bound autonomous
- * runs, grants, shares and revocation. Its first three doors replaced
+ * Access administration as one plugin: human credentials, durable Agents and bounded Runs,
+ * grants, shares and revocation. Its first three doors replaced
  * `POST /api/principals`, `POST /api/tokens` and `POST /api/tokens/revoke`.
  *
  * The MECHANISM stays floor and is untouched — hashing, timing-safe comparison, bearer
@@ -73,19 +93,9 @@ import { z } from "zod";
  * interface that had already promised its shape. What the ADR added ABOVE the door is the grant
  * administration trio below, which it named as this plugin's work and left otherwise unspecified.
  *
- * CONTRIBUTES ONE SECTION as of ADR 0019 §3 — `sessions`, the credential list. This plugin
- * shipped door-only for two waves on the stated grounds that "administration screens are a
- * later plugin"; the credential list is the first of them, and it lands here rather than in
- * a new god panel because the concept is this plugin's: principals and the credentials they
- * hold are what `core.access` mints and revokes. The FLEET's half of the same question —
- * which machines are enrolled, and withdrawing one — stays in `core.machines`'s existing
- * Machines section, for the same reason inverted (ADR 0019 §3: "rendered by the plugin that
- * owns each concept"). Two sections, two concepts, no panel that knows about both.
- *
- * The `admin UI: deferred, door-only` marker is therefore GONE from the description below,
- * deleted in the commit that discharges it. The share and grant markers stay: those screens
- * are still owed, and a marker that outlived its deferral is the lie the convention exists
- * to prevent — as is one deleted before its deferral ended.
+ * Agents and human Sessions have separate sidebar sections. The Agents section owns durable
+ * identities and their Run drill-down; Sessions retains the human credential inventory.
+ * Fleet enrollment stays in core.machines. Share and grant administration remain door-only.
  *
  * IN-PRODUCT DEFERRAL MARKER — the convention this manifest introduces, and it applies
  * wherever a plugin ships a door without the screen that drives it. A deferral a principal
@@ -110,42 +120,43 @@ export const accessManifest: PluginManifest = {
   version: "1.4.0",
   title: "Access",
   description:
-    "Creates sponsor-bound agent runs, enforces exact policy acknowledgement, inspects authorized run chains, and administers credentials, grants and shares — share UI: deferred, door-only; grant UI: deferred, door-only",
+    "Registers durable Agents, admits bounded Runs, enforces exact policy acknowledgement, and inspects authorized work alongside credentials, grants and shares — share UI: deferred, door-only; grant UI: deferred, door-only",
   /*
     `*` is here because `createPrincipal` demands root and a manifest is a readable ceiling
     on a plugin's authority: a reader must be able to see, without opening the code, that
     one of these doors is root-only. The share doors add no capability — a share IS a token
     bound to a node (A5), so the cap that already means "hands authority out" is the one they
     declare, and `containers:read`/`containers:write` are what accepting and using a foreign
-    node costs on the guest side. The grant doors add none either. `agents:delegate` is the
-    one new ceiling from ADR 0039: it names target-relative child-run creation and renewal, and
-    the identity mechanism discharges it against the requested run target. A manifest still
-    bounds only what the plugin's actions may DECLARE; the waterfall and run ceiling decide
-    what the CALLER holds.
+    node costs on the guest side. The grant doors add none either. `agents:delegate` names
+    target-relative delegation; `agents:run` admits work for a registered Agent without
+    authorizing ordinary effects. The identity mechanism evaluates both against the actual
+    Agent grant and Run target. This manifest bounds declarations, not the caller's authority.
   */
-  capabilities: ["*", "agents:delegate", "tokens:mint", "containers:read", "containers:write"],
+  capabilities: [
+    "*",
+    "agents:delegate",
+    "agents:run",
+    "tokens:mint",
+    "containers:read",
+    "containers:write",
+  ],
   essential: true,
   contributes: {
     panels: [],
-    /*
-      THE CREDENTIAL LIST'S HOME (ADR 0019 §3). `order: 30` puts it after Machines (20),
-      which is the order the two answers belong in: the fleet is what an operator looks at
-      daily, and who holds a credential is what they look at when something is wrong.
-
-      Named `sessions` rather than `credentials` or `access` because a section id is what a
-      HUMAN sees in the rail, and "which browsers hold my key" is a question about sessions.
-      The word carries no second meaning here: a session in this product is a client
-      connection, and a live credential is precisely what makes one possible.
-    */
-    sections: [{ id: "sessions", title: "Sessions", order: 30, setting: "sessions" }],
-    /*
-      ONE PREFERENCE OVER THE ROW (#133), and this is the seat where the difference from a
-      disable matters most. `essential: true` refuses to let anyone switch this plugin off,
-      because a workspace nobody can hold a credential in is broken; a preference lets ONE
-      reader put ONE row away in their own rail while every door, every grant and every other
-      principal's view is untouched. Shipped `true`.
-     */
-    settings: [{ id: "sessions", title: "Sessions", kind: "boolean", default: true }],
+    sections: [
+      {
+        id: "agents",
+        title: "Agents",
+        order: 25,
+        setting: "agents",
+        refKinds: ["agent", "run"],
+      },
+      { id: "sessions", title: "Sessions", order: 30, setting: "sessions" },
+    ],
+    settings: [
+      { id: "agents", title: "Agents", kind: "boolean", default: true },
+      { id: "sessions", title: "Sessions", kind: "boolean", default: true },
+    ],
     elements: [],
     tools: [],
     /*
@@ -160,6 +171,8 @@ export const accessManifest: PluginManifest = {
       projection stopped being legal, arriving without anybody at this instance doing anything.
      */
     events: [
+      { id: "agent_changed", title: "Agent changed" },
+      { id: "run_changed", title: "Run changed" },
       { id: "dial_online", title: "Dial live" },
       { id: "dial_offline", title: "Dial offline" },
       { id: "dial_revoked", title: "Dial revoked by its host" },
@@ -168,15 +181,29 @@ export const accessManifest: PluginManifest = {
 };
 
 /**
- * The two door names this plugin's own section dispatches, built from the manifest id rather
- * than spelled: a full action name is the pair `${manifest.id}.${local}`, so the chrome that
- * calls one and the `data-action` attribute that names it in the DOM (AXIOMS.md §Foundation law and REGISTRY.md §Foundation) cannot
- * drift from the declaration below. `core.keys` set this precedent.
+ * Door names shared by this plugin's browser section and action declarations. Deriving each
+ * name from the manifest id keeps dispatch and data-action attributes on the same vocabulary.
  */
 export const ACCESS_LIST_CREDENTIALS_ACTION = `${accessManifest.id}.listCredentials`;
 export const ACCESS_REVOKE_ACTION = `${accessManifest.id}.revoke`;
-export const ACCESS_INSPECT_AGENT_RUN_ACTION = `${accessManifest.id}.inspectAgentRun`;
-export const ACCESS_LIST_AGENT_RUNS_ACTION = `${accessManifest.id}.listAgentRuns`;
+export const ACCESS_REGISTER_AGENT_ACTION = `${accessManifest.id}.registerAgent`;
+export const ACCESS_LIST_AGENTS_ACTION = `${accessManifest.id}.listAgents`;
+export const ACCESS_GET_AGENT_ACTION = `${accessManifest.id}.getAgent`;
+export const ACCESS_UPDATE_AGENT_ACTION = `${accessManifest.id}.updateAgent`;
+export const ACCESS_DISABLE_AGENT_ACTION = `${accessManifest.id}.disableAgent`;
+export const ACCESS_ENABLE_AGENT_ACTION = `${accessManifest.id}.enableAgent`;
+export const ACCESS_RETIRE_AGENT_ACTION = `${accessManifest.id}.retireAgent`;
+export const ACCESS_CREATE_RUN_ACTION = `${accessManifest.id}.createRun`;
+export const ACCESS_CREATE_CHILD_RUN_ACTION = `${accessManifest.id}.createChildRun`;
+export const ACCESS_LAUNCH_RUN_ACTION = `${accessManifest.id}.launchRun`;
+export const ACCESS_LIST_RUNS_ACTION = `${accessManifest.id}.listRuns`;
+export const ACCESS_INSPECT_RUN_ACTION = `${accessManifest.id}.inspectRun`;
+export const ACCESS_LIST_HARNESSES_ACTION = `${accessManifest.id}.listHarnesses`;
+export const ACCESS_LIST_HARNESS_SESSIONS_ACTION = `${accessManifest.id}.listHarnessSessions`;
+export const ACCESS_RESOLVE_HARNESS_SESSION_ACTION = `${accessManifest.id}.resolveHarnessSession`;
+export const ACCESS_FINISH_AGENT_RUN_ACTION = `${accessManifest.id}.finishAgentRun`;
+export const ACCESS_SEND_RUN_INPUT_ACTION = `${accessManifest.id}.sendRunInput`;
+export const ACCESS_REPORT_RUN_ACTIVITY_ACTION = `${accessManifest.id}.reportRunActivity`;
 
 /**
  * Authority mirrors the deleted routes exactly, rung for rung.
@@ -192,8 +219,8 @@ export const ACCESS_LIST_AGENT_RUNS_ACTION = `${accessManifest.id}.listAgentRuns
  * widening. The deleted routes authenticated ANY token: a container-scoped human holding
  * `tokens:mint` could mint a further attenuated human credential inside its own container and
  * revoke what it had minted there. Autonomous delegation no longer uses this door: the
- * `createAgentRun` action below publishes its target-relative `agents:delegate` requirement and
- * the mechanism enforces strict child attenuation.
+ * `createChildRun` action publishes its target-relative `agents:delegate` requirement and
+ * the mechanism enforces strict child attenuation under the durable Agent grant.
  * The confinement obligation `scope: "container"` places on the legacy handlers is discharged
  * by the mechanism, on the real caller: a mint may not
  * widen its minter's container scope, and a scoped revocation reaches only that container's tokens.
@@ -217,13 +244,133 @@ export const accessActions = [
     result: TokenGrantSchema,
   }),
   defineAction({
-    name: "createAgentRun",
-    title: "Create a sponsor-bound agent run",
+    name: "registerAgent",
+    title: "Register a durable Agent",
+    caps: [],
+    runAccess: "delegate",
+    trace: "opaque",
+    input: RegisterAgentRequestSchema,
+    result: RegisterAgentResultSchema,
+  }),
+  defineAction({
+    name: "listAgents",
+    title: "List authorized Agents",
+    caps: [],
+    runAccess: "inspect",
+    trace: "opaque",
+    input: ListAgentsRequestSchema,
+    result: ListAgentsResultSchema,
+  }),
+  defineAction({
+    name: "getAgent",
+    title: "Get an authorized Agent",
+    caps: [],
+    runAccess: "inspect",
+    trace: "opaque",
+    input: AgentRequestSchema,
+    result: GetAgentResultSchema,
+  }),
+  defineAction({
+    name: "updateAgent",
+    title: "Update an Agent's standing grant or context",
+    caps: [],
+    runAccess: "delegate",
+    trace: "opaque",
+    input: UpdateAgentRequestSchema,
+    result: GetAgentResultSchema,
+  }),
+  defineAction({
+    name: "disableAgent",
+    title: "Disable an Agent and withdraw its active Runs",
+    caps: [],
+    runAccess: "delegate",
+    input: AgentRequestSchema,
+    result: GetAgentResultSchema,
+  }),
+  defineAction({
+    name: "enableAgent",
+    title: "Enable a disabled Agent",
+    caps: [],
+    runAccess: "delegate",
+    input: AgentRequestSchema,
+    result: GetAgentResultSchema,
+  }),
+  defineAction({
+    name: "retireAgent",
+    title: "Retire an Agent from future Run admission",
+    caps: [],
+    runAccess: "delegate",
+    input: AgentRequestSchema,
+    result: GetAgentResultSchema,
+  }),
+  defineAction({
+    name: "createRun",
+    title: "Create a bounded Run for an Agent",
+    caps: [],
+    runAccess: "runner",
+    input: CreateRunRequestSchema,
+    result: CreateRunResultSchema,
+  }),
+  defineAction({
+    name: "createChildRun",
+    title: "Delegate an attenuated child Run",
     caps: ["agents:delegate"],
     runAccess: "delegate",
     agentJustification: "required",
-    input: CreateAgentRunRequestSchema,
-    result: CreateAgentRunResultSchema,
+    input: CreateChildRunRequestSchema,
+    result: CreateRunResultSchema,
+  }),
+  defineAction({
+    name: "launchRun",
+    title: "Launch an Agent Run through its harness",
+    caps: [],
+    runAccess: "runner",
+    trace: "opaque",
+    input: LaunchRunRequestSchema,
+    result: LaunchRunResultSchema,
+  }),
+  defineAction({
+    name: "listHarnesses",
+    title: "List registered Agent harnesses",
+    caps: [],
+    runAccess: "inspect",
+    input: z.strictObject({}),
+    result: ListHarnessesResultSchema,
+  }),
+  defineAction({
+    name: "listHarnessSessions",
+    title: "List authorized harness sessions",
+    caps: [],
+    runAccess: "inspect",
+    trace: "opaque",
+    input: ListHarnessSessionsRequestSchema,
+    result: ListHarnessSessionsResultSchema,
+  }),
+  defineAction({
+    name: "resolveHarnessSession",
+    title: "Resolve an authorized harness session",
+    caps: [],
+    runAccess: "inspect",
+    trace: "opaque",
+    input: ResolveHarnessSessionRequestSchema,
+    result: ResolveHarnessSessionResultSchema,
+  }),
+  defineAction({
+    name: "sendRunInput",
+    title: "Send input to an Agent Run",
+    caps: [],
+    runAccess: "runner",
+    trace: "opaque",
+    input: SendRunInputRequestSchema,
+    result: SendRunInputResultSchema,
+  }),
+  defineAction({
+    name: "reportRunActivity",
+    title: "Report harness-observed Run activity",
+    caps: [],
+    runAccess: "runner",
+    input: ReportRunActivityRequestSchema,
+    result: ReportRunActivityResultSchema,
   }),
   defineAction({
     name: "getAgentPolicy",
@@ -243,9 +390,9 @@ export const accessActions = [
   }),
   defineAction({
     name: "renewAgentRun",
-    title: "Renew a sponsored agent run",
-    caps: ["agents:delegate"],
-    runAccess: "delegate",
+    title: "Renew a Run within its Agent's current grant",
+    caps: [],
+    runAccess: "runner",
     agentJustification: "required",
     input: RenewAgentRunRequestSchema,
     result: RenewAgentRunResultSchema,
@@ -259,22 +406,22 @@ export const accessActions = [
     result: FinishAgentRunResultSchema,
   }),
   defineAction({
-    name: "listAgentRuns",
-    title: "List safely inspectable agent runs",
+    name: "listRuns",
+    title: "List safely inspectable Runs",
     caps: [],
     runAccess: "inspect",
     trace: "opaque",
-    input: z.strictObject({}),
-    result: AgentRunInventorySchema,
+    input: ListRunsRequestSchema,
+    result: ListRunsResultSchema,
   }),
   defineAction({
-    name: "inspectAgentRun",
-    title: "Inspect an authorized agent run",
+    name: "inspectRun",
+    title: "Inspect an authorized Run",
     caps: [],
     runAccess: "inspect",
     trace: "opaque",
-    input: InspectAgentRunRequestSchema,
-    result: InspectAgentRunResultSchema,
+    input: InspectRunRequestSchema,
+    result: InspectRunResultSchema,
   }),
   defineAction({
     name: "reloadAgentPolicy",

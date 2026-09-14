@@ -41,6 +41,7 @@ import type { Logger } from "./log.ts";
  */
 export interface EventAuthority {
   allows(context: AuthContext, cap: "containers:read", containerId?: string): boolean;
+  canReadAgentNode(context: AuthContext, ref: Extract<ManifoldRef, { kind: "agent" | "run" }>): boolean;
 }
 
 /**
@@ -149,6 +150,8 @@ function topicContainer(ref: ManifoldRef, terminals: TerminalHomePort): string |
     case "output":
     case "service":
     case "principal":
+    case "agent":
+    case "run":
     case "plugin":
     case "action":
       return null;
@@ -233,6 +236,7 @@ export class EventHub {
   }
 
   private authorizedTopic(auth: AuthContext, topic: ManifoldRef): boolean {
+    if (topic.kind === "agent" || topic.kind === "run") return this.authority.canReadAgentNode(auth, topic);
     if (topic.kind === "operation" || topic.kind === "location") return false;
     if (topic.kind === "job" || topic.kind === "output" || topic.kind === "service")
       return this.deps.canReadGoverned(auth, topic);
@@ -482,13 +486,11 @@ export class EventHub {
       const entry = this.subscriptions.get(id);
       if (entry === undefined) continue;
       // Collection delivery cannot broaden the original resource's read authority.
-      if (
-        governingTopic.kind === "job" ||
-        governingTopic.kind === "output" ||
-        governingTopic.kind === "service"
+      if (governingTopic.kind === "agent" || governingTopic.kind === "run"
+        ? !this.authority.canReadAgentNode(entry.subscriber.auth, governingTopic)
+        : governingTopic.kind === "job" || governingTopic.kind === "output" || governingTopic.kind === "service"
           ? !this.deps.canReadGoverned(entry.subscriber.auth, governingTopic)
-          : !this.authorized(entry.subscriber.auth, containerId)
-      )
+          : !this.authorized(entry.subscriber.auth, containerId))
         continue;
       reached.add(id);
       if (frame === null) {
