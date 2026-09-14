@@ -3,13 +3,14 @@ import {
   AcknowledgeAgentPolicyRequestSchema,
   AgentPolicyChallengeSchema,
   AgentRunTerminalOutcomeSchema,
-  CreateAgentRunRequestSchema,
+  CreateChildRunRequestSchema,
+  CreateRunRequestSchema,
   RenewAgentRunRequestSchema,
 } from "./agent-runs.ts";
+import { ReportRunActivityRequestSchema } from "./agents.ts";
 import { GrantNodeSchema } from "./grants.ts";
 import { ActionDenialSchema, ActionSummarySchema } from "./plugin.ts";
 
-export const ACTION_RUNNER_VERSION = 1;
 export const ACTION_RUNNER_MAX_FRAME_BYTES = 65_536;
 export const ACTION_RUNNER_MAX_FRAMES = 1_024;
 export const ACTION_RUNNER_IDLE_TIMEOUT_MS = 5 * 60_000;
@@ -36,15 +37,21 @@ const JustificationSchema = z
   .optional();
 const RunIdSchema = z.string().min(1).max(128);
 
+/** Launcher-only data, never a member of the model-facing request union. */
+export const ActionRunnerBindSchema = z.union([
+  CreateRunRequestSchema.pick({ agentId: true, session: true, model: true }),
+  z.strictObject({ runId: RunIdSchema }),
+]);
+export type ActionRunnerBind = z.infer<typeof ActionRunnerBindSchema>;
+
+/** Only the trusted inherited activity pipe accepts this frame. */
+export const ActionRunnerActivitySchema = ReportRunActivityRequestSchema.extend({
+  activity: z.enum(["working", "blocked", "done", "idle"]),
+});
+export type ActionRunnerActivity = z.infer<typeof ActionRunnerActivitySchema>;
+
 /** Credentials, origins and transport headers are deliberately absent from every frame. */
 export const ActionRunnerRequestSchema = z.discriminatedUnion("type", [
-  z.strictObject({
-    type: z.literal("start"),
-    id: IdSchema,
-    version: z.literal(ACTION_RUNNER_VERSION),
-    declaration: CreateAgentRunRequestSchema,
-    justification: JustificationSchema,
-  }),
   z.strictObject({ type: z.literal("discover"), id: IdSchema, runId: RunIdSchema }),
   z.strictObject({ type: z.literal("policy"), id: IdSchema, runId: RunIdSchema }),
   z.strictObject({
@@ -66,7 +73,12 @@ export const ActionRunnerRequestSchema = z.discriminatedUnion("type", [
     type: z.literal("child"),
     id: IdSchema,
     runId: RunIdSchema,
-    declaration: CreateAgentRunRequestSchema,
+    declaration: CreateChildRunRequestSchema.omit({
+      runId: true,
+      agentId: true,
+      session: true,
+      model: true,
+    }),
     justification: JustificationSchema,
   }),
   z.strictObject({
@@ -96,7 +108,7 @@ const CorrelationSchema = z.object({
 export const ActionRunnerResponseSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("discovery"),
-    id: IdSchema,
+    id: IdSchema.nullable(),
     runId: RunIdSchema.nullable(),
     ...ActionProtocolSchema.shape,
   }),

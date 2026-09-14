@@ -4,6 +4,12 @@ Date: 2026-09-13
 Status: accepted
 Ratified: operator selection “Broader delegation now” for #553 on 2026-09-13; consumes #559/#558 as merged in #560.
 
+Superseded in part (2026-09-14) by [ADR 0042: durable Agents](0042-durable-agents.md):
+model-authored `start` and a general sponsor credential are replaced by launcher-only
+Agent/run environment binding. The bounded action transport, exact explicit policy
+acknowledgement, redacted output and finally-owned teardown remain in force. Harness activity
+uses a separate inherited bounded pipe or the trusted SDK method, not a model frame.
+
 ## Context
 
 The action plane was typed and discoverable, but an external agent's immediately available
