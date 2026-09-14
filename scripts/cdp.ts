@@ -2,8 +2,8 @@
  * Minimal Chrome DevTools Protocol driver, shared by every verify-*.ts gate that drives a
  * real browser and by bench-sync.ts. System chromium, no extra dependency.
  *
- * Timing lives in `gate-lib.ts` with the rest of the gate bootstrap; this file is the driver
- * and nothing else.
+ * Gate polling timing lives in `gate-lib.ts` with the rest of the gate bootstrap; this file is
+ * the driver and owns bounded protocol-operation deadlines.
  */
 import { rmSync } from "node:fs";
 import { reserveLoopbackPort, sleep } from "./gate-lib.ts";
@@ -77,11 +77,27 @@ export class Browser {
    */
   private readonly listeners = new Map<string, ((params: Record<string, unknown>) => void)[]>();
 
-  /** Subscribes to one CDP event by method name. Handlers run in registration order. */
-  on(method: string, handler: (params: Record<string, unknown>) => void): void {
+  /**
+   * Subscribes to one CDP event by method name. Handlers run in registration order.
+   * Returns an idempotent callback that removes this subscription.
+   */
+  on(method: string, handler: (params: Record<string, unknown>) => void): () => void {
     const existing = this.listeners.get(method);
     if (existing === undefined) this.listeners.set(method, [handler]);
     else existing.push(handler);
+    let subscribed = true;
+    return () => {
+      if (!subscribed) return;
+      subscribed = false;
+      const handlers = this.listeners.get(method);
+      if (handlers === undefined) return;
+      const index = handlers.indexOf(handler);
+      if (index === -1) return;
+      if (handlers.length === 1) this.listeners.delete(method);
+      else {
+        this.listeners.set(method, [...handlers.slice(0, index), ...handlers.slice(index + 1)]);
+      }
+    };
   }
 
   static detect(): string {
@@ -294,6 +310,34 @@ export class Browser {
   async goto(url: string): Promise<void> {
     await this.send("Page.navigate", { url });
     await sleep(1500);
+  }
+
+  /**
+   * Reloads the current page and waits until Chromium reports that the new document loaded.
+   * The event subscription is installed before the command so a fast load cannot race it.
+   */
+  async reload(): Promise<void> {
+    const loaded = Promise.withResolvers<void>();
+    let unsubscribe = (): void => {};
+    unsubscribe = this.on("Page.loadEventFired", () => {
+      unsubscribe();
+      loaded.resolve();
+    });
+    const timer = setTimeout(
+      () => loaded.reject(new Error("timed out waiting for Page.loadEventFired after Page.reload")),
+      30_000,
+    );
+    try {
+      const reload = this.send("Page.reload", {}).then((frame) => {
+        if (frame.error !== undefined) {
+          throw new Error(`CDP Page.reload failed: ${frame.error.message}`);
+        }
+      });
+      await Promise.all([reload, loaded.promise]);
+    } finally {
+      clearTimeout(timer);
+      unsubscribe();
+    }
   }
 
   async evaluate<T>(expression: string): Promise<T> {
