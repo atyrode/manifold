@@ -438,12 +438,7 @@ export class JobService {
       policy: record?.policy ?? null,
     };
   }
-  private instanceRuntimeRequest(
-    auth: AuthContext,
-    policy: ServicePolicy,
-    machineId: string,
-    traceId: string,
-  ): JobRequest {
+  private instanceRuntimeInstallation(policy: ServicePolicy, machineId: string): JobInstallation {
     const runtime = policy.runtime;
     if (!runtime || runtime.scope !== "instance") fail("invalid_instance_service_runtime");
     const install = this.jobs.installation(machineId, runtime.pluginId);
@@ -456,6 +451,26 @@ export class JobService {
       this.store.disabledPlugins().has(install.pluginId)
     )
       fail("instance_service_runtime_unavailable");
+    if (
+      install.revision !== runtime.installationRevision ||
+      install.artifact !== runtime.artifactSha256
+    )
+      fail("installation_changed");
+    if (
+      digest(this.operationBindings(install, runtime.operationId) ?? null) !==
+      runtime.resourceBindingDigest
+    )
+      fail("resource_bindings_changed");
+    return install;
+  }
+  private instanceRuntimeRequest(
+    auth: AuthContext,
+    policy: ServicePolicy,
+    machineId: string,
+    traceId: string,
+  ): JobRequest {
+    this.instanceRuntimeInstallation(policy, machineId);
+    const runtime = policy.runtime!;
     const input: JobRequest["input"] = {};
     for (const [name, value] of Object.entries(runtime.input)) {
       if (!("literal" in value)) fail("invalid_instance_service_runtime");
@@ -578,7 +593,7 @@ export class JobService {
     return this.invokeService(auth, this.instanceServiceReadArgs(args), callerPluginId, traceId);
   }
   private ensureInstanceService(serviceId: string): void {
-    const record = this.instanceServices.get(serviceId);
+    let record = this.instanceServices.get(serviceId);
     if (!record?.enabled) {
       this.instanceStarts.delete(serviceId);
       return;
@@ -589,6 +604,32 @@ export class JobService {
     )
       return;
     const owned = this.jobs.instanceServiceJobs(serviceId);
+    if (this.instanceReason(record) === "credential_revoked_or_expired") {
+      const revision = record.revision;
+      if (
+        owned.some(
+          (job) =>
+            job.request.service?.revision !== revision ||
+            this.jobs.cancellation(job.request.jobId)?.mode === "retire",
+        )
+      )
+        return;
+      try {
+        const install = this.instanceRuntimeInstallation(record.policy, record.machineId);
+        // Requirements come from the same pinned installation as the stored runtime policy.
+        record = this.instanceServices.remint(
+          serviceId,
+          record.revision,
+          this.operationRequirements(install, record.policy.runtime!.operationId),
+        );
+        this.instanceReadiness.delete(serviceId);
+        this.instanceFailures.delete(serviceId);
+      } catch (error) {
+        if (!(error instanceof ServiceError)) throw error;
+        this.instanceFailures.set(serviceId, { revision: record.revision, reason: error.message });
+        return;
+      }
+    }
     const existing = record.jobId ? this.jobs.get(record.jobId) : null;
     if (existing && active.has(existing.state)) {
       this.instanceStarts.delete(serviceId);
@@ -1993,6 +2034,9 @@ export class JobService {
       },
     });
     for (const job of this.jobs.active()) if (job.state === "queued") this.start(job);
+    for (const record of this.instanceServices.list())
+      if (this.instanceReason(record) === "credential_revoked_or_expired")
+        this.instanceStarts.add(record.serviceId);
     for (const serviceId of [...this.instanceStarts]) this.ensureInstanceService(serviceId);
   }
 

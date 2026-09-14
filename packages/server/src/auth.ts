@@ -649,8 +649,8 @@ export class AuthService {
     }
     const principal = this.store.getPrincipal(token.principalId);
     if (principal === null) throw new ServiceError("unauthorized", "invalid bearer token");
-    const agentRun = this.store.getAgentRunByToken(token.id);
-    const runner = this.store.getAgentByRunnerToken(token.id);
+    const agentRun = principal.kind === "agent" ? this.store.getAgentRunByToken(token.id) : null;
+    const runner = principal.kind === "agent" ? this.store.getAgentByRunnerToken(token.id) : null;
     return {
       principal,
       caps: token.caps,
@@ -916,7 +916,7 @@ export class AuthService {
       grantId: reference.grantId,
       isRoot,
       ...(reference.expiresAt === undefined ? {} : { expiresAt: reference.expiresAt }),
-      ...(reference.tokenId === null
+      ...(reference.tokenId === null || principal.kind !== "agent"
         ? {}
         : (() => {
             const run = this.store.getAgentRunByToken(reference.tokenId);
@@ -959,57 +959,83 @@ export class AuthService {
         )
       )
         throw new ServiceError("forbidden", "native_service_authority_required");
-      const principal = this.createPrincipal({ kind: "agent", name: serviceId.slice(0, 64) });
-      const grants = new Map<string, Grant>();
-      const createdAt = this.runtime.now();
-      for (const { cap, ref } of requirements) {
-        const node = formatManifoldUri(ref);
-        const existing = grants.get(node);
-        if (existing) {
-          if (!existing.caps.includes(cap)) existing.caps.push(cap);
-        } else {
-          grants.set(node, {
-            id: this.runtime.newId(),
-            principal: { kind: "principal", id: principal.id },
-            node,
-            caps: [cap],
-            effect: "allow",
-            reach: "node",
-            createdBy: current.principal.id,
-            createdAt,
-          });
-        }
-      }
-      for (const grant of grants.values()) this.store.createGrant(grant);
-      const operation = requirements.find(({ ref }) => ref.kind === "operation")!;
-      const grantId = grants.get(formatManifoldUri(operation.ref))!.id;
-      const tokenId = this.runtime.newId();
-      const caps = [...new Set(requirements.map(({ cap }) => cap))];
-      // Instance-service lifecycle, like a terminal's: explicit revocation, not browser expiry.
-      // Hash the one-time random bearer at creation; it never leaves this method.
-      this.store.createToken({
-        id: tokenId,
-        hash: sha256Hex(randomSecret()),
-        principalId: principal.id,
-        mintedBy: current.principal.id,
-        caps,
-        containerId: null,
-        createdAt,
-        revokedAt: null,
-        grantId,
-        expiresAt: null,
-      });
-      this.store.addEvent(null, createdAt, current.principal.id, "token_minted", {
-        tokenId,
-        subjectPrincipalId: principal.id,
-        caps,
-        containerId: null,
+      return this.persistNativeServiceCredential(
         serviceId,
         machineId,
-      });
-      this.store.afterCommit(() => this.authorityChanged());
-      return { principalId: principal.id, tokenId, grantId, caps, containerScope: null };
+        current.principal.id,
+        requirements,
+      );
     });
+  }
+
+  /** Registry-owned renewal keeps the persisted service authority independent of its sponsor. */
+  remintNativeServiceCredential(
+    serviceId: string,
+    machineId: string,
+    actorId: string,
+    requirements: readonly AuthorityRequirement[],
+  ): CredentialReference {
+    return this.store.transaction(() =>
+      this.persistNativeServiceCredential(serviceId, machineId, actorId, requirements),
+    );
+  }
+
+  private persistNativeServiceCredential(
+    serviceId: string,
+    machineId: string,
+    actorId: string,
+    requirements: readonly AuthorityRequirement[],
+  ): CredentialReference {
+    const principal = this.createPrincipal({ kind: "service", name: serviceId.slice(0, 64) });
+    const grants = new Map<string, Grant>();
+    const createdAt = this.runtime.now();
+    for (const { cap, ref } of requirements) {
+      const node = formatManifoldUri(ref);
+      const existing = grants.get(node);
+      if (existing) {
+        if (!existing.caps.includes(cap)) existing.caps.push(cap);
+      } else {
+        grants.set(node, {
+          id: this.runtime.newId(),
+          principal: { kind: "principal", id: principal.id },
+          node,
+          caps: [cap],
+          effect: "allow",
+          reach: "node",
+          createdBy: actorId,
+          createdAt,
+        });
+      }
+    }
+    for (const grant of grants.values()) this.store.createGrant(grant);
+    const operation = requirements.find(({ ref }) => ref.kind === "operation")!;
+    const grantId = grants.get(formatManifoldUri(operation.ref))!.id;
+    const tokenId = this.runtime.newId();
+    const caps = [...new Set(requirements.map(({ cap }) => cap))];
+    // Instance-service lifecycle, like a terminal's: explicit revocation, not browser expiry.
+    // Hash the one-time random bearer at creation; it never leaves this method.
+    this.store.createToken({
+      id: tokenId,
+      hash: sha256Hex(randomSecret()),
+      principalId: principal.id,
+      mintedBy: actorId,
+      caps,
+      containerId: null,
+      createdAt,
+      revokedAt: null,
+      grantId,
+      expiresAt: null,
+    });
+    this.store.addEvent(null, createdAt, actorId, "token_minted", {
+      tokenId,
+      subjectPrincipalId: principal.id,
+      caps,
+      containerId: null,
+      serviceId,
+      machineId,
+    });
+    this.store.afterCommit(() => this.authorityChanged());
+    return { principalId: principal.id, tokenId, grantId, caps, containerScope: null };
   }
 
   /** Trusted registry lifecycle mutation; shares its transaction and post-commit fence. */
@@ -1383,6 +1409,7 @@ export class AuthService {
       if (existing.kind === "agent") {
         throw new ServiceError("forbidden", "agent credentials require renewAgentRun");
       }
+      this.refuseManagedServicePrincipal(existing.id);
       principal = existing;
       if (
         !minter.isRoot &&
@@ -2734,7 +2761,9 @@ export class AuthService {
           ...(token.containerId === null ? {} : { containerId: token.containerId }),
           ...(token.expiresAt === null ? {} : { expiresAt: token.expiresAt }),
         }));
-      rows.push({ principal, createdAt, sessions });
+      const service =
+        principal.kind === "service" ? this.store.getNativeServiceIdentity(principal.id) : null;
+      rows.push({ principal, createdAt, sessions, ...service });
     }
     return rows;
   }
@@ -2780,6 +2809,16 @@ export class AuthService {
     });
   }
 
+  private refuseManagedServicePrincipal(principalId: string): void {
+    const principal = this.store.getPrincipal(principalId);
+    if (principal?.kind !== "service") return;
+    const serviceId = this.store.getNativeServiceIdentity(principalId)?.serviceId ?? principal.name;
+    throw new ServiceError(
+      "forbidden",
+      `service_credential_managed_by_service: ${serviceId}; use engine.services.configureInstance with enabled:false, replace, or uninstall the service`,
+    );
+  }
+
   /** Revokes only identities the actor created (or itself), without widening container scope. */
   revokePrincipal(principalId: string, actor: AuthContext): number {
     if (!this.allows(actor, "tokens:mint")) {
@@ -2792,6 +2831,7 @@ export class AuthService {
     ) {
       throw new ServiceError("forbidden", "cannot revoke another principal");
     }
+    this.refuseManagedServicePrincipal(principalId);
     const agent = this.store
       .listAgents()
       .find((candidate) => candidate.principalId === principalId);

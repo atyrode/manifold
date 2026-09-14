@@ -2320,6 +2320,10 @@ CREATE TABLE terminals(id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT,
   agent_principal_id TEXT, name TEXT);
 INSERT INTO meta VALUES ('schema_version', '28');
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, digest TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, permit TEXT, result TEXT, created_at INTEGER NOT NULL, audit_origin TEXT, decision_id TEXT, cancel_reason TEXT, event_seq INTEGER NOT NULL DEFAULT 0, output_seq INTEGER, next_input_seq INTEGER, stdin_closed INTEGER NOT NULL DEFAULT 0, owner_closed INTEGER NOT NULL DEFAULT 0 CHECK(owner_closed IN (0,1)));
+CREATE TABLE native_instance_services(
+  service_id TEXT PRIMARY KEY,revision TEXT NOT NULL,machine_id TEXT NOT NULL,
+  plugin_id TEXT NOT NULL,configuration TEXT NOT NULL,credential TEXT,job_id TEXT,
+  configured_by TEXT NOT NULL,configured_at INTEGER NOT NULL);
 ${LEGACY_PLUGIN_INSTALLS}
 ${JOB_SCHEDULE_SCHEMA_SQL}
 INSERT INTO machine_jobs(job_id, machine_id, plugin_id, digest, request, state, created_at, cancel_reason) VALUES

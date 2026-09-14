@@ -225,6 +225,40 @@ export class InstanceServiceStore {
     });
   }
 
+  /** A registry-owned repair changes only the credential, never placement or policy revision. */
+  remint(
+    serviceId: string,
+    revision: string,
+    requirements: readonly AuthorityRequirement[],
+  ): InstanceServiceRecord {
+    return this.store.transaction(() => {
+      const current = this.get(serviceId);
+      if (!current?.enabled || current.revision !== revision)
+        throw new ServiceError("conflict", "instance_service_configuration_changed");
+      if (current.credential && this.auth.restoreCredential(current.credential)) return current;
+      const previousTokenId = current.credential?.tokenId ?? null;
+      const credential = this.auth.remintNativeServiceCredential(
+        serviceId,
+        current.machineId,
+        current.configuredBy,
+        requirements,
+      );
+      this.store.db
+        .query(
+          "UPDATE native_instance_services SET credential=?,job_id=NULL WHERE service_id=? AND revision=?",
+        )
+        .run(canonicalJobJson(credential), serviceId, revision);
+      this.store.addEvent(
+        null,
+        this.runtime.now(),
+        current.configuredBy,
+        "service_credential_reminted",
+        { serviceId, machineId: current.machineId, previousTokenId },
+      );
+      return { ...current, credential, jobId: null };
+    });
+  }
+
   /** A delayed launch/exit can update only the configuration that caused it. */
   setJob(serviceId: string, revision: string, jobId: string | null): boolean {
     return (

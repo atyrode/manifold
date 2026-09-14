@@ -9,7 +9,7 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 37;
+export const SCHEMA_VERSION = 38;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -868,6 +868,30 @@ SELECT 'agent-runs:declarations-after-event-id',
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','36');
 `,
   37: { backup: true, apply: migrateToDurableAgents },
+  /**
+   * Service credentials have their own principal kind (#594). Mint events retain the
+   * identity of replaced credentials; current records cover credentials without that
+   * history. Only identity classification changes, never bearer hashes or token rows.
+   */
+  38: `
+UPDATE principals SET kind='service'
+WHERE kind='agent' AND id IN (
+  SELECT json_extract(credential,'$.principalId') FROM native_instance_services
+  WHERE CASE WHEN json_valid(credential) THEN
+    json_type(credential,'$.principalId')='text' AND
+    json_extract(credential,'$.principalId')<>''
+  END
+  UNION
+  SELECT json_extract(payload,'$.subjectPrincipalId') FROM events
+  WHERE type='token_minted' AND CASE WHEN json_valid(payload) THEN
+    json_type(payload,'$.subjectPrincipalId')='text' AND
+    json_extract(payload,'$.subjectPrincipalId')<>'' AND
+    json_type(payload,'$.serviceId')='text' AND json_extract(payload,'$.serviceId')<>'' AND
+    json_type(payload,'$.machineId')='text' AND json_extract(payload,'$.machineId')<>''
+  END
+);
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','38');
+`,
 };
 
 interface TableRow {

@@ -502,7 +502,10 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   its dependency verdict belongs to its implementing ADR. First-party accounts and a
   bundled identity provider are not part of this posture.
 
-- `Principal { id, kind: "human" | "agent", name, color, origin? }`. Stable; stored in SQLite.
+- `Principal { id, kind: "human" | "agent" | "service", name, color, origin? }`. Stable;
+  stored in SQLite. Native/instance-service credentials are `service`, not human sessions
+  or durable Agents. Generic bootstrap and token minting remain human-only; service
+  credentials are minted only by the internal native service lifecycle.
 - Every request, and every CHANNEL on a session socket, acts as exactly one principal via
   bearer token; a connection carries one credential's channels, because the SDK pools by
   token.
@@ -551,8 +554,10 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   enrollment credentials remain on their separate machine-authentication path. Credentials
   injected into a terminal are revoked automatically when that terminal exits or is removed,
   rather than expiring while its process still needs them. The generic token door cannot mint
-  another credential for that terminal principal. Neither exception is an option on a public
-  request.
+  another credential for that terminal principal. Native service credentials likewise follow
+  their configuration's lifecycle rather than a browser deadline; their management and
+  recovery contract is under [Access administration](#plugins-actions-and-the-workspace-layout).
+  None of these exceptions is an option on a public request.
 - **The owner key does not expire and is not revocable by a grant.** It is the separate bootstrap
   and recovery secret (ADR 0019 §1), not a privilege silently awarded to the first human account.
   Human credentials minted with it still expire normally.
@@ -642,6 +647,8 @@ STRING — the root is the bare scheme `manifold://` (`MANIFOLD_ROOT_URI`); a ma
 `effect` is `allow` or `deny`; `reach` is `node` (that node alone) or `subtree` (that node and
 everything under it). A grant never names an action: actions declare capabilities, grants grant
 capabilities, and the two meet at the door.
+Service principals match neither `any-human` nor `any-agent`; their named principal grants
+remain the authority issued for the native service's exact requirements.
 
 **Tokens reference grants; they do not carry authority.** `TokenRecord.grant_id` and
 `ShareRecord.grant_id` point at the row the credential was minted from — the referrer holds the
@@ -1724,6 +1731,28 @@ carrying the mechanism's own wording verbatim (`cannot mint capability <cap>`, `
 container
 scope`, `principal not found`, `cannot revoke another principal`); a cap the caller does not hold
 is `forbidden` at the door, one rung earlier.
+
+**Native service credentials are managed by their service, not by Sessions (#594).**
+`listCredentials` projects `kind: "service"` with optional top-level `serviceId` and `machineId`,
+populated together when the native service identity is recorded. The metadata contains no
+bearer value or hash: mint-event attribution identifies retained/replaced principals, with the
+current `native_instance_services.credential` reference as the fallback. Sessions renders
+“Native service · <serviceId> · owned by <machine>”, links to that service in Plugins, and offers
+no Revoke control; human and Agent rows keep their existing behavior.
+`core.access.revoke` and `revokePrincipal` refuse a service principal with
+`service_credential_managed_by_service` as the refusal-message prefix, including for root. The refusal names the `serviceId`
+and `engine.services.configureInstance`; disabling (`{ enabled: false }`), replacing or
+uninstalling the service remains the sanctioned lifecycle path and revokes its credential
+through that lifecycle.
+
+An enabled service with a proved owner self-heals `credential_revoked_or_expired` during
+reconciliation: it receives a fresh credential for the same requirements and policy revision,
+records `service_credential_reminted { serviceId, machineId, previousTokenId }` (and no
+credential secret), and restarts its workload. Disabled services, removed records and services
+without a proved owner are not re-minted. Recovery also refuses unavailable, disabled or
+purging installations and waits for any superseded workload's retirement; a fresh admission
+still requires owner-confirmed closure of the old lifetime. Requirements are re-derived only
+from the installation and resource bindings pinned by the stored runtime policy.
 
 `revoke` is `cleanup: true`: revocation is what somebody reaches for when a secret has
 leaked, so disabling `core.access` must not keep a compromised token alive (ADR 0013 §9). Its
@@ -3768,7 +3797,7 @@ meta(key TEXT PK, value TEXT)                         -- schema_version, plugins
                                                       -- layout:<principalId>
 ```
 
-Schema version 31 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
+Schema version 38 (10 added `plugin_kv`; 11 is the lexicon cut; 12 is cross-instance sharing
 — `shares`, `share_tickets`, `dials` and `principals.origin`; 13 is the permission waterfall's
 `grants` substrate; 14 is the trace ledger — five nullable columns on `events`; 15 is credential
 expiry — `tokens.expires_at`; 16 retires the grant rows of already-revoked tokens, the same rule
@@ -3794,6 +3823,11 @@ for committed effects; deployment rows retain reviewed scope, lifecycle and effe
 Migration 31 adds `machine_job_journal`, keyed by job and sequence. It rewrites nothing:
 a job that finished before the upgrade simply has no frames to read, which is what an empty
 page already means.
+Migration 38 reclassifies only `agent` principals identifiable as native service credentials:
+current `native_instance_services.credential` principal references and historical
+`token_minted { subjectPrincipalId, serviceId, machineId }` events. It preserves unrelated
+agents and humans, credential values/hashes, expiry and revocation state; retained mint events
+continue to identify credentials after a service replaces them.
 Migrations 12, 14, 15, 17, 18 and 20 are plain SQL for the same reason: none touches a stored
 document and existing rows need no backfill, since absence already means the right thing — a
 NULL origin means "this instance", a NULL `door` means "this row is an event, not a trace", a

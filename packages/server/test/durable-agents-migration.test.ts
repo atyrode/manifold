@@ -32,6 +32,10 @@ CREATE TRIGGER job_token_update AFTER UPDATE ON tokens BEGIN
 END;
 CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT,container_id TEXT,ts INTEGER,
   principal_id TEXT,type TEXT,payload TEXT,door TEXT,authority TEXT,targets TEXT,outcome TEXT,session TEXT);
+CREATE TABLE native_instance_services(
+  service_id TEXT PRIMARY KEY,revision TEXT NOT NULL,machine_id TEXT NOT NULL,
+  plugin_id TEXT NOT NULL,configuration TEXT NOT NULL,credential TEXT,job_id TEXT,
+  configured_by TEXT NOT NULL,configured_at INTEGER NOT NULL);
 CREATE TABLE agent_runs(
   id TEXT PRIMARY KEY,principal_id TEXT NOT NULL UNIQUE,root_run_id TEXT NOT NULL,parent_run_id TEXT,
   authorized_by_principal_id TEXT NOT NULL,
