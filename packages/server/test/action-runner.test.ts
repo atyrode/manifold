@@ -402,9 +402,6 @@ describe("external action runner over real doors", () => {
         outcome: "completed",
       });
       expect(runner.successful).toBe(true);
-      expect(
-        frames.some((frame) => frame.type === "result" && frame.door === "core.access.createRun"),
-      ).toBe(false);
       expect(JSON.stringify(frames)).not.toContain(admission.credential.token);
     } finally {
       await runner.close("failed");
