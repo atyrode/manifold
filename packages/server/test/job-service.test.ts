@@ -221,6 +221,140 @@ async function instanceFixture(path = ":memory:") {
   return { f, policy, provider, start, revision: configured.configuration.revision };
 }
 
+test("enabled owner-proved services remint revoked credentials and return ready in one reconcile", async () => {
+  const { f, policy, start, revision } = await instanceFixture();
+  const ready = (command: Extract<JobCommand, { type: "start" }>) => {
+    f.service.event(f.channel, {
+      type: "state",
+      jobId: command.request.jobId,
+      requestDigest: command.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+      state: "started",
+    });
+    f.service.event(f.channel, {
+      type: "service_ready",
+      jobId: command.request.jobId,
+      service: command.request.service!,
+    });
+  };
+  try {
+    ready(start);
+    const describe = () =>
+      f.service.describeInstanceService(f.root, { serviceId: policy.serviceId });
+    expect(describe().state).toBe("ready");
+    expect(() => f.auth.revokePrincipal(start.request.credential.principalId, f.root)).toThrow(
+      "service_credential_managed_by_service",
+    );
+    expect(describe().state).toBe("ready");
+    const originalGrants = f.store
+      .listGrants({ principalId: start.request.credential.principalId })
+      .map(({ node, caps, effect, reach }) => ({ node, caps, effect, reach }));
+    const send = f.channel.send;
+    f.channel.send = (message) => {
+      send(message);
+      const command = message.command;
+      if (command.type === "cancel" && command.jobId === start.request.jobId) {
+        f.service.event(f.channel, {
+          type: "result",
+          result: {
+            jobId: start.request.jobId,
+            requestDigest: start.request.requestDigest,
+            ownerId: f.owner.ownerId,
+            ownerGeneration: f.owner.generation,
+            state: "cancelled",
+            exitCode: null,
+            reason: command.reason,
+            startedAt: f.runtime.now(),
+            finishedAt: f.runtime.now(),
+            usage: null,
+            limits: start.request.limits,
+            outputs: [],
+          },
+        });
+        f.service.event(f.channel, {
+          type: "workload_empty",
+          jobId: start.request.jobId,
+          requestDigest: start.request.requestDigest,
+          ownerId: f.owner.ownerId,
+          ownerGeneration: f.owner.generation,
+        });
+      }
+      if (command.type === "start") ready(command);
+      return true;
+    };
+    f.store.revokeToken(start.request.credential.tokenId!, f.runtime.now());
+    expect(f.auth.restoreCredential(start.request.credential)).toBeNull();
+    f.service.tick();
+    const repaired = f.service.instanceServices.get(policy.serviceId)!;
+    expect(repaired.revision).toBe(revision);
+    expect(repaired.policy).toEqual(policy);
+    expect(repaired.credential!.tokenId).not.toBe(start.request.credential.tokenId);
+    expect(f.auth.restoreCredential(repaired.credential!)?.principal.kind).toBe("service");
+    expect(
+      f.store
+        .listGrants({ principalId: repaired.credential!.principalId })
+        .map(({ node, caps, effect, reach }) => ({ node, caps, effect, reach })),
+    ).toEqual(originalGrants);
+    expect(describe().state).toBe("ready");
+    const events = () =>
+      f.store.db
+        .query<{ payload: string }, []>(
+          "SELECT payload FROM events WHERE type='service_credential_reminted'",
+        )
+        .all()
+        .map((row) => JSON.parse(row.payload) as unknown);
+    expect(events()).toEqual([
+      {
+        serviceId: policy.serviceId,
+        machineId: f.machineId,
+        previousTokenId: start.request.credential.tokenId,
+      },
+    ]);
+    f.service.tick();
+    expect(f.service.instanceServices.get(policy.serviceId)!.credential).toEqual(
+      repaired.credential,
+    );
+    expect(events()).toHaveLength(1);
+  } finally {
+    f.store.close();
+  }
+});
+
+test.each(["disabled", "unproved", "replacing", "uninstalling"] as const)(
+  "%s instance services never remint revoked credentials",
+  async (state) => {
+    const { f, policy, start, revision } = await instanceFixture();
+    try {
+      if (state === "disabled" || state === "replacing")
+        await f.service.configureInstanceService(f.root, {
+          serviceId: policy.serviceId,
+          expectedRevision: revision,
+          policy: state === "replacing" ? { ...policy, revision: "replacement" } : policy,
+          enabled: state !== "disabled",
+        });
+      if (state === "unproved") f.service.offline(f.channel);
+      if (state === "uninstalling") f.service.disablePlugin(pluginId);
+      const current = f.service.instanceServices.get(policy.serviceId)!;
+      const credential = current.credential ?? start.request.credential;
+      f.store.revokeToken(credential.tokenId!, f.runtime.now());
+      f.service.tick();
+      expect(f.service.instanceServices.get(policy.serviceId)!.credential).toEqual(
+        current.credential,
+      );
+      expect(
+        f.store.db
+          .query<{ count: number }, []>(
+            "SELECT COUNT(*) AS count FROM events WHERE type='service_credential_reminted'",
+          )
+          .get()!.count,
+      ).toBe(0);
+    } finally {
+      f.store.close();
+    }
+  },
+);
+
 test("disabled services remain stopping through disconnect and terminal results until fenced empty confirmation", async () => {
   const { f, policy, start, revision } = await instanceFixture();
   try {
@@ -553,9 +687,10 @@ test.each(["explicit", "consent", "credential", "executor"] as const)(
           operationId,
           jobId: start.request.jobId,
         });
-      else if (cause === "credential")
-        f.auth.revokePrincipal(start.request.credential.principalId, f.root);
-      else if (cause === "executor") {
+      else if (cause === "credential") {
+        f.store.revokeToken(start.request.credential.tokenId!, f.runtime.now());
+        f.service.tick();
+      } else if (cause === "executor") {
         const machine = f.store.getMachine(f.machineId)!;
         f.auth.revokePrincipal(f.store.getToken(machine.tokenId)!.principalId, f.root);
         expect(f.service.jobs.cancellation(start.request.jobId)).toEqual({

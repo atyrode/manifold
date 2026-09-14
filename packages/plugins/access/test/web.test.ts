@@ -7,6 +7,8 @@ import {
   credentials,
   inspection,
   inventory,
+  nativeService,
+  nativeServiceDescription,
 } from "./web-fixture.ts";
 
 const ui = new AccessBrowser();
@@ -106,6 +108,95 @@ test("human and legacy Sessions remain logins while linked Agent principals expo
     denial: { rule: "forbidden", message: "Credential withdrawal is not authorized" },
   });
   await ui.text("Credential withdrawal is not authorized");
+  await ui.click("Withdraw every credential of Review agent");
+  await ui.click("Confirm withdrawing every credential of Review agent");
+  await ui.outcome("core.access.revoke", {
+    ok: false,
+    denial: { rule: "forbidden", message: "Agent credential withdrawal is not authorized" },
+  });
+  await ui.text("Agent credential withdrawal is not authorized");
+}, 60_000);
+
+test("native service Sessions identify their owner, open their plugin and never expose Agent or revoke controls", async () => {
+  await ui.reset("sessions");
+  await ui.answer("core.access.listCredentials", {
+    principals: [nativeService, ...credentials.principals],
+  });
+  // A stale Agent index must not turn a service back into an Agent session.
+  await ui.answer("core.access.listAgents", {
+    agents: [
+      agent,
+      { ...agent, agentId: "service-profile", principalId: "service-one", name: "Not an Agent" },
+    ],
+    truncated: false,
+    canRegister: true,
+  });
+  await ui.answer("core.access.listRuns", inventory);
+  await ui.text("Native service · native.accounts.broker · owned by machine-one");
+  await ui.answer("engine.services.describeInstance", nativeServiceDescription);
+  await ui.text("Native service · native.accounts.broker · owned by Preview hub");
+  const serviceText = await ui.browser.evaluate<string>(
+    'document.querySelector("[data-principal=service-one]").innerText',
+  );
+  expect(serviceText).toContain("Plugins");
+  expect(serviceText).not.toContain("Agent");
+  expect(serviceText).not.toContain("Run");
+  expect(
+    await ui.browser.evaluate<string[]>(
+      '[...document.querySelectorAll("[data-principal=service-one] button")].map(button => button.getAttribute("aria-label"))',
+    ),
+  ).toEqual(["Open native service native.accounts.broker in Plugins"]);
+  expect(
+    await ui.browser.evaluate<string[]>(
+      '[...document.querySelectorAll("[data-action=\\"core.access.revoke\\"]")].map(button => button.closest("[data-principal]").dataset.principal)',
+    ),
+  ).toEqual(["agent-one", "human-one"]);
+  await ui.screenshot("sessions-native-service");
+  await ui.click("Open native service native.accounts.broker in Plugins");
+  await ui.click("Open Agent Review agent");
+  await ui.click("Open run run-one");
+  expect(await ui.browser.evaluate<string[]>("window.accessFixture.navigations")).toEqual([
+    "manifold://plugin/native.accounts",
+    "manifold://agent/profile-one",
+    "manifold://run/run-one",
+  ]);
+  expect(
+    await ui.browser.evaluate<boolean>(
+      'window.accessFixture.requests.some(request => request.action === "core.access.revoke")',
+    ),
+  ).toBe(false);
+}, 60_000);
+
+test("inactive service Sessions retain their machine identity when Plugins inspection is refused", async () => {
+  await ui.reset("sessions");
+  await ui.answer("core.access.listCredentials", {
+    principals: [{ ...nativeService, sessions: [] }],
+  });
+  await ui.answer("core.access.listAgents", { agents: [], truncated: false, canRegister: true });
+  await ui.answer("core.access.listRuns", { ...inventory, runs: [] });
+  await ui.text("No live credentials");
+  expect(
+    await ui.browser.evaluate<boolean>(
+      '!document.querySelector("[data-principal=service-one]").checkVisibility()',
+    ),
+  ).toBe(true);
+  await ui.click("1 inactive identity");
+  await ui.outcome("engine.services.describeInstance", {
+    ok: false,
+    denial: { rule: "forbidden", message: "Service inspection is not authorized" },
+  });
+  await ui.text("Native service · native.accounts.broker · owned by machine-one");
+  await ui.text("Service inspection is not authorized");
+  const serviceText = await ui.browser.evaluate<string>(
+    'document.querySelector("[data-principal=service-one]").innerText',
+  );
+  expect(serviceText).not.toContain("Agent");
+  expect(serviceText).not.toContain("Run");
+  expect(
+    await ui.browser.evaluate<number>(
+      'document.querySelector("[data-principal=service-one]").querySelectorAll("button").length',
+    ),
+  ).toBe(0);
 }, 60_000);
 
 test("replacement viewers cannot see retained privileged rows or late inspection replies", async () => {

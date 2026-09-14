@@ -3,6 +3,7 @@ import {
   GrantsSchema,
   ShareGrantSchema,
   TokenGrantSchema,
+  CredentialsResponseSchema,
   type ActionOutcome,
   type Cap,
   type Grant,
@@ -339,6 +340,57 @@ describe("core.access ladder", () => {
     // is this call followed by authenticating with what it returned.
     expect(fix.auth.authenticate(token).isRoot).toBe(true);
     fix.store.close();
+  });
+
+  test("root and sponsor cannot casually revoke native service identities", async () => {
+    const fix = await fixture();
+    try {
+      const sponsor = fix.auth.bootstrapPrincipal({ name: "operator", kind: "human" }, fix.owner);
+      const sponsorRoot = fix.auth.authenticate(sponsor.token);
+      const sponsorMinter = fix.auth.authenticate(
+        fix.auth.mintToken({ principalId: sponsor.principal.id, caps: ["tokens:mint"] }, fix.owner)
+          .token,
+      );
+      const machineId = fix.auth.enrollLocalMachine("native owner").machine.id;
+      const serviceId = "sample.broker";
+      const credential = fix.auth.mintNativeServiceCredential(serviceId, machineId, sponsorRoot, [
+        { cap: "machines:run", ref: { kind: "operation", machineId, operationId: "sample.serve" } },
+      ]);
+      const before = fix.store.getToken(credential.tokenId!);
+      for (const actor of [fix.owner, sponsorMinter]) {
+        expect(() => fix.auth.revokePrincipal(credential.principalId, actor)).toThrow(
+          "service_credential_managed_by_service",
+        );
+        const refused = denial(
+          await fix.host.dispatch(actor, "core.access.revoke", {
+            principalId: credential.principalId,
+          }),
+        );
+        expect(refused.rule).toBe("refused");
+        expect(refused.message.split(":")[0]).toBe("service_credential_managed_by_service");
+        expect(refused.message).toContain(serviceId);
+        expect(refused.message).toContain("engine.services.configureInstance");
+        expect(fix.store.getToken(credential.tokenId!)).toEqual(before);
+        expect(fix.auth.restoreCredential(credential)?.principal.kind).toBe("service");
+      }
+      const listed = CredentialsResponseSchema.parse(
+        result(await fix.host.dispatch(fix.owner, "core.access.listCredentials", {})),
+      );
+      expect(
+        listed.principals.find((row) => row.principal.id === credential.principalId),
+      ).toMatchObject({
+        principal: { kind: "service" },
+        serviceId,
+        machineId,
+      });
+      expect(() =>
+        fix.auth.mintToken({ principalId: credential.principalId, caps: ["*"] }, fix.owner),
+      ).toThrow("service_credential_managed_by_service");
+      fix.auth.revokeNativeServiceCredential(credential, sponsor.principal.id);
+      expect(fix.auth.restoreCredential(credential)).toBeNull();
+    } finally {
+      fix.store.close();
+    }
   });
 
   test("revocation reports how many tokens died, and zero is a success", async () => {

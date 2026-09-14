@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { formatManifoldUri } from "@manifold/protocol";
@@ -8,6 +8,8 @@ import type {
   AgentRun,
   InspectRunResult,
   CredentialsResponse,
+  InstanceServiceDescription,
+  PrincipalCredentials,
 } from "@manifold/protocol";
 import { Browser } from "../../../../scripts/cdp.ts";
 import { until } from "../../../../scripts/gate-lib.ts";
@@ -60,6 +62,33 @@ export const credentials: CredentialsResponse = {
     },
   ],
 };
+export const nativeService: PrincipalCredentials = {
+  principal: {
+    id: "service-one",
+    kind: "service",
+    name: "Accounts broker",
+    color: "#69db7c",
+  },
+  createdAt: at,
+  serviceId: "native.accounts.broker",
+  machineId: "machine-one",
+  sessions: [{ id: "service-session", createdAt: at, caps: ["services:invoke"] }],
+};
+export const nativeServiceDescription: InstanceServiceDescription = {
+  serviceId: "native.accounts.broker",
+  defaultOwner: null,
+  owner: { machineId: "machine-one", name: "Preview hub", online: true },
+  configuration: {
+    revision: "service-revision",
+    pluginId: "native.accounts",
+    enabled: true,
+    policySha256: "0".repeat(64),
+  },
+  connected: true,
+  state: "ready",
+  reason: null,
+};
+
 export const inspection: InspectRunResult = {
   availability: "available",
   observedAt: at + 2_000,
@@ -367,6 +396,20 @@ export class AccessBrowser {
     await this.click(value.name);
     await this.answer("core.access.getAgent", { agent: value, canManage: true });
     await this.answer("core.access.listRuns", inventory);
+  }
+
+  async screenshot(name: string): Promise<void> {
+    const directory = process.env.MANIFOLD_RUNTIME_PROOF_DIR;
+    if (!directory) return;
+    const capture = await this.browser.send("Page.captureScreenshot", {
+      format: "png",
+      captureBeyondViewport: false,
+    });
+    const data = capture.result?.["data"];
+    if (typeof data !== "string" || data.length === 0)
+      throw new Error("Access browser screenshot was not returned");
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    writeFileSync(join(directory, `${name}.png`), Buffer.from(data, "base64"), { mode: 0o600 });
   }
 
   async close(): Promise<void> {

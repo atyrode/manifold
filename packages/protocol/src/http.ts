@@ -239,6 +239,9 @@ export const PrincipalCredentialsSchema = z.strictObject({
   createdAt: z.number().int().nonnegative(),
   /** Live credentials only: neither revoked nor past its expiry. Empty is a real answer. */
   sessions: z.array(CredentialSchema),
+  /** Native service identity and owner machine; populated together for service principals. */
+  serviceId: z.string().min(1).optional(),
+  machineId: z.string().min(1).optional(),
 });
 export type PrincipalCredentials = z.infer<typeof PrincipalCredentialsSchema>;
 

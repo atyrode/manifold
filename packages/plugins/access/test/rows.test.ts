@@ -3,9 +3,13 @@ import type { PrincipalCredentials } from "@manifold/protocol";
 
 import { partitionCredentials } from "../src/rows.ts";
 
-function row(id: string, sessions: number): PrincipalCredentials {
+function row(
+  id: string,
+  sessions: number,
+  kind: PrincipalCredentials["principal"]["kind"] = "human",
+): PrincipalCredentials {
   return {
-    principal: { id, kind: "human", name: id, color: "#ea580c" },
+    principal: { id, kind, name: id, color: "#ea580c" },
     createdAt: 0,
     sessions: Array.from({ length: sessions }, (_, index) => ({
       id: `${id}-${String(index)}`,
@@ -26,6 +30,25 @@ describe("partitionCredentials (#145)", () => {
     const parts = partitionCredentials([row("b", 1), row("z", 0), row("a", 1), row("y", 0)]);
     expect(parts.live.map((entry) => entry.principal.id)).toEqual(["b", "a"]);
     expect(parts.inactive.map((entry) => entry.principal.id)).toEqual(["z", "y"]);
+  });
+
+  test("service credentials share live and inactive grouping without becoming Agent sessions", () => {
+    const parts = partitionCredentials([
+      row("service-live", 1, "service"),
+      row("agent-inactive", 0, "agent"),
+      row("human-live", 1),
+      row("service-inactive", 0, "service"),
+      row("agent-live", 1, "agent"),
+    ]);
+    expect(parts.live.map((entry) => [entry.principal.id, entry.principal.kind])).toEqual([
+      ["service-live", "service"],
+      ["human-live", "human"],
+      ["agent-live", "agent"],
+    ]);
+    expect(parts.inactive.map((entry) => [entry.principal.id, entry.principal.kind])).toEqual([
+      ["agent-inactive", "agent"],
+      ["service-inactive", "service"],
+    ]);
   });
 
   test("empty is two empty halves, never a throw", () => {

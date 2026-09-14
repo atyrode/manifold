@@ -242,14 +242,17 @@ describe("InstanceServiceStore", () => {
       expect(f.auth.allowsRef(context, location.cap, location.ref)).toBe(false);
       const operation = f.requirements()[0]!;
       expect(f.auth.allowsRef(context, operation.cap, operation.ref)).toBe(true);
-      f.auth.revokePrincipal(credential.principalId, f.root);
-      expect(f.auth.restoreCredential(credential)).toBeNull();
+      expect(() => f.auth.revokePrincipal(credential.principalId, f.root)).toThrow(
+        "service_credential_managed_by_service",
+      );
+      expect(f.auth.restoreCredential(credential)).not.toBeNull();
       const withdrawn = f.configure({
         ...f.args,
         expectedRevision: f.registry.get(f.args.serviceId)!.revision,
         enabled: false,
       });
       expect(withdrawn.current.enabled).toBe(false);
+      expect(f.auth.restoreCredential(credential)).toBeNull();
     } finally {
       f.store.close();
     }

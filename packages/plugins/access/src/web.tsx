@@ -4,6 +4,7 @@ import { Chip, ControlIcon, Disclosure, Stack } from "@manifold/ui";
 import {
   ListRunsResultSchema,
   CredentialsResponseSchema,
+  InstanceServiceDescriptionSchema,
   ListAgentsResultSchema,
   RevokeResultSchema,
   formatManifoldUri,
@@ -49,7 +50,58 @@ function metaLine(row: PrincipalCredentials, now: number): string {
   return parts.join(" · ");
 }
 
-/** Sessions remain logins. The separately authorized Agents index owns autonomous history. */
+function NativeServiceCredential({
+  host,
+  serviceId,
+  machineId,
+  revision,
+}: {
+  readonly host: SectionProps["host"];
+  readonly serviceId: string;
+  readonly machineId: string;
+  readonly revision: number;
+}): ReactElement {
+  const read = useAccessRead(
+    host,
+    "engine.services.describeInstance",
+    InstanceServiceDescriptionSchema,
+    { serviceId },
+    revision,
+  );
+  const service =
+    read.state === "ready" && read.result.serviceId === serviceId ? read.result : null;
+  const owner = service?.owner;
+  const machine = owner?.machineId === machineId ? owner.name : machineId;
+  const pluginId = service?.configuration?.pluginId;
+  return (
+    <>
+      <span className="credential-inspection-note">
+        Native service · {serviceId} · owned by {machine}
+      </span>
+      <span className="credential-agent-links">
+        {pluginId === undefined ? (
+          <span className="credential-inspection-note">
+            {read.state === "loading"
+              ? "Loading Plugins link…"
+              : read.state === "failed"
+                ? read.message
+                : "Plugins link unavailable"}
+          </span>
+        ) : (
+          <Chip
+            className="credential-inspection-link"
+            aria-label={`Open native service ${serviceId} in Plugins`}
+            onClick={() => host.navigate(formatManifoldUri({ kind: "plugin", pluginId }))}
+          >
+            Plugins
+          </Chip>
+        )}
+      </span>
+    </>
+  );
+}
+
+/** Credentials include managed services; the separately authorized Agents index owns runs. */
 export function SessionsSection({ host }: SectionProps): ReactElement {
   const [authority, setAuthority] = useState({
     client: host.client,
@@ -156,47 +208,66 @@ function CredentialSessions({ host }: SectionProps): ReactElement {
         />
         <span className="credential-name">
           <strong>{row.principal.name}</strong>
-          <span className="credential-meta">
-            {metaLine(row, read.state === "ready" ? read.observedAt : 0)}
-          </span>
-          <span className="credential-agent-links">
-            {agent === undefined ? (
-              <span className="credential-inspection-note">{missingAgent}</span>
+          {row.principal.kind === "service" ? (
+            row.serviceId === undefined || row.machineId === undefined ? (
+              <span className="credential-inspection-note">
+                Native service · identity unavailable
+              </span>
             ) : (
-              <>
-                <Chip
-                  className="credential-inspection-link"
-                  aria-label={`Open Agent ${agent.name}`}
-                  onClick={() =>
-                    host.navigate(formatManifoldUri({ kind: "agent", agentId: agent.agentId }))
-                  }
-                >
-                  Agent · {agent.name}
-                </Chip>
-                {activeRuns.map((run) => (
-                  <Chip
-                    key={run.id}
-                    className="credential-inspection-link"
-                    aria-label={`Open run ${run.id}`}
-                    onClick={() => host.navigate(formatManifoldUri({ kind: "run", runId: run.id }))}
-                  >
-                    Run · {run.id}
-                  </Chip>
-                ))}
-                {activeRuns.length === 0 ? (
-                  <span className="credential-inspection-note">
-                    {runs.state !== "ready"
-                      ? "Run links unavailable"
-                      : runs.result.truncated
-                        ? "No active run in this page"
-                        : "No active run linked"}
-                  </span>
-                ) : null}
-              </>
-            )}
-          </span>
+              <NativeServiceCredential
+                host={host}
+                serviceId={row.serviceId}
+                machineId={row.machineId}
+                revision={revision}
+              />
+            )
+          ) : (
+            <>
+              <span className="credential-meta">
+                {metaLine(row, read.state === "ready" ? read.observedAt : 0)}
+              </span>
+              <span className="credential-agent-links">
+                {agent === undefined ? (
+                  <span className="credential-inspection-note">{missingAgent}</span>
+                ) : (
+                  <>
+                    <Chip
+                      className="credential-inspection-link"
+                      aria-label={`Open Agent ${agent.name}`}
+                      onClick={() =>
+                        host.navigate(formatManifoldUri({ kind: "agent", agentId: agent.agentId }))
+                      }
+                    >
+                      Agent · {agent.name}
+                    </Chip>
+                    {activeRuns.map((run) => (
+                      <Chip
+                        key={run.id}
+                        className="credential-inspection-link"
+                        aria-label={`Open run ${run.id}`}
+                        onClick={() =>
+                          host.navigate(formatManifoldUri({ kind: "run", runId: run.id }))
+                        }
+                      >
+                        Run · {run.id}
+                      </Chip>
+                    ))}
+                    {activeRuns.length === 0 ? (
+                      <span className="credential-inspection-note">
+                        {runs.state !== "ready"
+                          ? "Run links unavailable"
+                          : runs.result.truncated
+                            ? "No active run in this page"
+                            : "No active run linked"}
+                      </span>
+                    ) : null}
+                  </>
+                )}
+              </span>
+            </>
+          )}
         </span>
-        {mayRevoke && row.sessions.length > 0 ? (
+        {row.principal.kind !== "service" && mayRevoke && row.sessions.length > 0 ? (
           <button
             className="credential-revoke"
             type="button"

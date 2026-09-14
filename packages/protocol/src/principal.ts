@@ -1,10 +1,10 @@
 import { z } from "zod";
 import { InstanceOriginSchema } from "./origin.ts";
 
-/** One identity model for humans and agents — presence, ownership, terminals, audit. */
+/** One identity model for humans, agents and native services — ownership and audit. */
 export const PrincipalSchema = z.strictObject({
   id: z.string().min(1),
-  kind: z.enum(["human", "agent"]),
+  kind: z.enum(["human", "agent", "service"]),
   name: z.string().min(1).max(64),
   color: z
     .string()

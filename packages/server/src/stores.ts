@@ -1957,6 +1957,36 @@ export class ServerStore {
     return row === null ? null : toPrincipal(row);
   }
 
+  /** Safe service attribution survives replacement while its mint event is retained. */
+  getNativeServiceIdentity(principalId: string): { serviceId: string; machineId: string } | null {
+    const minted = this.db
+      .query<{ serviceId: string; machineId: string }, [string]>(
+        `SELECT json_extract(payload,'$.serviceId') AS serviceId,
+                json_extract(payload,'$.machineId') AS machineId
+         FROM events
+         WHERE type='token_minted' AND CASE WHEN json_valid(payload) THEN
+           json_extract(payload,'$.subjectPrincipalId')=? AND
+           json_type(payload,'$.subjectPrincipalId')='text' AND
+           json_type(payload,'$.serviceId')='text' AND json_extract(payload,'$.serviceId')<>'' AND
+           json_type(payload,'$.machineId')='text' AND json_extract(payload,'$.machineId')<>''
+         END
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(principalId);
+    if (minted !== null) return minted;
+    return this.db
+      .query<{ serviceId: string; machineId: string }, [string]>(
+        `SELECT service_id AS serviceId, machine_id AS machineId
+         FROM native_instance_services
+         WHERE CASE WHEN json_valid(credential) THEN
+           json_type(credential,'$.principalId')='text' AND
+           json_extract(credential,'$.principalId')=?
+         END
+         ORDER BY service_id LIMIT 1`,
+      )
+      .get(principalId);
+  }
+
   listPrincipals(): Principal[] {
     return this.db
       .query<PrincipalRow, []>(
@@ -2646,7 +2676,7 @@ export class ServerStore {
       .all(
         ...path,
         principal.id,
-        principal.kind === "human" ? "any-human" : "any-agent",
+        principal.kind === "human" ? "any-human" : principal.kind === "agent" ? "any-agent" : null,
         principal.origin ?? null,
       )
       .map(toGrant);
