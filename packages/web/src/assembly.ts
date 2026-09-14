@@ -1,4 +1,4 @@
-import { SessionsSection } from "@manifold-plugin/access/web";
+import { AgentsSection, SessionsSection } from "@manifold-plugin/access/web";
 import { ArrangeOverlay, ARRANGE_BINDINGS } from "@manifold-plugin/arrange/web";
 import { BrandRow } from "@manifold-plugin/brand/web";
 import { canvasWebPlugin } from "@manifold-plugin/canvas/web";
@@ -192,12 +192,11 @@ export const WEB_PLUGIN_DEFS: readonly WebPluginDef[] = [
   { id: "core.index", sections: { index: IndexSection, "new-folder": NewFolderRow } },
   { id: "core.machines", sections: { machines: MachinesSection } },
   /*
-    The credential list (ADR 0019 §3) — `core.access`'s first UI after two waves of
-    door-only, attached exactly like any other row. It draws principals and their live
-    credentials; the fleet's half of the same question stays in `core.machines` above,
-    because the concept is that plugin's.
+    Durable profiles and their runs belong to Agents; Sessions remains the identity and
+    credential surface. Both are ordinary Access contributions, so the browser floor does
+    not own either concept or a second navigation model for their cross-links.
   */
-  { id: "core.access", sections: { sessions: SessionsSection } },
+  { id: "core.access", sections: { sessions: SessionsSection, agents: AgentsSection } },
   { id: "core.plugins", sections: { plugins: PluginManagerSection } },
   /*
     THE RAIL'S NON-NEGOTIABLES, as seats of their own (issue #91). The brand line and the key
