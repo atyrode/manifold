@@ -1,4 +1,4 @@
-import type { LogEvent } from "@manifold/protocol";
+import { redactFields, type LogEvent } from "@manifold/protocol";
 
 /**
  * Structured log record; `ts` is stamped from the injected runtime clock.
@@ -17,3 +17,14 @@ export interface AgentLogRecord {
 
 /** Where structured logs go. main.ts writes them as JSONL to stdout; tests drop them. */
 export type AgentLogSink = (record: AgentLogRecord) => void;
+
+/**
+ * Creates the structured-log boundary. Every record is recursively sanitized before the
+ * resulting single JSONL line can reach the injected writer.
+ */
+export function createAgentLogSink(write: (line: string) => void): AgentLogSink {
+  return (record) => {
+    const redacted = redactFields(record);
+    write(`${JSON.stringify(redacted)}\n`);
+  };
+}

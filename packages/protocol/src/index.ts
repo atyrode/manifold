@@ -962,7 +962,7 @@ export {
   type RevokeMachineRequest,
 } from "./http.ts";
 export { defaultRuntime, type RuntimeDeps } from "./runtime.ts";
-export { LOG_EVENTS, type LogEvent } from "./log.ts";
+export { LOG_EVENTS, redactFields, type LogEvent } from "./log.ts";
 export {
   AssemblyDeltaSchema,
   HARDENED_CONTRACT_VERSION,
