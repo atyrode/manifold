@@ -1276,15 +1276,17 @@ export class PluginHost {
             destination: { machineId: target.data.machineId },
           });
           this.harnessDefinition(claim.agent.harness);
-          this.authService.bindRunSession(input.runId, session, actor);
+          this.jobs!.assertRunLaunchSupported(target.data.machineId);
+          const token = this.authService.bindRunSession(input.runId, session, actor);
           return {
             ...descriptor,
             runtime: this.broker.bindRunLaunch(
               runtime,
               claim.run,
-              claim.token,
+              token,
               actor,
               target.data.containerId,
+              claim.terminalId,
             ),
           };
         },

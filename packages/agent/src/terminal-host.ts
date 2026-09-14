@@ -615,11 +615,15 @@ export class TerminalHost {
         const next = fresh.request;
         if (
           old.jobId === next.jobId ||
+          old.machineId !== next.machineId ||
+          jobDigest(old.terminal ?? null) !== jobDigest(next.terminal ?? null) ||
           old.pluginId !== next.pluginId ||
           old.operationId !== next.operationId ||
           old.installationRevision !== next.installationRevision ||
           old.artifactSha256 !== next.artifactSha256 ||
-          jobDigest(old.input) !== jobDigest(next.input) ||
+          // A run's launcher may change input to resume, but only a fresh signed admission
+          // for this exact binding reaches startTerminal below. Ordinary recipes stay exact.
+          (!old.terminal?.runId && jobDigest(old.input) !== jobDigest(next.input)) ||
           jobDigest(old.resourceBindings ?? null) !== jobDigest(next.resourceBindings ?? null)
         ) {
           refuse("terminal_runtime_changed");

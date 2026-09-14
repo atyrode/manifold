@@ -2983,12 +2983,20 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
   watermark and obtains a fresh snapshot; output from the previous process cannot satisfy
   that new snapshot. Running titlebars require a second press before restarting.
 - Launch recipes are retained for terminals admitted after this feature. A pre-feature row
-  has no recoverable program recipe: on a currently **unconfined** owner Restart restores
+  without a Run binding has no recoverable program recipe: on a currently **unconfined** owner Restart restores
   the owner's default interactive shell in the known cwd, or `$HOME`, with
   `fallback:"no_recipe"` ("restored as a plain shell"). A governed owner instead refuses
   `no_recipe`; unknown execution authority never authorizes a shell. Older retained owners
   that omit restart support are refused as `unsupported`, without replacing their process.
   Governed recipes require fresh signed native admission, never replay of the old admission.
+- **Harness-bound restart uses the harness launch path.** A terminal's durable Run binding
+  sends restart through the same `core.access.launchRun` implementation, with the existing
+  Run and `SessionRef`, never through the generic recipe or plain-shell fallback. The harness
+  may prepare resume input, but may not change the bound session, terminal, home or native
+  operation identity. Fresh private credentials and signed admission retain the Run's lifetime
+  and authority; no bearer or consumed launch binding is replayed from storage. An unavailable
+  harness, revoked authority or expired Run refuses restart rather than substituting a shell.
+  Migration 38 recovers pre-feature terminal Run bindings from matching retained job records.
 - **Owner loss retains placement.** A transport's explicit owner-loss close (4010), or an
   admitted replacement-owner inventory missing a terminal, marks it `exited` with unknown
   exit code and releases its controller; its row, leaf and portals remain. Ordinary transport
@@ -3040,7 +3048,7 @@ the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` 
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
 4403 revoked, 4409 version, or 4003 admission refused (incumbent continuity mismatch or
 supersession damp). Version acceptance uses `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30, 31, 32}`; session/browser joins remain strictly current at protocol 32. An unchanged machine
+`{30, 31, 32, 33}`; session/browser joins remain strictly current at protocol 33. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade.
@@ -3088,7 +3096,7 @@ does not invalidate an otherwise compatible machine transport. The owner receive
 challenge or job authority, while machine presence, retained terminal continuity and
 the named drain/maintenance path remain available for the coordinated upgrade.
 
-The independent federation set is `{27, 28, 29, 30, 31, 32}`; these machine/native changes leave its
+The independent federation set is `{27, 28, 29, 30, 31, 32, 33}`; these machine/native changes leave its
 frames and resource vocabularies unchanged. The earlier per-program and per-job transport
 version gates are retired: every accepted transport understands those frames, while
 authority comes from explicit declarations and live owner proof.
@@ -3129,11 +3137,11 @@ Agent→server: `created { terminalId }` | `create_error { terminalId, message }
 `repository_fact { requestId, fact }` — exactly one per `repository_query`, correlated by id;
 an answer whose id nobody holds is dropped and logged, never believed.
 
-Protocol 32 additionally carries `terminal_cwd { terminalId, cwd }`,
+Protocol 33 additionally carries `terminal_cwd { terminalId, cwd }`,
 `terminal_restart { terminalId, cwd?, create?, noRecipe? }`,
 `terminal_restarted { terminalId, cwd?, fallback? }` and
 `terminal_restart_error { terminalId, reason }`. Restart is sent only when the transport is
-at least protocol 32 and the current owner declared `terminalRestart:true`. `create` carries
+at least protocol 33 and the current owner declared `terminalRestart:true`. `create` carries
 the launch recipe for a replacement owner; fresh hub-injected credentials replace revoked
 ones without persisting their plaintext. `noRecipe` identifies explicit legacy plain-shell
 restoration and grants no governed execution authority. Owner cwd/restart notifications also

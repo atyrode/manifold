@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ROOT_TILE_ID,
+  PROTOCOL_VERSION,
   ServerToAgentMessageSchema,
   type Container,
   type ServerToAgentMessage,
@@ -16,6 +17,7 @@ import { FakeClock, FakeRuntime, FakeSocket, testStore, testTileTrees } from "./
 class FakeMachine implements MachineChannel {
   readonly sent: ServerToAgentMessage[] = [];
   readonly terminalRestart = true;
+  readonly protocolVersion = PROTOCOL_VERSION;
 
   constructor(
     readonly machineId: string,

@@ -799,7 +799,7 @@ describe("SessionGateway liveness", () => {
       );
       expect(child.run.principal.id).not.toBe(runs[1]!.run.principal.id);
       expect(child.run.parentRunId).toBe(runs[1]!.run.id);
-      const childToken = fixture.auth.claimRunLaunch(child.run.id, owner).token;
+      const childToken = fixture.auth.claimRunLaunch(child.run.id, owner).token!;
       const childActor = fixture.auth.authenticate(childToken);
       const childPolicy = fixture.auth.agentPolicyChallenge(childActor);
       fixture.auth.acknowledgeAgentPolicy(

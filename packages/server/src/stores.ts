@@ -367,6 +367,7 @@ interface TerminalDbRow {
   created_at: number;
   cwd: string | null;
   launch_recipe: string | null;
+  run_id: string | null;
 }
 
 interface EventDbRow {
@@ -591,6 +592,7 @@ export interface StoredTerminal {
   createdAt: number;
   cwd?: string;
   launchRecipe?: TerminalLaunchRecipe;
+  runId?: string;
 }
 
 /** Input required to persist a newly created terminal. */
@@ -603,6 +605,7 @@ export interface NewStoredTerminal {
   createdAt: number;
   cwd?: string;
   launchRecipe?: TerminalLaunchRecipe;
+  runId?: string;
 }
 
 /**
@@ -1015,6 +1018,7 @@ function toTerminal(row: TerminalDbRow): StoredTerminal {
     exitCode: row.exit_code,
     createdAt: row.created_at,
     ...(row.cwd === null ? {} : { cwd: row.cwd }),
+    ...(row.run_id === null ? {} : { runId: row.run_id }),
     ...(row.launch_recipe === null
       ? {}
       : { launchRecipe: TerminalLaunchRecipeSchema.parse(JSON.parse(row.launch_recipe)) }),
@@ -3554,12 +3558,13 @@ export class ServerStore {
           null,
           string | null,
           string | null,
+          string | null,
         ]
       >(
         `INSERT INTO terminals(
            id, machine_id, container_id, created_by, agent_principal_id,
-           status, exit_code, created_at, name, cwd, launch_recipe
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           status, exit_code, created_at, name, cwd, launch_recipe, run_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         terminal.id,
@@ -3575,6 +3580,7 @@ export class ServerStore {
         terminal.launchRecipe === undefined
           ? null
           : JSON.stringify(TerminalLaunchRecipeSchema.parse(terminal.launchRecipe)),
+        terminal.runId ?? null,
       );
   }
 
@@ -3582,10 +3588,21 @@ export class ServerStore {
     const row = this.db
       .query<TerminalDbRow, [string]>(
         `SELECT id, machine_id, container_id, created_by, agent_principal_id,
-                status, exit_code, created_at, name, cwd, launch_recipe
+                status, exit_code, created_at, name, cwd, launch_recipe, run_id
          FROM terminals WHERE id = ?`,
       )
       .get(id);
+    return row === null ? null : toTerminal(row);
+  }
+
+  getTerminalForRun(runId: string): StoredTerminal | null {
+    const row = this.db
+      .query<TerminalDbRow, [string]>(
+        `SELECT id, machine_id, container_id, created_by, agent_principal_id,
+                status, exit_code, created_at, name, cwd, launch_recipe, run_id
+         FROM terminals WHERE run_id = ? ORDER BY created_at, id LIMIT 1`,
+      )
+      .get(runId);
     return row === null ? null : toTerminal(row);
   }
 
@@ -3593,7 +3610,7 @@ export class ServerStore {
     return this.db
       .query<TerminalDbRow, []>(
         `SELECT id, machine_id, container_id, created_by, agent_principal_id,
-                status, exit_code, created_at, name, cwd, launch_recipe
+                status, exit_code, created_at, name, cwd, launch_recipe, run_id
          FROM terminals ORDER BY created_at, id`,
       )
       .all()
@@ -3604,7 +3621,7 @@ export class ServerStore {
     return this.db
       .query<TerminalDbRow, [string]>(
         `SELECT id, machine_id, container_id, created_by, agent_principal_id,
-                status, exit_code, created_at, name, cwd, launch_recipe
+                status, exit_code, created_at, name, cwd, launch_recipe, run_id
          FROM terminals WHERE machine_id = ? AND status = 'running' ORDER BY created_at, id`,
       )
       .all(machineId)
@@ -3659,7 +3676,7 @@ export class ServerStore {
     return this.db
       .query<TerminalDbRow, [string]>(
         `SELECT id, machine_id, container_id, created_by, agent_principal_id,
-                status, exit_code, created_at, name, cwd, launch_recipe
+                status, exit_code, created_at, name, cwd, launch_recipe, run_id
          FROM terminals WHERE container_id = ? ORDER BY created_at, id`,
       )
       .all(containerId)

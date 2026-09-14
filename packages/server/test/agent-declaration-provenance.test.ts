@@ -60,7 +60,7 @@ function inspect(f: Fixture, runId: string, extra: Partial<InspectRunRequest> = 
 }
 
 function restorePreCutoverSchema(f: Fixture): void {
-  // Replay the real v35 -> v36 -> v37 upgrade, not a current schema with an old label.
+  // Replay the real v35 upgrade, not a current schema with an old label.
   // This fixture has one run per Agent, so restoring legacy principal uniqueness is safe.
   f.store.transaction(() => {
     f.store.db.exec(`
@@ -109,6 +109,8 @@ function restorePreCutoverSchema(f: Fixture): void {
       ALTER TABLE machine_jobs DROP COLUMN run_id;
       ALTER TABLE job_schedule_occurrences DROP COLUMN run_id;
       ALTER TABLE terminals DROP COLUMN run_id;
+      ALTER TABLE terminals DROP COLUMN cwd;
+      ALTER TABLE terminals DROP COLUMN launch_recipe;
       DROP TABLE agents;
     `);
     f.store.setMeta("schema_version", "35");

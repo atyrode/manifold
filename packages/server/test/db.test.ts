@@ -2215,7 +2215,6 @@ CREATE TABLE terminals(id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT,
   created_by TEXT, status TEXT, exit_code INTEGER, created_at INTEGER,
   agent_principal_id TEXT, name TEXT);
 INSERT INTO meta VALUES ('schema_version', '26');
-CREATE TABLE terminals(id TEXT PRIMARY KEY);
 CREATE TABLE machine_job_installs(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, enabled INTEGER NOT NULL, ready INTEGER NOT NULL DEFAULT 0, purge_requested INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(machine_id,plugin_id));
 CREATE TABLE machine_job_installations(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, PRIMARY KEY(machine_id,plugin_id,revision));
 CREATE TABLE machine_job_inputs(job_id TEXT NOT NULL, request_id TEXT NOT NULL, seq INTEGER NOT NULL, actor TEXT NOT NULL, trace_id TEXT NOT NULL, decision_id TEXT, state TEXT NOT NULL, reason TEXT, PRIMARY KEY(job_id,request_id));
@@ -2325,7 +2324,6 @@ CREATE TABLE native_instance_services(
   service_id TEXT PRIMARY KEY,revision TEXT NOT NULL,machine_id TEXT NOT NULL,
   plugin_id TEXT NOT NULL,configuration TEXT NOT NULL,credential TEXT,job_id TEXT,
   configured_by TEXT NOT NULL,configured_at INTEGER NOT NULL);
-CREATE TABLE terminals(id TEXT PRIMARY KEY);
 ${LEGACY_PLUGIN_INSTALLS}
 ${JOB_SCHEDULE_SCHEMA_SQL}
 INSERT INTO machine_jobs(job_id, machine_id, plugin_id, digest, request, state, created_at, cancel_reason) VALUES
@@ -2435,20 +2433,25 @@ UPDATE meta SET value='33' WHERE key='schema_version';
   }
 });
 
-test("migration 36 leaves legacy cwd unknown and persists new launch intent across reopening", () => {
+test("migration 38 leaves legacy cwd unknown and persists new launch intent across reopening", () => {
   const dir = mkdtempSync(join(tmpdir(), "manifold-db-terminal-restart-"));
   const path = join(dir, "manifold.db");
   let db = new Database(path);
   try {
     db.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-INSERT INTO meta VALUES ('schema_version', '35');
+INSERT INTO meta VALUES ('schema_version', '37');
 CREATE TABLE events(id INTEGER PRIMARY KEY, container_id TEXT, ts INTEGER NOT NULL);
 CREATE TABLE terminals(
   id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT, created_by TEXT,
-  agent_principal_id TEXT, name TEXT, status TEXT, exit_code INTEGER, created_at INTEGER
+  agent_principal_id TEXT, name TEXT, status TEXT, exit_code INTEGER, created_at INTEGER, run_id TEXT
 );
-INSERT INTO terminals VALUES ('legacy','machine','home','author',NULL,'kept','exited',NULL,1);
+INSERT INTO terminals VALUES ('legacy','machine','home','author',NULL,'kept','exited',NULL,1,NULL);
+CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, machine_id TEXT, created_at INTEGER, request TEXT);
+INSERT INTO machine_jobs VALUES
+  ('harness-job','machine',1,'{"terminal":{"terminalId":"legacy","containerId":"home","runId":"retained-run"}}'),
+  ('foreign-job','other-machine',2,'{"terminal":{"terminalId":"legacy","containerId":"home","runId":"foreign-run"}}'),
+  ('foreign-home','machine',3,'{"terminal":{"terminalId":"legacy","containerId":"other-home","runId":"foreign-run"}}');
 `);
     db.close();
     db = openDatabase(path);
@@ -2459,6 +2462,7 @@ INSERT INTO terminals VALUES ('legacy','machine','home','author',NULL,'kept','ex
       name: "kept",
       status: "exited",
       exitCode: null,
+      runId: "retained-run",
     });
     expect(store.getTerminal("legacy")?.cwd).toBeUndefined();
     expect(store.getTerminal("legacy")?.launchRecipe).toBeUndefined();

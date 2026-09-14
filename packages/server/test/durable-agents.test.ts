@@ -278,7 +278,7 @@ describe("durable Agent admission", () => {
         sponsor,
       );
       const launch = fix.auth.claimRunLaunch(admitted.run.id, sponsor);
-      const actor = fix.auth.authenticate(launch.token);
+      const actor = fix.auth.authenticate(launch.token!);
       fix.acknowledge(actor);
       fix.advance(60_000);
       const credentials = fix.store.listTokensByPrincipal(agent.agent.principalId).length;
@@ -399,7 +399,7 @@ describe("durable Agent admission", () => {
         "agent run inspection unavailable",
       );
       const childActor = fix.auth.authenticate(
-        fix.auth.claimRunLaunch(child.run.id, fix.owner).token,
+        fix.auth.claimRunLaunch(child.run.id, fix.owner).token!,
       );
       fix.acknowledge(childActor);
       expect(fix.auth.allows(childActor, "containers:read")).toBe(true);

@@ -1,6 +1,8 @@
 import type {
   Cap,
   ContainerTerminalSummary,
+  LaunchRunRequest,
+  LaunchRunResult,
   TerminalEnv,
   TerminalProgram,
   TerminalRuntime,
@@ -58,6 +60,14 @@ interface TerminalsCtx {
     readonly expiresAt?: number | undefined;
   };
   readonly store: { listTerminals(): readonly StoredTerminal[] };
+  readonly identity: {
+    launchRun(
+      input: LaunchRunRequest,
+    ): Promise<
+      | { readonly ok: true; readonly value: LaunchRunResult }
+      | { readonly ok: false; readonly message: string }
+    >;
+  };
   readonly rooms: { censuses(): readonly { readonly references: readonly string[] }[] };
   readonly broker: {
     rename(terminalId: string, name: string): "ok" | "not_found";
@@ -67,6 +77,7 @@ interface TerminalsCtx {
       principalId: string,
       credential?: TerminalsCtx["credential"],
       traceId?: number,
+      launchRun?: TerminalsCtx["identity"]["launchRun"],
     ): Promise<string>;
     liveTerminal(terminalId: string): LiveTerminal | null;
   };
@@ -213,6 +224,7 @@ export const terminalsHandlers = {
       ctx.principal.id,
       ctx.credential,
       ctx.traceId,
+      ctx.identity.launchRun,
     );
     return outcome === "ok"
       ? {}

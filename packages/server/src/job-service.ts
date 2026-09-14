@@ -3685,8 +3685,15 @@ export class JobService {
     privateEnv?: Extract<JobCommand, { type: "start" }>["privateEnv"],
   ): Extract<JobCommand, { type: "start" }> {
     if (runtime.machineId !== machineId) fail("terminal_runtime_destination_changed");
-    if (privateEnv || runtime.launchBinding !== undefined || terminal.runId !== undefined)
+    const runLaunch =
+      terminal.runId !== undefined &&
+      runtime.launchBinding !== undefined &&
+      privateEnv?.MANIFOLD_RUN_ID === terminal.runId &&
+      this.auth.runLaunchCredentialValid(terminal.runId, privateEnv.MANIFOLD_RUN_TOKEN);
+    if (privateEnv || runtime.launchBinding !== undefined || terminal.runId !== undefined) {
       this.assertRunLaunchSupported(machineId);
+      if (!runLaunch) fail("run_launch_binding_required");
+    }
     if (this.jobs.dispatchOrigin(String(traceId))?.door === "core.terminals.restart") {
       const stored = this.store.getTerminal(terminal.terminalId);
       const target = this.store.db
@@ -3694,12 +3701,31 @@ export class JobService {
           "SELECT json_extract(payload, '$.terminalId') AS terminalId FROM events WHERE id=? AND type='trace'",
         )
         .get(traceId);
+      const previous =
+        stored?.launchRecipe?.runtime ??
+        (stored?.runId === undefined
+          ? null
+          : this.store.db
+              .query<{ pluginId: string; operationId: string }, [string, string, string, string]>(
+                `SELECT plugin_id AS pluginId, json_extract(request,'$.operationId') AS operationId FROM machine_jobs
+             WHERE machine_id=? AND json_extract(request,'$.terminal.terminalId')=?
+               AND json_extract(request,'$.terminal.containerId')=?
+               AND json_extract(request,'$.terminal.runId')=?
+             ORDER BY created_at DESC, job_id DESC LIMIT 1`,
+              )
+              .get(machineId, terminal.terminalId, terminal.containerId, stored.runId));
       if (
         target?.terminalId !== terminal.terminalId ||
         stored?.machineId !== machineId ||
         stored.containerId !== terminal.containerId ||
-        !stored.launchRecipe?.runtime ||
-        digest(stored.launchRecipe.runtime) !== digest(runtime)
+        !previous ||
+        (stored.runId !== undefined
+          ? !runLaunch ||
+            stored.runId !== terminal.runId ||
+            previous.pluginId !== runtime.pluginId ||
+            previous.operationId !== runtime.operationId
+          : terminal.runId !== undefined ||
+            digest(stored.launchRecipe!.runtime) !== digest(runtime))
       )
         fail("terminal_restart_recipe_changed");
     }

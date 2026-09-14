@@ -1,6 +1,9 @@
 import {
   hasCap,
   canonicalJobJson,
+  TERMINAL_RESTART_PROTOCOL_VERSION,
+  type LaunchRunRequest,
+  type LaunchRunResult,
   type AgentRun,
   type TerminalRuntime,
   type AdvertisedTerminal,
@@ -133,6 +136,7 @@ interface PendingOpen {
   agentPrincipalId: string | null;
   cancelDeadline: (() => void) | null;
   launchRecipe: TerminalLaunchRecipe;
+  runId?: string;
 }
 
 interface PendingRestart {
@@ -140,6 +144,7 @@ interface PendingRestart {
   principalId: string;
   agentPrincipalId: string | null;
   jobId: string | null;
+  dispatched: boolean;
   resolve: (outcome: string) => void;
   cancelDeadline: (() => void) | null;
 }
@@ -182,6 +187,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       runId: string;
       digest: string;
       containerId: string | undefined;
+      terminalId: string | undefined;
       creator: CredentialReference;
       token: string;
       expiresAt: number;
@@ -195,6 +201,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     token: string,
     actor: AuthContext,
     containerId?: string,
+    terminalId?: string,
   ): TerminalRuntime {
     const bound = { ...runtime, launchBinding: this.runtime.newId() };
     const expiresAt = Math.min(run.expiresAt, this.runtime.now() + 60_000);
@@ -211,6 +218,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       runId: run.id,
       digest: createHash("sha256").update(canonicalJobJson(bound)).digest("hex"),
       containerId,
+      terminalId,
       creator,
       token,
       expiresAt,
@@ -224,7 +232,12 @@ export class TerminalBroker implements TerminalPlacementPort {
     this.runLaunches.clear();
   }
 
-  private consumeRunLaunch(runtime: TerminalRuntime, actor: AuthContext, containerId: string) {
+  private consumeRunLaunch(
+    runtime: TerminalRuntime,
+    actor: AuthContext,
+    containerId: string,
+    terminalId?: string,
+  ) {
     if (runtime.launchBinding === undefined) return undefined;
     const binding = this.runLaunches.get(runtime.launchBinding);
     if (
@@ -232,6 +245,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       binding.creator.tokenId !== actor.tokenId ||
       binding.creator.principalId !== actor.principal.id ||
       (binding.containerId !== undefined && binding.containerId !== containerId) ||
+      binding.terminalId !== terminalId ||
       binding.digest !== createHash("sha256").update(canonicalJobJson(runtime)).digest("hex")
     )
       throw new ServiceError("forbidden", "run launch binding refused");
@@ -900,6 +914,9 @@ export class TerminalBroker implements TerminalPlacementPort {
       opener: channel,
       agentPrincipalId: grant?.principal.id ?? null,
       cancelDeadline: null,
+      ...(runtime?.request.terminal?.runId === undefined
+        ? {}
+        : { runId: runtime.request.terminal.runId }),
       launchRecipe: {
         cols: message.cols,
         rows: message.rows,
@@ -1012,6 +1029,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       createdAt: pending.createdAt,
       ...(pending.launchRecipe.cwd === undefined ? {} : { cwd: pending.launchRecipe.cwd }),
       launchRecipe: pending.launchRecipe,
+      ...(pending.runId === undefined ? {} : { runId: pending.runId }),
     });
     const info: TerminalInfo = {
       id: terminalId,
@@ -1392,6 +1410,12 @@ export class TerminalBroker implements TerminalPlacementPort {
     principalId: string,
     credential?: CredentialReference,
     traceId?: number,
+    launchRun?: (
+      input: LaunchRunRequest,
+    ) => Promise<
+      | { readonly ok: true; readonly value: LaunchRunResult }
+      | { readonly ok: false; readonly message: string }
+    >,
   ): Promise<string> {
     const terminal = this.terminals.get(terminalId);
     const stored = this.store.getTerminal(terminalId);
@@ -1400,51 +1424,106 @@ export class TerminalBroker implements TerminalPlacementPort {
     const machine = this.machines.get(terminal.info.machineId);
     if (machine === undefined) return Promise.resolve("machine_offline");
     if (this.draining.has(machine.machineId)) return Promise.resolve("machine_draining");
-    if (machine.terminalRestart !== true) return Promise.resolve("unsupported");
+    if (
+      machine.terminalRestart !== true ||
+      (machine.protocolVersion ?? 0) < TERMINAL_RESTART_PROTOCOL_VERSION
+    )
+      return Promise.resolve("unsupported");
     const recipe = stored.launchRecipe;
-    if (recipe === undefined && machine.terminalExecution !== "unconfined")
-      return Promise.resolve("no_recipe");
-    if (recipe !== undefined && !recipe.runtime && machine.terminalExecution !== "unconfined")
-      return Promise.resolve("terminal_runtime_required");
-    let runtime: Extract<ServerToAgentMessage, { type: "create" }>["runtime"];
-    if (recipe?.runtime) {
-      try {
+    if (stored.runId !== undefined && !launchRun) return Promise.resolve("run_launch_unavailable");
+    if (stored.runId === undefined) {
+      if (recipe === undefined && machine.terminalExecution !== "unconfined")
+        return Promise.resolve("no_recipe");
+      if (recipe !== undefined && !recipe.runtime && machine.terminalExecution !== "unconfined")
+        return Promise.resolve("terminal_runtime_required");
+    }
+    const completion = Promise.withResolvers<string>();
+    const pending: PendingRestart = {
+      machineId: machine.machineId,
+      principalId,
+      agentPrincipalId: null,
+      jobId: null,
+      dispatched: false,
+      resolve: completion.resolve,
+      cancelDeadline: null,
+    };
+    this.pendingRestarts.set(terminalId, pending);
+    pending.cancelDeadline = this.timers.schedule(() => {
+      this.finishRestart(terminalId, "restart_timeout");
+    }, CREATE_DEADLINE_MS);
+    const prepare = async () => {
+      let runtime: Extract<ServerToAgentMessage, { type: "create" }>["runtime"];
+      if (recipe?.runtime || stored.runId !== undefined) {
         if (!this.jobs || !machine.terminalHostId || !credential || traceId === undefined)
-          return Promise.resolve("terminal_runtime_unsupported");
-        const auth = this.auth.restoreCredential(credential);
+          throw new Error("terminal_runtime_unsupported");
+        let auth = this.auth.restoreCredential(credential);
         if (!auth || auth.principal.id !== principalId)
-          return Promise.resolve("terminal_runtime_admission_refused");
+          throw new Error("terminal_runtime_admission_refused");
+        let descriptor = recipe?.runtime;
+        let privateEnv;
+        if (stored.runId !== undefined) {
+          const launched = await launchRun!({
+            runId: stored.runId,
+            target: { machineId: machine.machineId, containerId: stored.containerId },
+          });
+          if (this.pendingRestarts.get(terminalId) !== pending) return;
+          if (!launched.ok) throw new ServiceError("forbidden", launched.message);
+          auth = this.auth.restoreCredential(credential);
+          const current = this.store.getTerminal(terminalId);
+          if (
+            this.terminals.get(terminalId) !== terminal ||
+            current?.runId !== stored.runId ||
+            current.machineId !== stored.machineId ||
+            current.containerId !== stored.containerId
+          )
+            throw new Error("terminal_changed");
+          if (
+            !auth ||
+            auth.principal.id !== principalId ||
+            !this.auth.allows(auth, "terminals:write", stored.containerId) ||
+            (terminal.info.status === "running" &&
+              terminal.info.controllerId !== principalId &&
+              !auth.isRoot)
+          )
+            throw new Error("terminal_runtime_admission_refused");
+          if (this.machines.get(machine.machineId) !== machine)
+            throw new Error("machine_unavailable");
+          if (this.draining.has(machine.machineId)) throw new Error("machine_draining");
+          if (
+            machine.terminalRestart !== true ||
+            (machine.protocolVersion ?? 0) < TERMINAL_RESTART_PROTOCOL_VERSION
+          )
+            throw new Error("unsupported");
+          descriptor = launched.value.runtime;
+          privateEnv = this.consumeRunLaunch(descriptor, auth, stored.containerId, terminalId);
+          if (privateEnv?.MANIFOLD_RUN_ID !== stored.runId)
+            throw new Error("run_launch_unavailable");
+        }
+        if (descriptor === undefined) throw new Error("terminal_runtime_required");
         runtime = this.jobs.admitTerminal(
           auth,
-          recipe.runtime,
+          descriptor,
           machine.machineId,
-          { terminalId, terminalHostId: machine.terminalHostId, containerId: stored.containerId },
+          {
+            terminalId,
+            terminalHostId: machine.terminalHostId,
+            containerId: stored.containerId,
+            ...(stored.runId === undefined ? {} : { runId: stored.runId }),
+          },
           traceId,
+          privateEnv,
         );
-      } catch {
-        return Promise.resolve("terminal_runtime_admission_refused");
+        pending.jobId = runtime.request.jobId;
       }
-    }
-    const grant = runtime
-      ? null
-      : this.auth.mintSessionAgentToken(terminalId, stored.containerId, principalId);
-    return new Promise<string>((resolve) => {
-      const pending: PendingRestart = {
-        machineId: machine.machineId,
-        principalId,
-        agentPrincipalId: grant?.principal.id ?? null,
-        jobId: runtime?.request.jobId ?? null,
-        resolve,
-        cancelDeadline: null,
-      };
-      this.pendingRestarts.set(terminalId, pending);
-      pending.cancelDeadline = this.timers.schedule(() => {
-        this.finishRestart(terminalId, "restart_timeout");
-      }, CREATE_DEADLINE_MS);
+      const grant = runtime
+        ? null
+        : this.auth.mintSessionAgentToken(terminalId, stored.containerId, principalId);
+      pending.agentPrincipalId = grant?.principal.id ?? null;
+      pending.dispatched = true;
       const sent = machine.send({
         type: "terminal_restart",
         terminalId,
-        ...(recipe === undefined ? { noRecipe: true } : {}),
+        ...(recipe === undefined && stored.runId === undefined ? { noRecipe: true } : {}),
         ...(terminal.info.cwd === undefined ? {} : { cwd: terminal.info.cwd }),
         create: {
           cols: terminal.info.cols,
@@ -1464,7 +1543,12 @@ export class TerminalBroker implements TerminalPlacementPort {
         },
       });
       if (!sent) this.finishRestart(terminalId, "machine_unavailable");
+    };
+    void prepare().catch(() => {
+      if (this.pendingRestarts.get(terminalId) === pending)
+        this.finishRestart(terminalId, "terminal_runtime_admission_refused");
     });
+    return completion.promise;
   }
 
   private finishRestart(terminalId: string, outcome: string): void {
@@ -1486,7 +1570,8 @@ export class TerminalBroker implements TerminalPlacementPort {
   }
 
   onRestartError(machineId: string, terminalId: string, reason: string): void {
-    if (this.pendingRestarts.get(terminalId)?.machineId !== machineId) return;
+    const pending = this.pendingRestarts.get(terminalId);
+    if (pending?.machineId !== machineId || !pending.dispatched) return;
     this.finishRestart(terminalId, reason);
   }
 
@@ -1510,7 +1595,12 @@ export class TerminalBroker implements TerminalPlacementPort {
   ): void {
     const terminal = this.terminals.get(message.terminalId);
     const pending = this.pendingRestarts.get(message.terminalId);
-    if (!terminal || terminal.info.machineId !== machineId || pending?.machineId !== machineId)
+    if (
+      !terminal ||
+      terminal.info.machineId !== machineId ||
+      pending?.machineId !== machineId ||
+      !pending.dispatched
+    )
       return;
     const stored = this.store.getTerminal(message.terminalId);
     if (stored?.agentPrincipalId && pending.agentPrincipalId !== null)

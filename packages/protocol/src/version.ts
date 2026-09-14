@@ -331,8 +331,8 @@ export const PROTOCOL_VERSION = 33;
  *
  * v32 -> v33: TERMINAL CWD AND RESTART (issue #583). Owners may advertise their
  * observed `cwd` and `terminalRestart` support. The hub only sends `terminal_restart`
- * when the current owner declared support; an older retained owner is refused as
- * unsupported without changing its wire. Cwd and restart-result events are additive,
+ * when the transport is at least v33 and the current owner declared support; an older
+ * transport or retained owner is refused as unsupported. Cwd/restart events are additive,
  * and absent cwd remains unknown. Machine acceptance ADDS 33. Session joins are
  * strictly 33 for cwd/restarted events and terminal summaries. Owner loss retains
  * exited tiles rather than removing their homes. IPC stays 2, and the unchanged

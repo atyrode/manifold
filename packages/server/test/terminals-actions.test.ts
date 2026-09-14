@@ -44,6 +44,7 @@ const OWNER_KEY = "c".repeat(64);
 class FakeMachine implements MachineChannel {
   readonly terminalExecution: MachineChannel["terminalExecution"] = "unconfined";
   readonly terminalRestart = true;
+  readonly protocolVersion = PROTOCOL_VERSION;
   readonly sent: ServerToAgentMessage[] = [];
   readonly terminalHostId: string | null = null;
   onRestart: ((terminalId: string) => void) | null = null;
