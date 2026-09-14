@@ -1807,13 +1807,28 @@ replacement cannot start early. Explicit cancellation and authority revocation s
 force termination. See [instance-service retirement](CONTRACTS.md#governed-machine-jobs).
 
 **A metered service operation, and what a job may spend through it.** A proxy operation may
-declare `meter: { kind: "openai-usage" }` ([ADR 0038](decisions/0038-brokered-inference.md)),
-which is the only thing that ever reads a body: the provider's own `usage` object and the `model`
-it names, from a JSON response or from the final usage frame of an SSE stream — the owner sets
-`stream_options.include_usage` on a streaming request so that frame exists. Nothing else of the
-request or the response is read, kept or logged, and the bytes reach the caller unchanged. A 2xx
-response on a metered operation whose usage the meter cannot read is `service_response_invalid`,
-never a free call.
+declare a `meter` ([ADR 0038](decisions/0038-brokered-inference.md)), which is the only thing that
+ever reads a body: the provider's own `usage` object and the model the call names, from a JSON
+response or from the final usage frame of an SSE stream. Nothing else of the request or the
+response is read, kept or logged, and the bytes reach the caller unchanged. The `kind` says which
+wire the operation speaks, and it is the wire the upstream actually speaks, not a preference:
+
+| `kind`            | The request must name                        | Tokens are read from                                                                                                                               | The owner amends                                          |
+| ----------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `openai-usage`    | `model`                                      | `prompt_tokens`/`completion_tokens` or `input_tokens`/`output_tokens`, with `prompt_tokens_details.cached_tokens`                                  | `stream_options.include_usage` on a streamed chat request |
+| `pi-native-usage` | `modelId`, beside a `context.messages` array | `usage.input`, `usage.output`, `usage.cacheRead` on the terminal frame (`done`'s `message`, `error`'s `error`, or a non-streamed body's `message`) | nothing                                                   |
+
+`pi-native-usage` is pi-ai's own wire (`POST /v1/pi/stream`), where `input` is the fresh input
+bucket and `cacheRead` the cached one: the call is reported with their sum as `inputTokens` and
+`cacheRead` as `cachedInputTokens`, and `cacheWrite` is read by nothing because there is no price
+column for it. A request that spells its model any other way is refused `service_input_invalid`
+before the provider is dialed, so an unmetered call is never made by accident.
+
+A 2xx response on a metered operation whose usage the meter cannot read is
+`service_response_invalid`, never a free call: it ends the caller's stream, counts as one call and
+makes every later metered call in the job return the same. On `pi-native-usage`, where the wire
+always ends a turn with its usage, that call is journaled with the refusal's own status rather
+than the 2xx the provider began with, so it cannot be read as a call that simply cost nothing.
 
 Prices are the owner's, not the caller's: the policy carries
 `prices: { models: { "<model id>": { inputPerMillion, outputPerMillion, cachedInputPerMillion? } }, default? }`

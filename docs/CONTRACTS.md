@@ -2746,10 +2746,11 @@ read a retained IPC-1 owner and resume its existing terminals. Without an explic
 declaration it cannot create new ambient shells. Governed requests still require their
 separate native owner proof and admitted resource/runtime bindings.
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 33. Version 31 added an
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 34. Version 31 added an
 operation's declared `limits.concurrentJobs`; version 32 added metered service policies and a job's
-inference limits, usage and journal events; version 33 adds the workload's own reported progress as
-a job event of its own. All of them cross the strict owner parser, in install, start, event and
+inference limits, usage and journal events; version 33 added the workload's own reported progress
+as a job event of its own; version 34 adds the `pi-native-usage` meter kind a policy may name.
+All of them cross the strict owner parser, in install, start, event and
 result frames, so an owner at another version is never an execution owner for this hub. It remains
 disconnected for job admission, installation, resources, services, readiness, input and output.
 It is not the hub/session `PROTOCOL_VERSION`: an unchanged native RPC remains compatible
@@ -2757,7 +2758,7 @@ through a transport or browser upgrade. A native RPC change requires its own coo
 drained owner upgrade. Compatibility alone never proves current execution consent or
 resource readiness, and no PTY, polling or alternate execution path substitutes for it.
 
-The bounded retirement set is `{30, 31, 32}`, not general backwards compatibility. A member may
+The bounded retirement set is `{30, 31, 32, 33}`, not general backwards compatibility. A member may
 receive an owner challenge only while the machine is drained and its owner id, public key and
 generation exactly match the durable pin. Successful proof permits only `drain` plus
 `status` and `cancel`/`retire` without an admission payload for an already-retained job carrying
@@ -3131,12 +3132,24 @@ provider handling and postconditions belong to plugins, never the common floor.
 - **Metered inference** ([ADR 0038](decisions/0038-brokered-inference.md)). A job that drives a
   model never holds the model's credential: inference is an Instance Service whose origin is a
   provider and whose credential only the machine owner resolves, and the job is handed a loopback
-  URL and a bearer minted for that one run. A proxy operation declaring
-  `meter: { kind: "openai-usage" }` is the only thing that reads a body, and it reads exactly the
-  provider's own `usage` object and the `model` it names — from a JSON response or the final usage
-  frame of a stream the owner amended with `stream_options.include_usage` — never a prompt, never a
-  byte of the answer; unreadable usage on a 2xx is `service_response_invalid`, counts as a call and
-  latches that job's metered lane closed so missing usage cannot evade token or cost ceilings.
+  URL and a bearer minted for that one run. A proxy operation declaring a `meter` is the only
+  thing that reads a body, and it reads exactly the provider's own `usage` object and the model
+  the call names — never a prompt, never a byte of the answer. The `kind` names the wire, and a
+  policy may name no other: `openai-usage` reads `model` on the request and
+  `prompt_tokens`/`completion_tokens` or `input_tokens`/`output_tokens` with
+  `prompt_tokens_details.cached_tokens` from a JSON response or the final usage frame of a stream
+  the owner amended with `stream_options.include_usage`; `pi-native-usage` reads `modelId` beside
+  a `context.messages` array on the request — no other spelling of the model is a metered call —
+  and `usage.input`, `usage.output` and `usage.cacheRead` from the terminal frame of pi-ai's own
+  wire, which the owner amends not at all because that wire always sends one. `input` is the fresh
+  input bucket there and `cacheRead` the cached one, so the reported `inputTokens` is their sum
+  with `cachedInputTokens` named inside it, the way every usage total states it; `cacheWrite` is
+  read by nothing, because a policy has no price column for it. Unreadable usage on a 2xx is
+  `service_response_invalid`, counts as a call and latches that job's metered lane closed so
+  missing usage cannot evade token or cost ceilings — and on `pi-native-usage`, where a stream
+  without a usage frame is a turn that did not complete, the journaled call carries that refusal's
+  status rather than the 2xx the provider began with, so no such call reads as a success that
+  happened to cost nothing.
   Prices are policy content in integer micro-dollars, pinned by the policy's `revision`; ceilings
   are the job's `limits.inference`, and an operation's declared ceiling can be lowered by a request
   but never dropped (`limit_exceeded`). The owner serializes metered calls across every service
