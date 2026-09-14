@@ -2109,7 +2109,7 @@ test.skipIf(!linux || !cgroupRoot)(
     try {
       const operationId = "fixture.provider.run";
       const addedId = "fixture.provider.consume";
-      const full = {
+      const full: Extract<JobCommand, { type: "install" }> = {
         ...f.provider,
         machine: {
           ...f.provider.machine,
