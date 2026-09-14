@@ -792,6 +792,25 @@ export function SidebarPanel({ host }: PanelProps): ReactElement {
    * a migration; it lasts as long as the tab does.
    */
   const [collapsedSections, setCollapsedSections] = useState<CollapsedSections>({});
+  const requestedRef = host.requestedRef;
+  const revealedRef = useRef<typeof requestedRef>(null);
+  useEffect(() => {
+    if (requestedRef === null || revealedRef.current === requestedRef) return;
+    revealedRef.current = requestedRef;
+    const sections = assembly.sections.filter(
+      (section) => section.enabled && section.refKinds?.includes(requestedRef.kind),
+    );
+    if (sections.length === 0) return;
+    // A native reference names a destination, including when its owning rail section is folded.
+    setSidebarOpen(true);
+    setCollapsedSections((current) => {
+      const changed = sections.filter((section) => current[section.id] === true);
+      if (changed.length === 0) return current;
+      const next = { ...current };
+      for (const section of changed) next[section.id] = false;
+      return next;
+    });
+  }, [assembly.sections, requestedRef, setSidebarOpen]);
   /**
    * THE GESTURE IN FLIGHT, and the arrangement it has dragged the stack into so far.
    *

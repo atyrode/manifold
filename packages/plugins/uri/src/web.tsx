@@ -49,12 +49,12 @@ function resolveTarget(rest: string): Target {
       // the URI names only the terminal, so the index is what answers "where is it".
       return { state: "terminal", terminalId: ref.terminalId };
     case "plugin":
+    case "agent":
+    case "run":
       /*
-        A PLUGIN IS A PLACE, and the shell's own navigation door knows which one: a plugin is
-        shown by a surface INSIDE the workspace — whichever composed manager answers that
-        form — rather than by a route of its own, so this hands the address straight back to
-        `host.navigate` exactly as a container does and stops caring what happens next
-        (`navigateUri`, issue #133). Nothing here names a manager, or knows that one exists.
+        These records are shown by a surface inside the workspace rather than a route of
+        their own. Hand the native address back to the host, where the declared section
+        consumes it; this router does not need to know which plugin paints that section.
        */
       return { state: "open", uri: decoded, center: false };
     case "machine":
