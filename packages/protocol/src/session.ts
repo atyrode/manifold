@@ -18,10 +18,10 @@ import { STREAM_CLIENT_BODIES, STREAM_SERVER_BODIES } from "./stream.ts";
 /**
  * Session channel (`/ws/session`): browsers, SDKs, tools. JSON text frames.
  *
- * FRAME GRAMMAR (v33) — one socket per tab, many rooms or one roomless observer. Every
+ * FRAME GRAMMAR (v35) — one socket per tab, many rooms or one roomless observer. Every
  * frame is either connection-level or channel-level:
  *
- *   connection-level   client → server  {"type":"observe","token":"…","protocolVersion":33}
+ *   connection-level   client → server  {"type":"observe","token":"…","protocolVersion":35}
  *                      client → server  {"type":"pong"}
  *                      client → server  {"type":"subscribe","topics":[…]}
  *                      server → client  {"type":"observed"}

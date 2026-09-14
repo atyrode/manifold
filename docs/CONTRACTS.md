@@ -2338,11 +2338,11 @@ slice, which is a stage-2 decision, not something this proof may quietly widen.
 
 ## WS /ws/session — session channel (JSON text frames)
 
-**Frame grammar (v33).** One socket per tab, many rooms or one roomless observer. Every frame is
+**Frame grammar (v35).** One socket per tab, many rooms or one roomless observer. Every frame is
 either connection-level or channel-level:
 
 ```
-connection-level   client → server  {"type":"observe","token":"…","protocolVersion":33}
+connection-level   client → server  {"type":"observe","token":"…","protocolVersion":35}
                    client → server  {"type":"pong"}
                    client → server  {"type":"subscribe","topics":[…]}
                    client → server  {"type":"unsubscribe","topics":[…]}
@@ -2350,7 +2350,7 @@ connection-level   client → server  {"type":"observe","token":"…","protocolV
                    server → client  {"type":"ping"}
                    server → client  {"type":"session","connectionId":"…"}
                    server → client  {"type":"plugins","roster":[…]}
-                   server → client  {"type":"event","topic":{…},"kind":"…","at":…,"actor":…,"payload":{…}}
+                   server → client  {"type":"event","topic":{…},"plugin":"…","kind":"…","at":…,"actor":…,"payload":{…}}
 channel-level      both ways        {"ch":"<channelId>","type":"…", …}
 ```
 
