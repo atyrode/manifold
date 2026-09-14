@@ -8,7 +8,12 @@
  * artifact onto a hub), `dev` (pack and install on every change) and `verify` (artifacts against
  * a real spawned engine), each its own file under `src/` (issue #319).
  */
-export { HostCallError, IsolateSliceUnavailable, PluginDatabaseError } from "./errors.ts";
+export {
+  ActionCallError,
+  HostCallError,
+  IsolateSliceUnavailable,
+  PluginDatabaseError,
+} from "./errors.ts";
 export {
   ui,
   type BoxOptions,
@@ -20,6 +25,7 @@ export {
   type UiNodeOf,
 } from "./ui.ts";
 export type {
+  GuestActions,
   GuestAuth,
   GuestCtx,
   GuestDatabase,

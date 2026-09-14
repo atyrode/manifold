@@ -1214,6 +1214,63 @@ id — a directory inside the parent's package, subpath exports, the `contract` 
 is an authoring rule and lives in `docs/PLUGINS.md` §1; its gate check is S18 (`REGISTRY.md`
 §Gates).
 
+**A server handler opens a DECLARED dependency's door, under the principal it is already
+serving** (ADR 0041, #575). `ctx.actions.call({ plugin, action, input })` resolves with the callee
+door's own parsed result; it is on the in-realm `ActionCtx`
+(`packages/server/src/plugin-host.ts:586`), on a hardened guest's ctx through the proxy
+(`actions.call` in `ISOLATE_CTX_METHODS`; `GuestActions` in `packages/plugin-kit/src/server.ts`),
+and on the lifecycle and settled-job contexts that already carry `jobs`. The call IS a dispatch
+(`PluginHost.dispatch`), so the callee's whole ladder runs against the CALLER'S credential: no
+plugin gains authority by calling another, a principal that may not open `b.echo` directly cannot
+open it through `a.relay`, and the refusal happens at the callee. In a hook the principal is the
+installer's, restored per fan-out, exactly as `ctx.jobs` is — absent, not downgraded, when that
+credential no longer restores. The caller's `delegates` ceiling is deliberately NOT applied: that
+ceiling governs native effects a plugin performs with its own consented authority, and a sibling
+call performs none.
+
+The only checks this verb adds sit before the dispatch, and they are walked in this order:
+`dispatch_cycle` (the callee is already on this trace's plugin stack, the caller included, so a
+plugin cannot re-enter its own door), `dispatch_depth` (`MAX_ACTION_CALL_DEPTH` = 8 plugin frames
+per trace), `undeclared_dependency` (the callee is not `required` or `optional` in the CALLER's
+manifest `dependencies`), `dependency_unavailable` (a declared dependency not composed or disabled
+right now — reachable only for an `optional` edge, with no cascade onto the caller), and
+`caller_ceiling` (the callee door's declared `caps` are not all inside the CALLING plugin's own
+ceiling — `granted ∩ declared`, the ceiling rung 4's first half applies to its own doors; operator
+ruling 2026-09-14, ADR 0041 §3). A plugin never does through a sibling what it could not have
+declared for itself, so an install grant that withheld `plugins:manage` stays withheld when the
+row depends on `engine.plugins`; the ceiling is a SECOND bound and not a narrowing of the
+principal, and both have to pass. It bounds ENGINE caps only — a plugin's own namespaced cap is
+the callee's gate on the PRINCIPAL and a manifest may name only its own namespace (ADR 0035), so
+demanding one of a caller would make every door guarded by one unreachable — `delegates` are
+excluded, a governed cap is dropped from an installed caller's ceiling rather than admitted by its
+flat grant, and the check is per hop, so a chain is bounded by every ceiling along it. **The
+engine's own rows are not callees at all**: a builtin (`assembly.builtin(id)` — `engine.jobs`,
+`engine.services`, `engine.machines`, `engine.plugins`) is refused `undeclared_dependency` with a
+sentence saying a builtin row is not a plugin in the dependency model (ADR 0023 §7) and naming
+the native slices instead, because those doors resolve authority AND identity from the context
+they are handed — `jobContext` pins the plugin identity to the dispatching plugin while
+`engine.jobs`'s doors take `pluginId` as an argument, so a sibling call on one would read and
+cancel another plugin's jobs under the engine's identity. `ctx.jobs`, `ctx.services` and
+`ctx.machines` are the way to those mechanisms, each bound to the calling plugin. The callee's
+own answers then arrive as `unknown_action`, `capability`
+(its scope/grant/capability rung refused this principal) and `refused` (its handler's denial, its
+`invalid_args`, or an isolated callee that did
+not answer), each carrying the callee's sentence. Every message is the D5 shape: the class, then
+the plugins after `": "`, caller first — `undeclared_dependency: atyrode.babel -> atyrode.code`,
+`capability: test.a -> test.b.echo (terminals:write capability required)`. A refusal the calling
+handler does not catch refuses the CALLER's dispatch with that same sentence on the existing
+`refused` rung, and the caller's staged emissions are dropped as any refusal drops them. The
+closed set and the depth bound are published at `GET /api/protocol` under
+`pluginContract.actionCall` (`actionCall.refusals`, `actionCall.maxDepth`, `actionCall.member`,
+`actionCall.args`); the ctx member also appears in `isolateContract.ctxMethods`. A callee that
+THROWS is not a refusal: its own row settles `failed` and the caller is told
+`refused: <caller> -> <callee>.<door> (failed)` — never the callee's error text, in realm or
+through the proxy. The callee's ledger row is an ordinary trace with the caller's principal as its
+actor and two reserved payload keys — `origin`, the calling plugin, and `parentTrace`, the row of
+the dispatch it was serving. They are the ledger's alone: `tracePayload` strips both names from
+every door's arguments (`RESERVED_TRACE_KEYS`), so a client cannot attribute its own dispatch to a
+plugin by typing them into a request body, on a committed row or on a refused rung's write-ahead one.
+
 **Disable RETAINS. Destruction is a separate verb.** Disabling gates a plugin's active surface and
 destroys nothing: scene records, `plugin_kv` rows, panel leaves in stored layouts, section slots and
 element-type reservations all survive, and re-enabling restores them in place. Contributions render
@@ -1920,7 +1977,11 @@ about the negotiated frame.
 The ctx slices served over `call` are exactly `ISOLATE_CTX_METHODS`: `storage.get` / `set` /
 `compareAndSet` / `delete` / `keys` (namespaced by plugin id), `auth.allows` (graded as the dispatching principal,
 found by the dispatch id), `outsideScope`, `newId`, `machines.isOnline`, `placement.place`,
-`host.roster`, `host.enabled`. Every other `ActionCtx` member is NOT served in stage 1; the guest
+`host.roster`, `host.enabled`, and `actions.call` — one declared dependency's door, on the same
+terms an in-realm handler gets it (§Plugins, actions, and the workspace layout; ADR 0041), served
+from a dispatch's ctx and from a hook's only when that ctx carries the slice, with the refusal
+crossing as a throw the guest raises as `ActionCallError` carrying the host's sentence. Every
+other `ActionCtx` member is NOT served in stage 1; the guest
 runtime raises `IsolateSliceUnavailable(method)` and answers `{ ok: false, rule: "refused" }`, so
 the absence is a named refusal at the door. Arguments are validated in the child against the
 action's own zod `input` (the schema lives where the code lives; the roster still publishes the

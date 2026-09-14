@@ -7,7 +7,7 @@ import {
   type PluginManifest,
 } from "@manifold/protocol";
 import { z } from "zod";
-import { HostCallError } from "../src/errors.ts";
+import { ActionCallError, HostCallError } from "../src/errors.ts";
 import {
   attachServerGuest,
   defineServerAction,
@@ -451,6 +451,60 @@ describe("dispatch", () => {
         rule: "refused",
         message: "host.enabled said: slice_unavailable: host.enabled",
       },
+    });
+  });
+
+  test("a sibling call is one frame, and its refusal keeps the host's class at the front", async () => {
+    const fake = host({
+      manifest,
+      actions: [echo],
+      handlers: {
+        async echo(ctx: GuestCtx, args: { text: string }) {
+          const asked = ctx.actions.call({
+            plugin: "example.other",
+            action: "run",
+            input: { text: args.text },
+          });
+          // "raw" leaves the rejection uncaught on purpose: a hardened caller's dispatch must
+          // then refuse with the host's sentence verbatim, exactly as an in-realm caller's does.
+          if (args.text === "raw") return { text: String((await asked) as string) };
+          try {
+            return { text: String((await asked) as string) };
+          } catch (error) {
+            if (error instanceof ActionCallError) return { refused: `caught ${error.message}` };
+            throw error;
+          }
+        },
+      },
+    });
+    load(fake);
+    await fake.next();
+
+    fake.send({ t: "dispatch", id: "c1", action: "echo", args: { text: "hi" }, ctx: ctxOf() });
+    const call = await fake.next();
+    expect(call).toMatchObject({
+      t: "call",
+      method: "actions.call",
+      args: [{ plugin: "example.other", action: "run", input: { text: "hi" } }],
+    });
+    fake.send({ t: "reply", id: "c1:1", ok: true, result: "answered" });
+    expect(await fake.next()).toMatchObject({
+      outcome: { ok: true, result: { text: "answered" } },
+    });
+
+    const refusal = "undeclared_dependency: example.thing -> example.other";
+    fake.send({ t: "dispatch", id: "c2", action: "echo", args: { text: "hi" }, ctx: ctxOf() });
+    await fake.next();
+    fake.send({ t: "reply", id: "c2:1", ok: false, error: refusal });
+    expect(await fake.next()).toMatchObject({
+      outcome: { ok: false, rule: "refused", message: `caught ${refusal}` },
+    });
+
+    fake.send({ t: "dispatch", id: "c3", action: "echo", args: { text: "raw" }, ctx: ctxOf() });
+    await fake.next();
+    fake.send({ t: "reply", id: "c3:1", ok: false, error: refusal });
+    expect(await fake.next()).toMatchObject({
+      outcome: { ok: false, rule: "refused", message: refusal },
     });
   });
 

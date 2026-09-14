@@ -54,3 +54,20 @@ export class PluginDatabaseError extends Error {
     this.name = "PluginDatabaseError";
   }
 }
+
+/**
+ * A REFUSED SIBLING CALL (ADR 0041), carrying the host's refusal SENTENCE and nothing else:
+ * the class (`undeclared_dependency`, `dependency_unavailable`, `unknown_action`,
+ * `capability`, `refused`, `dispatch_cycle`, `dispatch_depth`), then the plugins it names,
+ * caller first. The method prefix a bare {@link HostCallError} would add is deliberately
+ * dropped — exactly as {@link PluginDatabaseError} drops it — because this refusal already has
+ * its own published vocabulary and a client reads the class before the first `": "`. An
+ * uncaught instance therefore refuses a hardened caller's dispatch with the same sentence an
+ * in-realm caller's escaping refusal produces.
+ */
+export class ActionCallError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ActionCallError";
+  }
+}

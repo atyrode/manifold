@@ -2,7 +2,7 @@ import type { PluginId, SettledJob } from "@manifold/protocol";
 import type { EmitEvent } from "./emit.ts";
 import type { PluginDatabase } from "./database.ts";
 import type { PluginStorage } from "./storage.ts";
-import type { PluginJobContext } from "./runtime.ts";
+import type { PluginActionContext, PluginJobContext } from "./runtime.ts";
 
 /**
  * THE LIFECYCLE — four hooks, one bound, no veto.
@@ -44,6 +44,11 @@ export const LIFECYCLE_TIMEOUT_MS = 2_000;
  * installer, or a first-party row nobody installed, leaves the slice absent rather than
  * silently downgraded, and a plugin that needs it says so by checking.
  *
+ * `actions` is admitted on exactly the same terms and for the same reason (ADR 0041): a half
+ * that composes on a sibling has to be able to ask it something at the transition it owns,
+ * and the principal it asks under is the installer's — the one authority the row has when
+ * nobody is dispatching — so the two slices are present or absent together.
+ *
  * The parameter is contravariant, so a plugin may declare the minimal slice it actually uses
  * (`(ctx: { storage: PluginStorage }) => void`) and still satisfy the hook type. That is the
  * same sandbox shape the server's action handlers use, checked at the registration site — and
@@ -61,6 +66,7 @@ export interface LifecycleCtx {
   readonly database?: PluginDatabase;
   readonly emit: EmitEvent;
   readonly jobs?: PluginJobContext | undefined;
+  readonly actions?: PluginActionContext | undefined;
   now(): number;
 }
 
@@ -86,6 +92,8 @@ export type AssemblyChangedHook = (ctx: LifecycleCtx, delta: AssemblyDelta) => v
  */
 export interface JobSettledCtx extends LifecycleCtx {
   readonly jobs: PluginJobContext;
+  /** The sibling verb, bound to the same credential the job ran under (ADR 0041). */
+  readonly actions: PluginActionContext;
 }
 export type JobSettledHook = (ctx: JobSettledCtx, job: SettledJob) => void | Promise<void>;
 

@@ -75,7 +75,12 @@ import {
 import { connect, type Socket } from "node:net";
 import { z } from "zod";
 
-import { HostCallError, IsolateSliceUnavailable, PluginDatabaseError } from "./errors.ts";
+import {
+  ActionCallError,
+  HostCallError,
+  IsolateSliceUnavailable,
+  PluginDatabaseError,
+} from "./errors.ts";
 
 /** Bun accepts an inherited socketpair fd here; Node's ambient overload omits that form. */
 const connectDescriptor = connect as unknown as (options: { readonly fd: number }) => Socket;
@@ -299,6 +304,21 @@ export interface GuestJobs {
 /** What a lifecycle hook may reach: every job verb except the live subscription. */
 export type GuestHookJobs = Omit<GuestJobs, "follow">;
 
+/**
+ * THE ONE VERB ONTO A SIBLING, served across the boundary (ADR 0041). `call` opens a door of
+ * a plugin this manifest declared as a `required` or `optional` dependency, under the
+ * principal of the request this handler is serving, and resolves with that door's own result.
+ *
+ * A refusal is a REJECTION with {@link ActionCallError}, whose message is the host's refusal
+ * sentence verbatim — the class (`undeclared_dependency`, `dependency_unavailable`,
+ * `unknown_action`, `capability`, `refused`, `dispatch_cycle`, `dispatch_depth`) then the
+ * plugins it names, caller first. An uncaught rejection refuses this dispatch with that same
+ * sentence, which is what makes a hardened caller's answer identical to an in-realm one's.
+ */
+export interface GuestActions {
+  call(args: { plugin: string; action: string; input: unknown }): Promise<unknown>;
+}
+
 /** The native service contract with asynchronous host calls across the isolate boundary. */
 export interface GuestServices {
   describe(args: { machineId: string }): Promise<ServiceDescription>;
@@ -332,6 +352,7 @@ export interface GuestCtx {
   readonly database?: GuestDatabase;
   readonly jobs: GuestJobs;
   readonly services: GuestServices;
+  readonly actions: GuestActions;
   readonly streams: {
     open(kind: string, node: ManifoldRef): Promise<GuestStreamProducer>;
   };
@@ -357,9 +378,11 @@ export interface GuestCtx {
  * {@link IsolateSliceUnavailable} and the hook fails by name rather than publishing into the
  * void.
  *
- * `jobs` is present only when the `hook` frame said the host serves it — the installer's
- * credential restored (#514) — so an enable that owns a cadence registers it here, and one
- * whose installer is gone sees `undefined` rather than a handle whose every call refuses.
+ * `jobs` and `actions` are present only when the `hook` frame said the host serves them — the
+ * installer's credential restored (#514, ADR 0041) — so an enable that owns a cadence
+ * registers it here and one that composes on a dependency may ask it something, while a hook
+ * whose installer is gone sees `undefined` rather than handles whose every call refuses. One
+ * flag governs both because one credential does.
  */
 export interface GuestLifecycleCtx {
   readonly pluginId: string;
@@ -367,11 +390,13 @@ export interface GuestLifecycleCtx {
   readonly database?: GuestDatabase;
   readonly emit: GuestEmit;
   readonly jobs?: GuestHookJobs | undefined;
+  readonly actions?: GuestActions | undefined;
   now(): number;
 }
-/** The settled hook's ctx: an ordinary hook ctx whose job authority is the settled job's own. */
+/** The settled hook's ctx: an ordinary hook ctx whose authority is the settled job's own. */
 export interface GuestJobSettledCtx extends GuestLifecycleCtx {
   readonly jobs: GuestHookJobs;
+  readonly actions: GuestActions;
 }
 
 export interface GuestLifecycle {
@@ -992,6 +1017,26 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       (await call("jobs.disableSchedule", [args])) as Record<string, never>,
   });
 
+  /**
+   * One round trip per sibling call (ADR 0041). The host owns every verdict — the declared
+   * edge, the callee's whole ladder, the cycle and the depth — so nothing is checked here: a
+   * guest that pre-judged its own dependency graph would be a second answer to "what may this
+   * plugin reach", and the one that matters is the manifest the hub pinned.
+   *
+   * The refusal is re-raised as {@link ActionCallError} carrying the host's sentence verbatim,
+   * so the class a client switches on stays at the front of it.
+   */
+  const actionsFor = (call: Call): GuestActions => ({
+    call: async (args) => {
+      try {
+        return await call("actions.call", [args]);
+      } catch (error) {
+        if (error instanceof HostCallError) throw new ActionCallError(error.detail);
+        throw error;
+      }
+    },
+  });
+
   const dispatchCtx = (call: Call, carried: IsolateDispatchCtx, staged: Emission[]): GuestCtx => {
     // Spread, not assigned: a plugin that declared no database has NO member here, so reading
     // it is `undefined` rather than a handle that would fail one round trip later.
@@ -1077,6 +1122,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
         invokeInstance: async (args) =>
           (await call("services.invokeInstance", [args])) as ServiceReply,
       },
+      actions: actionsFor(call),
       streams: {
         open: async (kind, node) => {
           const opened = (await call("streams.open", [kind, node])) as {
@@ -1165,7 +1211,11 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     return ctx;
   };
 
-  /** `jobs` mirrors the frame: announced means served, so the type and the wire agree. */
+  /**
+   * `jobs` mirrors the frame: announced means served, so the type and the wire agree. The
+   * sibling verb rides the same announcement because it rides the same credential — the
+   * installer's, restored per fan-out (ADR 0041) — so the pair is present or absent together.
+   */
   const hookCtx = (call: Call, jobs: boolean): GuestLifecycleCtx => {
     const database = databaseFor(call);
     return {
@@ -1175,7 +1225,7 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       emit: () => {
         throw new IsolateSliceUnavailable("emit");
       },
-      ...(jobs ? { jobs: jobsFor(call) } : {}),
+      ...(jobs ? { jobs: jobsFor(call), actions: actionsFor(call) } : {}),
       now: () => Date.now(),
     };
   };
@@ -1329,7 +1379,10 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
             throw new Error("onJobSettled is not declared");
           }
           if (frame.job === undefined) throw new Error("onJobSettled carries no settled job");
-          await lifecycle.onJobSettled({ ...ctx, jobs: jobsFor(requests.call) }, frame.job);
+          await lifecycle.onJobSettled(
+            { ...ctx, jobs: jobsFor(requests.call), actions: actionsFor(requests.call) },
+            frame.job,
+          );
           break;
         default: {
           const never: never = frame.hook;

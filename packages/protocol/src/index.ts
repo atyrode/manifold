@@ -548,10 +548,14 @@ export {
   type PresenceStatus,
 } from "./presence.ts";
 export {
+  ACTION_CALL_REFUSALS,
   ACTION_DENIAL_RULES,
   ACTION_SCOPES,
+  ActionCallArgsSchema,
+  ActionCallRefusalSchema,
   ActionDenialSchema,
   ActionOutcomeSchema,
+  MAX_ACTION_CALL_DEPTH,
   ActionScopeSchema,
   ActionSummarySchema,
   ActionRequirementSchema,
@@ -633,6 +637,8 @@ export {
   type ActionDenial,
   type ActionDenialRule,
   type ActionOutcome,
+  type ActionCallArgs,
+  type ActionCallRefusal,
   type ActionScope,
   type ActionRunAccess,
   type ActionSummary,
