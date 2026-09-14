@@ -2610,7 +2610,10 @@ try {
       10_000,
     ));
   const rootShot = await browser.send("Page.captureScreenshot", { format: "png" });
-  const rootShotPath = join(tmpdir(), "manifold-axi-root-live-roster.png");
+  const rootShotPath = join(
+    mkdtempSync(join(tmpdir(), "manifold-axi-root-live-roster-")),
+    "screenshot.png",
+  );
   writeFileSync(rootShotPath, Buffer.from(String(rootShot.result?.["data"] ?? ""), "base64"));
   console.log(`INFO  root live-roster screenshot: ${rootShotPath}`);
   const enabledAtRoot =
