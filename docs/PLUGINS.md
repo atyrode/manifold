@@ -676,11 +676,13 @@ have declared for itself, so declare what your dependencies do for you — the i
 manifest, and a cap your grant withheld stays withheld here. A capability in the CALLEE's own
 namespace (`atyrode.code:run`) is not your business: it is the callee's gate on your caller, and
 it is graded there. Your `delegates` are not involved, a governed cap cannot ride an edge at all,
-and the check is per hop. Calling one of the engine's own doors (`engine.jobs.*`,
-`engine.services.*`) spends your declared ceiling exactly as `ctx.jobs` and `ctx.services` do.
-In `onEnable`, `onDisable`, `onAssemblyChanged` and `onJobSettled` the
-slice is `ctx.actions?` on the same terms as `ctx.jobs?`: the installer's credential (the settled
-job's, for `onJobSettled`), and absent when it no longer restores.
+and the check is per hop. The engine's OWN rows are not dependencies you can call: naming
+`engine.jobs`, `engine.services`, `engine.machines` or `engine.plugins` as a callee is refused
+`undeclared_dependency` saying so, because those doors take their identity from the dispatch
+they belong to — `ctx.jobs`, `ctx.services` and `ctx.machines` are the way to them, and they are
+bound to you. In `onEnable`, `onDisable` and `onAssemblyChanged` the slice is `ctx.actions?` on
+the same terms as `ctx.jobs?` — the installer's credential, absent when it no longer restores —
+and `onJobSettled` always carries it, bound to the settled job's own credential.
 
 A refusal is a REJECTION whose message is the class then the plugins it names, caller first — the
 same `"<class>: <offenders>"` shape every plugin refusal uses. Catch it if you have something

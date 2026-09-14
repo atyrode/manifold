@@ -528,12 +528,63 @@ describe("what a sibling call is refused by", () => {
 
   test("a caller whose own ceiling lacks the callee door's capability refuses caller_ceiling", async () => {
     /*
-      THE REVIEWER'S REPRODUCTION, RULED ON (operator, 2026-09-14; ADR 0041 §3). `test.mgr`
-      declares no capability at all and depends on the engine's assembly administration. Under
-      the old rule an OWNER opening any of its doors administered the assembly on its behalf —
-      an authority its installer's grant never gave it. The caller's own ceiling is now a
-      second bound, so the sibling call is refused before the dispatch and the victim keeps
-      serving; the owner may still open `engine.plugins.setEnabled` directly.
+      THE CEILING, on an ordinary plugin callee (operator's ruling, 2026-09-14; ADR 0041 §3).
+      `test.thin` declares no capability at all, so `test.b.echo`'s `terminals:write` is not
+      something it could have asked for on its own manifest — and it does not get it by
+      depending on a plugin that demands it and waiting for a caller who holds it. The owner
+      DOES hold the cap, which is what makes this the ceiling rather than the principal.
+    */
+    const thin: ServerPluginDef = {
+      manifest: {
+        id: "test.thin",
+        version: "1.0.0",
+        title: "Thin",
+        description: "Declares nothing, depends on a door that demands something.",
+        capabilities: [],
+        dependencies: { [CALLEE]: { type: "required" } },
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      },
+      actions: [
+        defineAction({
+          name: "relay",
+          title: "Relay to a door that demands a capability",
+          caps: [],
+          input: z.strictObject({ word: z.string().min(1) }),
+          result: z.strictObject({ answer: z.unknown() }),
+        }),
+      ],
+      handlers: {
+        relay: async (ctx: ActionCtx, args: { word: string }) => ({
+          answer: await ctx.actions.call({ plugin: CALLEE, action: "echo", input: args }),
+        }),
+      },
+    };
+    const base = await fixture([...pair(), thin]);
+
+    const outcome = await base.host.dispatch(base.owner, "test.thin.relay", { word: "hi" });
+
+    expect(denial(outcome)).toEqual({
+      rule: "refused",
+      message: `caller_ceiling: test.thin -> ${CALLEE}.echo (terminals:write)`,
+    });
+    expect(traces(base).some((row) => row.door === `${CALLEE}.echo`)).toBe(false);
+    // The same door, from a caller whose manifest does declare the cap: admitted.
+    expect(await base.host.dispatch(base.owner, `${CALLER}.relay`, { word: "hi" })).toMatchObject({
+      ok: true,
+    });
+    base.store.close();
+  });
+
+  test("an engine builtin is not a callee at all, however a manifest names it", async () => {
+    /*
+      THE RULING ON THE REVIEWER'S REPRODUCTION (ADR 0041 §3, ADR 0023 `:189`). A builtin row
+      is not a plugin in the dependency model, and the reason is mechanical: the engine's own
+      doors declare no caps and resolve authority from the CONTEXT they are handed — including
+      the plugin identity `jobContext` pins to the dispatching plugin — so a call on
+      `engine.jobs.describe` would carry `engine.jobs`'s identity with a caller-chosen
+      `pluginId`, and a plugin would read and cancel another plugin's jobs through a door that
+      `ctx.jobs` refuses by construction. `engine.plugins` is the same shape one step further:
+      a `capabilities: []` row administering the assembly under its caller's principal.
     */
     const manager: ServerPluginDef = {
       manifest: {
@@ -570,7 +621,8 @@ describe("what a sibling call is refused by", () => {
 
     expect(denial(outcome)).toEqual({
       rule: "refused",
-      message: "caller_ceiling: test.mgr -> engine.plugins.setEnabled (plugins:manage)",
+      message:
+        "undeclared_dependency: test.mgr -> engine.plugins (a builtin row is not a plugin in the dependency model; reach the engine's doors through ctx.jobs, ctx.services or ctx.machines)",
     });
     expect(base.host.assembly().enabled("test.victim")).toBe(true);
     expect(traces(base).some((row) => row.door === "engine.plugins.setEnabled")).toBe(false);
@@ -611,14 +663,15 @@ describe("what a sibling call is refused by", () => {
     base.store.close();
   });
 
-  test("an engine builtin callee runs under the caller's native ceiling, not its caller's caps", async () => {
+  test("the engine's job doors are not reachable either, and the plugin identity is why", async () => {
     /*
-      THE OTHER HALF OF THE CEILING RULE. `engine.jobs`'s doors declare NO caps of their own
-      and resolve authority from the context they are handed, so the caps check above cannot
-      see them: a `capabilities: []` plugin depending on `engine.jobs` would otherwise execute
-      a job with its caller's whole credential, while its own `ctx.jobs.execute` — the same
-      mechanism, reached by method name — carries the ceiling its manifest declared. A builtin
-      callee is therefore dispatched under `nativeAuth`.
+      THE SECOND HALF OF THE SAME RULING, and the reproduction that forced it. `engine.jobs`'s
+      doors take `pluginId` as an ARGUMENT and `jobContext` pins the identity to the plugin
+      the dispatch belongs to (`job-doors.ts`), so a sibling call on one would carry
+      `engine.jobs`'s identity with a caller-chosen `pluginId` — `test.runner` reading
+      `test.other`'s jobs through a door whose own `ctx.jobs` refuses exactly that. Attenuating
+      the authority does not answer it: the identity, not the ceiling, is what the job service
+      checks. So a builtin is refused as a callee, and `ctx.jobs` is the way.
     */
     const runner: ServerPluginDef = {
       manifest: {
@@ -655,13 +708,14 @@ describe("what a sibling call is refused by", () => {
 
     const outcome = await base.host.dispatch(base.owner, "test.runner.ask", { machineId });
 
-    // The OWNER holds `machines:run` at that machine; `test.runner` declared nothing, so the
-    // engine's door refuses the read it would have answered for the owner's own dispatch.
     expect(denial(outcome)).toEqual({
       rule: "refused",
-      message: "refused: test.runner -> engine.jobs.describe (forbidden: job request refused)",
+      message:
+        "undeclared_dependency: test.runner -> engine.jobs (a builtin row is not a plugin in the dependency model; reach the engine's doors through ctx.jobs, ctx.services or ctx.machines)",
     });
-    expect(rowFor(base, "engine.jobs.describe").outcome).toBe("refused");
+    // Nothing was dispatched at the engine's door, so no identity of its was ever borrowed.
+    expect(traces(base).some((row) => row.door?.startsWith("engine.jobs.") === true)).toBe(false);
+    // The owner's own dispatch of that door is untouched.
     expect(
       await base.host.dispatch(base.owner, "engine.jobs.describe", {
         machineId,

@@ -110,22 +110,26 @@ truth about what admitting a row lets its code do.
    than by the first one. A door nobody published has no caps to check and falls through to
    `unknown_action`, which is the order the vocabulary publishes.
 
-   Two mechanics the rule needs to be the rule it says it is (PR #576 re-review):
+   Three mechanics the rule needs to be the rule it says it is (PR #576 re-reviews):
 
    - **ENGINE caps only.** A plugin's OWN capability is namespaced to the plugin that declared it
      and a manifest may declare only its own namespace (ADR 0035), so demanding a namespaced cap
      of the CALLER's ceiling would make every door guarded by one unreachable — which is
      `atyrode.code.runSession`'s exact shape. A namespaced cap is the callee's own gate and it is
      graded where its grant rows live: against the principal, at the callee.
-   - **An ENGINE BUILTIN callee is dispatched under the caller's `nativeAuth`.** `engine.jobs`,
-     `engine.services` and `engine.machines` doors carry no declared caps of their own and resolve
-     authority from the context they are handed, so the caps check above cannot see them at all: a
-     `capabilities: []` plugin depending on `engine.jobs` would otherwise execute a job with its
-     caller's whole credential, while `ctx.jobs.execute` — the same mechanism reached by method
-     name — carries the ceiling its manifest declared. So a call on an engine door is bounded
-     exactly like the method-name slice, and both bounds apply: a builtin door that DOES declare a
-     cap (`engine.plugins.setEnabled`: `plugins:manage`) still meets the ceiling check first. A
-     PLUGIN callee keeps the unattenuated principal, per §2.
+   - **A BUILTIN ROW IS NOT A CALLEE**, however a manifest names it: the call is refused
+     `undeclared_dependency` with a sentence that says so and points at the native slices. A
+     builtin is not a plugin in the dependency model (ADR 0023 §7 `:189`), and the reason is
+     mechanical rather than tidy. The engine's own doors declare no caps of their own and
+     resolve authority — and IDENTITY — from the context they are handed: `jobContext` pins the
+     plugin identity to the plugin whose dispatch it belongs to, and `engine.jobs`'s doors take
+     `pluginId` as an argument. Through this verb that identity would be `engine.jobs`'s own
+     with a caller-chosen `pluginId`, so a plugin would read, cancel and execute ANOTHER
+     plugin's jobs through a door whose `ctx.jobs` equivalent refuses exactly that (PR #576
+     re-review, reproduced). Attenuating the authority does not answer it, because the identity
+     rather than the ceiling is what the job service checks. The native slices are the way to
+     those mechanisms — `ctx.jobs`, `ctx.services`, `ctx.machines` — each bound to the calling
+     plugin and to its declared ceiling, which is what a plugin should be using them for.
    - **A governed cap is dropped from an installed caller's ceiling** rather than admitted by its
      grant, which is rung 4's first half read the other way round: a flat install grant never
      consents to governed authority — its consent is version-bound per artifact revision — so a
@@ -156,8 +160,8 @@ truth about what admitting a row lets its code do.
    published at `GET /api/protocol` beside the denial ladder (`pluginVocabulary().actionCall`):
    `dispatch_cycle`, `dispatch_depth`, `undeclared_dependency`, `dependency_unavailable`,
    `unknown_action`, `caller_ceiling`, `capability`, `refused` — walked in that order, so a caller
-   learns the first
-   thing wrong. The message is the D5 house shape every other plugin refusal uses: the class, then
+   learns the first thing wrong. The message is the D5 house shape every other plugin refusal
+   uses: the class, then
    the offenders after `": "`, caller first (`undeclared_dependency: atyrode.babel -> atyrode.code`,
    `capability: test.a -> test.b.echo (terminals:write capability required)`). A refusal the calling
    handler does not catch refuses the CALLER's dispatch with that same sentence, so a client learns

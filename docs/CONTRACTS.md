@@ -1241,13 +1241,16 @@ principal, and both have to pass. It bounds ENGINE caps only — a plugin's own 
 the callee's gate on the PRINCIPAL and a manifest may name only its own namespace (ADR 0035), so
 demanding one of a caller would make every door guarded by one unreachable — `delegates` are
 excluded, a governed cap is dropped from an installed caller's ceiling rather than admitted by its
-flat grant, and the check is per hop, so a chain is bounded by every ceiling along it. An ENGINE
-BUILTIN callee (`assembly.builtin(id)`: the `engine.*` rows) is additionally dispatched under the
-caller's `nativeAuth` rather than the caller's principal, because those doors declare no caps of
-their own and resolve authority from the context they are handed: a call on `engine.jobs.execute`
-is bounded exactly like `ctx.jobs.execute`, and a builtin door that does declare a cap
-(`engine.plugins.setEnabled`) meets the ceiling check as well. A plugin callee keeps the
-unattenuated principal. The callee's own answers then arrive as `unknown_action`, `capability`
+flat grant, and the check is per hop, so a chain is bounded by every ceiling along it. **The
+engine's own rows are not callees at all**: a builtin (`assembly.builtin(id)` — `engine.jobs`,
+`engine.services`, `engine.machines`, `engine.plugins`) is refused `undeclared_dependency` with a
+sentence saying a builtin row is not a plugin in the dependency model (ADR 0023 §7) and naming
+the native slices instead, because those doors resolve authority AND identity from the context
+they are handed — `jobContext` pins the plugin identity to the dispatching plugin while
+`engine.jobs`'s doors take `pluginId` as an argument, so a sibling call on one would read and
+cancel another plugin's jobs under the engine's identity. `ctx.jobs`, `ctx.services` and
+`ctx.machines` are the way to those mechanisms, each bound to the calling plugin. The callee's
+own answers then arrive as `unknown_action`, `capability`
 (its scope/grant/capability rung refused this principal) and `refused` (its handler's denial, its
 `invalid_args`, or an isolated callee that did
 not answer), each carrying the callee's sentence. Every message is the D5 shape: the class, then

@@ -2623,9 +2623,7 @@ export class PluginHost {
               nobody dispatched it, which is also why the parent is the sentinel rather than a
               row id.
             */
-            // A hook has no action, so there is no `delegates` ceiling to attenuate: the two
-            // authorities are one, exactly as its job slice already is.
-            actions: this.actionCalls(pluginId, auth, auth, null, LIFECYCLE_TRACE, [pluginId]),
+            actions: this.actionCalls(pluginId, auth, null, LIFECYCLE_TRACE, [pluginId]),
           }),
     };
   }
@@ -2750,7 +2748,7 @@ export class PluginHost {
       ),
       // Both slices are the SETTLED JOB'S credential, not the installer's: the wake belongs
       // to that run, so what it may ask a dependency is what that run could ask.
-      actions: this.actionCalls(id, auth, auth, null, delivery.traceId, [id]),
+      actions: this.actionCalls(id, auth, null, delivery.traceId, [id]),
     };
     let outcome: HookOutcome;
     try {
@@ -2782,18 +2780,12 @@ export class PluginHost {
    * mechanism behind both bounds: a callee already on it is a cycle, and a stack at
    * `MAX_ACTION_CALL_DEPTH` is as deep as one trace goes.
    *
-   * TWO AUTHORITIES, and which one is used depends on WHO the callee is. A plugin callee runs
-   * under `auth` — the unattenuated principal of the request the caller is serving (§2). An
-   * ENGINE BUILTIN runs under `nativeAuth`, the caller's own declared ceiling: the engine's
-   * doors are the same native mechanisms `ctx.jobs` and `ctx.services` reach by method name,
-   * and a plugin must not get through `engine.jobs.execute` what `ctx.jobs.execute` would
-   * refuse it. A hook has no action and therefore no `delegates` ceiling, so the two are the
-   * same context there, exactly as its job slice already is.
+   * ONE AUTHORITY, always the caller's own `auth` (§2). An engine BUILTIN is never a callee at
+   * all — the check below refuses it — so there is no second context to choose between.
    */
   private actionCalls(
     caller: string,
     auth: AuthContext,
-    nativeAuth: AuthContext,
     session: string | null,
     parentTrace: number | string,
     stack: readonly string[],
@@ -2822,6 +2814,24 @@ export class PluginHost {
           throw new ActionCallRefused("dispatch_depth", chain);
         }
         /*
+          A BUILTIN ROW IS NOT A PLUGIN IN THE DEPENDENCY MODEL (ADR 0023 `:189`), so it is not
+          a callee here however a manifest names it — and the reason is mechanical rather than
+          tidy. The engine's own doors (`engine.jobs`, `engine.services`, `engine.machines`,
+          `engine.plugins`) declare no caps of their own and resolve authority from the CONTEXT
+          they are handed, including the plugin identity `jobContext` pins to the dispatching
+          plugin (`job-doors.ts`) — which through this verb would be `engine.jobs`'s own, with
+          the `pluginId` argument caller-chosen. A plugin would then read and cancel another
+          plugin's jobs by asking the engine's door for them, which `ctx.jobs` refuses by
+          construction. The native slices ARE the way to those mechanisms: `ctx.jobs`,
+          `ctx.services` and `ctx.machines`, each bound to this plugin and its declared ceiling.
+        */
+        if (this.assembled.builtin(callee)) {
+          throw new ActionCallRefused(
+            "undeclared_dependency",
+            `${edge} (a builtin row is not a plugin in the dependency model; reach the engine's doors through ctx.jobs, ctx.services or ctx.machines)`,
+          );
+        }
+        /*
           THE DECLARED EDGE, and it is the only thing this side decides about authority.
           `dependencies` is the manifest's own statement of what it composes on (ADR 0013 §5),
           so an `incompatible` entry — or no entry at all — is not an edge: a plugin cannot
@@ -2848,9 +2858,9 @@ export class PluginHost {
           callee door's declared capabilities must also lie inside what the CALLING plugin
           could have declared for itself — `granted ∩ declared`, the same ceiling rung 4's
           first half applies to the caller's own doors. A plugin never does through a sibling
-          what it could not have asked for on its own manifest, so a row whose installer
-          withheld `plugins:manage` cannot administer the assembly by depending on
-          `engine.plugins` and waiting for an owner to open any of its doors.
+          what it could not have asked for on its own manifest: a row whose installer withheld
+          `terminals:write` does not get it by depending on a plugin whose door demands it and
+          waiting for a caller who holds it.
 
           It is a SECOND bound and not a narrowing of the principal: the grade at the callee is
           still the caller's request principal (§2), and both have to pass. Declared `caps`
@@ -2885,17 +2895,12 @@ export class PluginHost {
           flushing on ITS success — all of it is the existing path, which is why this verb adds
           no rung and cannot be a second denial ladder.
 
-          A PLUGIN callee is dispatched under the caller's own `auth` (§2). An ENGINE BUILTIN
-          is dispatched under `nativeAuth`, so a call on `engine.jobs.execute` is bounded by
-          exactly the ceiling `ctx.jobs.execute` is: those doors carry no declared caps of
-          their own and resolve authority from the context they are handed, so an unattenuated
-          one would be the one way a plugin could spend more of its caller's authority than
-          its own manifest ever declared.
+          Always under the caller's own `auth` (§2): a builtin callee was refused above, so
+          there is no second authority to choose between here.
         */
         let outcome: ActionOutcome;
         try {
-          const calleeAuth = this.assembled.builtin(callee) ? nativeAuth : auth;
-          outcome = await this.dispatch(calleeAuth, door, request.input, session, {
+          outcome = await this.dispatch(auth, door, request.input, session, {
             origin: { plugin: caller, parentTrace, stack },
           });
         } catch {
@@ -3235,18 +3240,18 @@ export class PluginHost {
           : "read",
       ),
       /*
-        THE SIBLING VERB, handed BOTH authorities (ADR 0041). A plugin callee is dispatched
-        under the caller's own `auth`: it grades the PRINCIPAL, and narrowing the principal's
-        caps would refuse a client its own authority at a door it may open directly. An engine
-        BUILTIN callee is dispatched under `nativeAuth` instead — the same attenuation
-        `ctx.jobs` and `ctx.services` above get — because those doors resolve authority from
-        the context they are handed, so a call on one must cost the plugin its own declared
-        ceiling exactly as the method-name slice does.
+        THE SIBLING VERB, bound to the CALLER'S OWN `auth` rather than to `nativeAuth` (ADR
+        0041). The attenuation above exists for the engine's native bridges, where a plugin
+        spends its own declared ceiling; a call on a declared dependency spends nothing of the
+        plugin's — the callee grades the PRINCIPAL, and narrowing the principal's caps here
+        would refuse a client its own authority at a door it may open directly. The engine's
+        own rows are not callees at all (`actionCalls` refuses a builtin), so this verb never
+        reaches a door that would have resolved authority from the context instead.
 
         The stack is this trace's frames plus this plugin, so a callee already on it is a
         cycle and a chain that never repeats an id still stops at the depth bound.
       */
-      actions: this.actionCalls(pluginId, auth, nativeAuth, session, traceId, [
+      actions: this.actionCalls(pluginId, auth, session, traceId, [
         ...(options.origin?.stack ?? []),
         pluginId,
       ]),
