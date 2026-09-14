@@ -636,7 +636,7 @@ describe("SessionGateway liveness", () => {
     fixture.store.close();
   });
 
-  test("durable Agent runs have isolated trace and socket identities; disable fences both in one fan-out", async () => {
+  test("durable Agent runs isolate trace and socket identities; generic revocation fences a cross-Agent child", async () => {
     const fixture = await gatewayFixture();
     try {
       const owner = fixture.auth.authenticate(fixture.ownerKey);
@@ -647,11 +647,11 @@ describe("SessionGateway liveness", () => {
           harness: "external",
           context: { profile: {} },
           grant: {
-            caps: ["containers:read"],
+            caps: ["containers:read", "agents:delegate"],
             targets: ["manifold://"],
             reach: "subtree",
             maxRunLifetimeMs: 600_000,
-            delegation: { maxDepth: 0, maxDescendants: 0 },
+            delegation: { maxDepth: 1, maxDescendants: 1 },
             expiresAt: 3_600_000,
           },
         },
@@ -728,14 +728,50 @@ describe("SessionGateway liveness", () => {
         fixture.container.id,
         renewed.credential.token,
       );
-      const fanout: string[] = [];
-      fixture.auth.onRevoked((principalId) => fanout.push(principalId));
-      fixture.auth.disableAgent({ agentId: registered.agent.agentId }, owner);
-      expect(fanout).toEqual([registered.agent.principalId]);
+      const childAgent = fixture.auth.registerAgent(
+        {
+          name: "socket reviewer",
+          purpose: "Review the delegated container",
+          harness: "external",
+          context: { profile: {} },
+          grant: registered.agent.grant,
+        },
+        owner,
+      );
+      const child = fixture.auth.createChildRun(
+        { runId: runs[1]!.run.id, agentId: childAgent.agent.agentId },
+        owner,
+      );
+      expect(child.run.principal.id).not.toBe(runs[1]!.run.principal.id);
+      expect(child.run.parentRunId).toBe(runs[1]!.run.id);
+      const childToken = fixture.auth.claimRunLaunch(child.run.id, owner).token;
+      const childActor = fixture.auth.authenticate(childToken);
+      const childPolicy = fixture.auth.agentPolicyChallenge(childActor);
+      fixture.auth.acknowledgeAgentPolicy(
+        {
+          revision: childPolicy.revision,
+          acknowledgements: childPolicy.required.map(({ id, digest }) => ({ id, digest })),
+        },
+        childActor,
+      );
+      const childSocket = new FakeSocket();
+      join(fixture.gateway, "agent-child", childSocket, fixture.container.id, childToken);
+      expect(childSocket.closed).toBeNull();
+      expect(
+        (
+          await fixture.plugins.dispatch(owner, "core.access.revoke", {
+            principalId: registered.agent.principalId,
+          })
+        ).ok,
+      ).toBe(true);
       expect(replacementSocket.closed).toEqual({ code: 4403, reason: "revoked" });
       expect(secondSocket.closed).toEqual({ code: 4403, reason: "revoked" });
+      expect(childSocket.closed).toEqual({ code: 4403, reason: "revoked" });
+      for (const token of [renewed.credential.token, runs[1]!.credential.token, childToken])
+        expect(() => fixture.auth.authenticate(token)).toThrow("revoked");
       expect(fixture.store.getAgentRun(runs[0]!.run.id)?.state).toBe("revoked");
       expect(fixture.store.getAgentRun(runs[1]!.run.id)?.state).toBe("revoked");
+      expect(fixture.store.getAgentRun(child.run.id)?.state).toBe("revoked");
     } finally {
       fixture.gateway.shutdown();
       fixture.store.close();
