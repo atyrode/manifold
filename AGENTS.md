@@ -140,7 +140,8 @@ in [`docs/PLUGINS.md`](docs/PLUGINS.md); deployment and release commands are rou
   reports fast versus full evidence and links a failed run to its named repair issue/owner so that
   repair or revert takes priority while unrelated safe work may continue.
 - Release/deployment is the irreversible boundary. Release publication requires successful full
-  `main` CI for its exact starting revision. Development deployment requires the exact `main` push;
+  `main` CI for its exact starting revision. Development deployment requires full
+  `main` push or manual-dispatch evidence for its exact revision;
   numbered previews require a full dispatch for their exact branch head; production promotion
   requires full `main` push/manual-dispatch evidence for the resolved release tag commit. Each
   operation must wait for its evidence. Fast PR green, another tree's artifact or a later unrelated

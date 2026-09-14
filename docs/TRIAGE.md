@@ -212,8 +212,9 @@ executable mapping.
    scope permits `agent-ready` only after complete acceptance criteria are present. That owner
    treats repair or revert as priority; unrelated safe work need not freeze while the full run
    completes.
-4. **Deployment and release.** Integrated development requires successful full CI from the exact
-   `main` push. Release starts from an exact full-`main` predecessor, and promotion separately
+4. **Deployment and release.** Integrated development requires successful full `main` push or
+   manual-dispatch CI evidence for its exact revision. Release starts from an exact full-`main`
+   predecessor, and promotion separately
    requires full evidence for the tagged release commit. A numbered PR preview may instead use a
    successful full manual CI dispatch at that exact branch head, valid only for that preview.
    Fast PR green, stale artifacts and a later unrelated green revision are insufficient. Release,
