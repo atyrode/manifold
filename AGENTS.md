@@ -110,7 +110,10 @@ itself is under verification, not as a substitute for the action plane.
 
 ```sh
 bun install        # workspace dependencies; Bun >= 1.4.2 (ADR 0032)
-bun run gate       # complete repository gate required before ready/merge
+bun run ci:plan    # inspect changed paths, risk, reasons and selected checks
+bun run ci:check   # run the local baseline plus affected tests from that plan
+bun run gate       # full repository proof; required only at the boundaries below
+bun run ci:status  # report fast/full CI state, failures, repair issue and next action
 bun run dev:server # local server on :7777; starts a local machine agent
 bun run dev:web    # Vite on :5173, proxying to :7777
 ```
@@ -121,23 +124,42 @@ in [`docs/PLUGINS.md`](docs/PLUGINS.md); deployment and release commands are rou
 
 ## CI performance contract
 
-- `bun run gate` is the authoritative full repository gate. Its no-argument execution stays
-  memory-bounded for local use; CI gains speed by scheduling the same task registry from
-  [`scripts/gate.ts`](scripts/gate.ts) across runners, not by maintaining a second list of checks.
-- Every gate-task addition or change must update the CI topology and pass
-  `bun scripts/ci-coverage.ts`. No check or assertion may be removed, narrowed or skipped for speed
-  without explicit operator acceptance.
-- Required source-change CI has an operating SLO of **under 7 minutes p95** for execution wall
-  clock over recent clean runs with sufficient hosted-runner concurrency. Record execution and
-  queue delay separately. Queue growth is a capacity incident, not permission to serialize checks
-  or weaken coverage; triage regressions from the recorded per-job receipts.
-- A build artifact is reusable only when it was produced from the exact source tree being checked.
-  Exact-tree artifacts expire after one day; after expiry, rerun the whole workflow, never only a
-  failed job against the missing artifact. Every required job has a bounded timeout, and a final
-  always-run aggregation job must reject failures and unexpected skips.
-- Plain-preview and integrated-preview runtime proofs remain concurrent required evidence. Retain
-  strict/current-base branch protection for semantic-conflict safety: optimize the CI topology
-  rather than weakening integration evidence to reduce merge tax.
+- [`docs/TRIAGE.md` §CI evidence and performance](docs/TRIAGE.md#ci-evidence-and-performance)
+  owns the four-boundary CI policy. An ordinary agent starts with `bun run ci:plan`, uses its
+  changed paths, risk reasons and selected checks to guide the work, then runs `bun run ci:check`
+  plus direct proof of the affected behavior. The local baseline is build, types, style, smoke and
+  targeted tests; it does not silently run high-risk extras.
+- Pull requests always run that baseline and the impact-selected checks. A green required `gate`
+  for the current head and integration base is merge evidence; ordinary work need not run
+  `bun run gate` locally or wait for the later full `main` run. Unknown impacts and changes to
+  authentication, persistence, execution, deployment, toolchain, workflow or normative contract
+  roots are conservative: follow the plan's reasons and obtain every selected high-risk proof or
+  the full gate rather than narrowing evidence by hand.
+- Every push to `main` and every manual CI dispatch runs the full registry. It is asynchronous
+  follow-through for already-integrated ordinary work, not a blanket freeze: `bun run ci:status`
+  reports fast versus full evidence and links a failed run to its named repair issue/owner so that
+  repair or revert takes priority while unrelated safe work may continue.
+- Release/deployment is the irreversible boundary. Release publication requires successful full
+  `main` CI for its exact starting revision. Development deployment requires full
+  `main` push or manual-dispatch evidence for its exact revision;
+  numbered previews require a full dispatch for their exact branch head; production promotion
+  requires full `main` push/manual-dispatch evidence for the resolved release tag commit. Each
+  operation must wait for its evidence. Fast PR green, another tree's artifact or a later unrelated
+  green run is not a substitute.
+- `bun run gate` remains the authoritative memory-bounded full local proof, and CI schedules the
+  same task registry from [`scripts/gate.ts`](scripts/gate.ts). Every registry change must update
+  the CI topology and pass `bun scripts/ci-coverage.ts`; no assertion may be removed or weakened
+  for speed without explicit operator acceptance.
+- The fast pull-request target is **1–2 minutes**. The separate full-suite SLO remains **under
+  7 minutes p95** execution wall clock over recent clean runs with sufficient hosted-runner
+  concurrency; record execution and queue delay separately and triage from per-job receipts.
+- A build artifact is reusable only for its exact source tree and expires after one day. After
+  expiry rerun the whole workflow. Required jobs have bounded timeouts, and the always-run `gate`
+  rejects required failures and unexpected skips. Full CI retains both plain-preview and
+  integrated-preview runtime proofs.
+- Contributors may opt into cheap pre-commit diff or formatting checks. Do not install hooks,
+  change Git configuration, or put the full gate in a hook automatically; hooks are convenience,
+  never a security or merge boundary.
 
 ## Boundaries
 
@@ -217,9 +239,12 @@ in [`docs/PLUGINS.md`](docs/PLUGINS.md); deployment and release commands are rou
   before requesting or operating one. You MAY request a preview when live verification or operator
   inspection is useful, and MUST when explicitly asked to provide a deployed PR preview. Ordinary
   docs/internal-only work with nothing to inspect needs none. Opening/pushing a PR does not
-  provision/update a preview: each deployment is one-shot at its recorded SHA. Previews are not
-  production or substitutes for CI. Use normal browser sign-in, never publish key-bearing URLs,
-  and follow the runbook's live-mode and teardown rules.
+  provision/update a preview: each deployment is one-shot at its recorded SHA. Before a numbered
+  preview, run full CI with `gh workflow run ci.yml --ref <PR-branch>` at that exact head and wait
+  for success, then request the trusted-`main` preview workflow. This wait is for deployment, not
+  ordinary PR readiness, and branch proof is valid only for that preview—not integrated `main`,
+  release or production. Use normal browser sign-in, never publish key-bearing URLs, and follow
+  the runbook's live-mode and teardown rules.
 - **Release or deployment work:** read [SELF-HOST.md → Environments](docs/SELF-HOST.md#environments)
   and the owning [`release.ts`](scripts/release.ts) / [`promote.ts`](scripts/promote.ts) procedures.
   `bun run release --dry-run` is release-assessment tooling, not an every-task ritual.
@@ -237,15 +262,18 @@ in [`docs/PLUGINS.md`](docs/PLUGINS.md); deployment and release commands are rou
 - User-visible changes need a fragment under `changes/`; follow [its schema and exemptions](changes/README.md).
   Keep commits small and coherent, using `scaffold:`, `protocol:`, `server:`, `web:`, `agent:`,
   `sdk:`, `plugin:`, `e2e:`, `docs:` or `release:` as appropriate. Do not reformat unrelated text.
-- Before ready/merge, `bun run gate` and required CI must pass for the current published revision
-  and intended integration target, `main`; a stacked branch without that evidence is not ready.
+- Before ready/merge, inspect `bun run ci:plan`, complete `bun run ci:check` and affected-behavior
+  proof, then obtain the required PR `gate` for the current published revision and intended
+  integration target, `main`. Ordinary work does not owe a local full gate or a wait for full
+  post-merge CI; conservative high-risk plan selections and operator holds remain binding.
   Follow the common lifecycle above; squash-merge only under granted authority and checks, then
   delete your branch; the standing grant's mechanical criteria are
   [TRIAGE.md §Merge](docs/TRIAGE.md#merge). Release commits also land through PRs:
   `bun run release` rebase-auto-merges after required checks, then tags the merged `main` commit.
-- When configured, successful main CI deploys integrated development at `DEV_DEPLOY_URL`.
-  For behavioral changes, verify that exact deployed revision there; source, merge, deployment
-  and runtime evidence remain distinct. This is not a requirement to deploy unrelated docs/process work.
+- When configured, successful full `main` CI deploys that exact integrated revision at
+  `DEV_DEPLOY_URL`. For behavioral changes, verify that deployed revision there; source, merge,
+  full CI, deployment and runtime evidence remain distinct. This is not a requirement to deploy
+  unrelated docs/process work.
 - When reporting a deployed preview, provide its exact SHA, ordinary URL, action/panel to inspect
   and expected result. Exercise that URL through normal sign-in; deployment success alone is
   not runtime verification, and an undeployed push is not visible there.

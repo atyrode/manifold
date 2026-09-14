@@ -18,8 +18,8 @@ on:
 
 # The job token only reads the repository; the Environment record is Actions' own bookkeeping.
 permissions:
+  actions: read
   contents: read
-
 concurrency:
   group: deploy-dev
   cancel-in-progress: false
@@ -27,7 +27,13 @@ concurrency:
 jobs:
   deploy:
     name: development
-    if: github.event.workflow_run.conclusion == 'success' && vars.DEV_DEPLOY_HOST != ''
+    if: >-
+      github.event.workflow_run.status == 'completed' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_branch == 'main' &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch') &&
+      vars.DEV_DEPLOY_HOST != ''
     runs-on: ubuntu-latest
     environment:
       name: development
@@ -35,6 +41,10 @@ jobs:
     env:
       SHA: ${{ github.event.workflow_run.head_sha }}
       DEV_URL: ${{ vars.DEV_DEPLOY_URL }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      REPOSITORY: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out the deployed commit
         # The whole history and its tags, because the expected identity is DERIVED from this
@@ -44,6 +54,27 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
+      - name: Verify full exact-revision CI evidence
+        shell: bash
+        run: |
+          [[ $(git rev-parse HEAD) == "$SHA" ]]
+          run="$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID")"
+          jq -e \
+            --arg repo "$REPOSITORY" \
+            --arg sha "$SHA" \
+            --argjson run_id "$RUN_ID" \
+            --argjson run_attempt "$RUN_ATTEMPT" \
+            '.id == $run_id and .run_attempt == $run_attempt and
+             .status == "completed" and .conclusion == "success" and
+             .head_repository.full_name == $repo and
+             .head_branch == "main" and .head_sha == $sha and
+             (.event == "push" or .event == "workflow_dispatch") and
+             .path == ".github/workflows/ci.yml"' <<<"$run" >/dev/null
+          jobs="$(gh api --paginate "repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" \
+            --jq '.jobs')"
+          jq -s -e \
+            '[.[][] | select(.name == "gate" and .status == "completed" and .conclusion == "success")] |
+             length == 1' <<<"$jobs" >/dev/null
 
       - name: Install Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2

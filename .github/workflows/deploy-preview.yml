@@ -115,6 +115,55 @@ jobs:
             }
             const action = process.env.REQUEST_ACTION === "deploy" && pr.state === "open" ? "deploy" : "stop";
             if (action === "deploy" && !/^[0-9a-f]{40}$/.test(pr.head.sha)) throw new Error("Invalid PR head SHA");
+            if (action === "deploy") {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                ...context.repo,
+                workflow_id: "ci.yml",
+                branch: pr.head.ref,
+                event: "workflow_dispatch",
+                per_page: 100,
+              });
+              const expectedJobs = new Set([
+                "plan", "build", "types (1/4)", "types (2/4)", "types (3/4)", "types (4/4)",
+                "style", "smoke", "targeted", "trace", "unit",
+                "e2e (testkit except preview recovery)", "e2e (preview recovery)",
+                "convergence", "terminal-selection", "terminal-mirror", "tile-drop", "budgets",
+                "pwa", "axioms", "runtime-jobs", "runtime-browser",
+                "preview-environment (plain)", "preview-environment (integrated)", "gate",
+              ]);
+              const proof = data.workflow_runs.find((run) =>
+                run.head_sha === pr.head.sha &&
+                run.head_branch === pr.head.ref &&
+                run.head_repository?.full_name === `${context.repo.owner}/${context.repo.repo}` &&
+                run.path === ".github/workflows/ci.yml" &&
+                run.event === "workflow_dispatch"
+              );
+              let complete = false;
+              if (proof?.status === "completed" && proof.conclusion === "success") {
+                const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                  ...context.repo, run_id: proof.id, per_page: 100,
+                });
+                const successful = new Set(jobs
+                  .filter((job) => job.status === "completed" && job.conclusion === "success")
+                  .map((job) => job.name));
+                complete = jobs.length === expectedJobs.size &&
+                  expectedJobs.size === successful.size &&
+                  [...expectedJobs].every((name) => successful.has(name));
+              }
+              if (!proof || !complete) {
+                const ref = pr.head.ref.replaceAll("`", "");
+                const latest = proof ? ` Latest exact run ${proof.id} is ${proof.status}/${proof.conclusion}.` : "";
+                throw new Error(
+                  `PR #${process.env.N} head ${pr.head.sha} needs successful full CI workflow_dispatch evidence.` +
+                  latest + ` Run \`gh workflow run ci.yml --ref ${ref}\`, inspect with ` +
+                  `\`gh run list --workflow ci.yml --branch ${ref} --event workflow_dispatch\`, ` +
+                  "then wait with `gh run watch <run-id>` and retry this deploy."
+                );
+              }
+              await core.summary.addRaw(
+                `Full CI proof: [run ${proof.id}](${proof.html_url}) for \`${pr.head.sha}\`.\n`
+              ).write();
+            }
             core.setOutput("action", action);
             core.setOutput("sha", action === "deploy" ? pr.head.sha : "");
 

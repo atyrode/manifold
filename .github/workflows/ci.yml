@@ -1,12 +1,12 @@
-# CI fans the registry out across hosted runners; `bun run gate` remains the complete,
-# memory-bounded local gate. Keep selectors here and tasks in scripts/gate.ts mechanically aligned.
+# CI fans the gate registry out across hosted runners. Pull requests always run the baseline and
+# planner-selected risk checks; main pushes and workflow dispatches run the complete inventory.
+# `bun run gate` remains the complete, memory-bounded local gate.
 # Real machine/browser runtime proofs and both preview modes intentionally live outside that local
-# gate, but remain mandatory CI jobs and are included in the final required result.
+# gate, but remain part of every full exact-revision CI proof.
 # Browser consumers download the web dist built from this exact commit. A dist is evidence, never a
 # cross-tree cache: changing the source SHA necessarily changes the artifact name.
 # Exact-tree artifacts expire after one day; rerun the whole workflow rather than reusing partial evidence.
-# The under-7-minute SLO assumes enough hosted-runner concurrency; queued time is measured
-# separately from execution topology.
+# The 1–2-minute ordinary PR target and under-7-minute full-lane SLO assume hosted-runner capacity.
 name: CI
 
 on:
@@ -20,13 +20,44 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      checks: ${{ steps.plan.outputs.checks }}
+      risk: ${{ steps.plan.outputs.risk }}
+      unitPaths: ${{ steps.plan.outputs.unitPaths }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/bun-workspace
+      - name: Select exact-revision checks
+        id: plan
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ $EVENT_NAME == pull_request ]]; then
+            MERGE_BASE_SHA=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+            bun scripts/ci-plan.ts --base "$MERGE_BASE_SHA" --head "$HEAD_SHA" --github-output
+          else
+            bun scripts/ci-plan.ts --full --github-output
+          fi
+
   build:
     name: build
     runs-on: ubuntu-latest
+    needs: plan
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -49,9 +80,14 @@ jobs:
           retention-days: 1
 
   types:
-    name: types
+    name: types (${{ matrix.shard }}/4)
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -61,12 +97,12 @@ jobs:
       - uses: ./.github/actions/bun-workspace
         with:
           changelog: "true"
-      - uses: ./.github/actions/gate-slice
-        with:
-          task: types
+      - name: Verify type shard
+        run: bun scripts/gate.ts --only types --shard "${{ matrix.shard }}/4"
 
   style:
     name: style
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -82,8 +118,52 @@ jobs:
       - name: Verify CI registry coverage
         run: bun scripts/ci-coverage.ts
 
+  smoke:
+    name: smoke
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/bun-workspace
+      - name: Download exact-commit web distribution
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: manifold-web-dist-${{ github.sha }}
+          path: ${{ runner.temp }}/manifold-gate-dist
+      - name: Verify the built server and SDK core path
+        env:
+          MANIFOLD_GATE_DIST: ${{ runner.temp }}/manifold-gate-dist
+        run: bun scripts/verify-ci-smoke.ts
+
+  targeted:
+    name: targeted
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/bun-workspace
+        with:
+          changelog: "true"
+      - name: Run exact-diff focused tests
+        shell: bash
+        env:
+          UNIT_PATHS: ${{ needs.plan.outputs.unitPaths }}
+        run: bun scripts/ci-plan.ts --run-targeted --unit-paths-json "$UNIT_PATHS"
+
   trace:
     name: trace
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.checks), 'trace')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -99,6 +179,8 @@ jobs:
 
   unit:
     name: unit
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.checks), 'unit')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -116,7 +198,8 @@ jobs:
 
   e2e-rest:
     name: e2e (testkit except preview recovery)
-    needs: build
+    needs: [plan, build]
+    if: contains(fromJSON(needs.plan.outputs.checks), 'e2e-rest')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -135,7 +218,8 @@ jobs:
 
   e2e-preview-recovery:
     name: e2e (preview recovery)
-    needs: build
+    needs: [plan, build]
+    if: contains(fromJSON(needs.plan.outputs.checks), 'e2e-preview-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -154,7 +238,8 @@ jobs:
 
   convergence:
     name: convergence
-    needs: build
+    needs: [plan, build]
+    if: contains(fromJSON(needs.plan.outputs.checks), 'convergence')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -171,7 +256,8 @@ jobs:
 
   terminal-selection:
     name: terminal-selection
-    needs: build
+    needs: [plan, build]
+    if: contains(fromJSON(needs.plan.outputs.checks), 'terminal-selection')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -188,7 +274,8 @@ jobs:
 
   terminal-mirror:
     name: terminal-mirror
-    needs: build
+    needs: [plan, build]
+    if: contains(fromJSON(needs.plan.outputs.checks), 'terminal-mirror')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -205,7 +292,8 @@ jobs:
 
   tile-drop:
     name: tile-drop
-    needs: build
+    needs: [plan, build]
+    if: contains(fromJSON(needs.plan.outputs.checks), 'tile-drop')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -222,7 +310,8 @@ jobs:
 
   budgets:
     name: budgets
-    needs: build
+    needs: [plan, build]
+    if: contains(fromJSON(needs.plan.outputs.checks), 'budgets')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -239,7 +328,8 @@ jobs:
 
   pwa:
     name: pwa
-    needs: build
+    needs: [plan, build]
+    if: contains(fromJSON(needs.plan.outputs.checks), 'pwa')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -256,7 +346,8 @@ jobs:
 
   axioms:
     name: axioms
-    needs: build
+    needs: [plan, build]
+    if: contains(fromJSON(needs.plan.outputs.checks), 'axioms')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -275,6 +366,8 @@ jobs:
 
   runtime-jobs:
     name: runtime-jobs
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.checks), 'runtime-jobs')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -310,7 +403,8 @@ jobs:
 
   runtime-browser:
     name: runtime-browser
-    needs: build
+    needs: [plan, build]
+    if: contains(fromJSON(needs.plan.outputs.checks), 'runtime-browser')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -363,6 +457,8 @@ jobs:
 
   preview-environment:
     name: preview-environment (${{ matrix.mode }})
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.checks), 'preview-environment')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -399,9 +495,12 @@ jobs:
     name: gate
     if: always()
     needs:
+      - plan
       - build
       - types
       - style
+      - smoke
+      - targeted
       - trace
       - unit
       - e2e-rest
@@ -419,17 +518,53 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Require every verification job
+      - name: Require exactly the planned verification jobs
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          EXPECTED_CHECKS: ${{ needs.plan.outputs.checks }}
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
+          universe='["build","types","style","smoke","targeted","trace","unit","e2e-rest","e2e-preview-recovery","convergence","terminal-selection","terminal-mirror","tile-drop","budgets","pwa","axioms","runtime-jobs","runtime-browser","preview-environment"]'
+          mandatory='["build","types","style","smoke","targeted"]'
           failed=0
-          count=0
-          while IFS=$'\t' read -r job result; do
-            count=$((count + 1))
-            printf '%-24s %s\n' "$job" "${result:-missing}"
-            [[ $result == success ]] || failed=1
-          done < <(jq -r 'to_entries[] | [.key, (.value.result // "missing")] | @tsv' <<<"$NEEDS_JSON")
-          [[ $count -gt 0 ]] || failed=1
+
+          if [[ $(jq -r '.plan.result // "missing"' <<<"$NEEDS_JSON") != success ]]; then
+            echo "planner did not succeed"
+            failed=1
+          fi
+          if ! jq -e --argjson universe "$universe" --argjson mandatory "$mandatory" '
+            . as $checks |
+            type == "array" and all(.[]; type == "string") and
+            (length == (unique | length)) and
+            all(.[]; . as $check | $universe | index($check)) and
+            all($mandatory[]; . as $check | $checks | index($check))
+          ' <<<"$EXPECTED_CHECKS" >/dev/null; then
+            echo "planner emitted an invalid, incomplete, or unknown check set: $EXPECTED_CHECKS"
+            failed=1
+          fi
+
+          if [[ $EVENT_NAME != pull_request ]] &&
+            ! jq -e --argjson universe "$universe" 'sort == ($universe | sort)' <<<"$EXPECTED_CHECKS" >/dev/null; then
+            echo "main/dispatch proof did not plan the full check universe"
+            failed=1
+          fi
+
+          expected_needs="$(jq -cn --argjson universe "$universe" '(["plan"] + $universe) | sort')"
+          actual_needs="$(jq -c 'keys | sort' <<<"$NEEDS_JSON")"
+          if [[ $actual_needs != "$expected_needs" ]]; then
+            echo "gate dependency inventory mismatch: $actual_needs"
+            failed=1
+          fi
+
+          while IFS= read -r check; do
+            result="$(jq -r --arg check "$check" '.[$check].result // "missing"' <<<"$NEEDS_JSON")"
+            planned="$(jq -r --arg check "$check" 'index($check) != null' <<<"$EXPECTED_CHECKS" 2>/dev/null || echo false)"
+            printf '%-24s %-9s planned=%s\n' "$check" "$result" "$planned"
+            if [[ $planned == true ]]; then
+              [[ $result == success ]] || failed=1
+            else
+              [[ $result == skipped ]] || failed=1
+            fi
+          done < <(jq -r '.[]' <<<"$universe")
           exit "$failed"

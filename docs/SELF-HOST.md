@@ -814,10 +814,19 @@ image falls back to `packages/web/package.json`'s version as a `development` bui
 the honest answer for an unstamped image. A development build also says so in the browser: the
 sidebar's rev line reads `development · v<build>`, and the tab title gains ` · development`
 unless you chose a `VITE_MANIFOLD_SITE_TITLE` of your own (§Choose the browser identity).
+Repository deployment starts only after successful **full** CI for its exact source revision.
+Integrated development requires a full `main` push or manual-dispatch result at that SHA. Release publication starts from
+an exact successful full-`main` predecessor; because the release process writes the tagged release
+commit, promotion separately requires a full `main` push or manual-dispatch result for that exact
+tagged revision. A numbered PR preview instead may use a full manual dispatch at that exact branch
+head, and that proof authorizes only that branch's preview: it is never integrated-`main`, release
+or production evidence. Fast pull-request `gate` success and artifacts from another tree do not
+cross these boundaries.
 
-**Release.** `bun run release -- <major|minor|patch|x.y.z>` publishes versioned artifacts from a
-green `main` — the GitHub Release, the fleet binaries, the `ghcr.io/atyrode/manifold:<tag>` image
-stamped `version = build = <x.y.z>`, `channel = release` — and deploys nothing.
+**Release.** `bun run release -- <major|minor|patch|x.y.z>` publishes versioned artifacts from an
+exact `main` revision with successful full `main` CI — the GitHub Release, the fleet binaries, the
+`ghcr.io/atyrode/manifold:<tag>` image stamped `version = build = <x.y.z>`,
+`channel = release` — and deploys nothing.
 
 The script pushes `release/vX.Y.Z`, opens a `release: vX.Y.Z` PR with its changelog and protocol
 status, and enables rebase auto-merge. The repository must allow auto-merge and rebase merges;
@@ -829,11 +838,13 @@ or a different main tree stops publication without a tag; interrupted-merge reco
 in the script header. `bun run release --dry-run` remains read-only from any branch.
 
 **Promote.** `bun run promote vX.Y.Z` puts one PUBLISHED release on the operator's production
-instance: it refuses a tag that is not a published GitHub Release, dispatches
-`.github/workflows/deploy-hub.yml` with that tag, watches the run to completion and ends with
-the fleet-pin reminder. Production is the GitHub Environment `production`; its deployment
+instance only after successful full CI for the resolved tag commit. The command refuses an
+unpublished tag, dispatches `.github/workflows/deploy-hub.yml`, and watches it to completion.
+That workflow separately refuses missing or unsuccessful exact-tag full `main` push/manual-dispatch
+evidence before any provider operation. Successful promotion ends with the fleet-pin reminder.
+Production is the GitHub Environment `production`; its deployment
 history is the ledger of what production ran, and protection rules attach there. Promotion is
-never a side effect of a release or of a green `main`.
+never a side effect of a release or of a different green `main` revision.
 
 **Fleet pin after promotion.** Once the hub answers with the promoted build, `deploy-hub.yml`
 dispatches `update-pins.yml` in atyrode/dotfiles so the spokes follow the hub in that order
@@ -850,11 +861,13 @@ step skipped or failing on a promotion run, or that reads this paragraph within 
 expiry date, tells the operator to renew; the date above is updated in the same commit as the
 renewal.
 
-**Development** is the operator's second instance, and it runs every green `main`:
-`.github/workflows/deploy-dev.yml` follows the CI workflow, hands the commit sha to the host over a
-forced-command SSH key, derives the expected `build` from the same checkout with the same script,
-and fails unless `/healthz` on the development URL answers exactly that. It is the GitHub
-Environment `development`, inert unless the repository variables `DEV_DEPLOY_HOST`,
+**Development** is the operator's second instance, and it runs each `main` revision only after a
+successful full main push or manual-dispatch CI run for that exact revision.
+`.github/workflows/deploy-dev.yml` follows the full CI
+workflow, hands its commit SHA to the host over a forced-command SSH key, derives the expected
+`build` from the same checkout with the same script, and fails unless `/healthz` on the development
+URL answers exactly that.
+It is the GitHub Environment `development`, inert unless the repository variables `DEV_DEPLOY_HOST`,
 `DEV_DEPLOY_USER` and `DEV_DEPLOY_URL` and the secret `DEV_DEPLOY_SSH_KEY` exist, and it names no
 host or provider: the receiver is `infra/previews/receiver.sh`.
 Shared development uses the ordinary application image with
@@ -868,13 +881,14 @@ previews retain their explicitly disposable development-image lifecycle.
 **Previews** are an optional development tier: `preview.<domain>` shows integrated `main`,
 `<N>.<domain>` serves PR N's last explicitly deployed SHA, and non-numeric `<name>.<domain>`
 serves a live worktree on the preview host with hot reload. Numbered previews are on demand:
-opening a PR or pushing does not provision or update one. Dispatch
-`.github/workflows/deploy-preview.yml` from `main` with `pr=N` and `action=deploy` to deploy
-an open same-repository PR's current head; request again after a push to update it.
-`action=stop` releases resources sooner, and closing the PR still tears it down automatically.
-The exact CLI commands, run-watching steps and inspection/reporting guidance are in
-`infra/previews/README.md` §Request, inspect and stop a PR preview. With
-`MANIFOLD_PREVIEW_DOMAIN=<domain>` on production, integrated and numbered previews use the
+opening a PR or pushing does not provision or update one. First start full proof for the exact
+head with `gh workflow run ci.yml --ref <PR-branch>` and wait for its successful completion; this
+is not an ordinary PR-readiness requirement. Then dispatch the trusted default-branch
+`.github/workflows/deploy-preview.yml` with `pr=N` and `action=deploy`. Request both again after a
+push to update it. `action=stop` releases resources sooner, and closing the PR still tears it down
+automatically. The exact CLI commands, run-watching steps and inspection/reporting guidance are in
+`infra/previews/README.md` §Request, inspect and stop a PR preview.
+With `MANIFOLD_PREVIEW_DOMAIN=<domain>` on production, integrated and numbered previews use the
 production browser identity handoff (ADR 0027): public URLs carry no secret, production
 credentials never enter preview code, and production capability restrictions are preserved.
 A fresh preview seeded from development still accepts the development owner key as break-glass.
@@ -884,8 +898,10 @@ skip this tier entirely.
 
 **A self-hoster replaces the `deploy-*.yml` files.** They are the operator's deployments,
 gated on repository variables so a fork never runs them (ADR 0022). Yours consume the same
-releases: `docker compose pull` a tag, or build a commit and stamp it as above. Whatever you run,
-`/healthz` tells you what it is — `curl -fsS https://<your-domain>/healthz` answers
+releases: `docker compose pull` a tag, or build a commit and stamp it as above. Preserve the same
+boundary in replacement automation: record successful full proof for the exact revision before
+deploying it. Whatever you run, `/healthz` tells you what it is —
+`curl -fsS https://<your-domain>/healthz` answers
 `{ ok, version, build, channel, protocolVersion }`, and the sidebar's rev line prints the same
 `build`, so the client you are looking at and the instance it looks at can be compared by eye.
 

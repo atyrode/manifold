@@ -13,6 +13,7 @@ type Group =
   | "build"
   | "types"
   | "style"
+  | "smoke"
   | "trace"
   | "unit"
   | "e2e"
@@ -106,6 +107,13 @@ const tasks: readonly GateTask[] = [
     group: "types",
     phase: "static",
     command: fixed("bunx", "tsc", "-p", "tsconfig.scripts.json"),
+  },
+  {
+    name: "verify:ci-smoke",
+    group: "smoke",
+    phase: "post-static",
+    command: fixed("bun", "scripts/verify-ci-smoke.ts"),
+    usesDist: true,
   },
   {
     name: "changelog:check",
@@ -222,16 +230,20 @@ const tasks: readonly GateTask[] = [
 interface Options {
   readonly list: boolean;
   readonly only: string | null;
+  readonly shard: number | null;
 }
 
 function usage(message: string): never {
-  console.error(`gate: ${message}\nusage: bun scripts/gate.ts [--list | --only <group-or-task>]`);
+  console.error(
+    `gate: ${message}\nusage: bun scripts/gate.ts [--list | --only <group-or-task> [--shard 1/4|2/4|3/4|4/4]]`,
+  );
   process.exit(2);
 }
 
 function parseArgs(argv: readonly string[]): Options {
   let list = false;
   let only: string | null = null;
+  let shard: number | null = null;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--list") {
@@ -248,10 +260,21 @@ function parseArgs(argv: readonly string[]): Options {
       index += 1;
       continue;
     }
+    if (argument === "--shard") {
+      if (shard !== null) usage("--shard may be specified only once");
+      const value = argv[index + 1];
+      const match = value === undefined ? null : /^([1-4])\/4$/.exec(value);
+      if (match === null) usage("--shard requires one of 1/4, 2/4, 3/4, or 4/4");
+      shard = Number(match[1]);
+      index += 1;
+      continue;
+    }
     usage(`unknown argument ${JSON.stringify(argument)}`);
   }
   if (list && only !== null) usage("--list and --only cannot be combined");
-  return { list, only };
+  if (list && shard !== null) usage("--list and --shard cannot be combined");
+  if (shard !== null && only !== "types") usage("--shard requires --only types");
+  return { list, only, shard };
 }
 
 async function run(
@@ -340,9 +363,13 @@ const dist = (): string => {
 };
 
 async function selected(selector: string): Promise<number> {
-  const matching = tasks.filter((task) => task.group === selector || task.name === selector);
-  if (matching.length === 0) usage(`unknown task or group ${JSON.stringify(selector)}`);
-
+  const group = tasks.filter((task) => task.group === selector || task.name === selector);
+  if (group.length === 0) usage(`unknown task or group ${JSON.stringify(selector)}`);
+  const shard = options.shard;
+  const matching =
+    shard === null
+      ? group
+      : group.filter((task, index) => task.group !== "types" || index % 4 === shard - 1);
   const results: TaskResult[] = [];
   // Registry order is significant for the build group: generated history must exist before Vite.
   if (matching.some((task) => task.phase === "build" || task.phase === "prepare")) {
@@ -398,13 +425,13 @@ async function localGate(): Promise<number> {
   const built = await building;
   // Hard drain before Chromium: browser processes beside six compilers exceed the local ceiling.
   const statics = await staticChecks;
-  let postStatics: TaskResult[] = [];
+  const postStatics: TaskResult[] = [];
   let convergence: TaskResult[] = [];
   let browsers: TaskResult[] = [];
   if (built.ok) {
-    const postStaticTask = tasks.find((task) => task.phase === "post-static");
-    if (postStaticTask === undefined) throw new Error("gate registry lacks post-static");
-    postStatics = [await run(postStaticTask, sharedDist)];
+    const postStaticTasks = tasks.filter((task) => task.phase === "post-static");
+    if (postStaticTasks.length === 0) throw new Error("gate registry lacks post-static");
+    for (const task of postStaticTasks) postStatics.push(await run(task, sharedDist));
     const convergenceTask = tasks.find((task) => task.phase === "convergence");
     if (convergenceTask === undefined) throw new Error("gate registry lacks convergence");
     convergence = [await runWithRetry(convergenceTask, sharedDist)];

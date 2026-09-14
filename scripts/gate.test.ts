@@ -7,6 +7,7 @@ const gate = join(import.meta.dir, "gate.ts");
 const requiredGroups = [
   "build",
   "types",
+  "smoke",
   "style",
   "trace",
   "unit",
@@ -58,7 +59,10 @@ async function runGate(
   return { exitCode, stdout, stderr };
 }
 
-async function runSelectedTasks(selector: string): Promise<SelectedTaskRun> {
+async function runSelectedTasks(
+  selector: string,
+  extraArguments: readonly string[] = [],
+): Promise<SelectedTaskRun> {
   const root = mkdtempSync(join(tmpdir(), "manifold-gate-test-"));
   const bin = join(root, "bin");
   const dist = join(root, "dist");
@@ -66,20 +70,19 @@ async function runSelectedTasks(selector: string): Promise<SelectedTaskRun> {
   mkdirSync(bin);
   mkdirSync(dist);
   writeFileSync(join(dist, "index.html"), "");
-  writeFileSync(
-    join(bin, "bun"),
-    `#!${process.execPath}
+  const fakeCommand = `#!${process.execPath}
 import { appendFileSync } from "node:fs";
 appendFileSync(Bun.env["GATE_TEST_LOG"], JSON.stringify({
   args: Bun.argv.slice(2),
   dist: Bun.env["MANIFOLD_GATE_DIST"],
 }) + "\\n");
-`,
-    { mode: 0o755 },
-  );
+`;
+  for (const executable of ["bun", "bunx"]) {
+    writeFileSync(join(bin, executable), fakeCommand, { mode: 0o755 });
+  }
 
   try {
-    const result = await runGate(["--only", selector], {
+    const result = await runGate(["--only", selector, ...extraArguments], {
       GATE_TEST_LOG: log,
       MANIFOLD_GATE_DIST: dist,
       PATH: bin,
@@ -118,6 +121,32 @@ describe("gate CLI", () => {
       "e2e\te2e (testkit except preview recovery)",
       "e2e\te2e (preview recovery)",
     ]);
+  });
+
+  test("smoke is a real registry task that consumes the selected build artifact", async () => {
+    const { result, invocations, dist } = await runSelectedTasks("smoke");
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(invocations).toEqual([{ args: ["scripts/verify-ci-smoke.ts"], dist }]);
+  });
+
+  test("four type shards are disjoint and cover the unsharded registry exactly", async () => {
+    const full = await runSelectedTasks("types");
+    const shards = await Promise.all(
+      ([1, 2, 3, 4] as const).map((shard) => runSelectedTasks("types", ["--shard", `${shard}/4`])),
+    );
+    const fullCommands = full.invocations.map((invocation) => invocation.args.join("\u0000"));
+    const shardCommands = shards.map((result) =>
+      result.invocations.map((invocation) => invocation.args.join("\u0000")),
+    );
+    expect(shardCommands.flat().sort()).toEqual([...fullCommands].sort());
+    for (let left = 0; left < shardCommands.length; left += 1) {
+      for (let right = left + 1; right < shardCommands.length; right += 1) {
+        expect(
+          shardCommands[left]?.filter((command) => shardCommands[right]?.includes(command)),
+        ).toEqual([]);
+      }
+    }
   });
 
   test.each([
@@ -161,6 +190,10 @@ describe("gate CLI", () => {
     [["--list", "--list"], "--list may be specified only once"],
     [["--only", "types", "--only", "style"], "--only may be specified only once"],
     [["--list", "--only", "types"], "--list and --only cannot be combined"],
+    [["--shard", "1/4"], "--shard requires --only types"],
+    [["--only", "style", "--shard", "1/4"], "--shard requires --only types"],
+    [["--only", "types", "--shard", "0/4"], "--shard requires one of"],
+    [["--only", "types", "--shard", "1/3"], "--shard requires one of"],
     [["--unknown"], 'unknown argument "--unknown"'],
     [["types"], 'unknown argument "types"'],
     [["--only", "not-a-gate-selector"], 'unknown task or group "not-a-gate-selector"'],
@@ -182,7 +215,7 @@ describe("gate CLI", () => {
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toBe(
       "gate: MANIFOLD_GATE_DIST must be an absolute path\n" +
-        "usage: bun scripts/gate.ts [--list | --only <group-or-task>]\n",
+        "usage: bun scripts/gate.ts [--list | --only <group-or-task> [--shard 1/4|2/4|3/4|4/4]]\n",
     );
     expect(result.stdout).toBe("");
   });
