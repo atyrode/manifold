@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
 import type { TerminalHostEvent } from "@manifold/protocol";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { FrameReader, FrameTooLargeError, FrameWriter } from "../src/ipc-framing.ts";
 import { TerminalHost, type TerminalHostSession } from "../src/terminal-host.ts";
 
@@ -16,19 +19,23 @@ interface Peer {
   readonly session: TerminalHostSession;
   closed: boolean;
   next(type: TerminalHostEvent["type"]): Promise<TerminalHostEvent>;
+  matching(predicate: (event: TerminalHostEvent) => boolean): Promise<TerminalHostEvent>;
 }
 
 /** One synchronous in-memory connection; `next` resolves on the next event of a type. */
 function openPeer(host: TerminalHost): Peer {
   const events: TerminalHostEvent[] = [];
-  const waiters: Array<{ type: string; resolve: (event: TerminalHostEvent) => void }> = [];
+  const waiters: Array<{
+    predicate: (event: TerminalHostEvent) => boolean;
+    resolve: (event: TerminalHostEvent) => void;
+  }> = [];
   const peer: Peer = {
     events,
     closed: false,
     session: host.open({
       write(event) {
         events.push(event);
-        const index = waiters.findIndex((waiter) => waiter.type === event.type);
+        const index = waiters.findIndex((waiter) => waiter.predicate(event));
         if (index !== -1) waiters.splice(index, 1)[0]?.resolve(event);
         return true;
       },
@@ -37,10 +44,13 @@ function openPeer(host: TerminalHost): Peer {
       },
     }),
     next(type) {
-      const seen = events.find((event) => event.type === type);
+      return peer.matching((event) => event.type === type);
+    },
+    matching(predicate) {
+      const seen = events.find(predicate);
       if (seen !== undefined) return Promise.resolve(seen);
       const { promise, resolve } = Promise.withResolvers<TerminalHostEvent>();
-      waiters.push({ type, resolve });
+      waiters.push({ predicate, resolve });
       return promise;
     },
   };
@@ -225,3 +235,356 @@ test("frames are bounded: a partial line accumulates, an oversize line is refuse
   expect(overflowed).toBe(1);
   expect(writer.send({ type: "ping" })).toBe(false); // stays refused after overflow
 });
+
+async function terminalEvent(
+  peer: Peer,
+  predicate: (event: TerminalHostEvent) => boolean,
+  timeoutMs = 5_000,
+): Promise<TerminalHostEvent> {
+  // These integration deadlines exercise real procfs/PTY timer behavior, not guessed sleeps.
+  let timer: Timer | undefined;
+  try {
+    return await Promise.race([
+      peer.matching(predicate),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("terminal event deadline exceeded")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+test.skipIf(process.platform !== "linux")(
+  "Linux cwd sampling follows output-idle and silent cd; retained restart preserves launch and resets snapshot",
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "manifold-terminal-cwd-"));
+    const idle = join(root, "idle");
+    const quiet = join(root, "quiet");
+    mkdirSync(idle);
+    mkdirSync(quiet);
+    const host = new TerminalHost({
+      shellCommand: [
+        BASH,
+        "--norc",
+        "-c",
+        'stty -echo; while IFS= read -r line; do eval "$line"; done',
+      ],
+    });
+    const peer = openPeer(host);
+    const input = (text: string) =>
+      peer.session.deliver({
+        type: "input",
+        terminalId: "cwd",
+        data: Buffer.from(`${text}\n`).toString("base64"),
+      });
+    try {
+      peer.session.deliver({ type: "attach" });
+      peer.session.deliver({
+        type: "create",
+        terminalId: "cwd",
+        cols: 80,
+        rows: 24,
+        cwd: root,
+        env: { ORIGINAL_VALUE: "kept", MANIFOLD_TOKEN: "old-test-grant" },
+      });
+      await terminalEvent(peer, (event) => event.type === "terminal_cwd" && event.cwd === root);
+      input(`cd '${idle}'; printf 'OLD_SCREEN\\n'`);
+      await terminalEvent(
+        peer,
+        (event) => event.type === "terminal_cwd" && event.cwd === idle,
+        2_000,
+      );
+      input(`cd '${quiet}'`);
+      await terminalEvent(peer, (event) => event.type === "terminal_cwd" && event.cwd === quiet);
+      expect(host.status().terminals).toMatchObject([{ terminalId: "cwd", cwd: quiet }]);
+      input("exit 7");
+      await peer.next("exited");
+      peer.events.length = 0;
+      peer.session.deliver({
+        type: "terminal_restart",
+        terminalId: "cwd",
+        cwd: root,
+        create: {
+          cols: 10,
+          rows: 10,
+          env: { ORIGINAL_VALUE: "altered", MANIFOLD_TOKEN: "fresh-test-grant" },
+          program: { argv: ["/not/the/original/program"] },
+        },
+      });
+      expect(await peer.next("terminal_restarted")).toEqual({
+        type: "terminal_restarted",
+        terminalId: "cwd",
+        cwd: quiet,
+      });
+      expect(host.status().terminals).toMatchObject([
+        { terminalId: "cwd", cols: 80, rows: 24, alive: true, cwd: quiet },
+      ]);
+      input('printf "NEW_SCREEN:%s:%s:%s\\n" "$PWD" "$ORIGINAL_VALUE" "$MANIFOLD_TOKEN"');
+      await terminalEvent(
+        peer,
+        (event) =>
+          event.type === "output" &&
+          Buffer.from(event.data, "base64")
+            .toString()
+            .includes(`NEW_SCREEN:${quiet}:kept:fresh-test-grant`),
+      );
+      peer.session.deliver({ type: "snapshot_request", terminalId: "cwd" });
+      const snapshot = await peer.next("snapshot");
+      if (snapshot.type !== "snapshot") throw new Error("snapshot required");
+      const screen = Buffer.from(snapshot.data, "base64").toString();
+      expect(screen).toContain(`NEW_SCREEN:${quiet}:kept:fresh-test-grant`);
+      expect(screen).not.toContain("OLD_SCREEN");
+    } finally {
+      await host.shutdown();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  15_000,
+);
+
+test.skipIf(process.platform !== "linux")(
+  "running restart escalates without publishing the old exit, then falls back through original cwd and HOME",
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "manifold-terminal-restart-"));
+    const original = join(root, "original");
+    const current = join(root, "current");
+    mkdirSync(original);
+    mkdirSync(current);
+    const host = new TerminalHost({
+      shutdownGraceMs: 25,
+      shellCommand: [
+        BASH,
+        "--norc",
+        "-c",
+        'trap "" TERM HUP; stty -echo; printf "READY\\n"; while :; do IFS= read -r line && eval "$line"; done',
+      ],
+    });
+    const peer = openPeer(host);
+    try {
+      peer.session.deliver({ type: "attach" });
+      peer.session.deliver({
+        type: "create",
+        terminalId: "running",
+        cols: 80,
+        rows: 24,
+        cwd: original,
+        env: { HOME: root },
+      });
+      await terminalEvent(
+        peer,
+        (event) =>
+          event.type === "output" && Buffer.from(event.data, "base64").toString().includes("READY"),
+      );
+      peer.session.deliver({
+        type: "input",
+        terminalId: "running",
+        data: Buffer.from(`cd '${current}'; printf 'MOVED\\n'\n`).toString("base64"),
+      });
+      await terminalEvent(peer, (event) => event.type === "terminal_cwd" && event.cwd === current);
+      rmSync(current, { recursive: true });
+      peer.events.length = 0;
+      peer.session.deliver({ type: "snapshot_request", terminalId: "running" });
+      peer.session.deliver({ type: "terminal_restart", terminalId: "running" });
+      expect(
+        await terminalEvent(peer, (event) => event.type === "terminal_restarted", 2_000),
+      ).toEqual({
+        type: "terminal_restarted",
+        terminalId: "running",
+        cwd: original,
+        fallback: "original",
+      });
+      expect(peer.events.some((event) => event.type === "exited")).toBe(false);
+      expect(peer.events.some((event) => event.type === "snapshot")).toBe(false);
+      await terminalEvent(
+        peer,
+        (event) =>
+          event.type === "output" && Buffer.from(event.data, "base64").toString().includes("READY"),
+      );
+      rmSync(original, { recursive: true });
+      peer.events.length = 0;
+      peer.session.deliver({ type: "terminal_restart", terminalId: "running" });
+      expect(
+        await terminalEvent(peer, (event) => event.type === "terminal_restarted", 2_000),
+      ).toEqual({
+        type: "terminal_restarted",
+        terminalId: "running",
+        cwd: root,
+        fallback: "home",
+      });
+      expect(peer.events.some((event) => event.type === "exited")).toBe(false);
+      expect(host.terminalCount).toBe(1);
+    } finally {
+      await host.shutdown();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  10_000,
+);
+
+test("failed restart retains unknown exit evidence across reconnect and repair retries the same terminal", async () => {
+  const root = mkdtempSync(join(tmpdir(), "manifold-terminal-restart-failure-"));
+  const executable = join(root, "program");
+  const program = [
+    `#!${BASH}`,
+    "trap 'exit 0' TERM HUP",
+    "stty -echo",
+    "printf 'READY\\n'",
+    'while IFS= read -r line; do eval "$line"; done',
+    "",
+  ].join("\n");
+  writeFileSync(executable, program, { mode: 0o700 });
+  const host = new TerminalHost();
+  const peer = openPeer(host);
+  try {
+    peer.session.deliver({ type: "attach" });
+    peer.session.deliver({
+      type: "create",
+      terminalId: "recoverable",
+      cols: 91,
+      rows: 31,
+      cwd: root,
+      env: { LAUNCH_VALUE: "preserved" },
+      program: { argv: [executable] },
+    });
+    await terminalEvent(
+      peer,
+      (event) =>
+        event.type === "output" && Buffer.from(event.data, "base64").toString().includes("READY"),
+    );
+    rmSync(executable);
+    peer.events.length = 0;
+    peer.session.deliver({ type: "terminal_restart", terminalId: "recoverable" });
+    await terminalEvent(peer, (event) => event.type === "terminal_restart_error");
+    expect(
+      peer.events.filter(
+        (event) =>
+          event.type === "exited" ||
+          event.type === "terminal_restart_error" ||
+          event.type === "terminal_restarted",
+      ),
+    ).toEqual([
+      { type: "exited", terminalId: "recoverable", exitCode: null },
+      expect.objectContaining({ type: "terminal_restart_error", terminalId: "recoverable" }),
+    ]);
+    const retained = {
+      terminalId: "recoverable",
+      cols: 91,
+      rows: 31,
+      cwd: root,
+      alive: false,
+      exitCode: null,
+    };
+    expect(host.status().terminals).toMatchObject([retained]);
+    peer.session.detach();
+    const reconnected = openPeer(host);
+    reconnected.session.deliver({ type: "attach" });
+    expect(await reconnected.next("attached")).toMatchObject({
+      terminalHostId: host.terminalHostId,
+      terminals: [retained],
+    });
+
+    writeFileSync(executable, program, { mode: 0o700 });
+    reconnected.session.deliver({ type: "terminal_restart", terminalId: "recoverable" });
+    expect(
+      await terminalEvent(reconnected, (event) => event.type === "terminal_restarted"),
+    ).toEqual({
+      type: "terminal_restarted",
+      terminalId: "recoverable",
+      cwd: root,
+    });
+    expect(host.status().terminals).toMatchObject([
+      { terminalId: "recoverable", cols: 91, rows: 31, alive: true, cwd: root },
+    ]);
+    await terminalEvent(
+      reconnected,
+      (event) =>
+        event.type === "output" && Buffer.from(event.data, "base64").toString().includes("READY"),
+    );
+    reconnected.session.deliver({
+      type: "input",
+      terminalId: "recoverable",
+      data: Buffer.from('printf "REPAIRED:%s:%s\\n" "$LAUNCH_VALUE" "$PWD"\n').toString("base64"),
+    });
+    await terminalEvent(
+      reconnected,
+      (event) =>
+        event.type === "output" &&
+        Buffer.from(event.data, "base64").toString().includes(`REPAIRED:preserved:${root}`),
+    );
+    reconnected.session.deliver({
+      type: "input",
+      terminalId: "recoverable",
+      data: Buffer.from("exit 0\n").toString("base64"),
+    });
+    expect(await terminalEvent(reconnected, (event) => event.type === "exited")).toEqual({
+      type: "exited",
+      terminalId: "recoverable",
+      exitCode: 0,
+    });
+    expect(host.status().terminals).toMatchObject([
+      { terminalId: "recoverable", alive: false, exitCode: 0 },
+    ]);
+  } finally {
+    await host.shutdown();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 10_000);
+
+test("replacement owner restores original program; explicit legacy restoration uses only the default shell", async () => {
+  const host = new TerminalHost({
+    shellCommand: [BASH, "--norc", "-c", "printf 'DEFAULT_SHELL\\n'; exec cat"],
+  });
+  const peer = openPeer(host);
+  try {
+    peer.session.deliver({ type: "attach" });
+    peer.session.deliver({
+      type: "terminal_restart",
+      terminalId: "recovered",
+      cwd: tmpdir(),
+      create: {
+        cols: 90,
+        rows: 30,
+        env: {},
+        program: { argv: [BASH, "-c", "printf 'ORIGINAL_PROGRAM\\n'; exec cat"] },
+      },
+    });
+    expect(await peer.next("terminal_restarted")).toMatchObject({
+      terminalId: "recovered",
+      cwd: tmpdir(),
+    });
+    await terminalEvent(
+      peer,
+      (event) =>
+        event.type === "output" &&
+        Buffer.from(event.data, "base64").toString().includes("ORIGINAL_PROGRAM"),
+    );
+    peer.session.deliver({
+      type: "terminal_restart",
+      terminalId: "legacy",
+      cwd: tmpdir(),
+      noRecipe: true,
+      create: { cols: 80, rows: 24, env: {}, program: { argv: ["/should/not/run"] } },
+    });
+    expect(
+      await terminalEvent(
+        peer,
+        (event) => event.type === "terminal_restarted" && event.terminalId === "legacy",
+      ),
+    ).toEqual({
+      type: "terminal_restarted",
+      terminalId: "legacy",
+      cwd: tmpdir(),
+      fallback: "no_recipe",
+    });
+    await terminalEvent(
+      peer,
+      (event) =>
+        event.type === "output" &&
+        event.terminalId === "legacy" &&
+        Buffer.from(event.data, "base64").toString().includes("DEFAULT_SHELL"),
+    );
+  } finally {
+    await host.shutdown();
+  }
+}, 10_000);

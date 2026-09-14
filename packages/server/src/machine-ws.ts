@@ -78,6 +78,7 @@ export class LiveMachineChannel implements MachineChannel {
      * IGNORES an unknown type, so asking it buys a deadline instead of an answer (#529).
      */
     readonly protocolVersion: number,
+    readonly terminalRestart = false,
   ) {}
 
   send(message: ServerToAgentMessage): boolean {
@@ -170,20 +171,16 @@ export type Admission =
  *     reconnect and hub restart working exactly as before. It is NOT accepted across an
  *     ownership change: a process that names a different owner cannot hold another process's
  *     PTYs, whatever it advertises, and a legacy agent cannot hold a terminal host's.
- *
- * Everything else is REFUSED before welcome, whether or not anybody is connected. Admitting
- * an unproven claimant "to keep the machine reachable" was evaluated and rejected: it made
- * the claimant the incumbent, so the returning owner was refused, drains reported the
- * claimant's empty inventory as the machine's, and terminals born on the claimant were later
- * disbelieved by the owner's reconciliation. The refused agent re-dials with backoff; the
- * moment the owner is back, or an operator has killed the rows through the named door, the
- * same hello is admitted. The invariant this buys is what every downstream path relies on:
- * THE ADMITTED CHANNEL IS THE OWNER OF RECORD, so its inventory may be believed, its drain
- * answer is the machine's, and a terminal born on it is born in the process that owns it.
+ * A vacant seat admits the authenticated replacement. Missing inventory then retains exited
+ * terminals instead of deleting their placement. An ACTIVE incumbent still requires proof
+ * of continuity: a claimant cannot evict a connected owner with running terminals.
  */
 export function decideAdmission(input: AdmissionInput): Admission {
   const supersedes = input.incumbent !== null;
   if (input.durableRunning.length === 0) return { verdict: "admit", supersedes };
+  // An empty machine seat may accept its replacement owner. Its inventory then records
+  // the lost owner's terminals as exited; it cannot displace an active incumbent.
+  if (input.incumbent === null) return { verdict: "admit", supersedes };
   const reference =
     input.incumbent === null ? input.persistedOwner : input.incumbent.terminalHostId;
   if (input.newcomerOwner !== null) {
@@ -348,6 +345,7 @@ export class MachineGateway {
       terminalHostId,
       message.terminalExecution ?? null,
       message.protocolVersion,
+      message.terminalRestart === true,
     );
     const older = this.activeByMachine.get(authenticated.id) ?? null;
     const advertised = new Set<string>();
@@ -392,8 +390,10 @@ export class MachineGateway {
     connection.channel = channel;
     connection.cancelHelloTimeout?.();
     connection.cancelHelloTimeout = null;
-    // Admission proved this hello is the owner of every running terminal (or that there is
-    // none), so its identity IS the owner of record from here on.
+    // A changed owner on a vacant seat cannot adopt processes belonging to its predecessor.
+    if (older === null && authenticated.ownerHostId !== terminalHostId)
+      this.broker.onOwnerLost(authenticated.id);
+    // Its admitted identity is the owner of record from here on.
     this.store.touchMachine(authenticated.id, message.name, now, terminalHostId);
     if (
       !channel.send({
@@ -464,6 +464,15 @@ export class MachineGateway {
       case "exited":
         this.broker.onExited(channel.machineId, message.terminalId, message.exitCode);
         return;
+      case "terminal_cwd":
+        this.broker.onCwd(channel.machineId, message.terminalId, message.cwd);
+        return;
+      case "terminal_restarted":
+        this.broker.onRestarted(channel.machineId, message);
+        return;
+      case "terminal_restart_error":
+        this.broker.onRestartError(channel.machineId, message.terminalId, message.reason);
+        return;
       case "pong":
         return;
       case "drain_status":
@@ -479,7 +488,7 @@ export class MachineGateway {
     }
   }
 
-  /** Cleans broker online state after a machine socket closes. */
+  /** A socket close removes reachability, not ownership: even IPC seat loss can leave PTYs alive. */
   close(id: string): void {
     const connection = this.connections.get(id);
     if (connection === undefined) return;

@@ -143,7 +143,6 @@ export interface TerminalRendererProps {
   readonly chrome?: "full" | "preview";
   readonly onPark?: () => void;
   readonly onClose?: () => void;
-  readonly onRestart?: () => Promise<void>;
   readonly onExpand?: () => void;
   readonly onRenameTitle?: (name: string) => void;
   /** The action `onRenameTitle` dispatches, marked onto the rename input as `data-action`. */

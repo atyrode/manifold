@@ -518,7 +518,7 @@ describe("L1 birth: a terminal and its home are created together", () => {
     expect(bodiesOfType(onCanvas.socket, "terminal_opened")).toEqual([]);
     expect(bodiesOfType(onCanvas.socket, "terminal_event")).toEqual([]);
     expect(bodiesOfType(inHome.socket, "terminal_event")).toEqual([
-      { type: "terminal_event", terminalId: born.terminalId, kind: "parked" },
+      { type: "terminal_event", terminalId: born.terminalId, kind: "exited", exitCode: 3 },
     ]);
   });
 
@@ -545,80 +545,36 @@ describe("L1 birth: a terminal and its home are created together", () => {
   });
 });
 
-describe("L2 exit: every observed root exit removes the terminal", () => {
-  test.each([0, 130, null])(
-    "exit %s removes every mirror, including persisted portals, for every viewer",
-    async (exitCode) => {
-      const fixture = await lifecycleFixture();
-      const born = bornOnCanvas(fixture, "ref-1");
-      const first = joinPeer(fixture, born.homeId);
-      const second = joinPeer(fixture, born.homeId);
-      const other = canvasContainer(fixture, "unloaded canvas");
-      writeElement(
-        canvasDoc(fixture),
-        portalElement("portal-a", born.homeId, 10, 10),
-        LOCAL_ORIGIN,
-      );
-      writeElement(
-        room(fixture, other.id).doc,
-        portalElement("portal-b", born.homeId, 20, 20),
-        LOCAL_ORIGIN,
-      );
-      fixture.rooms.evictIfIdle(other.id);
-      fixture.machine.clear();
-
-      fixture.broker.onExited(fixture.machine.machineId, born.terminalId, exitCode);
-      fixture.broker.onExited(fixture.machine.machineId, born.terminalId, exitCode);
-
-      expect(fixture.store.getTerminal(born.terminalId)).toBeNull();
-      expect(fixture.store.getContainer(born.homeId)).toBeNull();
-      expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual([]);
-      expect(room(fixture, other.id).portalIdsTo(born.homeId)).toEqual([]);
-      expect(await indexRows(fixture)).toEqual([]);
-      expect(fixture.machine.sent).toEqual([]);
-      for (const viewer of [first, second]) {
-        expect(bodiesOfType(viewer.socket, "terminal_event")).toEqual([
-          { type: "terminal_event", terminalId: born.terminalId, kind: "parked" },
-        ]);
-      }
-    },
-  );
-
-  test("a failed root exit removes all its leaves without deleting other composition occupants", async () => {
+describe("L2 exit: a clean root exit removes the terminal", () => {
+  test("a clean exit removes every mirror, including persisted portals, for every viewer", async () => {
     const fixture = await lifecycleFixture();
-    const composition = compositionContainer(fixture, "shared composition");
-    const inside = joinPeer(fixture, composition.id);
-    const finished = bornInComposition(fixture, inside, "finished");
-    const survivor = bornInComposition(fixture, inside, "survivor");
-    const home = room(fixture, composition.id);
-    expect(home.placeTerminalTile(finished.terminalId, null, null)).not.toBeNull();
-    writeElement(canvasDoc(fixture), portalElement("portal", composition.id, 10, 10), LOCAL_ORIGIN);
+    const born = bornOnCanvas(fixture, "ref-1");
+    const first = joinPeer(fixture, born.homeId);
+    const second = joinPeer(fixture, born.homeId);
+    const other = canvasContainer(fixture, "unloaded canvas");
+    writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 10, 10), LOCAL_ORIGIN);
+    writeElement(
+      room(fixture, other.id).doc,
+      portalElement("portal-b", born.homeId, 20, 20),
+      LOCAL_ORIGIN,
+    );
+    fixture.rooms.evictIfIdle(other.id);
     fixture.machine.clear();
 
-    fixture.broker.onExited(fixture.machine.machineId, finished.terminalId, 130);
-    fixture.broker.onExited(fixture.machine.machineId, finished.terminalId, 0);
+    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
+    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
 
-    expect(fixture.store.getTerminal(finished.terminalId)).toBeNull();
-    expect(fixture.store.getTerminal(survivor.terminalId)?.status).toBe("running");
-    expect(fixture.store.getContainer(composition.id)).not.toBeNull();
-    expect(soleRef(fixture, composition.id)).toEqual({
-      kind: "terminal",
-      terminalId: survivor.terminalId,
-    });
-    expect(room(fixture, fixture.canvas.id).portalIdsTo(composition.id)).toEqual(["portal"]);
+    expect(fixture.store.getTerminal(born.terminalId)).toBeNull();
+    expect(fixture.store.getContainer(born.homeId)).toBeNull();
+    expect(room(fixture, fixture.canvas.id).portalIdsTo(born.homeId)).toEqual([]);
+    expect(room(fixture, other.id).portalIdsTo(born.homeId)).toEqual([]);
+    expect(await indexRows(fixture)).toEqual([]);
     expect(fixture.machine.sent).toEqual([]);
-    expect(fixture.store.listEvents({ type: "terminal_killed", limit: 10 })).toEqual([]);
-    expect(
-      fixture.store
-        .listEvents({ type: "terminal_exited", limit: 10 })
-        .map((event) => JSON.parse(event.payload)),
-    ).toEqual([
-      {
-        terminalId: finished.terminalId,
-        machineId: fixture.machine.machineId,
-        exitCode: 130,
-      },
-    ]);
+    for (const viewer of [first, second]) {
+      expect(bodiesOfType(viewer.socket, "terminal_event")).toEqual([
+        { type: "terminal_event", terminalId: born.terminalId, kind: "parked" },
+      ]);
+    }
   });
 });
 
@@ -703,11 +659,11 @@ describe("L3 reap: a terminal's last home leaf IS the terminal", () => {
     expect(fixture.broker.introspect()).toEqual([]);
   });
 
-  test("a kill racing after root exit finds no terminal and cannot repeat removal", async () => {
+  test("a kill racing after a clean root exit finds no terminal and cannot repeat removal", async () => {
     const fixture = await lifecycleFixture();
     const born = bornOnCanvas(fixture, "ref-1");
     writeElement(canvasDoc(fixture), portalElement("portal-a", born.homeId, 10, 10), LOCAL_ORIGIN);
-    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 5);
+    fixture.broker.onExited(fixture.machine.machineId, born.terminalId, 0);
     fixture.machine.clear();
 
     const killed = await call(fixture, "POST", "/api/actions/core.terminals.kill", OWNER_KEY, {

@@ -43,12 +43,16 @@ const OWNER_KEY = "c".repeat(64);
 
 class FakeMachine implements MachineChannel {
   readonly terminalExecution: MachineChannel["terminalExecution"] = "unconfined";
+  readonly terminalRestart = true;
+  readonly protocolVersion = PROTOCOL_VERSION;
   readonly sent: ServerToAgentMessage[] = [];
   readonly terminalHostId: string | null = null;
+  onRestart: ((terminalId: string) => void) | null = null;
   constructor(readonly machineId: string) {}
 
   send(message: ServerToAgentMessage): boolean {
     this.sent.push(ServerToAgentMessageSchema.parse(message));
+    if (message.type === "terminal_restart") this.onRestart?.(message.terminalId);
     return true;
   }
 
@@ -271,6 +275,54 @@ describe("core.terminals doors", () => {
     ).toEqual({ rule: "refused", message: "terminal not found" });
   });
 
+  test("restart respects live control and home write authority, while exited terminals need no lease", async () => {
+    const base = await fixture();
+    const terminalId = liveTerminal(base);
+    const writer = context(base, ["containers:read", "terminals:write"], base.container.id);
+    const reader = context(base, ["containers:read"], base.container.id);
+    base.store.createContainer({
+      id: "another-home",
+      name: "another",
+      discipline: "composition",
+      createdAt: base.runtime.now(),
+    });
+    const outside = context(base, ["containers:read", "terminals:write"], "another-home");
+    expect(
+      denial(await base.host.dispatch(reader, "core.terminals.restart", { terminalId })).rule,
+    ).toBe("forbidden");
+    expect(
+      denial(await base.host.dispatch(outside, "core.terminals.restart", { terminalId })).rule,
+    ).toBe("refused");
+    expect(
+      denial(await base.host.dispatch(writer, "core.terminals.restart", { terminalId })),
+    ).toMatchObject({
+      rule: "refused",
+      message: "controller lease or owner capability required",
+    });
+    expect(base.machine.sent).toEqual([]);
+    base.machine.onRestart = (id) =>
+      base.broker.onRestarted(base.machine.machineId, {
+        type: "terminal_restarted",
+        terminalId: id,
+        cwd: "/work",
+      });
+    expect(await base.host.dispatch(base.owner, "core.terminals.restart", { terminalId })).toEqual({
+      ok: true,
+      result: {},
+    });
+    base.broker.onExited(base.machine.machineId, terminalId, 7);
+    expect(await base.host.dispatch(writer, "core.terminals.restart", { terminalId })).toEqual({
+      ok: true,
+      result: {},
+    });
+    expect(base.broker.liveTerminal(terminalId)).toMatchObject({
+      status: "running",
+      controllerId: writer.principal.id,
+      containerId: base.container.id,
+    });
+    base.store.close();
+  });
+
   test("taking the lease is a door: caps, scope, and an exited terminal has nothing to take", async () => {
     const base = await fixture();
     const terminalId = liveTerminal(base);
@@ -454,6 +506,7 @@ describe("core.terminals doors", () => {
       // is administration, and widening the carve-out to cover it would make a disabled
       // plugin more capable than the rule the disable suspends.
       ["core.terminals.take", { terminalId }],
+      ["core.terminals.restart", { terminalId }],
       ["core.terminals.listAll", {}],
       ["core.terminals.listByContainer", {}],
     ] as const) {

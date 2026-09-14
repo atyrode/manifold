@@ -1,6 +1,9 @@
 import {
   hasCap,
   canonicalJobJson,
+  TERMINAL_RESTART_PROTOCOL_VERSION,
+  type LaunchRunRequest,
+  type LaunchRunResult,
   type AgentRun,
   type TerminalRuntime,
   type AdvertisedTerminal,
@@ -30,7 +33,7 @@ import {
   type SerializedServerMessage,
   type SessionChannel,
 } from "./session-channel.ts";
-import type { ServerStore } from "./stores.ts";
+import type { ServerStore, TerminalLaunchRecipe } from "./stores.ts";
 import type { JobService } from "./job-service.ts";
 
 /**
@@ -63,6 +66,7 @@ export interface MachineChannel {
   readonly terminalHostId: string | null;
   readonly terminalExecution: TerminalExecution | null;
   readonly protocolVersion?: number;
+  readonly terminalRestart?: boolean;
   send(message: ServerToAgentMessage): boolean;
 }
 
@@ -131,6 +135,18 @@ interface PendingOpen {
   opener: SessionChannel;
   agentPrincipalId: string | null;
   cancelDeadline: (() => void) | null;
+  launchRecipe: TerminalLaunchRecipe;
+  runId?: string;
+}
+
+interface PendingRestart {
+  machineId: string;
+  principalId: string;
+  agentPrincipalId: string | null;
+  jobId: string | null;
+  dispatched: boolean;
+  resolve: (outcome: string) => void;
+  cancelDeadline: (() => void) | null;
 }
 
 /**
@@ -142,6 +158,7 @@ export class TerminalBroker implements TerminalPlacementPort {
   private readonly machines = new Map<string, MachineChannel>();
   private readonly terminals = new Map<string, RuntimeTerminal>();
   private readonly pendingOpens = new Map<string, PendingOpen>();
+  private readonly pendingRestarts = new Map<string, PendingRestart>();
   /**
    * THE admission latch (#278), one per drained machine, mirrored from the `machines` row it
    * is persisted on. In memory so `open` can refuse without a read per gesture; loaded at
@@ -170,6 +187,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       runId: string;
       digest: string;
       containerId: string | undefined;
+      terminalId: string | undefined;
       creator: CredentialReference;
       token: string;
       expiresAt: number;
@@ -183,6 +201,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     token: string,
     actor: AuthContext,
     containerId?: string,
+    terminalId?: string,
   ): TerminalRuntime {
     const bound = { ...runtime, launchBinding: this.runtime.newId() };
     const expiresAt = Math.min(run.expiresAt, this.runtime.now() + 60_000);
@@ -199,6 +218,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       runId: run.id,
       digest: createHash("sha256").update(canonicalJobJson(bound)).digest("hex"),
       containerId,
+      terminalId,
       creator,
       token,
       expiresAt,
@@ -212,7 +232,12 @@ export class TerminalBroker implements TerminalPlacementPort {
     this.runLaunches.clear();
   }
 
-  private consumeRunLaunch(runtime: TerminalRuntime, actor: AuthContext, containerId: string) {
+  private consumeRunLaunch(
+    runtime: TerminalRuntime,
+    actor: AuthContext,
+    containerId: string,
+    terminalId?: string,
+  ) {
     if (runtime.launchBinding === undefined) return undefined;
     const binding = this.runLaunches.get(runtime.launchBinding);
     if (
@@ -220,6 +245,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       binding.creator.tokenId !== actor.tokenId ||
       binding.creator.principalId !== actor.principal.id ||
       (binding.containerId !== undefined && binding.containerId !== containerId) ||
+      binding.terminalId !== terminalId ||
       binding.digest !== createHash("sha256").update(canonicalJobJson(runtime)).digest("hex")
     )
       throw new ServiceError("forbidden", "run launch binding refused");
@@ -291,6 +317,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         rows: 24,
         controllerId: row.status === "running" ? row.createdBy : null,
         createdBy: row.createdBy,
+        ...(row.cwd === undefined ? {} : { cwd: row.cwd }),
       };
       this.terminals.set(row.id, {
         info,
@@ -369,6 +396,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     const wasOnline = this.machines.has(channel.machineId);
     this.machines.set(channel.machineId, channel);
     if (wasOnline) this.failPendingDrains(channel.machineId, "machine reconnected mid-drain");
+    if (wasOnline) this.failPendingRestarts(channel.machineId, "machine_reconnected");
     if (channel.terminalHostId !== null) {
       channel.send({
         type: "drain",
@@ -391,6 +419,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       machineId: channel.machineId,
     });
     this.failPendingDrains(channel.machineId, "machine disconnected mid-drain");
+    this.failPendingRestarts(channel.machineId, "machine_offline");
     for (const [terminalId, pending] of this.pendingOpens) {
       if (pending.machineId !== channel.machineId) continue;
       pending.cancelDeadline?.();
@@ -648,6 +677,7 @@ export class TerminalBroker implements TerminalPlacementPort {
         rows: 24,
         controllerId: stored.status === "running" ? stored.createdBy : null,
         createdBy: stored.createdBy,
+        ...(stored.cwd === undefined ? {} : { cwd: stored.cwd }),
       };
       terminal = {
         info,
@@ -658,6 +688,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       };
       this.terminals.set(stored.id, terminal);
     }
+    if (advertised.cwd !== undefined) this.onCwd(machineId, stored.id, advertised.cwd);
     if (!advertised.alive) {
       if (terminal.info.status === "running") {
         this.onExited(machineId, advertised.terminalId, advertised.exitCode ?? null);
@@ -672,6 +703,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       cols: advertised.cols,
       rows: advertised.rows,
     };
+    terminal.lastReceivedOutputSeq = advertised.seq;
     terminal.snapshotRequestOutstanding = false;
     const adoptedContainerId = terminal.info.containerId;
     if (adoptedContainerId !== null) {
@@ -718,6 +750,12 @@ export class TerminalBroker implements TerminalPlacementPort {
     for (const stored of this.store.listRunningTerminalsForMachine(machineId)) {
       if (!advertisedIds.has(stored.id)) this.onMissing(machineId, stored.id);
     }
+  }
+
+  /** A newly admitted replacement owner proves the old seat's processes are unavailable. */
+  onOwnerLost(machineId: string): void {
+    for (const stored of this.store.listRunningTerminalsForMachine(machineId))
+      this.retainExited(machineId, stored.id, null);
   }
 
   private selectMachine(requested: string | undefined): MachineChannel | null {
@@ -876,6 +914,18 @@ export class TerminalBroker implements TerminalPlacementPort {
       opener: channel,
       agentPrincipalId: grant?.principal.id ?? null,
       cancelDeadline: null,
+      ...(runtime?.request.terminal?.runId === undefined
+        ? {}
+        : { runId: runtime.request.terminal.runId }),
+      launchRecipe: {
+        cols: message.cols,
+        rows: message.rows,
+        ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
+        env: message.env ?? {},
+        ...(message.program === undefined ? {} : { program: message.program }),
+        ...(message.runtime === undefined ? {} : { runtime: message.runtime }),
+        ...(placement === "tile" ? {} : { elementId: message.elementId }),
+      },
     };
     this.pendingOpens.set(terminalId, pending);
     pending.cancelDeadline = this.timers.schedule(() => {
@@ -977,6 +1027,9 @@ export class TerminalBroker implements TerminalPlacementPort {
       createdBy: pending.createdBy,
       agentPrincipalId: pending.agentPrincipalId,
       createdAt: pending.createdAt,
+      ...(pending.launchRecipe.cwd === undefined ? {} : { cwd: pending.launchRecipe.cwd }),
+      launchRecipe: pending.launchRecipe,
+      ...(pending.runId === undefined ? {} : { runId: pending.runId }),
     });
     const info: TerminalInfo = {
       id: terminalId,
@@ -989,6 +1042,7 @@ export class TerminalBroker implements TerminalPlacementPort {
       rows: pending.rows,
       controllerId: pending.createdBy,
       createdBy: pending.createdBy,
+      ...(pending.launchRecipe.cwd === undefined ? {} : { cwd: pending.launchRecipe.cwd }),
     };
     this.terminals.set(terminalId, {
       info,
@@ -1333,7 +1387,7 @@ export class TerminalBroker implements TerminalPlacementPort {
   }
 
   /**
-   * Explicit removal and every observed root PTY exit share one canonical sweep.
+   * Explicit removal and clean root PTY exit share one canonical sweep.
    * Removed terminals are absent from `this.terminals`, so duplicate or late exit
    * frames cannot resurrect them. Missing-owner inventory evidence remains dismissable.
    *
@@ -1348,6 +1402,247 @@ export class TerminalBroker implements TerminalPlacementPort {
     if (!this.terminals.has(terminalId)) return "not_found";
     this.destroyTerminal(terminalId);
     return "ok";
+  }
+
+  /** Restarts the process, not its placement. The terminal door has already judged authority. */
+  restartById(
+    terminalId: string,
+    principalId: string,
+    credential?: CredentialReference,
+    traceId?: number,
+    launchRun?: (
+      input: LaunchRunRequest,
+    ) => Promise<
+      | { readonly ok: true; readonly value: LaunchRunResult }
+      | { readonly ok: false; readonly message: string }
+    >,
+  ): Promise<string> {
+    const terminal = this.terminals.get(terminalId);
+    const stored = this.store.getTerminal(terminalId);
+    if (terminal === undefined || stored === null) return Promise.resolve("not_found");
+    if (this.pendingRestarts.has(terminalId)) return Promise.resolve("restart_pending");
+    const machine = this.machines.get(terminal.info.machineId);
+    if (machine === undefined) return Promise.resolve("machine_offline");
+    if (this.draining.has(machine.machineId)) return Promise.resolve("machine_draining");
+    if (
+      machine.terminalRestart !== true ||
+      (machine.protocolVersion ?? 0) < TERMINAL_RESTART_PROTOCOL_VERSION
+    )
+      return Promise.resolve("unsupported");
+    const recipe = stored.launchRecipe;
+    if (stored.runId !== undefined && !launchRun) return Promise.resolve("run_launch_unavailable");
+    if (stored.runId === undefined) {
+      if (recipe === undefined && machine.terminalExecution !== "unconfined")
+        return Promise.resolve("no_recipe");
+      if (recipe !== undefined && !recipe.runtime && machine.terminalExecution !== "unconfined")
+        return Promise.resolve("terminal_runtime_required");
+    }
+    const completion = Promise.withResolvers<string>();
+    const pending: PendingRestart = {
+      machineId: machine.machineId,
+      principalId,
+      agentPrincipalId: null,
+      jobId: null,
+      dispatched: false,
+      resolve: completion.resolve,
+      cancelDeadline: null,
+    };
+    this.pendingRestarts.set(terminalId, pending);
+    pending.cancelDeadline = this.timers.schedule(() => {
+      this.finishRestart(terminalId, "restart_timeout");
+    }, CREATE_DEADLINE_MS);
+    const prepare = async () => {
+      let runtime: Extract<ServerToAgentMessage, { type: "create" }>["runtime"];
+      if (recipe?.runtime || stored.runId !== undefined) {
+        if (!this.jobs || !machine.terminalHostId || !credential || traceId === undefined)
+          throw new Error("terminal_runtime_unsupported");
+        let auth = this.auth.restoreCredential(credential);
+        if (!auth || auth.principal.id !== principalId)
+          throw new Error("terminal_runtime_admission_refused");
+        let descriptor = recipe?.runtime;
+        let privateEnv;
+        if (stored.runId !== undefined) {
+          const launched = await launchRun!({
+            runId: stored.runId,
+            target: { machineId: machine.machineId, containerId: stored.containerId },
+          });
+          if (this.pendingRestarts.get(terminalId) !== pending) return;
+          if (!launched.ok) throw new ServiceError("forbidden", launched.message);
+          auth = this.auth.restoreCredential(credential);
+          const current = this.store.getTerminal(terminalId);
+          if (
+            this.terminals.get(terminalId) !== terminal ||
+            current?.runId !== stored.runId ||
+            current.machineId !== stored.machineId ||
+            current.containerId !== stored.containerId
+          )
+            throw new Error("terminal_changed");
+          if (
+            !auth ||
+            auth.principal.id !== principalId ||
+            !this.auth.allows(auth, "terminals:write", stored.containerId) ||
+            (terminal.info.status === "running" &&
+              terminal.info.controllerId !== principalId &&
+              !auth.isRoot)
+          )
+            throw new Error("terminal_runtime_admission_refused");
+          if (this.machines.get(machine.machineId) !== machine)
+            throw new Error("machine_unavailable");
+          if (this.draining.has(machine.machineId)) throw new Error("machine_draining");
+          if (
+            machine.terminalRestart !== true ||
+            (machine.protocolVersion ?? 0) < TERMINAL_RESTART_PROTOCOL_VERSION
+          )
+            throw new Error("unsupported");
+          descriptor = launched.value.runtime;
+          privateEnv = this.consumeRunLaunch(descriptor, auth, stored.containerId, terminalId);
+          if (privateEnv?.MANIFOLD_RUN_ID !== stored.runId)
+            throw new Error("run_launch_unavailable");
+        }
+        if (descriptor === undefined) throw new Error("terminal_runtime_required");
+        runtime = this.jobs.admitTerminal(
+          auth,
+          descriptor,
+          machine.machineId,
+          {
+            terminalId,
+            terminalHostId: machine.terminalHostId,
+            containerId: stored.containerId,
+            ...(stored.runId === undefined ? {} : { runId: stored.runId }),
+          },
+          traceId,
+          privateEnv,
+        );
+        pending.jobId = runtime.request.jobId;
+      }
+      const grant = runtime
+        ? null
+        : this.auth.mintSessionAgentToken(terminalId, stored.containerId, principalId);
+      pending.agentPrincipalId = grant?.principal.id ?? null;
+      pending.dispatched = true;
+      const sent = machine.send({
+        type: "terminal_restart",
+        terminalId,
+        ...(recipe === undefined && stored.runId === undefined ? { noRecipe: true } : {}),
+        ...(terminal.info.cwd === undefined ? {} : { cwd: terminal.info.cwd }),
+        create: {
+          cols: terminal.info.cols,
+          rows: terminal.info.rows,
+          ...(recipe?.cwd === undefined ? {} : { cwd: recipe.cwd }),
+          env: runtime
+            ? {}
+            : {
+                ...recipe?.env,
+                MANIFOLD_URL: this.publicUrl(),
+                MANIFOLD_CONTAINER: stored.containerId,
+                ...(recipe?.elementId === undefined ? {} : { MANIFOLD_ELEMENT: recipe.elementId }),
+                MANIFOLD_TOKEN: grant!.token,
+              },
+          ...(recipe?.program === undefined ? {} : { program: recipe.program }),
+          ...(runtime === undefined ? {} : { runtime }),
+        },
+      });
+      if (!sent) this.finishRestart(terminalId, "machine_unavailable");
+    };
+    void prepare().catch(() => {
+      if (this.pendingRestarts.get(terminalId) === pending)
+        this.finishRestart(terminalId, "terminal_runtime_admission_refused");
+    });
+    return completion.promise;
+  }
+
+  private finishRestart(terminalId: string, outcome: string): void {
+    const pending = this.pendingRestarts.get(terminalId);
+    if (pending === undefined) return;
+    this.pendingRestarts.delete(terminalId);
+    pending.cancelDeadline?.();
+    if (outcome !== "ok") {
+      if (pending.agentPrincipalId !== null)
+        this.auth.revokeIssuedPrincipal(pending.agentPrincipalId, pending.principalId);
+      if (pending.jobId !== null) this.jobs?.cancelTerminal(terminalId, pending.jobId);
+    }
+    pending.resolve(outcome);
+  }
+
+  private failPendingRestarts(machineId: string, reason: string): void {
+    for (const [terminalId, pending] of this.pendingRestarts)
+      if (pending.machineId === machineId) this.finishRestart(terminalId, reason);
+  }
+
+  onRestartError(machineId: string, terminalId: string, reason: string): void {
+    const pending = this.pendingRestarts.get(terminalId);
+    if (pending?.machineId !== machineId || !pending.dispatched) return;
+    this.finishRestart(terminalId, reason);
+  }
+
+  onCwd(machineId: string, terminalId: string, cwd: string): void {
+    const terminal = this.terminals.get(terminalId);
+    if (!terminal || terminal.info.machineId !== machineId || terminal.info.cwd === cwd) return;
+    terminal.info = { ...terminal.info, cwd };
+    this.store.updateTerminalCwd(terminalId, cwd);
+    this.rooms.live(terminal.info.containerId)?.broadcast({
+      type: "terminal_event",
+      terminalId,
+      kind: "cwd",
+      cwd,
+    });
+    this.announce(terminal.info.containerId, "terminal_cwd", null, { terminalId, cwd });
+  }
+
+  onRestarted(
+    machineId: string,
+    message: Extract<AgentMessage, { type: "terminal_restarted" }>,
+  ): void {
+    const terminal = this.terminals.get(message.terminalId);
+    const pending = this.pendingRestarts.get(message.terminalId);
+    if (
+      !terminal ||
+      terminal.info.machineId !== machineId ||
+      pending?.machineId !== machineId ||
+      !pending.dispatched
+    )
+      return;
+    const stored = this.store.getTerminal(message.terminalId);
+    if (stored?.agentPrincipalId && pending.agentPrincipalId !== null)
+      this.auth.revokeIssuedPrincipal(stored.agentPrincipalId, pending.principalId);
+    this.store.markTerminalRunning(
+      message.terminalId,
+      pending.agentPrincipalId ?? stored?.agentPrincipalId ?? null,
+    );
+    if (message.cwd !== undefined) this.store.updateTerminalCwd(message.terminalId, message.cwd);
+    terminal.info = {
+      ...terminal.info,
+      status: "running",
+      exitCode: null,
+      controllerId: pending.principalId,
+      ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
+    };
+    terminal.lastReceivedOutputSeq = 0;
+    terminal.snapshotRequestOutstanding = false;
+    for (const [channel, viewer] of terminal.viewers) {
+      viewer.state = "PENDING";
+      viewer.queue = [];
+      viewer.queuedBytes = 0;
+      viewer.lastDeliveredSeq = 0;
+      this.armSnapshotDeadline(terminal, channel, viewer);
+    }
+    const event = {
+      type: "terminal_event" as const,
+      terminalId: message.terminalId,
+      kind: "restarted" as const,
+      controllerId: pending.principalId,
+      ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
+      ...(message.fallback === undefined ? {} : { fallback: message.fallback }),
+    };
+    this.rooms.live(terminal.info.containerId)?.broadcast(event);
+    this.announce(terminal.info.containerId, "terminal_restarted", pending.principalId, {
+      terminalId: message.terminalId,
+      machineId,
+      ...(message.cwd === undefined ? {} : { cwd: message.cwd }),
+      ...(message.fallback === undefined ? {} : { fallback: message.fallback }),
+    });
+    this.finishRestart(message.terminalId, "ok");
+    this.requestSnapshotForPending(terminal);
   }
 
   /**
@@ -1378,30 +1673,35 @@ export class TerminalBroker implements TerminalPlacementPort {
   }
 
   /**
-   * The owner observed the root PTY exit. Exit status is audit evidence, not a reason to
-   * retain a dead tile. Nested processes produce no such frame while the root remains alive.
+   * Error and unknown exits retain their placement; clean exits keep canonical removal.
+   * Nested processes produce no such frame while the root remains alive.
    */
   onExited(machineId: string, terminalId: string, exitCode: number | null): void {
-    const terminal = this.terminals.get(terminalId);
-    if (terminal === undefined || terminal.info.machineId !== machineId) return;
-    // The PTY is already stopped: reaping must not send it a redundant kill.
-    terminal.info = { ...terminal.info, status: "exited", exitCode, controllerId: null };
-    this.destroyTerminal(terminalId, "exited");
-    // Retiring an empty home clears its history. Record the outcome after that sweep,
-    // retaining the former home identity without retaining its terminal or container.
-    this.announce(terminal.info.containerId, "terminal_exited", terminal.info.createdBy, {
-      terminalId,
-      machineId,
-      exitCode,
-    });
+    if (exitCode === 0) {
+      const terminal = this.terminals.get(terminalId);
+      if (!terminal || terminal.info.machineId !== machineId || terminal.info.status === "exited")
+        return;
+      terminal.info = { ...terminal.info, status: "exited", exitCode, controllerId: null };
+      this.destroyTerminal(terminalId, "exited");
+      this.announce(terminal.info.containerId, "terminal_exited", terminal.info.createdBy, {
+        terminalId,
+        machineId,
+        exitCode,
+      });
+      return;
+    }
+    this.retainExited(machineId, terminalId, exitCode);
   }
 
   /** An admitted owner's inventory lost a PTY without observing its exit. Retain evidence. */
   private onMissing(machineId: string, terminalId: string): void {
+    this.retainExited(machineId, terminalId, null);
+  }
+
+  private retainExited(machineId: string, terminalId: string, exitCode: number | null): void {
     const terminal = this.terminals.get(terminalId);
     if (terminal === undefined || terminal.info.machineId !== machineId) return;
     if (terminal.info.status === "exited") return;
-    const exitCode = null;
     for (const viewer of terminal.viewers.values()) viewer.cancelSnapshotDeadline?.();
     terminal.viewers.clear();
     terminal.info = { ...terminal.info, status: "exited", exitCode, controllerId: null };
@@ -1509,7 +1809,7 @@ export class TerminalBroker implements TerminalPlacementPort {
 
   /**
    * `TerminalPlacementPort`: the terminal half of removal — a running PTY is asked to
-   * stop and the row is forgotten. Closing its tile, killing it by id, observed root PTY
+   * stop and the row is forgotten. Closing its tile, killing it by id, clean root PTY
    * exit and deleting the composition it lived in all use this sweep.
    *
    * No exit is persisted on the way out. The row is being deleted, so an exit record would
@@ -1522,6 +1822,7 @@ export class TerminalBroker implements TerminalPlacementPort {
   reapTerminal(terminalId: string, reason: "killed" | "exited" = "killed"): void {
     const terminal = this.terminals.get(terminalId);
     if (terminal === undefined) return;
+    this.finishRestart(terminalId, "not_found");
     if (terminal.info.status === "running") this.sendPtyStop(terminal);
     for (const viewer of terminal.viewers.values()) viewer.cancelSnapshotDeadline?.();
     terminal.viewers.clear();
@@ -1608,6 +1909,7 @@ export class TerminalBroker implements TerminalPlacementPort {
     }
     for (const [terminalId, terminal] of this.terminals) {
       if (terminal.info.containerId !== containerId) continue;
+      this.finishRestart(terminalId, "not_found");
       if (terminal.info.status === "running") {
         this.machines
           .get(terminal.info.machineId)

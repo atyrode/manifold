@@ -9,7 +9,7 @@ import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
 import { migrateToDurableAgents } from "./migrate-agents.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 38;
+export const SCHEMA_VERSION = 39;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -891,6 +891,20 @@ WHERE kind='agent' AND id IN (
   END
 );
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','38');
+`,
+  39: `
+ALTER TABLE terminals ADD COLUMN cwd TEXT;
+ALTER TABLE terminals ADD COLUMN launch_recipe TEXT;
+UPDATE terminals SET run_id = (
+  SELECT json_extract(request,'$.terminal.runId') FROM machine_jobs
+  WHERE json_extract(request,'$.terminal.terminalId') = terminals.id
+    AND json_extract(request,'$.terminal.containerId') = terminals.container_id
+    AND machine_id = terminals.machine_id
+    AND json_type(request,'$.terminal.runId') = 'text'
+    AND length(json_extract(request,'$.terminal.runId')) > 0
+  ORDER BY created_at DESC, job_id DESC LIMIT 1
+) WHERE run_id IS NULL;
+INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','39');
 `,
 };
 

@@ -1,5 +1,12 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { createHash, generateKeyPairSync, sign, verify, createPublicKey } from "node:crypto";
+import {
+  createHash,
+  generateKeyPairSync,
+  randomBytes,
+  sign,
+  verify,
+  createPublicKey,
+} from "node:crypto";
 import { gzipSync } from "node:zlib";
 import {
   chmodSync,
@@ -401,9 +408,30 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
         executable: { runtimeTool: "absent" },
         runtimeTools: ["absent"],
       };
+      install.machine.operations["fixture.jobs.harness"] = {
+        ...install.machine.operations["fixture.jobs.run"]!,
+        executable: { runtimeTool: "busybox" },
+        runtimeTools: ["busybox"],
+        argv: [
+          { literal: "sh" },
+          { literal: "-c" },
+          {
+            literal:
+              '[ "${#MANIFOLD_RUN_TOKEN}" -eq "$1" ] || exit 13; printf "HARNESS:%s\\n" "$2"',
+          },
+          { literal: "harness" },
+          { input: "tokenBytes" },
+          { input: "phase" },
+        ],
+        input: {
+          tokenBytes: { type: "number", required: true },
+          phase: { type: "string", required: true },
+        },
+      };
       let owner: MachineJobOwner | null = null;
       const held: HeldDirectory[] = [];
       let bwrapFd = -1;
+      let busyboxFd = -1;
       let restoreLaunch: (() => void) | undefined;
       try {
         for (const name of ["journal", "cache", "outputs"])
@@ -411,6 +439,12 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
         const executableParent = HeldDirectory.openAbsolute(dirname(bwrap!));
         bwrapFd = executableParent.openRuntimeFile(basename(bwrap!));
         executableParent.close();
+        const runtimeParent = HeldDirectory.openAbsolute(dirname(busybox!));
+        try {
+          busyboxFd = runtimeParent.openRuntimeFile(basename(busybox!));
+        } finally {
+          runtimeParent.close();
+        }
         const cache = HeldDirectory.openAbsolute(join(root, "cache"), { private: true });
         const outputDirectory = HeldDirectory.openAbsolute(join(root, "outputs"), {
           private: true,
@@ -433,6 +467,7 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
           anchors: {},
           protectedDirectories: [protectedRoot],
           runtimeTools: {
+            busybox: [{ fd: busyboxFd, target: "/runtime/bin/busybox", writable: false }],
             absent: [{ fd: bwrapFd, target: "/runtime/bin/absent", writable: false }],
             helper: [{ fd: bwrapFd, target: "/runtime/bin/helper", writable: false }],
           },
@@ -817,13 +852,17 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
           },
         });
         const terminalEvents: TerminalHostEvent[] = [];
-        const terminalExit = Promise.withResolvers<void>();
+        let terminalExit = Promise.withResolvers<void>();
+        let terminalRestarted = Promise.withResolvers<TerminalHostEvent>();
+        let terminalRestartRefused = Promise.withResolvers<TerminalHostEvent>();
         let terminalRefused = Promise.withResolvers<void>();
         const seat = host.open({
           write(event) {
             terminalEvents.push(event);
             if (event.type === "exited") terminalExit.resolve();
             if (event.type === "create_error") terminalRefused.resolve();
+            if (event.type === "terminal_restarted") terminalRestarted.resolve(event);
+            if (event.type === "terminal_restart_error") terminalRestartRefused.resolve(event);
             return true;
           },
           close() {},
@@ -957,6 +996,218 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
             type: "create_error",
             message: "terminal_admission_reused",
           });
+          seat.deliver({
+            type: "terminal_restart",
+            terminalId: "native-terminal",
+            create: { cols: create.cols, rows: create.rows, env: {}, runtime: boundCommand },
+          });
+          expect(terminalEvents.at(-1)).toMatchObject({
+            type: "terminal_restart_error",
+            reason: "terminal_runtime_changed",
+          });
+          expect(host.status().terminals).toMatchObject([
+            { terminalId: "native-terminal", alive: false, exitCode: 0 },
+          ]);
+          const restartBody = {
+            ...boundBody,
+            jobId: "terminal-fresh-admission",
+          };
+          const restartRequest = { ...restartBody, requestDigest: jobDigest(restartBody) };
+          const restartIssuedAt = Date.now();
+          const restartPermit = {
+            ...boundPermit,
+            jobId: restartRequest.jobId,
+            permitId: "terminal-fresh-permit",
+            requestDigest: restartRequest.requestDigest,
+            issuedAt: restartIssuedAt,
+            expiresAt: restartIssuedAt + 30_000,
+          };
+          terminalExit = Promise.withResolvers<void>();
+          seat.deliver({
+            type: "terminal_restart",
+            terminalId: "native-terminal",
+            cwd: "/tmp/previous-generation",
+            create: {
+              cols: create.cols,
+              rows: create.rows,
+              env: {},
+              runtime: {
+                type: "start",
+                request: restartRequest,
+                permit: {
+                  ...restartPermit,
+                  signature: sign(
+                    null,
+                    Buffer.from(canonicalJobJson(restartPermit)),
+                    keys.privateKey,
+                  ).toString("base64"),
+                },
+              },
+            },
+          });
+          expect(await terminalRestarted.promise).toMatchObject({
+            type: "terminal_restarted",
+            terminalId: "native-terminal",
+            cwd: "/home/job",
+          });
+          await terminalExit.promise;
+          // The harness's newly admitted argv and private environment replace the original
+          // generation, while the terminal/run identity and the installed contract stay pinned.
+          const harnessBody = {
+            ...boundBody,
+            jobId: "harness-initial",
+            operationId: "fixture.jobs.harness",
+            input: { tokenBytes: 48, phase: "initial" },
+            terminal: { ...boundBody.terminal, terminalId: "harness-terminal", runId: "same-run" },
+          };
+          const signedTerminal = (
+            body: Omit<JobRequest, "requestDigest">,
+            tokenBytes = 48,
+          ): Extract<JobCommand, { type: "start" }> => {
+            const request = { ...body, requestDigest: jobDigest(body) };
+            const issuedAt = Date.now();
+            const permit = {
+              ...boundPermit,
+              permitId: body.jobId,
+              jobId: body.jobId,
+              requestDigest: request.requestDigest,
+              issuedAt,
+              expiresAt: issuedAt + 30_000,
+            };
+            return {
+              type: "start",
+              request,
+              permit: {
+                ...permit,
+                signature: sign(
+                  null,
+                  Buffer.from(canonicalJobJson(permit)),
+                  keys.privateKey,
+                ).toString("base64"),
+              },
+              ...(body.terminal?.runId
+                ? {
+                    privateEnv: {
+                      MANIFOLD_RUN_ID: body.terminal.runId,
+                      MANIFOLD_RUN_TOKEN: randomBytes(tokenBytes / 2).toString("hex"),
+                      MANIFOLD_ORIGIN: "https://fixture.invalid",
+                    },
+                  }
+                : {}),
+            };
+          };
+          const harnessInitial = signedTerminal(harnessBody);
+          terminalExit = Promise.withResolvers<void>();
+          terminalEvents.length = 0;
+          seat.deliver({ ...create, terminalId: "harness-terminal", runtime: harnessInitial });
+          await terminalExit.promise;
+          expect(host.status().terminals).toContainEqual(
+            expect.objectContaining({ terminalId: "harness-terminal", alive: false, exitCode: 0 }),
+          );
+          const restartHarness = (runtime: Extract<JobCommand, { type: "start" }>) => {
+            terminalRestartRefused = Promise.withResolvers<TerminalHostEvent>();
+            terminalRestarted = Promise.withResolvers<TerminalHostEvent>();
+            seat.deliver({
+              type: "terminal_restart",
+              terminalId: "harness-terminal",
+              create: { cols: create.cols, rows: create.rows, env: {}, runtime },
+            });
+          };
+          const resumeBody = {
+            ...harnessBody,
+            jobId: "harness-resume",
+            input: { tokenBytes: 64, phase: "resumed" },
+          };
+          for (const changed of [
+            { terminal: { ...harnessBody.terminal, runId: "other-run" } },
+            { terminal: { ...harnessBody.terminal, runId: undefined } },
+            { terminal: { ...harnessBody.terminal, terminalId: "other-terminal" } },
+            { terminal: { ...harnessBody.terminal, containerId: "other-home" } },
+            { terminal: { ...harnessBody.terminal, terminalHostId: "other-host" } },
+            { machineId: "other-machine" },
+            { operationId: "fixture.jobs.run" },
+          ]) {
+            restartHarness(signedTerminal({ ...harnessBody, jobId: "cross-binding", ...changed }));
+            expect(await terminalRestartRefused.promise).toMatchObject({
+              type: "terminal_restart_error",
+              reason: "terminal_runtime_changed",
+            });
+          }
+          restartHarness(harnessInitial);
+          expect(await terminalRestartRefused.promise).toMatchObject({
+            type: "terminal_restart_error",
+            reason: "terminal_runtime_changed",
+          });
+          const forged = signedTerminal(resumeBody, 64);
+          forged.permit.signature = Buffer.alloc(64).toString("base64");
+          restartHarness(forged);
+          expect(await terminalRestartRefused.promise).toMatchObject({
+            type: "terminal_restart_error",
+          });
+          const resumed = signedTerminal(resumeBody, 64);
+          terminalExit = Promise.withResolvers<void>();
+          terminalEvents.length = 0;
+          restartHarness(resumed);
+          expect(await terminalRestarted.promise).toMatchObject({
+            type: "terminal_restarted",
+            terminalId: "harness-terminal",
+          });
+          await terminalExit.promise;
+          expect(host.status().terminals).toContainEqual(
+            expect.objectContaining({ terminalId: "harness-terminal", alive: false, exitCode: 0 }),
+          );
+          expect(
+            terminalEvents
+              .flatMap((event) =>
+                event.type === "output" ? [Buffer.from(event.data, "base64").toString()] : [],
+              )
+              .join(""),
+          ).toContain("HARNESS:resumed");
+          // Reusing a later generation is fenced by the durable owner, not just the
+          // original recipe's jobId comparison.
+          restartHarness(resumed);
+          expect(await terminalRestartRefused.promise).toMatchObject({
+            type: "terminal_restart_error",
+            reason: "terminal_admission_reused",
+          });
+          seat.deliver({ type: "kill", terminalId: "harness-terminal" });
+
+          const ordinaryBody = {
+            ...harnessBody,
+            jobId: "ordinary-initial",
+            input: { tokenBytes: 0, phase: "initial" },
+            terminal: { ...boundBody.terminal, terminalId: "ordinary-terminal" },
+          };
+          terminalExit = Promise.withResolvers<void>();
+          seat.deliver({
+            ...create,
+            terminalId: "ordinary-terminal",
+            runtime: signedTerminal(ordinaryBody),
+          });
+          await terminalExit.promise;
+          terminalRestartRefused = Promise.withResolvers<TerminalHostEvent>();
+          seat.deliver({
+            type: "terminal_restart",
+            terminalId: "ordinary-terminal",
+            create: {
+              cols: create.cols,
+              rows: create.rows,
+              env: {},
+              runtime: signedTerminal({
+                ...ordinaryBody,
+                jobId: "ordinary-changed",
+                input: { tokenBytes: 0, phase: "resumed" },
+              }),
+            },
+          });
+          expect(await terminalRestartRefused.promise).toMatchObject({
+            type: "terminal_restart_error",
+            reason: "terminal_runtime_changed",
+          });
+          expect(host.status().terminals).toContainEqual(
+            expect.objectContaining({ terminalId: "ordinary-terminal", alive: false, exitCode: 0 }),
+          );
+          seat.deliver({ type: "kill", terminalId: "ordinary-terminal" });
           seat.detach();
           const successor = host.open({
             write(event) {
@@ -1216,6 +1467,7 @@ describe.skipIf(!realBackend || !compiledProbe)("real supervised job owner", () 
         restoreLaunch?.();
         await owner?.shutdown();
         if (bwrapFd >= 0) closeSync(bwrapFd);
+        if (busyboxFd >= 0) closeSync(busyboxFd);
         for (const directory of held) directory.close();
         rmSync(root, { recursive: true, force: true });
       }

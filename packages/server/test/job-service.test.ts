@@ -1737,6 +1737,108 @@ test("bound terminal admission requires current spawn authority, exact pins and 
     f.store.close();
   }
 });
+
+test("terminal restart re-admits fresh runtime under current home write authority", () => {
+  const f = fixture(":memory:", {
+    ...machine,
+    operations: {
+      [operationId]: {
+        ...machine.operations[operationId]!,
+        limits: { ...limits, concurrentJobs: 1 },
+      },
+    },
+  });
+  try {
+    consent(f, "machines:run");
+    f.owner.terminalHostId = "native-host";
+    prove(f);
+    const terminal = { terminalId: "restart", terminalHostId: "native-host", containerId: "home" };
+    const runtime = {
+      machineId: f.machineId,
+      pluginId,
+      operationId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+      resourceBindingDigest: createHash("sha256").update("null").digest("hex"),
+      input: { value: "safe" },
+    };
+    f.store.createContainer({
+      id: "home",
+      name: "terminal",
+      discipline: "composition",
+      createdAt: 0,
+    });
+    f.store.createTerminal({
+      id: terminal.terminalId,
+      machineId: f.machineId,
+      containerId: "home",
+      createdBy: f.root.principal.id,
+      agentPrincipalId: null,
+      createdAt: 0,
+      launchRecipe: { cols: 80, rows: 24, env: {}, runtime },
+    });
+    const grant = f.auth.mintToken(
+      {
+        principal: { name: "restart-writer", kind: "human" },
+        caps: ["terminals:write", "machines:run"],
+      },
+      f.root,
+    );
+    const writer = f.auth.authenticate(grant.token);
+    const traceId = f.store.appendTrace({
+      actor: writer.principal.id,
+      authority: "terminals:write",
+      door: "core.terminals.restart",
+      containerId: null,
+      session: null,
+      ts: 0,
+      outcome: null,
+      targets: [],
+      payload: { terminalId: "restart" },
+    });
+    expect(() =>
+      f.service.admitTerminal(
+        writer,
+        { ...runtime, input: { value: "substituted" } },
+        f.machineId,
+        terminal,
+        traceId,
+      ),
+    ).toThrow("terminal_restart_recipe_changed");
+    expect(() =>
+      f.service.admitTerminal(
+        writer,
+        runtime,
+        f.machineId,
+        { ...terminal, terminalId: "another" },
+        traceId,
+      ),
+    ).toThrow("terminal_restart_recipe_changed");
+    const first = f.service.admitTerminal(writer, runtime, f.machineId, terminal, traceId);
+    const second = f.service.admitTerminal(writer, runtime, f.machineId, terminal, traceId);
+    expect(second.request.jobId).not.toBe(first.request.jobId);
+    expect(second.permit).not.toEqual(first.permit);
+    f.service.cancelTerminal(terminal.terminalId, second.request.jobId);
+    expect(
+      f.commands.filter((command) => command.type === "cancel").map((command) => command.jobId),
+    ).toEqual([second.request.jobId]);
+    f.auth.grant(
+      {
+        principal: { kind: "principal", id: writer.principal.id },
+        node: formatManifoldUri({ kind: "container", containerId: "home" }),
+        caps: ["terminals:write"],
+        effect: "deny",
+        reach: "node",
+      },
+      f.root,
+    );
+    expect(() =>
+      f.service.admitTerminal(writer, runtime, f.machineId, terminal, traceId),
+    ).toThrow();
+  } finally {
+    f.store.close();
+  }
+});
 describe("retained job discovery", () => {
   test("bounded pages omit unreadable runs and recheck current authority", () => {
     const f = fixture();
@@ -5076,6 +5178,8 @@ ALTER TABLE job_schedule_occurrences DROP COLUMN run_id;
 ALTER TABLE terminals DROP COLUMN run_id;
 DROP TABLE agents;
 DELETE FROM meta WHERE key='agent-runs:declarations-after-event-id';
+ALTER TABLE terminals DROP COLUMN cwd;
+ALTER TABLE terminals DROP COLUMN launch_recipe;
 UPDATE meta SET value='33' WHERE key='schema_version';
 `);
       f.store.close();

@@ -29,6 +29,7 @@ import { JobOutputStore } from "./job-outputs.ts";
 import {
   preflightLinuxJob,
   startLinuxJob,
+  resolveTerminalWorkingDirectory,
   type LinuxJobHandle,
   type LinuxJobSpec,
 } from "./job-linux.ts";
@@ -377,6 +378,45 @@ test("directory mount inspection refuses an over-deep held tree before superviso
     f.close();
   }
 });
+
+test.skipIf(process.platform !== "linux")(
+  "terminal cwd restart stays beneath admitted locations and falls back for deleted or escaping paths",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "terminal-sandbox-cwd-"));
+    mkdirSync(join(root, "project"));
+    symlinkSync(tmpdir(), join(root, "escape"));
+    const location = HeldDirectory.openAbsolute(root);
+    const spec = {
+      workingDirectory: "/data",
+      locations: [{ fd: location.fd, target: "/data", writable: true }],
+    };
+    try {
+      expect(resolveTerminalWorkingDirectory(spec, "/data/project")).toEqual({
+        cwd: "/data/project",
+      });
+      rmSync(join(root, "project"), { recursive: true });
+      expect(resolveTerminalWorkingDirectory(spec, "/data/project")).toEqual({
+        cwd: "/data",
+        fallback: "original",
+      });
+      expect(resolveTerminalWorkingDirectory(spec, "/data/escape")).toEqual({
+        cwd: "/data",
+        fallback: "original",
+      });
+      expect(resolveTerminalWorkingDirectory(spec, "/data/../outside")).toEqual({
+        cwd: "/data",
+        fallback: "original",
+      });
+      expect(resolveTerminalWorkingDirectory({ locations: spec.locations }, "/tmp/gone")).toEqual({
+        cwd: "/home/job",
+        fallback: "home",
+      });
+    } finally {
+      location.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 // verify-jobs selects the [real-linux] cases by name; reserve that marker for
 // tests unlocked by its delegated cgroup, bubblewrap, and static fixtures.

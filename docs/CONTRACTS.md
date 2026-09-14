@@ -2967,13 +2967,54 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
   never `conflict` on an exited terminal. An exited terminal whose home no longer holds a leaf
   for it (a client rewrote the layout document directly) is pruned on the next init/resync of
   that home.
+- **Working directory and restart.** The owner samples the PTY session leader's cwd on
+  output-idle and at most five seconds apart on Linux (`/proc/<pid>/cwd`). The hub persists
+  the last observation and broadcasts `terminal_event { kind:"cwd", cwd }`. An absent
+  `TerminalInfo.cwd` means unknown, including older owners and Darwin; it never means
+  `$HOME`. Titlebars show the basename with the full path on hover, and the terminal index
+  exposes the same observation.
+- `core.terminals.restart { terminalId }` needs `terminals:write` on the home and the same
+  controller-or-`*` rule as kill while running. An exited terminal needs no controller.
+  Restart grace-kills a running PTY before respawning the original program, preserving the
+  terminal id, name, home and leaf. The last known cwd is preferred; a missing directory
+  falls back to the original launch directory, then `$HOME`. The home receives
+  `terminal_event { kind:"restarted", cwd?, controllerId, fallback? }`, where `fallback` is
+  `"original"` or `"home"` when that fallback was used. The viewer resets its byte
+  watermark and obtains a fresh snapshot; output from the previous process cannot satisfy
+  that new snapshot. Running titlebars require a second press before restarting.
+  If replacement startup fails after the previous process stops, the terminal remains
+  `exited` with unknown exit code, even when that previous process exited cleanly; the
+  failed restart does not remove the tile.
+- Launch recipes are retained for terminals admitted after this feature. A pre-feature row
+  without a Run binding has no recoverable program recipe: on a currently **unconfined** owner Restart restores
+  the owner's default interactive shell in the known cwd, or `$HOME`, with
+  `fallback:"no_recipe"` ("restored as a plain shell"). A governed owner instead refuses
+  `no_recipe`; unknown execution authority never authorizes a shell. Older retained owners
+  that omit restart support are refused as `unsupported`, without replacing their process.
+  Governed recipes require fresh signed native admission, never replay of the old admission.
+- **Harness-bound restart uses the harness launch path.** A terminal's durable Run binding
+  sends restart through the same `core.access.launchRun` implementation, with the existing
+  Run and `SessionRef`, never through the generic recipe or plain-shell fallback. The harness
+  may prepare resume input, but may not change the bound session, terminal, home or native
+  operation identity. Fresh private credentials and signed admission retain the Run's lifetime
+  and authority; no bearer or consumed launch binding is replayed from storage. An unavailable
+  harness, revoked authority or expired Run refuses restart rather than substituting a shell.
+  Migration 39 recovers pre-feature terminal Run bindings from matching retained job records.
+- **Owner loss retains placement.** An admitted hello from a different `terminalHostId`
+  marks the predecessor's terminals `exited` with unknown exit code and releases their
+  controllers; their rows, leaves and portals remain. Neither a transport disconnect nor
+  IPC seat loss (**4010**) proves owner loss: terminals remain running but unreachable,
+  with credentials intact. A reconnect to the same owner re-adopts its live inventory
+  rather than killing it. A replacement owner on the same machine may restart the retained
+  identity. Dismiss remains canonical removal; retaining the tile never claims that the
+  old workload survived.
 - **Unplaced terminals.** `TerminalInfo.containerId` is the composition the terminal lives in —
   never a canvas, never null, so "unbound" is not a state a terminal can be in. There is no
   pool: what parking used to mean is now `unplaced`, which says that nothing REFERENCES that
   home, and it is DERIVED from the containment graph on every read rather than stored — so
   releasing and re-placing a terminal leaves no state behind to go stale.
   `core.terminals.listAll` lists EVERY terminal as
-  `{ id, machineId, name, createdAt, status, exitCode, homeId, unplaced }`. The pool's
+  `{ id, machineId, name, createdAt, status, exitCode, cwd?, homeId, unplaced }`. The pool's
   durable `sort_order` is retired with it: an unplaced terminal's position is its home
   composition's position in the one index.
 - Terminals carry a durable nullable `name`, renamed through the action
@@ -3002,8 +3043,8 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
 ## WS /ws/machine — machine channel (JSON; `data` fields base64)
 
 Handshake: agent sends `hello { token, name, agentVersion, protocolVersion, terminals,
-terminalHostId?, terminalExecution?, jobOwner? }`, where `terminals` advertises retained PTYs
-`{ terminalId, cols, rows, alive, seq, exitCode? }` (server-restart adoption).
+terminalHostId?, terminalExecution?, terminalRestart?, jobOwner? }`, where `terminals` advertises retained PTYs
+`{ terminalId, cols, rows, alive, seq, exitCode?, cwd? }` (server-restart adoption).
 `terminalHostId` identifies the terminal host PROCESS, stable across transport replacements
 and fresh on host restart; it is not the machine token or a durable terminal checkpoint. An
 `alive:false` advertisement reports a real `exitCode` when the PTY exited while
@@ -3012,7 +3053,7 @@ the next `hello`, then forgotten when `welcome` acknowledges it (or when `kill` 
 Server replies `welcome { machineId, serverEpoch }` or closes: 4401 unauthorized,
 4403 revoked, 4409 version, or 4003 admission refused (incumbent continuity mismatch or
 supersession damp). Version acceptance uses `MACHINE_PROTOCOL_COMPAT_VERSIONS`, currently
-`{30}`; session/browser joins remain strictly current at protocol 30. An unchanged machine
+`{30, 31, 32, 33}`; session/browser joins remain strictly current at protocol 33. An unchanged machine
 wire may add a version to the set. A strictly additive-optional change may also add it only
 when old frames still parse and absent fields preserve the old semantics. Other changes
 reset the set and require a coordinated hub/transport upgrade.
@@ -3060,7 +3101,7 @@ does not invalidate an otherwise compatible machine transport. The owner receive
 challenge or job authority, while machine presence, retained terminal continuity and
 the named drain/maintenance path remain available for the coordinated upgrade.
 
-The independent federation set is `{27, 28, 29, 30}`; these machine/native changes leave its
+The independent federation set is `{27, 28, 29, 30, 31, 32, 33}`; these machine/native changes leave its
 frames and resource vocabularies unchanged. The earlier per-program and per-job transport
 version gates are retired: every accepted transport understands those frames, while
 authority comes from explicit declarations and live owner proof.
@@ -3100,6 +3141,16 @@ Agent→server: `created { terminalId }` | `create_error { terminalId, message }
 `drain_status { requestId, terminalHostId, draining, terminalIds }`,
 `repository_fact { requestId, fact }` — exactly one per `repository_query`, correlated by id;
 an answer whose id nobody holds is dropped and logged, never believed.
+
+Protocol 33 additionally carries `terminal_cwd { terminalId, cwd }`,
+`terminal_restart { terminalId, cwd?, create?, noRecipe? }`,
+`terminal_restarted { terminalId, cwd?, fallback? }` and
+`terminal_restart_error { terminalId, reason }`. Restart is sent only when the transport is
+at least protocol 33 and the current owner declared `terminalRestart:true`. `create` carries
+the launch recipe for a replacement owner; fresh hub-injected credentials replace revoked
+ones without persisting their plaintext. `noRecipe` identifies explicit legacy plain-shell
+restoration and grants no governed execution authority. Owner cwd/restart notifications also
+emit `terminal_cwd`/`terminal_restarted` collection events so index readers refresh.
 
 ### Governed machine jobs
 
@@ -3647,19 +3698,13 @@ terminals; a new server epoch re-adopts them. On successful re-adoption of a run
 terminal, the server transitions every existing viewer back to PENDING and uses the normal
 attach machinery to request a fresh snapshot. This heals output dropped during the
 disconnect window, including ring-buffer overflow. While durable running terminals exist,
-a same-token newcomer must prove ownership before welcome or reconciliation. A named
-`terminalHostId` must match the live incumbent's identity, or the persisted owner identity
-when no incumbent is connected. Legacy agents (neither side names an owner) must account
-for every durable running terminal, either alive or explicitly exited while disconnected.
-Mixed owners, different identities and incomplete legacy inventories are refused with
-4003, even when no agent is connected. An unproven process cannot occupy the seat, answer
-drain with someone else's empty inventory, or create work later disbelieved by the owner.
-
-When no durable running terminals remain, another owner may take the seat. Actual
-supersession closes the old socket with 4001 and remains subject to supersession damp.
-A refused claimant changes no terminal row. The real owner can return, or the operator
-can explicitly retire stale rows through `core.terminals.kill`; token possession alone
-never authorizes that destruction. **Healthy or connected does not mean preserved.**
+a same-token newcomer must prove continuity against an active incumbent before welcome or
+reconciliation: a named `terminalHostId` must match, and legacy inventories must account for
+every durable running terminal. Mixed owners and incomplete inventories cannot supersede a
+live owner. With no incumbent, an admitted new owner's inventory is evidence of replacement:
+missing terminals become retained unknown exits, not removed tiles. A refused claimant
+changes no terminal row. Actual supersession closes the old socket with 4001 and remains
+subject to supersession damp. **Healthy or connected does not mean preserved.**
 Preservation requires the expected terminal identities, same workloads and usable I/O,
 not merely a current connection or a new empty inventory.
 
@@ -3675,8 +3720,10 @@ The transport never spawns a fallback host or owns PTYs. Both modes require
 `MANIFOLD_TERMINAL_HOST_SOCKET`. It claims the host's single transport seat before dialing
 the hub and obtains a fresh inventory for every hello. An incumbent seat wins: a duplicate
 gets `attach_refused`, cannot mutate terminals, and retries without disturbing the owner.
-Transport shutdown releases the seat and network connection, killing nothing. Host loss
-closes the machine socket with **4010** and holds hub dialing until a seat is acquired again.
+Transport shutdown releases the seat and network connection, killing nothing. Losing the IPC
+seat closes the machine socket with **4010** and holds hub dialing until a seat is acquired
+again. Queue overflow can drop that seat while the host and its PTYs remain alive, so this
+close code is not evidence of owner death.
 
 The local protocol (`packages/protocol/src/terminal-host.ts`, version 2) is NDJSON on a
 0600 Unix socket in an owned 0700 directory. An existing non-private directory or live
@@ -3687,7 +3734,7 @@ growing memory without bound.
 
 An observer can send `status_request` and receives
 `status { terminalHostId, terminalHostProtocolVersion, build, pid, draining,
-terminalExecution?, transportAttached, terminals }`, including exited-but-retained terminals.
+terminalExecution?, terminalRestart?, transportAttached, terminals }`, including exited-but-retained terminals.
 Current owners declare `governed` when they supervise native jobs and `unconfined` otherwise;
 an older status without the field remains readable but grants no unconfined spawn authority.
 Only the seated transport may send terminal mutations. An observer may request maintenance
@@ -3698,8 +3745,10 @@ terminalIds }`.
 There is no force option. A refused stop is a hold, never permission to escalate to a signal.
 
 Host SIGTERM is DESTRUCTIVE: it terminates shells, escalating after the grace period.
-Host restart, cgroup/container teardown and machine reboot do not preserve PTYs. Routine
-automation may replace the transport only while leaving the host's process and supervision
+Host restart, cgroup/container teardown and machine reboot do not preserve PTYs.
+The hub now preserves their terminal tiles as restartable unknown exits, not their processes;
+Restart creates a new PTY and does not recover shell history or the old workload.
+Routine automation may replace the transport only while leaving the host's process and supervision
 lifetime intact. Host maintenance must drain and use the atomic shutdown door, never an
 SSH-session count, a hub-only inventory check, or a health check as an idle proxy.
 Released legacy combined-owner agents still lose their PTYs on replacement: they cannot

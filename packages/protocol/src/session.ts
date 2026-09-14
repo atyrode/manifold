@@ -2,7 +2,7 @@ import { z } from "zod";
 import { MAX_GESTURE_POINT_VALUES, MAX_SESSION_BASE64_CHARS } from "./elements.ts";
 import { CapSchema } from "./capabilities.ts";
 import { EventKindSchema, EventPayloadSchema, MAX_SUBSCRIBE_TOPICS } from "./events.ts";
-import { TerminalProgramSchema } from "./machine.ts";
+import { MachinePathSchema, TerminalProgramSchema } from "./machine.ts";
 import { TerminalRuntimeSchema } from "./jobs.ts";
 import {
   CarrySchema,
@@ -99,6 +99,8 @@ export const TerminalInfoSchema = z.strictObject({
   machineId: z.string().min(1),
   status: z.enum(["running", "exited"]),
   exitCode: z.number().int().nullable(),
+  /** An older owner leaves this absent rather than guessing its shell's home. */
+  cwd: MachinePathSchema.optional(),
   cols: z.number().int().positive().max(1000),
   rows: z.number().int().positive().max(1000),
   controllerId: z.string().nullable(),
@@ -484,12 +486,23 @@ const SERVER_BODIES = {
   terminal_event: z.strictObject({
     type: z.literal("terminal_event"),
     terminalId: z.string().min(1),
-    kind: z.enum(["opened", "exited", "controller_changed", "resized", "parked", "renamed"]),
+    kind: z.enum([
+      "opened",
+      "exited",
+      "controller_changed",
+      "resized",
+      "parked",
+      "renamed",
+      "cwd",
+      "restarted",
+    ]),
     exitCode: z.number().int().nullable().optional(),
     controllerId: z.string().nullable().optional(),
     cols: z.number().int().positive().optional(),
     rows: z.number().int().positive().optional(),
     name: z.string().min(1).max(120).optional(),
+    cwd: MachinePathSchema.optional(),
+    fallback: z.enum(["original", "home", "no_recipe"]).optional(),
   }),
   saved: z.strictObject({
     type: z.literal("saved"),

@@ -5,6 +5,7 @@ export interface TerminalRow {
   readonly id: string;
   /** Durable user-given terminal name; null falls back to machine labeling. */
   readonly name: string | null;
+  readonly cwd: string | null;
   readonly machineName: string | null;
   readonly machineOnline: boolean | null;
   readonly status: TerminalInfo["status"];
@@ -47,6 +48,7 @@ export function buildTerminalRows(input: TerminalInventoryInput): readonly Termi
       return {
         id: terminal.id,
         name: terminal.name,
+        cwd: terminal.cwd ?? null,
         machineName: machine?.name ?? null,
         machineOnline: machine === undefined ? null : machine.online,
         status: terminal.status,

@@ -2150,37 +2150,87 @@ export class AuthService {
   claimRunLaunch(
     runId: string,
     actor: AuthContext,
-  ): { run: AgentRun; agent: Agent; token: string; target?: HarnessTarget } {
+  ): { run: AgentRun; agent: Agent; token?: string; target?: HarnessTarget; terminalId?: string } {
     const authorized = this.authorizeRunInput(runId, actor);
-    const pending = this.pendingRunLaunches.get(runId);
-    if (pending === undefined || authorized.agent.state === "retired")
+    const record = this.store.getAgentRun(runId)!;
+    const sponsorCaps = this.agentRunSponsorCaps(record, record.target);
+    if (
+      authorized.agent.state === "retired" ||
+      this.restoreRunCredential(runId) === null ||
+      record.caps.some((cap) => !sponsorCaps.has(cap))
+    )
       throw new ServiceError("forbidden", "run_launch_unavailable");
-    return { ...authorized, ...pending };
+    const pending = this.pendingRunLaunches.get(runId);
+    if (pending !== undefined) {
+      if (!this.runLaunchCredentialValid(runId, pending.token))
+        throw new ServiceError("forbidden", "run_launch_unavailable");
+      return { ...authorized, ...pending };
+    }
+    const terminal = this.store.getTerminalForRun(runId);
+    if (
+      authorized.run.session === null ||
+      terminal === null ||
+      terminal.machineId !== authorized.run.session.machineId
+    )
+      throw new ServiceError("forbidden", "run_launch_unavailable");
+    return {
+      ...authorized,
+      terminalId: terminal.id,
+      target: { machineId: terminal.machineId, containerId: terminal.containerId },
+    };
   }
 
-  bindRunSession(runId: string, session: SessionRef, actor: AuthContext): void {
-    const { agent, run } = this.authorizeRunInput(runId, actor);
-    if (run.session !== null) throw new ServiceError("conflict", "run_session_already_bound");
+  /** Binding may refresh a launch credential, but never changes a Run's session or lease. */
+  bindRunSession(runId: string, session: SessionRef, actor: AuthContext): string {
+    const { agent, run } = this.claimRunLaunch(runId, actor);
     if (session.harness !== agent.harness)
       throw new ServiceError("forbidden", "session_harness_mismatch");
-    this.store.updateAgentRunSession(runId, session);
-    this.pendingRunLaunches.delete(runId);
-    this.agentChanged(agent.agentId, runId);
+    if (
+      run.session !== null &&
+      (run.session.harness !== session.harness ||
+        run.session.machineId !== session.machineId ||
+        run.session.sessionId !== session.sessionId)
+    )
+      throw new ServiceError("conflict", "run_session_already_bound");
+    const pending = this.pendingRunLaunches.get(runId);
+    if (pending !== undefined) {
+      this.store.updateAgentRunSession(runId, session);
+      this.pendingRunLaunches.delete(runId);
+      this.agentChanged(agent.agentId, runId);
+      return pending.token;
+    }
+    const record = this.store.getAgentRun(runId)!;
+    return this.store.transaction(() => {
+      const credential = this.persistToken(
+        record.principalId,
+        record.caps,
+        runContainerScope(record.target),
+        record.authorizedByPrincipalId,
+        "automated",
+        { node: record.target, reach: record.reach, expiresAt: record.expiresAt },
+      );
+      this.store.bindAgentRunCredential(runId, credential.record.id);
+      return credential.raw;
+    });
   }
 
   runLaunchCredentialValid(runId: string, token: string): boolean {
     const credential = this.store.getTokenByHash(sha256Hex(token));
     const run = credential === null ? null : this.store.getAgentRunByToken(credential.id);
     const agent = run === null ? null : this.store.getAgent(run.agentId);
+    const sponsorCaps = run === null ? null : this.agentRunSponsorCaps(run, run.target);
     return (
       credential !== null &&
       credential.revokedAt === null &&
+      credential.expiresAt !== null &&
+      credential.expiresAt > this.runtime.now() &&
       run?.id === runId &&
       run.expiresAt > this.runtime.now() &&
       !TERMINAL_AGENT_RUN_STATES.has(run.state) &&
       agent !== null &&
       agent.status === "enabled" &&
-      agent.grant.expiresAt > this.runtime.now()
+      agent.grant.expiresAt > this.runtime.now() &&
+      run.caps.every((cap) => sponsorCaps!.has(cap))
     );
   }
 

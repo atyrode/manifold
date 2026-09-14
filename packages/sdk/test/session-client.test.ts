@@ -1389,6 +1389,44 @@ describe("terminal attach refcounting", () => {
     expect(sentTypes(socket).filter((t) => t === "terminal_detach")).toHaveLength(1);
   });
 
+  test("restart restores exited refs before observers reacquire the replacement stream", () => {
+    const { client, socket } = connected();
+    socket.receive(INIT_WITH_TERMINAL);
+    client.attachTerminal("s1");
+    client.attachTerminal("s1");
+    socket.receive({ type: "terminal_event", terminalId: "s1", kind: "cwd", cwd: "/work/build" });
+    socket.receive({ type: "terminal_event", terminalId: "s1", kind: "exited", exitCode: 7 });
+    expect(client.terminals.get("s1")).toMatchObject({
+      status: "exited",
+      exitCode: 7,
+      cwd: "/work/build",
+    });
+
+    client.on("terminal_event", (event) => {
+      if (event.kind !== "restarted") return;
+      expect(client.terminals.get("s1")).toMatchObject({
+        status: "running",
+        exitCode: null,
+        cwd: "/work",
+        controllerId: "other",
+      });
+      // One mirror disappears while observing restart; the remaining ref must still
+      // reacquire a stream. Restart must not increment the surviving view's refcount.
+      client.detachTerminal("s1");
+    });
+    socket.receive({
+      type: "terminal_event",
+      terminalId: "s1",
+      kind: "restarted",
+      cwd: "/work",
+      controllerId: "other",
+      fallback: "original",
+    });
+    expect(sentTypes(socket).at(-1)).toBe("terminal_attach");
+    client.detachTerminal("s1");
+    expect(sentTypes(socket).at(-1)).toBe("terminal_detach");
+  });
+
   test("same-connection resync preserves the existing wire subscription", () => {
     const { client, socket } = connected();
     socket.receive(INIT_WITH_TERMINAL);

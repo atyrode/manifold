@@ -682,14 +682,16 @@ test("disconnected exit is advertised with its code and forgotten on welcome", a
     internals.dial();
 
     const hello = await secondHello.promise;
-    expect(hello.terminals).toContainEqual({
-      terminalId: "dead-while-away",
-      cols: 80,
-      rows: 24,
-      alive: false,
-      seq: terminal.seq,
-      exitCode: 17,
-    });
+    expect(hello.terminals).toMatchObject([
+      {
+        terminalId: "dead-while-away",
+        cols: 80,
+        rows: 24,
+        alive: false,
+        seq: terminal.seq,
+        exitCode: 17,
+      },
+    ]);
     expect(host.terminalCount).toBe(1);
 
     const second = sockets[1];
@@ -918,8 +920,8 @@ test("a transport shutdown ends nothing: the next transport advertises the same 
     expect(hello.terminalHostId).toBe(host.terminalHostId);
     const survivor = hello.terminals[0];
     if (survivor === undefined) throw new Error("missing surviving terminal");
-    expect(hello.terminals).toEqual([
-      { terminalId: "survivor", cols: 80, rows: 24, alive: true, seq: survivor.seq },
+    expect(hello.terminals).toMatchObject([
+      { terminalId: "survivor", cols: 80, rows: 24, alive: true },
     ]);
     // Later prompt/output is legitimate: compare immutable, witnessed watermarks.
     expect(survivor.seq).toBeGreaterThanOrEqual(offlineSnapshot.seq);
@@ -1152,3 +1154,55 @@ test("losing the terminal host closes the hub socket and holds the dial until re
     await host.shutdown();
   }
 }, 20000);
+
+test("an older owner's omitted restart capability refuses by name without dropping the machine channel", async () => {
+  const host = new TerminalHost();
+  const sockets: ScriptedSocket[] = [];
+  const dial = inMemoryDialer(host);
+  const refused = Promise.withResolvers<AgentMessage>();
+  const pong = Promise.withResolvers<void>();
+  const agent = new Agent({
+    serverUrl: "http://fake.invalid",
+    machineToken: "test-machine-token",
+    machineName: "old-owner",
+    dialTerminalHost: (handlers) =>
+      dial({
+        ...handlers,
+        onEvent(event) {
+          if (event.type === "status") {
+            const legacy = { ...event };
+            delete legacy.terminalRestart;
+            handlers.onEvent(legacy);
+          } else handlers.onEvent(event);
+        },
+      }),
+    createSocket: scriptedHub(sockets, (_socket, event) => {
+      if (event.type === "terminal_restart_error") refused.resolve(event);
+      if (event.type === "pong") pong.resolve();
+    }),
+  });
+  try {
+    await agent.connect();
+    const socket = sockets[0]!;
+    expect(socket.sent.find((event) => event.type === "hello")).not.toHaveProperty(
+      "terminalRestart",
+    );
+    socket.receive({
+      type: "terminal_restart",
+      terminalId: "retained",
+      create: { cols: 80, rows: 24, env: {} },
+    });
+    expect(await refused.promise).toEqual({
+      type: "terminal_restart_error",
+      terminalId: "retained",
+      reason: "unsupported",
+    });
+    socket.receive({ type: "ping" });
+    await pong.promise;
+    expect(host.terminalCount).toBe(0);
+    expect(socket.closedByAgent).toBeNull();
+  } finally {
+    await agent.shutdown();
+    await host.shutdown();
+  }
+});

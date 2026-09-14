@@ -29,7 +29,7 @@ export const terminalsManifest: PluginManifest = {
   id: "core.terminals",
   version: "1.0.0",
   title: "Terminals",
-  description: "Owns terminal creation policy, naming, killing, and the terminal indexes.",
+  description: "Owns terminal creation policy, naming, restart, killing, and the terminal indexes.",
   capabilities: ["containers:read", "terminals:spawn", "terminals:write"],
   contributes: {
     panels: [],
@@ -69,6 +69,8 @@ export const terminalsManifest: PluginManifest = {
       { id: "terminal_renamed", title: "Terminal renamed" },
       { id: "terminal_bound", title: "Terminal rehomed" },
       { id: "terminal_killed", title: "Terminal killed" },
+      { id: "terminal_cwd", title: "Terminal working directory changed" },
+      { id: "terminal_restarted", title: "Terminal restarted" },
     ],
   },
 };
@@ -80,7 +82,7 @@ const geometry = {
 };
 
 /**
- * Six doors, three authorities, and two scopes — every one of them chosen to reproduce the
+ * Seven doors, three authorities, and two scopes — every one of them chosen to reproduce the
  * authority the replaced ref enforced rather than to look tidy:
  *
  * - `open` carries `terminals:spawn`, the cap the broker itself demanded before this door
@@ -88,7 +90,7 @@ const geometry = {
  *   per-terminal agent token minted for it is container-scoped WITH that cap (`auth.ts`
  *   `mint`). A workspace-graded creation door would have quietly ended
  *   agents spawning their own terminals, which is A2's whole promise.
- * - `rename`, `take` and `kill` carry `terminals:write` at `scope: "container"`: the authority the
+ * - `rename`, `take`, `restart` and `kill` carry `terminals:write` at `scope: "container"`: the authority the
  *   terminal channel's `terminal_kill` verb has always enforced, and the one the browser's own
  *   `canKill` rule is computed from. The deleted `PATCH/DELETE /api/terminals/:id` routes
  *   asked for `containers:write` instead — two doors onto one concept answering differently, which
@@ -186,6 +188,14 @@ export const terminalsActions = [
     cleanup: true,
     name: "kill",
     title: "Kill a terminal",
+    caps: ["terminals:write"],
+    scope: "container",
+    input: z.strictObject({ terminalId: z.string().min(1) }),
+    result: z.strictObject({}),
+  }),
+  defineAction({
+    name: "restart",
+    title: "Restart a terminal in place",
     caps: ["terminals:write"],
     scope: "container",
     input: z.strictObject({ terminalId: z.string().min(1) }),

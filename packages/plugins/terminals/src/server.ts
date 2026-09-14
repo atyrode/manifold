@@ -1,5 +1,8 @@
 import type {
+  Cap,
   ContainerTerminalSummary,
+  LaunchRunRequest,
+  LaunchRunResult,
   TerminalEnv,
   TerminalProgram,
   TerminalRuntime,
@@ -16,6 +19,7 @@ interface StoredTerminal {
   readonly status: "running" | "exited";
   readonly exitCode: number | null;
   readonly createdAt: number;
+  readonly cwd?: string;
 }
 
 /** The live policy facts a kill is judged by: where it lives, and who is holding it. */
@@ -27,9 +31,9 @@ interface LiveTerminal {
 
 /**
  * The slice of the host this plugin touches, declared locally (D1). It is deliberately
- * small and deliberately READ-ONLY except for the two broker verbs: naming and killing are
- * the only mutations terminals own, and everything else here is the state the doors judge
- * by. The broker's own return vocabulary comes with it, because "there is no such terminal"
+ * small and deliberately READ-ONLY except for the broker lifecycle verbs. Everything else
+ * here is state the doors judge by. The broker's own return vocabulary comes with it,
+ * because "there is no such terminal"
  * is an answer this plugin has to relay, not one it can invent.
  */
 interface TerminalsCtx {
@@ -46,11 +50,35 @@ interface TerminalsCtx {
   outsideScope(containerId: string | null): { readonly refused: string } | null;
   readonly principal: { readonly id: string };
   readonly auth: { readonly isRoot: boolean };
+  /** Host-bound credential lineage for fresh governed admission, never caller arguments. */
+  readonly credential: {
+    readonly principalId: string;
+    readonly caps: readonly Cap[];
+    readonly containerScope: string | null;
+    readonly tokenId: string | null;
+    readonly grantId: string | null;
+    readonly expiresAt?: number | undefined;
+  };
   readonly store: { listTerminals(): readonly StoredTerminal[] };
+  readonly identity: {
+    launchRun(
+      input: LaunchRunRequest,
+    ): Promise<
+      | { readonly ok: true; readonly value: LaunchRunResult }
+      | { readonly ok: false; readonly message: string }
+    >;
+  };
   readonly rooms: { censuses(): readonly { readonly references: readonly string[] }[] };
   readonly broker: {
     rename(terminalId: string, name: string): "ok" | "not_found";
     killById(terminalId: string): "ok" | "not_found";
+    restartById(
+      terminalId: string,
+      principalId: string,
+      credential?: TerminalsCtx["credential"],
+      traceId?: number,
+      launchRun?: TerminalsCtx["identity"]["launchRun"],
+    ): Promise<string>;
     liveTerminal(terminalId: string): LiveTerminal | null;
   };
 }
@@ -180,6 +208,29 @@ export const terminalsHandlers = {
     return {};
   },
 
+  /** Restart has kill's live-controller rule, but an exited terminal has no lease to win. */
+  async restart(
+    ctx: TerminalsCtx,
+    args: { terminalId: string },
+  ): Promise<Outcome<Record<string, never>>> {
+    const live = ctx.broker.liveTerminal(args.terminalId);
+    if (live === null) return { refused: "terminal not found" };
+    const outside = ctx.outsideScope(live.containerId);
+    if (outside !== null) return outside;
+    if (live.status === "running" && live.controllerId !== ctx.principal.id && !ctx.auth.isRoot)
+      return { refused: "controller lease or owner capability required" };
+    const outcome = await ctx.broker.restartById(
+      args.terminalId,
+      ctx.principal.id,
+      ctx.credential,
+      ctx.traceId,
+      ctx.identity.launchRun,
+    );
+    return outcome === "ok"
+      ? {}
+      : { refused: outcome === "not_found" ? "terminal not found" : outcome };
+  },
+
   /**
    * THE terminal index: every terminal, with the composition it lives in and whether
    * anything references that composition. `unplaced` is DERIVED from the containment graph
@@ -206,6 +257,7 @@ export const terminalsHandlers = {
       exitCode: terminal.exitCode,
       homeId: terminal.containerId,
       unplaced: !referenced.has(terminal.containerId),
+      ...(terminal.cwd === undefined ? {} : { cwd: terminal.cwd }),
     }));
     return { terminals };
   },

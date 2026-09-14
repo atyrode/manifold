@@ -125,6 +125,8 @@ export const AdvertisedTerminalSchema = z.strictObject({
    * server treats absence as `null` (unknown/signal) — the pre-v4 semantics exactly.
    */
   exitCode: z.number().int().nullable().optional(),
+  /** Last observed session-leader directory; absent means the owner cannot observe it. */
+  cwd: MachinePathSchema.optional(),
 });
 export type AdvertisedTerminal = z.infer<typeof AdvertisedTerminalSchema>;
 
@@ -149,10 +151,24 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
      */
     terminalHostId: z.string().min(1).optional(),
     terminalExecution: TerminalExecutionSchema.optional(),
+    /** Older retained owners omit this even when their transport speaks the current wire. */
+    terminalRestart: z.boolean().optional(),
     jobOwner: JobOwnerSchema.optional(),
   }),
   z.strictObject({ type: z.literal("created"), terminalId }),
   z.strictObject({ type: z.literal("create_error"), terminalId, message: z.string() }),
+  z.strictObject({ type: z.literal("terminal_cwd"), terminalId, cwd: MachinePathSchema }),
+  z.strictObject({
+    type: z.literal("terminal_restarted"),
+    terminalId,
+    cwd: MachinePathSchema.optional(),
+    fallback: z.enum(["original", "home", "no_recipe"]).optional(),
+  }),
+  z.strictObject({
+    type: z.literal("terminal_restart_error"),
+    terminalId,
+    reason: z.string().min(1),
+  }),
   z.strictObject({
     type: z.literal("output"),
     terminalId,
@@ -199,6 +215,27 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
 ]);
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 
+/** Creation and replacement use one launch contract, including its signed runtime boundary. */
+const TerminalLaunchSchema = z.strictObject({
+  ...geometry,
+  cwd: z.string().optional(),
+  /**
+   * Injected into the PTY: the opener's own `env` (if any) UNDER the four fixed keys
+   * MANIFOLD_URL / MANIFOLD_CONTAINER / MANIFOLD_ELEMENT / MANIFOLD_TOKEN, which the server
+   * writes last so they always win.
+   */
+  env: z.record(z.string(), z.string()),
+  /**
+   * OPTIONAL and v22+: the program the PTY execs instead of the shell. The server never sends
+   * it to an agent whose hello named a protocol older than the field, because a pre-v22
+   * agent parses `create` strictly and would treat the key as a malformed frame — so an old
+   * agent's wire is byte-identical and the version was ADDED to the compat set.
+   */
+  program: TerminalProgramSchema.optional(),
+  /** Signed native admission; terminal identity is part of the request digest. */
+  runtime: JobStartCommandSchema.optional(),
+});
+
 export const ServerToAgentMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("welcome"),
@@ -206,26 +243,16 @@ export const ServerToAgentMessageSchema = z.discriminatedUnion("type", [
     /** Server boot identity; fences stale sockets after reconnects. */
     serverEpoch: z.string().min(1),
   }),
+  TerminalLaunchSchema.extend({ type: z.literal("create"), terminalId }),
   z.strictObject({
-    type: z.literal("create"),
+    type: z.literal("terminal_restart"),
     terminalId,
-    ...geometry,
-    cwd: z.string().optional(),
-    /**
-     * Injected into the PTY: the opener's own `env` (if any) UNDER the four fixed keys
-     * MANIFOLD_URL / MANIFOLD_CONTAINER / MANIFOLD_ELEMENT / MANIFOLD_TOKEN, which the server
-     * writes last so they always win.
-     */
-    env: z.record(z.string(), z.string()),
-    /**
-     * OPTIONAL and v22+: the program the PTY execs instead of the shell. The server never sends
-     * it to an agent whose hello named a protocol older than the field, because a pre-v22
-     * agent parses `create` strictly and would treat the key as a malformed frame — so an old
-     * agent's wire is byte-identical and the version was ADDED to the compat set.
-     */
-    program: TerminalProgramSchema.optional(),
-    /** Signed native admission; terminal identity is part of the request digest. */
-    runtime: JobStartCommandSchema.optional(),
+    /** The persisted observation takes precedence over the original launch directory. */
+    cwd: MachinePathSchema.optional(),
+    /** Explicit legacy restoration, permitted only by an unconfined owner's shell authority. */
+    noRecipe: z.boolean().optional(),
+    /** A replacement owner needs the original launch recipe, not a new terminal identity. */
+    create: TerminalLaunchSchema.optional(),
   }),
   z.strictObject({ type: z.literal("input"), terminalId, data: base64 }),
   z.strictObject({ type: z.literal("resize"), terminalId, ...geometry }),
@@ -273,6 +300,9 @@ export const AGENT_MESSAGE_TYPES = [
   "hello",
   "created",
   "create_error",
+  "terminal_cwd",
+  "terminal_restarted",
+  "terminal_restart_error",
   "output",
   "snapshot",
   "exited",
@@ -285,6 +315,7 @@ export const AGENT_MESSAGE_TYPES = [
 export const SERVER_TO_AGENT_MESSAGE_TYPES = [
   "welcome",
   "create",
+  "terminal_restart",
   "input",
   "resize",
   "kill",

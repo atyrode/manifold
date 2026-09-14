@@ -103,3 +103,13 @@
   font-size: 0.72rem;
   overflow-wrap: anywhere;
 }
+
+.index-terminal-cwd {
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary-color, #868e96);
+  font-size: 0.68rem;
+}

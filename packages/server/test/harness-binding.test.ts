@@ -7,11 +7,14 @@ import {
   canonicalJobJson,
   CreateRunResultSchema,
   JOB_OWNER_PROTOCOL_VERSION,
+  PROTOCOL_VERSION,
   LaunchRunResultSchema,
   ListHarnessesResultSchema,
   ListHarnessSessionsResultSchema,
   SessionRefSchema,
   type ActionOutcome,
+  type AgentRun,
+  type HarnessTarget,
   type JobCommand,
   type JobOwner,
   type MachineHalf,
@@ -52,8 +55,8 @@ const machine: MachineHalf = {
   },
   operations: {
     [operationId]: {
-      argv: [],
-      input: {},
+      argv: [{ input: "mode" }],
+      input: { mode: { type: "string", required: true, maxLength: 128 } },
       runtimeTools: [],
       locations: [],
       outputs: [],
@@ -92,8 +95,9 @@ async function fixture(dependency?: ServerPluginDef) {
     installationRevision: "r1",
     artifactSha256: hash,
     resourceBindingDigest: createHash("sha256").update("null").digest("hex"),
-    input: {},
+    input: { mode: "start" },
   };
+  const launches: { run: AgentRun; target: HarnessTarget }[] = [];
   const definition: ServerPluginDef = {
     manifest: {
       id: pluginId,
@@ -123,12 +127,16 @@ async function fixture(dependency?: ServerPluginDef) {
     handlers: {},
     harness: {
       profileSchema: z.strictObject({ label: z.string().min(1) }),
-      async launch(ctx, run) {
+      async launch(ctx, run, _agent, target) {
+        launches.push({ run, target });
         if (ctx.pluginId !== pluginId) throw new Error("harness context identity mismatch");
         await ctx.storage.set("last-run", run.id);
         return {
-          runtime: descriptor,
-          session: { harness: "test-harness", machineId, sessionId: run.id },
+          runtime:
+            run.session === null
+              ? descriptor
+              : { ...descriptor, input: { mode: `resume:${run.session.sessionId}` } },
+          session: run.session ?? { harness: "test-harness", machineId, sessionId: run.id },
           reviewDigest: hash,
         };
       },
@@ -190,12 +198,18 @@ async function fixture(dependency?: ServerPluginDef) {
   const sent: ServerToAgentMessage[] = [];
   const channel = {
     machineId,
-    protocolVersion: 32,
+    protocolVersion: PROTOCOL_VERSION,
+    terminalRestart: true,
     terminalHostId: "terminal-host",
     terminalExecution: "governed" as const,
     send(message: ServerToAgentMessage) {
       sent.push(message);
       if (message.type === "job_command") commands.push(message.command);
+      if (message.type === "terminal_restart")
+        broker.onRestarted(machineId, {
+          type: "terminal_restarted",
+          terminalId: message.terminalId,
+        });
       return true;
     },
   };
@@ -238,7 +252,7 @@ async function fixture(dependency?: ServerPluginDef) {
     }
     broker.setMachineOnline(channel);
   };
-  connect(32, JOB_OWNER_PROTOCOL_VERSION);
+  connect(PROTOCOL_VERSION, JOB_OWNER_PROTOCOL_VERSION);
   const grant = {
     caps: ["containers:read"] as const,
     targets: ["manifold://"],
@@ -293,6 +307,11 @@ async function fixture(dependency?: ServerPluginDef) {
     auth,
     root,
     host,
+    broker,
+    rooms,
+    service,
+    runtime,
+    launches,
     store,
     clock,
     registered,
@@ -301,6 +320,13 @@ async function fixture(dependency?: ServerPluginDef) {
     create,
     launch,
     open,
+    async openCreated(value: TerminalRuntime) {
+      await open(value);
+      const create = sent.findLast((message) => message.type === "create");
+      if (!create) throw new Error("terminal create missing");
+      broker.onCreated(machineId, create.terminalId);
+      return create;
+    },
     sent,
     connect,
     duplicate: () =>
@@ -326,7 +352,7 @@ test("browser descriptors bind distinct runs without returning or journaling the
     const a = await f.launch(first.run.id);
     const b = await f.launch(second.run.id);
     expect(a.runtime.launchBinding).not.toBe(b.runtime.launchBinding);
-    expect(a.runtime.input).toEqual({});
+    expect(a.runtime.input).toEqual({ mode: "start" });
     const other = f.auth.mintToken(
       {
         principal: { name: "Another opener", kind: "human" },
@@ -354,6 +380,262 @@ test("browser descriptors bind distinct runs without returning or journaling the
     expect(creates[1]?.runtime?.privateEnv?.MANIFOLD_RUN_ID).toBe(second.run.id);
     expect(creates[1]?.runtime?.privateEnv?.MANIFOLD_RUN_TOKEN).not.toBe(token);
     expect(f.auth.agentRunPolicyState(f.auth.authenticate(token))).toBe("pending_policy");
+  } finally {
+    f.close();
+  }
+});
+
+test("run terminal restart relaunches its harness session with fresh private signed admission in place", async () => {
+  const f = await fixture();
+  try {
+    const { run } = await f.create();
+    const launched = await f.launch(run.id);
+    const create = await f.openCreated(launched.runtime);
+    const terminalId = create.terminalId;
+    f.broker.rename(terminalId, "retained run");
+    const before = f.store.getTerminal(terminalId)!;
+    const layout = f.rooms.get(before.containerId)!.tileLayout();
+    expect(before.runId).toBe(run.id);
+    const oldToken = create.runtime!.privateEnv!.MANIFOLD_RUN_TOKEN;
+    const outcome = await f.host.dispatch(f.root, "core.terminals.restart", { terminalId });
+    expect(result(outcome)).toEqual({});
+    expect(
+      f.launches.map(({ run: launch, target }) => ({
+        runId: launch.id,
+        session: launch.session,
+        target,
+      })),
+    ).toEqual([
+      {
+        runId: run.id,
+        session: null,
+        target: { machineId: before.machineId, containerId: before.containerId },
+      },
+      {
+        runId: run.id,
+        session: launched.session,
+        target: { machineId: before.machineId, containerId: before.containerId },
+      },
+    ]);
+    const command = f.sent.find((message) => message.type === "terminal_restart");
+    if (!command?.create?.runtime?.privateEnv) throw new Error("private restart missing");
+    const replacement = command.create.runtime;
+    const token = replacement.privateEnv!.MANIFOLD_RUN_TOKEN;
+    expect(token).not.toBe(oldToken);
+    expect(f.auth.authenticate(token).agentRunId).toBe(run.id);
+    expect(replacement.request.input).toEqual({ mode: `resume:${launched.session.sessionId}` });
+    expect(replacement.request.terminal).toEqual(create.runtime!.request.terminal);
+    expect(replacement.request.jobId).not.toBe(create.runtime!.request.jobId);
+    expect(replacement.permit).not.toEqual(create.runtime!.permit);
+    expect(command.create.env).toEqual({});
+    expect(f.sent.filter((message) => message.type === "create")).toHaveLength(1);
+    expect(
+      f.sent.filter(
+        (message) => message.type === "job_command" && message.command.type === "start",
+      ),
+    ).toEqual([]);
+    expect(f.store.getTerminal(terminalId)).toEqual(before);
+    expect(f.rooms.get(before.containerId)!.tileLayout()).toEqual(layout);
+    expect(f.store.getAgentRun(run.id)).toMatchObject({
+      session: launched.session,
+      expiresAt: run.expiresAt,
+      renewals: 0,
+    });
+    const publicState = JSON.stringify([
+      outcome,
+      f.store.listTerminals(),
+      f.store.db.query("SELECT payload FROM events").all(),
+      replacement.request,
+    ]);
+    expect(publicState).not.toContain(token);
+    expect(publicState).not.toContain(oldToken);
+    // A relaunch descriptor belongs to this terminal, not another terminal_open.
+    const relaunch = await f.launch(run.id);
+    await f.open(relaunch.runtime);
+    expect(f.sent.filter((message) => message.type === "create")).toHaveLength(1);
+    await f.open(launched.runtime);
+    expect(f.sent.filter((message) => message.type === "create")).toHaveLength(1);
+  } finally {
+    f.close();
+  }
+});
+
+test("retained run bindings relaunch without a generic recipe and reject forged restart descriptors", async () => {
+  const f = await fixture();
+  try {
+    const { run } = await f.create();
+    const launched = await f.launch(run.id);
+    const create = await f.openCreated(launched.runtime);
+    f.store.db.query("UPDATE terminals SET launch_recipe=NULL WHERE id=?").run(create.terminalId);
+    expect(
+      result(
+        await f.host.dispatch(f.root, "core.terminals.restart", {
+          terminalId: create.terminalId,
+        }),
+      ),
+    ).toEqual({});
+    const restart = f.sent.find((message) => message.type === "terminal_restart");
+    expect(restart?.noRecipe).toBeUndefined();
+    expect(restart?.create?.runtime?.request.input).toEqual({
+      mode: `resume:${launched.session.sessionId}`,
+    });
+    expect(restart?.create?.runtime?.privateEnv?.MANIFOLD_RUN_ID).toBe(run.id);
+    const traceId = f.store.appendTrace({
+      actor: f.root.principal.id,
+      authority: "root",
+      door: "core.terminals.restart",
+      containerId: null,
+      session: null,
+      ts: f.runtime.now(),
+      outcome: null,
+      targets: [],
+      payload: { terminalId: create.terminalId },
+    });
+    expect(() =>
+      f.service.admitTerminal(
+        f.root,
+        { ...f.descriptor, launchBinding: "caller-forged", input: { mode: "replacement" } },
+        f.descriptor.machineId,
+        create.runtime!.request.terminal!,
+        traceId,
+      ),
+    ).toThrow("run_launch_binding_required");
+  } finally {
+    f.close();
+  }
+});
+
+test("plain governed restart uses its exact recipe without invoking a harness", async () => {
+  const f = await fixture();
+  try {
+    const create = await f.openCreated(f.descriptor);
+    expect(
+      result(
+        await f.host.dispatch(f.root, "core.terminals.restart", {
+          terminalId: create.terminalId,
+        }),
+      ),
+    ).toEqual({});
+    expect(f.launches).toEqual([]);
+    const restart = f.sent.find((message) => message.type === "terminal_restart");
+    expect(restart?.create?.runtime?.request.input).toEqual(create.runtime!.request.input);
+    expect(restart?.create?.runtime?.request.jobId).not.toBe(create.runtime!.request.jobId);
+    expect(restart?.create?.runtime?.privateEnv).toBeUndefined();
+    expect(f.store.getTerminal(create.terminalId)?.runId).toBeUndefined();
+  } finally {
+    f.close();
+  }
+});
+
+test("run restart refuses a changed session and a disabled harness without replacement admission", async () => {
+  const f = await fixture();
+  try {
+    const { run } = await f.create();
+    const launched = await f.launch(run.id);
+    const create = await f.openCreated(launched.runtime);
+    const harness = f.definition.harness!;
+    const launch = harness.launch;
+    harness.launch = async (...args) => {
+      const prepared = await launch(...args);
+      return { ...prepared, session: { ...prepared.session, sessionId: "another-session" } };
+    };
+    const tokens = f.store.listTokensForAgentRun(run.id);
+    expect(
+      (
+        await f.host.dispatch(f.root, "core.terminals.restart", {
+          terminalId: create.terminalId,
+        })
+      ).ok,
+    ).toBe(false);
+    expect(f.store.listTokensForAgentRun(run.id)).toEqual(tokens);
+    expect(f.store.getAgentRun(run.id)?.session).toEqual(launched.session);
+    result(
+      await f.host.dispatch(f.root, "engine.plugins.setEnabled", { id: pluginId, enabled: false }),
+    );
+    expect(
+      (
+        await f.host.dispatch(f.root, "core.terminals.restart", {
+          terminalId: create.terminalId,
+        })
+      ).ok,
+    ).toBe(false);
+    expect(f.launches).toHaveLength(2);
+    expect(f.sent.filter((message) => message.type === "terminal_restart")).toEqual([]);
+    expect(f.store.getTerminal(create.terminalId)?.status).toBe("running");
+  } finally {
+    f.close();
+  }
+});
+
+test("an awaited harness launch holds the restart guard and rechecks home authority", async () => {
+  const f = await fixture();
+  try {
+    const grant = f.auth.mintToken(
+      {
+        principal: { name: "restart administrator", kind: "human" },
+        caps: ["*"],
+      },
+      f.root,
+    );
+    const actor = f.auth.authenticate(grant.token);
+    const { run } = await f.create();
+    const create = await f.openCreated((await f.launch(run.id)).runtime);
+    const gate = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const harness = f.definition.harness!;
+    const launch = harness.launch;
+    harness.launch = async (...args) => {
+      entered.resolve();
+      await gate.promise;
+      return launch(...args);
+    };
+    const pending = f.host.dispatch(actor, "core.terminals.restart", {
+      terminalId: create.terminalId,
+    });
+    await entered.promise;
+    f.broker.onRestarted(f.descriptor.machineId, {
+      type: "terminal_restarted",
+      terminalId: create.terminalId,
+      cwd: "/stale-ack",
+    });
+    f.broker.onRestartError(f.descriptor.machineId, create.terminalId, "stale-refusal");
+    expect(f.store.getTerminal(create.terminalId)?.cwd).toBeUndefined();
+    expect(
+      await f.host.dispatch(actor, "core.terminals.restart", {
+        terminalId: create.terminalId,
+      }),
+    ).toMatchObject({ ok: false, denial: { message: "restart_pending" } });
+    f.auth.grant(
+      {
+        principal: { kind: "principal", id: actor.principal.id },
+        node: `manifold://container/${f.store.getTerminal(create.terminalId)!.containerId}`,
+        caps: ["terminals:write"],
+        effect: "deny",
+        reach: "node",
+      },
+      f.root,
+    );
+    gate.resolve();
+    expect((await pending).ok).toBe(false);
+    expect(f.sent.filter((message) => message.type === "terminal_restart")).toEqual([]);
+  } finally {
+    f.close();
+  }
+});
+
+test("restart transport capability cannot override the negotiated protocol floor", async () => {
+  const f = await fixture();
+  try {
+    const { run } = await f.create();
+    const create = await f.openCreated((await f.launch(run.id)).runtime);
+    f.connect(32, JOB_OWNER_PROTOCOL_VERSION);
+    expect(
+      await f.host.dispatch(f.root, "core.terminals.restart", {
+        terminalId: create.terminalId,
+      }),
+    ).toMatchObject({ ok: false, denial: { message: "unsupported" } });
+    expect(f.launches).toHaveLength(1);
+    expect(f.sent.filter((message) => message.type === "terminal_restart")).toEqual([]);
   } finally {
     f.close();
   }
@@ -549,3 +831,52 @@ test("harness dependency calls retain the owning plugin and the incoming call ch
     f.close();
   }
 });
+
+test.each(["draining", "disabled", "withdrawn"] as const)(
+  "a %s launch cannot admit a late run restart",
+  async (change) => {
+    const f = await fixture();
+    const gate = Promise.withResolvers<void>();
+    try {
+      const { run } = await f.create();
+      const create = await f.openCreated((await f.launch(run.id)).runtime);
+      const entered = Promise.withResolvers<void>();
+      const harness = f.definition.harness!;
+      const launch = harness.launch;
+      harness.launch = async (...args) => {
+        entered.resolve();
+        await gate.promise;
+        return launch(...args);
+      };
+      const pending = f.host.dispatch(f.root, "core.terminals.restart", {
+        terminalId: create.terminalId,
+      });
+      await entered.promise;
+      let drain: Promise<unknown> | undefined;
+      switch (change) {
+        case "draining":
+          drain = f.broker.drain(f.descriptor.machineId, true);
+          break;
+        case "disabled":
+          result(
+            await f.host.dispatch(f.root, "engine.plugins.setEnabled", {
+              id: pluginId,
+              enabled: false,
+            }),
+          );
+          break;
+        case "withdrawn":
+          f.auth.disableAgent({ agentId: run.agentId }, f.root);
+          break;
+      }
+      gate.resolve();
+      expect((await pending).ok).toBe(false);
+      expect(f.sent.filter((message) => message.type === "terminal_restart")).toEqual([]);
+      f.clock.advance(10_000);
+      await drain;
+    } finally {
+      gate.resolve();
+      f.close();
+    }
+  },
+);

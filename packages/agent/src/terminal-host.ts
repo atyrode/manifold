@@ -1,3 +1,5 @@
+import { accessSync, constants, statSync } from "node:fs";
+import { homedir } from "node:os";
 import {
   TERMINAL_HOST_COMMAND_TYPES,
   TERMINAL_HOST_PROTOCOL_VERSION,
@@ -15,6 +17,7 @@ import type { AgentLogRecord, AgentLogSink } from "./log.ts";
 import { PtyTerminal, type PtyOutput } from "./terminal.ts";
 import type { MachineJobOwner } from "./job-owner.ts";
 import { startLinuxJob, LinuxJobRefusal } from "./job-linux.ts";
+import { jobDigest } from "./job-journal.ts";
 
 /**
  * THE TERMINAL HOST (issue #278): the process that owns every PTY on a machine and nothing
@@ -64,6 +67,14 @@ interface Connection {
   closed: boolean;
 }
 
+type CreateCommand = Extract<TerminalHostCommand, { type: "create" }>;
+interface LaunchRecipe {
+  readonly create: CreateCommand;
+  readonly command?: readonly string[];
+  readonly environment?: Readonly<Record<string, string>>;
+  readonly cwd?: string;
+}
+
 /** Construction inputs for a {@link TerminalHost}. */
 export interface TerminalHostOptions {
   readonly sink?: AgentLogSink;
@@ -85,6 +96,10 @@ export class TerminalHost {
   readonly terminalHostId: string;
 
   private readonly terminals = new Map<string, PtyTerminal>();
+  private readonly recipes = new Map<string, LaunchRecipe>();
+  private readonly restarting = new Set<string>();
+  private readonly failedRestarts = new WeakSet<PtyTerminal>();
+  private readonly cancelledRestarts = new Set<string>();
   private readonly connections = new Set<Connection>();
   private transport: Connection | null = null;
   private draining = false;
@@ -134,6 +149,7 @@ export class TerminalHost {
       pid: process.pid,
       draining: this.draining,
       terminalExecution: this.jobOwner ? "governed" : "unconfined",
+      terminalRestart: true,
       transportAttached: this.transport !== null,
       terminals: this.inventory(),
     };
@@ -180,6 +196,7 @@ export class TerminalHost {
     await Promise.all(kills);
     for (const terminal of terminals) terminal.dispose();
     this.terminals.clear();
+    this.recipes.clear();
     for (const connection of [...this.connections]) this.cut(connection);
     this.log("info", "shutdown", { terminals: terminals.length });
   }
@@ -194,7 +211,11 @@ export class TerminalHost {
 
   private inventory(): AdvertisedTerminal[] {
     const terminals: AdvertisedTerminal[] = [];
-    for (const terminal of this.terminals.values()) terminals.push(terminal.toAdvertised());
+    for (const terminal of this.terminals.values()) {
+      const advertised = terminal.toAdvertised();
+      if (this.failedRestarts.has(terminal)) advertised.exitCode = null;
+      terminals.push(advertised);
+    }
     return terminals;
   }
 
@@ -261,6 +282,7 @@ export class TerminalHost {
         this.onShutdownRequest(connection);
         return;
       case "create":
+      case "terminal_restart":
       case "input":
       case "resize":
       case "kill":
@@ -351,6 +373,9 @@ export class TerminalHost {
       case "create":
         void this.onCreate(connection, command);
         return;
+      case "terminal_restart":
+        void this.onRestart(connection, command);
+        return;
       case "input": {
         const terminal = this.terminals.get(command.terminalId);
         if (terminal !== undefined && terminal.alive) {
@@ -367,6 +392,10 @@ export class TerminalHost {
         // Live: end it (the exit event follows). Dead: the transport has acknowledged the
         // exit on the hub's behalf, so the retained record can go.
         const terminal = this.terminals.get(command.terminalId);
+        if (this.restarting.has(command.terminalId)) {
+          this.cancelledRestarts.add(command.terminalId);
+          return;
+        }
         if (terminal === undefined) return;
         if (terminal.alive) {
           void terminal.kill().catch(() => {
@@ -374,6 +403,7 @@ export class TerminalHost {
           });
         } else if (terminal.workloadEmpty) {
           this.terminals.delete(command.terminalId);
+          this.recipes.delete(command.terminalId);
           terminal.dispose();
         }
         return;
@@ -400,10 +430,7 @@ export class TerminalHost {
     }
   }
 
-  private async onCreate(
-    connection: Connection,
-    msg: Extract<TerminalHostCommand, { type: "create" }>,
-  ): Promise<void> {
+  private async onCreate(connection: Connection, msg: CreateCommand): Promise<void> {
     if (this.jobOwner && !msg.runtime) {
       connection.peer.write({
         type: "create_error",
@@ -419,98 +446,297 @@ export class TerminalHost {
           terminalId: msg.terminalId,
           message: "terminal_admission_reused",
         });
-        return;
+      } else {
+        connection.peer.write({ type: "created", terminalId: msg.terminalId });
       }
-      // Idempotent re-create (e.g. a retried request): acknowledge the existing terminal.
-      connection.peer.write({ type: "created", terminalId: msg.terminalId });
       return;
     }
     if (this.draining) {
-      // The latch: refused by name, in the same synchronous step that would have admitted it.
       const message = "terminal host draining";
       connection.peer.write({ type: "create_error", terminalId: msg.terminalId, message });
       this.log("warn", "create_error", { terminalId: msg.terminalId, message });
       return;
     }
-    if (msg.runtime) {
-      let terminal: PtyTerminal | undefined;
-      try {
-        if (!this.jobOwner || msg.program || msg.cwd !== undefined || Object.keys(msg.env).length)
-          throw new Error("terminal_runtime_host_or_overrides_refused");
-        await this.jobOwner.startTerminal(
-          msg.runtime,
-          msg.terminalId,
-          this.terminalHostId,
-          (spec) => {
-            try {
-              terminal = new PtyTerminal({
-                terminalId: msg.terminalId,
-                cols: msg.cols,
-                rows: msg.rows,
-                onOutput: (output) => this.onOutput(msg.terminalId, output),
-                runtime: (pty) => startLinuxJob({ ...spec, terminal: pty }),
-              });
-            } catch {
-              throw new LinuxJobRefusal(
-                "terminal-allocation-failed",
-                "terminal-allocation-failed",
-                true,
-              );
-            }
-            this.terminals.set(msg.terminalId, terminal);
-            return terminal.runtimeHandle!;
-          },
-        );
-        if (!terminal || this.stopping) {
-          await terminal?.kill();
-          throw new Error("terminal_runtime_start_interrupted");
-        }
-        connection.peer.write({ type: "created", terminalId: msg.terminalId });
-        void this.watchExit(msg.terminalId, terminal);
-      } catch {
-        if (terminal) {
-          await terminal.kill().catch(() => {});
-          if (terminal.workloadEmpty) {
-            terminal.dispose();
-            this.terminals.delete(msg.terminalId);
-          } else {
-            this.draining = true;
-            this.jobOwner?.setDraining(true);
-          }
-        }
-        connection.peer.write({
-          type: "create_error",
-          terminalId: msg.terminalId,
-          message: "terminal_runtime_refused",
-        });
-      }
-      return;
-    }
-    // A program named by the opener execs in place of the shell — the pinned test shell
-    // included, since a test that names a program means that program (issue #192).
-    const command = msg.program?.argv ?? this.shellCommand;
     try {
-      const terminal = new PtyTerminal({
-        terminalId: msg.terminalId,
-        cols: msg.cols,
-        rows: msg.rows,
-        env: msg.env,
-        onOutput: (output) => this.onOutput(msg.terminalId, output),
-        ...(msg.cwd !== undefined ? { cwd: msg.cwd } : {}),
-        ...(command !== undefined ? { command } : {}),
-      });
-      this.terminals.set(msg.terminalId, terminal);
-      void this.watchExit(msg.terminalId, terminal);
+      const spawned = this.spawnTerminal(msg);
+      const terminal = spawned instanceof PtyTerminal ? spawned : await spawned;
+      this.rememberLaunch(msg, terminal);
       connection.peer.write({ type: "created", terminalId: msg.terminalId });
+      void this.watchExit(msg.terminalId, terminal);
       this.log("info", "created", { terminalId: msg.terminalId, cols: msg.cols, rows: msg.rows });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+    } catch (error) {
+      const message = msg.runtime
+        ? "terminal_runtime_refused"
+        : error instanceof Error
+          ? error.message
+          : String(error);
       connection.peer.write({ type: "create_error", terminalId: msg.terminalId, message });
       this.log("error", "create_error", { terminalId: msg.terminalId, message });
     }
   }
 
+  private rememberLaunch(msg: CreateCommand, terminal: PtyTerminal): void {
+    const cwd = msg.cwd ?? terminal.launchCwd;
+    this.recipes.set(msg.terminalId, {
+      create: msg,
+      ...(terminal.originalCommand ? { command: terminal.originalCommand } : {}),
+      ...(terminal.originalEnvironment ? { environment: terminal.originalEnvironment } : {}),
+      ...(cwd !== undefined ? { cwd } : {}),
+    });
+  }
+
+  private spawnTerminal(
+    msg: CreateCommand,
+    recipe?: LaunchRecipe,
+    restartCwd?: string,
+  ): PtyTerminal | Promise<PtyTerminal> {
+    let terminal: PtyTerminal | undefined;
+    const callbacks = {
+      onOutput: (output: PtyOutput) => this.onOutput(msg.terminalId, output),
+      onCwd: (cwd: string) => {
+        if (!this.restarting.has(msg.terminalId))
+          this.transport?.peer.write({ type: "terminal_cwd", terminalId: msg.terminalId, cwd });
+      },
+    };
+    if (msg.runtime) {
+      return (async () => {
+        try {
+          if (!this.jobOwner || msg.program || msg.cwd !== undefined || Object.keys(msg.env).length)
+            throw new Error("terminal_runtime_host_or_overrides_refused");
+          await this.jobOwner.startTerminal(
+            msg.runtime!,
+            msg.terminalId,
+            this.terminalHostId,
+            (spec) => {
+              try {
+                terminal = new PtyTerminal({
+                  terminalId: msg.terminalId,
+                  cols: msg.cols,
+                  rows: msg.rows,
+                  ...callbacks,
+                  ...(restartCwd !== undefined ? { restartCwd } : {}),
+                  runtime: (pty) => startLinuxJob({ ...spec, terminal: pty }),
+                });
+              } catch {
+                throw new LinuxJobRefusal(
+                  "terminal-allocation-failed",
+                  "terminal-allocation-failed",
+                  true,
+                );
+              }
+              this.terminals.set(msg.terminalId, terminal);
+              return terminal.runtimeHandle!;
+            },
+          );
+          if (!terminal || this.stopping) {
+            await terminal?.kill();
+            throw new Error("terminal_runtime_start_interrupted");
+          }
+          return terminal;
+        } catch (error) {
+          if (terminal) {
+            await terminal.kill().catch(() => {});
+            if (terminal.workloadEmpty) {
+              terminal.dispose();
+              if (this.terminals.get(msg.terminalId) === terminal)
+                this.terminals.delete(msg.terminalId);
+            } else {
+              this.draining = true;
+              this.jobOwner?.setDraining(true);
+            }
+          }
+          throw error;
+        }
+      })();
+    }
+    if (this.jobOwner) throw new Error("terminal_runtime_required");
+    const command = recipe?.command ?? msg.program?.argv ?? this.shellCommand;
+    const environment = recipe?.environment ? { ...recipe.environment } : undefined;
+    if (environment) {
+      for (const name of [
+        "MANIFOLD_URL",
+        "MANIFOLD_CONTAINER",
+        "MANIFOLD_ELEMENT",
+        "MANIFOLD_TOKEN",
+      ]) {
+        if (msg.env[name] !== undefined) environment[name] = msg.env[name]!;
+      }
+    }
+    terminal = new PtyTerminal({
+      terminalId: msg.terminalId,
+      cols: msg.cols,
+      rows: msg.rows,
+      env: msg.env,
+      ...callbacks,
+      ...(msg.cwd !== undefined ? { cwd: msg.cwd } : {}),
+      ...(command !== undefined ? { command } : {}),
+      ...(environment ? { environment } : {}),
+    });
+    this.terminals.set(msg.terminalId, terminal);
+    return terminal;
+  }
+
+  private async onRestart(
+    connection: Connection,
+    msg: Extract<TerminalHostCommand, { type: "terminal_restart" }>,
+  ): Promise<void> {
+    const refuse = (reason: string) =>
+      connection.peer.write({ type: "terminal_restart_error", terminalId: msg.terminalId, reason });
+    if (this.draining) {
+      refuse("draining");
+      return;
+    }
+    if (this.restarting.has(msg.terminalId)) {
+      refuse("restart_pending");
+      return;
+    }
+    const previous = this.terminals.get(msg.terminalId);
+    const recipe = this.recipes.get(msg.terminalId);
+    const noRecipe = msg.noRecipe === true && recipe === undefined;
+    if (noRecipe && this.jobOwner) {
+      refuse("no_recipe");
+      return;
+    }
+    const supplied =
+      msg.create && noRecipe
+        ? { cols: msg.create.cols, rows: msg.create.rows, env: msg.create.env }
+        : msg.create;
+    const create: CreateCommand | undefined =
+      recipe?.create ??
+      (supplied ? { ...supplied, type: "create", terminalId: msg.terminalId } : undefined);
+    if (!create) {
+      refuse("launch_recipe_unavailable");
+      return;
+    }
+    let runtime = create.runtime;
+    if (runtime || this.jobOwner) {
+      const fresh = msg.create?.runtime;
+      if (!fresh) {
+        refuse("terminal_runtime_required");
+        return;
+      }
+      if (recipe?.create.runtime) {
+        const old = recipe.create.runtime.request;
+        const next = fresh.request;
+        if (
+          old.jobId === next.jobId ||
+          old.machineId !== next.machineId ||
+          jobDigest(old.terminal ?? null) !== jobDigest(next.terminal ?? null) ||
+          old.pluginId !== next.pluginId ||
+          old.operationId !== next.operationId ||
+          old.installationRevision !== next.installationRevision ||
+          old.artifactSha256 !== next.artifactSha256 ||
+          // A run's launcher may change input to resume, but only a fresh signed admission
+          // for this exact binding reaches startTerminal below. Ordinary recipes stay exact.
+          (!old.terminal?.runId && jobDigest(old.input) !== jobDigest(next.input)) ||
+          jobDigest(old.resourceBindings ?? null) !== jobDigest(next.resourceBindings ?? null)
+        ) {
+          refuse("terminal_runtime_changed");
+          return;
+        }
+      }
+      runtime = fresh;
+    }
+    const preferred = previous?.sampleCwd() ?? msg.cwd;
+    let cwd = preferred ?? recipe?.cwd ?? create.cwd ?? homedir();
+    let fallback: "original" | "home" | undefined;
+    if (!runtime) {
+      const candidates = [
+        { cwd, fallback: undefined },
+        { cwd: recipe?.cwd ?? create.cwd ?? homedir(), fallback: "original" as const },
+        {
+          cwd: recipe?.environment?.HOME ?? create.env.HOME ?? homedir(),
+          fallback: "home" as const,
+        },
+      ];
+      const selected = candidates.find((candidate) => {
+        try {
+          accessSync(candidate.cwd, constants.X_OK);
+          return statSync(candidate.cwd).isDirectory();
+        } catch {
+          return false;
+        }
+      });
+      if (!selected) {
+        refuse("cwd_unavailable");
+        return;
+      }
+      ({ cwd, fallback } = selected);
+    }
+    this.restarting.add(msg.terminalId);
+    let replacement: PtyTerminal | undefined;
+    try {
+      if (previous) {
+        const killed = previous.kill();
+        let timer: Timer | undefined;
+        try {
+          await Promise.race([
+            killed,
+            new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, this.shutdownGraceMs);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+        if (previous.alive) previous.forceKill();
+        await killed;
+        if (!previous.workloadEmpty) throw new Error("terminal_empty_unproven");
+      }
+      if (this.stopping || this.draining || this.cancelledRestarts.has(msg.terminalId))
+        throw new Error("restart_interrupted");
+      const dimensions = previous?.toAdvertised();
+      const next: CreateCommand = {
+        ...create,
+        cols: dimensions?.cols ?? create.cols,
+        rows: dimensions?.rows ?? create.rows,
+        ...(runtime ? { runtime } : { cwd }),
+        env: runtime ? create.env : (msg.create?.env ?? create.env),
+      };
+      replacement = await this.spawnTerminal(next, recipe, preferred);
+      if (this.stopping || this.cancelledRestarts.has(msg.terminalId)) {
+        await replacement.kill();
+        throw new Error("restart_interrupted");
+      }
+      if (!recipe) this.rememberLaunch(create, replacement);
+      previous?.dispose();
+      this.restarting.delete(msg.terminalId);
+      const observed = replacement.sampleCwd() ?? replacement.launchCwd;
+      const restartedFallback = noRecipe ? "no_recipe" : (replacement.restartFallback ?? fallback);
+      connection.peer.write({
+        type: "terminal_restarted",
+        terminalId: msg.terminalId,
+        ...(observed !== undefined ? { cwd: observed } : {}),
+        ...(restartedFallback !== undefined ? { fallback: restartedFallback } : {}),
+      });
+      void this.watchExit(msg.terminalId, replacement);
+    } catch (error) {
+      if (replacement?.workloadEmpty) replacement.dispose();
+      if (
+        previous &&
+        (!this.terminals.has(msg.terminalId) || this.terminals.get(msg.terminalId) === replacement)
+      )
+        this.terminals.set(msg.terminalId, previous);
+      this.restarting.delete(msg.terminalId);
+      if (previous && !previous.alive && this.terminals.get(msg.terminalId) === previous) {
+        // A failed replacement is not the old program's natural completion. Retain unknown
+        // evidence here and in reconnect inventory, even if the requested stop exited zero.
+        this.failedRestarts.add(previous);
+        connection.peer.write({
+          type: "exited",
+          terminalId: msg.terminalId,
+          exitCode: null,
+        });
+      }
+      refuse(error instanceof Error ? error.message : "restart_failed");
+    } finally {
+      this.restarting.delete(msg.terminalId);
+      this.cancelledRestarts.delete(msg.terminalId);
+    }
+  }
+
   private onOutput(terminalId: string, output: PtyOutput): void {
+    if (this.restarting.has(terminalId)) return;
     // Ring + mirror were already updated inside the PtyTerminal. Stream to the transport ONLY
     // while one holds the seat; output produced with no transport stays in ring+mirror and
     // heals on the next hub attach via snapshot semantics (CONTRACTS.md §attach).
@@ -526,12 +752,16 @@ export class TerminalHost {
 
   private async onSnapshotRequest(connection: Connection, terminalId: string): Promise<void> {
     const terminal = this.terminals.get(terminalId);
-    if (terminal === undefined) return; // unknown/dead terminal: the hub handles the absence
+    if (terminal === undefined || this.restarting.has(terminalId)) return;
     try {
       const snapshot = await terminal.snapshot();
       // One frame carries (seq, data): the tuple is atomic on the seam. Reply only if the
       // requesting transport still holds the seat — a successor re-requests on its own hello.
-      if (this.transport === connection) {
+      if (
+        this.transport === connection &&
+        this.terminals.get(terminalId) === terminal &&
+        !this.restarting.has(terminalId)
+      ) {
         const data = Buffer.from(
           snapshot.data.buffer,
           snapshot.data.byteOffset,
@@ -557,7 +787,7 @@ export class TerminalHost {
       this.log("warn", "terminal_empty_unproven", { terminalId });
       return;
     }
-    if (this.terminals.get(terminalId) !== terminal) return; // already forgotten
+    if (this.terminals.get(terminalId) !== terminal || this.restarting.has(terminalId)) return;
     // The record is RETAINED (alive:false + exit code) until a transport acknowledges it with
     // `kill`: an attached transport does so once the hub has the `exited`; a transport that
     // attaches later advertises it dead in its hello and acknowledges on welcome.

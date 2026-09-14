@@ -198,6 +198,13 @@ const tasks: readonly GateTask[] = [
     usesDist: true,
   },
   {
+    name: "verify:terminal-restart",
+    group: "terminal-mirror",
+    phase: "browser",
+    command: fixed("bun", "scripts/verify-terminal-restart.ts"),
+    usesDist: true,
+  },
+  {
     name: "verify:tile-drop",
     group: "tile-drop",
     phase: "browser",
