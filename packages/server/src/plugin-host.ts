@@ -72,6 +72,7 @@ import type {
   SessionRef,
   LaunchRunRequest,
   LaunchRunResult,
+  ListHarnessSessionsResult,
   SendRunInputRequest,
   BootstrapPrincipalRequest,
   AcknowledgeAgentPolicyRequest,
@@ -244,7 +245,7 @@ export interface IdentityDoor {
   listHarnessSessions(
     harness: string,
     target: HarnessTarget,
-  ): Promise<IdentityResult<{ sessions: SessionRef[] }>>;
+  ): Promise<IdentityResult<ListHarnessSessionsResult>>;
   resolveHarnessSession(ref: SessionRef): Promise<IdentityResult<{ session: SessionRef | null }>>;
   /** Returns the exact server-selected policy bytes this run must acknowledge. */
   agentPolicyChallenge(): IdentityResult<AgentPolicyChallenge>;
@@ -3683,17 +3684,20 @@ export class PluginHost {
             return {};
           }),
         listHarnessSessions: (id, target) =>
-          identityCallAsync(async () => ({
-            sessions: await this.withHarness(ctx, auth, id, async (harness, bound) => {
+          identityCallAsync(() =>
+            this.withHarness(ctx, auth, id, async (harness, bound) => {
               const sessions = await harness.sessions(bound, HarnessTargetSchema.parse(target));
-              return sessions.map((value) => {
-                const ref = SessionRefSchema.parse(value);
-                if (ref.harness !== id || ref.machineId !== target.machineId)
-                  throw new ServiceError("forbidden", "harness session destination mismatch");
-                return ref;
-              });
+              return {
+                sessions: sessions.slice(0, 100).map((value) => {
+                  const ref = SessionRefSchema.parse(value);
+                  if (ref.harness !== id || ref.machineId !== target.machineId)
+                    throw new ServiceError("forbidden", "harness session destination mismatch");
+                  return ref;
+                }),
+                truncated: sessions.length > 100,
+              };
             }),
-          })),
+          ),
         resolveHarnessSession: (ref) =>
           identityCallAsync(async () => ({
             session: await this.withHarness(ctx, auth, ref.harness, async (harness, bound) => {

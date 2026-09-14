@@ -8,6 +8,7 @@ import {
   JOB_OWNER_PROTOCOL_VERSION,
   LaunchRunResultSchema,
   ListHarnessesResultSchema,
+  ListHarnessSessionsResultSchema,
   type ActionOutcome,
   type JobCommand,
   type JobOwner,
@@ -396,6 +397,33 @@ test("live harness inventory owns profile validation and loses execution on disa
       result(await f.host.dispatch(f.root, "core.access.listHarnesses", {})),
     );
     expect(disabled.harnesses.map((harness) => harness.id)).not.toContain("test-harness");
+  } finally {
+    f.close();
+  }
+});
+
+test("harness session inventory bounds retained transcripts and reports truncation at the limit", async () => {
+  const f = await fixture();
+  try {
+    const harness = f.definition.harness;
+    if (!harness) throw new Error("fixture harness missing");
+    const sessions = Array.from({ length: 101 }, (_, index) => ({
+      harness: "test-harness",
+      machineId: f.descriptor.machineId,
+      sessionId: `retained-${index}`,
+    }));
+    harness.sessions = async () => sessions;
+    const request = { harness: "test-harness", target: { machineId: f.descriptor.machineId } };
+    const truncated = ListHarnessSessionsResultSchema.parse(
+      result(await f.host.dispatch(f.root, "core.access.listHarnessSessions", request)),
+    );
+    expect(truncated).toEqual({ sessions: sessions.slice(0, 100), truncated: true });
+
+    sessions.pop();
+    const complete = ListHarnessSessionsResultSchema.parse(
+      result(await f.host.dispatch(f.root, "core.access.listHarnessSessions", request)),
+    );
+    expect(complete).toEqual({ sessions, truncated: false });
   } finally {
     f.close();
   }

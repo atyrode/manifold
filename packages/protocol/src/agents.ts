@@ -154,6 +154,7 @@ export const ListHarnessSessionsRequestSchema = z.strictObject({
 export type ListHarnessSessionsRequest = z.infer<typeof ListHarnessSessionsRequestSchema>;
 export const ListHarnessSessionsResultSchema = z.strictObject({
   sessions: z.array(SessionRefSchema).max(100),
+  truncated: z.boolean(),
 });
 export type ListHarnessSessionsResult = z.infer<typeof ListHarnessSessionsResultSchema>;
 export const ResolveHarnessSessionRequestSchema = z.strictObject({ session: SessionRefSchema });
