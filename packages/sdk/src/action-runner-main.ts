@@ -171,8 +171,9 @@ export async function runActionStdio(options: {
   let success = false;
   const pumps: Promise<void>[] = [];
   try {
-    // Signals do not interrupt admission mid-response and lose the server-issued run handle.
-    await runner.bind();
+    // Adopted work already exists and needs teardown; cancelled Agent admission creates nothing.
+    // Once admission starts, signals wait for its response rather than losing the run handle.
+    if (!stopping.signal.aborted || "runId" in options.bind) await runner.bind();
     if (!stopping.signal.aborted && !runner.closed) {
       const model = frames(options.input, stopping.signal, (value) =>
         enqueue(async () => {

@@ -101,6 +101,24 @@ describe("launcher-only runner binding", () => {
       expect(environment).toEqual({});
     }
   });
+
+  test("cancellation before Agent admission neither creates work nor reads the model", async () => {
+    const output: ActionRunnerResponse[] = [];
+    const code = await runActionStdio({
+      origin: "http://127.0.0.1:1",
+      token: credential,
+      bind: { agentId: "durable" },
+      signal: AbortSignal.abort(),
+      input: {
+        [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+          throw new Error("cancelled runner read model input");
+        },
+      },
+      output: (line) => output.push(ActionRunnerResponseSchema.parse(JSON.parse(line))),
+    });
+    expect(code).toBe(130);
+    expect(output).toEqual([{ type: "closed", outcome: "cancelled", cleanup: "not_started" }]);
+  });
 });
 
 test("trusted pipes admit before input, keep children on the Agent, and report activity without model authority", async () => {
