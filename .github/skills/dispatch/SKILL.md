@@ -10,6 +10,8 @@ correct, hold or ship it before claiming anything new. Otherwise claim before th
 commit, work in your own worktree on `<prefix>/<issue>-<slug>` from current `origin/main`, and take
 at most two claims at once.
 
-Use one draft per initiative and declare `## Dependencies` exactly as the runbook requires. Run
-`bun run gate` before marking it ready, then invoke **review** and **ship**. Stop with
-`Release: needs decision` rather than guessing at one.
+Use one draft per initiative and declare `## Dependencies` exactly as the runbook requires.
+Inspect `bun run ci:plan -- --json`, run `bun run ci:check` and the change's behavioral proof,
+then require the selected PR CI checks before readiness, **review** and **ship**. Full local
+`bun run gate` is not an ordinary-PR prerequisite; high-risk selections remain blocking in CI.
+Stop with `Release: needs decision` rather than guessing at one.
