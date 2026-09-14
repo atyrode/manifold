@@ -2610,6 +2610,8 @@ try {
       10_000,
     ));
   const rootShot = await browser.send("Page.captureScreenshot", { format: "png" });
+  // Persist the ephemeral fixture's pixels for post-run vision inspection, inside a securely
+  // created private directory rather than a predictable shared-temp pathname.
   const rootShotPath = join(
     mkdtempSync(join(tmpdir(), "manifold-axi-root-live-roster-")),
     "screenshot.png",
