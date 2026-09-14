@@ -792,28 +792,7 @@ export class AuthService {
     if (standingSponsor === null || !contextContainsNode(standingSponsor, node)) return new Set();
     const standingCaps = this.effectiveCaps(standingSponsor, node);
     let sponsor: AuthContext | null = standingSponsor;
-    if (run.parentRunId !== null) {
-      const parent = this.store.getAgentRun(run.parentRunId);
-      if (parent === null) return new Set();
-      const token = this.store
-        .listTokensForAgentRun(parent.id)
-        .findLast(
-          (candidate) =>
-            candidate.revokedAt === null &&
-            (candidate.expiresAt === null || candidate.expiresAt > this.runtime.now()),
-        );
-      sponsor =
-        token === undefined
-          ? null
-          : this.restoreCredential({
-              principalId: parent.principalId,
-              tokenId: token.id,
-              grantId: token.grantId,
-              caps: token.caps,
-              containerScope: token.containerId,
-              ...(token.expiresAt === null ? {} : { expiresAt: token.expiresAt }),
-            });
-    }
+    if (run.parentRunId !== null) sponsor = this.restoreRunCredential(run.parentRunId);
     if (sponsor === null || !contextContainsNode(sponsor, node)) return new Set();
     const sponsorCaps = sponsor === standingSponsor ? standingCaps : this.effectiveCaps(sponsor, node);
     return new Set(agent.grant.caps.filter((cap) => standingCaps.has(cap) && sponsorCaps.has(cap)));
@@ -1631,14 +1610,17 @@ export class AuthService {
   listAgents(actor: AuthContext): ListAgentsResult {
     const current = this.requireCurrentActor(actor);
     const visible = this.store.listAgents().filter((agent) => this.mayViewAgent(current, agent));
-    return { agents: visible.slice(0, 100).map((agent) => this.presentAgent(agent, current)), truncated: visible.length > 100 };
+    const canRegister = this.allows(current, "agents:delegate") || this.store.listGrants().some((grant) =>
+      (grant.caps.includes("*") || grant.caps.includes("agents:delegate")) &&
+      this.effectiveCaps(current, grant.node).has("agents:delegate"));
+    return { agents: visible.slice(0, 100).map((agent) => this.presentAgent(agent, current)), truncated: visible.length > 100, canRegister };
   }
 
   getAgent(input: AgentRequest, actor: AuthContext): GetAgentResult {
     const current = this.requireCurrentActor(actor);
     const agent = this.store.getAgent(input.agentId);
     if (agent === null || !this.mayViewAgent(current, agent)) throw new ServiceError("forbidden", "agent_unavailable");
-    return { agent: this.presentAgent(agent, current) };
+    return { agent: this.presentAgent(agent, current), canManage: this.mayManageAgent(current, agent) };
   }
 
   updateAgent(input: UpdateAgentRequest, actor: AuthContext): GetAgentResult {
@@ -1663,7 +1645,7 @@ export class AuthService {
     this.store.updateAgent(next);
     this.authorityChanged();
     this.agentChanged(agent.agentId);
-    return { agent: this.presentAgent(next, current) };
+    return { agent: this.presentAgent(next, current), canManage: true };
   }
 
   private setAgentStatus(input: AgentRequest, actor: AuthContext, status: AgentRecord["status"]): GetAgentResult {
@@ -1693,7 +1675,7 @@ export class AuthService {
       this.store.afterCommit(() => this.authorityChanged());
     });
     this.agentChanged(agent.agentId);
-    return { agent: this.presentAgent(next, current) };
+    return { agent: this.presentAgent(next, current), canManage: true };
   }
 
   disableAgent(input: AgentRequest, actor: AuthContext): GetAgentResult { return this.setAgentStatus(input, actor, "disabled"); }
@@ -1774,6 +1756,10 @@ export class AuthService {
       if (delegation.maxDepth > parent.maxDepth || delegation.maxDescendants > parent.maxDescendants ||
           parent.depth + 1 > delegation.maxDepth)
         throw new ServiceError("forbidden", "delegation_exceeds_grant");
+      const parentActor = this.restoreRunCredential(parent.id);
+      const parentCaps = parentActor === null ? null : this.effectiveCaps(parentActor, target);
+      if (parentCaps === null || !parentCaps.has("agents:delegate") || caps.some((cap) => !parentCaps.has(cap)))
+        throw new ServiceError("forbidden", "sponsor_authority_unavailable");
       const tree = this.store.listAgentRunTree(parent.rootRunId);
       for (const ancestor of this.inspectionAncestors(parent).chain) {
         if (this.agentRunSubtree(ancestor, tree, false).length - 1 >= ancestor.maxDescendants)
@@ -1831,16 +1817,20 @@ export class AuthService {
     return { run: this.presentAgentRun(run), agent: this.presentAgent(agent, current) };
   }
 
-  runHarnessActor(runId: string, actor: AuthContext): AuthContext {
-    this.authorizeRunInput(runId, actor);
-    if (actor.agentRunnerId === undefined) return actor;
+  private restoreRunCredential(runId: string): AuthContext | null {
     const token = this.store.listTokensForAgentRun(runId).findLast((candidate) =>
       candidate.revokedAt === null && candidate.expiresAt !== null && candidate.expiresAt > this.runtime.now());
-    const run = token === undefined ? null : this.restoreCredential({
+    return token === undefined ? null : this.restoreCredential({
       principalId: token.principalId, tokenId: token.id, grantId: token.grantId,
       caps: token.caps, containerScope: token.containerId,
       ...(token.expiresAt === null ? {} : { expiresAt: token.expiresAt }),
     });
+  }
+
+  runHarnessActor(runId: string, actor: AuthContext): AuthContext {
+    this.authorizeRunInput(runId, actor);
+    if (actor.agentRunnerId === undefined) return actor;
+    const run = this.restoreRunCredential(runId);
     if (run === null) throw new ServiceError("forbidden", "agent_run_unavailable");
     return run;
   }

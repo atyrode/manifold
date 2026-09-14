@@ -1699,10 +1699,15 @@ cross-instance ones below:
 | `core.access.mint`            | `tokens:mint`     | container                          | `{ principal \| principalId, caps, containerId? }` → `TokenGrant`                        |
 | `core.access.revoke`          | `tokens:mint`     | container                          | `{ principalId }` → `{ revoked: <count> }` — **`cleanup: true`**                         |
 | `core.access.listCredentials` | `tokens:mint`     | workspace                          | `{}` → `{ principals: PrincipalCredentials[] }`                                          |
-| `core.access.listAgents` | identity-relative | workspace / `runAccess: "inspect"` | `{}` → `{ agents, truncated }` |
-| `core.access.getAgent` | identity-relative | workspace / `runAccess: "inspect"` | `{ agentId }` → `{ agent }` |
+| `core.access.listAgents` | identity-relative | workspace / `runAccess: "inspect"` | `{}` → `{ agents, truncated, canRegister }` |
+| `core.access.getAgent` | identity-relative | workspace / `runAccess: "inspect"` | `{ agentId }` → `{ agent, canManage }` |
 | `core.access.listRuns` | identity-relative | workspace / `runAccess: "inspect"` | `{ agentId? }` → `ListRunsResult` (at most 100 safe Run summaries, including authorized descendants) |
 | `core.access.inspectRun` | identity-relative | workspace / `runAccess: "inspect"` | `{ runId, traceId?, beforeTraceId?, limit? }` → `InspectRunResult` |
+
+`canRegister` evaluates the caller's current delegation authority independently of room attendance,
+including target-scoped grants. `canManage` comes from the verified sponsor chain, not a browser
+comparison of principal labels. These control-eligibility hints never replace admission checks on
+the submitted grant or mutation.
 
 `createPrincipal` demands `*` because `requireRoot` did; the other two demand `tokens:mint`
 because the mechanism did. Both of those are `scope: "container"` (§Actions rung 3) because

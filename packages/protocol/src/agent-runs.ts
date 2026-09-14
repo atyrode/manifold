@@ -104,33 +104,6 @@ export const AgentRunSchema = z
   });
 export type AgentRun = z.infer<typeof AgentRunSchema>;
 
-export const CreateAgentRunRequestSchema = z.strictObject({
-  name: z.string().min(1).max(64),
-  color: z
-    .string()
-    .regex(/^#[0-9a-f]{6}$/i)
-    .optional(),
-  purpose: z.string().min(1).max(AGENT_RUN_MAX_PURPOSE_LENGTH),
-  taskRef: z.string().min(1).max(AGENT_RUN_MAX_TASK_REFERENCE_LENGTH).optional(),
-  target: GrantNodeSchema,
-  reach: GrantReachSchema,
-  caps: AgentRunCapsSchema,
-  lifetimeMs: z
-    .number()
-    .int()
-    .min(60_000)
-    .max(AGENT_RUN_MAX_LIFETIME_MS)
-    .default(AGENT_RUN_MAX_LIFETIME_MS),
-  maxDepth: z.number().int().min(1).max(AGENT_RUN_MAX_DEPTH).default(AGENT_RUN_MAX_DEPTH),
-  maxDescendants: z
-    .number()
-    .int()
-    .min(1)
-    .max(AGENT_RUN_MAX_DESCENDANTS)
-    .default(AGENT_RUN_MAX_DESCENDANTS),
-});
-export type CreateAgentRunRequest = z.infer<typeof CreateAgentRunRequestSchema>;
-
 export const CreateRunRequestSchema = z.strictObject({
   agentId: AgentIdSchema,
   session: SessionRefSchema.optional(),
@@ -179,12 +152,6 @@ export const AgentRunCredentialSchema = z.strictObject({
   expiresAt: z.number().int().positive(),
 });
 export type AgentRunCredential = z.infer<typeof AgentRunCredentialSchema>;
-
-export const CreateAgentRunResultSchema = z.strictObject({
-  run: AgentRunSchema,
-  credential: AgentRunCredentialSchema,
-});
-export type CreateAgentRunResult = z.infer<typeof CreateAgentRunResultSchema>;
 
 export const AGENT_POLICY_SOURCES = ["builtin", "operator"] as const;
 export const AgentPolicySourceSchema = z.enum(AGENT_POLICY_SOURCES);

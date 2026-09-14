@@ -387,6 +387,10 @@ function addressLabel(uri: string): string {
       return `machine ${ref.machineId}`;
     case "principal":
       return `principal ${ref.principalId}`;
+    case "agent":
+      return `Agent ${ref.agentId}`;
+    case "run":
+      return `Run ${ref.runId}`;
     case "plugin":
       return `plugin ${ref.pluginId}`;
     case "action":
