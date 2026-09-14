@@ -277,8 +277,8 @@ describe("durable Agent admission", () => {
         { agentId: agent.agent.agentId, lifetimeMs: 120_000 },
         sponsor,
       );
-      const launch = fix.auth.claimRunLaunch(admitted.run.id, sponsor);
-      const actor = fix.auth.authenticate(launch.token!);
+      const launchToken = fix.auth.claimRunLaunch(admitted.run.id, sponsor).token!;
+      const actor = fix.auth.authenticate(launchToken);
       fix.acknowledge(actor);
       fix.advance(60_000);
       const credentials = fix.store.listTokensByPrincipal(agent.agent.principalId).length;
@@ -288,13 +288,13 @@ describe("durable Agent admission", () => {
         ).toThrow("run_renewal_requires_harness");
         expect(fix.store.listTokensByPrincipal(agent.agent.principalId).length).toBe(credentials);
         expect(fix.store.getAgentRun(admitted.run.id)?.expiresAt).toBe(admitted.run.expiresAt);
-        expect(fix.auth.allows(fix.auth.authenticate(launch.token), "containers:read")).toBe(true);
+        expect(fix.auth.allows(fix.auth.authenticate(launchToken), "containers:read")).toBe(true);
       }
       const renewed = fix.auth.renewAgentRun(
         { runId: admitted.run.id, lifetimeMs: 120_000 },
         fix.auth.authenticate(agent.credential!.token),
       );
-      expect(() => fix.auth.authenticate(launch.token)).toThrow("revoked");
+      expect(() => fix.auth.authenticate(launchToken)).toThrow("revoked");
       expect(fix.auth.authenticate(renewed.credential.token).agentRunId).toBe(admitted.run.id);
     } finally {
       fix.db.close();
