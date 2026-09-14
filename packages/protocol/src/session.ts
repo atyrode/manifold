@@ -539,6 +539,15 @@ const ServerPingSchema = z.strictObject({ type: z.literal("ping") });
  * bare literal beside it rather than joining the table: it has no body to parse.
  */
 export const CONNECTION_BODIES = {
+  /**
+   * Server-issued correlation for this physical socket. It arrives before any room join,
+   * so a refusal before `init` still has an identifier the browser can show an operator.
+   * It is diagnostic only: never authority, identity, or a persistent device fingerprint.
+   */
+  session: z.strictObject({
+    type: z.literal("session"),
+    connectionId: z.string().min(1).max(128),
+  }),
   ...STREAM_SERVER_BODIES,
   /** The roster and, beside it, the developer-mode switch (`PluginsResponseSchema`); absent ≡ off. */
   plugins: z.strictObject({
@@ -592,6 +601,7 @@ export const ServerMessageBodySchema = z.discriminatedUnion("type", [
   SERVER_BODIES.error,
   SERVER_BODIES.channel_closed,
   ServerPingSchema,
+  CONNECTION_BODIES.session,
   CONNECTION_BODIES.plugins,
   CONNECTION_BODIES.event,
   CONNECTION_BODIES.stream_snapshot,
@@ -620,6 +630,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   channelized(SERVER_BODIES.channel_closed),
   ServerPingSchema,
   // Connection-level: identical in both unions, because a frame with no `ch` IS its body.
+  CONNECTION_BODIES.session,
   CONNECTION_BODIES.plugins,
   CONNECTION_BODIES.event,
   CONNECTION_BODIES.stream_snapshot,
@@ -669,6 +680,7 @@ export const SERVER_MESSAGE_TYPES = [
   "error",
   "channel_closed",
   "ping",
+  "session",
   "plugins",
   "event",
   "stream_snapshot",
@@ -711,6 +723,7 @@ export const CLIENT_MESSAGE_TYPES = [
 export const CONNECTION_LEVEL_MESSAGE_TYPES = [
   "ping",
   "pong",
+  "session",
   "plugins",
   "subscribe",
   "unsubscribe",
