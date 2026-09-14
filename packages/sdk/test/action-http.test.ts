@@ -11,7 +11,7 @@ import { ActionHttpError, discoverActions, invokeAction } from "../src/action-ht
 import { SessionClient } from "../src/session-client.ts";
 
 const TOKEN = "a".repeat(64);
-const options = { origin: "http://runner.invalid", token: TOKEN };
+const options = { origin: "http://runner.invalid////", token: TOKEN };
 const mocks: Array<{ mockRestore(): void }> = [];
 afterEach(() => {
   for (const mock of mocks.splice(0)) mock.mockRestore();

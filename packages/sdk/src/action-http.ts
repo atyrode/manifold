@@ -42,6 +42,12 @@ export class ActionProtocolError extends Error {
   }
 }
 
+function withoutTrailingSlashes(origin: string): string {
+  let end = origin.length;
+  while (end > 0 && origin.charCodeAt(end - 1) === 47) end--;
+  return end === origin.length ? origin : origin.slice(0, end);
+}
+
 /** One authenticated HTTP implementation for sessions, tooling and the bounded runner. */
 async function request(
   options: ActionHttpOptions,
@@ -66,7 +72,7 @@ async function request(
     const timeout = AbortSignal.timeout(options.timeoutMs);
     signal = signal === undefined ? timeout : AbortSignal.any([timeout, signal]);
   }
-  const response = await fetch(`${options.origin.replace(/\/+$/, "")}${path}`, {
+  const response = await fetch(`${withoutTrailingSlashes(options.origin)}${path}`, {
     method: invocation === undefined ? "GET" : "POST",
     headers,
     body: invocation === undefined ? null : JSON.stringify(invocation.args ?? {}),
