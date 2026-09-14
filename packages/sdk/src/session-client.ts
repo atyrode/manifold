@@ -789,10 +789,23 @@ export class SessionClient {
             if (msg.rows !== undefined) next.rows = msg.rows;
           }
           if (msg.kind === "renamed") next.name = msg.name ?? null;
+          if (msg.kind === "cwd" || msg.kind === "restarted") {
+            if (msg.cwd !== undefined) next.cwd = msg.cwd;
+          }
+          if (msg.kind === "restarted") {
+            next.status = "running";
+            next.exitCode = null;
+            next.controllerId = msg.controllerId ?? null;
+          }
           this.terminals.set(msg.terminalId, next);
         }
         this.emit(msg.type, msg);
         this.emit("terminals_changed");
+        if (msg.kind === "restarted" && this.attachCounts.has(msg.terminalId)) {
+          // Exit detaches the server's viewer, not our mounted refs. Notify every
+          // local view before acquiring the replacement stream's fresh snapshot.
+          this.send({ type: "terminal_attach", terminalId: msg.terminalId });
+        }
         break;
       }
       case "error": {

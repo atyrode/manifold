@@ -110,6 +110,7 @@ export function MachinesSection({ host }: SectionProps): ReactElement {
                 <button
                   className="sidebar-machine-create"
                   type="button"
+                  data-action="core.terminals.open"
                   aria-label={`New terminal on ${machine.name}`}
                   title={`New terminal on ${machine.name}`}
                   onClick={() => authoring.createTerminal(machine)}

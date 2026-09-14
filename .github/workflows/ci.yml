@@ -273,6 +273,7 @@ jobs:
           dist: "true"
 
   terminal-mirror:
+    # This gate group proves both snapshot rendering and in-place terminal restart.
     name: terminal-mirror
     needs: [plan, build]
     if: contains(fromJSON(needs.plan.outputs.checks), 'terminal-mirror')
@@ -286,9 +287,19 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/bun-workspace
       - uses: ./.github/actions/gate-slice
+        env:
+          MANIFOLD_RESTART_SCREENSHOT: ${{ runner.temp }}/terminal-restart.png
         with:
           task: terminal-mirror
           dist: "true"
+      - name: Retain terminal restart screenshot
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: terminal-restart-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/terminal-restart.png
+          if-no-files-found: warn
+          retention-days: 1
 
   tile-drop:
     name: tile-drop

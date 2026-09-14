@@ -20,6 +20,7 @@
     "verify:public": "bun scripts/verify-public.ts",
     "verify:terminal-selection": "bun scripts/verify-terminal-selection.ts",
     "verify:terminal-mirror": "bun scripts/verify-terminal-mirror.ts",
+    "verify:terminal-restart": "bun scripts/verify-terminal-restart.ts",
     "verify:tile-drop": "bun scripts/verify-tile-drop.ts",
     "verify:budgets": "bun scripts/verify-budgets.ts",
     "verify:pwa": "bun scripts/verify-pwa.ts",

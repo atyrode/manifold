@@ -60,6 +60,8 @@ import {
   terminalFontPreferences,
 } from "./terminal-font-preferences";
 
+const EMPTY_SNAPSHOT = new Uint8Array(0);
+
 /** Hosts one no-gap terminal viewer and keeps controller-only input and sizing explicit. */
 export function TerminalView({
   host,
@@ -72,7 +74,6 @@ export function TerminalView({
   chrome = "full",
   onPark,
   onClose,
-  onRestart,
   onExpand,
   onEngage,
   onShrink,
@@ -120,6 +121,7 @@ export function TerminalView({
   const fontReady = fontState === "ready";
   const [, rerender] = useReducer((version: number) => version + 1, 0);
   const [isRestarting, setIsRestarting] = useState(false);
+  const [restartArmed, setRestartArmed] = useState(false);
   const { notify } = useNotice();
   const notifyRef = useRef(notify);
   useEffect(() => {
@@ -166,6 +168,14 @@ export function TerminalView({
 
   const terminal = client.terminals.get(terminalId);
   const terminalReady = terminal !== undefined;
+  const cwd = terminal?.cwd;
+  const cwdLabel = cwd?.replace(/\/+$/, "").split("/").pop() || cwd || "unknown";
+  const hostCaps = host.client.selfCaps();
+  const canRestart =
+    terminal !== undefined &&
+    (hostCaps.includes("*") ||
+      (hostCaps.includes("terminals:write") &&
+        (terminal.status === "exited" || terminal.controllerId === host.principal.id)));
   /** Non-null exactly when this terminal's machine is known and NOT online. */
   const offlineMachine = machine !== null && !machine.online ? machine : null;
   const selfId = client.self?.id ?? null;
@@ -473,15 +483,18 @@ export function TerminalView({
     clipboardLiveRef.current = false;
     let snapshotSeq: number | null = null;
     let lastWrittenSeq = 0;
+    let streamGeneration = 0;
     const bufferedOutputs = new Map<number, string>();
-    const settle = (): void => {
-      if (!subscribed) return;
+    const settle = (generation: number): void => {
+      if (!subscribed || generation !== streamGeneration) return;
       clipboardLiveRef.current = true;
       settleRef.current?.();
     };
 
     const offSnapshot = client.on("terminal_snapshot", (message) => {
       if (message.terminalId !== terminalId) return;
+      const generation = ++streamGeneration;
+      const settled = (): void => settle(generation);
       clipboardRef.current?.reset();
       clipboardLiveRef.current = false;
       pasteModeRef.current?.reset();
@@ -496,10 +509,10 @@ export function TerminalView({
       bufferedOutputs.clear();
       graphicsRef.current?.writeSnapshot(
         base64ToBytes(message.data),
-        queued.length === 0 ? settle : undefined,
+        queued.length === 0 ? settled : undefined,
       );
       queued.forEach(([seq, data], index) => {
-        terminal.write(base64ToBytes(data), index === queued.length - 1 ? settle : undefined);
+        terminal.write(base64ToBytes(data), index === queued.length - 1 ? settled : undefined);
         lastWrittenSeq = seq;
       });
     });
@@ -517,6 +530,32 @@ export function TerminalView({
 
     const offTerminalEvent = client.on("terminal_event", (message) => {
       if (message.terminalId !== terminalId) return;
+      if (message.kind === "restarted") {
+        // This is a new byte stream under the same identity. The SDK re-attaches after
+        // notifying every view; only its fresh snapshot may make input live again.
+        streamGeneration++;
+        clipboardRef.current?.reset();
+        clipboardLiveRef.current = false;
+        pasteModeRef.current?.reset();
+        snapshotSeq = null;
+        lastWrittenSeq = 0;
+        bufferedOutputs.clear();
+        paintedRef.current = false;
+        graphicsRef.current?.writeSnapshot(EMPTY_SNAPSHOT);
+        setRestartArmed(false);
+        if (message.fallback !== undefined) {
+          notifyRef.current(
+            `${message.fallback === "no_recipe" ? "Terminal restored as a plain shell" : `Terminal restarted in ${message.fallback === "original" ? "its original directory" : "the home directory"}`}${message.cwd === undefined ? "" : `: ${message.cwd}`}`,
+            { key: `terminal-restart:${terminalId}` },
+          );
+        }
+      }
+      if (message.kind === "exited") {
+        streamGeneration++;
+        clipboardRef.current?.reset();
+        clipboardLiveRef.current = false;
+        setRestartArmed(false);
+      }
       if (message.kind === "resized" && message.cols !== undefined && message.rows !== undefined) {
         const { cols, rows } = message;
         terminal.write("", () => terminal.resize(cols, rows));
@@ -537,6 +576,7 @@ export function TerminalView({
 
     const offStatus = client.on("status", (status) => {
       if (status === "open") return;
+      streamGeneration++;
       clipboardRef.current?.reset();
       clipboardLiveRef.current = false;
       pasteModeRef.current?.reset();
@@ -605,6 +645,27 @@ export function TerminalView({
     if (client.status !== "open") return;
     client.takeTerminal(terminalId);
     terminalRef.current?.focus();
+  };
+
+  const handleRestart = (): void => {
+    if (!canRestart || offlineMachine !== null || isRestarting) return;
+    if (terminal?.status === "running" && !restartArmed) {
+      setRestartArmed(true);
+      return;
+    }
+    setRestartArmed(false);
+    setIsRestarting(true);
+    void host.client
+      .action("core.terminals.restart", { terminalId })
+      .then((outcome) => {
+        if (!outcome.ok) throw new Error(outcome.denial.message);
+      })
+      .catch((reason: unknown) => {
+        notify(reason instanceof Error ? reason.message : "Could not restart terminal", {
+          key: `terminal-restart:${terminalId}`,
+        });
+      })
+      .finally(() => setIsRestarting(false));
   };
 
   // The preview's input remains read-only even when its host permits titlebar placement
@@ -721,6 +782,9 @@ export function TerminalView({
               {...(projectionScope === undefined ? {} : { scope: projectionScope })}
             />
             {titlebarMiddle}
+            <span className="terminal-cwd" title={cwd ?? "Working directory unknown"}>
+              {cwdLabel}
+            </span>
             {machine === null ? null : (
               <span className="terminal-machine-badge" title={`machine ${machine.name}`}>
                 {machine.color === undefined ? null : (
@@ -744,6 +808,32 @@ export function TerminalView({
         closeClassName="terminal-ctl--close"
         extraActions={
           <>
+            {terminal === undefined ? null : (
+              <button
+                type="button"
+                className="node-titlebar__ctl terminal-ctl--restart"
+                data-action="core.terminals.restart"
+                data-confirming={restartArmed}
+                aria-label={restartArmed ? "Confirm restart terminal" : "Restart terminal"}
+                title={
+                  !canRestart
+                    ? "Restart requires terminal write access and control of a running terminal"
+                    : restartArmed
+                      ? "Press again to end the running process and restart in this directory"
+                      : "Restart terminal in this directory"
+                }
+                disabled={!canRestart || offlineMachine !== null || isRestarting}
+                onPointerDown={(event) => event.stopPropagation()}
+                onBlur={() => setRestartArmed(false)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setRestartArmed(false);
+                }}
+                onClick={handleRestart}
+              >
+                <ControlIcon kind="restart" size={12} />
+                {restartArmed ? <span>Restart?</span> : null}
+              </button>
+            )}
             {showTakeControl ? (
               <button
                 type="button"
@@ -868,30 +958,16 @@ export function TerminalView({
                   : "exited"}
               </span>
             )}
-            {!readOnly &&
-            terminal?.status === "exited" &&
-            offlineMachine === null &&
-            onRestart !== undefined ? (
+            {terminal?.status === "exited" && offlineMachine === null && canRestart ? (
               <button
                 type="button"
                 className="terminal-restart"
-                title="Restart terminal (new shell, same spot)"
+                data-action="core.terminals.restart"
+                aria-label="Restart exited terminal"
+                title="Restart terminal in this directory, keeping its tile and name"
                 disabled={isRestarting}
                 onPointerDown={(event) => event.stopPropagation()}
-                onClick={() => {
-                  setIsRestarting(true);
-                  void onRestart()
-                    .catch((reason: unknown) => {
-                      // The button that started the restart is the one place that knows a
-                      // restart was attempted at all, so it is where the failure is reported.
-                      // Keyed per terminal: hammering restart replaces the notice, never stacks.
-                      notify(
-                        reason instanceof Error ? reason.message : "Could not restart terminal",
-                        { key: `terminal-restart:${terminalId}` },
-                      );
-                    })
-                    .finally(() => setIsRestarting(false));
-                }}
+                onClick={handleRestart}
               >
                 <ControlIcon kind="restart" />
                 <span>{isRestarting ? "restarting…" : "restart"}</span>

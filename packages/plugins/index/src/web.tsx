@@ -111,6 +111,14 @@ function initials(name: string): string {
   return [...name][0]?.toUpperCase() ?? "?";
 }
 
+function terminalDirectory(cwd: string | undefined): ReactNode {
+  return (
+    <span className="index-terminal-cwd" title={cwd ?? "Working directory unknown"}>
+      {cwd?.replace(/\/+$/, "").split("/").pop() || cwd || "unknown"}
+    </span>
+  );
+}
+
 function initialShowTerminals(): boolean {
   try {
     return window.localStorage.getItem(TERMINAL_TREE_KEY) === "true";
@@ -244,6 +252,10 @@ export function IndexSection({ host }: SectionProps): ReactElement {
       events: client,
       hold: treeOwnsDrag,
     },
+  );
+  const terminalById = useMemo(
+    () => new Map(terminals.map((terminal) => [terminal.id, terminal])),
+    [terminals],
   );
 
   /**
@@ -861,6 +873,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
    */
   const renderContainerRow = (container: Container): ReactNode => {
     const active = container.id === activeContainerId;
+    const terminal = terminalByHome.get(container.id);
     const principals =
       presence.find((entry) => entry.containerId === container.id)?.principals ?? [];
     const visiblePrincipals = principals.slice(0, 3);
@@ -902,6 +915,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
           >
             {containerMark(container)}
             <span className="sidebar-container-name">{rowName(container)}</span>
+            {terminal === undefined ? null : terminalDirectory(terminal.cwd)}
             {runningCount > 0 ? (
               <span
                 className="sidebar-terminal-count"
@@ -953,6 +967,7 @@ export function IndexSection({ host }: SectionProps): ReactElement {
                   <ItemIcon kind="terminal" size={13} />
                 </span>
                 <span>{terminal.machineId}</span>
+                {terminalDirectory(terminalById.get(terminal.id)?.cwd)}
                 <small>{terminal.status}</small>
                 {terminal.status === "running" ? (
                   <button
