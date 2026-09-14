@@ -9,9 +9,18 @@ import { $ } from "bun";
  * production runs releases, and a tag alone is not one.
  */
 
-const tag = process.argv[2];
-if (tag === undefined || !/^v\d+\.\d+\.\d+$/.test(tag)) {
-  console.error("Usage: bun run promote vX.Y.Z   (a published release tag)");
+const args = process.argv.slice(2);
+// The one-time exception for a target that predates the export door (docs/SELF-HOST.md
+// §Installed-bundle gate): it only changes what the gate does on `unknown action`, never the
+// direction or the tag of the promotion, so it is a flag on this verb rather than a second one.
+const bootstrapGate = args.includes("--bootstrap-gate");
+const tag = args.find((arg) => !arg.startsWith("--"));
+if (
+  tag === undefined ||
+  !/^v\d+\.\d+\.\d+$/.test(tag) ||
+  args.some((arg) => arg.startsWith("--") && arg !== "--bootstrap-gate")
+) {
+  console.error("Usage: bun run promote vX.Y.Z [--bootstrap-gate]   (a published release tag)");
   process.exit(1);
 }
 
@@ -23,7 +32,7 @@ const { isDraft } = JSON.parse(release.text()) as { readonly isDraft: boolean };
 if (isDraft) throw new Error(`${tag} is a draft release, not a published one`);
 
 const since = new Date(Date.now() - 60_000).toISOString();
-await $`gh workflow run deploy-hub.yml -f ${`tag=${tag}`}`;
+await $`gh workflow run deploy-hub.yml -f ${`tag=${tag}`} -f ${`bootstrap_gate=${bootstrapGate}`}`;
 console.log(`Dispatched deploy-hub.yml for ${tag}; waiting for the run…`);
 
 let run: number | undefined;
