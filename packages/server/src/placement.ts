@@ -99,9 +99,10 @@ export function assemblyItemNouns(roster: () => PluginRoster): (kind: string) =>
 }
 
 /**
- * THE placement executor. One entry point — `place(ref, destination)` — for every way
- * an item can land in a container, with legality decided entirely by the protocol's
- * declarations (`resolvePlacement`) and never by a branch in here.
+ * THE placement executor. One execution path — `executePlace(ref, destination)` — for every
+ * way an item can land in a container, with `place` as the consumer result and
+ * `placeWithTraceTargets` as the action-door result. Legality is decided entirely by the
+ * protocol's declarations (`resolvePlacement`) and never by a branch in here.
  *
  * Three invariants make this the only placement path worth having:
  *
@@ -131,6 +132,12 @@ export type PlaceOutcome =
   | { readonly status: "placed"; readonly result: PlaceResponse }
   | { readonly status: "denied"; readonly denial: PlacementDenial }
   | { readonly status: "failed"; readonly failure: PlaceFailure };
+
+/** A placement result plus the authoritative container nodes its successful execution named. */
+export interface PlaceTraceResult {
+  readonly outcome: PlaceOutcome;
+  readonly containerIds: readonly string[];
+}
 
 /**
  * The terminal-side seam. Placement mutates CONTAINERS, but a terminal's home, its fan-out
@@ -233,31 +240,58 @@ export class PlaceExecutor {
   ) {}
 
   /**
-   * Resolves a placement and executes it. Legality is entirely the declarations' answer;
-   * this method only decides HOW the named op is carried out.
+   * Resolves and executes a placement for non-door consumers.
+   * Legality is entirely the declarations' answer; this method only decides HOW the named op
+   * is carried out.
    */
   place(request: PlaceRequest): PlaceOutcome {
+    return this.executePlace(request, null);
+  }
+
+  /**
+   * The action-door form of {@link place}. Targets come from effects reported where the
+   * executor performs them, never from a second read of the request, and are published only
+   * after a successful write.
+   */
+  placeWithTraceTargets(request: PlaceRequest): PlaceTraceResult {
+    const containerIds = new Set<string>();
+    const outcome = this.executePlace(request, containerIds);
+    return { outcome, containerIds: [...containerIds] };
+  }
+
+  private executePlace(request: PlaceRequest, traceContainerIds: Set<string> | null): PlaceOutcome {
     const { ref, destination } = request;
     const resolution = resolvePlacement(ref, destination, this.lookup());
     if (!resolution.ok) return { status: "denied", denial: resolution.denial };
     const source = this.locate(ref);
     if (source === "not_found") return { status: "failed", failure: "not_found" };
 
+    let outcome: PlaceOutcome;
     switch (destination.kind) {
       case "canvas":
         switch (resolution.op) {
           case "portal":
-            return this.executePortal(ref, resolution.item, destination, source);
+            outcome = this.executePortal(
+              ref,
+              resolution.item,
+              destination,
+              source,
+              traceContainerIds,
+            );
+            break;
           case "move_element":
-            return this.executeMoveElement(ref, destination, source);
+            outcome = this.executeMoveElement(ref, destination, source, traceContainerIds);
+            break;
           case "extract":
-            return this.executeExtract(ref, destination, source);
+            outcome = this.executeExtract(ref, destination, source, traceContainerIds);
+            break;
           default:
             // Unreachable: `canvasOpFor` maps every kind to one of the three above.
-            return { status: "failed", failure: "conflict" };
+            outcome = { status: "failed", failure: "conflict" };
         }
+        break;
       case "tile":
-        return this.executeAddTile(
+        outcome = this.executeAddTile(
           ref,
           resolution.item,
           destination.containerId,
@@ -265,16 +299,23 @@ export class PlaceExecutor {
           destination.edge,
           destination.between ?? false,
           source,
+          traceContainerIds,
         );
+        break;
       case "compose":
-        return this.executeCompose(ref, resolution.item, destination, source);
+        outcome = this.executeCompose(ref, resolution.item, destination, source, traceContainerIds);
+        break;
       case "unplaced":
-        return this.executeUnplace(ref, resolution.item, source);
+        outcome = this.executeUnplace(ref, resolution.item, source, traceContainerIds);
+        break;
       default: {
         const exhaustive: never = destination;
         return exhaustive;
       }
     }
+
+    if (outcome.status !== "placed") traceContainerIds?.clear();
+    return outcome;
   }
 
   /**
@@ -442,12 +483,16 @@ export class PlaceExecutor {
    * census means or the two describe different graphs. A composition left holding nothing by
    * the removal retires, exactly as it would if the item had been dragged out of it.
    */
-  private removeReferences(containerId: string): number {
+  private removeReferences(
+    containerId: string,
+    traceContainerIds: Set<string> | null = null,
+  ): number {
     let removed = 0;
     for (const referrerId of this.referrers(containerId)) {
       const room = this.rooms.get(referrerId);
       if (room === null) continue;
-      removed += room.removePortalsTo(containerId);
+      const portals = room.removePortalsTo(containerId);
+      removed += portals;
       const layout = room.tileLayout();
       let leaves = 0;
       for (const leafId of layout === null ? [] : tileLeafIds(layout)) {
@@ -464,6 +509,7 @@ export class PlaceExecutor {
           leaves += 1;
         }
       }
+      if (portals > 0 || leaves > 0) traceContainerIds?.add(referrerId);
       if (leaves > 0) this.deleteIfEmptied(referrerId);
       this.afterLeaving(referrerId);
     }
@@ -476,11 +522,17 @@ export class PlaceExecutor {
    * preserves the element id and its geometry, so no collaborator's portal jumps or blinks
    * and no selection is lost.
    */
-  private retargetReferences(fromId: string, toId: string): void {
+  private retargetReferences(
+    fromId: string,
+    toId: string,
+    traceContainerIds: Set<string> | null = null,
+  ): void {
     for (const referrerId of this.referrers(fromId)) {
       const room = this.rooms.get(referrerId);
       if (room === null) continue;
-      for (const elementId of room.portalIdsTo(fromId)) room.repointPortal(elementId, toId);
+      const portalIds = room.portalIdsTo(fromId);
+      for (const elementId of portalIds) room.repointPortal(elementId, toId);
+      if (portalIds.length > 0) traceContainerIds?.add(referrerId);
       this.afterLeaving(referrerId);
     }
   }
@@ -717,19 +769,22 @@ export class PlaceExecutor {
     item: PlacementItem,
     destination: { readonly containerId: string; readonly x: number; readonly y: number },
     source: SourceLocation,
+    traceContainerIds: Set<string> | null,
   ): PlaceOutcome {
     const containerId = item.containerId;
     if (containerId === null) return { status: "failed", failure: "conflict" };
     if (ref.kind === "element" && source.containerId !== null) {
       const moved = this.moveElementPlacement(source.containerId, ref.elementId, destination);
-      return moved === "ok"
-        ? { status: "placed", result: { op: "portal", elementId: ref.elementId } }
-        : { status: "failed", failure: moved };
+      if (moved !== "ok") return { status: "failed", failure: moved };
+      traceContainerIds?.add(source.containerId);
+      traceContainerIds?.add(destination.containerId);
+      return { status: "placed", result: { op: "portal", elementId: ref.elementId } };
     }
     const room = this.rooms.get(destination.containerId);
     if (room === null) return { status: "failed", failure: "not_found" };
     const elementId = room.placePortalElement(containerId, destination.x, destination.y);
     this.rooms.evictIfIdle(destination.containerId);
+    traceContainerIds?.add(destination.containerId);
     return { status: "placed", result: { op: "portal", elementId } };
   }
 
@@ -738,15 +793,17 @@ export class PlaceExecutor {
     ref: PlacementRef,
     destination: { readonly containerId: string; readonly x: number; readonly y: number },
     source: SourceLocation,
+    traceContainerIds: Set<string> | null,
   ): PlaceOutcome {
     if (ref.kind !== "element" || source.containerId === null) {
       // Only an addressed element places text or ink: there is no other way to name one.
       return { status: "failed", failure: "conflict" };
     }
     const moved = this.moveElementPlacement(source.containerId, ref.elementId, destination);
-    return moved === "ok"
-      ? { status: "placed", result: { op: "move_element", elementId: ref.elementId } }
-      : { status: "failed", failure: moved };
+    if (moved !== "ok") return { status: "failed", failure: moved };
+    traceContainerIds?.add(source.containerId);
+    traceContainerIds?.add(destination.containerId);
+    return { status: "placed", result: { op: "move_element", elementId: ref.elementId } };
   }
 
   /**
@@ -795,6 +852,7 @@ export class PlaceExecutor {
     ref: PlacementRef,
     item: PlacementItem,
     source: SourceLocation,
+    traceContainerIds: Set<string> | null,
   ): PlaceOutcome {
     if (ref.kind === "tile") {
       const composition = this.rooms.get(ref.containerId);
@@ -809,7 +867,10 @@ export class PlaceExecutor {
       if (occupant.kind === "terminal" && composition.census().items.length === 1) {
         return {
           status: "placed",
-          result: { op: "unplace", removed: this.removeReferences(ref.containerId) },
+          result: {
+            op: "unplace",
+            removed: this.removeReferences(ref.containerId, traceContainerIds),
+          },
         };
       }
       const evicted = this.evictLeaf(composition, ref.containerId, ref.tileId, ref);
@@ -828,6 +889,8 @@ export class PlaceExecutor {
       }
       this.deleteIfEmptied(ref.containerId);
       this.afterLeaving(ref.containerId);
+      traceContainerIds?.add(ref.containerId);
+      if (evicted.homeId !== null) traceContainerIds?.add(evicted.homeId);
       return { status: "placed", result: { op: "unplace", removed: 1 } };
     }
     const containerId = item.containerId;
@@ -837,14 +900,14 @@ export class PlaceExecutor {
       if (room === null) return { status: "failed", failure: "not_found" };
       const removed = room.removeElementById(source.addressed) ? 1 : 0;
       this.afterLeaving(source.containerId);
+      if (removed > 0) traceContainerIds?.add(source.containerId);
       return { status: "placed", result: { op: "unplace", removed } };
     }
     return {
       status: "placed",
-      result: { op: "unplace", removed: this.removeReferences(containerId) },
+      result: { op: "unplace", removed: this.removeReferences(containerId, traceContainerIds) },
     };
   }
-
   /**
    * A tileable ref — or NEW STRUCTURE — joining a composition. The leaf is written FIRST: a
    * tree that refuses the write leaves the source untouched, so a rejected placement mutates
@@ -879,14 +942,15 @@ export class PlaceExecutor {
     edge: TileEdge | null,
     between: boolean,
     source: SourceLocation,
+    traceContainerIds: Set<string> | null,
   ): PlaceOutcome {
     const composition = this.rooms.get(containerId);
     if (composition === null) return { status: "failed", failure: "not_found" };
     if (ref.kind === "structure") {
       const tileId = composition.placeStructure(ref.structure, targetTileId, edge, between);
-      return tileId === null
-        ? { status: "failed", failure: "conflict" }
-        : { status: "placed", result: { op: "add_tile", tileId } };
+      if (tileId === null) return { status: "failed", failure: "conflict" };
+      traceContainerIds?.add(containerId);
+      return { status: "placed", result: { op: "add_tile", tileId } };
     }
     const dragged = this.tileRefFor(item, source);
     if (dragged === null) return { status: "failed", failure: "conflict" };
@@ -915,13 +979,37 @@ export class PlaceExecutor {
           source.containerId !== null &&
           source.addressed !== null;
         if (seated) {
-          return this.executeTileSwap(ref, dragged, occupant, containerId, targetTileId, source);
+          return this.executeTileSwap(
+            ref,
+            dragged,
+            occupant,
+            containerId,
+            targetTileId,
+            source,
+            traceContainerIds,
+          );
         }
         const homeSeat = this.elementHomeSeat(ref, source);
         if (homeSeat !== null) {
-          return this.executeTileSwap(ref, dragged, occupant, containerId, targetTileId, homeSeat);
+          return this.executeTileSwap(
+            ref,
+            dragged,
+            occupant,
+            containerId,
+            targetTileId,
+            homeSeat,
+            traceContainerIds,
+          );
         }
-        return this.executeReplace(ref, dragged, occupant, containerId, targetTileId, source);
+        return this.executeReplace(
+          ref,
+          dragged,
+          occupant,
+          containerId,
+          targetTileId,
+          source,
+          traceContainerIds,
+        );
       }
     }
     // A contributed ELEMENT is read before the write, so a placement that cannot be
@@ -935,15 +1023,32 @@ export class PlaceExecutor {
     }
     const tileId = composition.placeTile(dragged, targetTileId, edge, between);
     if (tileId === null) return { status: "failed", failure: "conflict" };
+    traceContainerIds?.add(containerId);
     if (fromLeaf !== null) {
-      const moved = this.finishLeafMove(dragged, source, composition, containerId, tileId);
+      const moved = this.finishLeafMove(
+        dragged,
+        source,
+        composition,
+        containerId,
+        tileId,
+        traceContainerIds,
+      );
       if (moved === null) return { status: "failed", failure: "conflict" };
+      if (source.containerId !== null) traceContainerIds?.add(source.containerId);
       return { status: "placed", result: { op: "add_tile", tileId: moved } };
     }
     if (dragged.kind === "terminal" && source.homeId !== null && source.homeId !== containerId) {
-      this.absorbHome(dragged.terminalId, source, containerId, tileId);
+      this.absorbHome(dragged.terminalId, source, containerId, tileId, traceContainerIds);
+      traceContainerIds?.add(source.homeId);
     }
     if (element !== null) this.adoptCarriedElement(source, element, composition);
+    if (
+      source.containerId !== null &&
+      (element !== null ||
+        (dragged.kind === "terminal" && source.homeId !== null && source.homeId !== containerId))
+    ) {
+      traceContainerIds?.add(source.containerId);
+    }
     return { status: "placed", result: { op: "add_tile", tileId } };
   }
 
@@ -992,6 +1097,7 @@ export class PlaceExecutor {
     composition: Room,
     containerId: string,
     tileId: string,
+    traceContainerIds: Set<string> | null,
   ): string | null {
     const fromContainerId = source.containerId;
     const fromTileId = source.addressed;
@@ -1011,7 +1117,7 @@ export class PlaceExecutor {
           placementId,
         );
       }
-      this.retireEmptiedInto(fromContainerId, containerId);
+      this.retireEmptiedInto(fromContainerId, containerId, traceContainerIds);
     }
     this.afterLeaving(fromContainerId);
     return placementId;
@@ -1024,10 +1130,14 @@ export class PlaceExecutor {
    * selections — and only then does the emptied container retire. A container that still
    * holds something keeps its own references, because it still has something to show.
    */
-  private retireEmptiedInto(fromContainerId: string, toContainerId: string): void {
+  private retireEmptiedInto(
+    fromContainerId: string,
+    toContainerId: string,
+    traceContainerIds: Set<string> | null,
+  ): void {
     const room = this.rooms.get(fromContainerId);
     if (room === null || room.census().items.length > 0) return;
-    this.retargetReferences(fromContainerId, toContainerId);
+    this.retargetReferences(fromContainerId, toContainerId, traceContainerIds);
     this.deleteIfEmptied(fromContainerId);
   }
 
@@ -1050,6 +1160,7 @@ export class PlaceExecutor {
     containerId: string,
     targetTileId: string,
     source: SourceLocation,
+    traceContainerIds: Set<string> | null,
   ): PlaceOutcome {
     const fromContainerId = source.containerId;
     const fromTileId = source.addressed;
@@ -1072,6 +1183,7 @@ export class PlaceExecutor {
       if (!target.swapTileLeavesById(fromTileId, targetTileId)) {
         return { status: "failed", failure: "conflict" };
       }
+      traceContainerIds?.add(containerId);
       return {
         status: "placed",
         result: { op: "swap", placementId: targetTileId, withPlacementId: fromTileId },
@@ -1110,6 +1222,8 @@ export class PlaceExecutor {
     }
     this.afterLeaving(fromContainerId);
     this.afterLeaving(containerId);
+    traceContainerIds?.add(fromContainerId);
+    traceContainerIds?.add(containerId);
     return { status: "placed", result: { op: "swap", placementId, withPlacementId } };
   }
 
@@ -1141,6 +1255,7 @@ export class PlaceExecutor {
     containerId: string,
     targetTileId: string,
     source: SourceLocation,
+    traceContainerIds: Set<string> | null,
   ): PlaceOutcome {
     const composition = this.rooms.get(containerId);
     if (composition === null) return { status: "failed", failure: "not_found" };
@@ -1160,6 +1275,8 @@ export class PlaceExecutor {
       this.dropEvictedHome(evicted);
       return { status: "failed", failure: "conflict" };
     }
+    traceContainerIds?.add(containerId);
+    if (evicted.homeId !== null) traceContainerIds?.add(evicted.homeId);
     if (occupant.kind === "terminal" && evicted.homeId !== null && evicted.leafId !== null) {
       this.terminals.rebindTerminal(
         occupant.terminalId,
@@ -1174,7 +1291,14 @@ export class PlaceExecutor {
       // only reachable if that dispatch ever loosens. It is the same subtraction a leaf
       // gets everywhere else, and the id is read back because pruning the old seat can
       // collapse a split and rename the one just written.
-      const moved = this.finishLeafMove(dragged, source, composition, containerId, targetTileId);
+      const moved = this.finishLeafMove(
+        dragged,
+        source,
+        composition,
+        containerId,
+        targetTileId,
+        traceContainerIds,
+      );
       if (moved === null) return { status: "failed", failure: "conflict" };
       tileId = moved;
     } else if (
@@ -1182,9 +1306,18 @@ export class PlaceExecutor {
       source.homeId !== null &&
       source.homeId !== containerId
     ) {
-      this.absorbHome(dragged.terminalId, source, containerId, targetTileId);
+      this.absorbHome(dragged.terminalId, source, containerId, targetTileId, traceContainerIds);
+      traceContainerIds?.add(source.homeId);
     }
     if (element !== null) this.adoptCarriedElement(source, element, composition);
+    if (
+      source.containerId !== null &&
+      (fromLeaf !== null ||
+        element !== null ||
+        (dragged.kind === "terminal" && source.homeId !== null && source.homeId !== containerId))
+    ) {
+      traceContainerIds?.add(source.containerId);
+    }
     return {
       status: "placed",
       result: { op: "replace", tileId, displacedContainerId: evicted.homeId },
@@ -1235,6 +1368,7 @@ export class PlaceExecutor {
     source: SourceLocation,
     toContainerId: string,
     placementId: string,
+    traceContainerIds: Set<string> | null,
   ): void {
     const homeId = source.homeId;
     if (homeId === null) return;
@@ -1254,7 +1388,7 @@ export class PlaceExecutor {
       this.rooms.get(source.containerId)?.removeElementById(source.addressed);
       this.afterLeaving(source.containerId);
     }
-    this.retargetReferences(homeId, toContainerId);
+    this.retargetReferences(homeId, toContainerId, traceContainerIds);
     this.deleteIfEmptied(homeId);
     this.afterLeaving(homeId);
   }
@@ -1286,6 +1420,7 @@ export class PlaceExecutor {
       readonly edge: TileEdge;
     },
     source: SourceLocation,
+    traceContainerIds: Set<string> | null,
   ): PlaceOutcome {
     const room = this.rooms.get(destination.containerId);
     if (room === null) return { status: "failed", failure: "not_found" };
@@ -1295,7 +1430,7 @@ export class PlaceExecutor {
     // for any two canvas elements, so it is answered before the merge rules narrow the
     // target down to a reference.
     if (destination.edge === "center") {
-      return this.executeCanvasSwap(ref, destination, source);
+      return this.executeCanvasSwap(ref, destination, source, traceContainerIds);
     }
     // Only a REFERENCE can be composed onto. Text and ink hold no item to merge with, and a
     // canvas has no terminal element to birth a composition around any more.
@@ -1304,15 +1439,18 @@ export class PlaceExecutor {
     if (targetHomeId === null) return { status: "failed", failure: "conflict" };
     const targetSolo = this.soloOccupant(targetHomeId);
     if (targetSolo === null) {
-      const added = this.place({
-        ref,
-        destination: {
-          kind: "tile",
-          containerId: targetHomeId,
-          targetTileId: null,
-          edge: destination.edge,
+      const added = this.executePlace(
+        {
+          ref,
+          destination: {
+            kind: "tile",
+            containerId: targetHomeId,
+            targetTileId: null,
+            edge: destination.edge,
+          },
         },
-      });
+        traceContainerIds,
+      );
       if (added.status !== "placed") return added;
       if (added.result.op !== "add_tile") return { status: "failed", failure: "conflict" };
       return {
@@ -1396,9 +1534,10 @@ export class PlaceExecutor {
         { ...NO_SOURCE, terminalId: targetSolo.terminalId, homeId: targetHomeId },
         compositionId,
         targetTileId,
+        traceContainerIds,
       );
     } else {
-      this.moveNonTerminalLeaf(targetHomeId, composition, compositionId);
+      this.moveNonTerminalLeaf(targetHomeId, composition, compositionId, traceContainerIds);
     }
     const placedTileId =
       fromLeaf === null
@@ -1407,12 +1546,31 @@ export class PlaceExecutor {
           // and absorb-if-emptied a leaf gets at a tile destination, reached by the other
           // door. Its old container is only retired when the departure left it holding
           // nothing, which is what keeps a multi-tile source from being swallowed.
-          this.finishLeafMove(dragged, source, composition, compositionId, addedTileId);
+          this.finishLeafMove(
+            dragged,
+            source,
+            composition,
+            compositionId,
+            addedTileId,
+            traceContainerIds,
+          );
     if (placedTileId === null) return { status: "failed", failure: "conflict" };
     if (fromLeaf === null && dragged.kind === "terminal") {
-      this.absorbHome(dragged.terminalId, source, compositionId, addedTileId);
+      this.absorbHome(dragged.terminalId, source, compositionId, addedTileId, traceContainerIds);
     }
     this.rooms.evictIfIdle(destination.containerId);
+    traceContainerIds?.add(compositionId);
+    traceContainerIds?.add(destination.containerId);
+    traceContainerIds?.add(targetHomeId);
+    if (
+      source.containerId !== null &&
+      (fromLeaf !== null ||
+        element !== null ||
+        (dragged.kind === "terminal" && source.homeId !== null))
+    ) {
+      traceContainerIds?.add(source.containerId);
+    }
+    if (source.homeId !== null) traceContainerIds?.add(source.homeId);
     return {
       status: "placed",
       result: { op: "compose", containerId: compositionId, tileId: placedTileId },
@@ -1442,6 +1600,7 @@ export class PlaceExecutor {
     ref: PlacementRef,
     destination: { readonly containerId: string; readonly targetElementId: string },
     source: SourceLocation,
+    traceContainerIds: Set<string> | null,
   ): PlaceOutcome {
     if (
       ref.kind !== "element" ||
@@ -1468,6 +1627,7 @@ export class PlaceExecutor {
       return { status: "failed", failure: "not_found" };
     }
     this.rooms.evictIfIdle(destination.containerId);
+    traceContainerIds?.add(destination.containerId);
     return {
       status: "placed",
       result: {
@@ -1483,7 +1643,12 @@ export class PlaceExecutor {
    * an embedded canvas is a reference, so only the leaf moves, while a contributed element
    * travels between documents with its payload.
    */
-  private moveNonTerminalLeaf(fromContainerId: string, target: Room, toContainerId: string): void {
+  private moveNonTerminalLeaf(
+    fromContainerId: string,
+    target: Room,
+    toContainerId: string,
+    traceContainerIds: Set<string> | null,
+  ): void {
     const from = this.rooms.get(fromContainerId);
     if (from !== null) {
       const layout = from.tileLayout();
@@ -1501,7 +1666,7 @@ export class PlaceExecutor {
         from.removeTileLeafById(leafId);
       }
     }
-    this.retargetReferences(fromContainerId, toContainerId);
+    this.retargetReferences(fromContainerId, toContainerId, traceContainerIds);
     this.deleteIfEmptied(fromContainerId);
     this.afterLeaving(fromContainerId);
   }
@@ -1521,6 +1686,7 @@ export class PlaceExecutor {
     ref: PlacementRef,
     destination: { readonly containerId: string; readonly x: number; readonly y: number },
     source: SourceLocation,
+    traceContainerIds: Set<string> | null,
   ): PlaceOutcome {
     const containerId = source.containerId;
     const tileId = source.addressed;
@@ -1540,6 +1706,7 @@ export class PlaceExecutor {
       if (wasSolo) {
         const elementId = canvas.placePortalElement(containerId, destination.x, destination.y);
         this.rooms.evictIfIdle(destination.containerId);
+        traceContainerIds?.add(destination.containerId);
         return { status: "placed", result: { op: "extract", elementId } };
       }
       // The re-homing itself: the new home is built BEFORE the old leaf goes, so a tree
@@ -1557,6 +1724,9 @@ export class PlaceExecutor {
       this.deleteIfEmptied(containerId);
       this.afterLeaving(containerId);
       this.rooms.evictIfIdle(destination.containerId);
+      traceContainerIds?.add(containerId);
+      traceContainerIds?.add(homeId);
+      traceContainerIds?.add(destination.containerId);
       return { status: "placed", result: { op: "extract", elementId } };
     }
     // A panel is a rendering of a plugin contribution, not an object with a document, so
@@ -1579,6 +1749,8 @@ export class PlaceExecutor {
       this.deleteIfEmptied(containerId);
       this.afterLeaving(containerId);
       this.rooms.evictIfIdle(destination.containerId);
+      traceContainerIds?.add(containerId);
+      traceContainerIds?.add(destination.containerId);
       return { status: "placed", result: { op: "extract", elementId: occupant.elementId } };
     }
     if (!composition.removeTileLeafById(tileId)) return { status: "failed", failure: "conflict" };
@@ -1586,6 +1758,8 @@ export class PlaceExecutor {
     this.deleteIfEmptied(containerId);
     this.afterLeaving(containerId);
     this.rooms.evictIfIdle(destination.containerId);
+    traceContainerIds?.add(containerId);
+    traceContainerIds?.add(destination.containerId);
     return { status: "placed", result: { op: "extract", elementId } };
   }
 
