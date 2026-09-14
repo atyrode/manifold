@@ -55,7 +55,7 @@ export interface LinuxJobTerminal {
   onOutput(bytes: Uint8Array): void;
   /** Owner-only restart preference; never adds a mount or executable authority. */
   restartCwd?: string;
-  setProcessId?(pid: number): void;
+  setProcessId?(pid: number, bootstrapExecutable: { dev: number; ino: number }): void;
   setWorkingDirectory?(cwd: string, fallback?: "original" | "home"): void;
   setOutputHandler(handler: (bytes: Uint8Array) => void): void;
 }
@@ -920,7 +920,7 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
       refuse("cgroup-attachment-failed");
     // EOF also releases bubblewrap's gate: never close it on a failed launch until killed.
     if (reason !== "exited" || fatal) refuse("sandbox-setup-failed");
-    spec.terminal?.setProcessId?.(pid);
+    spec.terminal?.setProcessId?.(pid, fstatSync(spec.bubblewrapFd));
     gate.end(Buffer.from([1]));
   } catch (error) {
     settled = true;

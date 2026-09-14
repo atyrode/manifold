@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { readlinkSync } from "node:fs";
+import { readlinkSync, statSync } from "node:fs";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Terminal as HeadlessTerminal } from "@xterm/headless";
 import {
@@ -231,6 +231,7 @@ export class PtyTerminal {
   private readonly onOutput: (output: PtyOutput) => void;
   private readonly onCwd: ((cwd: string) => void) | undefined;
   private processId: number | undefined;
+  private runtimeBootstrap: { dev: number; ino: number } | undefined;
   private cwdValue: string | undefined;
   private cwdInterval: Timer | undefined;
   private cwdIdle: Timer | undefined;
@@ -309,8 +310,9 @@ export class PtyTerminal {
               outputHandler = handler;
             },
             ...(opts.restartCwd !== undefined ? { restartCwd: opts.restartCwd } : {}),
-            setProcessId: (pid) => {
+            setProcessId: (pid, bootstrapExecutable) => {
               this.processId = pid;
+              this.runtimeBootstrap = bootstrapExecutable;
               this.startCwdTracking();
             },
             setWorkingDirectory: (cwd, fallback) => {
@@ -431,6 +433,18 @@ export class PtyTerminal {
     if (process.platform !== "linux" || !this.aliveFlag || this.processId === undefined)
       return this.cwdValue;
     try {
+      // The native gate reports its pid before bubblewrap execs the admitted program.
+      // Its setup cwd is not the terminal's cwd, even when a short-lived command exits
+      // before the next sample. Keep the launch directory until the executable changes.
+      if (this.runtimeBootstrap !== undefined) {
+        const executable = statSync(`/proc/${this.processId}/exe`);
+        if (
+          executable.dev === this.runtimeBootstrap.dev &&
+          executable.ino === this.runtimeBootstrap.ino
+        )
+          return this.cwdValue;
+        this.runtimeBootstrap = undefined;
+      }
       const cwd = readlinkSync(`/proc/${this.processId}/cwd`);
       // procfs appends this marker for an unlinked directory: retain its usable prior name.
       if (cwd.startsWith("/") && !cwd.endsWith(" (deleted)") && cwd !== this.cwdValue) {
