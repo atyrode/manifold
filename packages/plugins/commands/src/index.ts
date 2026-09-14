@@ -25,12 +25,10 @@ import { type PluginManifest } from "@manifold/protocol";
  * mark the engine's closed control vocabulary has no neutral verb for; the key table lists
  * this plugin's row like every other, which is where a reader learns the keystroke.
  *
- * WHAT IT REFUSES TO DO is knock on a door it cannot fill. A composed action publishes its
- * input SCHEMA, and a schema with required properties needs arguments only the affordance
- * that owns the subject can supply — a rename knows which terminal, this list does not. So a
- * row is runnable when the door needs nothing, and every other row is a DIRECTORY ENTRY that
- * says what it would need. Guessing arguments from a search box would be a second, sniffing
- * answer to "how is this door called", sitting beside the published contract.
+ * A door with no published fields runs immediately. A door with fields opens the shared
+ * `@manifold/plugin/ui` generated form, which renders the action's own schema and submits the
+ * reader's validated value through the same action client. The list never guesses arguments or
+ * interprets the schema itself; that last rung remains the door's answer.
  *
  * `cmdk` is the list behind it, pinned and boring
  * (`docs/decisions/2026-09-01-cmdk-command-menu.md`).

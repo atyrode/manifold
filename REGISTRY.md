@@ -239,7 +239,7 @@ the `gate-and-registries` pillar — `scripts/verify-axioms.ts`, `scripts/verify
     },
     {
       "glob": "packages/plugin/src/**",
-      "why": "the registry itself: manifests, assembly, action definitions, host contracts, the default workspace layout — plus the plugin-facing standard library behind @manifold/plugin/hooks (plane mechanism: the carry/drop and tile vocabulary, the presence plane's browser half, the element host, the ELEMENT plane's polyline geometry — what a flat coordinate payload extends to and the SVG strings that paint it, neutral over producers so no plugin carries a private copy — the projection registry through which one renderer paints another plugin's occupant, the routed-container context, polling, WHICH INSTANCE the lens looks at and the session URL derived from it, the debug probe, THE one tile-tree renderer with its drop preview and zone debug, the words a keycap wears, the notice consumer half, the published vantage store, and the two device-local handoff slots two plugins that may not import each other pass a gesture through — a rebind request, and the placed structure a grip has in hand for the palette it goes back to (issue #148)). The design system is NOT here: it is `@manifold/ui` (#240), and this package re-exports nothing from it"
+      "why": "the registry itself: manifests, assembly, action definitions, host contracts, the default workspace layout — plus the plugin-facing standard library behind @manifold/plugin/hooks (plane mechanism: the carry/drop and tile vocabulary, the presence plane's browser half, the element host, the ELEMENT plane's polyline geometry — what a flat coordinate payload extends to and the SVG strings that paint it, neutral over producers so no plugin carries a private copy — the projection registry through which one renderer paints another plugin's occupant, the routed-container context, polling, WHICH INSTANCE the lens looks at and the session URL derived from it, the debug probe, THE one tile-tree renderer with its drop preview and zone debug, the words a keycap wears, the notice consumer half, the published vantage store, and the two device-local handoff slots two plugins that may not import each other pass a gesture through — a rebind request, and the placed structure a grip has in hand for the palette it goes back to (issue #148)) — plus the browser-only generated action form behind @manifold/plugin/ui, promoted when its second plugin consumer arrived (issue #168). The design system is NOT here: it is `@manifold/ui` (#240), and this package re-exports nothing from it"
     },
     {
       "glob": "packages/ui/src/**",
@@ -477,14 +477,19 @@ A plugin package holds a manifest, its actions (server half) and its contributio
 and it imports only the three named layers (ADR 0025 §8, #240): the SDK — `@manifold/protocol`,
 `@manifold/sdk` (and `@manifold/scene`), talking to the hub; the ENGINE API — `@manifold/plugin`,
 being a plugin; and the DESIGN SYSTEM — `@manifold/ui`, looking like manifold. The engine ships
-two entry points on purpose. `@manifold/plugin` is platform-free (manifests, action definitions,
+three entry points on purpose. `@manifold/plugin` is platform-free (manifests, action definitions,
 assembly, host contracts) and is what the server imports. `@manifold/plugin/hooks` carries the
 plane mechanism a plugin needs in a browser (the carry/drop vocabulary, the element host,
 `usePolledResource`, THE tile tree, the consumer half of the one notice stack, this device's
 published vantage store — neutral MECHANISM, every piece of it addressed by two parties that may
 not import each other, which is the litmus that puts a thing there rather than in whichever
-package used it first), so a server typecheck never pulls React and a DOM lib into its type
-graph. `@manifold/ui` is the components, the tokens and the motion and layout rules: the glyph
+package used it first). `@manifold/plugin/ui` carries the browser-only action-form adapter: a
+plugin names one composed action, and the shared component renders its published protocol schema
+and submits through `HostServices`. It owns rjsf because two sibling plugins use that action-plane
+mechanism and may not import each other; it is not a second general design system. Both browser
+subpaths keep React and the DOM out of the platform-free server type graph.
+
+`@manifold/ui` is the components, the tokens and the motion and layout rules: the glyph
 vocabulary, the one node titlebar, the layout algebra, the keycap, the chip, the key-value list,
 the disclosure, the scroll region, the popover, FLIP. The shell and every `core.*` panel render
 with it, so it is real; a mod imports the same package; and `@manifold/plugin` re-exports
@@ -1777,8 +1782,8 @@ prefix, never a scope root, and belongs to no stylesheet.
     },
     {
       "family": "door-form",
-      "owner": "packages/plugins/debug/src/door-form.css",
-      "why": "the generated door-invocation form a pinned inspector card opens (#128): the popover layer's width, the generated fields' rhythm (element-scoped on purpose — rjsf's emitted class vocabulary is engine internals no sheet may anchor on, docs/decisions/2026-09-01-rjsf-door-forms.md), the dispatch control and the outcome/refusal rows. Its own sheet beside the module so the skin loads with the lazy chunk it dresses"
+      "owner": "packages/plugin/src/ui/door-form.css",
+      "why": "the shared generated action form (issue #168): its fields come from the composed protocol schema and its submit goes through HostServices. The skin loads with the lazy rjsf engine chunk behind @manifold/plugin/ui, is consumed by core.debug and core.commands, and scopes vendor markup beneath this one family"
     },
     {
       "family": "mf-icon",

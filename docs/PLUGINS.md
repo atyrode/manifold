@@ -102,12 +102,13 @@ Your dependency budget is the three named layers (ADR 0025 §8): the SDK — `@m
 being a plugin; and the design system — `@manifold/ui`, looking like manifold. Importing anything
 else from the tree — server internals, web internals, another plugin — fails the gate.
 
-`@manifold/plugin` has two entries, and which one you reach for is a real distinction:
+`@manifold/plugin` has three entries, and which one you reach for is a real distinction:
 
 | entry                    | what it holds                                                                                                                                                                                               |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@manifold/plugin`       | the registry and the contracts — manifests, `defineAction`, host types. Platform-free, because the SERVER assembles through it.                                                                             |
 | `@manifold/plugin/hooks` | plane mechanism in a browser: the carry/drop vocabulary, the element host, `usePolledResource`, the one tile tree, `useNotice`, the published vantage store (`setVantage`), `requestRebind`, `keyCapLabel`. |
+| `@manifold/plugin/ui`    | the browser-only generated `DoorForm`: give it an action name and `HostServices`; it resolves the current published schema and dispatches through the same host. Its rjsf engine loads lazily.              |
 
 `@manifold/ui` is the third layer and its own package: `ItemIcon`/`ControlIcon`, `NodeTitleBar`,
 the layout algebra (§7b), `Disclosure`, `ScrollRegion`, `Popover`, `Chip`, `KeyValueList`,
@@ -2812,11 +2813,11 @@ section CSS may density-query it: `@container sidebar (max-width: 236px) { … }
 Three named layers, and a mod imports all three (ADR 0025 §8, #240). The precedent is Unity's UI
 Toolkit and Unreal's Slate: the editor is built on the toolkit mods use, so the toolkit is real.
 
-| layer         | packages                                                 | answers                                                                                                                                                |
-| ------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| SDK           | `@manifold/protocol`, `@manifold/sdk`, `@manifold/scene` | talking to the hub: wire schemas, the one WebSocket client, the document plane.                                                                        |
-| Engine API    | `@manifold/plugin`, `@manifold/plugin/hooks`             | being a plugin: `HostServices`, hooks, tile geometry, projection, the one tile tree, notices, view state.                                              |
-| Design system | `@manifold/ui`                                           | looking like manifold: components (this section's algebra, glyphs, titlebar, chrome), the tokens and the ground stylesheet, the FLIP motion primitive. |
+| layer         | packages                                                            | answers                                                                                                                                                |
+| ------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| SDK           | `@manifold/protocol`, `@manifold/sdk`, `@manifold/scene`            | talking to the hub: wire schemas, the one WebSocket client, the document plane.                                                                        |
+| Engine API    | `@manifold/plugin`, `@manifold/plugin/hooks`, `@manifold/plugin/ui` | being a plugin: `HostServices`, hooks, tile geometry, projection, the one tile tree, notices, view state, and generated action forms.                  |
+| Design system | `@manifold/ui`                                                      | looking like manifold: components (this section's algebra, glyphs, titlebar, chrome), the tokens and the ground stylesheet, the FLIP motion primitive. |
 
 The shell and every `core.*` panel render with `@manifold/ui` — the sidebar, the terminal viewer,
 the plugin manager, the identity gate — so what you import is what the product is drawn with, not
@@ -3460,7 +3461,7 @@ shell and the hub, which publish their own module identities under
 
 ```
 react            react-dom            react/jsx-runtime         react/jsx-dev-runtime
-@manifold/plugin @manifold/plugin/hooks @manifold/ui
+@manifold/plugin @manifold/plugin/hooks @manifold/plugin/ui      @manifold/ui
 @manifold/protocol   @manifold/sdk    @manifold/scene
 ```
 

@@ -4,13 +4,18 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./hooks": "./src/hooks.ts"
+    "./hooks": "./src/hooks.ts",
+    "./ui": "./src/ui/index.ts"
   },
   "dependencies": {
     "@manifold/protocol": "workspace:*",
     "@manifold/scene": "workspace:*",
     "@manifold/sdk": "workspace:*",
     "@manifold/ui": "workspace:*",
+    "@rjsf/core": "6.8.0",
+    "@rjsf/utils": "6.8.0",
+    "@rjsf/validator-ajv8": "6.8.0",
+    "ajv": "8.20.0",
     "zod": "4.4.3"
   },
   "peerDependencies": {
