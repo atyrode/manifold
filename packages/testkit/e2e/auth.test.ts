@@ -602,6 +602,19 @@ test("a revoked preview browser identity returns through production admission wi
       }),
     ).container;
     await browser.launch({ incognito: true });
+    const evaluateWhileNavigating = async (expression: string): Promise<boolean> => {
+      try {
+        return await browser.evaluate<boolean>(expression);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.includes("Inspected target navigated or closed")
+        ) {
+          return false;
+        }
+        throw error;
+      }
+    };
     await browser.goto(`${production.httpUrl}/#key=${production.ownerKey}`);
     await waitFor(
       () => browser.evaluate<boolean>("document.querySelector('#identity-name') !== null"),
@@ -621,7 +634,7 @@ test("a revoked preview browser identity returns through production admission wi
     await browser.goto(`${previewOrigin}/`);
     await waitFor(
       () =>
-        browser.evaluate<boolean>(
+        evaluateWhileNavigating(
           `location.origin === ${JSON.stringify(previewOrigin)} &&
          document.querySelector('.workspace') !== null &&
          localStorage.getItem('manifold.identity') !== null`,
@@ -786,7 +799,7 @@ test("a revoked preview browser identity returns through production admission wi
     await browser.reload();
     await waitFor(
       () =>
-        browser.evaluate<boolean>(
+        evaluateWhileNavigating(
           `location.origin === ${JSON.stringify(previewOrigin)} &&
          document.querySelector('.workspace') !== null &&
          JSON.parse(localStorage.getItem('manifold.identity') || 'null')?.token !==
