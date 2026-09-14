@@ -306,6 +306,19 @@ compatibility gates. A compatible transport keeps retained terminals and mainten
 reachable even when the owner's native RPC cannot admit jobs. An older owner's missing
 IPC-2 execution declaration cannot be treated as permission to create an unconfined shell.
 
+Owners with restart support retain their tiles in the hub after owner loss: nonzero or unknown
+exits show **Restart** instead of vanishing. The directory last observed on Linux is retained,
+and Restart creates a new PTY in the same tile; it does not preserve the process, shell history
+or running work. Clean shell exits still remove their tiles. Legacy tiles without a recorded
+launch recipe can be restored as a plain interactive shell only on a currently unconfined owner;
+the UI names that fallback. Governed owners refuse such missing recipes. An older retained owner
+without restart support remains usable but refuses Restart as `unsupported`; replace it only
+through the existing maintenance procedure. Darwin currently reports cwd as unknown.
+
+Tile retention changes no maintenance permission: drain still closes admission and kills
+nothing, Restart refuses while drained, and shutdown still requires an atomic drained-and-empty
+acknowledgement. A restartable tile is not evidence that replacing an occupied owner was safe.
+
 Before activating a hub whose `JOB_OWNER_PROTOCOL_VERSION` changes, drain the machine and
 resolve retained jobs while the incumbent hub can still command its owner. Atomically shut
 down that empty owner, start the new owner while admission remains drained, activate the
