@@ -956,7 +956,8 @@ export function jobOwnerInstallRestoresProjection(
   previous: Extract<JobCommand, { type: "install" }>,
   incoming: Extract<JobCommand, { type: "install" }>,
 ): boolean {
-  const { action: _action, ...command } = incoming;
+  const command = { ...incoming };
+  delete command.action;
   const pinned = canonicalJobJson(previous);
   for (const protocolVersion of JOB_OWNER_PROTOCOL_COMPAT_VERSIONS) {
     if (protocolVersion >= JOB_OWNER_PROTOCOL_VERSION) continue;

@@ -64,6 +64,7 @@ export async function runInstalledBundleGate(
   const path = join(root, "snapshot.json");
   writeFileSync(path, JSON.stringify(parsed), { mode: 0o600 });
   let timedOut = false;
+  let cleanupFailed = false;
   try {
     // No production volume, network, owner key, installer credential, or Docker socket is
     // visible to the candidate. Its own script and loader come from this exact image.
@@ -117,9 +118,9 @@ export async function runInstalledBundleGate(
     const detail = await new Response(cleanup.stderr).text();
     const code = await cleanup.exited;
     rmSync(root, { recursive: true, force: true });
-    if (code !== 0 && !detail.includes("No such container"))
-      throw new Error("installed-bundles candidate container cleanup failed");
+    cleanupFailed = code !== 0 && !detail.includes("No such container");
   }
+  if (cleanupFailed) throw new Error("installed-bundles candidate container cleanup failed");
 }
 
 if (import.meta.main) {
