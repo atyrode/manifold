@@ -25,7 +25,7 @@ const secret = "zz-provider-key";
 const binding: ServiceBinding = {
   serviceId: "atyrode.babel.inference",
   revision: "1",
-  operationIds: ["chat", "responses", "embed"],
+  operationIds: ["chat", "responses", "embed", "stream"],
 };
 const priced: NonNullable<ServicePolicy["prices"]> = {
   models: { "m-1": { inputPerMillion: 3000000, outputPerMillion: 15000000 } },
@@ -60,6 +60,7 @@ function policy(origin: string, prices = priced): ServicePolicy {
     operations: {
       chat,
       responses: { ...chat, path: "/v1/responses" },
+      stream: { ...chat, path: "/v1/pi/stream", meter: { kind: "pi-native-usage" } },
       embed: { ...unmetered, path: "/v1/embeddings" },
     },
   };
@@ -601,6 +602,258 @@ test("an operation without a meter is forwarded untouched and reports nothing", 
     expect(source.bodies).toEqual([asked, asked]);
     expect(owner.calls).toEqual([]);
     expect(owner.ceilings).toEqual([]);
+  } finally {
+    await proxy.close();
+    await source.close();
+  }
+});
+
+/** Pi-ai's canonical assistant message, as the gateway's own wire frames it. The `partial` on a
+ * delta carries a rolling usage that is deliberately absurd here: the turn's bill is the terminal
+ * frame's, and a meter that read the partial would report these numbers instead. */
+const piFrames = [
+  `data: ${JSON.stringify({ type: "start", partial: { model: "m-1", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 } } })}\n\n`,
+  `data: ${JSON.stringify({ type: "text_delta", contentIndex: 0, delta: "hello", partial: { model: "m-1", usage: { input: 99999, output: 99999, cacheRead: 99999, cacheWrite: 0, totalTokens: 299997 } } })}\n\n`,
+  `data: ${JSON.stringify({ type: "done", reason: "stop", message: { model: "m-1", usage: { input: 1000, output: 500, cacheRead: 400, cacheWrite: 250, totalTokens: 2150 } } })}\n\n`,
+  "data: [DONE]\n\n",
+];
+const piAsked = '{"modelId":"m-1","context":{"messages":[{"role":"user","content":"hi"}]}}';
+
+test("a pi-native stream is metered from its terminal frame and forwarded byte for byte", async () => {
+  const source = await upstream(async (_request, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    for (const frame of piFrames) {
+      await writeFlushed(response, frame.slice(0, 12));
+      await writeFlushed(response, frame.slice(12));
+    }
+    response.end();
+  });
+  const owner = ledger();
+  const proxy = await proxyFor(source.origin, owner.metering);
+  try {
+    const response = await send(proxy, { path: "/v1/pi/stream", body: piAsked });
+    expect(response.status).toBe(200);
+    expect(response.body).toBe(piFrames.join(""));
+    // This wire ends every stream with the turn's usage, so nothing is added to the request.
+    expect(source.bodies).toEqual([piAsked]);
+    expect(owner.calls).toHaveLength(1);
+    expect(owner.calls[0]).toMatchObject({
+      serviceId: binding.serviceId,
+      operationId: "stream",
+      model: "m-1",
+      // `input` is the fresh bucket and `cacheRead` the cached one; the protocol counts one
+      // input total with the cached part named inside it. `cacheWrite` is priced by nothing.
+      inputTokens: 1400,
+      outputTokens: 500,
+      cachedInputTokens: 400,
+      // 1000 fresh at $3/M, 400 cached with no cached price at $3/M, 500 output at $15/M.
+      costMicros: 11700,
+      status: 200,
+    });
+    expect(
+      JobEventSchema.safeParse({
+        type: "inference_call",
+        jobId: "job-1",
+        requestDigest: "b".repeat(64),
+        ownerId: "owner-1",
+        ownerGeneration: 3,
+        ...owner.calls[0],
+      }).success,
+    ).toBe(true);
+    expect(owner.usage).toEqual({
+      calls: 1,
+      inputTokens: 1400,
+      outputTokens: 500,
+      cachedInputTokens: 400,
+      costMicros: 11700,
+    });
+  } finally {
+    await proxy.close();
+    await source.close();
+  }
+});
+
+test("a pi-native answer that is one JSON body is metered from the message it carries", async () => {
+  const answer = JSON.stringify({
+    message: {
+      model: "m-1",
+      usage: { input: 40, output: 8, cacheRead: 10, cacheWrite: 5, totalTokens: 63 },
+    },
+  });
+  const source = await upstream((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(answer);
+  });
+  const owner = ledger();
+  const proxy = await proxyFor(source.origin, owner.metering);
+  try {
+    const asked = '{"modelId":"m-1","context":{"messages":[]},"stream":false}';
+    const response = await send(proxy, { path: "/v1/pi/stream", body: asked });
+    expect(response.status).toBe(200);
+    expect(response.body).toBe(answer);
+    expect(source.bodies).toEqual([asked]);
+    expect(owner.calls[0]).toMatchObject({
+      model: "m-1",
+      inputTokens: 50,
+      outputTokens: 8,
+      cachedInputTokens: 10,
+      // 40 fresh and 10 cached at $3/M, 8 output at $15/M; the 5 written to cache price nothing.
+      costMicros: 270,
+      status: 200,
+    });
+  } finally {
+    await proxy.close();
+    await source.close();
+  }
+});
+
+test("a pi-native stream that ends with no usage frame is a refused call, not a free one", async () => {
+  const source = await upstream(async (_request, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    for (const frame of piFrames.slice(0, 2)) await writeFlushed(response, frame);
+    response.end();
+  });
+  const owner = ledger();
+  const proxy = await proxyFor(source.origin, owner.metering);
+  try {
+    const truncated = await send(proxy, { path: "/v1/pi/stream", body: piAsked }).catch(
+      (error: unknown) => error,
+    );
+    expect(truncated).toBeInstanceOf(Error);
+    expect(owner.calls).toHaveLength(1);
+    // The rolling `partial` of the delta that did arrive is not the turn's bill, and the 200 the
+    // provider began with is not the answer the caller got: the call is reported as refused.
+    expect(owner.calls[0]).toMatchObject({
+      model: "m-1",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      costMicros: 0,
+      status: 502,
+    });
+    expect(
+      JobEventSchema.safeParse({
+        type: "inference_call",
+        jobId: "job-1",
+        requestDigest: "b".repeat(64),
+        ownerId: "owner-1",
+        ownerGeneration: 3,
+        ...owner.calls[0],
+      }).success,
+    ).toBe(true);
+    const refused = await send(proxy, { path: "/v1/pi/stream", body: piAsked });
+    expect(refused.status).toBe(502);
+    expect(JSON.parse(refused.body)).toEqual({ error: "service_response_invalid" });
+    expect(source.calls).toBe(1);
+    expect(owner.calls).toHaveLength(1);
+  } finally {
+    await proxy.close();
+    await source.close();
+  }
+});
+
+test("a pi-native turn the provider failed is journaled with that failure's own status", async () => {
+  // This wire's canonical `error` terminal, which is how the gateway the kind exists for projects
+  // every upstream failure and every abort: on a stream it has already answered 200, after
+  // deltas the caller has already read. The first states what the failed turn cost and no status;
+  // the second states the provider's own status with the zeroed usage the gateway sends.
+  const billed = [
+    ...piFrames.slice(0, 2),
+    `data: ${JSON.stringify({ type: "error", reason: "error", error: { role: "assistant", content: [], model: "m-1", stopReason: "error", errorMessage: "upstream_error", usage: { input: 1000, output: 500, cacheRead: 400, cacheWrite: 250, totalTokens: 2150 } } })}\n\n`,
+    "data: [DONE]\n\n",
+  ];
+  const projected = [
+    ...piFrames.slice(0, 1),
+    `data: ${JSON.stringify({ type: "error", reason: "error", error: { role: "assistant", content: [], model: "m-1", stopReason: "error", errorStatus: 529, errorMessage: "gateway_unavailable", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 } } })}\n\n`,
+    "data: [DONE]\n\n",
+  ];
+  const streams = [billed, projected];
+  const source = await upstream(async (_request, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    for (const frame of streams.shift() ?? []) await writeFlushed(response, frame);
+    response.end();
+  });
+  const owner = ledger();
+  const proxy = await proxyFor(source.origin, owner.metering);
+  try {
+    const failure = await send(proxy, { path: "/v1/pi/stream", body: piAsked });
+    // The caller reads the failure the provider sent, byte for byte. The journal does not read
+    // that stream's opening 200 as the turn's outcome, and keeps what the turn stated it cost.
+    expect(failure.status).toBe(200);
+    expect(failure.body).toBe(billed.join(""));
+    expect(owner.calls[0]).toMatchObject({
+      serviceId: binding.serviceId,
+      operationId: "stream",
+      model: "m-1",
+      inputTokens: 1400,
+      outputTokens: 500,
+      cachedInputTokens: 400,
+      costMicros: 11700,
+      status: 502,
+    });
+    // A failure the provider stated is an answer it gave: the lane is not latched, so the next
+    // call is admitted and reaches the provider.
+    const overloaded = await send(proxy, { path: "/v1/pi/stream", body: piAsked });
+    expect(overloaded.status).toBe(200);
+    expect(overloaded.body).toBe(projected.join(""));
+    expect(owner.calls[1]).toMatchObject({
+      model: "m-1",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      costMicros: 0,
+      status: 529,
+    });
+    expect(
+      JobEventSchema.safeParse({
+        type: "inference_call",
+        jobId: "job-1",
+        requestDigest: "b".repeat(64),
+        ownerId: "owner-1",
+        ownerGeneration: 3,
+        ...owner.calls[1],
+      }).success,
+    ).toBe(true);
+    expect(source.calls).toBe(2);
+    expect(owner.ceilings).toEqual([]);
+    expect(owner.usage).toEqual({
+      calls: 2,
+      inputTokens: 1400,
+      outputTokens: 500,
+      cachedInputTokens: 400,
+      costMicros: 11700,
+    });
+  } finally {
+    await proxy.close();
+    await source.close();
+  }
+});
+
+test("a pi-native call names its model as that wire spells it, or never reaches the provider", async () => {
+  const source = await upstream((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"message":{"usage":{"input":1,"output":2,"cacheRead":0,"cacheWrite":0}}}');
+  });
+  const owner = ledger();
+  const proxy = await proxyFor(source.origin, owner.metering);
+  try {
+    for (const body of [
+      // The OpenAI spelling, the compatibility form pi-ai's own parser also accepts, and a
+      // request without the messages array that wire checks: none of them is a metered call.
+      '{"model":"m-1","messages":[]}',
+      '{"model":{"id":"m-1"},"context":{"messages":[]}}',
+      '{"modelId":"m-1"}',
+      '{"modelId":"m-1","context":{}}',
+    ]) {
+      const refused = await send(proxy, { path: "/v1/pi/stream", body });
+      expect(refused.status).toBe(400);
+      expect(JSON.parse(refused.body)).toEqual({ error: "service_input_invalid" });
+    }
+    expect(source.calls).toBe(0);
+    expect(owner.calls).toEqual([]);
+    const allowed = await send(proxy, { path: "/v1/pi/stream", body: piAsked });
+    expect(allowed.status).toBe(200);
+    expect(owner.calls[0]).toMatchObject({ model: "m-1", inputTokens: 1, outputTokens: 2 });
   } finally {
     await proxy.close();
     await source.close();
