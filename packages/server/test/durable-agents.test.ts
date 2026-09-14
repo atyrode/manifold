@@ -39,6 +39,10 @@ describe("durable Agent admission", () => {
       expect(repeated.agent.agentId).toBe(fix.registered.agent.agentId);
       expect(repeated.created).toBe(false);
       expect(repeated.credential).toBeUndefined();
+      expect(fix.auth.listAgents(fix.owner).canRegister).toBe(true);
+      expect(fix.auth.listAgents(fix.runner).canRegister).toBe(false);
+      expect(fix.auth.getAgent({ agentId: repeated.agent.agentId }, fix.owner).canManage).toBe(true);
+      expect(fix.auth.getAgent({ agentId: repeated.agent.agentId }, fix.runner).canManage).toBe(false);
       const first = fix.create({ session: { harness: "external", sessionId: "conversation-one", machineId: "machine" } });
       const second = fix.create({ session: { harness: "external", sessionId: "conversation-two", machineId: "machine" } });
       const firstActor = fix.auth.authenticate(first.credential.token);
@@ -154,10 +158,19 @@ describe("durable Agent admission", () => {
   test("an explicit cross-Agent child remains nested under its parent without granting sibling visibility", () => {
     const fix = fixture();
     try {
-      const other = fix.auth.registerAgent({ ...fix.registration, name: "reviewer" }, fix.owner);
+      const sponsorGrant = fix.auth.mintToken({
+        principal: { name: "review sponsor", kind: "human" }, caps: ["containers:read", "agents:delegate"],
+      }, fix.owner);
+      const other = fix.auth.registerAgent({ ...fix.registration, name: "reviewer" }, fix.auth.authenticate(sponsorGrant.token));
       const parent = fix.create();
       const actor = fix.auth.authenticate(parent.credential.token);
       fix.acknowledge(actor);
+      const deny = fix.auth.grant({
+        principal: { kind: "principal", id: actor.principal.id }, node: "manifold://",
+        effect: "deny", reach: "subtree", caps: ["containers:read"],
+      }, fix.owner);
+      expect(() => fix.auth.createChildRun({ runId: parent.run.id, agentId: other.agent.agentId }, fix.owner)).toThrow("sponsor_authority_unavailable");
+      fix.auth.revokeGrant(deny.id, fix.owner);
       expect(() => fix.auth.createChildRun({ runId: parent.run.id, agentId: other.agent.agentId }, actor)).toThrow("agent_unavailable");
       const child = fix.auth.createChildRun({ runId: parent.run.id, agentId: other.agent.agentId }, fix.owner);
       expect(child.run.agentId).toBe(other.agent.agentId);
@@ -167,6 +180,12 @@ describe("durable Agent admission", () => {
       const unrelated = fix.auth.createRun({ agentId: other.agent.agentId }, fix.owner);
       expect(fix.auth.listRuns({ agentId: parent.run.agentId }, fix.owner).runs.some((run) => run.id === unrelated.run.id)).toBe(false);
       expect(() => fix.auth.inspectRun({ runId: unrelated.run.id, limit: 50 }, actor)).toThrow("agent run inspection unavailable");
+      const childActor = fix.auth.authenticate(fix.auth.claimRunLaunch(child.run.id, fix.owner).token);
+      fix.acknowledge(childActor);
+      expect(fix.auth.allows(childActor, "containers:read")).toBe(true);
+      fix.auth.revokePrincipal(sponsorGrant.principal.id, fix.owner);
+      expect(fix.auth.allows(childActor, "containers:read")).toBe(false);
+      expect(fix.auth.allows(actor, "containers:read")).toBe(true);
     } finally { fix.db.close(); }
   });
 

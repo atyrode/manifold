@@ -78,10 +78,10 @@ export const RegisterAgentResultSchema = z.strictObject({ agent: AgentSchema, cr
 export type RegisterAgentResult = z.infer<typeof RegisterAgentResultSchema>;
 export const AgentRequestSchema = z.strictObject({ agentId: AgentIdSchema });
 export type AgentRequest = z.infer<typeof AgentRequestSchema>;
-export const GetAgentResultSchema = z.strictObject({ agent: AgentSchema });
+export const GetAgentResultSchema = z.strictObject({ agent: AgentSchema, canManage: z.boolean() });
 export type GetAgentResult = z.infer<typeof GetAgentResultSchema>;
 export const ListAgentsRequestSchema = z.strictObject({});
-export const ListAgentsResultSchema = z.strictObject({ agents: z.array(AgentSchema).max(100), truncated: z.boolean() });
+export const ListAgentsResultSchema = z.strictObject({ agents: z.array(AgentSchema).max(100), truncated: z.boolean(), canRegister: z.boolean() });
 export type ListAgentsResult = z.infer<typeof ListAgentsResultSchema>;
 export const UpdateAgentRequestSchema = AgentRequestSchema.extend({
   purpose: AgentSchema.shape.purpose.optional(),
