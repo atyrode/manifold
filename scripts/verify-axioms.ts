@@ -4245,6 +4245,7 @@ try {
       resolved point rather than a path: whatever it commits, it commits from that pixel alone.
     */
     const beforeCentre = await railPaint();
+    const centreTreeBefore = await treeNow();
     const centreRows = await railSeats();
     const tallest = centreRows.reduce<RailSeat | null>(
       (best, seat) =>
@@ -4265,10 +4266,16 @@ try {
       async () => (await railSplits()).filter((split) => split.vacant).length > vacantBefore,
       8_000,
     );
-    await sleep(1_200);
+    /*
+      Seeing the vacant split proves the browser applied the local arrangement, but not that the
+      dispatch reached durable state. Wait until `/api/layout` exposes the changed tree before
+      measuring the next gesture instead of betting on a fixed persistence delay.
+    */
+    const centrePersisted =
+      tookCentre && (await settles(async () => (await treeNow()) !== centreTreeBefore, 8_000));
     const centreSplit = (await railSplits()).find((split) => split.vacant) ?? null;
     const besideIt =
-      tookCentre &&
+      centrePersisted &&
       centreSplit !== null &&
       (centreSplit.before === tallest?.id || centreSplit.after === tallest?.id);
     check(
@@ -4278,9 +4285,11 @@ try {
         ? "no rail rows or no palette source: the middle of a row was never aimed at"
         : !tookCentre
           ? `a stack dropped on the exact middle of "${tallest.id}" (${String(Math.round(tallest.bottom - tallest.top))} px tall) authored nothing: the rail was "${beforeCentre}" before and "${await railPaint()}" after, so the middle half of every row is a silent dead zone`
-          : besideIt
-            ? `a stack dropped on the middle of "${tallest.id}" landed beside it, between "${centreSplit?.before ?? ""}" and "${centreSplit?.after ?? ""}"`
-            : `the drop authored a split, but nowhere near the row it was aimed at: between "${centreSplit?.before ?? ""}" and "${centreSplit?.after ?? ""}" rather than beside "${tallest.id}"`,
+          : !centrePersisted
+            ? `a stack dropped on the middle of "${tallest.id}" painted a vacant split optimistically but never stored it`
+            : besideIt
+              ? `a stack dropped on the middle of "${tallest.id}" landed beside it, between "${centreSplit?.before ?? ""}" and "${centreSplit?.after ?? ""}"`
+              : `the drop authored a split, but nowhere near the row it was aimed at: between "${centreSplit?.before ?? ""}" and "${centreSplit?.after ?? ""}" rather than beside "${tallest.id}"`,
     );
 
     /*
@@ -4289,23 +4298,69 @@ try {
       stack — a different tree from the flat order it looks like, and the only way to tell them
       apart is that the members share an x and stack in y.
     */
-    const columnRows = await railSeats();
-    const columnAbove = columnRows[1];
-    const columnBelow = columnRows[2];
-    const columnPalette = await paletteAt('[data-testid="palette-stack-column"]');
+    interface ColumnGesture {
+      readonly source: { readonly x: number; readonly y: number };
+      readonly target: { readonly x: number; readonly y: number };
+    }
+    /*
+      Measure both ends in ONE layout read after the preceding commit is stored, and require
+      consecutive equal measurements before starting the next gesture. The old sequence read
+      source and target separately after an assumed delay, so layout motion between those reads
+      could leave the native release aimed at stale coordinates. A gesture must begin from one
+      stable geometry that is actually under the pointer.
+    */
+    const columnGestureAt = (): Promise<ColumnGesture | null> =>
+      browser!.evaluate<ColumnGesture | null>(
+        `(() => {
+           const rail = document.querySelector('.sidebar-sections');
+           const item = document.querySelector('[data-testid="palette-stack-column"]');
+           if (!(rail instanceof HTMLElement) || !(item instanceof HTMLElement)) return null;
+           const rows = Array.from(rail.querySelectorAll(':scope > [data-section-id]'));
+           const above = rows[1];
+           const below = rows[2];
+           if (!(above instanceof HTMLElement) || !(below instanceof HTMLElement)) return null;
+           const railBox = rail.getBoundingClientRect();
+           const sourceBox = item.getBoundingClientRect();
+           const aboveBox = above.getBoundingClientRect();
+           const belowBox = below.getBoundingClientRect();
+           const source = { x: sourceBox.left + sourceBox.width / 2,
+             y: sourceBox.top + sourceBox.height / 2 };
+           const target = { x: (aboveBox.left + aboveBox.right) / 2,
+             y: (aboveBox.bottom + belowBox.top) / 2 };
+           const sourceHit = document.elementFromPoint(source.x, source.y);
+           if (sourceHit?.closest('[data-testid="palette-stack-column"]') !== item ||
+               target.x < railBox.left || target.x > railBox.right ||
+               target.y < railBox.top || target.y > railBox.bottom) return null;
+           return { source, target };
+         })()`,
+      );
+    const columnGestureState: {
+      candidate: ColumnGesture | null;
+      stable: ColumnGesture | null;
+    } = { candidate: null, stable: null };
+    const columnReady =
+      centrePersisted &&
+      (await settles(async () => {
+        const measured = await columnGestureAt();
+        if (measured === null) {
+          columnGestureState.candidate = null;
+          return false;
+        }
+        if (JSON.stringify(measured) !== JSON.stringify(columnGestureState.candidate)) {
+          columnGestureState.candidate = measured;
+          return false;
+        }
+        columnGestureState.stable = measured;
+        return true;
+      }, 8_000));
+    const columnPalette = columnGestureState.stable?.source ?? null;
+    const columnDropTarget = columnGestureState.stable?.target ?? null;
     /* Keep evidence at the native-event boundary: a sealed payload alone proves dragstart,
        not that the rail accepted dragover or received drop after its preview repainted. */
     await browser.evaluate<null>(
       `(() => {
          const source = ${JSON.stringify(columnPalette)};
-         const target = ${JSON.stringify(
-           columnAbove === undefined || columnBelow === undefined
-             ? null
-             : {
-                 x: (columnAbove.left + columnAbove.right) / 2,
-                 y: (columnAbove.bottom + columnBelow.top) / 2,
-               },
-         )};
+         const target = ${JSON.stringify(columnDropTarget)};
          const describe = (node) => node instanceof Element ? {
            tag: node.tagName, class: node.getAttribute('class'),
            section: node.closest('[data-section-id]')?.getAttribute('data-section-id') ?? null,
@@ -4352,11 +4407,8 @@ try {
     let columnTrace: unknown = null;
     const columnCommitsBefore = commitCount();
     try {
-      if (columnPalette !== null && columnAbove !== undefined && columnBelow !== undefined) {
-        columnPayload = await browser.dragAndDrop(columnPalette, {
-          x: (columnAbove.left + columnAbove.right) / 2,
-          y: (columnAbove.bottom + columnBelow.top) / 2,
-        });
+      if (columnPalette !== null && columnDropTarget !== null) {
+        columnPayload = await browser.dragAndDrop(columnPalette, columnDropTarget);
       }
     } finally {
       columnTrace = await browser.evaluate<unknown>(`window.__columnDropTrace()`);
@@ -4387,8 +4439,10 @@ try {
     check(
       "R4 the palette's Stack column nests the rail the other way",
       columnWorks,
-      columnPalette === null
-        ? "the armed toolbar painted no Stack column to drag out of"
+      !columnReady
+        ? centrePersisted
+          ? "the Stack column source and rail gap never held the same stable on-screen geometry"
+          : "the preceding rail drop never reached stored state, so there was no stable tree for the Stack column gesture"
         : !columnLanded
           ? `dropping a Stack column between two rows authored no column split: the rail is "${await railPaint()}"; ${String(columnCommits)} layout write(s); payload ${JSON.stringify(columnPayload)}; native gesture ${JSON.stringify(columnTrace)}`
           : !columnOne
