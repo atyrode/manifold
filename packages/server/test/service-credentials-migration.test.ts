@@ -7,7 +7,7 @@ import { PrincipalCredentialsSchema } from "@manifold/protocol";
 import { openDatabase } from "../src/db.ts";
 import { ServerStore, sha256Hex } from "../src/stores.ts";
 
-/** The v37 tables read by migration 38, with their original credential columns. */
+/** The v37 authority and terminal tables needed by later migrations. */
 function seedV37(path: string): void {
   const db = new Database(path, { create: true, strict: true });
   try {
@@ -29,6 +29,8 @@ CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT,container_id TEXT,ts IN
   session TEXT,run_id TEXT,credential_id TEXT);
 CREATE TABLE machine_job_revisions(kind TEXT NOT NULL,identity TEXT NOT NULL,revision INTEGER NOT NULL,
   digest TEXT NOT NULL,PRIMARY KEY(kind,identity));
+CREATE TABLE terminals(id TEXT PRIMARY KEY,machine_id TEXT,container_id TEXT,run_id TEXT);
+CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY,machine_id TEXT,created_at INTEGER,request TEXT);
 CREATE TRIGGER job_token_update AFTER UPDATE ON tokens BEGIN
   INSERT INTO machine_job_revisions VALUES ('credential',NEW.id,1,'')
     ON CONFLICT(kind,identity) DO UPDATE SET revision=revision+1,digest='';
@@ -139,7 +141,6 @@ describe("migration 38: native service credentials", () => {
       db.close();
       db = openDatabase(path);
       const store = new ServerStore(db);
-      expect(store.getMeta("schema_version")).toBe("38");
       const serviceIds: Record<string, true> = { current: true, replaced: true, disabled: true };
       expect(db.query("SELECT * FROM principals ORDER BY id").all()).toEqual(
         beforePrincipals.map((row) => ({

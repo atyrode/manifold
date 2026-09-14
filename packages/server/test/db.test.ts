@@ -2433,14 +2433,14 @@ UPDATE meta SET value='33' WHERE key='schema_version';
   }
 });
 
-test("migration 38 leaves legacy cwd unknown and persists new launch intent across reopening", () => {
+test("migration 39 leaves legacy cwd unknown and persists new launch intent across reopening", () => {
   const dir = mkdtempSync(join(tmpdir(), "manifold-db-terminal-restart-"));
   const path = join(dir, "manifold.db");
   let db = new Database(path);
   try {
     db.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-INSERT INTO meta VALUES ('schema_version', '37');
+INSERT INTO meta VALUES ('schema_version', '38');
 CREATE TABLE events(id INTEGER PRIMARY KEY, container_id TEXT, ts INTEGER NOT NULL);
 CREATE TABLE terminals(
   id TEXT PRIMARY KEY, machine_id TEXT, container_id TEXT, created_by TEXT,

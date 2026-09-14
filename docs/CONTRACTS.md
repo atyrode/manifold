@@ -2996,7 +2996,7 @@ files, durable image storage, download URLs or arbitrary file transfer; that sep
   operation identity. Fresh private credentials and signed admission retain the Run's lifetime
   and authority; no bearer or consumed launch binding is replayed from storage. An unavailable
   harness, revoked authority or expired Run refuses restart rather than substituting a shell.
-  Migration 38 recovers pre-feature terminal Run bindings from matching retained job records.
+  Migration 39 recovers pre-feature terminal Run bindings from matching retained job records.
 - **Owner loss retains placement.** A transport's explicit owner-loss close (4010), or an
   admitted replacement-owner inventory missing a terminal, marks it `exited` with unknown
   exit code and releases its controller; its row, leaf and portals remain. Ordinary transport
