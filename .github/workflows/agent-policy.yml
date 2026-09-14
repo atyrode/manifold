@@ -45,8 +45,16 @@ jobs:
         with:
           bun-version: "1.4.2"
 
+      # bun run release opens release: v… PRs as its committer, atyrode, from release/v… in
+      # this repository. They publish already-triaged changes, so need no throwaway issue.
+      # Only lifecycle checks are exempt; the shared contract above and required gate run.
       - name: Check pull request lifecycle
-        if: github.event_name == 'pull_request'
+        if: >-
+          github.event_name == 'pull_request' &&
+          !(startsWith(github.event.pull_request.title, 'release: v') &&
+            github.event.pull_request.user.login == 'atyrode' &&
+            github.event.pull_request.head.repo.full_name == github.repository &&
+            startsWith(github.event.pull_request.head.ref, 'release/v'))
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
