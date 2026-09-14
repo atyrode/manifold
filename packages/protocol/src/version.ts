@@ -1,5 +1,5 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 33;
+export const PROTOCOL_VERSION = 34;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -337,8 +337,13 @@ export const PROTOCOL_VERSION = 33;
  * strictly 33 for cwd/restarted events and terminal summaries. Owner loss retains
  * exited tiles rather than removing their homes. IPC stays 2, and the unchanged
  * instance wire adds 33. No terminal host is stopped to acquire this feature.
+ *
+ * v33 -> v34: OWNER-SCOPED EVENTS (issue #601). Session event frames require the
+ * originating plugin id, and clients interpreting a kind qualify it by that origin.
+ * Machine and instance frames are unchanged; their acceptance sets add the shared
+ * revision without dropping compatible transports or requiring a fleet restart.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([30, 31, 32, 33]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([30, 31, 32, 33, 34]);
 
 /**
  * The first machine protocol that carries `repository_query`/`repository_fact` (issue #529).
@@ -382,10 +387,10 @@ export const TERMINAL_RESTART_PROTOCOL_VERSION = 33;
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v33 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v34 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32, 33,
+  27, 28, 29, 30, 31, 32, 33, 34,
 ]);
 
 /**
