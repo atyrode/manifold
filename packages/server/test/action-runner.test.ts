@@ -28,7 +28,8 @@ async function fixture() {
   const policyFile = join(directory, "policy.txt");
   writeFileSync(policyFile, "Approved read-only run.\n", "utf8");
   let sequence = 0;
-  const runtime: RuntimeDeps = { newId: () => `runner-${++sequence}`, now: () => 10_000 };
+  let now = 10_000;
+  const runtime: RuntimeDeps = { newId: () => `runner-${++sequence}`, now: () => now };
   const config = loadConfig(
     {
       MANIFOLD_PORT: "0",
@@ -67,6 +68,9 @@ async function fixture() {
     policyFile,
     agentId: registration.agent.agentId,
     token: registration.credential.token,
+    elapse: (milliseconds: number) => {
+      now += milliseconds;
+    },
   };
 }
 
@@ -105,7 +109,7 @@ async function ledger(origin: string) {
 
 describe("external action runner over real doors", () => {
   test("discovery, exact acknowledgement, refusal correlation, renewal, child attenuation and live re-ack share the ledger", async () => {
-    const { server, policyFile, agentId, token } = await fixture();
+    const { server, policyFile, agentId, token, elapse } = await fixture();
     const frames: ActionRunnerResponse[] = [];
     const runner = new ActionRunner({
       origin: server.publicUrl,
@@ -165,6 +169,7 @@ describe("external action runner over real doors", () => {
       expect(
         frames.find((frame) => frame.type === "result" && frame.id === "refuse"),
       ).toMatchObject({ outcome: { ok: false, denial: { rule: "forbidden" } } });
+      elapse(90_000);
       await runner.accept({
         type: "renew",
         id: "renew-root",
@@ -172,6 +177,9 @@ describe("external action runner over real doors", () => {
         lifetimeMs: 180_000,
         justification: "Continue the sponsor-approved read-only task.",
       });
+      expect(
+        frames.find((frame) => frame.type === "result" && frame.id === "renew-root"),
+      ).toMatchObject({ outcome: { ok: true }, expiresAt: 280_000 });
       await runner.accept({
         type: "child",
         id: "child",
@@ -303,7 +311,7 @@ describe("external action runner over real doors", () => {
 
   for (const terminal of ["completed", "failed"] as const) {
     test(`a scoped runner can renew and ${terminal} its run without retiring its Agent`, async () => {
-      const { server, agentId, token } = await fixture();
+      const { server, agentId, token, elapse } = await fixture();
       const frames: ActionRunnerResponse[] = [];
       const runner = new ActionRunner({
         origin: server.publicUrl,
@@ -315,6 +323,7 @@ describe("external action runner over real doors", () => {
         await runner.bind();
         const ownedPolicy = policyFrame(frames);
         await runner.accept(ack("ack", ownedPolicy));
+        elapse(180_000);
         await runner.accept({
           type: "renew",
           id: "renew",
@@ -324,7 +333,7 @@ describe("external action runner over real doors", () => {
         });
         expect(
           frames.find((frame) => frame.type === "result" && frame.id === "renew"),
-        ).toMatchObject({ outcome: { ok: true }, expiresAt: 100_000 });
+        ).toMatchObject({ outcome: { ok: true }, expiresAt: 280_000 });
         if (terminal === "completed")
           await runner.accept({
             type: "finish",
@@ -354,7 +363,7 @@ describe("external action runner over real doors", () => {
   }
 
   test("adopting a prepared run renews its private bearer and records harness activity without another admission", async () => {
-    const { server, agentId, token } = await fixture();
+    const { server, agentId, token, elapse } = await fixture();
     const created = await invokeAction(
       { origin: server.publicUrl, token },
       "core.access.createRun",
@@ -381,12 +390,17 @@ describe("external action runner over real doors", () => {
         }),
       ).rejects.toMatchObject({ code: "invalid_frame" });
       await runner.accept(ack("ack", policyFrame(frames)));
+      elapse(180_000);
       await runner.accept({
         type: "renew",
         id: "renew",
         runId: admission.run.id,
         lifetimeMs: 90_000,
+        justification: "Continue this harness run within its approved lifetime.",
       });
+      expect(frames.find((frame) => frame.type === "result" && frame.id === "renew")).toMatchObject(
+        { outcome: { ok: true }, expiresAt: 280_000 },
+      );
       await runner.reportActivity({ runId: admission.run.id, activity: "blocked" });
       const inspection = await invokeAction(
         { origin: server.publicUrl, token: SPONSOR },
