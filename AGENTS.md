@@ -163,6 +163,11 @@ in [`docs/PLUGINS.md`](docs/PLUGINS.md); deployment and release commands are rou
 
 ## Boundaries
 
+- Private conversations and personal context are not public repository material. Permission to
+  perform work does not authorize quoting, paraphrasing or narrating the exchange in issues, PRs,
+  comments, commits, documentation, logs or artifacts. Record only technical outcomes, scope,
+  constraints and evidence; publishing private content requires explicit approval for that
+  specific disclosure. Never use private conversation as public proof of authorization.
 - Planned code or user-visible documentation changes require a GitHub issue with the problem
   and acceptance criteria, ratified by the operator's intent. An operator-directed agent may
   author and triage it, but implementation starts only after the issue is `agent-ready`; a
@@ -267,7 +272,7 @@ in [`docs/PLUGINS.md`](docs/PLUGINS.md); deployment and release commands are rou
   integration target, `main`. Ordinary work does not owe a local full gate or a wait for full
   post-merge CI; conservative high-risk plan selections and operator holds remain binding.
   Follow the common lifecycle above; squash-merge only under granted authority and checks, then
-  delete your branch; the standing grant's mechanical criteria are
+  delete your branch; the standing grant's criteria are
   [TRIAGE.md §Merge](docs/TRIAGE.md#merge). Release commits also land through PRs:
   `bun run release` rebase-auto-merges after required checks, then tags the merged `main` commit.
 - When configured, successful full `main` CI deploys that exact integrated revision at

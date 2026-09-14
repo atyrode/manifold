@@ -100,6 +100,14 @@ A hold is for a decision only the operator can make: the meaning of an axiom or 
 posture, a live or production action, scope and product direction, or spend. Everything else is a
 decision the person or agent doing the work is expected to make.
 
+Check the current request and recorded standing or bounded grants before raising a hold. An
+already-approved action does not need a second approval because a file is protected or the work
+crosses from implementation to integration. Record the applicable grant and its limits; an
+`agent-ready` label or an agent-authored assertion alone does not create authority. New scope,
+expanded security authority, destructive or irreversible data changes, production/fleet effects
+or native-owner restarts outside that grant, and unresolved compatibility still require a decision.
+Technical failures and pending CI are work to diagnose or await, not operator decisions.
+
 Every hold carries a decision block, in the body or in a comment:
 
 ```
@@ -113,12 +121,23 @@ Unblocks: <labels/state to apply and what work starts when decided>
 ```
 
 Holds never resolve by silence, by deadline or by a second agent's opinion. The triage runbook
-presents every open hold to the operator on each run and records the answer in a
-`## Decision recorded (<date>)` comment that quotes the operator's words, then applies `Unblocks` —
+presents every open hold to the operator on each run and records the technical outcome in a
+`## Decision recorded (<date>)` comment: selected option, scope and constraints, then applies `Unblocks` —
 typically `needs-operator` → `agent-ready` plus a priority, or a close with a `Disposition:` comment
 (§Exit). A recorded decision is not a permanent veto, and arbitrary comment text is not operator
 authorization: an agent never writes `## Decision recorded` without an explicit operator answer in
 its own session or a comment the operator authored.
+A bounded grant's durable receipt is this technical decision comment on the owning issue, or an
+existing public operator decision, linked from the PR's `## Evidence`. An operator-directed agent
+may record only a grant it actually received, with the selected scope and limits, not a transcript.
+Later review/ship passes use that receipt without requesting the same approval again. The receipt
+records separately granted authority; arbitrary assertions or unclear provenance still do not
+create a grant and require resolution before the affected action.
+Public records must not quote, paraphrase or narrate private conversations or personal context as
+authorization evidence. Permission to act is not permission to publish the exchange. Keep public
+decisions technical and minimal; use an existing public authorization link when available, otherwise
+retain the private evidence in its private context. Publishing private content requires explicit
+permission for that specific disclosure.
 When the operator is present, use the interactive question tool when available to present the
 decision's concrete options and recommendation. Do not bury a hold in a progress report or continue
 implementation while waiting for the answer.
@@ -150,8 +169,11 @@ the prohibition on pushing to someone else's branch live in [`AGENTS.md`](../AGE
 
 ## Pull requests and review
 
-Open one draft for the initiative, with `Closes #N` — or `Refs #N` for partial work, naming what
-remains — and these sections:
+Open one draft for the initiative, with `Closes #N` only when merging resolves all acceptance.
+Otherwise use `Refs #N`, name what remains, and record the §Post-merge follow-through before
+readiness. A complete implementation may be ready while its operational acceptance necessarily
+follows merge; this does not permit deferring unfinished implementation or pre-merge verification.
+Include these sections:
 
 - `## Problem` — what is wrong, in the issue's terms.
 - `## Change` — what this does about it.
@@ -182,7 +204,10 @@ covers rebase auto-merge, not the ordinary squash-merge grant below; no bypass a
 
 Review posts exactly one comment per reviewed head, beginning `## Verdict: pass` or
 `## Verdict: fail`, followed by the acceptance checklist with the evidence for each item and, on a
-fail, the blocking findings. A new push invalidates every earlier verdict.
+fail, the blocking findings. Distinguish satisfied implementation/pre-merge criteria from explicitly
+pending post-merge operational criteria. A pass certifies the PR's complete approved implementation
+and merge eligibility, not unperformed deployment or issue completion; each pending criterion must
+have the follow-through required below. A new push invalidates every earlier verdict.
 
 ## CI evidence and performance
 
@@ -245,21 +270,28 @@ convenience only, never security or merge enforcement.
 An agent squash-merges with branch deletion, without an additional waiting period, when **all** of
 these hold:
 
-1. The pull request closes an issue carrying `agent-ready` and a priority label.
+1. The pull request claims an open issue carrying `agent-ready` and exactly one priority label.
+   Its approved implementation scope is complete. `Closes #N` or `Refs #N` follows §Pull requests;
+   a `Refs` PR has a complete post-merge handoff, not missing implementation disguised as follow-up.
 2. The required PR `gate` is green on the current head and integration base:
    `gh pr checks <n> --required` exits 0.
 3. The newest `## Verdict:` comment is `pass` and is dated after the head commit was pushed.
-4. Neither the pull request nor its issue carries `needs-operator`, `design` or `area:infra`.
-5. The pull request touches none of: `.github/workflows/**`, `infra/**`, `Dockerfile*`,
-   `compose*.y*ml`, `flake.nix`, `AXIOMS.md`, `docs/decisions/**`, `scripts/release*.ts`,
-   `scripts/promote.ts`, `packages/server/src/auth.ts`, `packages/web/src/identity.tsx`.
+4. The change is within the current operator request or an applicable recorded standing/bounded
+   grant, recorded and linked through the §Holds decision receipt. No unresolved `needs-operator` hold, design
+   decision, compatibility question or material risk remains on the PR or its issue.
+5. The risk plan and contract-specific verification cover the actual scope. `area:infra` and
+   protected paths require the appropriate strong proof and authority assessment, not an automatic
+   operator hold. This includes workflows, infrastructure, Docker/Compose, Nix, axioms, decision
+   records, release/promotion tooling and authentication/identity. Existing full-cutover proof,
+   axiom ratification and live-system boundaries are unchanged.
 
-A failure of criteria 1–3 blocks the merge until the pull request is corrected. Criteria 4 or 5
-identify a concrete operator decision or protected scope: the ship runbook labels the pull request
-`needs-operator` and writes a decision block. There is no time-based veto window. The operator may
-hold any pull request by adding `needs-operator`.
+Missing implementation, CI, review or handoff blocks merge until corrected; the agent does that
+work without asking the operator to waive it. A genuinely unresolved authority or risk decision
+requires `needs-operator`, a draft PR and the §Holds decision block. Do not reopen an already
+resolved decision solely because of a label or file path, infer permission from silence, or treat
+green checks as authorization. The operator may hold any PR with `needs-operator`.
 
-This grant is bounded and mechanical; it does not touch `bun run release` or `bun run promote`,
+This grant remains bounded; it does not touch `bun run release` or `bun run promote`,
 which remain explicitly authorized actions under [`AGENTS.md`](../AGENTS.md) Boundaries. A merge
 starts asynchronous full `main` proof. Do not wait before continuing unrelated safe work; use
 `bun run ci:status -- --sha <merge-sha>` when its state is needed. Trusted feedback files a `p1`
@@ -268,6 +300,31 @@ must wait for the exact-revision full result. Development deployment failure tra
 separate and `p0`: the agent that merged the revision owns recording a failed `deploy-dev.yml` run
 with its SHA, run link and named repair owner. Delegating monitoring does not leave that failure
 unowned or require unrelated safe work to stop.
+
+## Post-merge follow-through
+
+Merge, full `main` proof, deployment and operational acceptance are separate transitions. An issue
+stays open until every acceptance criterion is evidenced; neither a green run nor a merged PR
+closes unmet operational work. Do not manufacture a second issue just to satisfy a closing link.
+
+Before merging a `Refs` PR, record the following in the owning issue and link it from the PR:
+
+- Completed acceptance and its evidence, plus the exact PR head; add the merge SHA after integration.
+- Each remaining criterion, its required environment/revision and what observation will satisfy it.
+- The accountable contributor or agent, the applicable authorization and excluded actions.
+- The next safe action or external trigger, a bounded check/wait, and any blocker with its owner.
+
+After merge, update that receipt with exact full-CI, deployment and runtime results separately.
+Waiting for a known CI/deployment trigger does not need `needs-operator`. Keep the settled issue
+`agent-ready` so dispatch can resume it; use `blocked` only for the named issue/PR dependencies in
+§Label model. A failed check remains visible and owned, not retried until green or called complete.
+
+An agent may continue independent work while a trigger is pending. Before ending its execution
+pass, record the latest receipt and an explicit `Release:` for another agent to resume, unless an
+active agent has accepted ownership. The accountable contributor still owns routing until the next
+claim; an open issue must not depend on a vanished session or an unpublished promise to monitor.
+Dispatch reads this receipt before choosing the next action, not another implementation PR.
+Close the original issue only after recording evidence for all remaining acceptance.
 
 ## Exit
 
@@ -303,7 +360,8 @@ supports skills, or by saying "follow docs/TRIAGE.md §Runbooks › <name>".
 3. Holds pass. List every `needs-operator` issue and write a decision block for each that lacks
    one, researching the code and docs so the options are concrete rather than "what should we do".
    With the operator present, use the interactive question tool when available; then record each
-   answer as a `## Decision recorded (<date>)` comment quoting it and apply `Unblocks`. With no
+   technical outcome as a `## Decision recorded (<date>)` comment without private conversation or
+   personal context, and apply `Unblocks`. With no
    operator in the session, skip the questions; the blocks are still written. Never continue held
    implementation while waiting.
 4. `bun scripts/triage-policy.ts --flow`. End with the digest and the flow snapshot.
@@ -313,7 +371,14 @@ supports skills, or by saying "follow docs/TRIAGE.md §Runbooks › <name>".
 1. `bun scripts/dispatch.ts --next --limit 5`. If it reports non-draft PRs, run **review** or
    **ship**, correct the PR, or route its operator hold; do not claim new work. Otherwise take items
    up to the two-claim limit.
-2. For each: post the `Claim:` comment, create a worktree from `origin/main` — or the declared
+2. Read each issue's latest claim and follow-through before starting; respect existing ownership
+   and post a `Claim:` for the phase being resumed. If its implementation is merged, check the
+   recorded trigger once and resume the authorized operational action; do not duplicate the merged
+   implementation. If operational proof exposes a defect, a scoped repair PR may `Refs` the same
+   issue, or link a separate repair issue; normal ownership, review and verification still apply.
+   If the trigger is pending, update the receipt, release the execution claim and consider other
+   ready work in this pass rather than polling or requesting approval.
+   For implementation work, create a worktree from `origin/main` — or the declared
    dependency PR's head for a real stack — inspect `bun run ci:plan`, implement to the acceptance
    criteria, run `bun run ci:check` plus direct affected-behavior proof, push, and open the single
    draft per §Pull requests. Mark it ready once the selected pushed-head PR `gate` is green, then
@@ -331,12 +396,14 @@ A pass hands the same head directly to **ship**; it never starts another dispatc
 
 ### ship
 
-For each open non-draft pull request, evaluate §Merge mechanically —
-`gh pr view <n> --json labels,files,headRefOid,closingIssuesReferences,comments,isDraft` and
-`gh pr checks <n> --required` — then either merge with
-`gh pr merge <n> --squash --delete-branch` or report which criterion failed. For a pull request
-excluded by criteria 4 or 5, label it `needs-operator`, make it draft and write a decision block.
-After each merge, record the merge SHA and let full `main` CI continue asynchronously; do not block
+For each open non-draft pull request, evaluate every §Merge criterion —
+`gh pr view <n> --json body,labels,files,headRefOid,closingIssuesReferences,comments,isDraft`,
+its claimed issues (including `Refs`, which `closingIssuesReferences` omits), the applicable grant
+and `gh pr checks <n> --required`. Then merge with `gh pr merge <n> --squash --delete-branch` or
+record the failed criterion and next action. Repair technical/evidence gaps; only a concrete
+unresolved operator decision gets `needs-operator`, draft and a decision block. File paths alone
+are not that decision. After each merge, update the owning issue's §Post-merge follow-through with
+the merge SHA and let full `main` CI continue asynchronously; do not block
 independent safe work on it. Trusted feedback assigns any failed full run to its repair owner.
 Deployment or release operators must query that exact SHA and wait for its successful full proof.
 Then list dependent open PRs. Rebase and reverify branches you own; for another owner, comment the

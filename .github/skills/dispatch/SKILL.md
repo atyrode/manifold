@@ -10,6 +10,12 @@ correct, hold or ship it before claiming anything new. Otherwise claim before th
 commit, work in your own worktree on `<prefix>/<issue>-<slug>` from current `origin/main`, and take
 at most two claims at once.
 
+Read the issue's latest follow-through first. An already-merged implementation needs its recorded
+operational action, not a duplicate implementation PR; defects follow the runbook's repair path.
+Check a pending trigger once, keep its receipt and owner
+current, release the execution claim when handing off, and continue other ready work rather than
+polling or inventing an operator hold.
+
 Use one draft per initiative and declare `## Dependencies` exactly as the runbook requires.
 Inspect `bun run ci:plan -- --json`, run `bun run ci:check` and the change's behavioral proof,
 then require the selected PR CI checks before readiness, **review** and **ship**. Full local
