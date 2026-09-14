@@ -23,7 +23,7 @@ type Group =
   | "budgets"
   | "pwa"
   | "axioms";
-type Phase = "prepare" | "build" | "static" | "convergence" | "browser";
+type Phase = "prepare" | "build" | "static" | "post-static" | "convergence" | "browser";
 
 interface GateTask {
   readonly name: string;
@@ -138,10 +138,33 @@ const tasks: readonly GateTask[] = [
     ),
   },
   {
-    name: "e2e (testkit)",
+    name: "e2e (testkit except preview recovery)",
     group: "e2e",
     phase: "static",
-    command: fixed("bun", "test", "packages/testkit", "--timeout", "60000"),
+    command: fixed(
+      "bun",
+      "test",
+      "packages/testkit",
+      "--test-name-pattern",
+      "^(?!a revoked preview browser identity returns through production admission without clearing content$).*$",
+      "--timeout",
+      "60000",
+    ),
+    usesDist: true,
+  },
+  {
+    name: "e2e (preview recovery)",
+    group: "e2e",
+    phase: "post-static",
+    command: fixed(
+      "bun",
+      "test",
+      "packages/testkit",
+      "--test-name-pattern",
+      "^a revoked preview browser identity returns through production admission without clearing content$",
+      "--timeout",
+      "60000",
+    ),
     usesDist: true,
   },
   {
@@ -337,14 +360,18 @@ async function selected(selector: string): Promise<number> {
     ) {
       usage(`MANIFOLD_GATE_DIST has no index.html: ${selectedDist}`);
     }
+    const regular = matching.filter((task) => task.phase !== "post-static");
     results.push(
       ...(await runLimited(
         6,
-        matching.map(
+        regular.map(
           (task) => () => runWithRetry(task, task.usesDist === true ? selectedDist : null),
         ),
       )),
     );
+    for (const task of matching.filter((candidate) => candidate.phase === "post-static")) {
+      results.push(await runWithRetry(task, task.usesDist === true ? selectedDist : null));
+    }
   }
   return report(results);
 }
@@ -371,9 +398,13 @@ async function localGate(): Promise<number> {
   const built = await building;
   // Hard drain before Chromium: browser processes beside six compilers exceed the local ceiling.
   const statics = await staticChecks;
+  let postStatics: TaskResult[] = [];
   let convergence: TaskResult[] = [];
   let browsers: TaskResult[] = [];
   if (built.ok) {
+    const postStaticTask = tasks.find((task) => task.phase === "post-static");
+    if (postStaticTask === undefined) throw new Error("gate registry lacks post-static");
+    postStatics = [await run(postStaticTask, sharedDist)];
     const convergenceTask = tasks.find((task) => task.phase === "convergence");
     if (convergenceTask === undefined) throw new Error("gate registry lacks convergence");
     convergence = [await runWithRetry(convergenceTask, sharedDist)];
@@ -382,7 +413,7 @@ async function localGate(): Promise<number> {
       tasks.filter((task) => task.phase === "browser").map((task) => () => run(task, sharedDist)),
     );
   }
-  return report([built, ...statics, ...convergence, ...browsers]);
+  return report([built, ...statics, ...postStatics, ...convergence, ...browsers]);
 }
 
 let exitCode: number;

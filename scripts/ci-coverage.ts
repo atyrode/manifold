@@ -7,6 +7,10 @@ interface WorkflowJob {
 
 const groupName = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 const selectorName = /^[A-Za-z0-9][A-Za-z0-9 ._:/()-]*$/;
+const requiredJobSelectors: Readonly<Record<string, string>> = {
+  "e2e-rest": "e2e (testkit except preview recovery)",
+  "e2e-preview-recovery": "e2e (preview recovery)",
+};
 
 const unquote = (value: string): string => {
   const trimmed = value.trim();
@@ -173,14 +177,26 @@ export const ciCoverageErrors = (gateListOutput: string, workflowSource: string)
   for (const required of ["runtime-jobs", "runtime-browser"]) {
     if (!byId.has(required)) errors.push(`missing required workflow job: ${required}`);
   }
+  for (const [jobId, expectedSelector] of Object.entries(requiredJobSelectors)) {
+    const job = byId.get(jobId);
+    if (!job) {
+      errors.push(`missing required workflow job: ${jobId}`);
+      continue;
+    }
+    try {
+      const jobSelectors = keySelections(job.lines, "task", `workflow job ${jobId} task selector`);
+      if (jobSelectors.length !== 1 || jobSelectors[0] !== expectedSelector) {
+        errors.push(`workflow job ${jobId} must select only: ${expectedSelector}`);
+      }
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
 
-  const previewJobs = jobs.filter((job) => job.id.includes("preview"));
-  if (previewJobs.length === 0) {
+  const preview = byId.get("preview-environment");
+  if (!preview) {
     errors.push("missing required preview job");
-  } else if (previewJobs.length > 1) {
-    errors.push(`expected one preview job, found: ${previewJobs.map((job) => job.id).join(", ")}`);
   } else {
-    const preview = previewJobs[0]!;
     let modes: string[] = [];
     try {
       modes = keySelections(preview.lines, "mode", `preview job ${preview.id} matrix mode`);

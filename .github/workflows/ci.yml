@@ -114,8 +114,8 @@ jobs:
         with:
           task: unit
 
-  e2e:
-    name: e2e
+  e2e-rest:
+    name: e2e (testkit except preview recovery)
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -130,7 +130,26 @@ jobs:
           changelog: "true"
       - uses: ./.github/actions/gate-slice
         with:
-          task: e2e
+          task: e2e (testkit except preview recovery)
+          dist: "true"
+
+  e2e-preview-recovery:
+    name: e2e (preview recovery)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/bun-workspace
+        with:
+          changelog: "true"
+      - uses: ./.github/actions/gate-slice
+        with:
+          task: e2e (preview recovery)
           dist: "true"
 
   convergence:
@@ -385,7 +404,8 @@ jobs:
       - style
       - trace
       - unit
-      - e2e
+      - e2e-rest
+      - e2e-preview-recovery
       - convergence
       - terminal-selection
       - terminal-mirror
