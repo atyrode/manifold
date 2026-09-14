@@ -11,7 +11,7 @@ import {
 import { LOCAL_ORIGIN, Y, createSceneDoc, encodeUpdate, writeElement } from "@manifold/scene";
 import { AuthService, INTERACTIVE_TOKEN_TTL_MS } from "../src/auth.ts";
 import type { EventHub } from "../src/event-hub.ts";
-import { silentLogger } from "../src/log.ts";
+import { silentLogger, type Logger, type LogLevel } from "../src/log.ts";
 import type { PluginHost } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { SessionGateway } from "../src/session-ws.ts";
@@ -45,7 +45,7 @@ interface GatewayFixture {
   readonly plugins: PluginHost;
 }
 
-async function gatewayFixture(): Promise<GatewayFixture> {
+async function gatewayFixture(logger: Logger = silentLogger): Promise<GatewayFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
   const store = testStore();
@@ -90,16 +90,7 @@ async function gatewayFixture(): Promise<GatewayFixture> {
   plugins = await testPluginHost(store, auth, rooms, broker, runtime, { events });
   broker.setEvents(events);
   rooms.setEvents(events);
-  const gateway = new SessionGateway(
-    auth,
-    rooms,
-    broker,
-    plugins,
-    clock,
-    silentLogger,
-    runtime,
-    events,
-  );
+  const gateway = new SessionGateway(auth, rooms, broker, plugins, clock, logger, runtime, events);
   const secondContainer = (name: string): Container => {
     const created: Container = {
       id: runtime.newId(),
@@ -173,9 +164,8 @@ function join(
 ): void {
   gateway.open(id, socket);
   send(gateway, id, CH, { type: "join", containerId, token, protocolVersion: PROTOCOL_VERSION });
-  // The plugin roster comes first and belongs to the SOCKET: a connection learns the workspace's
-  // vocabulary before it carries any room, so the join's `init` is the second frame.
-  expect(socket.messages().map((message) => message.type)).toEqual(["plugins", "init"]);
+  // Correlation and plugin vocabulary belong to the SOCKET and arrive before the room init.
+  expect(socket.messages().map((message) => message.type)).toEqual(["session", "plugins", "init"]);
   socket.clear();
 }
 
@@ -195,7 +185,7 @@ function joinSpectator(
     protocolVersion: PROTOCOL_VERSION,
     spectator: true,
   });
-  expect(socket.messages().map((message) => message.type)).toEqual(["plugins", "init"]);
+  expect(socket.messages().map((message) => message.type)).toEqual(["session", "plugins", "init"]);
   socket.clear();
 }
 
@@ -368,6 +358,71 @@ describe("SessionGateway connection identity", () => {
       x: 1,
       y: 2,
     });
+    fixture.gateway.shutdown();
+    fixture.store.close();
+  });
+
+  test("same-principal sockets keep distinct correlation through refusal and closure", async () => {
+    const logs: Array<{
+      level: LogLevel;
+      evt: string;
+      fields: Readonly<Record<string, unknown>>;
+    }> = [];
+    const logger: Logger = {
+      info: (evt, fields = {}) => logs.push({ level: "info", evt, fields }),
+      warn: (evt, fields = {}) => logs.push({ level: "warn", evt, fields }),
+      error: (evt, fields = {}) => logs.push({ level: "error", evt, fields }),
+    };
+    const fixture = await gatewayFixture(logger);
+    const healthy = new FakeSocket();
+    const refused = new FakeSocket();
+    fixture.gateway.open("session-healthy", healthy);
+    fixture.gateway.open("session-refused", refused);
+
+    expect(healthy.messages()[0]).toEqual({
+      type: "session",
+      connectionId: "session-healthy",
+    });
+    expect(refused.messages()[0]).toEqual({
+      type: "session",
+      connectionId: "session-refused",
+    });
+    joinChannel(fixture, "session-healthy", healthy);
+    send(fixture.gateway, "session-refused", "missing-room", {
+      type: "join",
+      containerId: "missing",
+      token: fixture.ownerKey,
+      protocolVersion: PROTOCOL_VERSION,
+    });
+
+    expect(
+      logs.find(
+        ({ evt, fields }) =>
+          evt === "session_channel_refused" && fields.connectionId === "session-refused",
+      )?.fields,
+    ).toMatchObject({
+      channelId: "missing-room",
+      principalId: fixture.auth.ownerPrincipal.id,
+      code: 4404,
+      reason: "container not found",
+    });
+
+    fixture.gateway.close("session-refused", 1006);
+    expect(
+      logs.find(
+        ({ evt, fields }) => evt === "session_closed" && fields.connectionId === "session-refused",
+      )?.fields,
+    ).toMatchObject({
+      principalId: fixture.auth.ownerPrincipal.id,
+      code: 1006,
+      cause: "transport_drop",
+      channels: [],
+    });
+
+    healthy.clear();
+    send(fixture.gateway, "session-healthy", CH, { type: "resync_request" });
+    expect(healthy.messages().some((message) => message.type === "resync")).toBe(true);
+    expect(healthy.closed).toBeNull();
     fixture.gateway.shutdown();
     fixture.store.close();
   });

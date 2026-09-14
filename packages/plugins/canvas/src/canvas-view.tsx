@@ -628,15 +628,20 @@ export function CanvasView({
   useEffect(() => {
     if (connectStartedRef.current) return;
     connectStartedRef.current = true;
-    void client.connect().catch((reason: unknown) => {
+    const offStatus = client.on("status", (status) => {
+      if (status !== "closed" || client.connectionError === null) return;
       // Sticky: the canvas stays degraded until this is resolved, so the notice must not
       // fade out from under the viewer. Keyed, so a reconnect loop shows one row.
-      notify(reason instanceof Error ? reason.message : "Could not connect to this canvas", {
+      notify(client.connectionError.message, {
         lifetime: "sticky",
         key: "canvas-connect",
       });
     });
-    return () => client.close();
+    void client.connect().catch(() => undefined);
+    return () => {
+      offStatus();
+      client.close();
+    };
   }, [client, notify]);
 
   useEffect(() => {

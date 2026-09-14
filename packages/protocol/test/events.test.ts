@@ -204,6 +204,15 @@ describe("the subscription frames", () => {
   });
 });
 
+describe("the session correlation frame", () => {
+  test("it identifies the socket before admission without accepting a room channel", () => {
+    const frame = { type: "session", connectionId: "session-a" } as const;
+    expect(ServerMessageSchema.parse(frame)).toEqual(frame);
+    expect(CONNECTION_BODIES.session.parse(frame)).toEqual(frame);
+    expect(ServerMessageSchema.safeParse({ ...frame, ch: "c1" }).success).toBe(false);
+  });
+});
+
 describe("the event frame", () => {
   test("it addresses the SOCKET and carries topic, kind, stamp, actor and payload", () => {
     const frame = eventFrame();
@@ -295,7 +304,7 @@ describe("topics are the addressing algebra, not a second grammar", () => {
 });
 
 describe("the event plane is published and classified", () => {
-  test("the inventories classify all three frames, in both directions", () => {
+  test("the inventories classify every connection-level frame in both directions", () => {
     for (const type of ["subscribe", "unsubscribe", "event"]) {
       expect(CONNECTION_LEVEL_MESSAGE_TYPES as readonly string[]).toContain(type);
     }
@@ -304,6 +313,10 @@ describe("the event plane is published and classified", () => {
       expect(CONNECTION_LEVEL_MESSAGE_TYPES as readonly string[]).toContain(type);
     }
     expect(SERVER_MESSAGE_TYPES as readonly string[]).toContain("event");
+    for (const type of Object.keys(CONNECTION_BODIES)) {
+      expect(SERVER_MESSAGE_TYPES as readonly string[]).toContain(type);
+      expect(CONNECTION_LEVEL_MESSAGE_TYPES as readonly string[]).toContain(type);
+    }
   });
 
   test("GET /api/protocol publishes the vocabulary a stranger's agent needs", () => {

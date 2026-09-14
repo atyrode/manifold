@@ -48,6 +48,21 @@ const KNOWN_CLIENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
 const RESYNC_MIN_INTERVAL_MS = 1_000;
 const JOIN_DEADLINE_MS = 10_000;
 
+type SessionCloseCause =
+  | "authorization_refused"
+  | "client_closed"
+  | "credential_expired"
+  | "credential_refused"
+  | "credential_revoked"
+  | "join_timeout"
+  | "liveness_timeout"
+  | "protocol_error"
+  | "protocol_skew"
+  | "server_shutdown"
+  | "transport_closed"
+  | "transport_drop"
+  | "transport_overflow";
+
 /**
  * Connection-level liveness probe; it belongs to the socket, so it carries no channel.
  * The SERVER asks and the client answers — the same orientation every other dial uses,
@@ -143,6 +158,12 @@ interface SessionConnection {
   readonly socket: RawSocket;
   /** Bun's socket id; it prefixes every membership's `selfConnId`. */
   readonly id: string;
+  /** Authenticated identity, when admission got far enough to establish one. */
+  principalId: string | null;
+  /** Server-selected bounded close classification; never peer-provided close text. */
+  closeCause: SessionCloseCause | null;
+  /** Server-selected bounded close reason, never a peer-provided WebSocket reason. */
+  closeReason: string | null;
   /** Channel id → its room membership. Insertion ordered, which the drain rotation uses. */
   readonly channels: Map<string, ChannelState>;
   /** Rotates the drain start so a chatty room cannot monopolize socket buffer space. */
@@ -270,16 +291,21 @@ export class SessionGateway {
       cancelExpiry: null,
       awaitingPong: false,
       closed: false,
+      principalId: null,
+      closeCause: null,
+      closeReason: null,
     };
     this.armJoinDeadline(connection);
     this.connections.set(id, connection);
     this.logger.info("session_open", { connectionId: id });
+    socket.send(
+      JSON.stringify(CONNECTION_BODIES.session.parse({ type: "session", connectionId: id })),
+    );
     /*
-      The roster, before anything else and before any join. It is CONNECTION-level state:
-      it describes the workspace's vocabulary rather than any one room, so it is written
-      straight to the socket like `ping` and never passes through channel serialization —
-      a peer cannot tag it with a room, and a client with no room yet still learns what
-      exists. Delivered here on open and again on every change (D3).
+      Correlation is first, then the roster, both before any join. They are CONNECTION-level
+      state: they describe this socket and the workspace vocabulary rather than any one room,
+      so they are written directly like `ping` and never pass through channel serialization.
+      A peer cannot tag either with a room, and a refused client still learns its socket id.
      */
     socket.send(
       JSON.stringify(
@@ -297,11 +323,25 @@ export class SessionGateway {
    * again after its last channel leaves. One deadline, one close code: an idle
    * connection is indistinguishable from one that never joined.
    */
+  private closeSocket(
+    connection: SessionConnection,
+    code: number,
+    reason: string,
+    cause: SessionCloseCause,
+  ): void {
+    if (connection.closed) return;
+    connection.closeCause ??= cause;
+    connection.closeReason ??= reason.slice(0, 120);
+    connection.socket.close(code, reason);
+  }
+
   private armJoinDeadline(connection: SessionConnection): void {
     connection.cancelJoinTimeout?.();
     connection.cancelJoinTimeout = this.timers.schedule(() => {
       connection.cancelJoinTimeout = null;
-      if (connection.channels.size === 0) connection.socket.close(4002, "join timeout");
+      if (connection.channels.size === 0) {
+        this.closeSocket(connection, 4002, "join timeout", "join_timeout");
+      }
     }, JOIN_DEADLINE_MS);
   }
 
@@ -320,7 +360,7 @@ export class SessionGateway {
           connectionId: connection.id,
           channelIds: [...connection.channels.keys()],
         });
-        connection.socket.close(4008, "liveness timeout");
+        this.closeSocket(connection, 4008, "liveness timeout", "liveness_timeout");
         return;
       }
       connection.awaitingPong = true;
@@ -340,12 +380,12 @@ export class SessionGateway {
         return;
       case "malformed":
         this.logger.warn("session_malformed_frame", { detail: classified.detail });
-        connection.socket.close(4002, "malformed client frame");
+        this.closeSocket(connection, 4002, "malformed client frame", "protocol_error");
         return;
       case "message": {
         const message = classified.message;
         if (connection.channels.size === 0 && message.type !== "join") {
-          connection.socket.close(4002, "first frame must be join");
+          this.closeSocket(connection, 4002, "first frame must be join", "protocol_error");
           return;
         }
         if (message.type === "pong") {
@@ -399,7 +439,7 @@ export class SessionGateway {
       // Unreachable through the grammar — the first frame must be a join and a join that
       // completes seats this — so it is a close rather than a drop: a socket that got here
       // is speaking a protocol this server does not have.
-      connection.socket.close(4002, "subscribe before join");
+      this.closeSocket(connection, 4002, "subscribe before join", "protocol_error");
       return;
     }
     if (message.type === "subscribe") {
@@ -421,14 +461,19 @@ export class SessionGateway {
     const subscriber = connection.subscriber;
     const sender = connection.streamSender;
     if (subscriber === null || sender === null) {
-      connection.socket.close(4002, "stream before join");
+      this.closeSocket(connection, 4002, "stream before join", "protocol_error");
       return;
     }
     if (
       connection.streams.has(message.subscriptionId) ||
       connection.streams.size >= MAX_STREAM_SUBSCRIPTIONS_PER_CONNECTION
     ) {
-      connection.socket.close(4002, "stream subscription limit or duplicate");
+      this.closeSocket(
+        connection,
+        4002,
+        "stream subscription limit or duplicate",
+        "protocol_error",
+      );
       return;
     }
     let finished = false;
@@ -462,8 +507,8 @@ export class SessionGateway {
         );
       },
       close: (reason) => {
-        connection.socket.close(1013, reason);
-        this.close(connection.id);
+        this.closeSocket(connection, 1013, reason, "transport_overflow");
+        this.close(connection.id, 1013);
       },
     });
     if (connection.closed || finished) release();
@@ -474,14 +519,17 @@ export class SessionGateway {
   private refuseChannel(
     connection: SessionConnection,
     ch: string,
+    containerId: string,
     code: number,
     reason: string,
   ): void {
     this.logger.warn("session_channel_refused", {
       connectionId: connection.id,
       channelId: ch,
+      containerId,
+      principalId: connection.principalId,
       code,
-      reason,
+      reason: reason.slice(0, 120),
     });
     const frame = serializeServerMessage({ type: "channel_closed", code, reason });
     connection.socket.send(`{"ch":"${ch}",${frame.body.slice(1)}`);
@@ -501,11 +549,11 @@ export class SessionGateway {
       spectator: message.spectator === true,
     });
     if (message.protocolVersion !== PROTOCOL_VERSION) {
-      connection.socket.close(4409, "protocol version mismatch");
+      this.closeSocket(connection, 4409, "protocol version mismatch", "protocol_skew");
       return;
     }
     if (connection.channels.has(message.ch)) {
-      connection.socket.close(4002, "duplicate join");
+      this.closeSocket(connection, 4002, "duplicate join", "protocol_error");
       return;
     }
 
@@ -523,24 +571,36 @@ export class SessionGateway {
        */
       if (error instanceof ServiceError && error.code === "forbidden") {
         const named: readonly string[] = AUTH_REFUSALS;
-        connection.socket.close(4403, named.includes(error.message) ? error.message : "forbidden");
+        this.closeSocket(
+          connection,
+          4403,
+          named.includes(error.message) ? error.message : "forbidden",
+          "credential_refused",
+        );
       } else {
-        connection.socket.close(4401, "unauthorized");
+        this.closeSocket(connection, 4401, "unauthorized", "credential_refused");
       }
       return;
     }
+    connection.principalId ??= context.principal.id;
     if (!this.auth.allows(context, "containers:read", message.containerId)) {
-      connection.socket.close(4403, "forbidden");
+      this.closeSocket(connection, 4403, "forbidden", "authorization_refused");
       return;
     }
     if (connection.channels.size >= MAX_SESSION_CHANNELS_PER_CONNECTION) {
       this.logger.warn("session_channel_limit", { containerId: message.containerId });
-      this.refuseChannel(connection, message.ch, CHANNEL_LIMIT_CLOSE_CODE, "channel limit reached");
+      this.refuseChannel(
+        connection,
+        message.ch,
+        message.containerId,
+        CHANNEL_LIMIT_CLOSE_CODE,
+        "channel limit reached",
+      );
       return;
     }
     const room = this.rooms.get(message.containerId);
     if (room === null) {
-      this.refuseChannel(connection, message.ch, 4404, "container not found");
+      this.refuseChannel(connection, message.ch, message.containerId, 4404, "container not found");
       return;
     }
     this.broker.pruneExitedUnhomedForContainer(message.containerId);
@@ -556,7 +616,9 @@ export class SessionGateway {
       connection.cancelExpiry = this.timers.schedule(
         () => {
           connection.cancelExpiry = null;
-          if (!connection.closed) connection.socket.close(4403, "expired");
+          if (!connection.closed) {
+            this.closeSocket(connection, 4403, "expired", "credential_expired");
+          }
         },
         Math.max(0, context.expiresAt - this.runtime.now()),
       );
@@ -566,8 +628,8 @@ export class SessionGateway {
     // against; the closure is the only thing the hub ever learns about a WebSocket.
     if (connection.subscriber === null) {
       const close = (code: number, reason: string): void => {
-        connection.socket.close(code, reason);
-        this.close(connection.id);
+        this.closeSocket(connection, code, reason, "transport_overflow");
+        this.close(connection.id, code);
       };
       const sender = new SessionSender(connection.socket, (body) => body, 0, close, close, "drop");
       connection.eventSender = sender;
@@ -594,8 +656,8 @@ export class SessionGateway {
       message.containerId,
       message.ch,
       message.spectator === true,
-      (closing) => {
-        this.retireChannel(connection, closing);
+      (closing, code, reason, connectionClosed) => {
+        this.retireChannel(connection, closing, code, reason, connectionClosed);
       },
     );
     const channel: ChannelState = {
@@ -649,9 +711,25 @@ export class SessionGateway {
     if (!connection.closed && connection.channels.size === 0) this.armJoinDeadline(connection);
   }
 
-  /** Called by a peer that closed itself (channel refusal, overflow, transport failure). */
-  private retireChannel(connection: SessionConnection, peer: SessionChannel): void {
-    if (connection.channels.get(peer.channel)?.peer !== peer) return;
+  private retireChannel(
+    connection: SessionConnection,
+    peer: SessionChannel,
+    code: number,
+    reason: string,
+    connectionClosed: boolean,
+  ): void {
+    if (connectionClosed) {
+      connection.closeCause ??= "transport_overflow";
+      connection.closeReason ??= reason.slice(0, 120);
+    }
+    this.logger.warn("session_channel_closed", {
+      connectionId: connection.id,
+      channelId: peer.channel,
+      containerId: peer.containerId,
+      principalId: connection.principalId,
+      code,
+      reason: reason.slice(0, 120),
+    });
     this.releaseChannel(connection, peer.channel);
   }
 
@@ -1029,11 +1107,33 @@ export class SessionGateway {
    * subscription it held. Subscriptions are presence-class: the socket dying IS their expiry,
    * so there is nothing to persist, nothing on a timer, and no reconnect that resumes them.
    */
-  close(id: string): void {
+  close(id: string, code = 1000): void {
     const connection = this.connections.get(id);
     if (connection === undefined) return;
     this.connections.delete(id);
     connection.closed = true;
+    const cause =
+      connection.closeCause ??
+      (code === 1000 ? "client_closed" : code === 1006 ? "transport_drop" : "transport_closed");
+    const reason =
+      connection.closeReason ??
+      (cause === "client_closed"
+        ? "client closed"
+        : cause === "transport_drop"
+          ? "transport drop"
+          : "transport closed");
+    this.logger.info("session_closed", {
+      connectionId: id,
+      principalId: connection.principalId,
+      code,
+      reason,
+      cause,
+      channels: [...connection.channels.values()].map(({ peer }) => ({
+        channelId: peer.channel,
+        containerId: peer.containerId,
+        spectator: peer.spectator,
+      })),
+    });
     connection.eventSender?.stop();
     connection.eventSender = null;
     connection.streamSender?.stop();
@@ -1069,8 +1169,8 @@ export class SessionGateway {
         break;
       }
       if (!fenced) continue;
-      connection.socket.close(4403, "revoked");
-      this.close(id);
+      this.closeSocket(connection, 4403, "revoked", "credential_revoked");
+      this.close(id, 4403);
     }
   }
 
@@ -1082,8 +1182,8 @@ export class SessionGateway {
     this.plugins.streams.shutdown();
     for (const [id, connection] of [...this.connections]) {
       connection.cancelJoinTimeout?.();
-      connection.socket.close(1001, "server shutting down");
-      this.close(id);
+      this.closeSocket(connection, 1001, "server shutting down", "server_shutdown");
+      this.close(id, 1001);
     }
   }
 }

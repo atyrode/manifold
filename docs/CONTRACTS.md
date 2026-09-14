@@ -4067,6 +4067,14 @@ build target and nothing branches on which instance is being looked at.
 JSONL to stdout: `{ ts, level: "info"|"warn"|"error", evt, ...fields }`. Never log tokens,
 owner keys, or terminal data. `/api/introspect` exposes live state for agent-operators.
 
+`/ws/session` sends `{ type: "session", connectionId }` as its first server frame. The value is
+ephemeral, non-secret correlation for one physical socket, not identity or authority; the SDK
+exposes it as `SessionClient.connectionId` and includes it with the channel id, close code and
+bounded reason in `SessionConnectionError`. Server lifecycle logs use the same connection id and,
+after authentication, principal and channel/container identities. Refusals and closures record a
+bounded server-selected reason and cause; peer close text, credentials, request bodies, terminal
+content, URLs and continuous per-frame traffic are never logged.
+
 The log is the OPERATIONAL stream and it is not the audit: the durable record of who exercised
 what is the journal's trace family, read through `core.events.list` (axiom A6, §The journal and
 its two families). The two say the same word for the same dispatch — the `action` line's
