@@ -19,6 +19,8 @@ export const CAPS = [
   "machines:mint",
   /** Create and renew sponsor-bound autonomous-agent runs within the caller's frozen ceiling. */
   "agents:delegate",
+  /** Harness-host admission for exactly one durable Agent, never ordinary action authority. */
+  "agents:run",
   /**
    * READ A MACHINE'S OWN FACTS: what the enrolled agent can say about the host it runs on,
    * asked at `manifold://machine/<id>` rather than in the abstract. Separate from

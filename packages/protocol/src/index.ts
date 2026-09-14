@@ -329,6 +329,8 @@ export {
   type PluginCap,
 } from "./capabilities.ts";
 export {
+  ListRunsRequestSchema, ListRunsResultSchema, InspectRunRequestSchema, InspectRunResultSchema,
+  type ListRunsRequest, type ListRunsResult, type InspectRunRequest, type InspectRunResult,
   AGENT_JUSTIFICATION_MAX_LENGTH,
   AgentRunInventorySchema,
   AgentRunInspectionSchema,
@@ -342,15 +344,11 @@ export {
   type InspectAgentRunResult,
 } from "./agent-run-inspection.ts";
 export {
+  CreateRunRequestSchema, CreateRunResultSchema, CreateRunCredentialResultSchema,
+  CreateChildRunRequestSchema, LaunchRunRequestSchema, LaunchRunResultSchema, SendRunInputRequestSchema,
+  type CreateRunRequest, type CreateRunResult, type CreateRunCredentialResult,
+  type CreateChildRunRequest, type LaunchRunRequest, type LaunchRunResult, type SendRunInputRequest,
   AGENT_POLICY_SOURCES,
-  AGENT_RUN_MAX_DEPTH,
-  AGENT_RUN_MAX_DESCENDANTS,
-  AGENT_RUN_MAX_LIFETIME_MS,
-  AGENT_RUN_MAX_POLICY_BODY_BYTES,
-  AGENT_RUN_MAX_POLICY_BUNDLES,
-  AGENT_RUN_MAX_PURPOSE_LENGTH,
-  AGENT_RUN_MAX_RENEWALS,
-  AGENT_RUN_MAX_TASK_REFERENCE_LENGTH,
   AGENT_RUN_STATES,
   AGENT_RUN_TERMINAL_OUTCOMES,
   AcknowledgeAgentPolicyRequestSchema,
@@ -361,7 +359,6 @@ export {
   AgentPolicySourceSchema,
   AgentRunAuthorizationPathSchema,
   AgentRunAuthorizationCredentialSchema,
-  AgentRunCapSchema,
   AgentRunCleanupSchema,
   AgentRunCredentialSchema,
   AgentRunSchema,
@@ -383,7 +380,6 @@ export {
   type AgentRun,
   type AgentRunAuthorizationPath,
   type AgentRunAuthorizationCredential,
-  type AgentRunCap,
   type AgentRunCleanup,
   type AgentRunCredential,
   type AgentRunState,
@@ -396,6 +392,23 @@ export {
   type RenewAgentRunRequest,
   type RenewAgentRunResult,
 } from "./agent-runs.ts";
+export {
+  AGENT_RUN_MAX_DEPTH, AGENT_RUN_MAX_DESCENDANTS, AGENT_RUN_MAX_LIFETIME_MS,
+  AGENT_RUN_MAX_POLICY_BODY_BYTES, AGENT_RUN_MAX_POLICY_BUNDLES, AGENT_RUN_MAX_PURPOSE_LENGTH,
+  AGENT_RUN_MAX_RENEWALS, AGENT_RUN_MAX_TASK_REFERENCE_LENGTH,
+  AgentIdSchema, HarnessIdSchema, SessionRefSchema, RunModelSchema, RunActivitySchema,
+  AgentRunCapSchema, AgentRunCapsSchema, AgentDelegationSchema, AgentGrantSchema,
+  AgentContextSchema, AgentStateSchema, AgentSchema, AgentCredentialSchema,
+  RegisterAgentRequestSchema, RegisterAgentResultSchema, AgentRequestSchema,
+  GetAgentResultSchema, ListAgentsRequestSchema, ListAgentsResultSchema, UpdateAgentRequestSchema,
+  ReportRunActivityRequestSchema, HarnessDefinitionSchema, ListHarnessesResultSchema,
+  HarnessTargetSchema, AgentAdmissionRefusalSchema,
+  type AgentId, type HarnessId, type SessionRef, type RunModel, type RunActivity,
+  type AgentRunCap, type AgentDelegation, type AgentGrant, type AgentContext, type Agent,
+  type RegisterAgentRequest, type RegisterAgentResult, type AgentRequest, type GetAgentResult,
+  type ListAgentsResult, type UpdateAgentRequest, type ReportRunActivityRequest,
+  type HarnessDefinition, type ListHarnessesResult, type HarnessTarget, type AgentAdmissionRefusal,
+} from "./agents.ts";
 export { IDENTITY_COLORS, PrincipalSchema, identityColorFor, type Principal } from "./principal.ts";
 export {
   EVENT_KIND_PATTERN,
