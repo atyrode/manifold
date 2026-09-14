@@ -129,7 +129,7 @@ terminal-lifecycle identities retain their separately named internal paths.
 A run authenticates immediately but begins `pending_policy`. Until it fetches
 `core.access.getAgentPolicy` and sends every exact bundle id and digest to
 `core.access.acknowledgeAgentPolicy`, the dispatch ladder permits only policy and teardown
-doors. The required bytes are the built-in action-plane contract plus the optional operator
+doors and scoped run inspection. The required bytes are the built-in action-plane contract plus the optional operator
 file selected by `MANIFOLD_AGENT_POLICY_FILE`. A changed revision moves active runs to
 `policy_stale`; startup and the root-only `core.access.reloadAgentPolicy` apply the same
 reconciliation, and only exact re-acknowledgement restores ordinary actions.
@@ -192,6 +192,75 @@ sponsor, including when the child's bearer has expired. Lost creation responses,
 and uncatchable termination cannot guarantee cleanup: report failure and rely on server expiry
 only as the backstop. See [the operating contract](../packages/sdk/README.md) before launching.
 
+### Agent run inspection and declarations
+
+`core.access.inspectAgentRun` is the one headless projection drawn by the Sessions drill-down
+([ADR 0041](decisions/0041-agent-run-inspection.md), #557). Name exactly one `runId` or
+`principalId`; optionally name a decimal `traceId`, or page older attempts using
+`beforeTraceId` and `limit` (default 50, maximum 100). A trace reference is the same durable
+event-row id reported by action invocation, not a new request id.
+
+Authorization is identity-relative in `AuthService`: root may inspect any run; an authenticated
+run may inspect itself and its verified ancestor/descendant chain, never siblings; a sponsor
+may inspect only descendants reached through durable authorization edges. Every edge verifies
+parent id, sponsor principal, root id and depth. Every returned lineage link is checked again
+against the viewer, so opening an ancestor cannot disclose its other branches. Expired or
+revoked credentials cannot inspect. A denied run and a nonexistent run produce the same
+refusal; an unrelated trace id and a pruned/missing trace id both produce `unavailable` within
+an authorized run. `core.events.list` remains the root-only workspace journal door.
+
+The projection reads existing `agent_runs`, policy snapshots, principals, token/grant rows,
+the `events` trace family, `machine_jobs`, schedule occurrences (including ones refused before
+launch), retained terminals, and the live session gateway.
+It returns an explicit allowlist: sponsor/purpose/task, scope and capability ceilings, expiry
+and policy acknowledgement, credential/grant lifecycle summaries, observed connections,
+action/target/authority/outcome/timestamp/trace ids, native job revision/artifact pins and
+terminal references, lineage and cleanup counts. It never returns bearers, credential ids,
+hashes or prefixes, arbitrary trace payloads, action arguments, native input/environment,
+terminal bytes, retained output, raw policy bodies or cleanup exception text. Free-text
+declarations and labels are normalized and credential-like text is withheld. Artifact and
+policy revision digests are non-credential pins and remain inspectable.
+
+History is explicitly `retained_only`. A null trace outcome is `pending_or_crashed`, not
+success and not proof of a crash. A disconnected connection is `closed_or_unavailable`;
+its first/last trace observation is not a fabricated open/close timestamp. Legacy principals
+without a run envelope have `origin_unavailable`; a pruned native origin stays unavailable,
+and retained terminals are not called cleaned up. Expiry may be observable before cleanup;
+the projection reports expired authority separately from pending cleanup without mutating
+the run. No audit table, journal writer, retention policy or output-retention path is added.
+
+An action may publish `agentJustification: "required"`. The initial set is
+`core.access.createAgentRun`, `core.access.renewAgentRun`, `engine.jobs.execute`, and
+`engine.jobs.schedule`: delegation, extended authority, immediate native execution and
+deferred native execution. Ordinary reads and cleanup are not in this set. An accountable
+active run may supply `x-manifold-agent-justification` through the shared action transport.
+The dispatcher checks the optional text after existing policy, scope, capability and real input/
+target-relative/native admission. Isolated input transforms/refinements run exactly once before
+host admission; enforcement immediately precedes effects. Raw and normalized text are bounded to
+512 characters. A detection-only Unicode skeleton rejects obfuscated credential assignments and
+Basic/Bearer material without echoing or persisting it. Missing required text
+produces traced `justification_required`; invalid supplied text produces traced
+`invalid_justification`. The accepted declaration lives only in the existing trace payload's
+reserved `agentDeclaration` field; an action argument cannot populate it. Humans and
+non-accountable lifecycle identities receive the same mechanical traces with no invented
+declaration. A declaration is visibly an **agent's claim**, never authorization, hidden
+reasoning, verified intention or proof of compliance.
+Metadata-only migration 36 atomically records the last pre-cutover event id in
+`meta["agent-runs:declarations-after-event-id"]`, using retained and SQLite sequence maxima.
+Only later trace rows may carry trusted declarations. Legacy caller-supplied fields never become
+reasoning; missing/corrupt metadata fails closed and reopening does not reset the boundary.
+
+`core.access.listCredentials` retains its existing administrator-only fields and
+root/revocable-principal audience. `core.access.listAgentRuns` supplies the separately bounded
+newest 100 inspectable run summaries and a truncation flag to self/sponsor viewers, without
+credential references or raw names/purposes. Both revalidate credentials at point of use. The
+summary's reserved `runAccess: "inspect"` permits pending/stale and container-scoped run inspection
+without restoring ordinary effect authority. Agent names are accessible drill-down controls;
+human administrator rows keep their existing behavior. Opening a row, lineage navigation and
+exact trace references call the same inspection action, with no polling or browser history store.
+Replacing client/viewer authority synchronously removes privileged rows and snapshots; old async
+responses cannot restore them. Native jobs retain their stable ids as plain text because they are
+not navigable places; terminal/place links and exact trace expansion use existing doors.
 ## Topology
 
 ```
@@ -1506,12 +1575,14 @@ lets any principal render the same badge.
 attenuation, the revocation fence) stays floor and unchanged. The three doors, plus the five
 cross-instance ones below:
 
-| Action                        | Caps          | Scope     | Args → Result                                                                |
-| ----------------------------- | ------------- | --------- | ---------------------------------------------------------------------------- |
-| `core.access.createPrincipal` | `*`           | workspace | `{ name, color?, kind? }` → `TokenGrant` (caps `["*"]`, `containerId: null`) |
-| `core.access.mint`            | `tokens:mint` | container | `{ principal \| principalId, caps, containerId? }` → `TokenGrant`            |
-| `core.access.revoke`          | `tokens:mint` | container | `{ principalId }` → `{ revoked: <count> }` — **`cleanup: true`**             |
-| `core.access.listCredentials` | `tokens:mint` | workspace | `{}` → `{ principals: PrincipalCredentials[] }`                              |
+| Action                        | Caps              | Scope                              | Args → Result                                                                            |
+| ----------------------------- | ----------------- | ---------------------------------- | ---------------------------------------------------------------------------------------- |
+| `core.access.createPrincipal` | `*`               | workspace                          | `{ name, color?, kind? }` → `TokenGrant` (caps `["*"]`, `containerId: null`)             |
+| `core.access.mint`            | `tokens:mint`     | container                          | `{ principal \| principalId, caps, containerId? }` → `TokenGrant`                        |
+| `core.access.revoke`          | `tokens:mint`     | container                          | `{ principalId }` → `{ revoked: <count> }` — **`cleanup: true`**                         |
+| `core.access.listCredentials` | `tokens:mint`     | workspace                          | `{}` → `{ principals: PrincipalCredentials[] }`                                          |
+| `core.access.listAgentRuns`   | identity-relative | workspace / `runAccess: "inspect"` | `{}` → `AgentRunInventory` (at most 100 safe run summaries)                              |
+| `core.access.inspectAgentRun` | identity-relative | workspace / `runAccess: "inspect"` | `{ runId? \| principalId?, traceId?, beforeTraceId?, limit? }` → `InspectAgentRunResult` |
 
 `createPrincipal` demands `*` because `requireRoot` did; the other two demand `tokens:mint`
 because the mechanism did. Both of those are `scope: "container"` (§Actions rung 3) because

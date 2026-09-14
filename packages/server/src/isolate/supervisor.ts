@@ -76,6 +76,7 @@ interface Pending {
   readonly served: ServedCtx;
   readonly request: IsolateHostFrame;
   serving: number;
+  admitted: boolean;
   readonly answer: (frame: AnsweredFrame) => void;
   readonly fail: (error: Error) => void;
 }
@@ -372,7 +373,14 @@ export class IsolateSupervisor implements IsolateRunner {
       const { promise, resolve, reject } = Promise.withResolvers<AnsweredFrame>();
       const request = build(id);
       if (served.kind === "migration") isolate.migration = { id, calls: new Set() };
-      isolate.pending.set(id, { served, request, serving: 0, answer: resolve, fail: reject });
+      isolate.pending.set(id, {
+        served,
+        request,
+        serving: 0,
+        admitted: false,
+        answer: resolve,
+        fail: reject,
+      });
       if (!child.send(request)) reject(new IsolateDenial("unavailable", "isolate exited"));
       return await promise;
     } finally {
@@ -583,6 +591,33 @@ export class IsolateSupervisor implements IsolateRunner {
         }
         isolate.handshake.reject(new IsolateLoadError(frame.error));
         return;
+      case "prepared": {
+        const pending = isolate.pending.get(frame.id);
+        if (
+          pending === undefined ||
+          pending.request.t !== "dispatch" ||
+          pending.served.kind !== "dispatch" ||
+          pending.admitted ||
+          pending.serving !== 0
+        ) {
+          pending?.fail(new IsolateDenial("unavailable", "isolate prepared out of protocol"));
+          isolate.pending.delete(frame.id);
+          child.send({ t: "admitted", id: frame.id, allowed: false });
+          return;
+        }
+        try {
+          if (pending.served.ctx.admitPrepared === undefined)
+            throw new IsolateDenial("unavailable", "isolate has no admission continuation");
+          pending.served.ctx.admitPrepared(frame.targets);
+          pending.admitted = true;
+          child.send({ t: "admitted", id: frame.id, allowed: true });
+        } catch (error) {
+          pending.fail(error instanceof Error ? error : new Error("isolate admission failed"));
+          isolate.pending.delete(frame.id);
+          child.send({ t: "admitted", id: frame.id, allowed: false });
+        }
+        return;
+      }
       case "dispatched":
       case "migrated":
       case "hooked": {
@@ -604,6 +639,9 @@ export class IsolateSupervisor implements IsolateRunner {
               : "migrated";
         if (
           frame.t !== expected ||
+          (frame.t === "dispatched" &&
+            !pending.admitted &&
+            (frame.outcome.ok || frame.outcome.rule !== "invalid_args")) ||
           (pending.request.t === "migrate" &&
             (frame.t !== "migrated" ||
               frame.name !== pending.request.migration.name ||
@@ -704,6 +742,13 @@ export class IsolateSupervisor implements IsolateRunner {
     let reply: IsolateHostFrame;
     const migration = isolate.migration;
     try {
+      if (
+        pending?.served.kind === "dispatch" &&
+        (!pending.admitted ||
+          pending.request.t !== "dispatch" ||
+          isolate.pending.get(pending.request.id) !== pending)
+      )
+        throw new Error("dispatch has not been admitted");
       if (migration !== null) {
         if (
           pending?.served.kind !== "migration" ||

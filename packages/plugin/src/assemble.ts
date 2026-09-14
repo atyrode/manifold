@@ -640,6 +640,9 @@ export function assembleRoster(
         ...(action.delegates === undefined ? {} : { delegates: [...action.delegates] }),
         ...(action.cleanup === true ? { cleanup: true } : {}),
         ...(action.runAccess === undefined ? {} : { runAccess: action.runAccess }),
+        ...(action.agentJustification === undefined
+          ? {}
+          : { agentJustification: action.agentJustification }),
         // Always published, never inferred by the reader: the default is applied HERE so a
         // client answering "may my container-scoped token call this?" reads a value rather than an
         // absence it would have to know the rule for.

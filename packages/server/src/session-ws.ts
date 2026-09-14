@@ -74,6 +74,8 @@ const DENIAL_ERROR_CODES: Readonly<Record<ActionDenialRule, ErrorCode>> = {
   policy_stale: "forbidden",
   forbidden: "forbidden",
   invalid_args: "invalid",
+  justification_required: "forbidden",
+  invalid_justification: "invalid",
   refused: "conflict",
   unavailable: "forbidden",
 };
@@ -226,6 +228,18 @@ export class SessionGateway {
     private readonly runtime: RuntimeDeps,
     private readonly events: EventHub,
   ) {
+    auth.setRunConnectionReader((principalId) => {
+      const ids: string[] = [];
+      for (const connection of this.connections.values()) {
+        if (connection.closed) continue;
+        for (const { peer } of connection.channels.values()) {
+          if (peer.auth.principal.id !== principalId) continue;
+          ids.push(connection.id);
+          break;
+        }
+      }
+      return ids;
+    });
     this.removeRevocationListener = auth.onRevoked((principalId, containerId) => {
       this.revokePrincipal(principalId, containerId);
     });
@@ -1062,6 +1076,7 @@ export class SessionGateway {
   shutdown(): void {
     this.removeRevocationListener();
     this.removeRosterListener();
+    this.auth.setRunConnectionReader(() => []);
     this.plugins.streams.shutdown();
     for (const [id, connection] of [...this.connections]) {
       connection.cancelJoinTimeout?.();

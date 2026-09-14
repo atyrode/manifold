@@ -567,6 +567,19 @@ export const archive = defineAction({
 effect: "allow", reach: "subtree" }` is then the whole administration: one principal, one
 machine, one verb.
 
+For selected high-impact delegated effects, **`agentJustification: "required"`** publishes a
+bounded declaration requirement in the same action metadata at `GET /api/protocol`.
+An active accountable run supplies `x-manifold-agent-justification` through the shared action
+transport; raw and normalized text are limited to 512 characters, normalized to one safe line
+and rejected when credential-like. Existing real input and target/native authority refusers
+retain precedence; a missing/invalid declaration is enforced immediately before the admitted
+effect and is never authority. The dispatcher owns the reserved trace `agentDeclaration` field;
+action arguments cannot forge it, and pre-cutover payloads never become trusted declarations.
+Human callers are not asked to invent reasoning.
+Use this on high-impact delegation/execution, not ordinary reads or cleanup. The
+[inspection contract](CONTRACTS.md#agent-run-inspection-and-declarations) owns privacy and
+retention; it exposes no general trace payload.
+
 Two optional fields on an action are declared carve-outs from exactly one rung of the denial ladder,
 and they are the only ones:
 
@@ -2982,11 +2995,15 @@ served across a process boundary (`docs/CONTRACTS.md` §Hardened plugins, `ISOLA
   flushes them only when the dispatch is `ok`.
 
 Two rungs of the ladder are graded IN YOUR PROCESS (`ISOLATE_GUEST_DENIAL_RULES`): the runtime
-parses arguments against your action's own zod `input` (`invalid_args`, the engine's wording) and
-your handler's `{ refused }` is `refused`. Every other rung — unknown action, disabled plugin,
-scope, capabilities including the installer's grant — is the host's, and a dispatch never reaches
-you until it has passed them. Your `result` schema is enforced on the way out too, and the roster
-publishes both as JSON Schema from the `loaded` frame, generated from the zod you wrote.
+parses arguments against your action's own Zod `input` (`invalid_args`) and your handler's
+`{ refused }` is `refused`. Host policy/scope/capability checks precede invocation. After the
+guest's one real parse, its runtime sends `prepared` with only the declared authority targets;
+transformed arguments remain in the guest, including non-JSON values. The host evaluates its
+own requirements and agent declaration, then answers `admitted`. Context calls and successful
+results are forbidden before that admission, and a refused preparation never invokes the handler.
+The `result` schema is enforced on the way out too; the roster publishes both schemas from
+the `loaded` frame. Repack existing self-contained guests with the current kit for this mandatory
+handshake; there is no old-runtime validation fallback or second public action door.
 
 A hook (`onEnable`, `onDisable`, `onAssemblyChanged`) gets storage and the clock. It does NOT get
 `emit`: the `hooked` frame has no carrier for emissions, so a hook that emits fails by name instead

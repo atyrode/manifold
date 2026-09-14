@@ -1338,6 +1338,9 @@ CREATE TABLE scene_docs(container_id TEXT NOT NULL, epoch TEXT NOT NULL, rev INT
   ts INTEGER NOT NULL, hash TEXT NOT NULL, doc BLOB NOT NULL,
   PRIMARY KEY (container_id, epoch, rev));
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER,
+  principal_id TEXT, type TEXT, payload TEXT,
+  door TEXT, authority TEXT, targets TEXT, outcome TEXT, session TEXT);
 CREATE TABLE machines(id TEXT PRIMARY KEY, name TEXT, token_id TEXT, last_seen INTEGER);
 CREATE TABLE plugin_installs(
   plugin_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, source TEXT NOT NULL,
@@ -1618,7 +1621,6 @@ describe("migration 19: contributed element refs", () => {
       corruptDoc.destroy();
       expect(sha256Hex(corrupt.doc)).not.toBe(corrupt.hash);
       const before = new Database(path, { strict: true });
-      before.exec("CREATE TABLE events(id INTEGER PRIMARY KEY, container_id TEXT, ts INTEGER)");
       before
         .query<void, [string, string, number, number, string, Uint8Array]>(
           "INSERT INTO scene_docs(container_id, epoch, rev, ts, hash, doc) VALUES (?, ?, ?, ?, ?, ?)",
@@ -1721,7 +1723,7 @@ test("migration 23: canvas draw retains storage, reservations and disable attrib
   try {
     db.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE events(id INTEGER PRIMARY KEY, container_id TEXT, ts INTEGER);
+CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER);
 CREATE TABLE principals(id TEXT PRIMARY KEY, kind TEXT);
 CREATE TABLE machines(id TEXT PRIMARY KEY, token_id TEXT);
 CREATE TABLE terminals(agent_principal_id TEXT, status TEXT);
@@ -2182,6 +2184,9 @@ test("migration 27 preserves input receipts and installs while adding per-machin
     // Schema-26 rows deliberately predate both resource-binding columns.
     db.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER,
+  principal_id TEXT, type TEXT, payload TEXT,
+  door TEXT, authority TEXT, targets TEXT, outcome TEXT, session TEXT);
 INSERT INTO meta VALUES ('schema_version', '26');
 CREATE TABLE machine_job_installs(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, enabled INTEGER NOT NULL, ready INTEGER NOT NULL DEFAULT 0, purge_requested INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(machine_id,plugin_id));
 CREATE TABLE machine_job_installations(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL, PRIMARY KEY(machine_id,plugin_id,revision));
@@ -2277,6 +2282,9 @@ test("migration 29 preserves legacy forced stops independently of their reason t
   try {
     db.exec(`
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, container_id TEXT, ts INTEGER,
+  principal_id TEXT, type TEXT, payload TEXT,
+  door TEXT, authority TEXT, targets TEXT, outcome TEXT, session TEXT);
 INSERT INTO meta VALUES ('schema_version', '28');
 CREATE TABLE machine_jobs(job_id TEXT PRIMARY KEY, cancel_reason TEXT);
 ${LEGACY_PLUGIN_INSTALLS}

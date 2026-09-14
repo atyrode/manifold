@@ -329,6 +329,19 @@ export {
   type PluginCap,
 } from "./capabilities.ts";
 export {
+  AGENT_JUSTIFICATION_MAX_LENGTH,
+  AgentRunInventorySchema,
+  AgentRunInspectionSchema,
+  AgentRunTraceSummarySchema,
+  InspectAgentRunRequestSchema,
+  InspectAgentRunResultSchema,
+  type AgentRunInspection,
+  type AgentRunInventory,
+  type AgentRunTraceSummary,
+  type InspectAgentRunRequest,
+  type InspectAgentRunResult,
+} from "./agent-run-inspection.ts";
+export {
   AGENT_POLICY_SOURCES,
   AGENT_RUN_MAX_DEPTH,
   AGENT_RUN_MAX_DESCENDANTS,

@@ -97,6 +97,9 @@ export function localActionDef(pluginId: string, summary: ActionSummary): AnyAct
     ...(summary.trace === undefined ? {} : { trace: summary.trace }),
     ...(summary.cleanup === true ? { cleanup: true } : {}),
     ...(summary.runAccess === undefined ? {} : { runAccess: summary.runAccess }),
+    ...(summary.agentJustification === undefined
+      ? {}
+      : { agentJustification: summary.agentJustification }),
     input: z.unknown().meta({ ...summary.input }),
     result: z.unknown().meta({ ...summary.result }),
   };
@@ -158,6 +161,7 @@ export function buildIsolateDef(
   return {
     def: {
       manifest,
+      inputValidation: "guest",
       actions,
       handlers,
       lifecycle,

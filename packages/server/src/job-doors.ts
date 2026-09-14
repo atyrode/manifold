@@ -138,6 +138,7 @@ export function jobContext(
   auth: AuthContext,
   pluginId: string,
   traceId: number | string,
+  beforeEffect?: () => void,
 ): JobContext {
   const callee = (requested?: string): string =>
     pluginId === "engine.jobs" ? id.parse(requested) : pluginId;
@@ -171,7 +172,13 @@ export function jobContext(
     execute: (args) => {
       const { pluginId: requested, ...request } = args;
       return service().publicJob(
-        service().execute(auth, callee(requested), String(traceId), execute.parse(request)),
+        service().execute(
+          auth,
+          callee(requested),
+          String(traceId),
+          execute.parse(request),
+          beforeEffect,
+        ),
       );
     },
     status: (node: z.infer<typeof jobNode>) =>
@@ -240,6 +247,7 @@ export function jobContext(
         String(traceId),
         schedule.parse(request),
         pluginId,
+        beforeEffect,
       );
       return {};
     },
@@ -360,6 +368,9 @@ export const jobDoors: ServerPluginDef = {
           ? ["*"]
           : [],
       trace: "opaque",
+      ...(name === "execute" || name === "schedule"
+        ? { agentJustification: "required" as const }
+        : {}),
       input,
       result: results[name] ?? empty,
     }),
