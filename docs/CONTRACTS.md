@@ -1196,7 +1196,7 @@ rides the connection-level `plugins` frame the same way:
   lifecycle?: "ok" | "enable_failed" | "disable_failed"
            | "isolate_starting" | "isolate_crashed",   // absent ≡ ok; the isolate_ pair is the runner's
   refusal?: PluginRefusalReason,              // why this row cannot be toggled right now
-  held?: { reason: string, by?: string },     // assembly quarantine; enabled is false
+  held?: { reason: string, by?: string, minimum?: number }, // assembly quarantine; enabled is false
   changedBy?: string | null, changedAt?: number | null,    // who last flipped it, and when
   install?: { sha256, source, grantedCaps, installedBy, installedAt, hardened?, builtAgainst?, mode?, refusal? }  // present iff INSTALLED (§Hardened plugins)
 }
@@ -1215,6 +1215,10 @@ a held plugin refuses with that reason. Compatible replacement clears holds on r
 Core-manifest problems remain fatal with the named `AssemblyError`. Install and replacement
 preflight still reject conflicting candidate bundles before admission; holding is not a second
 installation mode (ADR 0045).
+An installed bundle without an accepted `hardenedContract` is held before any import or child
+spawn, with `held: { reason: "repack_required", minimum: N }`. The minimum is an integer SDK
+contract, not the hub's release number. Repack once with a current plugin kit and replace the
+bundle; do not edit the stamp on old executable bytes.
 
 `GET /api/protocol` embeds the same vocabulary beside the wire schemas, plus a `pluginContract`
 block — `engineNamespace`, `sources`, `dependencyTypes`, `dormantModes`, `defaultDormantMode`,
@@ -2068,6 +2072,7 @@ nothing. A plugin's own JSX wears the root class on its root element; the engine
 
 ```json
 { "format": 1,
+  "hardenedContract": 2,
   "manifest": { ...PluginManifest, "entry": { "server": true, "web": "web.js", "styles": true } },
   "files": { "server.js": "<base64>", "web.js": "<base64>", "styles.css": "<base64>" } }
 ```
@@ -2102,6 +2107,34 @@ always did). Hardened bundles are self-contained (`pack --self-contained`) and r
 existing process/Worker runners. In-realm bundles use the shared-module registry and plain
 `import()`. Selecting hardening does not turn a React definition into a worker program; the
 React-over-frames reconciler is #259.
+
+**Executable bundle compatibility (#602).** Every pack stamps `hardenedContract` independently
+of `format` and the machine/session protocols. `HARDENED_CONTRACT_VERSION` is 2; the hub accepts
+`HARDENED_CONTRACT_COMPAT_VERSIONS = {1, 2}`, with minimum 1. Add an additive-optional contract
+to that set; reset it for a genuine break. An unstamped or outside-set installed artifact is
+held at assembly with `repack_required` and the minimum, never imported or spawned, even if
+the administrator had it disabled. Fresh incompatible installs are refused by name with the
+same repacking guidance; the admission path never replaces a working bundle with them.
+
+HISTORY: contract 1 identifies the bounded receipt transport (#536) plus the prepared/admitted
+dispatch boundary (#587). Pre-#587 bytes are not contract 1 and must be repacked. Contract
+1 → 2 adds the optional `load.hardenedContract` identity. The hub omits it for contract-1
+guests, whose strict old parser and ordinary dispatch remain supported; contract-2 guests
+check it against their packed runtime. Subsequent optional fields are gated by the admitted
+contract, never sent speculatively. “Isolate answered out of protocol” denotes an internal
+protocol violation, not an SDK-upgrade remedy exposed after version drift.
+
+**Installed deployment export.** Root-only `engine.plugins.exportInstalled {}` returns a
+versioned snapshot of the installed bundle bytes and the safe `plugin_installs` projection,
+including enablement and developer mode. Paths are relative to the plugin data root; source
+URLs are replaced with that path. Installer credential lineage, bearer credentials and owner
+keys are not exported. It is a read-only declared door through the normal authority/trace
+ladder, not a database-download endpoint. Deployment automation boots the exact candidate
+image with this snapshot in disposable data directories before replacing the target hub;
+[SELF-HOST.md §Environments](SELF-HOST.md#environments) owns this mandatory gate and its
+explicit, default-off one-time bootstrap exception for an authenticated `unknown_action`
+response from a target predating the export door. The exception emits a target/reason warning
+and step-summary receipt; an existing door always runs the normal gate.
 
 **The install grant (ADR 0016 §5, R4 = option B).** `install.grantedCaps` is what the installer
 consented to. It defaults to the manifest's declared `capabilities` minus the high-risk set
@@ -2140,7 +2173,7 @@ receipt, so merely writing more calls cannot hide an unread reply backlog:
 
 | Direction  | `t`           | Carries                                                                                                                                                                    |
 | ---------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| host→child | `load`        | `pluginId`, `manifest`, `dir` — the first frame; the child already runs from `dir`                                                                                         |
+| host→child | `load`        | `pluginId`, `manifest`, `dir`, `hardenedContract?` (contract 2+) — the first frame; the child already runs from `dir`                                                      |
 | host→child | `dispatch`    | `id`, `action` (LOCAL name), `args`, `ctx: { traceId, principal, caps, isRoot, containerScope, now }` — the caller's authority captured per id                             |
 | host→child | `hook`        | `id`, `hook: "onEnable" \| "onDisable" \| "onAssemblyChanged"`, `delta?: { enabled, disabled }`                                                                            |
 | host→child | `reply`       | `id`, `ok: true, result` or `ok: false, error` — the answer to a child's `call`                                                                                            |
@@ -2152,14 +2185,11 @@ receipt, so merely writing more calls cannot hide an unread reply backlog:
 | child→host | `received`    | unpredictable receipt from one consumed host envelope; receipts are FIFO and cannot be guessed from outgoing calls                                                         |
 | child→host | `call`        | `id`, `method: IsolateCtxMethod`, `args: unknown[]`                                                                                                                        |
 
-The bounded receipt socket and strict frames introduced by #536 are the minimum supported hardened
-runner generation. A bundle packed before that boundary waits on Bun IPC instead of reading fd 3;
-the hub does not restore that unbounded deserialization path and refuses a silent or exiting load
-with guidance to repack using a current plugin kit. Because `traceId` already belongs to this
-supported generation's exact context, a missing future capability handshake cannot mean the
-pre-#312 five-field shape. Any later additive context field must first gain an explicit child
-capability in `loaded`; the host sends it only after advertisement, while both sides remain strict
-about the negotiated frame.
+The bounded receipt socket (#536) and prepared/admitted dispatch (#587) together define the
+minimum supported hardened contract. Older Bun-IPC or pre-admission bundles are held before
+spawning, not diagnosed by a timeout or first dispatch. Both sides retain strict frame
+validation. Future optional fields must have an explicit minimum contract, and the host
+sends them only to an admitted bundle that understands them.
 
 The ctx slices served over `call` are exactly `ISOLATE_CTX_METHODS`: `storage.get` / `set` /
 `compareAndSet` / `delete` / `keys` (namespaced by plugin id), `auth.allows` (graded as the dispatching principal,
@@ -3093,36 +3123,47 @@ read a retained IPC-1 owner and resume its existing terminals. Without an explic
 declaration it cannot create new ambient shells. Governed requests still require their
 separate native owner proof and admitted resource/runtime bindings.
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 36. Version 31 added an
-operation's declared `limits.concurrentJobs`; version 32 added metered service policies and a job's
-inference limits, usage and journal events; version 33 added the workload's own reported progress
-as a job event of its own; version 34 added the `pi-native-usage` meter kind a policy may name;
-version 35 added a terminal runtime's host-minted one-use `launchBinding` and the private native
-launch carrier; version 36 adds an operation's declared bound `inputs` and `exports`, a request's
-`inputs` bindings and `limits.inputBytes`.
-All of them cross the strict owner parser, in install, start, event and
-result frames, so an owner at another version is never an execution owner for this hub. It remains
-disconnected for job admission, installation, resources, services, readiness, input and output.
-It is not the hub/session `PROTOCOL_VERSION`: an unchanged native RPC remains compatible
-through a transport or browser upgrade. A native RPC change requires its own coordinated,
-drained owner upgrade. Compatibility alone never proves current execution consent or
-resource readiness, and no PTY, polling or alternate execution path substitutes for it.
+### Native job owner RPC
 
-The bounded retirement set is `{30, 31, 32, 33, 34, 35}`, not general backwards compatibility. A member may
-receive an owner challenge only while the machine is drained and its owner id, public key and
-generation exactly match the durable pin. Successful proof permits only `drain` plus
-`status` and `cancel`/`retire` without an admission payload for an already-retained job carrying
-that exact owner generation and a durable cancellation. Status recovers a final result that
-completed while disconnected; cancellation proves whole-workload emptiness.
-Only a terminal `result` and `workload_empty` for that cancelled job are accepted in return.
-The connection never becomes an online execution
-owner or publishes retained service readiness. These lifecycle frames are the unchanged subset
-across the named versions; any other native RPC version, identity, state or frame remains fenced.
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 36, and
+`JOB_OWNER_PROTOCOL_COMPAT_VERSIONS = {34, 35, 36}`. It is independent of machine and session
+protocols. An additive-optional change **adds** its new version to the acceptance set; a
+breaking change **resets** the set and requires a coordinated drained owner upgrade.
+Compatibility never substitutes for owner proof, current execution consent or resource
+readiness.
 
-A structurally valid native-owner announcement outside the current or bounded-retirement rules
-does not invalidate an otherwise compatible machine transport. The owner receives no native
-challenge or job authority, while machine presence, retained terminal continuity and
-the named drain/maintenance path remain available for the coordinated upgrade.
+HISTORY: version 31 added `limits.concurrentJobs`; 32 added metered service policies,
+inference limits, usage and journal events; 33 added workload-reported progress; 34 is the
+accepted baseline and added the `pi-native-usage` meter kind (#572). The additive 34 → 35
+change added optional `privateEnv`, terminal `runId` and host-minted `launchBinding` (#587).
+The additive 35 → 36 change added operation `inputs`/`exports`, request `inputs` and
+`limits.inputBytes` (#592). These are optional operations, not permission to orphan every
+already-running job or instance service.
+
+The hub sends only fields the negotiated owner parses. Private launch and `launchBinding`
+require 35; bound inputs require 36. An older accepted owner keeps serving its compatible
+jobs and instance services; only the newer operation is refused by name
+(`run_launch_protocol_unsupported` or `bound_inputs_protocol_unsupported`). Unsupported
+operation declarations are omitted from that owner's install projection rather than
+weakening them, and signed admissions are never rewritten. Upgrading an owner may restore
+the complete installation only when its retained command exactly matches the deterministic
+older projection of the authenticated full install; existing operations, artifacts and
+resource authority remain immutable.
+
+Retirement is independent of the acceptance set, unconditionally across owner RPC versions.
+An outside-set owner is refused all new work but may prove the existing durable owner id,
+public key and generation while its machine is drained. That proof permits `drain` plus
+`status` and `cancel`/`retire` without admission for an already-retained, durably cancelled
+job owned by that exact generation. Only its terminal `result` and `workload_empty` are
+accepted in return. The connection never becomes an online execution owner, never publishes
+service readiness, and cannot resurrect work. Drain/finish-cancelled/atomic maintenance
+shutdown remain usable even after a breaking reset. Identity, signature, generation and
+whole-workload-emptiness fences still apply.
+
+A structurally valid native-owner announcement does not invalidate an otherwise compatible
+machine transport. An owner outside the acceptance set that does not qualify for retirement
+receives no native authority, while machine presence, retained terminal continuity and the
+named drain/maintenance path remain available for the coordinated upgrade.
 
 The independent federation set is `{27, 28, 29, 30, 31, 32, 33}`; these machine/native changes leave its
 frames and resource vocabularies unchanged. The earlier per-program and per-job transport

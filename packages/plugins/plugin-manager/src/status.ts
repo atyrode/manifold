@@ -226,7 +226,14 @@ export function pluginStatus(
   entry: PluginRosterEntry,
 ): PluginStatus {
   if (entry.held !== undefined) {
-    return { word: "Held", tone: "attention", why: entry.held.reason };
+    return {
+      word: "Held",
+      tone: "attention",
+      why:
+        entry.held.reason === "repack_required"
+          ? `Repack this bundle once with plugin-kit hardened contract ${String(entry.held.minimum)} or a newer accepted contract; no code from this bundle was loaded.`
+          : entry.held.reason,
+    };
   }
   const installRefusal = entry.install?.refusal;
   if (installRefusal !== undefined) {

@@ -356,6 +356,8 @@ function refusalMessage(problems: readonly string[]): string {
 export interface AssemblyProblem {
   readonly reason: string;
   readonly plugins: readonly string[];
+  /** An executable contract hold carries the minimum accepted SDK contract to the roster. */
+  readonly minimum?: number;
 }
 
 /**
@@ -589,7 +591,13 @@ export function assembleRoster(
       }
       for (const id of offenders) {
         const prior = held.get(id);
-        held.set(id, { reason: prior ? `${prior.reason}; ${problem.reason}` : problem.reason });
+        if (prior?.reason === "repack_required") continue;
+        held.set(
+          id,
+          problem.reason === "repack_required"
+            ? { reason: problem.reason, minimum: problem.minimum }
+            : { reason: prior ? `${prior.reason}; ${problem.reason}` : problem.reason },
+        );
       }
     }
     for (;;) {

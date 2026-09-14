@@ -746,7 +746,7 @@ describe("machine admission and terminal continuity", () => {
     fix.gateway.setJobs(jobs);
     const keys = generateKeyPairSync("ed25519");
     const owner: JobOwner = {
-      protocolVersion: JOB_OWNER_PROTOCOL_VERSION - 1,
+      protocolVersion: JOB_OWNER_PROTOCOL_VERSION + 1,
       ownerId: "retained-owner",
       publicKey: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
       generation: 1,

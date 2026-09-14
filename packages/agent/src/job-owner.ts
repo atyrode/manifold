@@ -6,6 +6,7 @@ import { connectWorkloadLoopback } from "./job-listener-proof.ts";
 import {
   canonicalJobJson,
   JOB_OWNER_PROTOCOL_VERSION,
+  jobOwnerInstallRestoresProjection,
   JobCommandSchema,
   JobRequestSchema,
   JobResultSchema,
@@ -1665,11 +1666,26 @@ export class MachineJobOwner {
         throw new Error("artifact_unexpected_delivery");
     const archives = new Map<string, Buffer>();
     const decoded = new Map<string, Buffer>();
+    const declarationChanged =
+      existing !== undefined && jobDigest(existing.command) !== jobDigest(command);
+    const restoresProjection =
+      declarationChanged && jobOwnerInstallRestoresProjection(existing.command, command);
+    if (restoresProjection || !existing) {
+      for (const locationId of Object.keys(command.machine.locations))
+        if (!locationId.startsWith(`${command.pluginId}.`))
+          throw new Error("location_namespace_mismatch");
+      for (const [id, operation] of Object.entries(command.machine.operations)) {
+        if (!id.startsWith(`${command.pluginId}.`)) throw new Error("operation_namespace_mismatch");
+        for (const location of operation.locations)
+          if (!command.machine.locations[location.locationId])
+            throw new Error("undeclared_location");
+      }
+    }
     if (command.action) {
       if (
         !existing ||
         existing.command.artifactSha256 !== command.artifactSha256 ||
-        jobDigest(existing.command.machine) !== jobDigest(command.machine)
+        (jobDigest(existing.command.machine) !== jobDigest(command.machine) && !restoresProjection)
       )
         throw new Error("installation_revision_changed");
       const affected = [...this.jobs.values()].filter(
@@ -1681,6 +1697,7 @@ export class MachineJobOwner {
       )
         throw new Error("installation_active_leases");
       this.options.journal.append({ kind: "install", command });
+      if (restoresProjection) existing.command = { ...command, action: undefined };
       existing.enabled = false;
       if (command.action === "disable") {
         for (const installation of this.installs.values()) {
@@ -1736,7 +1753,7 @@ export class MachineJobOwner {
     }
     if (existing) {
       deliveredArtifact(artifactSpec, delivery, decoded);
-      if (jobDigest(existing.command) !== jobDigest(command))
+      if (declarationChanged && !restoresProjection)
         throw new Error("installation_revision_changed");
       if (!existing.artifact)
         existing.artifact = await acquireArtifact(
@@ -1747,21 +1764,13 @@ export class MachineJobOwner {
           archives,
           decoded,
         );
-      if (!existing.enabled) {
+      if (!existing.enabled || restoresProjection) {
         this.options.journal.append({ kind: "install", command });
+        existing.command = command;
         existing.enabled = true;
       }
     } else {
       if (this.installs.size >= 128) throw new Error("installation_capacity");
-      for (const locationId of Object.keys(command.machine.locations))
-        if (!locationId.startsWith(`${command.pluginId}.`))
-          throw new Error("location_namespace_mismatch");
-      for (const [id, operation] of Object.entries(command.machine.operations)) {
-        if (!id.startsWith(`${command.pluginId}.`)) throw new Error("operation_namespace_mismatch");
-        for (const location of operation.locations)
-          if (!command.machine.locations[location.locationId])
-            throw new Error("undeclared_location");
-      }
       const artifact = await acquireArtifact(
         artifactSpec,
         this.options.cache,

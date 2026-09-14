@@ -512,6 +512,7 @@ export const IsolateHostFrameSchema = z.discriminatedUnion("t", [
     pluginId: PluginIdSchema,
     manifest: PluginManifestSchema,
     dir: z.string().min(1).max(4096),
+    hardenedContract: z.number().int().positive().optional(),
   }),
   z.strictObject({
     t: z.literal("dispatch"),
@@ -735,6 +736,21 @@ export type WebIsolateWorkerFrame = z.infer<typeof WebIsolateWorkerFrameSchema>;
 export const PLUGIN_BUNDLE_FORMAT = 1;
 
 /**
+ * Hardened bundle compatibility is independent of the artifact format and machine/session
+ * channels. Add an additive-optional version to the set; reset the set only on a real break.
+ * A host emits a newer field only to the contract that understands it.
+ *
+ * HISTORY
+ * 1: The bounded receipt transport (#536) and prepared/admitted dispatch (#587) baseline.
+ *    Earlier, unstamped bundles are not this baseline and require one repack.
+ * 1 -> 2: Additive-optional `load.hardenedContract` identifies the admitted bundle contract.
+ *    Contract-1 guests still receive the original load frame and retain prepared admission.
+ */
+export const HARDENED_CONTRACT_VERSION = 2;
+export const HARDENED_CONTRACT_COMPAT_VERSIONS: ReadonlySet<number> = new Set([1, 2]);
+export const HARDENED_CONTRACT_MINIMUM = Math.min(...HARDENED_CONTRACT_COMPAT_VERSIONS);
+
+/**
  * The file the server guest lives in when `entry.server` is true. A NAME rather than a field
  * because the bundle is self-contained — the kit's `pack` inlines the guest runtime into it —
  * and `Bun.spawn(["bun", "--smol", "<dir>/server.js"])` is the whole loader.
@@ -771,6 +787,8 @@ export const MAX_PLUGIN_BUNDLE_FILES = 64;
 export const PluginBundleSchema = z
   .strictObject({
     format: z.literal(PLUGIN_BUNDLE_FORMAT),
+    /** Absent on legacy artifacts so assembly can hold them with repacking guidance. */
+    hardenedContract: z.number().int().positive().optional(),
     /*
       `safeExtend`, not `extend`: the manifest carries a refinement of its own (a capability
       must be the engine's or the declaring plugin's, ADR 0035), and zod refuses to overwrite

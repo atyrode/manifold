@@ -271,6 +271,7 @@ async function fixture(onEnable: (ctx: LifecycleCtx) => void | Promise<void>) {
   const bytes = Buffer.from(
     JSON.stringify({
       format: 1,
+      hardenedContract: 2,
       manifest: MANIFEST,
       files: { "server.js": Buffer.from("export {};").toString("base64") },
     }),

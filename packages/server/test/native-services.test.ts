@@ -187,8 +187,10 @@ function fixture(servicePolicy = policy, mode: "read" | "invoke" = "read") {
   };
 }
 
-test("projected native reads need service authority, not machine execution or an installed worker", async () => {
+test("v35 native reads keep working with service authority, not machine execution or an installed worker", async () => {
   const f = fixture();
+  f.owner.protocolVersion = 35;
+  f.prove();
   try {
     expect(f.reader.caps).toEqual(["services:read"]);
     const pending = f.service.readService(f.reader, f.args);

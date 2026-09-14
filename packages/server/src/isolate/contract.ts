@@ -24,6 +24,8 @@ export interface InstalledPluginRef {
   readonly manifest: PluginManifest;
   /** The extracted bundle directory containing `server.js` (`PLUGIN_BUNDLE_SERVER_FILE`). */
   readonly dir: string;
+  /** The assembly-admitted stamp; absent only for a caller supplying a raw contract-1 guest. */
+  readonly hardenedContract?: number;
 }
 
 /**

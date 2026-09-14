@@ -1,10 +1,10 @@
-# THE OPERATOR'S DEVELOPMENT INSTANCE, consuming every green `main` and permitting an
-# explicit compare-and-swap rollback (docs/SELF-HOST.md §Environments). Both paths prove the
+# THE OPERATOR'S DEVELOPMENT INSTANCE, consuming every green `main` and permitting explicit
+# forward deployment or compare-and-swap rollback (docs/SELF-HOST.md §Environments). Both paths prove the
 # exact commit with the complete CI gate before the forced-command receiver applies its own
 # ordering guard. Production is a different file and a different decision (deploy-hub.yml).
 name: Deploy development
 run-name: >-
-  ${{ github.event_name == 'workflow_dispatch' && format('Rollback development to {0}', inputs.target_sha) || format('Deploy development {0}', github.event.workflow_run.head_sha) }}
+  ${{ github.event_name == 'workflow_dispatch' && format('{0} development to {1}', inputs.operation == 'deploy' && 'Deploy' || 'Rollback', inputs.target_sha) || format('Deploy development {0}', github.event.workflow_run.head_sha) }}
 
 on:
   workflow_run:
@@ -13,21 +13,32 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      operation:
+        description: Deployment direction; rollback retains the expected-current compare-and-swap guard
+        required: true
+        default: rollback
+        type: choice
+        options: [rollback, deploy]
       target_sha:
-        description: Full lowercase 40-character main SHA to restore (non-secret)
+        description: Full lowercase 40-character main SHA to deploy (non-secret)
         required: true
         type: string
       expected_current_sha:
-        description: Full lowercase 40-character SHA expected to be running (compare-and-swap)
-        required: true
+        description: For rollback, the full lowercase 40-character expected current SHA (compare-and-swap)
+        required: false
         type: string
       reason:
-        description: Non-secret single-line rollback reason (1-500 characters)
+        description: Non-secret single-line deployment reason (1-500 characters)
         required: true
         type: string
       compatibility_reviewed:
         description: I reviewed application/data compatibility; this does not restore databases
         required: true
+        default: false
+        type: boolean
+      bootstrap_gate:
+        description: Permit one-time bootstrap only when the target export door returns unknown action
+        required: false
         default: false
         type: boolean
 
@@ -42,8 +53,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: development
+  request:
+    name: Prove deployment request
     if: >-
       vars.DEV_DEPLOY_HOST != '' &&
       ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
@@ -54,16 +65,17 @@ jobs:
         github.event.workflow_run.head_branch == 'main' &&
         (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')))
     runs-on: ubuntu-latest
-    environment:
-      name: development
-      url: ${{ vars.DEV_DEPLOY_URL }}
-    env:
-      DEV_URL: ${{ vars.DEV_DEPLOY_URL }}
+    outputs:
+      sha: ${{ steps.request.outputs.sha }}
+      expected_current_sha: ${{ steps.request.outputs.expected_current_sha }}
+      rollback: ${{ steps.request.outputs.rollback }}
+      ci_run_id: ${{ steps.request.outputs.ci_run_id }}
     steps:
       - name: Prove deployment request and exact full CI gate
         id: request
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
+          DISPATCH_OPERATION: ${{ inputs.operation || 'rollback' }}
           DISPATCH_TARGET_SHA: ${{ inputs.target_sha }}
           DISPATCH_EXPECTED_CURRENT_SHA: ${{ inputs.expected_current_sha }}
           DISPATCH_REASON: ${{ inputs.reason }}
@@ -71,19 +83,27 @@ jobs:
         with:
           script: |
             const fullSha = /^[0-9a-f]{40}$/;
-            const rollback = context.eventName === "workflow_dispatch";
+            const dispatched = context.eventName === "workflow_dispatch";
+            const operation = process.env.DISPATCH_OPERATION ?? "rollback";
+            if (dispatched && !["rollback", "deploy"].includes(operation)) {
+              throw new Error("operation must be rollback or deploy");
+            }
+            const rollback = dispatched && operation === "rollback";
             let target;
             let expected = "";
 
-            if (rollback) {
+            if (dispatched) {
               if (context.ref !== "refs/heads/main" || context.payload.repository?.default_branch !== "main") {
-                throw new Error("Development rollback must run from the trusted default branch main");
+                throw new Error("Development dispatch must run from the trusted default branch main");
               }
               target = process.env.DISPATCH_TARGET_SHA ?? "";
-              expected = process.env.DISPATCH_EXPECTED_CURRENT_SHA ?? "";
+              if (rollback) expected = process.env.DISPATCH_EXPECTED_CURRENT_SHA ?? "";
               const reason = process.env.DISPATCH_REASON ?? "";
-              if (!fullSha.test(target) || !fullSha.test(expected)) {
-                throw new Error("target_sha and expected_current_sha must be full lowercase 40-character SHAs");
+              if (!fullSha.test(target)) {
+                throw new Error("target_sha must be a full lowercase 40-character SHA");
+              }
+              if (rollback && !fullSha.test(expected)) {
+                throw new Error("expected_current_sha must be a full lowercase 40-character SHA");
               }
               if (reason.length > 500 || reason.trim().length === 0 || /[\r\n\x00-\x1f\x7f]/.test(reason)) {
                 throw new Error("reason must be a nonempty, single-line, non-secret value of at most 500 characters");
@@ -116,7 +136,7 @@ jobs:
             if (proof.name !== "CI" || proof.path !== ".github/workflows/ci.yml") {
               throw new Error(`Latest exact-commit proof ${proof.id} is not the required CI workflow`);
             }
-            if (!rollback && (context.payload.workflow_run?.id !== proof.id ||
+            if (!dispatched && (context.payload.workflow_run?.id !== proof.id ||
                 context.payload.workflow_run?.run_attempt !== proof.run_attempt)) {
               throw new Error(`Triggering CI attempt is not the latest exact-commit proof for ${target}`);
             }
@@ -150,6 +170,44 @@ jobs:
             core.setOutput("rollback", rollback ? "true" : "false");
             core.setOutput("ci_run_id", String(proof.id));
 
+  installed-bundles:
+    name: installed-bundles
+    needs: [request]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SHA: ${{ needs.request.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.request.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/bun-workspace
+      - name: Build the exact candidate
+        run: |
+          [[ $(git rev-parse HEAD) == "$SHA" ]]
+          eval "$(bun scripts/build-identity.ts --env)"
+          docker build --tag "installed-bundles:$SHA" \
+            --build-arg MANIFOLD_VERSION --build-arg MANIFOLD_BUILD --build-arg MANIFOLD_CHANNEL .
+      - name: Check the running instance's installed bundles without changing it
+        env:
+          INSTALLED_BUNDLES_ORIGIN: ${{ vars.DEV_DEPLOY_URL }}
+          INSTALLED_BUNDLES_TOKEN: ${{ secrets.DEV_INSTALLED_BUNDLES_TOKEN }}
+          INSTALLED_BUNDLES_BOOTSTRAP_GATE: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_gate }}
+        run: bun scripts/installed-bundles.ts "installed-bundles:$SHA"
+
+  deploy:
+    name: development
+    needs: [request, installed-bundles]
+    runs-on: ubuntu-latest
+    environment:
+      name: development
+      url: ${{ vars.DEV_DEPLOY_URL }}
+    env:
+      DEV_URL: ${{ vars.DEV_DEPLOY_URL }}
+      SHA: ${{ needs.request.outputs.sha }}
+    steps:
       - name: Check out trusted workflow code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -165,7 +223,7 @@ jobs:
       - name: Name the expected build without executing target code
         id: identity
         env:
-          SHA: ${{ steps.request.outputs.sha }}
+          SHA: ${{ needs.request.outputs.sha }}
         run: |
           resolved="$(git rev-parse --verify "$SHA^{commit}")"
           if [ "$resolved" != "$SHA" ]; then
@@ -178,11 +236,11 @@ jobs:
       - name: Record deployment intent
         env:
           ACTOR: ${{ github.actor }}
-          SHA: ${{ steps.request.outputs.sha }}
-          EXPECTED_CURRENT_SHA: ${{ steps.request.outputs.expected_current_sha }}
-          ROLLBACK: ${{ steps.request.outputs.rollback }}
+          SHA: ${{ needs.request.outputs.sha }}
+          EXPECTED_CURRENT_SHA: ${{ needs.request.outputs.expected_current_sha }}
+          ROLLBACK: ${{ needs.request.outputs.rollback }}
           REASON: ${{ inputs.reason }}
-          CI_RUN_ID: ${{ steps.request.outputs.ci_run_id }}
+          CI_RUN_ID: ${{ needs.request.outputs.ci_run_id }}
         run: |
           {
             if [ "$ROLLBACK" = true ]; then
@@ -196,9 +254,9 @@ jobs:
 
       - name: Hand the guarded request to the host
         env:
-          SHA: ${{ steps.request.outputs.sha }}
-          EXPECTED_CURRENT_SHA: ${{ steps.request.outputs.expected_current_sha }}
-          ROLLBACK: ${{ steps.request.outputs.rollback }}
+          SHA: ${{ needs.request.outputs.sha }}
+          EXPECTED_CURRENT_SHA: ${{ needs.request.outputs.expected_current_sha }}
+          ROLLBACK: ${{ needs.request.outputs.rollback }}
           DEV_DEPLOY_SSH_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
           DEV_DEPLOY_USER: ${{ vars.DEV_DEPLOY_USER }}
           DEV_DEPLOY_HOST: ${{ vars.DEV_DEPLOY_HOST }}
@@ -229,3 +287,13 @@ jobs:
             sleep 15
           done
           echo "development at $DEV_URL never reported build $EXPECTED; last answer: $answer"; exit 1
+
+      - name: Dispatch the preview owner pin
+        # The release fleet follows production; this receiver follows ONLY the preview owner.
+        # atyrode/dotfiles#687 must provide this target/revision contract and no-op when current.
+        if: env.GH_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.DOTFILES_DISPATCH_TOKEN }}
+        run: >-
+          gh workflow run update-preview-owner.yml --repo atyrode/dotfiles
+          -f target=preview-owner -f revision="$SHA"

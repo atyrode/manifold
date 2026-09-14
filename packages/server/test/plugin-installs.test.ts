@@ -53,6 +53,7 @@ function bundleBytes(
   return Buffer.from(
     JSON.stringify({
       format: 1,
+      hardenedContract: 2,
       manifest,
       files: Object.fromEntries(
         Object.entries(members).map(([name, text]) => [name, Buffer.from(text).toString("base64")]),

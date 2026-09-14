@@ -41,6 +41,8 @@ import type { ServerMigration as GuestMigration } from "@manifold/plugin-kit/ser
 import {
   ActionCallArgsSchema,
   GuestMigrationDeclarationsSchema,
+  HARDENED_CONTRACT_COMPAT_VERSIONS,
+  HARDENED_CONTRACT_MINIMUM,
   ISOLATE_MIGRATION_DEADLINE_MS,
   MAX_ACTION_CALL_DEPTH,
   CAPS,
@@ -113,6 +115,7 @@ import type {
   PluginBundle,
   PluginInstall,
   PluginInstallRefusal,
+  InstalledPluginsSnapshot,
   PluginLifecycleState,
   PluginPurgeResult,
   PluginRefusalReason,
@@ -170,6 +173,7 @@ import {
   verifyInstalledBundle,
   type InstalledArtifact,
 } from "./plugin-installs.ts";
+import { exportInstalledPlugins } from "./installed-plugins.ts";
 import type { RoomManager } from "./room.ts";
 import type {
   MachineRecord,
@@ -550,6 +554,7 @@ export interface HostControl {
     installer: CredentialReference | null,
   ): Promise<ActionRefused | PluginInstallResult>;
   uninstall(id: string, removedBy: string, purge: boolean): Promise<ActionRefused | { ok: true }>;
+  exportInstalled(): Promise<InstalledPluginsSnapshot>;
   setDeveloperMode(on: boolean, changedBy: string): Promise<ActionRefused | { ok: true }>;
   author(
     request: PluginAuthorRequest,
@@ -846,6 +851,9 @@ const ENGINE_BUILTIN_DEFS: readonly ServerPluginDef[] = [
         args: PluginInstallRequest,
       ): Promise<ActionRefused | PluginInstallResult> {
         return ctx.host.install(args, ctx.principal.id, ctx.credential);
+      },
+      async exportInstalled(ctx: EngineDoorCtx): Promise<InstalledPluginsSnapshot> {
+        return ctx.host.exportInstalled();
       },
       async uninstall(
         ctx: EngineDoorCtx,
@@ -1585,6 +1593,13 @@ export class PluginHost {
     hardened: boolean,
   ): Promise<ServerPluginDef> {
     if (this.isolates === null) throw new Error("this host admits no bundles");
+    if (
+      bundle.hardenedContract === undefined ||
+      !HARDENED_CONTRACT_COMPAT_VERSIONS.has(bundle.hardenedContract)
+    )
+      throw new IsolateLoadError(
+        `${bundle.manifest.id}: repack_required; repack with plugin-kit hardened contract ${String(HARDENED_CONTRACT_MINIMUM)} or a newer accepted contract`,
+      );
     if (bundle.manifest.entry.server !== true) {
       return { manifest: bundle.manifest, actions: [], handlers: {} };
     }
@@ -1648,6 +1663,7 @@ export class PluginHost {
       pluginId: bundle.manifest.id,
       manifest: bundle.manifest,
       dir,
+      hardenedContract: bundle.hardenedContract,
     });
     return { ...loaded.def, lifecycle: loaded.lifecycle };
   }
@@ -1708,6 +1724,24 @@ export class PluginHost {
     });
   }
 
+  private bundleProblems(except?: string): AssemblyProblem[] {
+    const problems: AssemblyProblem[] = [];
+    for (const [id, { bundle }] of this.installed) {
+      if (
+        id !== except &&
+        bundle !== null &&
+        (bundle.hardenedContract === undefined ||
+          !HARDENED_CONTRACT_COMPAT_VERSIONS.has(bundle.hardenedContract))
+      )
+        problems.push({
+          reason: "repack_required",
+          plugins: [id],
+          minimum: HARDENED_CONTRACT_MINIMUM,
+        });
+    }
+    return problems;
+  }
+
   /** One composition over the store's current enablement and the facts `env` reads fresh. */
   private async reassemble(declarationsOnly = false): Promise<Assembly> {
     const env = await this.env();
@@ -1718,7 +1752,7 @@ export class PluginHost {
       ...env,
       dataState,
       problemPolicy: "hold",
-      problems: this.harnessProblems(this.defs),
+      problems: [...this.bundleProblems(), ...this.harnessProblems(this.defs)],
     });
     if (!declarationsOnly) {
       for (const id of assembly.order) {
@@ -2075,6 +2109,11 @@ export class PluginHost {
 
   roster(): PluginRoster {
     return this.assembled.roster;
+  }
+
+  /** Serialize with install/uninstall so rows and their exact bytes describe one inventory. */
+  async exportInstalled(): Promise<InstalledPluginsSnapshot> {
+    return this.changeAssembly(async () => exportInstalledPlugins(this.store, this.dataDir));
   }
 
   /** The workspace's developer-mode switch (ADR 0025 §4), published beside every roster. */
@@ -2657,7 +2696,7 @@ export class PluginHost {
       ...env,
       dataState,
       problemPolicy: "hold",
-      problems: this.harnessProblems(prospective),
+      problems: [...this.bundleProblems(id), ...this.harnessProblems(prospective)],
     });
     // Existing, unrelated holds cannot make a compatible repair impossible. The candidate
     // and every previously admitted definition must nevertheless pass strict admission.

@@ -243,6 +243,13 @@ export {
   type ListJobRunsResult,
   JobOwnerSchema,
   JOB_OWNER_PROTOCOL_VERSION,
+  JOB_OWNER_PROTOCOL_COMPAT_VERSIONS,
+  type JobOwnerCapability,
+  jobOwnerSupports,
+  jobOwnerOperationRefusal,
+  jobOwnerRequestRefusal,
+  jobOwnerMachine,
+  jobOwnerInstallRestoresProjection,
   JobCommandSchema,
   JobArtifactDeliverySchema,
   type JobArtifactDelivery,
@@ -958,6 +965,9 @@ export { defaultRuntime, type RuntimeDeps } from "./runtime.ts";
 export { LOG_EVENTS, type LogEvent } from "./log.ts";
 export {
   AssemblyDeltaSchema,
+  HARDENED_CONTRACT_VERSION,
+  HARDENED_CONTRACT_COMPAT_VERSIONS,
+  HARDENED_CONTRACT_MINIMUM,
   ISOLATE_CRASH_BUDGET,
   ISOLATE_CTX_METHODS,
   ISOLATE_ERROR_TEXT_MAX,
@@ -1090,3 +1100,9 @@ export {
   type TerminalSummary,
   type TerminalsResponse,
 } from "./http.ts";
+export {
+  InstalledPluginRowSchema,
+  InstalledPluginsSnapshotSchema,
+  type InstalledPluginRow,
+  type InstalledPluginsSnapshot,
+} from "./installed-plugins.ts";

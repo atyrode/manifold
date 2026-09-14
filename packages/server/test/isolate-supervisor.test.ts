@@ -17,7 +17,6 @@ import { FakeRuntime, testStore } from "./helpers.ts";
 
 const GUEST_DIR = resolve(import.meta.dir, "fixtures/isolate-guest");
 const SILENT_GUEST_DIR = resolve(import.meta.dir, "fixtures/isolate-guest-silent");
-const PRE_FD3_GUEST_DIR = resolve(import.meta.dir, "fixtures/isolate-guest-pre-fd3");
 const PLUGIN_ID = "test.guest";
 
 const manifest: PluginManifest = {
@@ -193,15 +192,6 @@ describe("IsolateSupervisor", () => {
     expect(logger.count("isolate_spawned")).toBe(1);
   });
 
-  test("a pre-fd3 child is refused with actionable repack guidance", async () => {
-    const { supervisor } = fixture({ dispatchDeadlineMs: 200 });
-
-    await expect(
-      supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: PRE_FD3_GUEST_DIR }),
-    ).rejects.toThrow("repack with a current plugin kit");
-    expect(supervisor.state(PLUGIN_ID)).toBe("stopped");
-  });
-
   test("a dispatch round-trips through the child, which reaches storage by call, and its emits are re-staged", async () => {
     const { supervisor, runtime, storage } = fixture();
     const { def } = await supervisor.load({ pluginId: PLUGIN_ID, manifest, dir: GUEST_DIR });
@@ -320,9 +310,6 @@ describe("IsolateSupervisor", () => {
       .load({ pluginId: PLUGIN_ID, manifest, dir: SILENT_GUEST_DIR })
       .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(IsolateLoadError);
-    expect((failure as Error).message).toBe(
-      "isolate did not answer load within 200ms; hardened bundles must use the bounded runner transport introduced by #536; repack with a current plugin kit",
-    );
     expect(supervisor.state(PLUGIN_ID)).toBe("stopped");
     await until(() => logger.count("isolate_exited") === 1);
     expect(logger.lines.find((line) => line.evt === "isolate_exited")?.fields?.signal).toBe(
