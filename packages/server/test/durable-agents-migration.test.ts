@@ -486,45 +486,58 @@ describe("migration 37: durable agents", () => {
       try {
         // Renewal in v36 replaced the parent's token and grant, not the child's historical
         // authorizer. Keep the pre-cutover schema and the child's still-live credential.
-        fixture.query("UPDATE tokens SET caps=? WHERE principal_id IN ('sponsor','agent-a')").run(
-          JSON.stringify(parentCaps),
-        );
-        fixture.query("UPDATE grants SET caps=? WHERE principal_id IN ('sponsor','agent-a')").run(
-          JSON.stringify(parentCaps),
-        );
-        fixture.query("UPDATE agent_runs SET caps=?,authorizer_caps=? WHERE id='root'").run(
-          JSON.stringify(parentCaps),
-          JSON.stringify(parentCaps),
-        );
-        fixture.query(
-          `UPDATE agent_runs SET state='active',cleanup_revoked_credentials=0,
+        fixture
+          .query("UPDATE tokens SET caps=? WHERE principal_id IN ('sponsor','agent-a')")
+          .run(JSON.stringify(parentCaps));
+        fixture
+          .query("UPDATE grants SET caps=? WHERE principal_id IN ('sponsor','agent-a')")
+          .run(JSON.stringify(parentCaps));
+        fixture
+          .query("UPDATE agent_runs SET caps=?,authorizer_caps=? WHERE id='root'")
+          .run(JSON.stringify(parentCaps), JSON.stringify(parentCaps));
+        fixture
+          .query(
+            `UPDATE agent_runs SET state='active',cleanup_revoked_credentials=0,
           cleanup_revoked_grants=0,finished_at=NULL,cleanup_failure=NULL WHERE id IN ('root','child')`,
-        ).run();
+          )
+          .run();
         fixture.query("UPDATE agent_runs SET authorizer_expires_at=? WHERE id='root'").run(expiry);
-        fixture.query(
-          `UPDATE agent_runs SET authorizer_caps=?,authorizer_container_scope='room',
+        fixture
+          .query(
+            `UPDATE agent_runs SET authorizer_caps=?,authorizer_container_scope='room',
           authorizer_expires_at=?,expires_at=?,renewals=0 WHERE id='child'`,
-        ).run(JSON.stringify(parentCaps), originalExpiry, originalExpiry);
-        fixture.query(
-          `UPDATE tokens SET revoked_at=NULL,grant_id='child-grant',container_id='room',
+          )
+          .run(JSON.stringify(parentCaps), originalExpiry, originalExpiry);
+        fixture
+          .query(
+            `UPDATE tokens SET revoked_at=NULL,grant_id='child-grant',container_id='room',
           created_at=?,expires_at=? WHERE id='child-token'`,
-        ).run(now, originalExpiry);
-        fixture.query(
-          `INSERT INTO grants SELECT 'child-grant','principal','agent-b',node,?,effect,reach,
+          )
+          .run(now, originalExpiry);
+        fixture
+          .query(
+            `INSERT INTO grants SELECT 'child-grant','principal','agent-b',node,?,effect,reach,
           'agent-a',? FROM grants WHERE id='root-grant'`,
-        ).run(JSON.stringify(["containers:read"]), now);
-        fixture.query(
-          `INSERT INTO grants SELECT 'root-renewed-grant',principal_kind,principal_id,node,caps,
+          )
+          .run(JSON.stringify(["containers:read"]), now);
+        fixture
+          .query(
+            `INSERT INTO grants SELECT 'root-renewed-grant',principal_kind,principal_id,node,caps,
           effect,reach,created_by,? FROM grants WHERE id='root-grant'`,
-        ).run(renewedAt);
-        fixture.query(
-          `INSERT INTO tokens SELECT 'root-renewed',?,principal_id,caps,'room',?,NULL,minted_by,
+          )
+          .run(renewedAt);
+        fixture
+          .query(
+            `INSERT INTO tokens SELECT 'root-renewed',?,principal_id,caps,'room',?,NULL,minted_by,
           'root-renewed-grant',expires_at FROM tokens WHERE id='root-token'`,
-        ).run(sha256Hex("root-renewed"), renewedAt);
-        fixture.query(
-          `UPDATE tokens SET revoked_at=?,grant_id=NULL,container_id='room',expires_at=?
+          )
+          .run(sha256Hex("root-renewed"), renewedAt);
+        fixture
+          .query(
+            `UPDATE tokens SET revoked_at=?,grant_id=NULL,container_id='room',expires_at=?
           WHERE id='root-token'`,
-        ).run(renewedAt, originalExpiry);
+          )
+          .run(renewedAt, originalExpiry);
         fixture.exec("DELETE FROM grants WHERE id='root-grant'");
       } finally {
         fixture.close();
@@ -608,7 +621,12 @@ describe("migration 37: durable agents", () => {
         store.bindAgentRunnerCredential("agent-a", "later-runner");
         const agents = store.listAgents();
         const runs = agents.flatMap((agent) => store.listAgentRuns(agent.agentId));
-        const history = store.agentRunInspectionFacts("root", { runId: "root", limit: 20 }, now, []);
+        const history = store.agentRunInspectionFacts(
+          "root",
+          { runId: "root", limit: 20 },
+          now,
+          [],
+        );
         store.close();
         store = new ServerStore(openDatabase(path));
         expect(store.listAgents()).toEqual(agents);

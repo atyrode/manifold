@@ -125,12 +125,13 @@ An **Agent** is a durable, sponsor-owned identity; a **Run** is one bounded invo
 ([ADR 0042](decisions/0042-durable-agents.md), #578). `core.access.registerAgent` accepts
 `{name,purpose,harness,grant,context}`. The standing grant names capability ceilings, target
 URIs, reach, maximum Run lifetime, delegation budgets and expiry; context contains optional
-instructions and the selected harness's validated profile. Registration returns
-`{agent,credential?,created}`: the first registration issues a trusted runner credential, while
+instructions and the selected harness's validated profile. Registration requires a human or root
+sponsor; Run, runner and legacy agent credentials are refused. It returns `{agent,credential?,created}`:
+the first registration issues a trusted runner credential, including to a browser sponsor, while
 repeating the same sponsor/name returns the existing Agent without another credential.
 The runner credential admits Runs for that Agent; it is not ordinary action authority.
 `listAgents`, `getAgent`, `updateAgent`, `disableAgent`, `enableAgent` and `retireAgent` use the
-same actor-bound identity mechanism. Get and mutation results are `{agent}`. Disabling
+same actor-bound identity mechanism. Get and mutation results are `{agent,canManage}`. Disabling
 withdraws active Runs; enabling does not resurrect them. Retirement blocks new Run admission
 without rewriting retained history. Agent context/profile and inspection requests have opaque
 traces. `createPrincipal` and `mint` remain human-only; machine, native-service,
@@ -152,8 +153,9 @@ destination, typed session and review digest. Trusted terminal admission injects
 `MANIFOLD_RUN_TOKEN`, `MANIFOLD_RUN_ID` and `MANIFOLD_ORIGIN` only through the private machine
 launch seam, never through public runtime/environment fields, browser results or traces.
 `listHarnesses` publishes profile schemas; `listHarnessSessions` and `resolveHarnessSession`
-use the host's authorized typed session interface. `sendRunInput` relays to that harness with
-an opaque trace; `reportRunActivity` accepts trusted runner/own-Run reports of `working`,
+use the host's authorized typed session interface. Enumeration returns at most 100 bindings plus
+`truncated`, rather than failing when additional transcripts exist. `sendRunInput` relays to that harness
+with an opaque trace; `reportRunActivity` accepts trusted runner/own-Run reports of `working`,
 `blocked`, `done`, `idle` or `unknown`. Activity is observation, not authority or settlement:
 reporting `done` does not finish a Run.
 
@@ -176,10 +178,12 @@ Agent. Child caps, target, reach, lifetime and delegation budgets must attenuate
 parent and standing grant: maximum depth four, at most 32 descendants under a root, and any
 lower ancestor budget still applies. Browser/root child admission also returns no bearer.
 
-`core.access.renewAgentRun` permits an authorized Run, direct parent, matching runner or
-sponsor to renew an active policy-current Run within the current Agent grant. It declares
-`caps: []` and `runAccess: "runner"` because the identity mechanism evaluates actual Run and
-grant authority, not a workspace-wide delegation check. Renewal must extend the lease, may
+`core.access.renewAgentRun` permits only the Run's own credential or its matching Agent runner
+to renew an active policy-current Run within the current Agent grant. Browser sponsors and root
+are refused with `run_renewal_requires_harness` without minting or revoking credentials; a parent
+Run has no renewal authority over its child merely by being its parent. The door declares `caps: []`
+and `runAccess: "runner"` because the identity mechanism evaluates actual Run and grant authority,
+not a workspace-wide delegation check. Renewal must extend the lease, may
 happen at most 24 times, lasts at most one hour and never outlives the standing grant or
 parent. Replacement revokes only that Run's prior credentials and grants, never every
 credential of the shared Agent principal.
@@ -507,7 +511,7 @@ Reasoning and rejected alternatives: [ADR 0019](decisions/0019-identity-posture.
   `terminals:spawn`, `terminals:write`, `tokens:mint`, `machines:mint`, `machines:read` and
   `plugins:manage`. Reads of scene and presence come with `containers:read`.
   `terminals:write` covers input+resize+kill+take on terminals in scope. `agents:delegate`
-  authorizes target-relative child-run creation and sponsor renewal; admission checks the
+  authorizes target-relative child-run creation and human/root standing-grant registration; admission checks the
   requested target, and the retained credential lineage keeps the sponsor waterfall as a live
   ceiling at every descendant node. `plugins:manage` authorizes plugin
   administration only — the engine doors `engine.plugins.setEnabled` and

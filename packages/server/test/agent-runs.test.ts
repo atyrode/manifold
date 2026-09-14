@@ -337,7 +337,7 @@ describe("sponsor-bound agent runs", () => {
     const fix = await fixture();
     const created = createExternalRun(fix, {
       name: "renewed",
-      purpose: "Exercise explicit sponsor renewal.",
+      purpose: "Exercise explicit harness renewal.",
       target: "manifold://",
       reach: "subtree",
       caps: ["containers:read"],
@@ -347,10 +347,13 @@ describe("sponsor-bound agent runs", () => {
     await acknowledge(fix, original);
     const renewed = RenewAgentRunResultSchema.parse(
       value(
-        await fix.host.dispatch(fix.owner, "core.access.renewAgentRun", {
-          runId: created.run.id,
-          lifetimeMs: 120_000,
-        }),
+        await fix.host.dispatch(
+          original,
+          "core.access.renewAgentRun",
+          { runId: created.run.id, lifetimeMs: 120_000 },
+          null,
+          { agentJustification: "Extend this bounded read-only task." },
+        ),
       ),
     );
     expect(renewed.run).toMatchObject({
@@ -460,12 +463,12 @@ describe("sponsor-bound agent runs", () => {
       );
       expect(
         denial(
-          await fix.host.dispatch(fix.owner, "core.access.renewAgentRun", {
+          await fix.host.dispatch(actor, "core.access.renewAgentRun", {
             runId: created.run.id,
             lifetimeMs: 60_000,
           }),
         ).rule,
-      ).toBe("refused");
+      ).toBe("policy_stale");
 
       const challenge = AgentPolicyChallengeSchema.parse(
         value(await fix.host.dispatch(actor, "core.access.getAgentPolicy", {})),

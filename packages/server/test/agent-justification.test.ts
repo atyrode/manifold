@@ -168,7 +168,7 @@ describe("bound agent declarations", () => {
     const child = fix.auth.authenticate(created.credential.token);
     await acknowledge(fix, child);
     const renewal = await fix.host.dispatch(
-      actor,
+      child,
       "core.access.renewAgentRun",
       {
         runId: created.run.id,

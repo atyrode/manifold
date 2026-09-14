@@ -16,9 +16,10 @@ A durable Agent needs a sponsor, purpose, harness, standing grant and context th
 Runs. A Run still needs its own policy acknowledgement, bounded authority, credential lineage, activity
 and cleanup. A harness session and model selection describe execution; neither is an identity or grant.
 
-This record supersedes **the one-fresh-principal-per-Run identity decision in ADR 0039** and **the
-model-visible startup/admission portion of ADR 0040**. It retains their live authority intersection,
-exact policy acknowledgement, bounded delegation, action transport and teardown obligations. ADR 0041's
+This record supersedes **the one-fresh-principal-per-Run identity and sponsor-directed renewal decisions
+in ADR 0039** and **the model-visible startup/admission portion of ADR 0040**. It retains their live
+authority intersection, exact policy acknowledgement, bounded delegation, action transport and teardown
+obligations. ADR 0041's
 safe inspection allowlist remains, with Run-only lookup and self/direct-child visibility replacing the
 broader ancestor/descendant reading. The normative contracts are
 [Automation credential lifecycle](../CONTRACTS.md#automation-credential-lifecycle) and
@@ -33,11 +34,14 @@ contains `name`, `purpose`, `harness`, `grant` and `context`. The grant bounds c
 reach, maximum Run lifetime, delegation depth/descendant budgets and expiry. Context contains optional
 instructions and a profile validated by the selected harness. Repeating the same sponsor/name returns
 that Agent with `created: false` and no credential; registration is not a token recovery or rotation door.
+Only root or a human sponsor may register. A Run, runner credential or legacy agent principal cannot
+register another standing identity and thereby escape the originating Run's delegation and cleanup tree.
 
-The first registration may return the trusted runner credential. That credential carries Agent-specific
-`agents:run` admission, not ordinary effect authority and not the power to reproduce the standing grant.
-Agent getters and lifecycle mutations return `{agent}`. Disabling withdraws current Runs; enabling admits
-future work without resurrecting settled Runs. Retirement blocks future admission while preserving the
+The first registration may return the trusted runner credential to its registering human/root sponsor,
+including a browser bootstrap. That credential carries Agent-specific `agents:run` admission, not
+ordinary effect authority and not the power to reproduce the standing grant. Agent getters and
+lifecycle mutations return `{agent,canManage}`. Disabling withdraws current Runs; enabling admits future
+work without resurrecting settled Runs. Retirement blocks future admission while preserving the
 identity and its history. Human Sessions retain their separate credential administration surface.
 
 `core.access.createRun` selects a registered Agent and optionally narrows caps, target, reach, lifetime
@@ -72,11 +76,15 @@ does not silently acknowledge another Run. Renewal stays bounded by the current 
 one-hour maximum lease and 24-renewal limit. Child delegation retains the maximum four levels and 32
 descendants, including stricter ancestor budgets.
 
-Renewal replaces only the selected Run's credentials and their grants. Finishing or expiring a Run
-withdraws only its Run subtree. Sibling Runs, the durable Agent runner credential and supplied sponsor
-credentials are not cleanup targets. Credential and trace attribution use Run bindings rather than a
-principal-wide lookup. Activity is a separate trusted observation: `done` is not a finish operation and
-`unknown` is not proof of either work or idleness.
+Renewal is a harness concern: only the Run's own credential or its matching Agent runner may receive
+the replacement bearer. Browser sponsors, root and a parent Run acting only as parent cannot renew.
+Refusal neither mints a replacement nor revokes the harness's existing credential. Renewal replaces only
+the selected Run's credentials and their grants. Finishing or expiring a Run withdraws only its Run
+subtree. Sibling Runs, the durable Agent runner credential and supplied sponsor credentials are not
+cleanup targets. Generic principal revocation fences every affected descendant principal, including
+cross-Agent children, once after settlement commits. Credential and trace attribution use Run bindings
+rather than a principal-wide lookup. Activity is a separate trusted observation: `done` is not a finish
+operation and `unknown` is not proof of either work or idleness.
 
 ### 3. Harness integration is typed and keeps launch secrets private
 
@@ -84,6 +92,8 @@ Harnesses publish profile schemas and typed `SessionRef {harness,sessionId,machi
 existing host interface. `listHarnesses`, `listHarnessSessions` and `resolveHarnessSession` expose those
 contracts; `sendRunInput` uses the selected harness, and `reportRunActivity` is restricted to its trusted
 runner or the Run's own credential. Agent profile/context and harness input have opaque traces.
+Session enumeration returns at most 100 bindings and an explicit `truncated` flag; retained history
+beyond that bound must not turn a valid inventory into an output-validation failure.
 
 For an owner/browser-created Run, `launchRun` returns a secret-free terminal runtime, destination,
 SessionRef and review digest. The trusted terminal admission path injects `MANIFOLD_RUN_TOKEN`,
@@ -94,6 +104,12 @@ client cannot turn a copied public runtime into authority by supplying an arbitr
 Private launch carriers require machine protocol 32 and native owner RPC 35. The hub keeps protocol
 30/31 transports connected for existing work but refuses managed launch on older transports or owners
 before sending any credential. Deploy the hub first and upgrade spokes when their work permits.
+
+This is not same-OS-user isolation. Where Linux permits same-user process inspection, the wrapper's
+initial Run credential may remain readable through `/proc/<pid>/environ` even after environment entries
+are deleted. It is an expiring, Run-scoped credential, never a sponsor or Agent-runner secret; its
+authority remains bounded by scope and expiry. Model-authored native code requires a separate OS-user
+or equivalent isolation boundary if it must not observe the wrapper's credential.
 
 The trusted external launcher binds an existing Agent or adopts an already admitted Run before reading
 untrusted model input. The model does not choose the sponsor, standing grant or root identity in a start

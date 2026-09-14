@@ -216,6 +216,91 @@ describe("durable Agent admission", () => {
     }
   });
 
+  test("Run and agent credentials cannot turn exhausted child budgets into new standing Agents", () => {
+    const fix = fixture({ delegation: { maxDepth: 0, maxDescendants: 0 } });
+    try {
+      const parent = fix.create();
+      const actor = fix.auth.authenticate(parent.credential.token);
+      fix.acknowledge(actor);
+      const legacy = fix.auth.mintToken(
+        {
+          principal: { name: "unbound agent", kind: "human" },
+          caps: ["*"],
+        },
+        fix.owner,
+      );
+      // Persist the pre-managed identity shape that public minting no longer creates.
+      fix.db.query("UPDATE principals SET kind='agent' WHERE id=?").run(legacy.principal.id);
+      const principals = fix.store.listPrincipalsWithCreation().length;
+      const agents = fix.store.listAgents().length;
+      const request: RegisterAgentRequest = {
+        ...fix.registration,
+        name: "escaped lineage",
+        grant: {
+          ...fix.registration.grant,
+          maxRunLifetimeMs: 60_000,
+          expiresAt: parent.run.expiresAt,
+          delegation: { maxDepth: 4, maxDescendants: 32 },
+        },
+      };
+      expect(fix.auth.allows(actor, "agents:delegate")).toBe(true);
+      for (const caller of [actor, fix.runner, fix.auth.authenticate(legacy.token)]) {
+        expect(() => fix.auth.registerAgent(request, caller)).toThrow(
+          "agent_registration_requires_human",
+        );
+        expect(fix.auth.listAgents(caller).canRegister).toBe(false);
+      }
+      expect(fix.store.listPrincipalsWithCreation().length).toBe(principals);
+      expect(fix.store.listAgents().length).toBe(agents);
+      expect(fix.auth.listRuns({}, fix.owner).runs.map((run) => run.id)).toEqual([parent.run.id]);
+    } finally {
+      fix.db.close();
+    }
+  });
+
+  test("browser sponsors cannot renew or displace a harness credential", () => {
+    const fix = fixture();
+    try {
+      const sponsorToken = fix.auth.mintToken(
+        {
+          principal: { name: "browser sponsor", kind: "human" },
+          caps: ["containers:read", "agents:delegate"],
+        },
+        fix.owner,
+      );
+      const sponsor = fix.auth.authenticate(sponsorToken.token);
+      const agent = fix.auth.registerAgent(
+        { ...fix.registration, name: "browser managed" },
+        sponsor,
+      );
+      const admitted = fix.auth.createRun(
+        { agentId: agent.agent.agentId, lifetimeMs: 120_000 },
+        sponsor,
+      );
+      const launch = fix.auth.claimRunLaunch(admitted.run.id, sponsor);
+      const actor = fix.auth.authenticate(launch.token);
+      fix.acknowledge(actor);
+      fix.advance(60_000);
+      const credentials = fix.store.listTokensByPrincipal(agent.agent.principalId).length;
+      for (const browser of [sponsor, fix.owner]) {
+        expect(() =>
+          fix.auth.renewAgentRun({ runId: admitted.run.id, lifetimeMs: 120_000 }, browser),
+        ).toThrow("run_renewal_requires_harness");
+        expect(fix.store.listTokensByPrincipal(agent.agent.principalId).length).toBe(credentials);
+        expect(fix.store.getAgentRun(admitted.run.id)?.expiresAt).toBe(admitted.run.expiresAt);
+        expect(fix.auth.allows(fix.auth.authenticate(launch.token), "containers:read")).toBe(true);
+      }
+      const renewed = fix.auth.renewAgentRun(
+        { runId: admitted.run.id, lifetimeMs: 120_000 },
+        fix.auth.authenticate(agent.credential!.token),
+      );
+      expect(() => fix.auth.authenticate(launch.token)).toThrow("revoked");
+      expect(fix.auth.authenticate(renewed.credential.token).agentRunId).toBe(admitted.run.id);
+    } finally {
+      fix.db.close();
+    }
+  });
+
   test("renewal replaces only one run credential, while child budgets and activity are run-relative", () => {
     const fix = fixture();
     try {
@@ -321,6 +406,49 @@ describe("durable Agent admission", () => {
       fix.auth.revokePrincipal(sponsorGrant.principal.id, fix.owner);
       expect(fix.auth.allows(childActor, "containers:read")).toBe(false);
       expect(fix.auth.allows(actor, "containers:read")).toBe(true);
+    } finally {
+      fix.db.close();
+    }
+  });
+
+  test("sponsor updates change reusable context and immediately narrow live Run authority", () => {
+    const fix = fixture();
+    try {
+      const run = fix.create();
+      const actor = fix.auth.authenticate(run.credential.token);
+      fix.acknowledge(actor);
+      const outsider = fix.auth.authenticate(
+        fix.auth.mintToken(
+          { principal: { name: "unrelated sponsor", kind: "human" }, caps: ["agents:delegate"] },
+          fix.owner,
+        ).token,
+      );
+      for (const caller of [outsider, fix.runner, actor]) {
+        expect(() =>
+          fix.auth.updateAgent({ agentId: run.run.agentId, purpose: "Not authorized" }, caller),
+        ).toThrow("agent_unavailable");
+      }
+      expect(fix.auth.allows(actor, "containers:read")).toBe(true);
+      const context = { instructions: "Only delegate the next bounded task", profile: {} };
+      fix.auth.updateAgent(
+        {
+          agentId: run.run.agentId,
+          purpose: "Narrowed work",
+          context,
+          grant: { ...fix.registration.grant, caps: ["agents:delegate"] },
+        },
+        fix.owner,
+      );
+      const updated = fix.auth.getAgent({ agentId: run.run.agentId }, fix.owner).agent;
+      expect(updated.context).toEqual(context);
+      expect(updated.purpose).toBe("Narrowed work");
+      expect(fix.auth.allows(actor, "containers:read")).toBe(false);
+      expect(() => fix.create({ caps: ["containers:read"] })).toThrow("cap_exceeds_grant");
+      expect(fix.create().run.caps).toEqual(["agents:delegate"]);
+      fix.auth.retireAgent({ agentId: run.run.agentId }, fix.owner);
+      expect(() =>
+        fix.auth.updateAgent({ agentId: run.run.agentId, purpose: "Reopen" }, fix.owner),
+      ).toThrow("agent_retired");
     } finally {
       fix.db.close();
     }

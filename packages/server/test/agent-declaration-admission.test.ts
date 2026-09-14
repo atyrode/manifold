@@ -290,7 +290,7 @@ describe("declarations follow real first-party admission", () => {
       f.owner,
     );
     expect(
-      await f.host.dispatch(f.actor, "core.access.renewAgentRun", {
+      await f.host.dispatch(sponsored.actor, "core.access.renewAgentRun", {
         runId: sponsored.created.run.id,
         lifetimeMs: 120_000,
       }),
@@ -320,7 +320,7 @@ describe("declarations follow real first-party admission", () => {
     const before = f.store.getAgentRun(sponsored.created.run.id);
     expect(
       await f.host.dispatch(
-        f.actor,
+        sponsored.actor,
         "core.access.renewAgentRun",
         {
           runId: sponsored.created.run.id,
@@ -341,7 +341,7 @@ describe("declarations follow real first-party admission", () => {
     const renewed = RenewAgentRunResultSchema.parse(
       value(
         await f.host.dispatch(
-          f.actor,
+          sponsored.actor,
           "core.access.renewAgentRun",
           { runId: sponsored.created.run.id, lifetimeMs: 120_000 },
           null,

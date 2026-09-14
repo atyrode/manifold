@@ -827,10 +827,7 @@ export class AuthService {
       )
     )
       return new Set();
-    const standingSponsor = this.restoreCredential({
-      principalId: agent.sponsorPrincipalId,
-      ...agent.authorizationCredential,
-    });
+    const standingSponsor = this.restoreAgentSponsor(agent);
     if (standingSponsor === null || !contextContainsNode(standingSponsor, node)) return new Set();
     const standingCaps = this.effectiveCaps(standingSponsor, node);
     let sponsor: AuthContext | null = standingSponsor;
@@ -839,6 +836,22 @@ export class AuthService {
     const sponsorCaps =
       sponsor === standingSponsor ? standingCaps : this.effectiveCaps(sponsor, node);
     return new Set(agent.grant.caps.filter((cap) => standingCaps.has(cap) && sponsorCaps.has(cap)));
+  }
+
+  private restoreAgentSponsor(agent: AgentRecord): AuthContext | null {
+    const tokenId = agent.authorizationCredential.tokenId;
+    const sponsorRun = tokenId === null ? null : this.store.getAgentRunByToken(tokenId);
+    // Legacy child Agents retain admission attribution, not a lease on the parent's old token.
+    // Follow that exact Run through renewal without substituting another Run of its principal.
+    if (sponsorRun !== null) {
+      return sponsorRun.principalId === agent.sponsorPrincipalId
+        ? this.restoreRunCredential(sponsorRun.id)
+        : null;
+    }
+    return this.restoreCredential({
+      principalId: agent.sponsorPrincipalId,
+      ...agent.authorizationCredential,
+    });
   }
 
   /**
@@ -1569,6 +1582,8 @@ export class AuthService {
   registerAgent(input: RegisterAgentRequest, actor: AuthContext): RegisterAgentResult {
     const parsed = RegisterAgentRequestSchema.parse(input);
     const current = this.requireCurrentActor(actor);
+    if (!this.mayRegisterAgent(current))
+      throw new ServiceError("forbidden", "agent_registration_requires_human");
     const existing = this.store.getAgentBySponsorName(current.principal.id, parsed.name);
     if (existing !== null) return { agent: this.presentAgent(existing, current), created: false };
     this.validateStandingGrant(parsed.grant, current);
@@ -1658,6 +1673,14 @@ export class AuthService {
     }
   }
 
+  private mayRegisterAgent(actor: AuthContext): boolean {
+    return (
+      actor.agentRunId === undefined &&
+      actor.agentRunnerId === undefined &&
+      actor.principal.kind === "human"
+    );
+  }
+
   private mayManageAgent(actor: AuthContext, agent: AgentRecord): boolean {
     if (actor.isRoot) return true;
     if (actor.agentRunId !== undefined || actor.agentRunnerId !== undefined) return false;
@@ -1713,14 +1736,15 @@ export class AuthService {
     const current = this.requireCurrentActor(actor);
     const visible = this.store.listAgents().filter((agent) => this.mayViewAgent(current, agent));
     const canRegister =
-      this.allows(current, "agents:delegate") ||
-      this.store
-        .listGrants()
-        .some(
-          (grant) =>
-            (grant.caps.includes("*") || grant.caps.includes("agents:delegate")) &&
-            this.effectiveCaps(current, grant.node).has("agents:delegate"),
-        );
+      this.mayRegisterAgent(current) &&
+      (this.allows(current, "agents:delegate") ||
+        this.store
+          .listGrants()
+          .some(
+            (grant) =>
+              (grant.caps.includes("*") || grant.caps.includes("agents:delegate")) &&
+              this.effectiveCaps(current, grant.node).has("agents:delegate"),
+          ));
     return {
       agents: visible.slice(0, 100).map((agent) => this.presentAgent(agent, current)),
       truncated: visible.length > 100,
@@ -1925,10 +1949,7 @@ export class AuthService {
       throw new ServiceError("forbidden", "session_binding_untrusted");
     if (parsed.taskRef !== undefined && agent.harness !== "external")
       throw new ServiceError("forbidden", "session_binding_untrusted");
-    const sponsor = this.restoreCredential({
-      principalId: agent.sponsorPrincipalId,
-      ...agent.authorizationCredential,
-    });
+    const sponsor = this.restoreAgentSponsor(agent);
     const sponsorCaps = sponsor === null ? null : this.effectiveCaps(sponsor, target);
     if (
       sponsor === null ||
@@ -2220,16 +2241,14 @@ export class AuthService {
   ): RenewAgentRunResult {
     const parsed = RenewAgentRunRequestSchema.parse(input);
     const currentActor = this.requireCurrentActor(actor);
+    if (currentActor.agentRunId === undefined && currentActor.agentRunnerId === undefined)
+      throw new ServiceError("forbidden", "run_renewal_requires_harness");
     const initial = this.store.getAgentRun(parsed.runId);
     const agent = initial === null ? null : this.store.getAgent(initial.agentId);
     if (
       initial === null ||
       agent === null ||
-      (!currentActor.isRoot &&
-        currentActor.agentRunId !== initial.id &&
-        currentActor.agentRunId !== initial.parentRunId &&
-        currentActor.agentRunnerId !== initial.agentId &&
-        !this.mayManageAgent(currentActor, agent))
+      (currentActor.agentRunId !== initial.id && currentActor.agentRunnerId !== initial.agentId)
     )
       throw new ServiceError("forbidden", "agent_unavailable");
     if (agent.status === "disabled") throw new ServiceError("forbidden", "agent_disabled");
@@ -2722,34 +2741,43 @@ export class AuthService {
 
   /** Revokes a server-issued short-lived identity after a failed terminal create. */
   revokeIssuedPrincipal(principalId: string, actorId: string): number {
-    let settled = 0;
-    const agent = this.store
-      .listAgents()
-      .find((candidate) => candidate.principalId === principalId);
-    if (agent !== undefined) {
-      for (const candidate of this.store.listAgentRuns(agent.agentId)) {
-        const run = this.store.getAgentRun(candidate.id);
-        if (run !== null && !TERMINAL_AGENT_RUN_STATES.has(run.state))
-          settled += this.settleAgentRunSubtree(
-            run,
-            "revoked",
-            actorId,
-            undefined,
-            false,
-          ).revokedCredentials;
+    return this.store.transaction(() => {
+      let settled = 0;
+      const fenced = new Set([principalId]);
+      const agent = this.store
+        .listAgents()
+        .find((candidate) => candidate.principalId === principalId);
+      if (agent !== undefined) {
+        for (const candidate of this.store.listAgentRuns(agent.agentId)) {
+          const run = this.store.getAgentRun(candidate.id);
+          if (run !== null && !TERMINAL_AGENT_RUN_STATES.has(run.state)) {
+            for (const descendant of this.agentRunSubtree(run)) fenced.add(descendant.principalId);
+            settled += this.settleAgentRunSubtree(
+              run,
+              "revoked",
+              actorId,
+              undefined,
+              false,
+            ).revokedCredentials;
+          }
+        }
       }
-    }
-    const at = this.runtime.now();
-    const count =
-      settled + this.settleRevocation(this.store.revokeTokensByPrincipal(principalId, at));
-    this.store.addEvent(null, at, actorId, "token_revoked", {
-      subjectPrincipalId: principalId,
-      count,
+      const at = this.runtime.now();
+      const revoked = this.store.revokeTokensByPrincipal(principalId, at);
+      const count = settled + revoked.tokens;
+      this.store.addEvent(null, at, actorId, "token_revoked", {
+        subjectPrincipalId: principalId,
+        count,
+      });
+      this.store.afterCommit(() => {
+        this.settleRevocation(revoked);
+        if (count > 0) {
+          for (const affectedPrincipal of fenced)
+            for (const listener of [...this.revokedListeners]) listener(affectedPrincipal, null);
+        }
+      });
+      return count;
     });
-    if (count > 0) {
-      for (const listener of [...this.revokedListeners]) listener(principalId, null);
-    }
-    return count;
   }
 
   /** Revokes only identities the actor created (or itself), without widening container scope. */
