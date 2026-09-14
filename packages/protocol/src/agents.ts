@@ -104,6 +104,14 @@ export const ListHarnessesResultSchema = z.strictObject({ harnesses: z.array(Har
 export type ListHarnessesResult = z.infer<typeof ListHarnessesResultSchema>;
 export const HarnessTargetSchema = z.strictObject({ machineId: z.string().min(1).max(128), containerId: z.string().min(1).max(128).optional() });
 export type HarnessTarget = z.infer<typeof HarnessTargetSchema>;
+export const ListHarnessSessionsRequestSchema = z.strictObject({ harness: HarnessIdSchema, target: HarnessTargetSchema });
+export type ListHarnessSessionsRequest = z.infer<typeof ListHarnessSessionsRequestSchema>;
+export const ListHarnessSessionsResultSchema = z.strictObject({ sessions: z.array(SessionRefSchema).max(100) });
+export type ListHarnessSessionsResult = z.infer<typeof ListHarnessSessionsResultSchema>;
+export const ResolveHarnessSessionRequestSchema = z.strictObject({ session: SessionRefSchema });
+export type ResolveHarnessSessionRequest = z.infer<typeof ResolveHarnessSessionRequestSchema>;
+export const ResolveHarnessSessionResultSchema = z.strictObject({ session: SessionRefSchema.nullable() });
+export type ResolveHarnessSessionResult = z.infer<typeof ResolveHarnessSessionResultSchema>;
 export const AgentAdmissionRefusalSchema = z.enum([
   "agent_unavailable", "agent_disabled", "agent_retired", "grant_expired", "cap_exceeds_grant",
   "target_exceeds_grant", "reach_exceeds_grant", "lifetime_exceeds_grant", "delegation_exceeds_grant",

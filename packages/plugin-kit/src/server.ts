@@ -6,6 +6,8 @@ import type {
   ServiceConfigurationRead,
   ServiceDescription,
 } from "@manifold/plugin";
+import type { ServerHarness } from "@manifold/plugin";
+export type { ServerHarness, Agent, AgentRun, HarnessTarget, SessionRef, TerminalRuntime } from "@manifold/plugin";
 import {
   EventKindSchema,
   EventPayloadSchema,
@@ -275,6 +277,7 @@ export interface GuestJobs {
   }): Promise<JobDeploymentDescription>;
   execute(args: GuestJobRequest): Promise<GuestJobStatus>;
   status(node: GuestJobNode): Promise<GuestJobStatus>;
+  runTerminal(runId: string): Promise<GuestJobNode>;
   listRuns(args: ListJobRunsArgs): Promise<ListJobRunsResult>;
   input(args: {
     node: GuestJobNode;
@@ -421,6 +424,7 @@ export interface ServerPluginDef {
   readonly handlers: Readonly<Record<string, ServerHandler>>;
   readonly lifecycle?: GuestLifecycle | undefined;
   readonly migrations?: readonly ServerMigration[] | undefined;
+  readonly harness?: ServerHarness<GuestCtx>;
 }
 
 // ---------------------------------------------------------------------------- the transport
@@ -1001,6 +1005,8 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
       ),
     execute: async (args) => (await call("jobs.execute", [args])) as GuestJobStatus,
     status: async (node) => (await call("jobs.status", [node])) as GuestJobStatus,
+    runTerminal: async (runId) =>
+      ManifoldRefSchema.options[10].parse(await call("jobs.runTerminal", [runId])),
     listRuns: async (args) =>
       ListJobRunsResultSchema.parse(
         await call("jobs.listRuns", [ListJobRunsArgsSchema.parse(args)]),

@@ -20,6 +20,7 @@ import {
   type PluginRoster,
   type PluginRosterEntry,
   type SectionPresentation,
+  type ManifoldRef,
   type SettingDef,
   type StreamDescriptor,
 } from "@manifold/protocol";
@@ -109,6 +110,7 @@ export interface AssemblySection {
    * indifferent to the value; only the component that fills the row reads it.
    */
   readonly presentation: SectionPresentation;
+  readonly refKinds?: readonly ManifoldRef["kind"][];
   /**
    * WHICH CLUSTER this row declared, or undefined for "its own". Rows sharing a cluster paint
    * side by side as one horizontal row at the cluster's earliest member (`clusteredSections`,
@@ -732,6 +734,7 @@ export function assembleRoster(
         ...(section.cluster === undefined ? {} : { cluster: section.cluster }),
         // Spread for the same reason, and absent means "unconditional" (`visibleSections`).
         ...(section.setting === undefined ? {} : { setting: section.setting }),
+        ...(section.refKinds === undefined ? {} : { refKinds: section.refKinds }),
         presentation: section.presentation ?? DEFAULT_SECTION_PRESENTATION,
       });
     }

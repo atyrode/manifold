@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   AgentPolicyChallengeSchema,
-  CreateAgentRunResultSchema,
+  CreateRunCredentialResultSchema,
   type ActionOutcome,
-  type CreateAgentRunRequest,
   type LogEvent,
 } from "@manifold/protocol";
 import { AuthService, type AuthContext } from "../src/auth.ts";
@@ -13,6 +12,7 @@ import { RoomManager } from "../src/room.ts";
 import { TRACE_ROW_TYPE, type ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import { createExternalRun, type ExternalRunFixtureInput } from "./agent-fixtures.ts";
 
 const stores = new Set<ServerStore>();
 afterEach(() => {
@@ -71,23 +71,20 @@ function latestTrace(fix: Fixture) {
 }
 
 const childArgs = {
-  name: "reader",
-  purpose: "Read a bounded part of the sponsored task.",
   target: "manifold://",
   reach: "subtree",
   caps: ["containers:read"],
 };
 
-async function newRun(fix: Fixture, options: Partial<CreateAgentRunRequest> = {}) {
-  const created = CreateAgentRunResultSchema.parse(
-    result(
-      await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
-        ...childArgs,
-        caps: ["agents:delegate", "containers:read", "containers:write"],
-        ...options,
-      }),
-    ),
-  );
+async function newRun(fix: Fixture, options: Partial<ExternalRunFixtureInput> = {}) {
+  const created = createExternalRun(fix, {
+    name: "reader",
+    purpose: "Read a bounded part of the sponsored task.",
+    target: "manifold://",
+    reach: "subtree",
+    caps: ["agents:delegate", "containers:read", "containers:write"],
+    ...options,
+  });
   return { created, actor: fix.auth.authenticate(created.credential.token) };
 }
 
@@ -148,11 +145,14 @@ describe("bound agent declarations", () => {
 
   test("safe claims survive success and handler refusal without changing delegation authority", async () => {
     const fix = await fixture();
-    const { actor } = await newRun(fix);
+    const { created: parent, actor } = await newRun(fix);
     await acknowledge(fix, actor);
-    const created = CreateAgentRunResultSchema.parse(
+    const created = CreateRunCredentialResultSchema.parse(
       result(
-        await fix.host.dispatch(actor, "core.access.createAgentRun", childArgs, null, {
+        await fix.host.dispatch(actor, "core.access.createChildRun", {
+          ...childArgs,
+          runId: parent.run.id,
+        }, null, {
           agentJustification: " \tDelegate\nread-only work.\u202e ",
         }),
       ),
@@ -187,9 +187,10 @@ describe("bound agent declarations", () => {
     ).toBe(true);
     const refused = await fix.host.dispatch(
       actor,
-      "core.access.createAgentRun",
+      "core.access.createChildRun",
       {
         ...childArgs,
+        runId: parent.run.id,
         caps: ["terminals:write"],
       },
       null,
@@ -209,7 +210,7 @@ describe("bound agent declarations", () => {
     const { actor } = await newRun(fix, { caps: ["containers:read"] });
     const invalid = { agentJustification: "token=fixture-only-value" };
     expect(
-      await fix.host.dispatch(actor, "core.access.createAgentRun", {}, null, invalid),
+      await fix.host.dispatch(actor, "core.access.createChildRun", {}, null, invalid),
     ).toMatchObject({ ok: false, denial: { rule: "policy_required" } });
     await acknowledge(fix, actor);
     expect(
@@ -222,7 +223,7 @@ describe("bound agent declarations", () => {
       ),
     ).toMatchObject({ ok: false, denial: { rule: "forbidden" } });
     expect(
-      await fix.host.dispatch(actor, "core.access.createAgentRun", {}, null, invalid),
+      await fix.host.dispatch(actor, "core.access.createChildRun", {}, null, invalid),
     ).toMatchObject({ ok: false, denial: { rule: "invalid_args" } });
     expect(JSON.parse(latestTrace(fix).payload)).toEqual({});
     expect(JSON.stringify(fix.logs)).not.toContain("fixture-only-value");
@@ -285,7 +286,7 @@ describe("bound agent declarations", () => {
     });
     const options = { agentJustification: "Inspect this suspended run." };
     expect(
-      await fix.host.dispatch(actor, "core.access.listAgentRuns", {}, null, options),
+      await fix.host.dispatch(actor, "core.access.listRuns", {}, null, options),
     ).toMatchObject({
       ok: true,
       result: { runs: [{ id: created.run.id, state: "pending_policy" }] },
@@ -301,7 +302,7 @@ describe("bound agent declarations", () => {
     });
     fix.store.updateAgentRunPolicy(created.run.id, "0".repeat(64), "policy_stale");
     expect(
-      await fix.host.dispatch(actor, "core.access.listAgentRuns", {}, null, options),
+      await fix.host.dispatch(actor, "core.access.listRuns", {}, null, options),
     ).toMatchObject({
       ok: true,
       result: { runs: [{ id: created.run.id, state: "policy_stale" }] },
@@ -315,10 +316,17 @@ describe("bound agent declarations", () => {
   test("human and legacy agent credentials never acquire claims from supplied options", async () => {
     const fix = await fixture();
     const options = { agentJustification: "token=fixture-only-value" };
+    const registeredRun = createExternalRun(fix, {
+      name: "human-created run",
+      purpose: "Keep human claims separate from run declarations.",
+      target: "manifold://",
+      reach: "subtree",
+      caps: ["containers:read"],
+    });
     const created = await fix.host.dispatch(
       fix.owner,
-      "core.access.createAgentRun",
-      childArgs,
+      "core.access.createRun",
+      { agentId: registeredRun.run.agentId },
       null,
       options,
     );

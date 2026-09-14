@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   CONNECTION_BODIES,
+  CreateRunCredentialResultSchema,
   ContainerResponseSchema,
   MAX_SUBSCRIPTIONS_PER_CONNECTION,
   PROTOCOL_VERSION,
@@ -223,6 +224,53 @@ const INDEX_TOPIC: ManifoldRef = { kind: "plugin", pluginId: "core.index" };
 const SPACE_TOPIC: ManifoldRef = { kind: "plugin", pluginId: "core.space" };
 
 describe("governed event disclosure", () => {
+  test("Agent notifications stay sponsor-private through collection delivery and recheck run credentials", async () => {
+    const fixture = await planeFixture();
+    try {
+      const sponsorToken = context(fixture, ["containers:read", "agents:delegate"]);
+      const strangerToken = context(fixture, ["containers:read"]);
+      const sponsor = fixture.auth.authenticate(sponsorToken);
+      const sponsorSocket = connect(fixture, "agent-sponsor", { token: sponsorToken });
+      const strangerSocket = connect(fixture, "agent-stranger", { token: strangerToken });
+      const collection: ManifoldRef = { kind: "plugin", pluginId: "core.access" };
+      subscribe(fixture, "agent-sponsor", [collection]);
+      subscribe(fixture, "agent-stranger", [collection]);
+      const registered = fixture.auth.registerAgent({
+        name: "private profile", purpose: "Inspect", harness: "external", context: { profile: {} },
+        grant: {
+          caps: ["containers:read"], targets: ["manifold://"], reach: "subtree",
+          maxRunLifetimeMs: 60_000, delegation: { maxDepth: 0, maxDescendants: 0 }, expiresAt: 120_000,
+        },
+      }, sponsor);
+      expect(eventsOn(sponsorSocket).map((event) => [event.kind, event.payload, event.actor])).toEqual([["agent_changed", {}, null]]);
+      expect(eventsOn(strangerSocket)).toEqual([]);
+      const runner = fixture.auth.authenticate(registered.credential!.token);
+      const admitted = CreateRunCredentialResultSchema.parse(fixture.auth.createRun({
+        agentId: registered.agent.agentId, lifetimeMs: 60_000,
+      }, runner));
+      const actor = fixture.auth.authenticate(admitted.credential.token);
+      const policy = fixture.auth.agentPolicyChallenge(actor);
+      fixture.auth.acknowledgeAgentPolicy({
+        revision: policy.revision, acknowledgements: policy.required.map(({ id, digest }) => ({ id, digest })),
+      }, actor);
+      const runSocket = connect(fixture, "agent-run", { token: admitted.credential.token });
+      subscribe(fixture, "agent-run", [{ kind: "run", runId: admitted.run.id }]);
+      subscribe(fixture, "agent-stranger", [{ kind: "agent", agentId: registered.agent.agentId }, { kind: "run", runId: admitted.run.id }]);
+      sponsorSocket.clear();
+      fixture.auth.reportRunActivity({ runId: admitted.run.id, activity: "blocked" }, runner);
+      expect(eventsOn(sponsorSocket).map((event) => event.kind)).toEqual(["agent_changed", "run_changed"]);
+      expect(eventsOn(runSocket).map((event) => [event.kind, event.payload])).toEqual([["run_changed", {}]]);
+      expect(eventsOn(strangerSocket)).toEqual([]);
+      runSocket.clear();
+      fixture.auth.finishAgentRun({ runId: admitted.run.id, outcome: "completed" }, sponsor);
+      expect(eventsOn(runSocket)).toEqual([]);
+      expect(eventsOn(strangerSocket)).toEqual([]);
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
   test("collection delivery cannot bypass a job denial and access invalidation carries no job", async () => {
     const fixture = await planeFixture((auth, reader, node) =>
       auth.allowsRef(reader, "jobs:read", node),

@@ -213,6 +213,7 @@ const JOB_METHODS = [
   "jobs.describeDeployment",
   "jobs.execute",
   "jobs.status",
+  "jobs.runTerminal",
   "jobs.listRuns",
   "jobs.input",
   "jobs.cancel",
@@ -241,6 +242,8 @@ function serveJobsCall(
       return jobs.execute(JobExecuteArgsSchema.parse(args[0]));
     case "jobs.status":
       return jobs.status(jobDoorSchemas.status.parse({ node: args[0] }).node);
+    case "jobs.runTerminal":
+      return jobs.runTerminal(stringArg(args, 0, method));
     case "jobs.listRuns":
       return jobs.listRuns(ListJobRunsArgsSchema.parse(args[0]));
     case "jobs.input":
@@ -468,6 +471,7 @@ export async function serveCtxCall(
     case "jobs.describeDeployment":
     case "jobs.execute":
     case "jobs.status":
+    case "jobs.runTerminal":
     case "jobs.listRuns":
     case "jobs.input":
     case "jobs.cancel":
@@ -530,6 +534,7 @@ export async function serveCtxCall(
     case "jobs.describeDeployment":
     case "jobs.execute":
     case "jobs.status":
+    case "jobs.runTerminal":
     case "jobs.listRuns":
     case "jobs.input":
     case "jobs.cancel":

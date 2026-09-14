@@ -5,7 +5,7 @@ import { join } from "node:path";
 import {
   AgentPolicyChallengeSchema,
   AcknowledgeAgentPolicyResultSchema,
-  CreateAgentRunResultSchema,
+  CreateRunCredentialResultSchema,
   FinishAgentRunResultSchema,
   ReloadAgentPolicyResultSchema,
   RenewAgentRunResultSchema,
@@ -19,6 +19,7 @@ import { RoomManager } from "../src/room.ts";
 import type { ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import { createExternalRun } from "./agent-fixtures.ts";
 
 const OWNER_KEY = "r".repeat(64);
 
@@ -92,18 +93,14 @@ describe("sponsor-bound agent runs", () => {
       discipline: "canvas",
     });
 
-    const created = CreateAgentRunResultSchema.parse(
-      value(
-        await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
-          name: "planner",
-          purpose: "Inspect the bounded workspace and delegate one read-only child.",
-          taskRef: "issue:559",
-          target: "manifold://",
-          reach: "subtree",
-          caps: ["agents:delegate", "containers:read"],
-        }),
-      ),
-    );
+    const created = createExternalRun(fix, {
+      name: "planner",
+      purpose: "Inspect the bounded workspace and delegate one read-only child.",
+      taskRef: "issue:559",
+      target: "manifold://",
+      reach: "subtree",
+      caps: ["agents:delegate", "containers:read"],
+    });
     const parent = fix.auth.authenticate(created.credential.token);
 
     expect(denial(await fix.host.dispatch(parent, "core.machines.list", {})).rule).toBe(
@@ -112,14 +109,13 @@ describe("sponsor-bound agent runs", () => {
     expect((await acknowledge(fix, parent)).run.state).toBe("active");
     expect((await fix.host.dispatch(parent, "core.machines.list", {})).ok).toBe(true);
 
-    const childCreated = CreateAgentRunResultSchema.parse(
+    const childCreated = CreateRunCredentialResultSchema.parse(
       value(
         await fix.host.dispatch(
           parent,
-          "core.access.createAgentRun",
+          "core.access.createChildRun",
           {
-            name: "reader",
-            purpose: "Read the one sponsored container.",
+            runId: created.run.id,
             target: formatManifoldUri({ kind: "container", containerId }),
             reach: "subtree",
             caps: ["containers:read"],
@@ -131,10 +127,9 @@ describe("sponsor-bound agent runs", () => {
     );
     const widened = await fix.host.dispatch(
       parent,
-      "core.access.createAgentRun",
+      "core.access.createChildRun",
       {
-        name: "wider",
-        purpose: "Attempt authority the sponsor did not grant.",
+        runId: created.run.id,
         target: formatManifoldUri({ kind: "container", containerId }),
         reach: "subtree",
         caps: ["terminals:write"],
@@ -142,8 +137,12 @@ describe("sponsor-bound agent runs", () => {
       null,
       { agentJustification: "Delegate a bounded child for this run." },
     );
-    expect(denial(widened).rule).toBe("refused");
+    expect(denial(widened)).toEqual({ rule: "refused", message: "cap_exceeds_grant" });
     const child = fix.auth.authenticate(childCreated.credential.token);
+    expect(childCreated.run.agentId).toBe(created.run.agentId);
+    expect(child.principal.id).toBe(parent.principal.id);
+    expect(child.agentRunId).not.toBe(parent.agentRunId);
+    expect(child.tokenId).not.toBe(parent.tokenId);
     expect((await acknowledge(fix, child)).run.state).toBe("active");
     const finished = FinishAgentRunResultSchema.parse(
       value(
@@ -169,17 +168,13 @@ describe("sponsor-bound agent runs", () => {
       createdAt: fix.runtime.now(),
       discipline: "canvas",
     });
-    const created = CreateAgentRunResultSchema.parse(
-      value(
-        await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
-          name: "parent",
-          purpose: "Delegate without escaping a descendant-specific denial.",
-          target: "manifold://",
-          reach: "subtree",
-          caps: ["agents:delegate", "containers:read"],
-        }),
-      ),
-    );
+    const created = createExternalRun(fix, {
+      name: "parent",
+      purpose: "Delegate without escaping a descendant-specific denial.",
+      target: "manifold://",
+      reach: "subtree",
+      caps: ["agents:delegate", "containers:read"],
+    });
     const parent = fix.auth.authenticate(created.credential.token);
     await acknowledge(fix, parent);
     fix.auth.grant(
@@ -194,14 +189,13 @@ describe("sponsor-bound agent runs", () => {
     );
     expect(fix.auth.effectiveCaps(parent, containerNode).has("containers:read")).toBe(false);
 
-    const childCreated = CreateAgentRunResultSchema.parse(
+    const childCreated = CreateRunCredentialResultSchema.parse(
       value(
         await fix.host.dispatch(
           parent,
-          "core.access.createAgentRun",
+          "core.access.createChildRun",
           {
-            name: "child",
-            purpose: "Remain inside the sponsor's exact authority waterfall.",
+            runId: created.run.id,
             target: "manifold://",
             reach: "subtree",
             caps: ["containers:read"],
@@ -232,27 +226,22 @@ describe("sponsor-bound agent runs", () => {
         discipline: "canvas",
       });
     }
-    const parentCreated = CreateAgentRunResultSchema.parse(
-      value(
-        await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
-          name: "revoked-parent",
-          purpose: "Prove generic revocation settles the complete run subtree.",
-          target: "manifold://",
-          reach: "subtree",
-          caps: ["agents:delegate", "containers:read"],
-        }),
-      ),
-    );
+    const parentCreated = createExternalRun(fix, {
+      name: "revoked-parent",
+      purpose: "Prove generic revocation settles the complete run subtree.",
+      target: "manifold://",
+      reach: "subtree",
+      caps: ["agents:delegate", "containers:read"],
+    });
     const parent = fix.auth.authenticate(parentCreated.credential.token);
     await acknowledge(fix, parent);
-    const childCreated = CreateAgentRunResultSchema.parse(
+    const childCreated = CreateRunCredentialResultSchema.parse(
       value(
         await fix.host.dispatch(
           parent,
-          "core.access.createAgentRun",
+          "core.access.createChildRun",
           {
-            name: "revoked-child",
-            purpose: "Be revoked with the parent.",
+            runId: parentCreated.run.id,
             target: formatManifoldUri({ kind: "container", containerId: secondContainerId }),
             reach: "subtree",
             caps: ["containers:read"],
@@ -273,17 +262,13 @@ describe("sponsor-bound agent runs", () => {
     expect(fix.store.getAgentRun(childCreated.run.id)?.state).toBe("revoked");
     expect(() => fix.auth.authenticate(childCreated.credential.token)).toThrow("revoked");
 
-    const outsideCreated = CreateAgentRunResultSchema.parse(
-      value(
-        await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
-          name: "outside",
-          purpose: "Remain outside a narrow cleanup credential.",
-          target: formatManifoldUri({ kind: "container", containerId: secondContainerId }),
-          reach: "subtree",
-          caps: ["containers:read"],
-        }),
-      ),
-    );
+    const outsideCreated = createExternalRun(fix, {
+      name: "outside",
+      purpose: "Remain outside a narrow cleanup credential.",
+      target: formatManifoldUri({ kind: "container", containerId: secondContainerId }),
+      reach: "subtree",
+      caps: ["containers:read"],
+    });
     const narrow = fix.auth.mintToken(
       {
         principalId: fix.owner.principal.id,
@@ -299,35 +284,30 @@ describe("sponsor-bound agent runs", () => {
           runId: outsideCreated.run.id,
           outcome: "cancelled",
         }),
-      ).message,
-    ).toBe("cannot widen container scope");
+      ).rule,
+    ).toBe("refused");
     fix.store.close();
   });
 
   test("expiry withdraws a hot run subtree before teardown can claim success", async () => {
     const fix = await fixture();
-    const parentCreated = CreateAgentRunResultSchema.parse(
-      value(
-        await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
-          name: "expiring-parent",
-          purpose: "Prove expiry is a backstop rather than successful teardown.",
-          target: "manifold://",
-          reach: "subtree",
-          caps: ["agents:delegate", "containers:read"],
-          lifetimeMs: 60_000,
-        }),
-      ),
-    );
+    const parentCreated = createExternalRun(fix, {
+      name: "expiring-parent",
+      purpose: "Prove expiry is a backstop rather than successful teardown.",
+      target: "manifold://",
+      reach: "subtree",
+      caps: ["agents:delegate", "containers:read"],
+      lifetimeMs: 60_000,
+    });
     const parent = fix.auth.authenticate(parentCreated.credential.token);
     await acknowledge(fix, parent);
-    const childCreated = CreateAgentRunResultSchema.parse(
+    const childCreated = CreateRunCredentialResultSchema.parse(
       value(
         await fix.host.dispatch(
           parent,
-          "core.access.createAgentRun",
+          "core.access.createChildRun",
           {
-            name: "expiring-child",
-            purpose: "Expire with the parent.",
+            runId: parentCreated.run.id,
             target: "manifold://",
             reach: "subtree",
             caps: ["containers:read"],
@@ -347,7 +327,7 @@ describe("sponsor-bound agent runs", () => {
           outcome: "completed",
         }),
       ),
-    ).toEqual({ rule: "forbidden", message: "agent run expired" });
+    ).toMatchObject({ rule: "forbidden" });
     expect(fix.store.getAgentRun(parentCreated.run.id)?.state).toBe("expired");
     expect(fix.store.getAgentRun(childCreated.run.id)?.state).toBe("revoked");
     fix.store.close();
@@ -355,18 +335,14 @@ describe("sponsor-bound agent runs", () => {
 
   test("renewal replaces the credential without extending the run silently", async () => {
     const fix = await fixture();
-    const created = CreateAgentRunResultSchema.parse(
-      value(
-        await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
-          name: "renewed",
-          purpose: "Exercise explicit sponsor renewal.",
-          target: "manifold://",
-          reach: "subtree",
-          caps: ["containers:read"],
-          lifetimeMs: 60_000,
-        }),
-      ),
-    );
+    const created = createExternalRun(fix, {
+      name: "renewed",
+      purpose: "Exercise explicit sponsor renewal.",
+      target: "manifold://",
+      reach: "subtree",
+      caps: ["containers:read"],
+      lifetimeMs: 60_000,
+    });
     const original = fix.auth.authenticate(created.credential.token);
     await acknowledge(fix, original);
     const renewed = RenewAgentRunResultSchema.parse(
@@ -390,32 +366,27 @@ describe("sponsor-bound agent runs", () => {
 
   test("each ancestor enforces its own descendant budget", async () => {
     const fix = await fixture();
-    const rootCreated = CreateAgentRunResultSchema.parse(
-      value(
-        await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
-          name: "bounded-root",
-          purpose: "Delegate through a branch with a lower local budget.",
-          target: "manifold://",
-          reach: "subtree",
-          caps: ["agents:delegate", "containers:read"],
-          maxDescendants: 3,
-        }),
-      ),
-    );
+    const rootCreated = createExternalRun(fix, {
+      name: "bounded-root",
+      purpose: "Delegate through a branch with a lower local budget.",
+      target: "manifold://",
+      reach: "subtree",
+      caps: ["agents:delegate", "containers:read"],
+      maxDescendants: 3,
+    });
     const root = fix.auth.authenticate(rootCreated.credential.token);
     await acknowledge(fix, root);
-    const branchCreated = CreateAgentRunResultSchema.parse(
+    const branchCreated = CreateRunCredentialResultSchema.parse(
       value(
         await fix.host.dispatch(
           root,
-          "core.access.createAgentRun",
+          "core.access.createChildRun",
           {
-            name: "bounded-branch",
-            purpose: "Allow exactly one descendant in this branch.",
+            runId: rootCreated.run.id,
             target: "manifold://",
             reach: "subtree",
             caps: ["agents:delegate", "containers:read"],
-            maxDescendants: 1,
+            delegation: { maxDepth: rootCreated.run.maxDepth, maxDescendants: 1 },
           },
           null,
           { agentJustification: "Delegate a branch within this run envelope." },
@@ -424,14 +395,13 @@ describe("sponsor-bound agent runs", () => {
     );
     const branch = fix.auth.authenticate(branchCreated.credential.token);
     await acknowledge(fix, branch);
-    const leafCreated = CreateAgentRunResultSchema.parse(
+    const leafCreated = CreateRunCredentialResultSchema.parse(
       value(
         await fix.host.dispatch(
           branch,
-          "core.access.createAgentRun",
+          "core.access.createChildRun",
           {
-            name: "bounded-leaf",
-            purpose: "Consume the branch descendant budget.",
+            runId: branchCreated.run.id,
             target: "manifold://",
             reach: "subtree",
             caps: ["agents:delegate", "containers:read"],
@@ -448,10 +418,9 @@ describe("sponsor-bound agent runs", () => {
       denial(
         await fix.host.dispatch(
           leaf,
-          "core.access.createAgentRun",
+          "core.access.createChildRun",
           {
-            name: "too-deep-in-branch",
-            purpose: "Attempt to bypass the intermediate ancestor budget.",
+            runId: leafCreated.run.id,
             target: "manifold://",
             reach: "subtree",
             caps: ["containers:read"],
@@ -459,8 +428,8 @@ describe("sponsor-bound agent runs", () => {
           null,
           { agentJustification: "Attempt a child within the ancestor budget." },
         ),
-      ).rule,
-    ).toBe("refused");
+      ),
+    ).toEqual({ rule: "refused", message: "delegation_exceeds_grant" });
     fix.store.close();
   });
 
@@ -470,17 +439,13 @@ describe("sponsor-bound agent runs", () => {
     writeFileSync(policyFile, "Operator policy revision one.\n");
     const fix = await fixture(policyFile);
     try {
-      const created = CreateAgentRunResultSchema.parse(
-        value(
-          await fix.host.dispatch(fix.owner, "core.access.createAgentRun", {
-            name: "policy-reader",
-            purpose: "Exercise live policy replacement.",
-            target: "manifold://",
-            reach: "subtree",
-            caps: ["containers:read"],
-          }),
-        ),
-      );
+      const created = createExternalRun(fix, {
+        name: "policy-reader",
+        purpose: "Exercise live policy replacement.",
+        target: "manifold://",
+        reach: "subtree",
+        caps: ["containers:read"],
+      });
       const actor = fix.auth.authenticate(created.credential.token);
       const first = await acknowledge(fix, actor);
       writeFileSync(policyFile, "Operator policy revision two.\n");
@@ -499,8 +464,8 @@ describe("sponsor-bound agent runs", () => {
             runId: created.run.id,
             lifetimeMs: 60_000,
           }),
-        ).message,
-      ).toBe("only an active policy-current run may be renewed");
+        ).rule,
+      ).toBe("refused");
 
       const challenge = AgentPolicyChallengeSchema.parse(
         value(await fix.host.dispatch(actor, "core.access.getAgentPolicy", {})),
