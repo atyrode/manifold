@@ -3,6 +3,7 @@ import {
   closeSync,
   chmodSync,
   constants,
+  existsSync,
   ftruncateSync,
   lstatSync,
   linkSync,
@@ -10,6 +11,7 @@ import {
   mkdtempSync,
   renameSync,
   readFileSync,
+  readSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -583,6 +585,41 @@ linuxTest("a sealed archive whose bytes no longer match its digest is a corrupt 
       expect(() => store.extract("job-1", "material", destination, 1048576)).toThrow(
         "input_source_corrupt",
       );
+    } finally {
+      destination.close();
+    }
+  });
+});
+
+linuxTest("an archive member that climbs out of its own tree is a corrupt source, by that name", () => {
+  fixture(({ store, create, privateDirectory, root }) => {
+    const lease = create("material");
+    writeFileSync(`${lease.directory.procPath}/payload`, "authentic");
+    const sealed = store.seal(lease, proof);
+    // Rewrite the member's name to climb, and repair the header checksum so the block parses:
+    // only the path check stands between this archive and a write outside the destination.
+    chmodSync(`${privateDirectory.procPath}/${sealed.outputId}.tar`, 0o600);
+    const fd = privateDirectory.openFile(`${sealed.outputId}.tar`, constants.O_RDWR);
+    try {
+      const block = Buffer.alloc(512);
+      readSync(fd, block, 0, 512, 0);
+      block.fill(0, 0, 100);
+      block.write("../escape", 0, 100, "utf8");
+      block.fill(32, 148, 156);
+      let sum = 0;
+      for (const byte of block) sum += byte;
+      block.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148, 8, "ascii");
+      writeSync(fd, block, 0, 512, 0);
+    } finally {
+      closeSync(fd);
+    }
+    mkdirSync(join(root, "extracted"), { mode: 0o700 });
+    const destination = HeldDirectory.openAbsolute(join(root, "extracted"));
+    try {
+      expect(() => store.extract("job-1", "material", destination, 1048576)).toThrow(
+        "input_source_corrupt",
+      );
+      expect(existsSync(join(root, "escape"))).toBe(false);
     } finally {
       destination.close();
     }

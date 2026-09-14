@@ -713,13 +713,18 @@ export class JobOutputStore {
         throw new Error("input_source_corrupt");
       return { bytes: total, files };
     } catch (error) {
-      // A malformed archive collides with itself: two entries for one path, a file where a
-      // directory belongs. Those errnos are the archive's fault and get the archive's refusal;
-      // a full filesystem is not, and keeps its own name.
+      // A malformed archive collides with itself or climbs out of its own tree: two entries for
+      // one path, a file where a directory belongs, a `..` member. Those are the archive's fault
+      // and get the archive's refusal; a full filesystem is not, and keeps its own name. The set
+      // this throws is closed, so a preparation refusal always names one of ours.
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOSPC" || code === "EDQUOT" || code === "EFBIG")
         throw new Error("input_storage_exhausted");
-      if (code !== undefined && code !== "EIO") throw new Error("input_source_corrupt");
+      if (
+        (code !== undefined && code !== "EIO") ||
+        (error instanceof Error && error.message === "unsafe_file_component")
+      )
+        throw new Error("input_source_corrupt");
       throw error;
     } finally {
       for (const held of directories.values()) held.close();

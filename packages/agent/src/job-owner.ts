@@ -2410,7 +2410,8 @@ export class MachineJobOwner {
           this.emit({ type: "result", result: job.result }, job);
           job.resolveFinalized();
         }
-        this.releaseInputs(job);
+        this.closeInputFiles(job);
+        this.releaseBoundInputs(job);
         job.progress.close();
       }
       throw error;
@@ -2423,7 +2424,8 @@ export class MachineJobOwner {
     const handle = job.handle;
     for (const childId of job.children) await this.cancel(childId);
     job.resolveEmpty();
-    this.releaseInputs(job);
+    this.closeInputFiles(job);
+    this.releaseBoundInputs(job);
     for (const release of job.releaseWriters) release();
     job.releaseWriters = [];
     // The last stage reported must reach the hub while the job is still started: after the
@@ -2537,7 +2539,9 @@ export class MachineJobOwner {
     await this.closeServices(job);
     // Immutable inputs have no output-writer authority. Child mounts retain their own kernel
     // references; releasing our transport copies is safe even if empty proof is unavailable.
-    this.releaseInputs(job);
+    // The extracted trees go after the cancel attempt, as `finish` orders it: a workload that is
+    // still running keeps the directory its mount resolves to until its tree is observed empty.
+    this.closeInputFiles(job);
     if (job.handle) {
       try {
         const observed = await job.handle.cancel();
@@ -2549,6 +2553,7 @@ export class MachineJobOwner {
         /* No output sealing without empty proof. */
       }
     }
+    this.releaseBoundInputs(job);
     job.progress.flush();
     job.result = {
       ...job.result,
@@ -2757,10 +2762,12 @@ export class MachineJobOwner {
   private installKey(pluginId: string, revision: string): string {
     return `${pluginId}\0${revision}`;
   }
-  /** Every path out of a started or refused job runs this: the sandbox's inputs outlive nothing. */
-  private releaseInputs(job: OwnedJob): void {
+  private closeInputFiles(job: OwnedJob): void {
     for (const file of job.inputFiles) closeSync(file.fd);
     job.inputFiles = [];
+  }
+  /** An extraction outlives no job: every settle, interrupt and refused start removes its tree. */
+  private releaseBoundInputs(job: OwnedJob): void {
     for (const input of job.boundInputs) this.options.boundInputs?.release(input);
     job.boundInputs = [];
   }

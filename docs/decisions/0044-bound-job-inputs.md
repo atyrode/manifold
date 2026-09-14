@@ -88,10 +88,19 @@ duplicate_input           two bindings claim one /inputs name
 
 That is the closed set; each refusal names the binding after a colon
 (`input_not_exported:material`), so the codes stay a vocabulary while a caller with sixteen bindings
-still learns which one failed. Admission asks them in that order — declaration before existence,
-existence before permission, permission before authority — because each answer is cheaper and less
-disclosing than the next, and a caller should not learn that a job exists by being told it may not
-read it.
+still learns which one failed. The order is declaration, then existence, then export, then
+authority, and it is a deliberate trade rather than a privacy ladder: it is the order in which the
+answers become CHEAP and WELL-FORMED. The declaration check reads the manifest already in hand.
+Existence is what produces the source job's operation id, and the authority walk needs that id to
+name a node at all, so authority cannot be asked first without inventing the node it would ask
+about. Being honest about the consequence: steps 2 and 3 are an existence and export oracle for a
+caller who already holds `machines:run` on the consuming operation and is guessing job ids — it
+learns that a job exists and what it exported before its own read authority is graded. That is
+accepted because the oracle is bounded to one machine's own jobs and to names the caller's
+operation already declared, and because the alternative is a refusal that cannot say which binding
+failed. If that ever stops being acceptable, the fix is to collapse 2-4 into one
+`input_source_unavailable` for a caller without `jobs:read` anywhere on that machine, not to
+reorder them.
 
 A deferred start asks all of them again. A schedule occurrence or a queued job admitted while the
 machine was offline can launch minutes later, by which time the source output may have been released
@@ -178,9 +187,12 @@ one finite backing with named outputs, and that is an explicit sizing instructio
 - The `runtime` anchor's tmpfs must be sized for outputs AND extractions. The module's 1 MiB default
   is now visibly too small for any operation that binds a corpus, which is an honest thing for a
   default to be.
-- One protocol field is additive on the owner wire (`JobRequest.inputs`, `JobLimits.inputBytes`), so
-  no `JOB_OWNER_PROTOCOL_VERSION` bump: an older owner receives a request it cannot satisfy only if
-  a newer hub admits one, and the hub's own admission is what gates the feature.
+- The owner wire gains fields that cross its strict parser — `inputs`/`exports` inside the whole
+  `MachineHalf` of an `install` frame, and `inputs`/`limits.inputBytes` in a `start` frame — so
+  `JOB_OWNER_PROTOCOL_VERSION` moves to 35 and 34 joins the bounded retirement set `{30, 31, 32,
+33, 34}`, exactly as `concurrentJobs` took 31 and metered inference took 32. A drained owner at 34
+  can still be challenged to finish and retire its retained work; it is never an execution owner
+  for this hub.
 
 ## Evidence
 

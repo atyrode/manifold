@@ -3029,10 +3029,12 @@ read a retained IPC-1 owner and resume its existing terminals. Without an explic
 declaration it cannot create new ambient shells. Governed requests still require their
 separate native owner proof and admitted resource/runtime bindings.
 
-Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 34. Version 31 added an
+Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 35. Version 31 added an
 operation's declared `limits.concurrentJobs`; version 32 added metered service policies and a job's
 inference limits, usage and journal events; version 33 added the workload's own reported progress
-as a job event of its own; version 34 adds the `pi-native-usage` meter kind a policy may name.
+as a job event of its own; version 34 added the `pi-native-usage` meter kind a policy may name;
+version 35 adds an operation's declared bound `inputs` and `exports`, a request's `inputs` bindings
+and `limits.inputBytes`.
 All of them cross the strict owner parser, in install, start, event and
 result frames, so an owner at another version is never an execution owner for this hub. It remains
 disconnected for job admission, installation, resources, services, readiness, input and output.
@@ -3041,7 +3043,7 @@ through a transport or browser upgrade. A native RPC change requires its own coo
 drained owner upgrade. Compatibility alone never proves current execution consent or
 resource readiness, and no PTY, polling or alternate execution path substitutes for it.
 
-The bounded retirement set is `{30, 31, 32, 33}`, not general backwards compatibility. A member may
+The bounded retirement set is `{30, 31, 32, 33, 34}`, not general backwards compatibility. A member may
 receive an owner challenge only while the machine is drained and its owner id, public key and
 generation exactly match the durable pin. Successful proof permits only `drain` plus
 `status` and `cancel`/`retire` without an admission payload for an already-retained job carrying
@@ -3402,7 +3404,8 @@ provider handling and postconditions belong to plugins, never the common floor.
   SHA256 is recomputed while it is read, every path component is checked, and the archive's
   own length is charged against `limits.inputBytes` summed across the job's bindings before a
   byte is written. An archive the store does not hold refuses `input_source_missing`, one past
-  the budget `input_too_large`, a malformed or digest-mismatched one `input_source_corrupt`,
+  the budget `input_too_large`, and a malformed, digest-mismatched, self-colliding or
+  tree-climbing one `input_source_corrupt`,
   and a full backing `input_storage_exhausted` — all at preparation, by name, with nothing
   mounted and no directory left behind. A machine that configures no `runtime` anchor refuses
   `input_storage_unavailable` rather than extracting into the owner's own state. The

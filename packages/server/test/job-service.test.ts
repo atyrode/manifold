@@ -781,7 +781,11 @@ test("legacy retirement requires a drained exact pinned owner", () => {
     expect(challenged({ ...legacy, ownerId: "other-owner" })).toBe(false);
     expect(challenged(legacy)).toBe(true);
     // The bump before this one is what a retained job's owner speaks: a new protocol version that
-    // drops its predecessor from the set strands that job, which is the regression this pins.
+    // drops its predecessor from the set strands that job, which is the regression this pins. The
+    // whole audited set is named, so a bump that adds a version without extending it fails here.
+    for (const protocolVersion of [30, 31, 32, 33, 34]) {
+      expect(challenged({ ...legacy, protocolVersion })).toBe(true);
+    }
     expect(challenged({ ...legacy, protocolVersion: JOB_OWNER_PROTOCOL_VERSION - 1 })).toBe(true);
   } finally {
     f.store.close();

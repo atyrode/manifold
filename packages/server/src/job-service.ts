@@ -3739,8 +3739,10 @@ export class JobService {
       if (!machine || machine.draining || !install?.ready) return null;
       const operationReason = this.operationRefusal(install, request.operationId);
       const context = this.auth.restoreCredential(request.credential);
-      // A deferred start asks the input questions again: a source output released, or an export
-      // withdrawn, between admission and launch must refuse rather than spawn a half-fed job.
+      // A deferred start asks the input questions again: a source output released, or the source
+      // installation's `jobs:read` consent revoked, between admission and launch must refuse
+      // rather than spawn a half-fed job. Withdrawing an export in a NEW revision does not reach
+      // a source job pinned to the old one; revoking that revision's consent is what does.
       const operation = install.machine.operations[request.operationId];
       let refusal = !context
         ? "credential_revoked_or_expired"
