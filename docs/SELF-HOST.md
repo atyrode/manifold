@@ -284,10 +284,20 @@ have `restartIfChanged=false`, `stopIfChanged=false`, `Restart=on-failure` and
 atomic maintenance shutdown stays stopped. Old immutable store paths must remain rooted
 until the retained owner exits; do not garbage-collect its old system generation mid-session.
 Changing a unit definition does not mean the retained owner is running that new version.
-Hub/transport protocol 30, terminal-host IPC 2 and native job-owner RPC 30 have separate
+Hub/transport protocol 30, terminal-host IPC 2 and native job-owner RPC 33 have separate
 compatibility gates. A compatible transport keeps retained terminals and maintenance
 reachable even when the owner's native RPC cannot admit jobs. An older owner's missing
 IPC-2 execution declaration cannot be treated as permission to create an unconfined shell.
+
+Before activating a hub whose `JOB_OWNER_PROTOCOL_VERSION` changes, drain the machine and
+resolve retained jobs while the incumbent hub can still command its owner. Atomically shut
+down that empty owner, start the new owner while admission remains drained, activate the
+compatible hub and transport, prove native readiness, then reopen. Do not activate the hub
+first merely because the owner unit is protected from restart: that strands retained jobs
+behind the new hub's execution fence. The bounded legacy-retirement bridge in the
+[`/ws/machine` contract](CONTRACTS.md#ws-wsmachine--machine-channel-json-data-fields-base64)
+exists only to empty an already-stranded exact pinned owner; it never makes that owner
+eligible for execution or service readiness.
 
 The supported command is `manifold-agent --maintenance`; it does not run the transport,
 acquire its seat, discover machines or credential files, retire terminals, cancel jobs,

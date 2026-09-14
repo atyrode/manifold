@@ -2750,14 +2750,26 @@ Native owner RPC has its own `JOB_OWNER_PROTOCOL_VERSION`, currently 33. Version
 operation's declared `limits.concurrentJobs`; version 32 added metered service policies and a job's
 inference limits, usage and journal events; version 33 adds the workload's own reported progress as
 a job event of its own. All of them cross the strict owner parser, in install, start, event and
-result frames, so older owners are fenced before receiving any of those shapes.
+result frames, so an owner at another version is never an execution owner for this hub. It remains
+disconnected for job admission, installation, resources, services, readiness, input and output.
 It is not the hub/session `PROTOCOL_VERSION`: an unchanged native RPC remains compatible
 through a transport or browser upgrade. A native RPC change requires its own coordinated,
 drained owner upgrade. Compatibility alone never proves current execution consent or
 resource readiness, and no PTY, polling or alternate execution path substitutes for it.
 
-A structurally valid native-owner announcement with a different RPC version does not
-invalidate an otherwise compatible machine transport. The owner receives no native
+The bounded retirement set is `{30, 31, 32}`, not general backwards compatibility. A member may
+receive an owner challenge only while the machine is drained and its owner id, public key and
+generation exactly match the durable pin. Successful proof permits only `drain` plus
+`status` and `cancel`/`retire` without an admission payload for an already-retained job carrying
+that exact owner generation and a durable cancellation. Status recovers a final result that
+completed while disconnected; cancellation proves whole-workload emptiness.
+Only a terminal `result` and `workload_empty` for that cancelled job are accepted in return.
+The connection never becomes an online execution
+owner or publishes retained service readiness. These lifecycle frames are the unchanged subset
+across the named versions; any other native RPC version, identity, state or frame remains fenced.
+
+A structurally valid native-owner announcement outside the current or bounded-retirement rules
+does not invalidate an otherwise compatible machine transport. The owner receives no native
 challenge or job authority, while machine presence, retained terminal continuity and
 the named drain/maintenance path remain available for the coordinated upgrade.
 

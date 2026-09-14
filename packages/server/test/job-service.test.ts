@@ -629,6 +629,192 @@ test("executor revocation does not revive a retiring service after fenced empty 
   }
 });
 
+test("legacy retirement requires a drained exact pinned owner", () => {
+  const f = fixture();
+  try {
+    f.service.jobs.pinOwner(f.machineId, f.owner);
+    const legacy = { ...f.owner, protocolVersion: 30 };
+    const challenged = (owner: JobOwner): boolean => {
+      f.commands.length = 0;
+      f.service.online(f.channel, owner, "retirement-epoch");
+      return f.commands.some((command) => command.type === "owner_challenge");
+    };
+    expect(challenged(legacy)).toBe(false);
+    f.store.setMachineDraining(f.machineId, true);
+    expect(challenged({ ...legacy, protocolVersion: 29 })).toBe(false);
+    expect(challenged({ ...legacy, generation: legacy.generation + 1 })).toBe(false);
+    expect(challenged({ ...legacy, ownerId: "other-owner" })).toBe(false);
+    expect(challenged(legacy)).toBe(true);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("proved legacy owner can only finish its durably cancelled retained job", async () => {
+  const { f, policy, start, revision } = await instanceFixture();
+  try {
+    f.service.event(f.channel, {
+      type: "state",
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+      state: "started",
+    });
+    await f.service.configureInstanceService(f.root, {
+      serviceId: policy.serviceId,
+      expectedRevision: revision,
+      policy,
+      enabled: false,
+    });
+    const node = {
+      kind: "job" as const,
+      machineId: f.machineId,
+      operationId,
+      jobId: start.request.jobId,
+    };
+    f.service.cancel(f.root, node);
+    f.store.setMachineDraining(f.machineId, true);
+    f.service.offline(f.channel);
+    f.commands.length = 0;
+
+    const legacy = { ...f.owner, protocolVersion: 30 };
+    f.service.online(f.channel, legacy, "retirement-epoch");
+    const challenge = f.commands.at(-1);
+    if (challenge?.type !== "owner_challenge") throw new Error("owner challenge missing");
+    f.service.cancel(f.root, node);
+    expect(f.commands.map((command) => command.type)).toEqual(["owner_challenge"]);
+    const body = {
+      nonce: challenge.nonce,
+      serverEpoch: challenge.serverEpoch,
+      machineId: f.machineId,
+      owner: legacy,
+    };
+    f.service.event(f.channel, {
+      type: "owner_proof",
+      ...body,
+      signature: sign(null, Buffer.from(canonicalJobJson(body)), f.privateKey).toString("base64"),
+    });
+
+    expect(f.commands.map((command) => command.type)).toEqual([
+      "owner_challenge",
+      "drain",
+      "status",
+      "cancel",
+    ]);
+    expect(f.commands.at(-1)).toMatchObject({
+      type: "cancel",
+      jobId: start.request.jobId,
+    });
+    expect(f.commands.at(-1)).not.toHaveProperty("admission");
+    expect(
+      f.commands.some((command) =>
+        ["install", "configure_services", "start"].includes(command.type),
+      ),
+    ).toBe(false);
+    expect(f.service.describe(f.root, { machineId: f.machineId, pluginId })).toMatchObject({
+      connected: false,
+      platforms: [],
+      installation: { ready: false },
+    });
+
+    f.service.event(f.channel, {
+      type: "installed",
+      pluginId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+    });
+    f.service.event(f.channel, {
+      type: "service_ready",
+      jobId: start.request.jobId,
+      service: start.request.service!,
+    });
+    expect(f.service.describe(f.root, { machineId: f.machineId, pluginId })).toMatchObject({
+      connected: false,
+      installation: { ready: false },
+    });
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        jobId: start.request.jobId,
+        requestDigest: start.request.requestDigest,
+        ownerId: f.owner.ownerId,
+        ownerGeneration: f.owner.generation,
+        state: "started",
+        exitCode: null,
+        reason: null,
+        startedAt: f.runtime.now(),
+        finishedAt: null,
+        usage: null,
+        limits: start.request.limits,
+        outputs: [],
+      },
+    });
+    expect(f.service.jobs.get(start.request.jobId)?.state).toBe("started");
+    const empty = {
+      type: "workload_empty" as const,
+      jobId: start.request.jobId,
+      requestDigest: start.request.requestDigest,
+      ownerId: f.owner.ownerId,
+      ownerGeneration: f.owner.generation,
+    };
+    f.service.event(f.channel, { ...empty, ownerGeneration: f.owner.generation + 1 });
+    expect(f.service.jobs.get(start.request.jobId)?.ownerClosed).toBe(false);
+    f.service.event(f.channel, empty);
+    expect(f.service.jobs.get(start.request.jobId)?.ownerClosed).toBe(true);
+    f.service.offline(f.channel);
+    f.commands.length = 0;
+    f.service.online(f.channel, legacy, "result-replay-epoch");
+    const replayChallenge = f.commands.at(-1);
+    if (replayChallenge?.type !== "owner_challenge") throw new Error("owner challenge missing");
+    const replayBody = {
+      nonce: replayChallenge.nonce,
+      serverEpoch: replayChallenge.serverEpoch,
+      machineId: f.machineId,
+      owner: legacy,
+    };
+    f.service.event(f.channel, {
+      type: "owner_proof",
+      ...replayBody,
+      signature: sign(null, Buffer.from(canonicalJobJson(replayBody)), f.privateKey).toString(
+        "base64",
+      ),
+    });
+    expect(f.commands.map((command) => command.type)).toEqual([
+      "owner_challenge",
+      "drain",
+      "status",
+    ]);
+    expect(f.commands.at(-1)).not.toHaveProperty("admission");
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        jobId: start.request.jobId,
+        requestDigest: start.request.requestDigest,
+        ownerId: f.owner.ownerId,
+        ownerGeneration: f.owner.generation,
+        state: "exited",
+        exitCode: 0,
+        reason: null,
+        startedAt: f.runtime.now(),
+        finishedAt: f.runtime.now(),
+        usage: null,
+        limits: start.request.limits,
+        outputs: [],
+      },
+    });
+    expect(f.service.jobs.get(start.request.jobId)).toMatchObject({
+      state: "exited",
+      ownerClosed: true,
+    });
+    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+      "stopped",
+    );
+  } finally {
+    f.store.close();
+  }
+});
+
 test("installation acknowledgement requires proof on both initial connection and reconnect", () => {
   const f = fixture();
   try {
