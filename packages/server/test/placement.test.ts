@@ -55,7 +55,7 @@ import {
 import type { PluginHost } from "../src/plugin-host.ts";
 import { RoomManager, type Room } from "../src/room.ts";
 import { SessionChannel } from "../src/session-channel.ts";
-import type { ServerStore } from "../src/stores.ts";
+import { TRACE_ROW_TYPE, type ServerStore } from "../src/stores.ts";
 import { TerminalBroker, type MachineChannel } from "../src/terminal-broker.ts";
 import {
   FakeClock,
@@ -1781,6 +1781,150 @@ describe("core.space.place", () => {
     expect(PlaceResponseSchema.parse(unplaced.result)).toEqual({ op: "unplace", removed: 1 });
     expect(homeOf(fixture, fixture.loose)).toBe(looseHome);
     expect(fixture.store.getContainer(looseHome)).not.toBeNull();
+  });
+
+  test("settled traces name resolved source and destination containers once", async () => {
+    const fixture = await placementFixture();
+    const move = async (sourceContainerId: string, destinationContainerId: string) => {
+      const outcome = await dispatch(fixture, OWNER_KEY, {
+        ref: { kind: "element", containerId: sourceContainerId, elementId: "el-text" },
+        destination: { kind: "canvas", containerId: destinationContainerId, x: 80, y: 90 },
+      });
+      expect(outcome.ok).toBe(true);
+    };
+
+    await move(fixture.canvas.id, fixture.other.id);
+    const crossContainer = fixture.store
+      .listEvents({ type: TRACE_ROW_TYPE, limit: 10 })
+      .filter((row) => row.door === "core.space.place");
+    expect(crossContainer).toHaveLength(1);
+    expect(crossContainer[0]?.targets).toEqual([
+      `manifold://container/${fixture.canvas.id}`,
+      `manifold://container/${fixture.other.id}`,
+    ]);
+    expect(fixture.store.listEvents({ type: "item_placed", limit: 10 })).toHaveLength(1);
+
+    await move(fixture.other.id, fixture.other.id);
+    const sameContainer = fixture.store
+      .listEvents({ type: TRACE_ROW_TYPE, limit: 10 })
+      .filter((row) => row.door === "core.space.place");
+    expect(sameContainer).toHaveLength(2);
+    expect(sameContainer[0]?.targets).toEqual([`manifold://container/${fixture.other.id}`]);
+    expect(fixture.store.listEvents({ type: "item_placed", limit: 10 })).toHaveLength(2);
+  });
+
+  test("settled traces include a terminal home absorbed by a tile placement", async () => {
+    const fixture = await placementFixture();
+    const looseHome = homeOf(fixture, fixture.loose);
+
+    const outcome = await dispatch(fixture, OWNER_KEY, {
+      ref: { kind: "terminal", terminalId: fixture.loose },
+      destination: {
+        kind: "tile",
+        containerId: fixture.composition.id,
+        targetTileId: terminalLeafId(fixture, fixture.composition.id, fixture.occupant),
+        edge: "right",
+      },
+    });
+    expect(outcome.ok).toBe(true);
+
+    const trace = fixture.store
+      .listEvents({ type: TRACE_ROW_TYPE, limit: 10 })
+      .find((row) => row.door === "core.space.place");
+    expect(trace?.targets).toEqual([
+      `manifold://container/${fixture.composition.id}`,
+      `manifold://container/${looseHome}`,
+    ]);
+    expect(fixture.store.listEvents({ type: "item_placed", limit: 10 })).toHaveLength(1);
+  });
+
+  test("settled traces follow a non-solo portal to the composition actually changed", async () => {
+    const fixture = await placementFixture();
+    const sourceTileId = terminalLeafId(fixture, fixture.composition.id, fixture.occupant);
+
+    const outcome = await dispatch(fixture, OWNER_KEY, {
+      ref: { kind: "tile", containerId: fixture.composition.id, tileId: sourceTileId },
+      destination: {
+        kind: "compose",
+        containerId: fixture.canvas.id,
+        targetElementId: "el-portal-composition",
+        edge: "right",
+      },
+    });
+    expect(outcome.ok).toBe(true);
+
+    const trace = fixture.store
+      .listEvents({ type: TRACE_ROW_TYPE, limit: 10 })
+      .find((row) => row.door === "core.space.place");
+    expect(trace?.targets).toEqual([
+      `manifold://container/${fixture.otherComposition.id}`,
+      `manifold://container/${fixture.composition.id}`,
+    ]);
+    expect(trace?.targets).not.toContain(`manifold://container/${fixture.canvas.id}`);
+    expect(fixture.store.listEvents({ type: "item_placed", limit: 10 })).toHaveLength(1);
+  });
+
+  test.each([
+    { edge: "right", op: "add_tile" },
+    { edge: "center", op: "replace" },
+  ] as const)(
+    "$op traces omit the source canvas when a portal itself stays in place",
+    async ({ edge, op }) => {
+      const fixture = await placementFixture();
+      const outcome = await dispatch(fixture, OWNER_KEY, {
+        ref: {
+          kind: "element",
+          containerId: fixture.canvas.id,
+          elementId: "el-portal-canvas",
+        },
+        destination: {
+          kind: "tile",
+          containerId: fixture.composition.id,
+          targetTileId: terminalLeafId(fixture, fixture.composition.id, fixture.occupant),
+          edge,
+        },
+      });
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) throw new Error(`${op} expected`);
+      expect(PlaceResponseSchema.parse(outcome.result).op).toBe(op);
+
+      const trace = fixture.store
+        .listEvents({ type: TRACE_ROW_TYPE, limit: 10 })
+        .find((row) => row.door === "core.space.place");
+      expect(trace?.targets).toContain(`manifold://container/${fixture.composition.id}`);
+      expect(trace?.targets).not.toContain(`manifold://container/${fixture.canvas.id}`);
+    },
+  );
+
+  test("compose traces omit a different source canvas when its portal stays in place", async () => {
+    const fixture = await placementFixture();
+    writeElement(
+      roomFor(fixture, fixture.other.id).doc,
+      element({ id: "copied-portal", type: "portal", containerId: fixture.spare.id }),
+      LOCAL_ORIGIN,
+    );
+
+    const outcome = await dispatch(fixture, OWNER_KEY, {
+      ref: { kind: "element", containerId: fixture.other.id, elementId: "copied-portal" },
+      destination: {
+        kind: "compose",
+        containerId: fixture.canvas.id,
+        targetElementId: "el-portal-solo",
+        edge: "right",
+      },
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) throw new Error("compose expected");
+    const result = PlaceResponseSchema.parse(outcome.result);
+    expect(result.op).toBe("compose");
+    if (result.op !== "compose") throw new Error("compose response expected");
+
+    const trace = fixture.store
+      .listEvents({ type: TRACE_ROW_TYPE, limit: 10 })
+      .find((row) => row.door === "core.space.place");
+    expect(trace?.targets).toContain(`manifold://container/${result.containerId}`);
+    expect(trace?.targets).toContain(`manifold://container/${fixture.canvas.id}`);
+    expect(trace?.targets).not.toContain(`manifold://container/${fixture.other.id}`);
   });
 
   test("an unplace that removes nothing is a success carrying zero, not a refusal", async () => {

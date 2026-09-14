@@ -977,6 +977,15 @@ own docs: legality cannot drift between a drag preview and the write that follow
 executor then resolves the ref's CURRENT location from identity, never from the request,
 so a caller cannot lie about where an item was.
 
+On success, the action-facing executor answer also names the authoritative container effects of
+the operation: containers actually changed as resolved sources or destinations, homes created,
+absorbed, or re-homed, and referrer documents repointed or pruned by that placement. Composition
+through a portal names the composition that changed, not the untouched canvas that happened to
+hold the target portal. The answer deduplicates coincident containers before `core.space.place`
+registers them through `ctx.target`; request addresses are never the audit authority. The handler
+still stages exactly one `item_placed` event, on the executor's actual landing composition for a
+compose rather than on the request's portal-bearing canvas.
+
 **The index.** `GET /api/containers` returns one
 `ContainerCensus { containerId, discipline, items, references }` per container. `items` are what
 it
@@ -1901,8 +1910,11 @@ authority, no outcome, no session and an empty `targets`; a trace row carries al
 `type: "trace"`, so `{ kind: "trace" }` IS the ledger and nothing has to be inferred from a NULL
 check. `door` is the full action name; `authority` is what the ladder discharged (`root`, the
 declared caps joined by `+`, or `open` for a door that demands nothing); `targets` are the
-`manifold://` nodes the door named, collected from emissions or explicit `ctx.target(ref)` calls and
-published PARSED because the ladder is their only writer; `outcome` is `ok`, `failed`, or the
+`manifold://` nodes the door named, collected from emissions or explicit `ctx.target(ref)` calls,
+canonicalized and deduplicated by the ladder, and published PARSED because the ladder is their only
+writer. Placement contributes the executor-reported container effects of the successful operation
+before its single event, rather than treating request addresses as authoritative; `outcome` is
+`ok`, `failed`, or the
 denial rung (`TRACE_OUTCOMES` in `@manifold/protocol`), and NULL means the dispatch was still in
 flight — the ledger is written AHEAD of the handler, so an unsettled row is a dispatch that never
 came back rather than a row somebody forgot to finish; `session` is the socket it arrived on, NULL

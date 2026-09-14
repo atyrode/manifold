@@ -35,14 +35,16 @@ interface LayoutCtx {
 
 interface PlaceCtx {
   readonly placement: {
-    place(
-      request: PlaceRequest,
-    ):
-      | { readonly status: "placed"; readonly result: PlaceResponse }
-      | { readonly status: "denied"; readonly denial: PlacementDenial }
-      | { readonly status: "failed"; readonly failure: "not_found" | "conflict" };
+    placeWithTraceTargets(request: PlaceRequest): {
+      readonly outcome:
+        | { readonly status: "placed"; readonly result: PlaceResponse }
+        | { readonly status: "denied"; readonly denial: PlacementDenial }
+        | { readonly status: "failed"; readonly failure: "not_found" | "conflict" };
+      readonly containerIds: readonly string[];
+    };
   };
   readonly emit: EmitEvent;
+  target(ref: ManifoldRef): void;
 }
 
 /**
@@ -62,9 +64,11 @@ interface RemoveTileCtx {
 type Outcome = { refused: string } | Record<string, never>;
 
 /**
- * The node an `item_placed` announces on: the container the item landed IN, or — for
- * `unplaced`, which has no destination left to name because every reference to the item goes —
- * the item's OWN node, which is what a `PlacementRef` that names something already is.
+ * The node an `item_placed` announces on: the container the item actually landed IN, or —
+ * for `unplaced`, which has no destination left to name because every reference to the item
+ * goes — the item's OWN node, which is what a `PlacementRef` that names something already is.
+ * Compose is the one request whose addressed canvas can differ from that landing container:
+ * the executor's result names the composition reached through the portal or created by the merge.
  *
  * Null for the one ref that names nothing. A `structure` ref carries new tile material rather
  * than a representation of something that exists (issue #104), so there is no node to address
@@ -75,9 +79,11 @@ type Outcome = { refused: string } | Record<string, never>;
 function placedTopic(
   ref: PlaceRequest["ref"],
   destination: PlaceRequest["destination"],
+  result: PlaceResponse,
 ): ManifoldRef | null {
   if (destination.kind !== "unplaced") {
-    return { kind: "container", containerId: destination.containerId };
+    const containerId = result.op === "compose" ? result.containerId : destination.containerId;
+    return { kind: "container", containerId };
   }
   return ref.kind === "structure" ? null : ref;
 }
@@ -131,7 +137,7 @@ export const spaceHandlers = {
    *             is data.
    */
   async place(ctx: PlaceCtx, args: PlaceRequest): Promise<PlaceResponse | { refused: string }> {
-    const outcome = ctx.placement.place(args);
+    const { outcome, containerIds } = ctx.placement.placeWithTraceTargets(args);
     if (outcome.status === "denied") return { refused: placementRefusal(outcome.denial) };
     if (outcome.status === "failed") {
       return {
@@ -140,6 +146,9 @@ export const spaceHandlers = {
             ? "not_found: placement ref or container not found"
             : "conflict: placement could not be carried out",
       };
+    }
+    for (const containerId of containerIds) {
+      ctx.target({ kind: "container", containerId });
     }
     /*
       THE DROP, announced once, on the container the item landed IN — `placedTopic` above holds
@@ -150,7 +159,7 @@ export const spaceHandlers = {
       event is a notification that something happened. A ref that addresses nothing announces
       nothing either — there is no node to notify about.
      */
-    const topic = placedTopic(args.ref, args.destination);
+    const topic = placedTopic(args.ref, args.destination, outcome.result);
     if (topic !== null) {
       ctx.emit(topic, "item_placed", {
         op: outcome.result.op,
