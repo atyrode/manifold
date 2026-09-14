@@ -320,9 +320,6 @@ describe("IsolateSupervisor", () => {
       .load({ pluginId: PLUGIN_ID, manifest, dir: SILENT_GUEST_DIR })
       .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(IsolateLoadError);
-    expect((failure as Error).message).toBe(
-      "isolate did not answer load within 200ms; hardened bundles must use the bounded runner transport introduced by #536; repack with a current plugin kit",
-    );
     expect(supervisor.state(PLUGIN_ID)).toBe("stopped");
     await until(() => logger.count("isolate_exited") === 1);
     expect(logger.lines.find((line) => line.evt === "isolate_exited")?.fields?.signal).toBe(

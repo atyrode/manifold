@@ -2122,6 +2122,7 @@ async function installFixture(
       const bytes = Buffer.from(
         JSON.stringify({
           format: 1,
+          hardenedContract: 2,
           manifest,
           files: Object.fromEntries(
             Object.entries(files).map(([name, text]) => [
@@ -4125,7 +4126,7 @@ async function fakePack(pluginDir: string, outFile: string): Promise<{ sha256: s
     "web.js": member("web.tsx"),
   };
   if (existsSync(join(pluginDir, "styles.css"))) files["styles.css"] = member("styles.css");
-  const bytes = Buffer.from(JSON.stringify({ format: 1, manifest, files }));
+  const bytes = Buffer.from(JSON.stringify({ format: 1, hardenedContract: 2, manifest, files }));
   writeFileSync(outFile, bytes);
   return { sha256: sha256Hex(bytes) };
 }

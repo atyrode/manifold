@@ -16,6 +16,7 @@ export type {
   TerminalRuntime,
 } from "@manifold/plugin";
 import {
+  HARDENED_CONTRACT_VERSION,
   EventKindSchema,
   EventPayloadSchema,
   IsolateChildFrameSchema,
@@ -1292,6 +1293,11 @@ export function attachServerGuest(def: ServerPluginDef, transport: ServerGuestTr
     }
     let summaries: ActionSummary[];
     try {
+      if (
+        frame.hardenedContract !== undefined &&
+        frame.hardenedContract !== HARDENED_CONTRACT_VERSION
+      )
+        throw new Error("bundle contract does not match its packed guest runtime; repack");
       summaries = describe(frame.pluginId);
       GuestMigrationDeclarationsSchema.parse({
         dataVersion: frame.manifest.dataVersion,

@@ -15,6 +15,8 @@ const fixtureTestPattern = [
   "instance retirement preserves native (?:cooperative|lost-completion|launch-race|noncooperative) ownership until confirmed exit",
   "real machine jobs enforce consent, execute once across transport replacement, and fence queued revocation",
   "instance services survive hub and transport replacement and route only current cross-owner authority",
+  "owner upgrade restores an exact older install projection without changing pinned authority",
+  "outside-set owner RPC never blocks drained empty native maintenance shutdown",
 ].join("|");
 
 // Run only inside a disposable delegated systemd unit, never in the caller's normal cgroup.

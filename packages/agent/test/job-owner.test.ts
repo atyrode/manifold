@@ -25,6 +25,7 @@ import { join, dirname, basename } from "node:path";
 import {
   canonicalJobJson,
   JobEventSchema,
+  JOB_OWNER_PROTOCOL_VERSION,
   type ServicePolicy,
   type JobCommand,
   type JobEvent,
@@ -2100,6 +2101,133 @@ async function resourceServiceOwner(scope: "job" | "instance") {
     },
   };
 }
+
+test.skipIf(!linux || !cgroupRoot)(
+  "owner upgrade restores an exact older install projection without changing pinned authority",
+  async () => {
+    const f = await resourceServiceOwner("job");
+    try {
+      const operationId = "fixture.provider.run";
+      const addedId = "fixture.provider.consume";
+      const full = {
+        ...f.provider,
+        machine: {
+          ...f.provider.machine,
+          operations: {
+            ...f.provider.machine.operations,
+            [addedId]: { ...f.provider.machine.operations[operationId]!, inputs: ["material"] },
+          },
+        },
+      };
+      const operations = () =>
+        f.owner
+          .installedResources(full.pluginId, full.installationRevision)
+          .operations.map((operation) => operation.operationId)
+          .sort();
+      const refuse = async (command: Extract<JobCommand, { type: "install" }>) => {
+        await f.owner.execute(command);
+        expect(f.events.at(-1)).toMatchObject({
+          type: "refusal",
+          reason: "installation_revision_changed",
+        });
+        expect(operations()).toEqual([operationId]);
+      };
+      await refuse({
+        ...full,
+        machine: {
+          ...full.machine,
+          operations: {
+            ...full.machine.operations,
+            [operationId]: {
+              ...full.machine.operations[operationId]!,
+              argv: [{ literal: "changed" }],
+            },
+          },
+        },
+      });
+      await refuse({
+        ...full,
+        resourceBindings: { ...full.resourceBindings!, anchors: { unreviewed: "a".repeat(64) } },
+      });
+      await refuse({
+        ...full,
+        machine: {
+          ...full.machine,
+          artifacts: {
+            [`linux-${process.arch}`]: {
+              ...Object.values(full.machine.artifacts)[0]!,
+              maxBytes: Object.values(full.machine.artifacts)[0]!.maxBytes + 1,
+            },
+          },
+        },
+      });
+      await refuse({
+        ...full,
+        machine: {
+          ...full.machine,
+          operations: {
+            ...full.machine.operations,
+            "fixture.provider.extra": full.machine.operations[operationId]!,
+          },
+        },
+      });
+      const append = spyOn(JobJournal.prototype, "append").mockImplementationOnce(() => {
+        throw new Error("journal_write_failed");
+      });
+      try {
+        await f.owner.execute(full);
+        expect(f.events.at(-1)).toMatchObject({ type: "refusal", reason: "journal_write_failed" });
+        expect(operations()).toEqual([operationId]);
+      } finally {
+        append.mockRestore();
+      }
+      await f.owner.execute(full);
+      expect(operations()).toEqual([addedId, operationId]);
+      f.provider.machine = full.machine;
+      await f.recoverWithoutProviderArtifact();
+      expect(operations()).toEqual([addedId, operationId]);
+      await f.owner.execute(full);
+      expect(
+        f.owner.installedResources(full.pluginId, full.installationRevision).artifactAvailable,
+      ).toBe(true);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test.skipIf(!linux || !cgroupRoot)(
+  "outside-set owner RPC never blocks drained empty native maintenance shutdown",
+  async () => {
+    const f = await resourceServiceOwner("job");
+    try {
+      const advertised = f.owner.identity;
+      Object.defineProperty(f.owner, "identity", {
+        get: () => ({ ...advertised, protocolVersion: JOB_OWNER_PROTOCOL_VERSION + 1 }),
+      });
+      const host = new TerminalHost({ jobOwner: f.owner });
+      const events: TerminalHostEvent[] = [];
+      const peer = host.open({
+        write: (event) => {
+          events.push(event);
+          return true;
+        },
+        close() {},
+      });
+      peer.deliver({ type: "shutdown_request" });
+      expect(events.at(-1)).toMatchObject({ type: "shutdown_refused", reason: "not_draining" });
+      peer.deliver({ type: "attach" });
+      peer.deliver({ type: "drain", draining: true, requestId: "compat-drain" });
+      peer.deliver({ type: "shutdown_request" });
+      expect(events.at(-1)).toMatchObject({
+        type: "shutting_down",
+        terminalHostId: host.terminalHostId,
+      });
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test.skipIf(!linux || !cgroupRoot)(
   "reacquired runtime artifacts restore dependent service readiness without new configuration",

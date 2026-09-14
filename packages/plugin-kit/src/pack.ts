@@ -6,6 +6,7 @@ import { open, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
 import { verifyBundledArtifacts } from "./artifacts.ts";
 import {
+  HARDENED_CONTRACT_VERSION,
   ISOLATE_MAX_ARTIFACT_BYTES,
   PLUGIN_BUNDLE_FORMAT,
   PLUGIN_BUNDLE_SERVER_FILE,
@@ -296,6 +297,7 @@ export async function compilePlugin(
   }
   const bundle: PluginBundle = PluginBundleSchema.parse({
     format: PLUGIN_BUNDLE_FORMAT,
+    hardenedContract: HARDENED_CONTRACT_VERSION,
     manifest,
     files,
     ...(shared === false ? {} : { builtAgainst }),

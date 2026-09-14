@@ -14,6 +14,34 @@ import { JobResourceBindingsSchema, JobResourceInventorySchema } from "./job-res
 /** Native owner RPC changes independently of hub, session, and transport releases. */
 export const JOB_OWNER_PROTOCOL_VERSION = 36;
 
+/**
+ * Native owners outlive hub deploys. An unchanged or strictly additive-optional RPC change
+ * ADDS its version; a breaking change RESETS this set and requires a coordinated upgrade.
+ * Send newer fields only to owners that parse them, refusing the affected operation rather
+ * than disconnecting compatible services and jobs. Retirement is independent of this set.
+ *
+ * HISTORY. v34 is the accepted baseline: `pi-native-usage` joins service policy meter kinds
+ * (#572). v35 adds the optional private launch carrier, terminal `runId` and host-minted
+ * `launchBinding` (#587). v36 adds operation `inputs`/`exports`, request `inputs` and
+ * `limits.inputBytes`. All other commands, policies and ordinary admissions remain unchanged.
+ */
+export const JOB_OWNER_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([34, 35, 36]);
+
+export type JobOwnerCapability = "privateEnv" | "launchBinding" | "boundInputs";
+const jobOwnerCapabilityVersions: Readonly<Record<JobOwnerCapability, number>> = {
+  privateEnv: 35,
+  launchBinding: 35,
+  boundInputs: 36,
+};
+
+/** Capability support never grants execution authority to an owner outside the accepted set. */
+export function jobOwnerSupports(protocolVersion: number, capability: JobOwnerCapability): boolean {
+  return (
+    JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion) &&
+    protocolVersion >= jobOwnerCapabilityVersions[capability]
+  );
+}
+
 const id = z.string().min(1).max(128);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -348,6 +376,36 @@ export type MachineHalf = z.infer<typeof MachineHalfSchema>;
 export type MachineArtifact = z.infer<typeof MachineArtifactSchema>;
 export type MachineOperation = z.infer<typeof MachineOperationSchema>;
 export type MachineLocation = z.infer<typeof MachineLocationSchema>;
+
+/** Strict install parsers must never receive a declaration for a newer-only operation. */
+export function jobOwnerOperationRefusal(
+  protocolVersion: number,
+  operation: MachineOperation,
+): string | null {
+  if (!JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion)) return "owner_protocol_unsupported";
+  if (
+    !jobOwnerSupports(protocolVersion, "boundInputs") &&
+    (operation.inputs !== undefined ||
+      operation.exports !== undefined ||
+      operation.limits.inputBytes !== undefined)
+  )
+    return "bound_inputs_protocol_unsupported";
+  return null;
+}
+
+/** Preserve complete supported declarations; an omitted operation never gains weaker semantics. */
+export function jobOwnerMachine(protocolVersion: number, machine: MachineHalf): MachineHalf | null {
+  if (!JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion)) return null;
+  if (jobOwnerSupports(protocolVersion, "boundInputs")) return machine;
+  let operations: MachineHalf["operations"] | undefined;
+  for (const [id, operation] of Object.entries(machine.operations)) {
+    if (jobOwnerOperationRefusal(protocolVersion, operation) === null) continue;
+    operations ??= { ...machine.operations };
+    delete operations[id];
+  }
+  if (!operations) return machine;
+  return Object.keys(operations).length ? { ...machine, operations } : null;
+}
 /** All declared layouts, including managed tools; callers still select the owner platform. */
 export function machineArtifacts(machine: MachineHalf | undefined): MachineArtifact[] {
   return [
@@ -415,6 +473,22 @@ export const JobRequestSchema = z.strictObject({
     .optional(),
 });
 export type JobRequest = z.infer<typeof JobRequestSchema>;
+
+/** Check before signing or replaying admission; never strip fields from a signed request. */
+export function jobOwnerRequestRefusal(
+  protocolVersion: number,
+  request: Pick<JobRequest, "inputs" | "limits" | "terminal">,
+): string | null {
+  if (!JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(protocolVersion)) return "owner_protocol_unsupported";
+  if (request.terminal?.runId !== undefined && !jobOwnerSupports(protocolVersion, "privateEnv"))
+    return "run_launch_protocol_unsupported";
+  if (
+    !jobOwnerSupports(protocolVersion, "boundInputs") &&
+    (request.inputs !== undefined || request.limits.inputBytes !== undefined)
+  )
+    return "bound_inputs_protocol_unsupported";
+  return null;
+}
 
 export const JobInvocationTargetSchema = JobRequestSchema.pick({
   machineId: true,
@@ -872,6 +946,30 @@ export const JobCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("service_tunnel_frame"), frame: ServiceTunnelFrameSchema }),
 ]);
 export type JobCommand = z.infer<typeof JobCommandSchema>;
+
+/**
+ * A hub may restore operations omitted for an older parser, not revise pinned authority.
+ * Every retained operation and all artifact/resource metadata must match the exact prior
+ * projection. This is only an install comparison, never authentication or admission.
+ */
+export function jobOwnerInstallRestoresProjection(
+  previous: Extract<JobCommand, { type: "install" }>,
+  incoming: Extract<JobCommand, { type: "install" }>,
+): boolean {
+  const { action: _action, ...command } = incoming;
+  const pinned = canonicalJobJson(previous);
+  for (const protocolVersion of JOB_OWNER_PROTOCOL_COMPAT_VERSIONS) {
+    if (protocolVersion >= JOB_OWNER_PROTOCOL_VERSION) continue;
+    const machine = jobOwnerMachine(protocolVersion, command.machine);
+    if (
+      machine !== null &&
+      machine !== command.machine &&
+      canonicalJobJson({ ...command, machine }) === pinned
+    )
+      return true;
+  }
+  return false;
+}
 export const JobInstallationResourcesSchema = z.strictObject({
   artifactAvailable: z.boolean(),
   tools: z

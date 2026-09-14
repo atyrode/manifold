@@ -884,6 +884,25 @@ head, and that proof authorizes only that branch's preview: it is never integrat
 or production evidence. Fast pull-request `gate` success and artifacts from another tree do not
 cross these boundaries.
 
+Both `deploy-dev.yml` and `deploy-hub.yml` also require the `installed-bundles` job before
+the switch. It builds the candidate image for that exact revision, discovers and invokes the
+running target's root-only `engine.plugins.exportInstalled` door, then boots the candidate
+against copies of the returned bundles and safe install rows in temporary data directories.
+It checks original enablement and a second disposable all-enabled copy so a disabled module
+cannot hide a load failure. No production data volume, network, installer credential or owner
+key is mounted into the candidate. Any held, missing, unverified or load-failed bundle refuses
+deployment by plugin id with the candidate's minimum SDK contract.
+
+Configure root-authorized export credentials as `DEV_INSTALLED_BUNDLES_TOKEN` and
+`HUB_INSTALLED_BUNDLES_TOKEN` in repository secrets, scoped operationally to their respective
+target origins (`DEV_DEPLOY_URL` and `MANIFOLD_HUB_ORIGIN`). The export door returns no
+credential lineage or source URL credentials. Missing credentials or a target too old to
+advertise `engine.plugins.exportInstalled` fail closed, never mean an empty installed set.
+Introducing this gate to an older target therefore requires deploying the export-door
+prerequisite first under an explicitly authorized bootstrap procedure; the gate has no bypass.
+Self-hosted automation can run the same `scripts/installed-bundles.ts IMAGE` with
+`INSTALLED_BUNDLES_ORIGIN` and `INSTALLED_BUNDLES_TOKEN` supplied through its secret environment.
+
 **Release.** `bun run release -- <major|minor|patch|x.y.z>` publishes versioned artifacts from an
 exact `main` revision with successful full `main` CI — the GitHub Release, the fleet binaries, the
 `ghcr.io/atyrode/manifold:<tag>` image stamped `version = build = <x.y.z>`,
@@ -965,6 +984,17 @@ build/configuration validation, without terminal retirement/resume, recursive da
 changes or spoke rebuild/restart. The native execution-only profile remains separately declared
 and supervised. Numbered previews retain their explicitly disposable development-image lifecycle.
 
+After the successful development health check, `deploy-dev.yml` dispatches dotfiles'
+`update-preview-owner.yml` with `target=preview-owner` and `revision=<deployed SHA>`, using
+`DOTFILES_DISPATCH_TOKEN`. The receiver updates only the preview-owner pin and must no-op
+when that exact revision is already pinned; the operator's next apply or scheduled fleet
+apply then carries the owner. The generic production `update-pins.yml` currently accepts
+no target/revision inputs, so this is a deliberately separate receiver contract tracked by
+[dotfiles #687](https://github.com/atyrode/dotfiles/issues/687). Until that receiver lands,
+dispatch will report the missing workflow rather than accidentally bump production pins.
+This pin follow-through is convenience, not survival: accepted additive-behind owner RPCs
+continue serving while waiting for their normal apply.
+
 **Previews** are an optional development tier: `preview.<domain>` shows integrated `main`,
 `<N>.<domain>` serves PR N's last explicitly deployed SHA, and non-numeric `<name>.<domain>`
 serves a live worktree on the preview host with hot reload. Numbered previews are on demand:
@@ -986,8 +1016,8 @@ skip this tier entirely.
 **A self-hoster replaces the `deploy-*.yml` files.** They are the operator's deployments,
 gated on repository variables so a fork never runs them (ADR 0022). Yours consume the same
 releases: `docker compose pull` a tag, or build a commit and stamp it as above. Preserve the same
-boundary in replacement automation: record successful full proof for the exact revision before
-deploying it. Whatever you run, `/healthz` tells you what it is —
+boundary in replacement automation: record successful full proof for the exact revision and
+pass the installed-bundle candidate gate before deploying it. Whatever you run, `/healthz` tells you what it is —
 `curl -fsS https://<your-domain>/healthz` answers
 `{ ok, version, build, channel, protocolVersion }`, and the sidebar's rev line prints the same
 `build`, so the client you are looking at and the instance it looks at can be compared by eye.

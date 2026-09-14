@@ -42,8 +42,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  installed-bundles:
+    name: installed-bundles
+    if: >-
+      github.event.workflow_run.status == 'completed' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_branch == 'main' &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch') &&
+      vars.DEV_DEPLOY_HOST != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/bun-workspace
+      - name: Build the exact candidate
+        run: |
+          [[ $(git rev-parse HEAD) == "$SHA" ]]
+          eval "$(bun scripts/build-identity.ts --env)"
+          docker build --tag "installed-bundles:$SHA" \
+            --build-arg MANIFOLD_VERSION --build-arg MANIFOLD_BUILD --build-arg MANIFOLD_CHANNEL .
+      - name: Check the running instance's installed bundles without changing it
+        env:
+          INSTALLED_BUNDLES_ORIGIN: ${{ vars.DEV_DEPLOY_URL }}
+          INSTALLED_BUNDLES_TOKEN: ${{ secrets.DEV_INSTALLED_BUNDLES_TOKEN }}
+        run: bun scripts/installed-bundles.ts "installed-bundles:$SHA"
+
   deploy:
     name: development
+    needs: [installed-bundles]
     if: >-
       vars.DEV_DEPLOY_HOST != '' &&
       ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
@@ -229,3 +262,13 @@ jobs:
             sleep 15
           done
           echo "development at $DEV_URL never reported build $EXPECTED; last answer: $answer"; exit 1
+
+      - name: Dispatch the preview owner pin
+        # The release fleet follows production; this receiver follows ONLY the preview owner.
+        # atyrode/dotfiles#687 must provide this target/revision contract and no-op when current.
+        if: env.GH_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.DOTFILES_DISPATCH_TOKEN }}
+        run: >-
+          gh workflow run update-preview-owner.yml --repo atyrode/dotfiles
+          -f target=preview-owner -f revision="$SHA"

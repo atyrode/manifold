@@ -110,6 +110,7 @@ test.skipIf(!canSpawnServer())(
           source,
           JSON.stringify({
             format: 1,
+            hardenedContract: 2,
             manifest: {
               id,
               version,

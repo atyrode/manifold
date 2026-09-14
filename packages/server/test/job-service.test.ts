@@ -1,5 +1,6 @@
 import "../src/shared-modules.ts";
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 import { createHash, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,6 +11,12 @@ import {
   JOB_OWNER_PROTOCOL_VERSION,
   JobCommandSchema,
   InstanceServiceDescriptionSchema,
+  MachineHalfSchema,
+  MachineOperationSchema,
+  JobLimitsSchema,
+  MachineOperationLimitsSchema,
+  JobStartCommandSchema,
+  JobRequestSchema,
   type ServicePolicy,
   type Cap,
   JobDeploymentRequestSchema,
@@ -169,7 +176,7 @@ function execute(f: Fixture, jobId = "job", value = "safe") {
   });
 }
 
-async function instanceFixture(path = ":memory:") {
+async function instanceFixture(path = ":memory:", protocolVersion = JOB_OWNER_PROTOCOL_VERSION) {
   const provider: MachineHalf = {
     ...machine,
     operations: {
@@ -177,6 +184,7 @@ async function instanceFixture(path = ":memory:") {
     },
   };
   const f = fixture(path, provider);
+  f.owner.protocolVersion = protocolVersion;
   consent(f, "machines:run");
   consent(f, "jobs:cancel");
   prove(f);
@@ -220,6 +228,186 @@ async function instanceFixture(path = ":memory:") {
   if (!start || !configured.configuration) throw new Error("instance runtime was not admitted");
   return { f, policy, provider, start, revision: configured.configuration.revision };
 }
+
+test.each([34, 35])(
+  "accepted v%s owner keeps instance services and ordinary jobs across reconnect",
+  async (protocolVersion) => {
+    const { f, policy, start } = await instanceFixture(":memory:", protocolVersion);
+    try {
+      f.service.event(f.channel, {
+        type: "state",
+        jobId: start.request.jobId,
+        requestDigest: start.request.requestDigest,
+        ownerId: f.owner.ownerId,
+        ownerGeneration: f.owner.generation,
+        state: "started",
+      });
+      f.service.offline(f.channel);
+      f.commands.length = 0;
+      prove(f);
+      f.service.event(f.channel, {
+        type: "service_ready",
+        jobId: start.request.jobId,
+        service: start.request.service!,
+      });
+      expect(
+        f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }),
+      ).toMatchObject({ state: "ready", connected: true });
+      expect(f.service.jobs.cancellation(start.request.jobId)).toBeNull();
+      expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+      expect(execute(f, "ordinary").state).toBe("start-committed");
+      expect(f.commands.findLast((command) => command.type === "start")).toMatchObject({
+        request: { jobId: "ordinary" },
+        permit: { ownerId: f.owner.ownerId, ownerGeneration: f.owner.generation },
+      });
+    } finally {
+      f.store.close();
+    }
+  },
+);
+
+test("v35 strict owner parser receives compatible operations only and bound-input work is refused by name", () => {
+  const consumerId = `${pluginId}.consume`;
+  const manifest: MachineHalf = {
+    ...machine,
+    operations: {
+      ...machine.operations,
+      [consumerId]: { ...machine.operations[operationId]!, inputs: ["material"] },
+    },
+  };
+  const f = fixture(":memory:", manifest);
+  try {
+    const legacyOperation = z.strictObject({
+      ...z.strictObject(MachineOperationSchema.shape).omit({ inputs: true, exports: true }).shape,
+      limits: MachineOperationLimitsSchema.omit({ inputBytes: true }),
+    });
+    const legacyMachine = z.strictObject({
+      ...MachineHalfSchema.shape,
+      operations: z.record(z.string(), legacyOperation),
+    });
+    const legacyRequest = z.strictObject({
+      ...JobRequestSchema.omit({ inputs: true }).shape,
+      limits: JobLimitsSchema.omit({ inputBytes: true }),
+    });
+    const legacyStart = z.strictObject({
+      ...JobStartCommandSchema.shape,
+      request: legacyRequest,
+    });
+    const send = f.channel.send;
+    f.channel.send = (message) => {
+      if (message.command.type === "install") legacyMachine.parse(message.command.machine);
+      if (message.command.type === "start") legacyStart.parse(message.command);
+      return send(message);
+    };
+    f.owner.protocolVersion = 35;
+    consent(f, "machines:run");
+    prove(f);
+    const described = f.service.describe(f.root, { machineId: f.machineId, pluginId });
+    expect(described.operations[operationId]).toMatchObject({ ready: true, reason: null });
+    expect(described.operations[consumerId]).toMatchObject({
+      ready: false,
+      reason: "bound_inputs_protocol_unsupported",
+    });
+    expect(() =>
+      f.service.execute(f.root, pluginId, "trace", {
+        jobId: "unsupported",
+        machineId: f.machineId,
+        operationId: consumerId,
+        input: { value: "safe" },
+        outputs: [],
+      }),
+    ).toThrow("bound_inputs_protocol_unsupported");
+    expect(() =>
+      f.service.execute(f.root, pluginId, "trace", {
+        jobId: "new-limit",
+        machineId: f.machineId,
+        operationId,
+        input: { value: "safe" },
+        outputs: [],
+        limits: { ...limits, inputBytes: 1024 },
+      }),
+    ).toThrow("bound_inputs_protocol_unsupported");
+    expect(execute(f).state).toBe("start-committed");
+    expect(f.service.jobs.get("unsupported")).toBeNull();
+    expect(f.service.jobs.get("new-limit")).toBeNull();
+  } finally {
+    f.store.close();
+  }
+});
+
+test("v35 owner refuses deferred bound-input operations without waiting for an impossible install", () => {
+  const f = fixture(":memory:", {
+    ...machine,
+    operations: { [operationId]: { ...machine.operations[operationId]!, exports: [] } },
+  });
+  try {
+    consent(f, "machines:run");
+    expect(execute(f).state).toBe("queued");
+    f.owner.protocolVersion = 35;
+    prove(f);
+    expect(f.service.jobs.get("job")?.state).toBe("refused");
+    expect(
+      f.commands.filter((command) => command.type === "install" || command.type === "start"),
+    ).toEqual([]);
+    expect(
+      f.service.describe(f.root, { machineId: f.machineId, pluginId }).operations[operationId],
+    ).toMatchObject({ ready: false, reason: "bound_inputs_protocol_unsupported" });
+  } finally {
+    f.store.close();
+  }
+});
+
+test("older owner status and cancellation never replay unparsed fields or rewrite signed admission", () => {
+  const f = fixture();
+  try {
+    consent(f, "machines:run");
+    consent(f, "jobs:read");
+    consent(f, "jobs:cancel");
+    prove(f);
+    const job = f.service.execute(f.root, pluginId, "trace", {
+      jobId: "newer-admission",
+      machineId: f.machineId,
+      operationId,
+      input: { value: "safe" },
+      outputs: [],
+      limits: { ...limits, inputBytes: 1024 },
+    });
+    const admission = canonicalJobJson({ request: job.request, permit: job.permit });
+    f.service.offline(f.channel);
+    f.commands.length = 0;
+    f.owner.protocolVersion = 35;
+    const requestSchema = z.strictObject({
+      ...JobRequestSchema.omit({ inputs: true }).shape,
+      limits: JobLimitsSchema.omit({ inputBytes: true }),
+    });
+    const send = f.channel.send;
+    f.channel.send = (message) => {
+      const command = message.command;
+      if ("admission" in command && command.admission)
+        requestSchema.parse(command.admission.request);
+      return send(message);
+    };
+    prove(f);
+    const node = {
+      kind: "job" as const,
+      machineId: f.machineId,
+      operationId,
+      jobId: job.request.jobId,
+    };
+    expect(f.service.status(f.root, node).state).toBe("start-committed");
+    f.service.cancel(f.root, node);
+    expect(f.commands.findLast((command) => command.type === "cancel")).toMatchObject({
+      type: "cancel",
+      jobId: job.request.jobId,
+    });
+    const retained = f.service.jobs.get(job.request.jobId)!;
+    expect(canonicalJobJson({ request: retained.request, permit: retained.permit })).toBe(
+      admission,
+    );
+  } finally {
+    f.store.close();
+  }
+});
 
 test("enabled owner-proved services remint revoked credentials and return ready in one reconcile", async () => {
   const { f, policy, start, revision } = await instanceFixture();
@@ -764,11 +952,11 @@ test("executor revocation does not revive a retiring service after fenced empty 
   }
 });
 
-test("legacy retirement requires a drained exact pinned owner", () => {
+test("outside-set retirement requires a drained exact pinned identity, not a version allowlist", () => {
   const f = fixture();
   try {
     f.service.jobs.pinOwner(f.machineId, f.owner);
-    const legacy = { ...f.owner, protocolVersion: 30 };
+    const legacy = { ...f.owner, protocolVersion: 1 };
     const challenged = (owner: JobOwner): boolean => {
       f.commands.length = 0;
       f.service.online(f.channel, owner, "retirement-epoch");
@@ -776,186 +964,194 @@ test("legacy retirement requires a drained exact pinned owner", () => {
     };
     expect(challenged(legacy)).toBe(false);
     f.store.setMachineDraining(f.machineId, true);
-    expect(challenged({ ...legacy, protocolVersion: 29 })).toBe(false);
+    expect(challenged({ ...legacy, publicKey: "other-key" })).toBe(false);
     expect(challenged({ ...legacy, generation: legacy.generation + 1 })).toBe(false);
     expect(challenged({ ...legacy, ownerId: "other-owner" })).toBe(false);
     expect(challenged(legacy)).toBe(true);
-    // The bump before this one is what a retained job's owner speaks: a new protocol version that
-    // drops its predecessor from the set strands that job, which is the regression this pins. The
-    // whole audited set is named, so a bump that adds a version without extending it fails here.
-    for (const protocolVersion of [30, 31, 32, 33, 34, 35]) {
-      expect(challenged({ ...legacy, protocolVersion })).toBe(true);
-    }
-    expect(challenged({ ...legacy, protocolVersion: JOB_OWNER_PROTOCOL_VERSION - 1 })).toBe(true);
+    expect(challenged({ ...legacy, protocolVersion: JOB_OWNER_PROTOCOL_VERSION + 1 })).toBe(true);
   } finally {
     f.store.close();
   }
 });
 
-test("proved legacy owner can only finish its durably cancelled retained job", async () => {
-  const { f, policy, start, revision } = await instanceFixture();
-  try {
-    f.service.event(f.channel, {
-      type: "state",
-      jobId: start.request.jobId,
-      requestDigest: start.request.requestDigest,
-      ownerId: f.owner.ownerId,
-      ownerGeneration: f.owner.generation,
-      state: "started",
-    });
-    await f.service.configureInstanceService(f.root, {
-      serviceId: policy.serviceId,
-      expectedRevision: revision,
-      policy,
-      enabled: false,
-    });
-    const node = {
-      kind: "job" as const,
-      machineId: f.machineId,
-      operationId,
-      jobId: start.request.jobId,
-    };
-    f.service.cancel(f.root, node);
-    f.store.setMachineDraining(f.machineId, true);
-    f.service.offline(f.channel);
-    f.commands.length = 0;
-
-    const legacy = { ...f.owner, protocolVersion: 30 };
-    f.service.online(f.channel, legacy, "retirement-epoch");
-    const challenge = f.commands.at(-1);
-    if (challenge?.type !== "owner_challenge") throw new Error("owner challenge missing");
-    f.service.cancel(f.root, node);
-    expect(f.commands.map((command) => command.type)).toEqual(["owner_challenge"]);
-    const body = {
-      nonce: challenge.nonce,
-      serverEpoch: challenge.serverEpoch,
-      machineId: f.machineId,
-      owner: legacy,
-    };
-    f.service.event(f.channel, {
-      type: "owner_proof",
-      ...body,
-      signature: sign(null, Buffer.from(canonicalJobJson(body)), f.privateKey).toString("base64"),
-    });
-
-    expect(f.commands.map((command) => command.type)).toEqual([
-      "owner_challenge",
-      "drain",
-      "status",
-      "cancel",
-    ]);
-    expect(f.commands.at(-1)).toMatchObject({
-      type: "cancel",
-      jobId: start.request.jobId,
-    });
-    expect(f.commands.at(-1)).not.toHaveProperty("admission");
-    expect(
-      f.commands.some((command) =>
-        ["install", "configure_services", "start"].includes(command.type),
-      ),
-    ).toBe(false);
-    expect(f.service.describe(f.root, { machineId: f.machineId, pluginId })).toMatchObject({
-      connected: false,
-      platforms: [],
-      installation: { ready: false },
-    });
-
-    f.service.event(f.channel, {
-      type: "installed",
-      pluginId,
-      installationRevision: "r1",
-      artifactSha256: hash,
-    });
-    f.service.event(f.channel, {
-      type: "service_ready",
-      jobId: start.request.jobId,
-      service: start.request.service!,
-    });
-    expect(f.service.describe(f.root, { machineId: f.machineId, pluginId })).toMatchObject({
-      connected: false,
-      installation: { ready: false },
-    });
-    f.service.event(f.channel, {
-      type: "result",
-      result: {
+test.each([1, JOB_OWNER_PROTOCOL_VERSION + 1])(
+  "outside-set v%s owner can only finish durably cancelled work",
+  async (protocolVersion) => {
+    const { f, policy, start, revision } = await instanceFixture();
+    try {
+      const uncancelled = execute(f, "uncancelled");
+      f.service.event(f.channel, {
+        type: "state",
         jobId: start.request.jobId,
         requestDigest: start.request.requestDigest,
         ownerId: f.owner.ownerId,
         ownerGeneration: f.owner.generation,
         state: "started",
-        exitCode: null,
-        reason: null,
-        startedAt: f.runtime.now(),
-        finishedAt: null,
-        usage: null,
-        limits: start.request.limits,
-        outputs: [],
-      },
-    });
-    expect(f.service.jobs.get(start.request.jobId)?.state).toBe("started");
-    const empty = {
-      type: "workload_empty" as const,
-      jobId: start.request.jobId,
-      requestDigest: start.request.requestDigest,
-      ownerId: f.owner.ownerId,
-      ownerGeneration: f.owner.generation,
-    };
-    f.service.event(f.channel, { ...empty, ownerGeneration: f.owner.generation + 1 });
-    expect(f.service.jobs.get(start.request.jobId)?.ownerClosed).toBe(false);
-    f.service.event(f.channel, empty);
-    expect(f.service.jobs.get(start.request.jobId)?.ownerClosed).toBe(true);
-    f.service.offline(f.channel);
-    f.commands.length = 0;
-    f.service.online(f.channel, legacy, "result-replay-epoch");
-    const replayChallenge = f.commands.at(-1);
-    if (replayChallenge?.type !== "owner_challenge") throw new Error("owner challenge missing");
-    const replayBody = {
-      nonce: replayChallenge.nonce,
-      serverEpoch: replayChallenge.serverEpoch,
-      machineId: f.machineId,
-      owner: legacy,
-    };
-    f.service.event(f.channel, {
-      type: "owner_proof",
-      ...replayBody,
-      signature: sign(null, Buffer.from(canonicalJobJson(replayBody)), f.privateKey).toString(
-        "base64",
-      ),
-    });
-    expect(f.commands.map((command) => command.type)).toEqual([
-      "owner_challenge",
-      "drain",
-      "status",
-    ]);
-    expect(f.commands.at(-1)).not.toHaveProperty("admission");
-    f.service.event(f.channel, {
-      type: "result",
-      result: {
+      });
+      await f.service.configureInstanceService(f.root, {
+        serviceId: policy.serviceId,
+        expectedRevision: revision,
+        policy,
+        enabled: false,
+      });
+      const node = {
+        kind: "job" as const,
+        machineId: f.machineId,
+        operationId,
+        jobId: start.request.jobId,
+      };
+      f.service.cancel(f.root, node);
+      f.store.setMachineDraining(f.machineId, true);
+      f.service.offline(f.channel);
+      f.commands.length = 0;
+
+      const legacy = { ...f.owner, protocolVersion };
+      f.service.online(f.channel, legacy, "retirement-epoch");
+      const challenge = f.commands.at(-1);
+      if (challenge?.type !== "owner_challenge") throw new Error("owner challenge missing");
+      f.service.cancel(f.root, node);
+      expect(f.commands.map((command) => command.type)).toEqual(["owner_challenge"]);
+      const body = {
+        nonce: challenge.nonce,
+        serverEpoch: challenge.serverEpoch,
+        machineId: f.machineId,
+        owner: legacy,
+      };
+      f.service.event(f.channel, {
+        type: "owner_proof",
+        ...body,
+        signature: sign(null, Buffer.from(canonicalJobJson(body)), f.privateKey).toString("base64"),
+      });
+      expect(() => execute(f, "new-work")).toThrow("owner_protocol_unsupported");
+      expect(f.service.jobs.get("new-work")).toBeNull();
+      f.service.event(f.channel, {
+        type: "workload_empty",
+        jobId: uncancelled.request.jobId,
+        requestDigest: uncancelled.request.requestDigest,
+        ownerId: f.owner.ownerId,
+        ownerGeneration: f.owner.generation,
+      });
+      expect(f.service.jobs.get(uncancelled.request.jobId)?.ownerClosed).toBe(false);
+
+      expect(f.commands.map((command) => command.type)).toEqual([
+        "owner_challenge",
+        "drain",
+        "status",
+        "cancel",
+      ]);
+      expect(f.commands.at(-1)).toMatchObject({
+        type: "cancel",
+        jobId: start.request.jobId,
+      });
+      expect(f.commands.at(-1)).not.toHaveProperty("admission");
+      expect(
+        f.commands.some((command) =>
+          ["install", "configure_services", "start"].includes(command.type),
+        ),
+      ).toBe(false);
+      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId })).toMatchObject({
+        connected: false,
+        platforms: [],
+        installation: { ready: false },
+      });
+
+      f.service.event(f.channel, {
+        type: "installed",
+        pluginId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+      });
+      f.service.event(f.channel, {
+        type: "service_ready",
+        jobId: start.request.jobId,
+        service: start.request.service!,
+      });
+      expect(f.service.describe(f.root, { machineId: f.machineId, pluginId })).toMatchObject({
+        connected: false,
+        installation: { ready: false },
+      });
+      f.service.event(f.channel, {
+        type: "result",
+        result: {
+          jobId: start.request.jobId,
+          requestDigest: start.request.requestDigest,
+          ownerId: f.owner.ownerId,
+          ownerGeneration: f.owner.generation,
+          state: "started",
+          exitCode: null,
+          reason: null,
+          startedAt: f.runtime.now(),
+          finishedAt: null,
+          usage: null,
+          limits: start.request.limits,
+          outputs: [],
+        },
+      });
+      expect(f.service.jobs.get(start.request.jobId)?.state).toBe("started");
+      const empty = {
+        type: "workload_empty" as const,
         jobId: start.request.jobId,
         requestDigest: start.request.requestDigest,
         ownerId: f.owner.ownerId,
         ownerGeneration: f.owner.generation,
+      };
+      f.service.event(f.channel, { ...empty, ownerGeneration: f.owner.generation + 1 });
+      expect(f.service.jobs.get(start.request.jobId)?.ownerClosed).toBe(false);
+      f.service.event(f.channel, empty);
+      expect(f.service.jobs.get(start.request.jobId)?.ownerClosed).toBe(true);
+      f.service.offline(f.channel);
+      f.commands.length = 0;
+      f.service.online(f.channel, legacy, "result-replay-epoch");
+      const replayChallenge = f.commands.at(-1);
+      if (replayChallenge?.type !== "owner_challenge") throw new Error("owner challenge missing");
+      const replayBody = {
+        nonce: replayChallenge.nonce,
+        serverEpoch: replayChallenge.serverEpoch,
+        machineId: f.machineId,
+        owner: legacy,
+      };
+      f.service.event(f.channel, {
+        type: "owner_proof",
+        ...replayBody,
+        signature: sign(null, Buffer.from(canonicalJobJson(replayBody)), f.privateKey).toString(
+          "base64",
+        ),
+      });
+      expect(f.commands.map((command) => command.type)).toEqual([
+        "owner_challenge",
+        "drain",
+        "status",
+      ]);
+      expect(f.commands.at(-1)).not.toHaveProperty("admission");
+      f.service.event(f.channel, {
+        type: "result",
+        result: {
+          jobId: start.request.jobId,
+          requestDigest: start.request.requestDigest,
+          ownerId: f.owner.ownerId,
+          ownerGeneration: f.owner.generation,
+          state: "exited",
+          exitCode: 0,
+          reason: null,
+          startedAt: f.runtime.now(),
+          finishedAt: f.runtime.now(),
+          usage: null,
+          limits: start.request.limits,
+          outputs: [],
+        },
+      });
+      expect(f.service.jobs.get(start.request.jobId)).toMatchObject({
         state: "exited",
-        exitCode: 0,
-        reason: null,
-        startedAt: f.runtime.now(),
-        finishedAt: f.runtime.now(),
-        usage: null,
-        limits: start.request.limits,
-        outputs: [],
-      },
-    });
-    expect(f.service.jobs.get(start.request.jobId)).toMatchObject({
-      state: "exited",
-      ownerClosed: true,
-    });
-    expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
-      "stopped",
-    );
-  } finally {
-    f.store.close();
-  }
-});
+        ownerClosed: true,
+      });
+      expect(f.service.describeInstanceService(f.root, { serviceId: policy.serviceId }).state).toBe(
+        "stopped",
+      );
+    } finally {
+      f.store.close();
+    }
+  },
+);
 
 test("installation acknowledgement requires proof on both initial connection and reconnect", () => {
   const f = fixture();

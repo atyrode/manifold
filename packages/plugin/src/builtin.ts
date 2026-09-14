@@ -8,6 +8,7 @@ import {
   PluginBundleFileSchema,
   PluginIdSchema,
   PluginPurgeResultSchema,
+  InstalledPluginsSnapshotSchema,
   SettingValueSchema,
   type PluginManifest,
 } from "@manifold/protocol";
@@ -50,6 +51,7 @@ export const ENGINE_PURGE_ACTION = `${ENGINE_PLUGINS_ID}.purge`;
 export const ENGINE_SET_SETTING_ACTION = `${ENGINE_PLUGINS_ID}.setSetting`;
 export const ENGINE_INSTALL_ACTION = `${ENGINE_PLUGINS_ID}.install`;
 export const ENGINE_UNINSTALL_ACTION = `${ENGINE_PLUGINS_ID}.uninstall`;
+export const ENGINE_EXPORT_INSTALLED_ACTION = `${ENGINE_PLUGINS_ID}.exportInstalled`;
 export const ENGINE_SET_DEVELOPER_MODE_ACTION = `${ENGINE_PLUGINS_ID}.setDeveloperMode`;
 export const ENGINE_AUTHOR_ACTION = `${ENGINE_PLUGINS_ID}.author`;
 
@@ -234,6 +236,13 @@ export const enginePluginsActions: readonly AnyActionDef[] = [
     caps: ["*"],
     input: PluginInstallRequestSchema,
     result: PluginInstallResultSchema,
+  }),
+  defineAction({
+    name: "exportInstalled",
+    title: "Export installed bundles for a read-only deployment compatibility check",
+    caps: ["*"],
+    input: z.strictObject({}),
+    result: InstalledPluginsSnapshotSchema,
   }),
   defineAction({
     name: "uninstall",

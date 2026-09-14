@@ -2595,12 +2595,16 @@ discipline is tiled. One word per concept (`AXIOMS.md` §Lexicon law, `REGISTRY.
   last-write-wins, no load-order precedence, and no silent override. Non-core manifests with
   assembly problems are quarantined, not allowed to displace core or another claimant.
 - **Held is visible, not uninstalled.** A held manifest remains on the roster with
-  `enabled: false` and `held: { reason, by? }`, but contributes no serving registries or lifecycle
+  `enabled: false` and `held: { reason, by?, minimum? }`, but contributes no serving registries or lifecycle
   hooks. Its reason is the assembly problem text. Required dependents are held transitively as
   `held_by_dependency:<pluginId>`, with `by` naming that dependency. The manager and
   `GET /api/plugins` expose the reason; enabling refuses with the same reason until compatible
   replacement clears it. Data and install metadata are retained. Install/replace preflight
   still refuses conflicting candidate bundles rather than admitting them held.
+  `repack_required` is the executable-contract hold: `minimum` names the minimum accepted
+  integer plugin-kit contract. It applies to unstamped and outside-set installed bundles,
+  before importing either half or spawning a hardened child. Repack once and replace the
+  pinned artifact; toggling cannot repair executable bytes and editing the stamp is not repacking.
 - **Action caps must be a subset of manifest capabilities**, checked at assembly, not at
   dispatch.
 - **Enable/disable is hot, workspace-global, and an ENGINE door.**
@@ -3212,8 +3216,9 @@ bun run --cwd packages/plugin-kit pack <plugin-dir> --out example.counter.manifo
 
 `pack --self-contained` reads `<plugin-dir>/manifest.json`, bundles `server.ts` (target `bun`)
 and `web.ts` (target `browser`) with the kit's guest runtimes, the protocol and zod INLINED, and
-writes one JSON document (`PluginBundleSchema`: `format: 1`, the manifest with its `entry`, the
-members as base64, no `builtAgainst`). The artifact is self-contained because the runner resolves
+writes one JSON document (`PluginBundleSchema`: `format: 1`, `hardenedContract: 2`, the manifest
+with its `entry`, the members as base64, no `builtAgainst`). All packing modes stamp the same
+executable contract. The artifact is self-contained because the runner resolves
 nothing: the hub's process runner is one `Bun.spawn` of the bundle's `server.js`, the page's is one
 `new Worker("/api/plugins/<id>/web.js")`, and neither has the shared-module registry an in-realm
 bundle imports through. That is why the flag is required for a hardened row and why it is the
@@ -3225,6 +3230,16 @@ before load (exit code 1)`, the child having died on `Missing shared module: @ma
 door itself — where a source may come from, the default grant, the refusal classes, where the
 bundle lives afterwards — is §7 Installing a plugin, and the artifact's shape is
 `docs/CONTRACTS.md` §Hardened plugins.
+
+`hardenedContract` has an acceptance set separate from releases and machine/session protocols.
+The current hub accepts contracts 1 and 2; current packs stamp 2. Contract 1 is the bounded
+receipt plus prepared/admitted dispatch baseline, and contract 2 adds optional load identity.
+An older accepted bundle uses the compatible frame path and keeps working. A missing stamp
+does not mean contract 1: older bundles need one genuine repack with a current kit. The plugin
+manager and `GET /api/plugins` show `held: { reason: "repack_required", minimum: 1 }` before
+any code loads; new incompatible installs refuse with the bundle name and minimum.
+Maintainers add versions for additive-optional changes and reset the set only for breaks,
+recording the decision in `packages/protocol/src/isolate.ts` HISTORY.
 
 ### Developing against a hub
 

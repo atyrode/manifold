@@ -13,6 +13,11 @@ import { z } from "zod";
 import {
   formatManifoldUri,
   parseManifoldUri,
+  JOB_OWNER_PROTOCOL_COMPAT_VERSIONS,
+  jobOwnerSupports,
+  jobOwnerOperationRefusal,
+  jobOwnerMachine,
+  jobOwnerRequestRefusal,
   type ManifoldRef,
   type Cap,
   type RuntimeDeps,
@@ -30,7 +35,6 @@ import {
 } from "@manifold/protocol";
 import {
   canonicalJobJson,
-  JOB_OWNER_PROTOCOL_VERSION,
   JobRequestSchema,
   JobCommandSchema,
   MachineHalfSchema,
@@ -157,10 +161,6 @@ function fail(code = "governed_authority_refused"): never {
   throw new ServiceError("forbidden", code);
 }
 const active = new Set(["queued", "admitted", "start-committed", "started"]);
-// Each current RPC must opt into its audited retirement-only predecessors; a future bump defaults closed.
-const legacyRetirementProtocols = new Map<number, ReadonlySet<number>>([
-  [36, new Set([30, 31, 32, 33, 34, 35])],
-]);
 const runCursorSchema = z.strictObject({
   filter: z.strictObject({
     pluginId: z.string().min(1).max(256),
@@ -1183,6 +1183,11 @@ export class JobService {
     invocationEdges: readonly JobInvocationEdge[] = [],
   ): string | null {
     const live = this.channels.get(install.machineId);
+    const operation = install.machine.operations[operationId];
+    if (live && operation) {
+      const protocolReason = jobOwnerOperationRefusal(live.owner.protocolVersion, operation);
+      if (protocolReason) return protocolReason;
+    }
     const refusal = jobResourceRefusal(
       install.machine,
       operationId,
@@ -1231,6 +1236,7 @@ export class JobService {
     )
       return "installation_disabled";
     const live = this.channels.get(install.machineId);
+    if (live?.retirementOnly) return "owner_protocol_unsupported";
     if (!live?.proved) return "resource_owner_unavailable";
     const resourceReason = this.resourceRefusal(install, operationId);
     if (resourceReason) return resourceReason;
@@ -3589,6 +3595,9 @@ export class JobService {
       credential: this.auth.credentialReference(auth),
       ...(terminal ? { terminal } : {}),
     };
+    const live = this.channels.get(args.machineId);
+    const protocolReason = live && jobOwnerRequestRefusal(live.owner.protocolVersion, unsigned);
+    if (protocolReason) fail(protocolReason);
     return JobRequestSchema.parse({ ...unsigned, requestDigest: digest(unsigned) });
   }
   execute(
@@ -3670,7 +3679,12 @@ export class JobService {
 
   assertRunLaunchSupported(machineId: string): void {
     const live = this.channels.get(machineId);
-    if (!live || (live.channel.protocolVersion ?? 0) < 32 || live.owner.protocolVersion < 35)
+    if (
+      !live ||
+      (live.channel.protocolVersion ?? 0) < 32 ||
+      !jobOwnerSupports(live.owner.protocolVersion, "privateEnv") ||
+      !jobOwnerSupports(live.owner.protocolVersion, "launchBinding")
+    )
       fail("run_launch_protocol_unsupported");
     if (!live.proved || live.retirementOnly) fail("run_launch_owner_unavailable");
   }
@@ -3788,19 +3802,24 @@ export class JobService {
     )
       return;
     if (!live?.proved) return;
+    let protocolReason: string | null = null;
     const permit = this.store.transaction(() => {
       const current = this.jobs.get(request.jobId)!;
       if (current.state !== "queued") return null;
       const machine = this.store.getMachine(request.machineId);
       const install = this.jobs.installation(request.machineId, request.pluginId);
-      if (!machine || machine.draining || !install?.ready) return null;
-      const operationReason = this.operationRefusal(install, request.operationId);
+      if (!machine || machine.draining || !install) return null;
+      const operation = install.machine.operations[request.operationId];
+      protocolReason =
+        jobOwnerRequestRefusal(live.owner.protocolVersion, request) ??
+        (operation ? jobOwnerOperationRefusal(live.owner.protocolVersion, operation) : null);
+      if (!install.ready && !protocolReason) return null;
+      const operationReason = protocolReason ?? this.operationRefusal(install, request.operationId);
       const context = this.auth.restoreCredential(request.credential);
       // A deferred start asks the input questions again: a source output released, or the source
       // installation's `jobs:read` consent revoked, between admission and launch must refuse
       // rather than spawn a half-fed job. Withdrawing an export in a NEW revision does not reach
       // a source job pinned to the old one; revoking that revision's consent is what does.
-      const operation = install.machine.operations[request.operationId];
       let refusal = !context
         ? "credential_revoked_or_expired"
         : (operationReason ??
@@ -3867,7 +3886,7 @@ export class JobService {
       this.publishJobEvent(request.jobId, {
         type: "refusal",
         jobId: request.jobId,
-        reason: "admission_refused",
+        reason: protocolReason ?? "admission_refused",
       });
     }
     if (permit) {
@@ -3876,13 +3895,8 @@ export class JobService {
       return command;
     }
   }
-  private legacyRetirementOwner(machineId: string, owner: JobOwner): boolean {
-    if (
-      legacyRetirementProtocols.get(JOB_OWNER_PROTOCOL_VERSION)?.has(owner.protocolVersion) !==
-        true ||
-      !this.store.getMachine(machineId)?.draining
-    )
-      return false;
+  private retirementOwner(machineId: string, owner: JobOwner): boolean {
+    if (!this.store.getMachine(machineId)?.draining) return false;
     const pinned = this.jobs.owner(machineId);
     return (
       pinned !== null &&
@@ -3891,14 +3905,14 @@ export class JobService {
       pinned.generation === owner.generation
     );
   }
-  private legacyRetirementJob(
+  private retirementJob(
     live: LiveJobOwner,
     job: JobRecord,
     cancellation: JobCancellation | null,
   ): boolean {
     return (
       live.retirementProved &&
-      this.legacyRetirementOwner(job.request.machineId, live.owner) &&
+      this.retirementOwner(job.request.machineId, live.owner) &&
       cancellation !== null &&
       job.permit !== null &&
       job.permit.ownerId === live.owner.ownerId &&
@@ -3915,10 +3929,8 @@ export class JobService {
       .query("UPDATE machine_job_installs SET ready=0 WHERE machine_id=?")
       .run(channel.machineId);
     if (!owner) return;
-    const retirementOnly = owner.protocolVersion !== JOB_OWNER_PROTOCOL_VERSION;
-    if (retirementOnly) {
-      if (!this.legacyRetirementOwner(channel.machineId, owner)) return;
-    } else {
+    const retirementOnly = !JOB_OWNER_PROTOCOL_COMPAT_VERSIONS.has(owner.protocolVersion);
+    if (!retirementOnly) {
       const pinned = this.jobs.owner(channel.machineId);
       if (
         pinned &&
@@ -3938,6 +3950,9 @@ export class JobService {
       retirementOnly,
       retirementProved: false,
     });
+    // Retain the advertised incompatibility to refuse new work by name, without granting
+    // even a challenge until the drained owner exactly matches the durable identity pin.
+    if (retirementOnly && !this.retirementOwner(channel.machineId, owner)) return;
     channel.send({
       type: "job_command",
       command: {
@@ -4148,32 +4163,34 @@ export class JobService {
   }
   private sendInstall(install: JobInstallation): void {
     const live = this.channels.get(install.machineId);
-    if (live?.proved)
-      live.channel.send({
-        type: "job_command",
-        command: JobCommandSchema.parse({
-          type: "install",
-          pluginId: install.pluginId,
-          installationRevision: install.revision,
-          artifactSha256: install.artifact,
-          machine: install.machine,
-          ...(install.resourceBindings ? { resourceBindings: install.resourceBindings } : {}),
-          ...(install.enabled && !install.purgeRequested
-            ? // An unavailable former bundle must refuse acquisition, not disconnect retained reads.
-              (this.artifactDelivery(
-                install.pluginId,
-                install.machine,
-                install.artifact,
-                live.owner.platforms,
-              ) ?? {})
-            : {}),
-          ...(install.purgeRequested
-            ? { action: "purge" as const }
-            : install.enabled
-              ? {}
-              : { action: "disable" as const }),
-        }),
-      });
+    if (!live?.proved) return;
+    const machine = jobOwnerMachine(live.owner.protocolVersion, install.machine);
+    if (!machine) return;
+    live.channel.send({
+      type: "job_command",
+      command: JobCommandSchema.parse({
+        type: "install",
+        pluginId: install.pluginId,
+        installationRevision: install.revision,
+        artifactSha256: install.artifact,
+        machine,
+        ...(install.resourceBindings ? { resourceBindings: install.resourceBindings } : {}),
+        ...(install.enabled && !install.purgeRequested
+          ? // An unavailable former bundle must refuse acquisition, not disconnect retained reads.
+            (this.artifactDelivery(
+              install.pluginId,
+              install.machine,
+              install.artifact,
+              live.owner.platforms,
+            ) ?? {})
+          : {}),
+        ...(install.purgeRequested
+          ? { action: "purge" as const }
+          : install.enabled
+            ? {}
+            : { action: "disable" as const }),
+      }),
+    });
   }
   event(channel: JobChannel, event: JobEvent): void {
     const live = this.channels.get(channel.machineId);
@@ -4208,7 +4225,7 @@ export class JobService {
         return;
       }
       if (live.retirementOnly) {
-        if (!this.legacyRetirementOwner(channel.machineId, live.owner)) {
+        if (!this.retirementOwner(channel.machineId, live.owner)) {
           this.offline(channel);
           return;
         }
@@ -4224,7 +4241,7 @@ export class JobService {
         }
         for (const job of this.jobs.reconcilable(channel.machineId)) {
           const cancellation = this.jobs.cancellation(job.request.jobId);
-          if (cancellation === null || !this.legacyRetirementJob(live, job, cancellation)) continue;
+          if (cancellation === null || !this.retirementJob(live, job, cancellation)) continue;
           const statusDelivered = channel.send({
             type: "job_command",
             command: { type: "status", jobId: job.request.jobId },
@@ -4277,7 +4294,7 @@ export class JobService {
             command: {
               type: "status",
               jobId: job.request.jobId,
-              ...(job.permit ? { admission: { request: job.request, permit: job.permit } } : {}),
+              ...this.ownerAdmission(live, job),
             },
           });
       }
@@ -4294,7 +4311,7 @@ export class JobService {
       const cancellation = job ? this.jobs.cancellation(job.request.jobId) : null;
       if (
         !job ||
-        !this.legacyRetirementJob(live, job, cancellation) ||
+        !this.retirementJob(live, job, cancellation) ||
         (event.type !== "workload_empty" &&
           (event.type !== "result" || active.has(event.result.state)))
       )
@@ -4820,7 +4837,7 @@ export class JobService {
         command: {
           type: "status",
           jobId: job.request.jobId,
-          ...(job.permit ? { admission: { request: job.request, permit: job.permit } } : {}),
+          ...this.ownerAdmission(live, job),
         },
       });
     return this.jobs.get(job.request.jobId)!;
@@ -4931,6 +4948,14 @@ export class JobService {
       )
         this.cancelRecord(job, "terminal_closed");
   }
+  private ownerAdmission(
+    live: LiveJobOwner,
+    job: JobRecord,
+  ): Pick<Extract<JobCommand, { type: "status" }>, "admission"> {
+    return job.permit && jobOwnerRequestRefusal(live.owner.protocolVersion, job.request) === null
+      ? { admission: { request: job.request, permit: job.permit } }
+      : {};
+  }
   private dispatchCancellation(job: JobRecord, cancellation: JobCancellation): boolean {
     const live = this.channels.get(job.request.machineId);
     if (live?.proved)
@@ -4940,10 +4965,10 @@ export class JobService {
           type: cancellation.mode,
           jobId: job.request.jobId,
           reason: cancellation.reason,
-          ...(job.permit ? { admission: { request: job.request, permit: job.permit } } : {}),
+          ...this.ownerAdmission(live, job),
         },
       });
-    if (live && !job.ownerClosed && this.legacyRetirementJob(live, job, cancellation))
+    if (live && !job.ownerClosed && this.retirementJob(live, job, cancellation))
       return live.channel.send({
         type: "job_command",
         command: {

@@ -1050,7 +1050,16 @@ export const PluginRosterEntrySchema = z.strictObject({
   /** Why this row cannot be toggled right now — a lock in the UI, not a hidden failure. */
   refusal: PluginRefusalReasonSchema.optional(),
   /** A structurally incompatible plugin is discoverable but contributes nothing at runtime. */
-  held: z.strictObject({ reason: z.string().min(1), by: PluginIdSchema.optional() }).optional(),
+  held: z
+    .strictObject({
+      reason: z.string().min(1),
+      by: PluginIdSchema.optional(),
+      minimum: z.number().int().positive().optional(),
+    })
+    .refine(({ reason, minimum }) => reason !== "repack_required" || minimum !== undefined, {
+      message: "repack_required must name the minimum accepted hardened contract",
+    })
+    .optional(),
   changedBy: z.string().min(1).max(128).nullish(),
   changedAt: z.number().int().min(0).nullish(),
   /**

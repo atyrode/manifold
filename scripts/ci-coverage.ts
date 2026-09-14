@@ -194,12 +194,11 @@ const workflowJobDisplayNames = (workflow: YamlMap): string[] => {
 export const deploymentCoverageErrors = (source: string): string[] =>
   workflowErrors(source, (workflow) => {
     const errors: string[] = [];
-    const deploy = childMap(
-      childMap(workflow, "jobs", "deployment jobs"),
-      "deploy",
-      "deployment job",
-    );
-    const condition = String(deploy["if"] ?? "");
+    const jobs = childMap(workflow, "jobs", "deployment jobs");
+    const deploy = childMap(jobs, "deploy", "deployment job");
+    const installed = childMap(jobs, "installed-bundles", "installed-bundles job");
+    if (!strings(deploy["needs"], "deployment prerequisites").includes("installed-bundles"))
+      errors.push("deployment must require installed-bundles success");
     for (const proof of [
       "workflow_run.status == 'completed'",
       "workflow_run.conclusion == 'success'",
@@ -208,7 +207,7 @@ export const deploymentCoverageErrors = (source: string): string[] =>
       "workflow_run.event == 'push'",
       "workflow_run.event == 'workflow_dispatch'",
     ]) {
-      if (!condition.includes(proof))
+      if (![deploy, installed].every((job) => String(job["if"] ?? "").includes(proof)))
         errors.push(`deployment condition missing trusted proof: ${proof}`);
     }
     // Admission itself is executed against API metadata in deployment-workflow.test.ts.
