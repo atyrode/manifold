@@ -4083,6 +4083,15 @@ build target and nothing branches on which instance is being looked at.
   lifetimes, establish use before replacing authority state, keep the old consumer alive, then
   exercise the same boundary again, including invalid-input and authority-unavailable refusals.
   Fresh-start success cannot prove that transition.
+- **Development deployment ordering** (#590): integrated preview verification exercises the
+  actual forced-command receiver and retained deployment against legacy and provenance-marked
+  incumbent images. It proves same-revision retry, forward ancestry and compare-and-swap
+  rollback; stale expected and unrequested backward revisions preserve the incumbent generation.
+  Focused Git/image-metadata regressions cover missing, dirty, ambiguous and foreign-base
+  provenance, plus divergent history. Workflow-only GitHub run selection stays at the credential
+  boundary: both automatic and manual requests must identify the latest exact-commit full-main
+  CI run and its successful `gate`; tests must drive that selection with fake API metadata rather
+  than assert workflow source text.
 - **UI boundaries**: user-visible interactions get tests at the interaction boundary; wire-level
   green does not prove the UI works. Gate green does not prove a surface feels finished:
   UI-touching changes require vision-model inspection of real screenshots from a real browser

@@ -1,25 +1,42 @@
-# THE OPERATOR'S DEVELOPMENT INSTANCE, consuming every green `main` (docs/SELF-HOST.md
-# §Environments). It follows the CI workflow rather than a push, so a commit that failed the gate
-# never reaches a running instance, and it is inert unless the repository variable
-# DEV_DEPLOY_HOST exists - a fork never runs it. Nothing here names a provider or a host: the
-# host, user, URL and key are repository variables and a secret, and the host-side receiver (a
-# forced-command SSH key that checks out the sha it is handed and rebuilds the compose project,
-# stamping MANIFOLD_VERSION/MANIFOLD_BUILD/MANIFOLD_CHANNEL from scripts/build-identity.ts) is
-# implemented in infra/previews/receiver.sh (infra/previews/README.md). Production is a different
-# file and a different decision (deploy-hub.yml).
+# THE OPERATOR'S DEVELOPMENT INSTANCE, consuming every green `main` and permitting an
+# explicit compare-and-swap rollback (docs/SELF-HOST.md §Environments). Both paths prove the
+# exact commit with the complete CI gate before the forced-command receiver applies its own
+# ordering guard. Production is a different file and a different decision (deploy-hub.yml).
 name: Deploy development
-run-name: Deploy development ${{ github.event.workflow_run.head_sha }}
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch' && format('Rollback development to {0}', inputs.target_sha) || format('Deploy development {0}', github.event.workflow_run.head_sha) }}
 
 on:
   workflow_run:
     workflows: [CI]
     types: [completed]
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Full lowercase 40-character main SHA to restore (non-secret)
+        required: true
+        type: string
+      expected_current_sha:
+        description: Full lowercase 40-character SHA expected to be running (compare-and-swap)
+        required: true
+        type: string
+      reason:
+        description: Non-secret single-line rollback reason (1-500 characters)
+        required: true
+        type: string
+      compatibility_reviewed:
+        description: I reviewed application/data compatibility; this does not restore databases
+        required: true
+        default: false
+        type: boolean
 
-# The job token only reads the repository; the Environment record is Actions' own bookkeeping.
 permissions:
   actions: read
   contents: read
+defaults:
+  run:
+    shell: bash
 concurrency:
   group: deploy-dev
   cancel-in-progress: false
@@ -28,80 +45,181 @@ jobs:
   deploy:
     name: development
     if: >-
-      github.event.workflow_run.status == 'completed' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_repository.full_name == github.repository &&
-      github.event.workflow_run.head_branch == 'main' &&
-      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch') &&
-      vars.DEV_DEPLOY_HOST != ''
+      vars.DEV_DEPLOY_HOST != '' &&
+      ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.status == 'completed' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.head_branch == 'main' &&
+        (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')))
     runs-on: ubuntu-latest
     environment:
       name: development
       url: ${{ vars.DEV_DEPLOY_URL }}
     env:
-      SHA: ${{ github.event.workflow_run.head_sha }}
       DEV_URL: ${{ vars.DEV_DEPLOY_URL }}
-      RUN_ID: ${{ github.event.workflow_run.id }}
-      RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-      REPOSITORY: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Check out the deployed commit
-        # The whole history and its tags, because the expected identity is DERIVED from this
-        # checkout by the same code the host runs (scripts/build-identity.ts) and then compared
-        # to what the instance answers - never re-spelled here.
+      - name: Prove deployment request and exact full CI gate
+        id: request
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          DISPATCH_TARGET_SHA: ${{ inputs.target_sha }}
+          DISPATCH_EXPECTED_CURRENT_SHA: ${{ inputs.expected_current_sha }}
+          DISPATCH_REASON: ${{ inputs.reason }}
+          DISPATCH_COMPATIBILITY_REVIEWED: ${{ inputs.compatibility_reviewed }}
+        with:
+          script: |
+            const fullSha = /^[0-9a-f]{40}$/;
+            const rollback = context.eventName === "workflow_dispatch";
+            let target;
+            let expected = "";
+
+            if (rollback) {
+              if (context.ref !== "refs/heads/main" || context.payload.repository?.default_branch !== "main") {
+                throw new Error("Development rollback must run from the trusted default branch main");
+              }
+              target = process.env.DISPATCH_TARGET_SHA ?? "";
+              expected = process.env.DISPATCH_EXPECTED_CURRENT_SHA ?? "";
+              const reason = process.env.DISPATCH_REASON ?? "";
+              if (!fullSha.test(target) || !fullSha.test(expected)) {
+                throw new Error("target_sha and expected_current_sha must be full lowercase 40-character SHAs");
+              }
+              if (reason.length > 500 || reason.trim().length === 0 || /[\r\n\x00-\x1f\x7f]/.test(reason)) {
+                throw new Error("reason must be a nonempty, single-line, non-secret value of at most 500 characters");
+              }
+              if (process.env.DISPATCH_COMPATIBILITY_REVIEWED !== "true") {
+                throw new Error("compatibility_reviewed must be explicitly acknowledged");
+              }
+            } else {
+              target = context.payload.workflow_run?.head_sha ?? "";
+              if (!fullSha.test(target)) throw new Error("CI supplied no exact full commit SHA");
+            }
+
+            // Do not ask only for successful runs: a newer failed, cancelled, queued or in-progress
+            // proof for this exact commit must be visible and must prevent an older success winning.
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              ...context.repo,
+              workflow_id: "ci.yml",
+              branch: "main",
+              head_sha: target,
+              per_page: 100,
+            });
+            const eligible = runs.filter((run) =>
+              run.head_sha === target &&
+              run.head_branch === "main" &&
+              run.head_repository?.full_name === `${context.repo.owner}/${context.repo.repo}` &&
+              ["push", "workflow_dispatch"].includes(run.event)
+            ).sort((a, b) => b.run_number - a.run_number || b.run_attempt - a.run_attempt);
+            const proof = eligible[0];
+            if (!proof) throw new Error(`No full-main CI run proves ${target}`);
+            if (proof.name !== "CI" || proof.path !== ".github/workflows/ci.yml") {
+              throw new Error(`Latest exact-commit proof ${proof.id} is not the required CI workflow`);
+            }
+            if (!rollback && (context.payload.workflow_run?.id !== proof.id ||
+                context.payload.workflow_run?.run_attempt !== proof.run_attempt)) {
+              throw new Error(`Triggering CI attempt is not the latest exact-commit proof for ${target}`);
+            }
+            if (proof.status !== "completed" || proof.conclusion !== "success") {
+              throw new Error(`Latest exact-commit CI proof ${proof.id} is ${proof.status}/${proof.conclusion ?? "pending"}`);
+            }
+
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
+              ...context.repo,
+              run_id: proof.id,
+              attempt_number: proof.run_attempt,
+              per_page: 100,
+            });
+            const gates = jobs.filter((job) => job.name === "gate");
+            if (gates.length !== 1 || gates[0].run_id !== proof.id || gates[0].head_sha !== target ||
+                gates[0].status !== "completed" || gates[0].conclusion !== "success") {
+              throw new Error(`CI run ${proof.id} has no unique successful exact-commit gate job`);
+            }
+            const { data: confirmed } = await github.rest.actions.getWorkflowRun({
+              ...context.repo,
+              run_id: proof.id,
+            });
+            if (confirmed.id !== proof.id || confirmed.run_attempt !== proof.run_attempt ||
+                confirmed.head_sha !== target || confirmed.status !== "completed" ||
+                confirmed.conclusion !== "success") {
+              throw new Error(`CI proof ${proof.id} changed while its gate was being inspected`);
+            }
+
+            core.setOutput("sha", target);
+            core.setOutput("expected_current_sha", expected);
+            core.setOutput("rollback", rollback ? "true" : "false");
+            core.setOutput("ci_run_id", String(proof.id));
+
+      - name: Check out trusted workflow code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Verify full exact-revision CI evidence
-        shell: bash
-        run: |
-          [[ $(git rev-parse HEAD) == "$SHA" ]]
-          run="$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID")"
-          jq -e \
-            --arg repo "$REPOSITORY" \
-            --arg sha "$SHA" \
-            --argjson run_id "$RUN_ID" \
-            --argjson run_attempt "$RUN_ATTEMPT" \
-            '.id == $run_id and .run_attempt == $run_attempt and
-             .status == "completed" and .conclusion == "success" and
-             .head_repository.full_name == $repo and
-             .head_branch == "main" and .head_sha == $sha and
-             (.event == "push" or .event == "workflow_dispatch") and
-             .path == ".github/workflows/ci.yml"' <<<"$run" >/dev/null
-          jobs="$(gh api --paginate "repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" \
-            --jq '.jobs')"
-          jq -s -e \
-            '[.[][] | select(.name == "gate" and .status == "completed" and .conclusion == "success")] |
-             length == 1' <<<"$jobs" >/dev/null
+          persist-credentials: false
 
       - name: Install Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: "1.4.2"
 
-      - name: Name the expected build
+      - name: Name the expected build without executing target code
         id: identity
-        run: bun scripts/build-identity.ts | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_OUTPUT"
-
-      - name: Hand the host the sha
-        # The receiver's key is forced-command: whatever is typed here is ignored as a command
-        # and delivered as SSH_ORIGINAL_COMMAND, which is how the sha travels.
         env:
+          SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          resolved="$(git rev-parse --verify "$SHA^{commit}")"
+          if [ "$resolved" != "$SHA" ]; then
+            echo "::error::CI proof target did not resolve to the exact requested commit"
+            exit 1
+          fi
+          bun scripts/build-identity.ts --revision "$SHA" \
+            | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_OUTPUT"
+
+      - name: Record deployment intent
+        env:
+          ACTOR: ${{ github.actor }}
+          SHA: ${{ steps.request.outputs.sha }}
+          EXPECTED_CURRENT_SHA: ${{ steps.request.outputs.expected_current_sha }}
+          ROLLBACK: ${{ steps.request.outputs.rollback }}
+          REASON: ${{ inputs.reason }}
+          CI_RUN_ID: ${{ steps.request.outputs.ci_run_id }}
+        run: |
+          {
+            if [ "$ROLLBACK" = true ]; then
+              printf '### Development rollback\n\n'
+              printf -- '- Actor: <code>%s</code>\n- Target: <code>%s</code>\n- Expected current: <code>%s</code>\n- CI proof: <code>%s</code>\n- Reason: <code>%s</code>\n' \
+                "$ACTOR" "$SHA" "$EXPECTED_CURRENT_SHA" "$CI_RUN_ID" "$(printf '%s' "$REASON" | jq -Rrs '@html')"
+            else
+              printf '### Development forward deployment\n\n- Target: <code>%s</code>\n- CI proof: <code>%s</code>\n' "$SHA" "$CI_RUN_ID"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Hand the guarded request to the host
+        env:
+          SHA: ${{ steps.request.outputs.sha }}
+          EXPECTED_CURRENT_SHA: ${{ steps.request.outputs.expected_current_sha }}
+          ROLLBACK: ${{ steps.request.outputs.rollback }}
           DEV_DEPLOY_SSH_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
+          DEV_DEPLOY_USER: ${{ vars.DEV_DEPLOY_USER }}
+          DEV_DEPLOY_HOST: ${{ vars.DEV_DEPLOY_HOST }}
         run: |
           umask 077
           key="$(mktemp)"
+          trap 'rm -f "$key"' EXIT
           printf '%s\n' "$DEV_DEPLOY_SSH_KEY" > "$key"
+          if [ "$ROLLBACK" = true ]; then
+            request="dev-rollback $EXPECTED_CURRENT_SHA $SHA"
+          else
+            request="dev $SHA"
+          fi
           ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$key" \
-            "${{ vars.DEV_DEPLOY_USER }}@${{ vars.DEV_DEPLOY_HOST }}" "dev $SHA"
-          rm -f "$key"
+            "$DEV_DEPLOY_USER@$DEV_DEPLOY_HOST" "$request"
 
       - name: Development answers with this build
         env:
           EXPECTED: ${{ steps.identity.outputs.build }}
         run: |
+          [[ -n "$EXPECTED" ]] || { echo "::error::Missing expected development build"; exit 1; }
           for _ in $(seq 1 60); do
             answer="$(curl -fsS "$DEV_URL/healthz" || true)"
             if [ "$(printf '%s' "$answer" | jq -r .build)" = "$EXPECTED" ]; then

@@ -5,9 +5,23 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$here/common.sh"
 # shellcheck source=infra/previews/environment.sh
 source "$here/environment.sh"
+# shellcheck source=infra/previews/deployment-order.sh
+source "$here/deployment-order.sh"
 require_domain
-[[ $# == 1 ]] || fail 'usage: deploy-dev.sh SHA'
-sha_arg "$1"
+mode=forward
+expected_current=
+case "$#" in
+  1) sha_arg "$1"; target_arg=$1 ;;
+  3)
+    [[ $2 == --rollback-from ]] || fail 'usage: deploy-dev.sh SHA [--rollback-from EXPECTED_CURRENT_FULL_SHA]'
+    [[ $1 =~ ^[0-9a-f]{40}$ && $3 =~ ^[0-9a-f]{40}$ ]] ||
+      fail 'rollback target and expected current revision must be full commit SHAs'
+    target_arg=$1
+    expected_current=$3
+    mode=rollback
+    ;;
+  *) fail 'usage: deploy-dev.sh SHA [--rollback-from EXPECTED_CURRENT_FULL_SHA]' ;;
+esac
 umask 077
 mkdir -p "$PREVIEW_HOME"
 exec 9>"$PREVIEW_HOME/dev.lock"
@@ -20,13 +34,27 @@ export MANIFOLD_SERVICE_OWNER_MACHINE_ID="$MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID
 # This configures only the replacement. The retained lifecycle separately proves
 # the actual incumbent is server-only before it may stop or replace that container.
 export MANIFOLD_SPAWN_AGENT=0
-echo "deploy-dev: converging on $1"
-# Fetch everything and resolve locally: a remote serves want-lists by full object id only,
-# and an operator at a terminal types the abbreviation.
+echo "deploy-dev: converging on $target_arg"
+# Fetch and resolve without changing this checkout: it contains the installed receiver
+# and guard, while the selected application is streamed from the immutable Git object.
 git -C "$checkout" fetch -q --tags origin
-git -C "$checkout" checkout -q --detach "$1"
-revision=$(git -C "$checkout" rev-parse HEAD)
-identity "$checkout"
+revision=$(full_commit "$checkout" "$target_arg")
+if [[ $mode == rollback && $revision != "$target_arg" ]]; then
+  fail 'rollback target must identify an exact commit'
+fi
+unset MANIFOLD_VERSION MANIFOLD_BUILD MANIFOLD_CHANNEL
+identity_output=$(bun "$here/../../scripts/build-identity.ts" --repository "$checkout" --revision "$revision" --env) ||
+  fail 'cannot derive target build identity with installed trusted tooling'
+while IFS='=' read -r key value; do
+  case "$key" in
+    'export MANIFOLD_VERSION') export MANIFOLD_VERSION="$value" ;;
+    'export MANIFOLD_BUILD') export MANIFOLD_BUILD="$value" ;;
+    'export MANIFOLD_CHANNEL') export MANIFOLD_CHANNEL="$value" ;;
+    *) fail 'invalid target build identity output' ;;
+  esac
+done <<<"$identity_output"
+[[ -n ${MANIFOLD_VERSION:-} && -n ${MANIFOLD_BUILD:-} && -n ${MANIFOLD_CHANNEL:-} ]] ||
+  fail 'incomplete target build identity output'
 export MANIFOLD_CHANNEL=development
 echo "deploy-dev: version=$MANIFOLD_VERSION build=$MANIFOLD_BUILD channel=$MANIFOLD_CHANNEL"
 # Compose's resolved configuration can contain credentials. Keep it only in a private
@@ -73,12 +101,25 @@ dev_compose() {
   local image=$1; shift
   (cd "$checkout" && frozen_retained_compose "$sealed_configuration" "$project" "$@")
 }
-# Build the ordinary application image, not the disposable development environment.
-build_retained_hub "$final_configuration" "$checkout" "$final_image" "$revision"
-final_image=$(docker image inspect --format '{{.Id}}' "$final_image")
+# Ordering follows the immutable image used by the exact Compose service, including
+# a stopped candidate left by a failed activation. The installed checkout need not
+# name that image's commit and is deliberately not deployment-state evidence.
+incumbent_image=$(installed_development_image "$project")
+incumbent_revision=$(development_image_revision "$incumbent_image" "$checkout")
+require_development_order "$checkout" "$incumbent_revision" "$revision" "$mode" "$expected_current"
+# Keep the incumbent's image record reachable even on containerd image stores.
+# A failed activation may leave it referenced only by the previous candidate tag.
+docker image tag "$incumbent_image" "$project:local" ||
+  fail 'HOLD: cannot preserve incumbent image provenance'
+candidate_image="$project:candidate"
+# Build separately: replacing the incumbent's sole tag can discard its metadata.
+build_retained_hub "$final_configuration" "$checkout" "$candidate_image" "$revision"
+final_image=$(docker image inspect --format '{{.Id}}' "$candidate_image")
 [[ $final_image =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'replacement image identity unavailable'
 seal_retained_configuration "$final_configuration" "$final_image" "$sealed_configuration"
 # Retained data must already exist: a typo must not silently create a fresh identity.
 docker volume inspect "$volume" >/dev/null 2>&1 || fail 'retained development data volume is missing'
 replace_environment retained "$volume" "$final_image" "$project" "$public_url" dev_compose
+docker image tag "$final_image" "$project:local" ||
+  fail 'retained hub is healthy but its current image reference could not be promoted'
 echo "deploy-dev: retained hub healthy on $MANIFOLD_BUILD; native execution unchanged"

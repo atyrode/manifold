@@ -35,36 +35,74 @@ export interface BuildIdentity {
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DESCRIBE = /^v(.+)-(\d+)-g([0-9a-f]+)(-dirty)?$/;
 const CHANNELS: readonly BuildChannel[] = ["release", "development"];
+const COMMIT_SHA = /^[0-9a-f]{40}$/;
 
-function describe(repositoryRoot: string): string | null {
+function describe(repositoryRoot: string, revision?: string): string | null {
+  const args = ["describe", "--tags", "--long", "--abbrev=7", "--match", "v*"];
+  args.push(revision ?? "--dirty=-dirty");
   try {
-    return execFileSync(
-      "git",
-      ["describe", "--tags", "--long", "--abbrev=7", "--match", "v*", "--dirty=-dirty"],
-      { cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-    ).trim();
+    return execFileSync("git", args, {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
   } catch {
     return null;
   }
 }
 
-function packagedVersion(repositoryRoot: string): string {
+function packagedVersion(repositoryRoot: string, revision?: string): string {
   try {
-    const metadata = JSON.parse(
-      readFileSync(resolve(repositoryRoot, "packages/web/package.json"), "utf8"),
-    ) as { readonly version?: unknown };
-    if (typeof metadata.version === "string" && metadata.version !== "") return metadata.version;
-  } catch {
+    const contents =
+      revision === undefined
+        ? readFileSync(resolve(repositoryRoot, "packages/web/package.json"), "utf8")
+        : execFileSync("git", ["show", `${revision}:packages/web/package.json`], {
+            cwd: repositoryRoot,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+          });
+    const metadata: unknown = JSON.parse(contents);
+    if (
+      typeof metadata === "object" &&
+      metadata !== null &&
+      "version" in metadata &&
+      typeof metadata.version === "string" &&
+      metadata.version !== ""
+    ) {
+      return metadata.version;
+    }
+  } catch (cause) {
+    if (revision !== undefined) {
+      throw new Error(`Cannot read the package version at ${revision}`, { cause });
+    }
     // A compiled binary carries no package.json beside it; the fallback below is honest about that.
   }
+  if (revision !== undefined) throw new Error(`No package version at ${revision}`);
   return "0.0.0";
 }
 
-/** Derives the identity of the tree at `repositoryRoot` (this checkout by default). */
-export function deriveBuildIdentity(repositoryRoot: string = REPOSITORY_ROOT): BuildIdentity {
-  const match = describe(repositoryRoot)?.match(DESCRIBE);
+/** Derives the checked-out tree's identity, or an immutable commit without moving the checkout. */
+export function deriveBuildIdentity(
+  repositoryRoot: string = REPOSITORY_ROOT,
+  revision?: string,
+): BuildIdentity {
+  if (revision !== undefined) {
+    if (!COMMIT_SHA.test(revision)) throw new Error("Build revision must be a full commit SHA");
+    let resolved: string;
+    try {
+      resolved = execFileSync("git", ["rev-parse", "--verify", `${revision}^{commit}`], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    } catch (cause) {
+      throw new Error(`Cannot resolve build revision ${revision}`, { cause });
+    }
+    if (resolved !== revision) throw new Error(`Build revision ${revision} is not a commit`);
+  }
+  const match = describe(repositoryRoot, revision)?.match(DESCRIBE);
   if (match === null || match === undefined) {
-    const version = packagedVersion(repositoryRoot);
+    const version = packagedVersion(repositoryRoot, revision);
     return { version, build: version, channel: "development" };
   }
   const [, version = "", distance = "0", sha = "", dirty] = match;
@@ -110,10 +148,32 @@ export function resolveBuildIdentity(
 }
 
 if (import.meta.main) {
-  // `bun scripts/build-identity.ts` prints JSON; `--env` prints `export`s for a shell to eval
-  // before `docker compose up --build`, which is how a self-hoster stamps a locally built image.
-  const identity = deriveBuildIdentity();
-  if (process.argv.includes("--env")) {
+  // Derive from trusted tooling even when an older source revision is being deployed.
+  let repositoryRoot = REPOSITORY_ROOT;
+  let revision: string | undefined;
+  let emitEnvironment = false;
+  for (let index = 2; index < process.argv.length; index += 1) {
+    const argument = process.argv[index];
+    switch (argument) {
+      case "--env":
+        emitEnvironment = true;
+        break;
+      case "--repository":
+      case "--revision": {
+        const value = process.argv[++index];
+        if (value === undefined || value.startsWith("--")) {
+          throw new Error(`${argument} requires a value`);
+        }
+        if (argument === "--repository") repositoryRoot = resolve(value);
+        else revision = value;
+        break;
+      }
+      default:
+        throw new Error(`Unknown build identity argument: ${argument}`);
+    }
+  }
+  const identity = deriveBuildIdentity(repositoryRoot, revision);
+  if (emitEnvironment) {
     console.log(
       [
         `export MANIFOLD_VERSION=${identity.version}`,

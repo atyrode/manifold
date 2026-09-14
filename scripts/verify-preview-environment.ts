@@ -22,6 +22,7 @@ import {
   TerminalsResponseSchema,
 } from "../packages/protocol/src/index.ts";
 import { SessionClient, base64ToText } from "../packages/sdk/src/index.ts";
+import { deriveBuildIdentity } from "./build-identity.ts";
 import { Browser } from "./cdp.ts";
 import { reserveLoopbackPort, sleep, until } from "./gate-lib.ts";
 
@@ -46,7 +47,7 @@ const evidence = mkdtempSync(
 chmodSync(evidence, 0o700);
 const home = join(directory, "home");
 const deployment = join(directory, "deployment");
-const tooling = join(directory, "tooling");
+const tooling = join(directory, "installed", "infra", "previews");
 const originRepo = join(directory, "origin.git");
 const fixtureRepo = join(directory, "fixture");
 const shims = join(directory, "host-services");
@@ -247,7 +248,10 @@ async function ready(): Promise<void> {
   (metrics["readinessMs"] as number[]).push(elapsedMs);
 }
 async function rememberImages(): Promise<void> {
-  for (const image of [baseImage(), finalImage()]) {
+  const images = integrated
+    ? [finalImage(), `${project()}:candidate`]
+    : [baseImage(), finalImage()];
+  for (const image of images) {
     const result = await docker(["image", "inspect", image, "--format", "{{.Id}}"], {
       allowFailure: true,
     });
@@ -256,15 +260,21 @@ async function rememberImages(): Promise<void> {
 }
 async function up(
   options: CommandOptions = {},
+  rollbackFrom?: string,
 ): Promise<{ code: number; out: string; err: string }> {
   active = true;
   const argv = integrated
-    ? ["bash", join(tooling, "deploy-dev.sh"), revision]
+    ? ["bash", join(tooling, "receiver.sh")]
     : ["bash", join(tooling, "preview.sh"), "up", number, revision];
-  const result = await command(argv, {
-    timeoutMs: 18 * 60_000,
-    ...options,
-  });
+  const requestOptions: CommandOptions = { timeoutMs: 18 * 60_000, ...options };
+  if (integrated) {
+    requestOptions.env = {
+      ...(options.env ?? env),
+      SSH_ORIGINAL_COMMAND:
+        rollbackFrom === undefined ? `dev ${revision}` : `dev-rollback ${rollbackFrom} ${revision}`,
+    };
+  }
+  const result = await command(argv, requestOptions);
   await rememberImages();
   return result;
 }
@@ -534,6 +544,23 @@ async function fixtureRevision(marker: string): Promise<string> {
   await command(["git", "checkout", "--detach", sha], { cwd: fixtureRepo });
   return sha;
 }
+async function fixtureChild(parent: string, marker: string): Promise<string> {
+  // Create a new commit object over the identical application tree. Objects and
+  // refs remain in this run's private repositories; source and main refs are untouched.
+  const tree = (
+    await command(["git", "rev-parse", `${parent}^{tree}`], { cwd: fixtureRepo })
+  ).out.trim();
+  const sha = (
+    await command(["git", "commit-tree", tree, "-p", parent], {
+      cwd: fixtureRepo,
+      input: `preview deployment ordering fixture ${marker}\n`,
+    })
+  ).out.trim();
+  await command(["git", "update-ref", `refs/heads/fixture-order-${marker}`, sha], {
+    cwd: originRepo,
+  });
+  return sha;
+}
 async function setup(): Promise<void> {
   for (const binary of ["bun", "docker", "git", "bash", "flock", "curl", "jq"])
     requireThat(Bun.which(binary) !== null, `missing runtime prerequisite: ${binary}`);
@@ -580,6 +607,7 @@ async function setup(): Promise<void> {
     PREVIEW_ROUTER_PORT: String(reserveLoopbackPort()),
     PREVIEW_DEV_PORT: String(reserveLoopbackPort()),
   };
+  writeFileSync(join(deployment, "env"), "", { mode: 0o600 });
   await docker(["info", "--format", "{{.OSType}}"]);
   await docker(["compose", "version"]);
   requireThat(
@@ -650,9 +678,11 @@ async function setup(): Promise<void> {
   }
   for (const name of [
     "preview.sh",
+    "receiver.sh",
     "common.sh",
     "environment.sh",
     "deploy-dev.sh",
+    "deployment-order.sh",
     "retained-server-only.ts",
     "compose.development.yaml",
     "caddy.sh",
@@ -663,6 +693,9 @@ async function setup(): Promise<void> {
   ]) {
     cpSync(join(repo, "infra/previews", name), join(tooling, name));
   }
+  const trustedScripts = resolve(tooling, "../..", "scripts");
+  mkdirSync(trustedScripts, { recursive: true, mode: 0o700 });
+  cpSync(join(repo, "scripts", "build-identity.ts"), join(trustedScripts, "build-identity.ts"));
   if (!integrated) {
     const pin = readFileSync(pinPath, "utf8");
     requireThat(
@@ -1148,12 +1181,21 @@ async function teardown(): Promise<void> {
           failures.push(`could not remove owned ${kind} ${id}`);
       }
     }
-    for (const tag of [
-      baseImage(),
-      finalImage(),
-      ...(integrated ? [] : [`manifold-pr-${number}:local`]),
-    ])
-      await docker(["image", "rm", tag], { allowFailure: true });
+    const tags = integrated
+      ? [finalImage(), `${project()}:candidate`]
+      : [baseImage(), finalImage(), `manifold-pr-${number}:local`];
+    for (const tag of tags) {
+      const found = await docker(["image", "ls", "--quiet", "--filter", `reference=${tag}`], {
+        allowFailure: true,
+      });
+      if (found.code !== 0) failures.push(`could not inspect owned image tag ${tag}`);
+      else if (
+        found.out.trim() !== "" &&
+        (await docker(["image", "rm", tag], { allowFailure: true })).code !== 0
+      ) {
+        failures.push(`could not remove owned image tag ${tag}`);
+      }
+    }
     for (const image of ownedImages) {
       const found = await docker(["image", "inspect", image, "--format", "{{json .RepoTags}}"], {
         allowFailure: true,
@@ -1310,6 +1352,131 @@ console.log(JSON.stringify({
           env["MANIFOLD_DEV_SPAWN_AGENT"] = "0";
         },
       );
+    });
+    await step(
+      "development ordering refuses stale state and permits explicit rollback",
+      async () => {
+        const original = revision;
+        const installedCheckout = (
+          await command(["git", "rev-parse", "HEAD"], { cwd: fixtureRepo })
+        ).out.trim();
+        const forward = await fixtureChild(original, `forward-${crypto.randomUUID()}`);
+        const staleExpectation = await fixtureChild(original, `stale-${crypto.randomUUID()}`);
+        revision = forward;
+        expectedBuild = deriveBuildIdentity(fixtureRepo, revision).build;
+        await up();
+        await ready();
+
+        const incumbent = await inspectContainer();
+        revision = original;
+        const backward = await up({ allowFailure: true, timeoutMs: 6 * 60_000 });
+        requireThat(backward.code === 2, "normal deployment did not refuse a stale target");
+        let after = await inspectContainer();
+        requireThat(
+          after.Id === incumbent.Id &&
+            after.State.StartedAt === incumbent.State.StartedAt &&
+            after.State.Status === "running",
+          "stale normal deployment mutated the incumbent",
+        );
+
+        const staleRollback = await up(
+          { allowFailure: true, timeoutMs: 6 * 60_000 },
+          staleExpectation,
+        );
+        requireThat(
+          staleRollback.code === 2,
+          "rollback did not enforce its incumbent compare-and-swap",
+        );
+        after = await inspectContainer();
+        requireThat(
+          after.Id === incumbent.Id &&
+            after.State.StartedAt === incumbent.State.StartedAt &&
+            after.State.Status === "running",
+          "stale rollback expectation mutated the incumbent",
+        );
+        requireThat(
+          (await health()).build === expectedBuild,
+          "refused ordering requests damaged the incumbent HTTP service",
+        );
+        requireThat(
+          (await command(["git", "rev-parse", "HEAD"], { cwd: fixtureRepo })).out.trim() ===
+            installedCheckout,
+          "refused deployment changed the installed receiver checkout",
+        );
+        // The installed checkout remains fixed across both refusals. A same-target
+        // retry still follows the incumbent image label rather than checkout HEAD.
+        revision = forward;
+        await up({}, staleExpectation);
+        await ready();
+
+        revision = original;
+        expectedBuild = deriveBuildIdentity(fixtureRepo, revision).build;
+        await up({}, forward);
+        await ready();
+        requireThat(
+          (await command(["git", "rev-parse", "HEAD"], { cwd: fixtureRepo })).out.trim() ===
+            installedCheckout,
+          "rollback changed the installed receiver checkout",
+        );
+      },
+    );
+    await step("a stopped failed candidate remains the deployment authority", async () => {
+      const original = revision;
+      const candidate = await fixtureChild(original, `failed-${crypto.randomUUID()}`);
+      const previous = await inspectContainer();
+      const fastClock = join(shims, "sleep");
+      revision = candidate;
+      expectedBuild = deriveBuildIdentity(fixtureRepo, revision).build;
+      // Only accelerate host polling. Docker activation and all failed HTTP
+      // requests stay real, against this run's loopback server and private data.
+      writeFileSync(fastClock, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+      try {
+        const failed = await up({
+          allowFailure: true,
+          env: { ...env, PREVIEW_DEV_URL: `${origin}/unconfirmed-activation` },
+        });
+        requireThat(failed.code !== 0, "unconfirmed activation unexpectedly succeeded");
+      } finally {
+        rmSync(fastClock);
+      }
+      const retained = await inspectContainer();
+      requireThat(retained.Id !== previous.Id, "failed activation never created its candidate");
+      requireThat(
+        (
+          await docker([
+            "image",
+            "inspect",
+            retained.Image,
+            "--format",
+            '{{index .Config.Labels "org.opencontainers.image.revision"}}',
+          ])
+        ).out.trim() === candidate,
+        "failed candidate lost its immutable application provenance",
+      );
+      await docker(["stop", retained.Id]);
+      revision = original;
+      const stale = await up({ allowFailure: true });
+      requireThat(stale.code === 2, "a stopped newer candidate allowed an ordinary rollback");
+      const unchanged = await inspectContainer();
+      requireThat(
+        unchanged.Id === retained.Id &&
+          unchanged.Image === retained.Image &&
+          unchanged.State.Status === "exited",
+        "refused deployment replaced or restarted the stopped candidate",
+      );
+      // Existing retained-process safety still requires a running incumbent.
+      // Recover this run-owned container explicitly; deployment must not bypass that hold.
+      await docker(["start", retained.Id]);
+      await ready();
+      // The failed candidate was referenced only by :candidate. Retrying it
+      // must pin that actual image before the candidate build tag is reused.
+      revision = candidate;
+      await up();
+      await ready();
+      revision = original;
+      expectedBuild = deriveBuildIdentity(fixtureRepo, revision).build;
+      await up({}, candidate);
+      await ready();
     });
     for (const [name, override] of [
       [

@@ -1,10 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ALL_CHECKS } from "./ci-plan.ts";
-import {
-  ciCoverageErrors,
-  deploymentCoverageErrors,
-  previewDeploymentCoverageErrors,
-} from "./ci-coverage.ts";
+import { ciCoverageErrors, previewDeploymentCoverageErrors } from "./ci-coverage.ts";
 
 const registry = [
   "build\tbuild:web (shared dist)",
@@ -26,9 +22,6 @@ const registry = [
 ].join("\n");
 
 const ci = await Bun.file(new URL("../.github/workflows/ci.yml", import.meta.url)).text();
-const deployDev = await Bun.file(
-  new URL("../.github/workflows/deploy-dev.yml", import.meta.url),
-).text();
 const deployPreview = await Bun.file(
   new URL("../.github/workflows/deploy-preview.yml", import.meta.url),
 ).text();
@@ -168,27 +161,6 @@ describe("risk-selected CI topology coverage", () => {
 });
 
 describe("deployment evidence boundaries", () => {
-  test("accepts only full exact-revision main CI for development", () => {
-    expect(deploymentCoverageErrors(deployDev)).toEqual([]);
-  });
-
-  test("rejects development deployment without same-repository evidence", () => {
-    const crossRepository = deployDev.replace(
-      "github.event.workflow_run.head_repository.full_name == github.repository &&",
-      "true &&",
-    );
-    expect(deploymentCoverageErrors(crossRepository)).toContain(
-      "deployment condition missing trusted proof: workflow_run.head_repository.full_name == github.repository",
-    );
-  });
-
-  test("rejects development deployment without an exact successful gate", () => {
-    const noGate = deployDev.replace('.name == "gate"', '.name == "other"');
-    expect(deploymentCoverageErrors(noGate)).toContain(
-      'deployment exact-revision verification missing: .name == "gate"',
-    );
-  });
-
   test("accepts exact-head full workflow-dispatch evidence for persistent previews", () => {
     expect(previewDeploymentCoverageErrors(deployPreview, ci)).toEqual([]);
   });

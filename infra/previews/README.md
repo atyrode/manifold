@@ -76,13 +76,36 @@ identity files and ordinary canvas data stay in the same volume; no production d
 seeded into integrated development. The resolved configuration is mode-private and removed
 on exit, never printed. Existing host proxy configuration remains operator-owned.
 
-`deploy-dev.sh` builds the ordinary application directly as `<project>:local`, never the
-shared `manifold:local` tag. It requires explicit `MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID`
-and `MANIFOLD_DEV_SPAWN_AGENT=0`. Build and final Compose validation precede replacement.
+`deploy-dev.sh` builds the ordinary application as `<project>:candidate`, never the shared
+`manifold:local` tag. After ordering is accepted, `<project>:local` first pins the actual incumbent
+image, then is promoted to the new image only after healthy activation. These two bounded references
+preserve immutable image metadata across refused builds and failed activations, including on
+containerd image stores; neither tag is deployment-order evidence. It requires explicit
+`MANIFOLD_DEV_SERVICE_OWNER_MACHINE_ID` and `MANIFOLD_DEV_SPAWN_AGENT=0`.
+Build and final Compose validation precede replacement.
 The final merge is frozen once in a private memory-backed directory (0700, files 0600)
 and the built image is sealed by content ID before incumbent mutation. Preflight and
 creation consume that same configuration, not newly resolved local overrides.
 The image is built from that revision's Git archive, not untracked checkout files.
+Every newly retained development image is stamped with the application marker
+`io.manifold.deployment.provenance=git-v1` and
+`org.opencontainers.image.revision=<full-commit-sha>`. Under the existing `dev.lock`, before
+any build or live mutation, deployment reads the actual incumbent image's immutable provenance
+and resolves the requested revision unambiguously. Ordinary `dev <sha>` permits retrying the same
+revision and otherwise requires the incumbent to be an ancestor of the target. Moving backward
+is available only as
+`dev-rollback <expected-current-full-sha> <target-full-sha>`: both values are lowercase
+40-character SHAs; the same-target case is a safe retry, while an actual move requires the
+expected value to equal the incumbent and the target to be its strict ancestor. A missing,
+dirty, divergent or ambiguous identity refuses without building or replacing anything.
+
+The marked application revision is authoritative for newly built images. During migration,
+an incumbent without that marker may resolve through its canonical `MANIFOLD_BUILD`: either
+an exact immutable release tag or the clean `<version>+<distance>.g<sha>` development form.
+Unmarked OCI revision labels may belong to the base image and are never application evidence.
+The result must identify one full commit and agree with the retained repository; dirty,
+malformed and non-unique legacy identities fail closed. This compatibility path is not a
+second deployment state file and becomes unused as marked images replace legacy ones.
 Alternate build contexts, recipes and undeclared build inputs are refused before build.
 Image defaults and effective Compose command, entrypoint, workdir, PID namespace,
 loader environment, healthcheck and execution hooks must have the ordinary server-only
@@ -100,6 +123,10 @@ direct-child command, bundle path, process identity, control descriptor and mini
 environment fingerprint. Those isolates are supervised parts of the hub: they stop
 with it, reload from their pinned bundles after replacement and own no native execution.
 Desired replacement settings never prove the old process tree safe.
+A stopped failed candidate still counts as the incumbent for ordering. Replacement retains the
+existing running-process safety requirement: explicit recovery of that same retained container
+may be needed before retry or rollback. Ordering approval never bypasses this hold or grants
+native-owner restart authority.
 Its actual named volume, machine identity and selected networks must match the final
 Compose merge; both generations must mount the volume's actual backing root and use
 `/data` as the effective application data directory. Volume subpaths are unsupported;
@@ -222,14 +249,15 @@ branch `main` (not tags). Both manual requests and closed-PR cleanup use the tru
 default-branch workflow; no PR checkout runs on its credential-bearing runner. This
 environment rule is defense in depth, not isolation from maintainers who can edit workflows
 or repository-level secrets. Keep the existing deployment variables and forced-command SSH
-credential configured; this cutover does not change the receiver or production credentials.
+credential configured; updating receiver code does not change its SSH configuration or production credentials.
 
 Write `$PREVIEW_HOME/env` before using the SSH receiver. It is literal `KEY=VALUE`,
 without shell quoting, expansion or secrets; blank lines and `#` comments are allowed.
 The CLI also reads this file; file values override inherited environment values.
 
 - `PREVIEW_DOMAIN`: required base domain (without `preview.`).
-- `PREVIEW_DEV_CHECKOUT`: existing dev checkout; default `$HOME/manifold-dev`.
+- `PREVIEW_DEV_CHECKOUT`: stable deployment tooling/configuration checkout; default
+  `$HOME/manifold-dev`. It is not moved to the requested application revision.
 - `PREVIEW_DEV_URL`: dev health URL; default `https://preview.<domain>`.
 - `PREVIEW_DEV_PORT`: the dev stack's loopback port; default `7912`. The `plugin` verb installs
   through it.
@@ -266,6 +294,15 @@ handoff through its ordinary public URL.
 Set `PREVIEW_HOME` in the invoking environment, not inside its own env file. The dev
 checkout keeps its existing Compose project, data and host-proxy configuration;
 `dev <sha>` replaces only its `manifold` service through the retained server-only application path.
+
+The forced-command receiver and deployment scripts come from the stable tooling checkout,
+not the requested application revision. Roll out ordering support by updating that stable
+checkout from reviewed source, serialized with `dev.lock`, before using the rollback workflow;
+this is a host-tool installation, not an application deployment. Existing automatic
+`dev <sha>` callers also pass through the same installed host guard, so an older queued
+workflow cannot move the instance backward. No SSH key/configuration or Nix change is needed.
+This rollout does not deploy an application, restart the separately owned native profile,
+or change production or fleet pins.
 Create `preview` and `*` DNS A records pointing to the host's public address.
 In the operator-owned public Caddy configuration **outside this repository**, substitute
 `<domain>` and add the global option to your existing global block:
@@ -304,8 +341,9 @@ Run `infra/previews/preview.sh` with: `router`; `up 123 <sha>`; `down 123`; `ls`
 `down` destroys the container, volume, checkout and per-PR image (including an image whose
 checkout is already gone). An absent image is a no-op; `unlive` retains live data.
 `gc` removes PRs reported CLOSED or MERGED by `gh pr view`; without `gh` it is a no-op.
-The receiver accepts `dev <sha>`, `preview up 123 <sha>`, `preview down 123`,
-`plugin <https-url> <sha256> [--hardened]`, or a bare `<sha>` (legacy dev deployment). Other commands are refused.
+The receiver accepts `dev <sha>`, `dev-rollback <expected-current-full-sha> <target-full-sha>`,
+`preview up 123 <sha>`, `preview down 123`, `plugin <https-url> <sha256> [--hardened]`, or a bare
+`<sha>` (legacy dev deployment). Other commands are refused.
 
 `plugin <url> <sha256>` installs a published plugin bundle on the integrated preview: it runs
 `packages/plugin-kit/src/install.ts` from this stable checkout against `http://127.0.0.1:$PREVIEW_DEV_PORT`
