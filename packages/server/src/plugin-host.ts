@@ -2623,7 +2623,9 @@ export class PluginHost {
               nobody dispatched it, which is also why the parent is the sentinel rather than a
               row id.
             */
-            actions: this.actionCalls(pluginId, auth, null, LIFECYCLE_TRACE, [pluginId]),
+            // A hook has no action, so there is no `delegates` ceiling to attenuate: the two
+            // authorities are one, exactly as its job slice already is.
+            actions: this.actionCalls(pluginId, auth, auth, null, LIFECYCLE_TRACE, [pluginId]),
           }),
     };
   }
@@ -2748,7 +2750,7 @@ export class PluginHost {
       ),
       // Both slices are the SETTLED JOB'S credential, not the installer's: the wake belongs
       // to that run, so what it may ask a dependency is what that run could ask.
-      actions: this.actionCalls(id, auth, null, delivery.traceId, [id]),
+      actions: this.actionCalls(id, auth, auth, null, delivery.traceId, [id]),
     };
     let outcome: HookOutcome;
     try {
@@ -2779,10 +2781,19 @@ export class PluginHost {
    * `stack` is the plugin frames this trace already carries, caller LAST, and it is the whole
    * mechanism behind both bounds: a callee already on it is a cycle, and a stack at
    * `MAX_ACTION_CALL_DEPTH` is as deep as one trace goes.
+   *
+   * TWO AUTHORITIES, and which one is used depends on WHO the callee is. A plugin callee runs
+   * under `auth` — the unattenuated principal of the request the caller is serving (§2). An
+   * ENGINE BUILTIN runs under `nativeAuth`, the caller's own declared ceiling: the engine's
+   * doors are the same native mechanisms `ctx.jobs` and `ctx.services` reach by method name,
+   * and a plugin must not get through `engine.jobs.execute` what `ctx.jobs.execute` would
+   * refuse it. A hook has no action and therefore no `delegates` ceiling, so the two are the
+   * same context there, exactly as its job slice already is.
    */
   private actionCalls(
     caller: string,
     auth: AuthContext,
+    nativeAuth: AuthContext,
     session: string | null,
     parentTrace: number | string,
     stack: readonly string[],
@@ -2847,24 +2858,44 @@ export class PluginHost {
           authority, which the caller never borrows. A door nobody published has no caps to
           check and falls through to `unknown_action` at the dispatch below, which is the
           order the vocabulary publishes.
+
+          ENGINE caps only. A plugin's OWN capability (ADR 0035) is namespaced to the plugin
+          that declared it, and a manifest may name only its own namespace — so demanding it
+          of a caller's ceiling would make every door guarded by one unreachable, which is
+          `atyrode.code.runSession`'s exact shape. A namespaced cap is the callee's own gate
+          and it is graded where it belongs: against the PRINCIPAL, at the callee.
+
+          A GOVERNED cap is dropped from an installed caller's ceiling rather than admitted by
+          its grant, which is rung 4's first half read the other way round: a flat install
+          grant never consents to governed authority (its consent is version-bound and
+          discharged per artifact revision), so an edge must not be able to carry one.
         */
         const granted = this.installed.get(caller)?.row.grantedCaps;
         const ceiling = (callerRow?.manifest.capabilities ?? []).filter(
-          (cap) => granted === undefined || withinCeiling(cap, granted),
+          (cap) =>
+            granted === undefined || (!GOVERNED_CAPS.includes(cap) && withinCeiling(cap, granted)),
         );
         for (const cap of this.assembled.actions.get(door)?.def.caps ?? []) {
-          if (withinCeiling(cap, ceiling)) continue;
+          if (!isEngineCap(cap) || withinCeiling(cap, ceiling)) continue;
           throw new ActionCallRefused("caller_ceiling", `${caller} -> ${door} (${cap})`);
         }
         /*
           THE CALLEE'S OWN LADDER, unchanged and whole: the same method a client's dispatch
-          walks, under the same `auth`. Its trace, its capability checks, its declared limits,
-          its staged emissions flushing on ITS success — all of it is the existing path, which
-          is why this verb adds no rung and cannot be a second denial ladder.
+          walks. Its trace, its capability checks, its declared limits, its staged emissions
+          flushing on ITS success — all of it is the existing path, which is why this verb adds
+          no rung and cannot be a second denial ladder.
+
+          A PLUGIN callee is dispatched under the caller's own `auth` (§2). An ENGINE BUILTIN
+          is dispatched under `nativeAuth`, so a call on `engine.jobs.execute` is bounded by
+          exactly the ceiling `ctx.jobs.execute` is: those doors carry no declared caps of
+          their own and resolve authority from the context they are handed, so an unattenuated
+          one would be the one way a plugin could spend more of its caller's authority than
+          its own manifest ever declared.
         */
         let outcome: ActionOutcome;
         try {
-          outcome = await this.dispatch(auth, door, request.input, session, {
+          const calleeAuth = this.assembled.builtin(callee) ? nativeAuth : auth;
+          outcome = await this.dispatch(calleeAuth, door, request.input, session, {
             origin: { plugin: caller, parentTrace, stack },
           });
         } catch {
@@ -3204,16 +3235,18 @@ export class PluginHost {
           : "read",
       ),
       /*
-        THE SIBLING VERB, bound to the CALLER'S OWN `auth` rather than to `nativeAuth` (ADR
-        0041). The attenuation above exists for the engine's native bridges, where a plugin
-        spends its own declared ceiling; a call on a declared dependency spends nothing of the
-        plugin's — the callee grades the PRINCIPAL, and narrowing the principal's caps here
-        would refuse a client its own authority at a door it may open directly.
+        THE SIBLING VERB, handed BOTH authorities (ADR 0041). A plugin callee is dispatched
+        under the caller's own `auth`: it grades the PRINCIPAL, and narrowing the principal's
+        caps would refuse a client its own authority at a door it may open directly. An engine
+        BUILTIN callee is dispatched under `nativeAuth` instead — the same attenuation
+        `ctx.jobs` and `ctx.services` above get — because those doors resolve authority from
+        the context they are handed, so a call on one must cost the plugin its own declared
+        ceiling exactly as the method-name slice does.
 
         The stack is this trace's frames plus this plugin, so a callee already on it is a
         cycle and a chain that never repeats an id still stops at the depth bound.
       */
-      actions: this.actionCalls(pluginId, auth, session, traceId, [
+      actions: this.actionCalls(pluginId, auth, nativeAuth, session, traceId, [
         ...(options.origin?.stack ?? []),
         pluginId,
       ]),

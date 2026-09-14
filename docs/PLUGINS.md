@@ -670,11 +670,15 @@ const session = await ctx.actions.call({
 It resolves with the callee door's own result. **The callee runs under the principal of the
 request you are serving** — its capability checks grade your caller, not you — so a client that
 may not open `atyrode.code.runSession` directly cannot open it through your door either. And
-**the callee door's declared `caps` must be inside YOUR OWN ceiling** (your manifest's
+**the callee door's declared ENGINE `caps` must be inside YOUR OWN ceiling** (your manifest's
 `capabilities` ∩ your install grant): a plugin never does through a sibling what it could not
 have declared for itself, so declare what your dependencies do for you — the installer reads that
-manifest, and a cap your grant withheld stays withheld here. Your `delegates` are not involved,
-and the check is per hop. In `onEnable`, `onDisable`, `onAssemblyChanged` and `onJobSettled` the
+manifest, and a cap your grant withheld stays withheld here. A capability in the CALLEE's own
+namespace (`atyrode.code:run`) is not your business: it is the callee's gate on your caller, and
+it is graded there. Your `delegates` are not involved, a governed cap cannot ride an edge at all,
+and the check is per hop. Calling one of the engine's own doors (`engine.jobs.*`,
+`engine.services.*`) spends your declared ceiling exactly as `ctx.jobs` and `ctx.services` do.
+In `onEnable`, `onDisable`, `onAssemblyChanged` and `onJobSettled` the
 slice is `ctx.actions?` on the same terms as `ctx.jobs?`: the installer's credential (the settled
 job's, for `onJobSettled`), and absent when it no longer restores.
 

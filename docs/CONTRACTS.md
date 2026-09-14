@@ -1237,9 +1237,17 @@ ceiling — `granted ∩ declared`, the ceiling rung 4's first half applies to i
 ruling 2026-09-14, ADR 0041 §3). A plugin never does through a sibling what it could not have
 declared for itself, so an install grant that withheld `plugins:manage` stays withheld when the
 row depends on `engine.plugins`; the ceiling is a SECOND bound and not a narrowing of the
-principal, and both have to pass. `delegates` are excluded — a delegate is a native ceiling the
-CALLEE spends with its own consented authority — and the check is per hop, so a chain is bounded
-by every ceiling along it. The callee's own answers then arrive as `unknown_action`, `capability`
+principal, and both have to pass. It bounds ENGINE caps only — a plugin's own namespaced cap is
+the callee's gate on the PRINCIPAL and a manifest may name only its own namespace (ADR 0035), so
+demanding one of a caller would make every door guarded by one unreachable — `delegates` are
+excluded, a governed cap is dropped from an installed caller's ceiling rather than admitted by its
+flat grant, and the check is per hop, so a chain is bounded by every ceiling along it. An ENGINE
+BUILTIN callee (`assembly.builtin(id)`: the `engine.*` rows) is additionally dispatched under the
+caller's `nativeAuth` rather than the caller's principal, because those doors declare no caps of
+their own and resolve authority from the context they are handed: a call on `engine.jobs.execute`
+is bounded exactly like `ctx.jobs.execute`, and a builtin door that does declare a cap
+(`engine.plugins.setEnabled`) meets the ceiling check as well. A plugin callee keeps the
+unattenuated principal. The callee's own answers then arrive as `unknown_action`, `capability`
 (its scope/grant/capability rung refused this principal) and `refused` (its handler's denial, its
 `invalid_args`, or an isolated callee that did
 not answer), each carrying the callee's sentence. Every message is the D5 shape: the class, then

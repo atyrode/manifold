@@ -110,6 +110,27 @@ truth about what admitting a row lets its code do.
    than by the first one. A door nobody published has no caps to check and falls through to
    `unknown_action`, which is the order the vocabulary publishes.
 
+   Two mechanics the rule needs to be the rule it says it is (PR #576 re-review):
+
+   - **ENGINE caps only.** A plugin's OWN capability is namespaced to the plugin that declared it
+     and a manifest may declare only its own namespace (ADR 0035), so demanding a namespaced cap
+     of the CALLER's ceiling would make every door guarded by one unreachable — which is
+     `atyrode.code.runSession`'s exact shape. A namespaced cap is the callee's own gate and it is
+     graded where its grant rows live: against the principal, at the callee.
+   - **An ENGINE BUILTIN callee is dispatched under the caller's `nativeAuth`.** `engine.jobs`,
+     `engine.services` and `engine.machines` doors carry no declared caps of their own and resolve
+     authority from the context they are handed, so the caps check above cannot see them at all: a
+     `capabilities: []` plugin depending on `engine.jobs` would otherwise execute a job with its
+     caller's whole credential, while `ctx.jobs.execute` — the same mechanism reached by method
+     name — carries the ceiling its manifest declared. So a call on an engine door is bounded
+     exactly like the method-name slice, and both bounds apply: a builtin door that DOES declare a
+     cap (`engine.plugins.setEnabled`: `plugins:manage`) still meets the ceiling check first. A
+     PLUGIN callee keeps the unattenuated principal, per §2.
+   - **A governed cap is dropped from an installed caller's ceiling** rather than admitted by its
+     grant, which is rung 4's first half read the other way round: a flat install grant never
+     consents to governed authority — its consent is version-bound per artifact revision — so a
+     dependency edge must not be able to carry one.
+
 4. **Bounded by the trace, not by taste.** Each dispatch carries the plugin frames of its trace,
    caller last. A callee already on that stack is `dispatch_cycle` — including the caller itself,
    so a plugin reaching for its own door is refused rather than re-entering its own ladder — and a

@@ -5,6 +5,7 @@ import { defineAction } from "@manifold/plugin";
 import { z } from "zod";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { InstanceDialer } from "../src/instance-dialer.ts";
+import { JobService } from "../src/job-service.ts";
 import { serveCtxCall } from "../src/isolate/proxy-def.ts";
 import { silentLogger } from "../src/log.ts";
 import { PlaceExecutor, assemblyPlacementVocabulary, assemblyItemNouns } from "../src/placement.ts";
@@ -607,6 +608,155 @@ describe("what a sibling call is refused by", () => {
         proxy: true,
       }),
     ).toEqual({ ok: true, result: { answer: { answer: { word: "open" } } } });
+    base.store.close();
+  });
+
+  test("an engine builtin callee runs under the caller's native ceiling, not its caller's caps", async () => {
+    /*
+      THE OTHER HALF OF THE CEILING RULE. `engine.jobs`'s doors declare NO caps of their own
+      and resolve authority from the context they are handed, so the caps check above cannot
+      see them: a `capabilities: []` plugin depending on `engine.jobs` would otherwise execute
+      a job with its caller's whole credential, while its own `ctx.jobs.execute` — the same
+      mechanism, reached by method name — carries the ceiling its manifest declared. A builtin
+      callee is therefore dispatched under `nativeAuth`.
+    */
+    const runner: ServerPluginDef = {
+      manifest: {
+        id: "test.runner",
+        version: "1.0.0",
+        title: "Runner",
+        description: "Wants the engine's jobs.",
+        capabilities: [],
+        dependencies: { "engine.jobs": { type: "required" } },
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      },
+      actions: [
+        defineAction({
+          name: "ask",
+          title: "Describe a machine's jobs through the engine's own door",
+          caps: [],
+          input: z.strictObject({ machineId: z.string() }),
+          result: z.strictObject({ answer: z.unknown() }),
+        }),
+      ],
+      handlers: {
+        ask: async (ctx: ActionCtx, args: { machineId: string }) => ({
+          answer: await ctx.actions.call({
+            plugin: "engine.jobs",
+            action: "describe",
+            input: { machineId: args.machineId, pluginId: "test.runner" },
+          }),
+        }),
+      },
+    };
+    const base = await fixture([runner]);
+    base.host.setJobs(new JobService(base.store, base.auth, base.runtime));
+    const machineId = base.auth.enrollMachine("runner-host", base.owner).machine.id;
+
+    const outcome = await base.host.dispatch(base.owner, "test.runner.ask", { machineId });
+
+    // The OWNER holds `machines:run` at that machine; `test.runner` declared nothing, so the
+    // engine's door refuses the read it would have answered for the owner's own dispatch.
+    expect(denial(outcome)).toEqual({
+      rule: "refused",
+      message: "refused: test.runner -> engine.jobs.describe (forbidden: job request refused)",
+    });
+    expect(rowFor(base, "engine.jobs.describe").outcome).toBe("refused");
+    expect(
+      await base.host.dispatch(base.owner, "engine.jobs.describe", {
+        machineId,
+        pluginId: "test.runner",
+      }),
+    ).toMatchObject({ ok: true });
+    base.store.close();
+  });
+
+  test("a callee door guarded by its OWN namespaced capability is reachable", async () => {
+    /*
+      ADR 0035's shape, and `atyrode.code.runSession`'s: the callee guards its door with a cap
+      in its OWN namespace. A manifest may declare only its own namespace, so a caller could
+      never hold `test.own:echo` — demanding it of the caller's ceiling would make every such
+      door unreachable. The ceiling therefore bounds ENGINE caps only; a namespaced cap is the
+      callee's own gate, graded against the PRINCIPAL at the callee, which is where the grant
+      rows for it live.
+    */
+    const own: ServerPluginDef = {
+      manifest: {
+        id: "test.own",
+        version: "1.0.0",
+        title: "Own",
+        description: "Guards its door with its own capability.",
+        capabilities: ["test.own:echo"],
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      },
+      actions: [
+        defineAction({
+          name: "echo",
+          title: "Echo behind a namespaced capability",
+          caps: ["test.own:echo"],
+          input: z.strictObject({ word: z.string().min(1) }),
+          result: z.strictObject({ word: z.string() }),
+        }),
+      ],
+      handlers: { echo: async (_ctx: ActionCtx, args: { word: string }) => ({ word: args.word }) },
+    };
+    const asker: ServerPluginDef = {
+      manifest: {
+        id: CALLER,
+        version: "1.0.0",
+        title: "Asker",
+        description: "Depends on a plugin with a capability of its own.",
+        // Nothing: a manifest may declare only its OWN namespace, so this caller COULD not
+        // hold `test.own:echo` however much it wanted to.
+        capabilities: [],
+        dependencies: { "test.own": { type: "required" } },
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      },
+      actions: [
+        defineAction({
+          name: "relay",
+          title: "Relay to the namespaced door",
+          caps: [],
+          input: z.strictObject({ word: z.string().min(1) }),
+          result: z.strictObject({ answer: z.unknown() }),
+        }),
+      ],
+      handlers: {
+        relay: async (ctx: ActionCtx, args: { word: string }) => ({
+          answer: await ctx.actions.call({ plugin: "test.own", action: "echo", input: args }),
+        }),
+      },
+    };
+    const base = await fixture([asker, own]);
+    // The ROOT credential holds a plugin's capability only where a grant row names it (ADR
+    // 0035), so the principal is granted it here — which is the point: the cap is the callee's
+    // gate on the caller's CLIENT, and the caller's manifest never mentions it.
+    base.auth.grant(
+      {
+        principal: { kind: "principal", id: base.owner.principal.id },
+        node: "manifold://",
+        caps: ["test.own:echo"],
+        effect: "allow",
+        reach: "subtree",
+      },
+      base.owner,
+    );
+
+    const outcome = await base.host.dispatch(base.owner, `${CALLER}.relay`, { word: "hi" });
+
+    expect(outcome).toEqual({ ok: true, result: { answer: { word: "hi" } } });
+    // And the principal's own gate still holds: a client without the grant is refused AT the
+    // callee, which is where a namespaced cap is graded.
+    expect(
+      denial(
+        await base.host.dispatch(guest(base, ["containers:read"]), `${CALLER}.relay`, {
+          word: "hi",
+        }),
+      ),
+    ).toEqual({
+      rule: "refused",
+      message: `capability: ${CALLER} -> test.own.echo (test.own:echo capability required)`,
+    });
     base.store.close();
   });
 
