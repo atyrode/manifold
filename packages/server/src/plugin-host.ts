@@ -2817,8 +2817,8 @@ export class PluginHost {
           discover a sibling at runtime and start using it, which is what keeps the dependency
           graph a reader can see in the manifests the same graph the hub actually runs.
         */
-        const declared = this.assembled.roster.find((entry) => entry.manifest.id === caller)
-          ?.manifest.dependencies?.[callee];
+        const callerRow = this.assembled.roster.find((entry) => entry.manifest.id === caller);
+        const declared = callerRow?.manifest.dependencies?.[callee];
         if (declared === undefined || declared.type === "incompatible") {
           throw new ActionCallRefused("undeclared_dependency", edge);
         }
@@ -2831,6 +2831,30 @@ export class PluginHost {
         */
         if (!this.assembled.enabled(callee)) {
           throw new ActionCallRefused("dependency_unavailable", edge);
+        }
+        /*
+          THE CALLER'S OWN CEILING, as the operator ruled on 2026-09-14 (ADR 0041 §3): the
+          callee door's declared capabilities must also lie inside what the CALLING plugin
+          could have declared for itself — `granted ∩ declared`, the same ceiling rung 4's
+          first half applies to the caller's own doors. A plugin never does through a sibling
+          what it could not have asked for on its own manifest, so a row whose installer
+          withheld `plugins:manage` cannot administer the assembly by depending on
+          `engine.plugins` and waiting for an owner to open any of its doors.
+
+          It is a SECOND bound and not a narrowing of the principal: the grade at the callee is
+          still the caller's request principal (§2), and both have to pass. Declared `caps`
+          only — a `delegates` entry is a ceiling the callee spends with its OWN consented
+          authority, which the caller never borrows. A door nobody published has no caps to
+          check and falls through to `unknown_action` at the dispatch below, which is the
+          order the vocabulary publishes.
+        */
+        const granted = this.installed.get(caller)?.row.grantedCaps;
+        const ceiling = (callerRow?.manifest.capabilities ?? []).filter(
+          (cap) => granted === undefined || withinCeiling(cap, granted),
+        );
+        for (const cap of this.assembled.actions.get(door)?.def.caps ?? []) {
+          if (withinCeiling(cap, ceiling)) continue;
+          throw new ActionCallRefused("caller_ceiling", `${caller} -> ${door} (${cap})`);
         }
         /*
           THE CALLEE'S OWN LADDER, unchanged and whole: the same method a client's dispatch

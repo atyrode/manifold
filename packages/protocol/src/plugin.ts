@@ -1153,6 +1153,15 @@ export type ActionOutcome = z.infer<typeof ActionOutcomeSchema>;
  *                            one absent or off is a composition refusal (ADR 0013 §5.1) —
  *                            and the caller stays enabled either way: there is no cascade.
  *   `unknown_action`         the callee publishes no door by that name.
+ *   `caller_ceiling`         the callee door declares a capability the CALLING plugin's own
+ *                            ceiling does not hold (`granted ∩ declared`, the ceiling its own
+ *                            doors are bounded by). A plugin never does through a sibling what
+ *                            it could not have declared for itself, so an install grant that
+ *                            withheld `plugins:manage` is still withheld when the plugin
+ *                            depends on `engine.plugins` and an owner opens one of its doors.
+ *                            A SECOND bound, not a narrowing of the principal: the grade at
+ *                            the callee is still the caller's request principal, and both have
+ *                            to pass. The detail names the caller, the callee door and the cap.
  *   `capability`             the callee's OWN scope/grant/capability rung refused this
  *                            principal — at the callee, never admitted by the caller's
  *                            authority. The callee's sentence is the detail.
@@ -1169,6 +1178,7 @@ export const ACTION_CALL_REFUSALS = [
   "undeclared_dependency",
   "dependency_unavailable",
   "unknown_action",
+  "caller_ceiling",
   "capability",
   "refused",
 ] as const;

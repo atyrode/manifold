@@ -669,14 +669,19 @@ const session = await ctx.actions.call({
 
 It resolves with the callee door's own result. **The callee runs under the principal of the
 request you are serving** — its capability checks grade your caller, not you — so a client that
-may not open `atyrode.code.runSession` directly cannot open it through your door either. In
-`onEnable`, `onDisable`, `onAssemblyChanged` and `onJobSettled` the slice is `ctx.actions?` on the
-same terms as `ctx.jobs?`: the installer's credential (the settled job's, for `onJobSettled`), and
-absent when it no longer restores.
+may not open `atyrode.code.runSession` directly cannot open it through your door either. And
+**the callee door's declared `caps` must be inside YOUR OWN ceiling** (your manifest's
+`capabilities` ∩ your install grant): a plugin never does through a sibling what it could not
+have declared for itself, so declare what your dependencies do for you — the installer reads that
+manifest, and a cap your grant withheld stays withheld here. Your `delegates` are not involved,
+and the check is per hop. In `onEnable`, `onDisable`, `onAssemblyChanged` and `onJobSettled` the
+slice is `ctx.actions?` on the same terms as `ctx.jobs?`: the installer's credential (the settled
+job's, for `onJobSettled`), and absent when it no longer restores.
 
 A refusal is a REJECTION whose message is the class then the plugins it names, caller first — the
 same `"<class>: <offenders>"` shape every plugin refusal uses. Catch it if you have something
-better to answer, or let it escape and your own dispatch refuses with that sentence:
+better to answer, or let it escape and your own dispatch refuses with that sentence. A callee that
+THROWS is not a refusal of its own making: you are told `(failed)` and never its error text.
 
 ```
 dispatch_cycle: example.a -> example.a                  you are already on this trace
@@ -684,6 +689,7 @@ dispatch_depth: example.a -> … -> example.i             8 plugin frames per tr
 undeclared_dependency: example.a -> example.b           declare the edge, or do not call it
 dependency_unavailable: example.a -> example.opt        an optional dependency absent or off
 unknown_action: example.b.ghost                         no such door there
+caller_ceiling: example.a -> engine.plugins.setEnabled (plugins:manage)
 capability: example.a -> example.b.echo (terminals:write capability required)
 refused: example.a -> example.b.sulk (the callee says no)
 ```

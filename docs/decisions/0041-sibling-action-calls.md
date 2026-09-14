@@ -39,8 +39,10 @@ The dependency model is already the shape of the permission. A manifest declares
 it (§5 rule 4). What a plugin composes on is therefore already written down, already machine-read,
 and already arbitrated by the floor — which is criterion 3 of the foundation litmus (§13 `:682`:
 "it referees between plugins where no plugin could be trusted to referee… an arbiter cannot be a
-party"). A verb that admits exactly the declared edges adds no new registry and no new consent
-surface.
+party"). A verb that admits exactly the declared edges adds no new registry, and §3's second bound
+is what keeps it from adding a consent surface either: a call reaches no capability the calling
+plugin's own install grant does not already hold, so the install screen keeps telling the whole
+truth about what admitting a row lets its code do.
 
 ## Decision
 
@@ -68,11 +70,13 @@ surface.
    nothing rather than silently downgrading to the engine's own hand. `onJobSettled` carries the
    settled job's credential, as its `jobs` slice does.
 
-   The caller's own attenuation is deliberately NOT applied. `ctx.jobs` and `ctx.services` are
-   handed a capability ceiling narrowed to the action's declared `delegates`, because there the
-   plugin spends its own consented authority on a native effect. A sibling call spends none: the
-   callee grades the principal, and narrowing the principal's capabilities on the way would refuse
-   a client its own authority at a door it may open directly.
+   The caller's own attenuation is deliberately NOT applied to the PRINCIPAL. `ctx.jobs` and
+   `ctx.services` are handed a capability ceiling narrowed to the action's declared `delegates`,
+   because there the plugin spends its own consented authority on a native effect. A sibling call
+   spends none: the callee grades the principal, and narrowing the principal's capabilities on the
+   way would refuse a client its own authority at a door it may open directly. What the caller's
+   ceiling bounds instead is WHICH DOORS its code may open at all — §3's second bound, asked of
+   the manifest rather than of the credential.
 
 3. **A declared edge, and nothing else.** The callee must appear in the CALLER's manifest
    `dependencies` as `required` or `optional`; anything else — absent, or `incompatible` — is
@@ -83,17 +87,28 @@ surface.
    off is a composition refusal), and the caller stays enabled either way: there is no cascade
    (§5 rule 5).
 
-   **Open at the time of writing: the admissible-callee rule for engine builtins is pending the
-   operator's ruling (PR #576 review, finding 2).** The engine's own rows compose as manifests, so
-   as written a third-party plugin may declare `engine.plugins` (or `core.access`) a dependency and
-   open its administrative doors whenever an owner opens any of its own — under that owner's
-   principal, which the owner could exercise directly, but through a surface the install
-   affordance (ADR 0016 §5) does not show. The three options on the table are: accept as written
-   and have the install affordance list a row's declared edges as door access; refuse `engine.*`
-   (and/or `core.access`) callees regardless of the manifest, keeping the engine's own doors
-   client-only; or intersect the callee's caps with the caller's install grant (rejected below for
-   ordinary plugins). Nothing in this section is ratified until that ruling lands; §Context's
-   "adds no new consent surface" is the claim it decides.
+   **AND THE CALLER'S OWN CEILING (operator's ruling, 2026-09-14).** The callee door's declared
+   capabilities must also lie inside the CALLING plugin's ceiling — `granted ∩ declared`, the same
+   ceiling rung 4's first half applies to the caller's own doors — or the call is refused
+   `caller_ceiling`, naming the caller, the callee door and the cap that fell outside. A plugin
+   never does through a sibling what it could not have declared for itself.
+
+   The rule exists because the review of this ADR reproduced its absence: `test.mgr`, a row with
+   `capabilities: []` whose installer therefore granted it nothing, declared
+   `dependencies: { "engine.plugins": { type: "required" } }` and disabled another plugin the
+   moment an owner opened ANY of its doors — the owner's own authority, exercised by code the
+   owner never consented to exercise it. Under the ceiling rule that call is refused before the
+   dispatch, the owner keeps every ability they had directly, and ADR 0016 §5's install affordance
+   keeps telling the truth: a row's high-risk caps are the ones it is shown asking for, whether
+   its code spends them at its own doors or at a dependency's. No affordance change is owed.
+
+   It is a SECOND bound, not a narrowing of the principal: the grade at the callee is still the
+   caller's request principal (§2), both have to pass, and a caller holding the ceiling gains
+   nothing when its caller does not hold the capability. Declared `caps` only — a `delegates`
+   entry is a native ceiling the callee spends with its OWN consented authority, which a caller
+   never borrows — and it is asked per HOP, so a chain is bounded by every ceiling along it rather
+   than by the first one. A door nobody published has no caps to check and falls through to
+   `unknown_action`, which is the order the vocabulary publishes.
 
 4. **Bounded by the trace, not by taste.** Each dispatch carries the plugin frames of its trace,
    caller last. A callee already on that stack is `dispatch_cycle` — including the caller itself,
@@ -119,7 +134,8 @@ surface.
 6. **A refusal is a class, then the plugins it names.** `ACTION_CALL_REFUSALS` is closed and
    published at `GET /api/protocol` beside the denial ladder (`pluginVocabulary().actionCall`):
    `dispatch_cycle`, `dispatch_depth`, `undeclared_dependency`, `dependency_unavailable`,
-   `unknown_action`, `capability`, `refused` — walked in that order, so a caller learns the first
+   `unknown_action`, `caller_ceiling`, `capability`, `refused` — walked in that order, so a caller
+   learns the first
    thing wrong. The message is the D5 house shape every other plugin refusal uses: the class, then
    the offenders after `": "`, caller first (`undeclared_dependency: atyrode.babel -> atyrode.code`,
    `capability: test.a -> test.b.echo (terminals:write capability required)`). A refusal the calling
@@ -177,11 +193,13 @@ declared data.
   clients would inherit whatever the caller's identity held. Every capability question in the
   server goes through one evaluator (`AuthService.allows`); a plugin identity would be the first
   question that could not.
-- **The callee's caps intersected with the caller's declared `delegates`.** Rejected as a
-  narrowing that lies: `delegates` is a ceiling on NATIVE effects the plugin performs with its own
-  consented authority (ADR 0033), while a sibling call performs no effect of the caller's at all.
-  Under this rule a root client's dispatch could be refused at a door it may open directly, and the
-  refusal would name the wrong party.
+- **Narrowing the PRINCIPAL to the caller's ceiling** (handing the callee an attenuated
+  `AuthContext` the way `ctx.jobs` gets one). Rejected, and it is the distinction §3's second
+  bound rests on: a sibling call performs no effect of the caller's, so attenuating the credential
+  would refuse a root client its own authority at a door it may open directly, and the refusal
+  would name the wrong party. The caller's ceiling is a bound on WHICH DOORS its code may open,
+  asked of the manifest; the principal is who is asking, asked of the credential. Both hold; only
+  one of them is the caller's.
 - **A new manifest field (`calls: [...]`) beside `dependencies`.** Rejected: two registries for one
   relationship. "I build on this plugin" and "I open this plugin's doors" are the same statement —
   ADR 0013 §5's `reason` field already exists to say why — and a second list would drift from the
@@ -206,7 +224,8 @@ declared data.
   writer (ADR 0013 §11, ADR 0034 §7). A sibling reads a sibling's data by calling a door that
   answers with it, which is the same sentence those two ADRs already wrote.
 - **Not an authority gain.** There is no plugin principal, no cap inheritance along an edge, no
-  elevation at a boundary, and no way for a caller to widen what its own caller held. A declared
+  elevation at a boundary, and no way for a caller to widen what its own caller held — nor to
+  reach, through a dependency, a capability its own install grant withheld (§3). A declared
   dependency is permission to ASK, never permission to DO.
 - **Not a transitive grant.** `a -> b` does not let `a` reach `c` because `b` declares it: each
   frame's edge is checked against the caller of that frame, and the trace carries the whole chain.
@@ -220,12 +239,16 @@ declared data.
 
 `packages/server/test/plugin-actions-call.test.ts` drives the whole contract against a real host
 and a real ladder: the declared edge succeeding under the caller's principal with `origin` on the
-callee's ledger row, the callee's emission flushing while the caller's refusal publishes nothing,
+callee's ledger row, a client's forged `origin`/`parentTrace` stripped from both a committed row
+and a refused rung's, the callee's emission flushing while the caller's refusal publishes nothing,
 the undeclared plugin, the absent and the disabled optional dependency with the caller still
-enabled, a principal without the callee's capability refused at the callee, an unpublished door, the
-callee's own refusal, a self-call, a nine-plugin chain refused at the bound, and the same request
-and the same refusal through `serveCtxCall` — the proxy path a hardened guest's `call` frame
-reaches. `packages/plugin-kit/test/server.test.ts` pins the guest half: one frame per call, and the
+enabled, the review's `test.mgr` refused `caller_ceiling` at `engine.plugins.setEnabled` with the
+victim still enabled and the owner's own dispatch still admitted, a caller whose ceiling does hold
+the callee's caps succeeding, a principal without the callee's capability refused at the callee, an
+unpublished door, the callee's own refusal, a callee that throws answered without its error text, a
+self-call, a nine-plugin chain refused at the bound, and the same requests and refusals through
+`serveCtxCall` — the proxy path a hardened guest's `call` frame reaches.
+`packages/plugin-kit/test/server.test.ts` pins the guest half: one frame per call, and the
 host's refusal sentence reaching the handler as `ActionCallError` with its class still at the front.
 Not exercised here: no deployed instance was driven, and `atyrode.code.runSession`
 (`atyrode/code#170`) does not exist yet — the first real edge is owed by that issue and

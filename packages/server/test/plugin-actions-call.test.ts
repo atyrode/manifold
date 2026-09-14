@@ -88,6 +88,10 @@ function relayDef(
  * The pair the acceptance cases use: a caller that relays, probes and stages, and a callee
  * whose `echo` demands a capability of its own. `test.opt` is declared `optional` so it can be
  * switched off — a `required` dependency cannot be, the toggle door refuses it by name.
+ *
+ * The caller DECLARES `terminals:write` without using it in a door of its own: that is the
+ * ceiling the operator's 2026-09-14 ruling requires of a caller, and declaring it is how a
+ * plugin says out loud, on the manifest an installer reads, what its dependencies do for it.
  */
 function pair(): readonly ServerPluginDef[] {
   const caller: ServerPluginDef = {
@@ -96,7 +100,7 @@ function pair(): readonly ServerPluginDef[] {
       version: "1.0.0",
       title: "Caller",
       description: "Calls its declared dependency.",
-      capabilities: [],
+      capabilities: ["terminals:write"],
       dependencies: { [CALLEE]: { type: "required" }, [OPTIONAL]: { type: "optional" } },
       contributes: {
         panels: [],
@@ -504,11 +508,13 @@ describe("what a sibling call is refused by", () => {
     const outcome = await base.host.dispatch(reader, `${CALLER}.relay`, { word: "hi" });
 
     /*
-      THE CONFUSED DEPUTY, ANSWERED. `test.a.relay` declares no capability at all, so this
-      principal opens it; `test.b.echo` demands `terminals:write`, which this principal does
-      not hold. The refusal is the CALLEE's rung 4 — a plugin cannot lend its caller authority
-      it did not have — and the class says which so the caller's author asks for a grant
-      rather than editing a manifest.
+      THE CONFUSED DEPUTY, ANSWERED. `test.a.relay` demands no capability of its caller, so
+      this principal opens it, and `test.a`'s own ceiling does declare `terminals:write`, so
+      the caller-ceiling bound passes; `test.b.echo` demands `terminals:write` of the
+      PRINCIPAL, which this one does not hold. The refusal is the CALLEE's rung 4 — a plugin
+      cannot lend its caller authority the caller never had — and the two bounds are visibly
+      different questions: `caller_ceiling` is about the manifest, `capability` about the
+      credential.
     */
     expect(denial(outcome)).toEqual({
       rule: "refused",
@@ -516,6 +522,91 @@ describe("what a sibling call is refused by", () => {
     });
     expect(rowFor(base, `${CALLEE}.echo`).outcome).toBe("forbidden");
     expect(base.store.listEvents({ type: "echoed", limit: 5 })).toHaveLength(0);
+    base.store.close();
+  });
+
+  test("a caller whose own ceiling lacks the callee door's capability refuses caller_ceiling", async () => {
+    /*
+      THE REVIEWER'S REPRODUCTION, RULED ON (operator, 2026-09-14; ADR 0041 §3). `test.mgr`
+      declares no capability at all and depends on the engine's assembly administration. Under
+      the old rule an OWNER opening any of its doors administered the assembly on its behalf —
+      an authority its installer's grant never gave it. The caller's own ceiling is now a
+      second bound, so the sibling call is refused before the dispatch and the victim keeps
+      serving; the owner may still open `engine.plugins.setEnabled` directly.
+    */
+    const manager: ServerPluginDef = {
+      manifest: {
+        id: "test.mgr",
+        version: "1.0.0",
+        title: "Manager",
+        description: "Wants the assembly.",
+        capabilities: [],
+        dependencies: { "engine.plugins": { type: "required" } },
+        contributes: { panels: [], sections: [], elements: [], tools: [], events: [] },
+      },
+      actions: [
+        defineAction({
+          name: "seize",
+          title: "Disable a sibling through the engine's own door",
+          caps: [],
+          input: z.strictObject({ id: z.string() }),
+          result: z.strictObject({ answer: z.unknown() }),
+        }),
+      ],
+      handlers: {
+        seize: async (ctx: ActionCtx, args: { id: string }) => ({
+          answer: await ctx.actions.call({
+            plugin: "engine.plugins",
+            action: "setEnabled",
+            input: { id: args.id, enabled: false },
+          }),
+        }),
+      },
+    };
+    const base = await fixture([manager, relayDef("test.victim", {}, null)]);
+
+    const outcome = await base.host.dispatch(base.owner, "test.mgr.seize", { id: "test.victim" });
+
+    expect(denial(outcome)).toEqual({
+      rule: "refused",
+      message: "caller_ceiling: test.mgr -> engine.plugins.setEnabled (plugins:manage)",
+    });
+    expect(base.host.assembly().enabled("test.victim")).toBe(true);
+    expect(traces(base).some((row) => row.door === "engine.plugins.setEnabled")).toBe(false);
+    // The principal's own authority is untouched: the owner still opens that door directly.
+    expect(
+      await base.host.dispatch(base.owner, "engine.plugins.setEnabled", {
+        id: "test.victim",
+        enabled: false,
+      }),
+    ).toEqual({ ok: true, result: {} });
+    base.store.close();
+  });
+
+  test("the same bound crossing the proxy, and a declared ceiling still succeeds", async () => {
+    const base = await fixture();
+
+    // `test.a` declares `terminals:write`, which is what `test.b.echo` demands: the ceiling
+    // holds, so the call goes through — in realm and through the hardened path alike.
+    expect(
+      await base.host.dispatch(base.owner, `${CALLER}.probe`, {
+        plugin: CALLEE,
+        action: "echo",
+        input: { word: "within" },
+        proxy: true,
+      }),
+    ).toMatchObject({ ok: true });
+
+    // `test.opt.relay` declares no caps at all, so an empty-ceiling call is not refused either:
+    // the bound is the callee DOOR's demands, not a requirement to declare something.
+    expect(
+      await base.host.dispatch(base.owner, `${CALLER}.probe`, {
+        plugin: OPTIONAL,
+        action: "relay",
+        input: { word: "open" },
+        proxy: true,
+      }),
+    ).toEqual({ ok: true, result: { answer: { answer: { word: "open" } } } });
     base.store.close();
   });
 

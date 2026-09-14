@@ -1231,9 +1231,17 @@ The only checks this verb adds sit before the dispatch, and they are walked in t
 plugin cannot re-enter its own door), `dispatch_depth` (`MAX_ACTION_CALL_DEPTH` = 8 plugin frames
 per trace), `undeclared_dependency` (the callee is not `required` or `optional` in the CALLER's
 manifest `dependencies`), `dependency_unavailable` (a declared dependency not composed or disabled
-right now — reachable only for an `optional` edge, with no cascade onto the caller). The callee's
-own answers arrive as `unknown_action`, `capability` (its scope/grant/capability rung refused this
-principal) and `refused` (its handler's denial, its `invalid_args`, or an isolated callee that did
+right now — reachable only for an `optional` edge, with no cascade onto the caller), and
+`caller_ceiling` (the callee door's declared `caps` are not all inside the CALLING plugin's own
+ceiling — `granted ∩ declared`, the ceiling rung 4's first half applies to its own doors; operator
+ruling 2026-09-14, ADR 0041 §3). A plugin never does through a sibling what it could not have
+declared for itself, so an install grant that withheld `plugins:manage` stays withheld when the
+row depends on `engine.plugins`; the ceiling is a SECOND bound and not a narrowing of the
+principal, and both have to pass. `delegates` are excluded — a delegate is a native ceiling the
+CALLEE spends with its own consented authority — and the check is per hop, so a chain is bounded
+by every ceiling along it. The callee's own answers then arrive as `unknown_action`, `capability`
+(its scope/grant/capability rung refused this principal) and `refused` (its handler's denial, its
+`invalid_args`, or an isolated callee that did
 not answer), each carrying the callee's sentence. Every message is the D5 shape: the class, then
 the plugins after `": "`, caller first — `undeclared_dependency: atyrode.babel -> atyrode.code`,
 `capability: test.a -> test.b.echo (terminals:write capability required)`. A refusal the calling
