@@ -36,9 +36,17 @@ vantage presence, the shell — is plugin territory, and the shipped ones are yo
 
 ## 1. Anatomy
 
-A peer plugin is a workspace package under `packages/plugins/<name>`, published as
+A peer plugin is a workspace package under `packages/plugins/<name>`, named
 `@manifold-plugin/<name>`, exporting up to three halves. A child instead lives inside its
 parent's package (below); it has no separate `package.json` or `tsconfig.json`.
+
+Workspace package names are checkout import identities, not registry distribution promises.
+Every package under `packages/` is private: Manifold releases the public source and application
+artifacts, while plugin-author workflows consume a checkout. Publishing any workspace package
+requires a separate operator decision, a guarded publication path that deliberately removes its
+private marker, and verified registry-scope ownership. `private: true` prevents accidental
+publication from this tree; it makes no claim that the `@manifold` or `@manifold-plugin` scopes are
+owned or unavailable to anyone else.
 
 ```jsonc
 // packages/plugins/<name>/package.json — a peer with both runtime halves

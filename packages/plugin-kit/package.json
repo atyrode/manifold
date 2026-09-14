@@ -1,5 +1,6 @@
 {
   "name": "@manifold/plugin-kit",
+  "private": true,
   "version": "0.1.0",
   "type": "module",
   "exports": {
