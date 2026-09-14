@@ -5218,3 +5218,360 @@ UPDATE meta SET value='33' WHERE key='schema_version';
     }
   });
 });
+
+describe("a job input bound to an earlier job's sealed output", () => {
+  const producerId = `${pluginId}.prepare`;
+  const consumerId = `${pluginId}.review`;
+  const otherPlugin = "other.consumer";
+  const otherConsumerId = `${otherPlugin}.review`;
+  const base = {
+    argv: [],
+    input: {},
+    runtimeTools: [],
+    locations: [],
+    outputs: [],
+    network: "none" as const,
+    limits,
+    stdin: false,
+  };
+  const sealedId = `${pluginId}.sealed`;
+  const producing: MachineHalf = {
+    ...machine,
+    locations: {
+      [sealedId]: {
+        anchor: "runtime" as const,
+        components: ["sealed"],
+        revision: "1",
+        kind: "directory" as const,
+      },
+    },
+    operations: {
+      // `material` may leave the plugin; `notes` is declared, sealed and never exported.
+      [producerId]: {
+        ...base,
+        locations: [{ locationId: sealedId, access: "write" as const }],
+        outputs: ["material", "notes"],
+        exports: ["material"],
+      },
+      [consumerId]: { ...base, inputs: ["material", "notes"] },
+    },
+  };
+  const consuming: MachineHalf = {
+    ...machine,
+    operations: { [otherConsumerId]: { ...base, inputs: ["material", "notes"] } },
+  };
+  const allow = (f: Fixture, plugin: string, operation: string, cap: Cap, enabled = true) =>
+    f.service.consent(f.root, {
+      machineId: f.machineId,
+      pluginId: plugin,
+      installationRevision: "r1",
+      artifactSha256: hash,
+      node: formatManifoldUri({ kind: "operation", machineId: f.machineId, operationId: operation }),
+      cap,
+      enabled,
+    });
+  function bound(): Fixture {
+    const f = fixture(":memory:", producing);
+    f.service.setManifestResolver((id) =>
+      id === pluginId ? producing : id === otherPlugin ? consuming : null,
+    );
+    f.service.install(f.root, {
+      machineId: f.machineId,
+      pluginId: otherPlugin,
+      installationRevision: "r1",
+      artifactSha256: hash,
+      machine: consuming,
+    });
+    allow(f, pluginId, producerId, "machines:run");
+    f.service.consent(f.root, {
+      machineId: f.machineId,
+      pluginId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+      node: formatManifoldUri({
+        kind: "location",
+        machineId: f.machineId,
+        locationId: sealedId,
+      }),
+      cap: "locations:write",
+      enabled: true,
+    });
+    allow(f, pluginId, producerId, "jobs:read");
+    allow(f, pluginId, consumerId, "machines:run");
+    allow(f, otherPlugin, otherConsumerId, "machines:run");
+    prove(f);
+    f.service.event(f.channel, {
+      type: "installed",
+      pluginId: otherPlugin,
+      installationRevision: "r1",
+      artifactSha256: hash,
+    });
+    return f;
+  }
+  /** The producer's settled run, with both names sealed the way its owner reported them. */
+  function seal(f: Fixture, jobId = "producer"): JobRecord {
+    const job = f.service.execute(f.root, pluginId, "trace-produce", {
+      jobId,
+      machineId: f.machineId,
+      operationId: producerId,
+      input: {},
+      outputs: [
+        { name: "material", locationId: sealedId, components: ["material"] },
+        { name: "notes", locationId: sealedId, components: ["notes"] },
+      ],
+    });
+    f.service.event(f.channel, {
+      type: "result",
+      result: {
+        jobId,
+        requestDigest: job.request.requestDigest,
+        ownerId: f.owner.ownerId,
+        ownerGeneration: f.owner.generation,
+        state: "exited",
+        exitCode: 0,
+        reason: null,
+        startedAt: 0,
+        finishedAt: 7,
+        usage: { elapsedMs: 1, memoryBytes: 1, processes: 1, outputBytes: 4096 },
+        limits,
+        outputs: [
+          { outputId: "o-material", name: "material", sha256: hash, bytes: 2048, files: 2 },
+          { outputId: "o-notes", name: "notes", sha256: "b".repeat(64), bytes: 1024, files: 1 },
+        ],
+      },
+    });
+    return job;
+  }
+  const consume = (
+    f: Fixture,
+    inputs: JobRequest["inputs"],
+    jobId = "consumer",
+    plugin = pluginId,
+    operation = consumerId,
+    limitOverride?: JobRequest["limits"],
+  ) =>
+    f.service.execute(f.root, plugin, "trace-consume", {
+      jobId,
+      machineId: f.machineId,
+      operationId: operation,
+      input: {},
+      outputs: [],
+      inputs,
+      ...(limitOverride ? { limits: limitOverride } : {}),
+    });
+
+  test("the admitted job echoes its bindings and inherits the operation's own output ceiling", () => {
+    const f = bound();
+    try {
+      seal(f);
+      const job = consume(f, [{ name: "material", from: { jobId: "producer", output: "material" } }]);
+      expect(job.state).toBe("start-committed");
+      expect(job.request.inputs).toEqual([
+        { name: "material", from: { jobId: "producer", output: "material" } },
+      ]);
+      expect(job.request.limits.inputBytes).toBe(limits.outputBytes);
+      expect(f.service.publicJob(job).inputs).toEqual(job.request.inputs);
+      const start = f.commands.findLast((command) => command.type === "start");
+      expect(start?.type === "start" && start.request.inputs).toEqual(job.request.inputs);
+      // A consumer's input name is its own; it need not match the name the producer sealed.
+      expect(
+        consume(f, [{ name: "notes", from: { jobId: "producer", output: "material" } }], "renamed")
+          .state,
+      ).toBe("start-committed");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("a name the operation never declared is refused before anything else is asked", () => {
+    const f = bound();
+    try {
+      seal(f);
+      expect(() =>
+        consume(f, [{ name: "corpus", from: { jobId: "producer", output: "material" } }]),
+      ).toThrow("unknown_input:corpus");
+      expect(() =>
+        consume(f, [
+          { name: "material", from: { jobId: "producer", output: "material" } },
+          { name: "material", from: { jobId: "producer", output: "notes" } },
+        ]),
+      ).toThrow("duplicate_input");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("the source must exist, be settled, have sealed that name, and live on this machine", () => {
+    const f = bound();
+    try {
+      expect(() =>
+        consume(f, [{ name: "material", from: { jobId: "absent", output: "material" } }]),
+      ).toThrow("input_source_unavailable:material");
+      // Started is not settled: nothing is immutable until the owner seals it.
+      const running = f.service.execute(f.root, pluginId, "trace-produce", {
+        jobId: "running",
+        machineId: f.machineId,
+        operationId: producerId,
+        input: {},
+        outputs: [],
+      });
+      expect(running.state).toBe("start-committed");
+      expect(() =>
+        consume(f, [{ name: "material", from: { jobId: "running", output: "material" } }]),
+      ).toThrow("input_source_unavailable:material");
+      seal(f);
+      expect(() =>
+        consume(f, [{ name: "material", from: { jobId: "producer", output: "unsealed" } }]),
+      ).toThrow("input_source_unavailable:material");
+      // Bytes never cross a machine: a consumer elsewhere cannot reach this archive.
+      const second = f.auth.enrollMachine("elsewhere", f.root).machine.id;
+      f.service.install(f.root, {
+        machineId: second,
+        pluginId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+        machine: producing,
+      });
+      f.service.consent(f.root, {
+        machineId: second,
+        pluginId,
+        installationRevision: "r1",
+        artifactSha256: hash,
+        node: formatManifoldUri({
+          kind: "operation",
+          machineId: second,
+          operationId: consumerId,
+        }),
+        cap: "machines:run",
+        enabled: true,
+      });
+      expect(() =>
+        f.service.execute(f.root, pluginId, "trace-consume", {
+          jobId: "remote",
+          machineId: second,
+          operationId: consumerId,
+          input: {},
+          outputs: [],
+          inputs: [{ name: "material", from: { jobId: "producer", output: "material" } }],
+        }),
+      ).toThrow("input_source_unavailable:material");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("another plugin binds only an exported output; the producing plugin needs no export", () => {
+    const f = bound();
+    try {
+      seal(f);
+      allow(f, pluginId, producerId, "jobs:read");
+      expect(() =>
+        consume(
+          f,
+          [{ name: "notes", from: { jobId: "producer", output: "notes" } }],
+          "outsider",
+          otherPlugin,
+          otherConsumerId,
+        ),
+      ).toThrow("input_not_exported:notes");
+      expect(
+        consume(
+          f,
+          [{ name: "material", from: { jobId: "producer", output: "material" } }],
+          "welcome",
+          otherPlugin,
+          otherConsumerId,
+        ).state,
+      ).toBe("start-committed");
+      // The same plugin reads its own unexported output: an export names what LEAVES a plugin.
+      expect(
+        consume(f, [{ name: "notes", from: { jobId: "producer", output: "notes" } }], "insider")
+          .state,
+      ).toBe("start-committed");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("the export replaces the caller-plugin pin but never the read authority at the source", () => {
+    const f = bound();
+    try {
+      seal(f);
+      allow(f, pluginId, producerId, "jobs:read", false);
+      expect(() =>
+        consume(
+          f,
+          [{ name: "material", from: { jobId: "producer", output: "material" } }],
+          "unauthorized",
+          otherPlugin,
+          otherConsumerId,
+        ),
+      ).toThrow("input_authority_refused:material");
+      // Its own plugin fares no better: the export is not a substitute for `jobs:read`.
+      expect(() =>
+        consume(f, [{ name: "material", from: { jobId: "producer", output: "material" } }]),
+      ).toThrow("input_authority_refused:material");
+      allow(f, pluginId, producerId, "jobs:read");
+      expect(
+        consume(
+          f,
+          [{ name: "material", from: { jobId: "producer", output: "material" } }],
+          "authorized",
+          otherPlugin,
+          otherConsumerId,
+        ).state,
+      ).toBe("start-committed");
+    } finally {
+      f.store.close();
+    }
+  });
+
+  test("an input ceiling only lowers, and a deferred start asks every question again", () => {
+    const f = bound();
+    try {
+      seal(f);
+      expect(() =>
+        consume(
+          f,
+          [{ name: "material", from: { jobId: "producer", output: "material" } }],
+          "greedy",
+          pluginId,
+          consumerId,
+          { ...limits, inputBytes: limits.outputBytes + 1 },
+        ),
+      ).toThrow("limit_exceeded");
+      expect(
+        consume(
+          f,
+          [{ name: "material", from: { jobId: "producer", output: "material" } }],
+          "modest",
+          pluginId,
+          consumerId,
+          { ...limits, inputBytes: 4096 },
+        ).request.limits.inputBytes,
+      ).toBe(4096);
+      // Offline: the job is admitted and queued, and its start happens later.
+      f.service.offline(f.channel);
+      const queued = consume(
+        f,
+        [{ name: "material", from: { jobId: "producer", output: "material" } }],
+        "deferred",
+      );
+      expect(queued.state).toBe("queued");
+      allow(f, pluginId, producerId, "jobs:read", false);
+      prove(f);
+      const settled = f.service.jobs.get("deferred")!;
+      expect(settled.state).toBe("refused");
+      expect(f.service.jobs.authority(settled).decision?.refusal).toBe(
+        "input_authority_refused:material",
+      );
+      expect(
+        f.commands.some(
+          (command) => command.type === "start" && command.request.jobId === "deferred",
+        ),
+      ).toBe(false);
+    } finally {
+      f.store.close();
+    }
+  });
+});

@@ -28,7 +28,7 @@ export type { ServiceConfigurationRead } from "@manifold/protocol";
 
 export type JobExecution = Pick<
   JobRequest,
-  "jobId" | "machineId" | "operationId" | "input" | "outputs"
+  "jobId" | "machineId" | "operationId" | "input" | "outputs" | "inputs"
 > & {
   limits?: JobRequest["limits"] | undefined;
   installationRevision?: string | undefined;

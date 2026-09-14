@@ -235,6 +235,109 @@ test("managed executables require an explicit runtime dependency and readonly in
   expect(JobRequestSchema.shape.input.safeParse({ config: "é".repeat(32768) }).success).toBe(false);
 });
 
+test("a bound input is declared beside the input files it shares a namespace with, and only an own output is exported", () => {
+  const operation = {
+    argv: [],
+    input: {},
+    inputFiles: { "config.json": { literal: "{}" } },
+    runtimeTools: [],
+    locations: [],
+    outputs: ["material", "report"],
+    inputs: ["material"],
+    exports: ["report"],
+    network: "none",
+    stdin: false,
+    limits: { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 },
+  };
+  expect(MachineOperationSchema.parse(operation)).toMatchObject({
+    inputs: ["material"],
+    exports: ["report"],
+  });
+  // `/inputs/config.json` is already an input file; the same name cannot also be a directory.
+  expect(
+    MachineOperationSchema.safeParse({ ...operation, inputs: ["config.json"] }).success,
+  ).toBe(false);
+  expect(
+    MachineOperationSchema.safeParse({ ...operation, inputs: ["material", "material"] }).success,
+  ).toBe(false);
+  // Exporting is a statement about this operation's OWN outputs, never another's.
+  expect(MachineOperationSchema.safeParse({ ...operation, exports: ["absent"] }).success).toBe(
+    false,
+  );
+  expect(
+    MachineOperationSchema.safeParse({ ...operation, exports: ["report", "report"] }).success,
+  ).toBe(false);
+  expect(MachineOperationSchema.safeParse({ ...operation, exports: ["stdout"] }).success).toBe(
+    false,
+  );
+  expect(
+    MachineOperationSchema.safeParse({
+      ...operation,
+      inputs: Array.from({ length: 17 }, (_, index) => `bound${index}`),
+    }).success,
+  ).toBe(false);
+});
+
+test("a request binds a named input to one sealed output of one job, and the input ceiling only lowers", () => {
+  const perJob = { timeoutMs: 1000, memoryBytes: 1048576, processes: 1, outputBytes: 65536 };
+  const request = {
+    jobId: "consumer",
+    machineId: "machine",
+    operationId: "review",
+    pluginId: "sample.consumer",
+    installationRevision: "one",
+    artifactSha256: "a".repeat(64),
+    input: {},
+    limits: { ...perJob, inputBytes: 32768 },
+    outputs: [],
+    inputs: [{ name: "material", from: { jobId: "producer", output: "material" } }],
+    parent: null,
+    credential: {
+      principalId: "actor",
+      tokenId: null,
+      grantId: null,
+      caps: ["jobs:read"],
+      containerScope: null,
+    },
+    traceId: "trace",
+    requestDigest: "b".repeat(64),
+  };
+  expect(JobRequestSchema.parse(request).inputs).toEqual(request.inputs);
+  expect(JobRequestSchema.safeParse({ ...request, inputs: [] }).success).toBe(true);
+  expect(
+    JobRequestSchema.safeParse({
+      ...request,
+      inputs: [{ name: "material", from: { jobId: "producer" } }],
+    }).success,
+  ).toBe(false);
+  expect(
+    JobRequestSchema.safeParse({
+      ...request,
+      inputs: [{ name: "stdout", from: { jobId: "producer", output: "material" } }],
+    }).success,
+  ).toBe(false);
+  expect(
+    JobRequestSchema.safeParse({
+      ...request,
+      inputs: [{ name: "material", from: { jobId: "producer", output: "material" }, extra: 1 }],
+    }).success,
+  ).toBe(false);
+  expect(
+    JobRequestSchema.safeParse({
+      ...request,
+      inputs: Array.from({ length: 17 }, (_, index) => ({
+        name: `bound${index}`,
+        from: { jobId: "producer", output: "material" },
+      })),
+    }).success,
+  ).toBe(false);
+  expect(JobRequestSchema.safeParse({ ...request, limits: { ...perJob, inputBytes: 0 } }).success).toBe(
+    false,
+  );
+  // An operation's own `inputBytes` is a per-job ceiling, so no invocation edge aggregates it.
+  expect(jobLimits({ ...perJob, inputBytes: 2048 })).toEqual({ ...perJob, inputBytes: 2048 });
+});
+
 test("install transport bounds all selected members together and forbids duplicate primary bytes", () => {
   const command = {
     type: "install",

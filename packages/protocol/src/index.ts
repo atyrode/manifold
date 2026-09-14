@@ -211,6 +211,8 @@ export {
   JobOutputBindingSchema,
   JobOutputRuleSchema,
   type JobOutputRule,
+  JobInputBindingSchema,
+  type JobInputBinding,
   JobRequestSchema,
   JobInvocationTargetSchema,
   JobInvocationEdgeSchema,

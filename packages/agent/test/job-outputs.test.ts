@@ -9,6 +9,7 @@ import {
   mkdirSync,
   mkdtempSync,
   renameSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -504,6 +505,86 @@ linuxTest("empty stdio remains an authenticated recoverable zero-byte output", (
       });
     } finally {
       recovered.close();
+    }
+  });
+});
+
+linuxTest("a sealed archive extracts back into the tree it was sealed from, by name", () => {
+  fixture(({ store, create, root }) => {
+    const lease = create("material", 262144);
+    mkdirSync(`${lease.directory.procPath}/nested/deeper`, { recursive: true });
+    writeFileSync(`${lease.directory.procPath}/top.txt`, "top");
+    writeFileSync(`${lease.directory.procPath}/nested/inner.txt`, "inner");
+    writeFileSync(`${lease.directory.procPath}/nested/deeper/leaf.bin`, Buffer.alloc(70000, 7));
+    const sealed = store.seal(lease, proof);
+    mkdirSync(join(root, "extracted"), { mode: 0o700 });
+    const destination = HeldDirectory.openAbsolute(join(root, "extracted"));
+    try {
+      expect(store.extract("job-1", "material", destination, 1048576)).toEqual({
+        bytes: sealed.bytes,
+        files: 3,
+      });
+      expect(readFileSync(join(root, "extracted/top.txt"), "utf8")).toBe("top");
+      expect(readFileSync(join(root, "extracted/nested/inner.txt"), "utf8")).toBe("inner");
+      expect(readFileSync(join(root, "extracted/nested/deeper/leaf.bin"))).toEqual(
+        Buffer.alloc(70000, 7),
+      );
+      // Read-only for the owner too; the mount is not the only thing keeping it immutable.
+      expect(lstatSync(join(root, "extracted/top.txt")).mode & 0o777).toBe(0o400);
+      expect(() => store.extract("job-1", "absent", destination, 1048576)).toThrow(
+        "input_source_missing",
+      );
+      expect(() => store.extract("other-job", "material", destination, 1048576)).toThrow(
+        "input_source_missing",
+      );
+    } finally {
+      destination.close();
+    }
+  });
+});
+
+linuxTest("an archive past the budget is refused before a byte of it is written", () => {
+  fixture(({ store, create, root }) => {
+    const lease = create("material");
+    writeFileSync(`${lease.directory.procPath}/payload`, Buffer.alloc(4096, 1));
+    const sealed = store.seal(lease, proof);
+    mkdirSync(join(root, "extracted"), { mode: 0o700 });
+    const destination = HeldDirectory.openAbsolute(join(root, "extracted"));
+    try {
+      expect(() => store.extract("job-1", "material", destination, sealed.bytes - 1)).toThrow(
+        "input_too_large",
+      );
+      expect(destination.names()).toEqual([]);
+      expect(() => store.extract("job-1", "material", destination, 0)).toThrow("input_too_large");
+      expect(store.extract("job-1", "material", destination, sealed.bytes).files).toBe(1);
+    } finally {
+      destination.close();
+    }
+  });
+});
+
+linuxTest("a sealed archive whose bytes no longer match its digest is a corrupt source", () => {
+  fixture(({ store, create, privateDirectory, root }) => {
+    const lease = create("material");
+    writeFileSync(`${lease.directory.procPath}/payload`, "authentic");
+    const sealed = store.seal(lease, proof);
+    // Rewrite one payload byte in place: the length and the header checksums still hold, so
+    // only the archive's own SHA256 can tell the reader that this is not what was sealed.
+    chmodSync(`${privateDirectory.procPath}/${sealed.outputId}.tar`, 0o600);
+    const fd = privateDirectory.openFile(`${sealed.outputId}.tar`, constants.O_RDWR);
+    try {
+      writeSync(fd, Buffer.from("X"), 0, 1, 512);
+    } finally {
+      closeSync(fd);
+    }
+    mkdirSync(join(root, "extracted"), { mode: 0o700 });
+    const destination = HeldDirectory.openAbsolute(join(root, "extracted"));
+    try {
+      expect(() => store.extract("job-1", "material", destination, 1048576)).toThrow(
+        "input_source_corrupt",
+      );
+    } finally {
+      destination.close();
     }
   });
 });

@@ -3121,6 +3121,32 @@ provider handling and postconditions belong to plugins, never the common floor.
   Canonical operation/location nodes belong under that machine, jobs under their admitted
   operation, and outputs under their job; ownership is resolved from the installation and
   admitted request, not guessed from caller-supplied IDs or machine labels.
+- **Bound inputs: another job's sealed output as a declared input.** An operation may declare
+  `inputs`: at most sixteen names it reads, each mounted read-only at `/inputs/<name>` as the
+  extracted contents of a sealed output of an EARLIER job on the SAME machine. It is the
+  outputs primitive inverted, and it is how data flows between plugins' jobs under consent.
+  The `/inputs` namespace is shared with `inputFiles`, so the two name sets are disjoint. The
+  producing side declares `exports`: which of its own `outputs` another plugin's job may bind.
+  `exports` is part of the reviewed machine half — consented with the operation at deployment
+  review exactly as `outputs` is, and pinned by the artifact every consent row names, so an
+  operation that begins exporting an output needs a new review. A request carries
+  `inputs: [{ name, from: { jobId, output } }]` and `PublicJob.inputs` echoes what was
+  admitted; `limits.inputBytes` is the ceiling on what those bindings may extract to, summed
+  across them, defaulting to the operation's own `outputBytes` and lowerable but never
+  droppable. It is a per-job ceiling, so no invocation aggregate carries it, and a nested
+  invocation binds no input at all: an edge consents to resources and outputs, never to
+  another job's archive.
+  Admission asks four questions in order and refuses at the first, naming the binding after a
+  colon (`input_not_exported:material`): the name is one this operation declared
+  (`unknown_input`); the source job exists on this machine, is settled, and sealed that output
+  (`input_source_unavailable`); the source operation exports it, or the source and the consumer
+  are the same plugin (`input_not_exported`); and the requesting principal holds `jobs:read`
+  at the source job's own node, under the same walk a job read takes but WITHOUT the
+  caller-plugin pin — the export declaration is what replaces the pin
+  (`input_authority_refused`). Two bindings of one name refuse `duplicate_input`. A deferred
+  start asks all four again, so a released output or a revoked consent refuses the launch
+  rather than feeding it. That closed set is the whole vocabulary; nothing else admits a
+  binding.
 - **Describe and readiness.** `engine.jobs.describe({ machineId, pluginId, installationRevision? })`
   (also `ctx.jobs.describe`) is a read-only `machines:run` check at the machine; a plugin may
   describe only its own installation. Omission selects the current revision; an explicit
@@ -3369,6 +3395,21 @@ provider handling and postconditions belong to plugins, never the common floor.
   stdout and stderr share the remainder, not one full budget each; exhausting it terminates
   the job. Final collected output bytes also share the aggregate limit. These boundaries
   do not confine administrators or unconfined same-UID processes able to remount storage.
+- **Bound input extraction.** Before spawn the owner extracts each admitted binding's sealed
+  archive — the same canonical ustar the sealing writer produced, read from its own private
+  output store — into a fresh 0700 owner-only directory beneath `job-inputs` under the
+  `runtime` anchor, and binds that directory read-only at `/inputs/<name>`. The archive's
+  SHA256 is recomputed while it is read, every path component is checked, and the archive's
+  own length is charged against `limits.inputBytes` summed across the job's bindings before a
+  byte is written. An archive the store does not hold refuses `input_source_missing`, one past
+  the budget `input_too_large`, a malformed or digest-mismatched one `input_source_corrupt`,
+  and a full backing `input_storage_exhausted` — all at preparation, by name, with nothing
+  mounted and no directory left behind. A machine that configures no `runtime` anchor refuses
+  `input_storage_unavailable` rather than extracting into the owner's own state. The
+  extraction root is a protected directory, so no declared location can resolve into it, and
+  the directory is removed when the job settles, is interrupted, or refuses to start.
+  Extractions are derived state: the owner deletes every one it finds at startup, because a
+  tree that outlived its generation belongs to a job that will never run again.
 - **Nested invocations.** A separately approved edge binds exact caller/callee machine,
   plugin, operation, installation revision and artifact, exact revisioned resource rights,
   depth/concurrency and aggregate limits. Outputs are rules of exactly

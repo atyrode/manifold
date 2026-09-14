@@ -225,6 +225,51 @@ test("input files must be immutable anonymous descriptors, not readonly views of
   }
 });
 
+test("a bound input must be a readonly directory at its own /inputs name, never a file or a writer", () => {
+  const f = fixture();
+  const path = mkdtempSync(join(tmpdir(), "job-linux-bound-"));
+  const source = HeldDirectory.openAbsolute(path);
+  const fd = privateByteFile(Buffer.from("config"));
+  try {
+    for (const bind of [
+      { fd: source.fd, target: "/inputs/material", writable: true },
+      { fd: f.spec.artifactFd, target: "/inputs/material", writable: false },
+      { fd: source.fd, target: "/inputs", writable: false },
+      { fd: source.fd, target: "/inputs/nested/material", writable: false },
+      { fd: source.fd, target: "/material", writable: false },
+      { fd: source.fd, target: "/inputs/../escape", writable: false },
+    ]) {
+      expect(() => preflightLinuxJob({ ...f.spec, boundInputs: [bind] })).toThrow();
+    }
+    expect(() =>
+      preflightLinuxJob({ ...f.spec, boundInputs: [{ fd: source.fd, target: "/inputs", writable: false }] }),
+    ).toThrow("unsafe-bound-input");
+    // One `/inputs/<name>` namespace: an input file and a bound input cannot claim one name.
+    expect(() =>
+      preflightLinuxJob({
+        ...f.spec,
+        inputFiles: [{ fd, target: "/inputs/material", writable: false }],
+        boundInputs: [{ fd: source.fd, target: "/inputs/material", writable: false }],
+      }),
+    ).toThrow("overlapping-mounts");
+    expect(() =>
+      preflightLinuxJob({
+        ...f.spec,
+        boundInputs: Array.from({ length: 17 }, (_, index) => ({
+          fd: source.fd,
+          target: `/inputs/bound${index}`,
+          writable: false,
+        })),
+      }),
+    ).toThrow("too-many-bound-inputs");
+  } finally {
+    closeSync(fd);
+    rmSync(path, { recursive: true, force: true });
+    source.close();
+    f.close();
+  }
+});
+
 test("sealed home inputs refuse unsafe components and every host-backed ancestor", () => {
   const f = fixture();
   const fd = privateByteFile(Buffer.from("private"));
@@ -684,6 +729,52 @@ test.skipIf(!realLinux)(
         closeSync(fd);
       }
     });
+  },
+);
+
+test.skipIf(!realLinux)(
+  "[real-linux] a bound input is a readable directory tree at /inputs/<name> that the workload cannot write",
+  async () => {
+    await withLinux(
+      [
+        "test -d /inputs/material || exit 80",
+        'test "$(/bin/busybox cat /inputs/material/top.txt)" = sealed || exit 81',
+        'test "$(/bin/busybox cat /inputs/material/nested/inner.txt)" = deeper || exit 82',
+        "if ( printf substituted > /inputs/material/top.txt ) 2>/dev/null; then exit 83; fi",
+        "if ( printf added > /inputs/material/new ) 2>/dev/null; then exit 84; fi",
+        "if /bin/busybox rm /inputs/material/top.txt 2>/dev/null; then exit 85; fi",
+        "/bin/busybox find /inputs/material -type f | /bin/busybox sort",
+      ].join("\n"),
+      async (spec) => {
+        const path = mkdtempSync(join(tmpdir(), "job-linux-material-"));
+        mkdirSync(join(path, "nested"), { mode: 0o700 });
+        writeFileSync(join(path, "top.txt"), "sealed\n", { mode: 0o400 });
+        writeFileSync(join(path, "nested/inner.txt"), "deeper\n", { mode: 0o400 });
+        const material = HeldDirectory.openAbsolute(path);
+        const frames: string[] = [];
+        try {
+          const handle = await startLinuxJob({
+            ...spec,
+            boundInputs: [{ fd: material.fd, target: "/inputs/material", writable: false }],
+            onOutput: (frame) => {
+              if (frame.channel === "stdout") frames.push(Buffer.from(frame.bytes).toString());
+            },
+          });
+          handle.endInput();
+          const result = await handle.result;
+          handle.release();
+          expect(result.exitCode).toBe(0);
+          expect(result.empty).toBe(true);
+          expect(frames.join("").trim().split("\n")).toEqual([
+            "/inputs/material/nested/inner.txt",
+            "/inputs/material/top.txt",
+          ]);
+        } finally {
+          material.close();
+          rmSync(path, { recursive: true, force: true });
+        }
+      },
+    );
   },
 );
 
