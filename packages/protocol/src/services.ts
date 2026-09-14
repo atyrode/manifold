@@ -380,12 +380,16 @@ export const ServiceProxyOperationPolicySchema = z
       .positive()
       .max(256 * 1024 * 1024),
     /**
-     * A metered operation's proxy reads the provider's own `usage` object (and `model`) from a
-     * JSON response or the final usage frame of an SSE stream, and nothing else of the body. A
-     * streaming request is amended with `stream_options.include_usage` so that frame exists; a
-     * response the meter cannot read is `service_response_invalid`, never a free call.
+     * A metered operation's proxy reads the provider's own `usage` object (and the model the call
+     * names) from a JSON response or the final usage frame of an SSE stream, and nothing else of
+     * the body. `openai-usage` reads the OpenAI spellings, and a streaming request is amended with
+     * `stream_options.include_usage` so that frame exists. `pi-native-usage` reads pi-ai's own
+     * wire - `modelId` and `context.messages` on the request, `usage.input`/`.output`/`.cacheRead`
+     * on the terminal frame - and amends nothing, because that wire states the turn's usage in
+     * every terminal frame it sends. A response the meter cannot read is
+     * `service_response_invalid`, never a free call.
      */
-    meter: z.strictObject({ kind: z.literal("openai-usage") }).optional(),
+    meter: z.strictObject({ kind: z.enum(["openai-usage", "pi-native-usage"]) }).optional(),
   })
   .refine((operation) => operation.method !== "GET" || operation.request.kind === "none")
   .superRefine((operation, ctx) => {

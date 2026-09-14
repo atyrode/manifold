@@ -218,22 +218,26 @@ function proxyOperation(): ServiceProxyOperationPolicy {
   };
 }
 
-test("a metered proxy operation requires a JSON request", () => {
+test("a metered proxy operation requires a JSON request and names a wire the proxy can read", () => {
   const operation = proxyOperation();
+  const posted = {
+    ...operation,
+    method: "POST",
+    request: { kind: "json", disclosure: "full" },
+  };
+  for (const kind of ["openai-usage", "pi-native-usage"]) {
+    expect(
+      ServiceProxyOperationPolicySchema.safeParse({ ...operation, meter: { kind } }).success,
+    ).toBe(false);
+    expect(
+      ServiceProxyOperationPolicySchema.safeParse({ ...posted, meter: { kind } }).success,
+    ).toBe(true);
+  }
+  // A kind is a reader the owner has; a policy may not name one it does not.
   expect(
-    ServiceProxyOperationPolicySchema.safeParse({
-      ...operation,
-      meter: { kind: "openai-usage" },
-    }).success,
+    ServiceProxyOperationPolicySchema.safeParse({ ...posted, meter: { kind: "anthropic-usage" } })
+      .success,
   ).toBe(false);
-  expect(
-    ServiceProxyOperationPolicySchema.safeParse({
-      ...operation,
-      method: "POST",
-      request: { kind: "json", disclosure: "full" },
-      meter: { kind: "openai-usage" },
-    }).success,
-  ).toBe(true);
 });
 
 test("proxy header policies admit application data but never transport, routing or credential controls", () => {
