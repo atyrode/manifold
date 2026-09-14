@@ -5,6 +5,7 @@ import { HeldDirectory } from "./job-files.ts";
 import { JobJournal } from "./job-journal.ts";
 import { MachineJobOwner } from "./job-owner.ts";
 import { JobOutputStore } from "./job-outputs.ts";
+import { JobBoundInputStore } from "./job-bound-inputs.ts";
 import { type LinuxJobBind } from "./job-linux.ts";
 import { DirectoryExclusions } from "./job-locations.ts";
 
@@ -26,11 +27,19 @@ export async function openConfiguredJobOwner(
     closeSync(configFd);
   }
   const state = HeldDirectory.openAbsolute(config.stateDirectory, { private: true });
+  const anchors: Record<string, HeldDirectory> = {};
+  for (const [name, path] of Object.entries(config.anchors))
+    anchors[name] = HeldDirectory.openAbsolute(path);
+  // Bound inputs are extracted onto the bounded runtime backing, beside named output storage:
+  // derived bytes on the device the operator already sizes and the kernel already bounds. The
+  // owner protects that one subdirectory, so no declared location can resolve into it.
+  const boundInputRoot = anchors.runtime?.openChild("job-inputs", { create: true });
   const protectedDirectories = [
     state,
     parent,
     HeldDirectory.openAbsolute(dirname(socketPath), { private: true }),
     HeldDirectory.openAbsolute(dirname(terminalSocketPath), { private: true }),
+    ...(boundInputRoot ? [boundInputRoot] : []),
     ...config.protectedDirectories.map((path) => HeldDirectory.openAbsolute(path)),
   ];
   const serviceCredentials = new Map<string, { fd: number; origins: readonly string[] }>();
@@ -66,13 +75,11 @@ export async function openConfiguredJobOwner(
   const journal = new JobJournal(state.openChild("journal", { create: true }));
   const cache = state.openChild("artifacts", { create: true });
   const outputs = JobOutputStore.open(state.openChild("outputs", { create: true }));
+  const boundInputs = boundInputRoot ? JobBoundInputStore.open(boundInputRoot) : undefined;
   const delegatedCgroup = HeldDirectory.openAbsolute(config.delegatedCgroup);
   const bwrapParent = HeldDirectory.openAbsolute(dirname(config.bubblewrap));
   const bubblewrapFd = bwrapParent.openRuntimeFile(basename(config.bubblewrap));
   bwrapParent.close();
-  const anchors: Record<string, HeldDirectory> = {};
-  for (const [name, path] of Object.entries(config.anchors))
-    anchors[name] = HeldDirectory.openAbsolute(path);
   const runtimeTools: Record<string, LinuxJobBind[]> = {};
   // These sources live with the retained owner. Sharing their descriptors lets
   // independent tool groups compose without relaxing target-conflict checks.
@@ -112,6 +119,7 @@ export async function openConfiguredJobOwner(
     cache,
     managedState: state.openChild("locations", { create: true }),
     outputs,
+    ...(boundInputs ? { boundInputs } : {}),
     delegatedCgroup,
     bubblewrapFd,
     anchors,

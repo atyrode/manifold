@@ -47,6 +47,7 @@ import { JobContext } from "./job-context.ts";
 import { JobProgressCoalescer, type ObservedProgress } from "./job-progress.ts";
 import type { JobOutputStore } from "./job-outputs.ts";
 import { type JobOutputLease, type JobOutputByteStream } from "./job-outputs.ts";
+import type { JobBoundInput, JobBoundInputStore } from "./job-bound-inputs.ts";
 import {
   preflightLinuxJob,
   preflightLinuxJobRuntime,
@@ -97,6 +98,12 @@ export interface JobOwnerOptions {
   cache: HeldDirectory;
   managedState: HeldDirectory;
   outputs: JobOutputStore;
+  /**
+   * Where a bound input is extracted before it is mounted. Absent when this machine configures
+   * no `runtime` anchor, and then a job that declares one refuses `input_storage_unavailable`
+   * rather than extracting into the owner's own state.
+   */
+  boundInputs?: JobBoundInputStore | undefined;
   delegatedCgroup: HeldDirectory;
   bubblewrapFd: number;
   anchors: Readonly<Record<string, HeldDirectory>>;
@@ -124,6 +131,7 @@ interface OwnedJob {
   context: JobContext | null;
   locations: Map<string, JobLocation>;
   inputFiles: LinuxJobBind[];
+  boundInputs: JobBoundInput[];
   leases: JobOutputLease[];
   releaseWriters: Array<() => void>;
   inputSeq: number;
@@ -2258,6 +2266,22 @@ export class MachineJobOwner {
           ? this.instanceRuntimeServices.get(request.service.serviceId)?.bearer
           : job.serviceRuntime?.bearer,
       );
+      // The archive is another job's, sealed, on this machine. Extract it before the spec so a
+      // missing, corrupt or oversized source refuses by name with nothing mounted yet, and
+      // charge every binding against one aggregate budget rather than each against the whole.
+      let inputBudget = request.limits.inputBytes ?? request.limits.outputBytes;
+      for (const binding of request.inputs ?? []) {
+        if (!(operation.inputs ?? []).includes(binding.name)) throw new Error("undeclared_input");
+        if (job.boundInputs.some((input) => input.name === binding.name))
+          throw new Error("duplicate_input");
+        const store = this.options.boundInputs;
+        if (!store) throw new Error("input_storage_unavailable");
+        const input = store.stage(binding.name, (into) =>
+          this.options.outputs.extract(binding.from.jobId, binding.from.output, into, inputBudget),
+        );
+        job.boundInputs.push(input);
+        inputBudget -= input.bytes;
+      }
       const spec: LinuxJobSpec = {
         bubblewrapFd: this.options.bubblewrapFd,
         artifactFd: installation.artifact.fd,
@@ -2265,6 +2289,11 @@ export class MachineJobOwner {
           ? { executableRuntimeTool: operation.executable.runtimeTool }
           : {}),
         inputFiles: job.inputFiles,
+        boundInputs: job.boundInputs.map((input) => ({
+          fd: input.directory.fd,
+          target: `/inputs/${input.name}`,
+          writable: false,
+        })),
         argv: operation.argv
           .filter((slot) => !slot.when || request.input[slot.when.input] === slot.when.equals)
           .map((slot) => ("literal" in slot ? slot.literal : String(request.input[slot.input]))),
@@ -2381,6 +2410,7 @@ export class MachineJobOwner {
           job.resolveFinalized();
         }
         this.closeInputFiles(job);
+        this.releaseBoundInputs(job);
         job.progress.close();
       }
       throw error;
@@ -2394,6 +2424,7 @@ export class MachineJobOwner {
     for (const childId of job.children) await this.cancel(childId);
     job.resolveEmpty();
     this.closeInputFiles(job);
+    this.releaseBoundInputs(job);
     for (const release of job.releaseWriters) release();
     job.releaseWriters = [];
     // The last stage reported must reach the hub while the job is still started: after the
@@ -2507,6 +2538,8 @@ export class MachineJobOwner {
     await this.closeServices(job);
     // Immutable inputs have no output-writer authority. Child mounts retain their own kernel
     // references; releasing our transport copies is safe even if empty proof is unavailable.
+    // The extracted trees go after the cancel attempt, as `finish` orders it: a workload that is
+    // still running keeps the directory its mount resolves to until its tree is observed empty.
     this.closeInputFiles(job);
     if (job.handle) {
       try {
@@ -2519,6 +2552,7 @@ export class MachineJobOwner {
         /* No output sealing without empty proof. */
       }
     }
+    this.releaseBoundInputs(job);
     job.progress.flush();
     job.result = {
       ...job.result,
@@ -2630,6 +2664,7 @@ export class MachineJobOwner {
       context: null,
       locations: new Map(),
       inputFiles: [],
+      boundInputs: [],
       leases: [],
       releaseWriters: [],
       inputSeq: 0,
@@ -2729,6 +2764,11 @@ export class MachineJobOwner {
   private closeInputFiles(job: OwnedJob): void {
     for (const file of job.inputFiles) closeSync(file.fd);
     job.inputFiles = [];
+  }
+  /** An extraction outlives no job: every settle, interrupt and refused start removes its tree. */
+  private releaseBoundInputs(job: OwnedJob): void {
+    for (const input of job.boundInputs) this.options.boundInputs?.release(input);
+    job.boundInputs = [];
   }
   private runtimeAliases(command: Installation["command"]): Installation["runtimeAliases"] {
     const aliases: Installation["runtimeAliases"] = new Map();

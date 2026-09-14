@@ -106,6 +106,37 @@ function header(path: string, size: number): Buffer {
   bytes.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148, 8, "ascii");
   return bytes;
 }
+/** The inverse of `header`, accepting only what that writer emits: a checksummed POSIX ustar
+ * block for a regular file. Anything else — a link, a device, an extension record, a wrong
+ * checksum — is a corrupt source, because nothing but `seal` ever wrote one of these. */
+function parseHeader(block: Buffer): { path: string; size: number } | null {
+  if (block.every((byte) => byte === 0)) return null;
+  let sum = 0;
+  for (let index = 0; index < 512; index++) sum += index >= 148 && index < 156 ? 32 : block[index]!;
+  const text = (offset: number, length: number) =>
+    block
+      .subarray(offset, offset + length)
+      .toString("utf8")
+      .replace(/\0[\s\S]*$/, "");
+  const octal = (offset: number, length: number) => {
+    const field = text(offset, length).trim();
+    return /^[0-7]{1,16}$/.test(field) ? Number.parseInt(field, 8) : Number.NaN;
+  };
+  const size = octal(124, 12);
+  const name = text(0, 100);
+  const prefix = text(345, 155);
+  if (
+    octal(148, 8) !== sum ||
+    block.subarray(257, 263).toString("ascii") !== "ustar\0" ||
+    block[156] !== 48 ||
+    !Number.isSafeInteger(size) ||
+    size < 0 ||
+    size > MAX_BYTES ||
+    name === ""
+  )
+    throw new Error("input_source_corrupt");
+  return { path: prefix === "" ? name : `${prefix}/${name}`, size };
+}
 
 export class JobOutputLease {
   readonly mount: { fd: number; path: string };
@@ -585,6 +616,118 @@ export class JobOutputStore {
       count += n;
     }
     return { data, eof: offset + count === item.output.bytes };
+  }
+  /**
+   * The inverse of `seal`: one sealed archive of a settled job, written out into a directory the
+   * owner just created and will mount read-only at `/inputs/<name>`. Nothing crosses the wire —
+   * the bytes never left this machine — and nothing here trusts them either: the archive's own
+   * SHA256 is recomputed as it is read, every path component is checked, and the whole thing is
+   * refused before a byte is written if the archive is larger than the budget allows.
+   *
+   * `bytes` is the ARCHIVE's length, which is what the budget charges: it is never smaller than
+   * what lands on disk, so bounding it bounds the extraction without predicting it.
+   */
+  extract(
+    jobId: string,
+    name: string,
+    destination: HeldDirectory,
+    maxBytes: number,
+  ): { bytes: number; files: number } {
+    this.ensureOpen();
+    const item = [...this.sealed.values()].find(
+      (candidate) => candidate.jobId === jobId && candidate.output.name === name,
+    );
+    if (!item) throw new Error("input_source_missing");
+    const total = item.output.bytes;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1024) throw new Error("input_too_large");
+    if (total > maxBytes) throw new Error("input_too_large");
+    if (item.encoding !== "ustar" || total < 1024 || total % 512 !== 0)
+      throw new Error("input_source_corrupt");
+    const hash = createHash("sha256");
+    const block = Buffer.allocUnsafe(512);
+    const buffer = Buffer.allocUnsafe(65536);
+    const directories = new Map<string, HeldDirectory>();
+    let offset = 0;
+    let files = 0;
+    const take = (into: Buffer, length: number) => {
+      let count = 0;
+      while (count < length) {
+        const n = readSync(item.fd, into, count, length - count, offset + count);
+        if (!n) throw new Error("input_source_corrupt");
+        count += n;
+      }
+      hash.update(into.subarray(0, length));
+      offset += length;
+    };
+    try {
+      while (offset < total) {
+        take(block, 512);
+        const entry = parseHeader(block);
+        if (entry === null) {
+          // `seal` closes with exactly two zero blocks, and writes nothing after them.
+          if (total - offset !== 512) throw new Error("input_source_corrupt");
+          take(block, 512);
+          if (!block.every((byte) => byte === 0)) throw new Error("input_source_corrupt");
+          break;
+        }
+        if (++files > MAX_ENTRIES) throw new Error("input_source_corrupt");
+        const padded = Math.ceil(entry.size / 512) * 512;
+        if (padded > total - offset) throw new Error("input_source_corrupt");
+        const parts = entry.path.split("/");
+        if (parts.length > 16) throw new Error("input_source_corrupt");
+        let parent = destination;
+        let walked = "";
+        for (const part of parts.slice(0, -1)) {
+          safeComponent(part);
+          walked = walked === "" ? part : `${walked}/${part}`;
+          let held = directories.get(walked);
+          if (!held) {
+            held = parent.openChild(part, { create: true });
+            directories.set(walked, held);
+          }
+          parent = held;
+        }
+        const leaf = parts[parts.length - 1]!;
+        safeComponent(leaf);
+        const fd = parent.createFile(leaf, 0o400);
+        try {
+          let written = 0;
+          while (written < entry.size) {
+            const length = Math.min(buffer.length, entry.size - written);
+            take(buffer, length);
+            let done = 0;
+            while (done < length) {
+              const n = writeSync(fd, buffer, done, length - done);
+              if (!n) throw new Error("short_input_write");
+              done += n;
+            }
+            written += length;
+          }
+          if (padded > entry.size) take(buffer, padded - entry.size);
+        } finally {
+          closeSync(fd);
+        }
+      }
+      if (offset !== total || hash.digest("hex") !== item.output.sha256)
+        throw new Error("input_source_corrupt");
+      return { bytes: total, files };
+    } catch (error) {
+      // A malformed archive collides with itself or climbs out of its own tree: two entries for
+      // one path, a file where a directory belongs, a `..` member. Those are the archive's fault
+      // and get the archive's refusal; a full filesystem is not, and keeps its own name. The set
+      // this throws is closed, so a preparation refusal always names one of ours.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOSPC" || code === "EDQUOT" || code === "EFBIG")
+        throw new Error("input_storage_exhausted");
+      if (
+        (code !== undefined && code !== "EIO") ||
+        (error instanceof Error && error.message === "unsafe_file_component")
+      )
+        throw new Error("input_source_corrupt");
+      throw error;
+    } finally {
+      for (const held of directories.values()) held.close();
+    }
   }
   release(jobId: string, outputId: string): void {
     this.ensureOpen();

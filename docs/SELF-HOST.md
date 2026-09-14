@@ -92,14 +92,14 @@ names, arrival order, provider labels and other machines are never fallback choi
 
 ### Independent lifetimes and storage
 
-| Unit / path                                                 | Ownership                                                                                                                                           |
-| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `manifold-server.service`                                   | Hub HTTP/WebSockets, SQLite, instance authority and local configuration preparation                                                                 |
-| `manifold-owner.service`                                    | Retained terminal host plus native owner; no machine token or hub key in its environment                                                            |
-| `manifold-transport.service`                                | Replaceable outbound machine channel; reads only its enrolled machine token file                                                                    |
-| `/var/lib/manifold`                                         | Private 0700 hub/control storage; owner key, machine token, immutable `job-owner/config.json`, durable owner state/journal/artifacts/sealed outputs |
-| `/var/lib/manifold-workload/{home,data,state,cache,config}` | Persistent declared workload anchors, separate from protected control storage                                                                       |
-| `/var/lib/manifold-output`                                  | Dedicated bounded tmpfs, the `runtime` anchor for named-output locations; temporary, not durable owner state                                        |
+| Unit / path                                                 | Ownership                                                                                                                                                           |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `manifold-server.service`                                   | Hub HTTP/WebSockets, SQLite, instance authority and local configuration preparation                                                                                 |
+| `manifold-owner.service`                                    | Retained terminal host plus native owner; no machine token or hub key in its environment                                                                            |
+| `manifold-transport.service`                                | Replaceable outbound machine channel; reads only its enrolled machine token file                                                                                    |
+| `/var/lib/manifold`                                         | Private 0700 hub/control storage; owner key, machine token, immutable `job-owner/config.json`, durable owner state/journal/artifacts/sealed outputs                 |
+| `/var/lib/manifold-workload/{home,data,state,cache,config}` | Persistent declared workload anchors, separate from protected control storage                                                                                       |
+| `/var/lib/manifold-output`                                  | Dedicated bounded tmpfs, the `runtime` anchor for named-output locations and for `job-inputs`, where bound inputs are extracted; temporary, not durable owner state |
 
 The owner has **no** `PartOf`, `BindsTo` or `Requires` relationship to the hub or transport.
 Detaching a child would leave it inside the hub cgroup; the module instead starts the owner
@@ -142,6 +142,23 @@ across owner restart, but it is not an aggregate disk quota or an automatic rete
 Size/monitor the persistent filesystem, use explicit governed release/purge, and back up the
 hub and owner control state as secrets. Named-output scratch disappears at reboot; retained
 sealed outputs, job identities and workload data do not. Never treat tmpfs as a durable receipt.
+
+The `runtime` anchor now also hosts **bound input extractions**, in an owner-private
+`job-inputs` subdirectory the owner creates and protects: a job whose request binds another
+job's sealed output gets that archive written out into a fresh 0700 directory there and
+mounted read-only at `/inputs/<name>`, then removed when the job settles. It is the right
+device for it — derived bytes, bounded by the kernel, gone at reboot — but it is the SAME
+finite backing named outputs use, so size it for both: the concurrent jobs' `outputBytes`
+plus their `inputBytes`, the latter defaulting to each operation's own `outputBytes`. The
+module's 1 MiB default is a bound for stdio and small named outputs, not for handing a
+corpus to a job; raise `execution.outputBytes` and `execution.outputInodes` before declaring
+an operation that binds one. A full backing refuses the job with `input_storage_exhausted`
+at preparation rather than starting it half-fed, and a machine that configures no `runtime`
+anchor refuses `input_storage_unavailable`: extractions never land in owner state.
+Because the owner protects `job-inputs`, a declared location that resolves into it fails with
+`private_owner_source_overlap`; do not point a workload location at that name. Extractions
+are derived, never durable — the owner deletes every one it finds at startup, because a tree
+that outlived its generation belongs to a job that will never run again.
 
 `execution.runtimeTools` maps the manifest's tool names to reviewed
 `{ source, target, kind }` bindings. Choose explicit executable targets such as

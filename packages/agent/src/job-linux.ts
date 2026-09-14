@@ -63,6 +63,12 @@ export interface LinuxJobSpec {
   executableRuntimeTool?: string;
   /** Sealed anonymous readonly files, separate from runtime closures and output writers. */
   inputFiles?: readonly LinuxJobBind[];
+  /**
+   * Another job's sealed output, already extracted by the owner into a private directory, bound
+   * read-only at `/inputs/<name>`. Shares the `/inputs` namespace with `inputFiles`: those are
+   * sealed bytes at a leaf, these are a directory tree.
+   */
+  boundInputs?: readonly LinuxJobBind[];
   argv: readonly string[];
   runtime: readonly LinuxJobBind[];
   locations: readonly LinuxJobBind[];
@@ -312,7 +318,14 @@ export function preflightLinuxJob(spec: LinuxJobSpec): number {
   )
     refuse("invalid-fixed-argv");
   const inputFiles = spec.inputFiles ?? [];
-  const binds = [...spec.runtime, ...spec.locations, ...spec.outputs, ...inputFiles];
+  const boundInputs = spec.boundInputs ?? [];
+  const binds = [
+    ...spec.runtime,
+    ...spec.locations,
+    ...spec.outputs,
+    ...inputFiles,
+    ...boundInputs,
+  ];
   if (binds.length > 256) refuse("too-many-mounts");
   for (const bind of binds) destination(bind.target);
   if (
@@ -357,6 +370,14 @@ export function preflightLinuxJob(spec: LinuxJobSpec): number {
     inputBytes += fstatSync(bind.fd).size;
   }
   if (inputBytes > 65536) refuse("input-file-byte-limit");
+  if (boundInputs.length > 16) refuse("too-many-bound-inputs");
+  for (const bind of boundInputs)
+    if (
+      bind.writable ||
+      !/^\/inputs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(bind.target) ||
+      !fstatSync(bind.fd).isDirectory()
+    )
+      refuse("unsafe-bound-input");
   if (spec.executableRuntimeTool !== undefined) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(spec.executableRuntimeTool))
       refuse("invalid-runtime-executable");
@@ -673,7 +694,12 @@ export async function startLinuxJob(spec: LinuxJobSpec): Promise<LinuxJobHandle>
     args.push(writable ? "--bind-fd" : "--ro-bind-fd", String(slot), target);
   }
   bind(spec.artifactFd, "/job/artifact", false);
-  for (const mount of [...spec.runtime, ...spec.locations, ...spec.outputs])
+  for (const mount of [
+    ...spec.runtime,
+    ...spec.locations,
+    ...spec.outputs,
+    ...(spec.boundInputs ?? []),
+  ])
     bind(mount.fd, mount.target, mount.writable);
   let child: { readonly pid?: number | undefined; kill(signal: "SIGKILL"): unknown };
   let exited: Promise<{ code: number | null; signal: string | null }>;

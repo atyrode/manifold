@@ -53,6 +53,8 @@ import {
   type JobOwner,
   type JobRequest,
   type MachineHalf,
+  type MachineOperation,
+  type JobInputBinding,
   type JobFollowEvent,
   type JobJournalPage,
   type JobOutputPage,
@@ -157,7 +159,7 @@ function fail(code = "governed_authority_refused"): never {
 const active = new Set(["queued", "admitted", "start-committed", "started"]);
 // Each current RPC must opt into its audited retirement-only predecessors; a future bump defaults closed.
 const legacyRetirementProtocols = new Map<number, ReadonlySet<number>>([
-  [35, new Set([30, 31, 32, 33, 34])],
+  [36, new Set([30, 31, 32, 33, 34, 35])],
 ]);
 const runCursorSchema = z.strictObject({
   filter: z.strictObject({
@@ -187,16 +189,23 @@ export interface SettledJobDelivery {
 const executionLimitKeys = ["timeoutMs", "memoryBytes", "processes", "outputBytes"] as const;
 const inferenceLimitKeys = ["calls", "inputTokens", "outputTokens", "costMicros"] as const;
 /**
- * A request's limits replace the operation's, except that an inference ceiling the operation
- * declares and the request omits still applies: a ceiling can only be lowered, never dropped.
+ * A request's limits replace the operation's, except for the two ceilings a request may lower
+ * but never drop: an inference ceiling and `inputBytes`. Omitting either keeps the operation's.
  */
 function effectiveJobLimits(
   requested: JobRequest["limits"] | undefined,
   declared: JobRequest["limits"],
 ): JobRequest["limits"] {
   if (!requested) return declared;
-  if (requested.inference !== undefined || declared.inference === undefined) return requested;
-  return { ...requested, inference: declared.inference };
+  return {
+    ...requested,
+    ...(requested.inference === undefined && declared.inference !== undefined
+      ? { inference: declared.inference }
+      : {}),
+    ...(requested.inputBytes === undefined && declared.inputBytes !== undefined
+      ? { inputBytes: declared.inputBytes }
+      : {}),
+  };
 }
 
 export class JobService {
@@ -1264,6 +1273,65 @@ export class JobService {
     );
     return running >= limit ? "concurrency_limit" : null;
   }
+  /**
+   * A bound input is another job's sealed output, read on the machine that already holds it, so
+   * nothing crosses the wire and the hub's whole job is to decide whether this job may be handed
+   * that archive. It asks four questions in order and refuses at the first:
+   *
+   * 1. is the name one this operation declared it reads (`unknown_input`);
+   * 2. does the source job exist on THIS machine, settled, with that output sealed
+   *    (`input_source_unavailable`);
+   * 3. does the source operation EXPORT that output, or is the source the same plugin — a plugin
+   *    feeding its own jobs declares nothing (`input_not_exported`);
+   * 4. does the requesting principal hold `jobs:read` at the source job's own node, under the
+   *    same walk `ctx.jobs.output` takes but WITHOUT the caller-plugin pin — the export
+   *    declaration is what replaces the pin (`input_authority_refused`).
+   *
+   * Each refusal names the binding after a colon (`input_not_exported:material`), so the four
+   * codes stay a closed set while a caller with sixteen bindings still learns which one failed.
+   */
+  private inputRefusal(
+    auth: AuthContext | null,
+    pluginId: string,
+    machineId: string,
+    operation: MachineOperation,
+    inputs: readonly JobInputBinding[],
+  ): string | null {
+    if (new Set(inputs.map((binding) => binding.name)).size !== inputs.length)
+      return "duplicate_input";
+    if (inputs.length === 0) return null;
+    const context = auth && this.auth.restoreCredential(this.auth.credentialReference(auth));
+    const named = (code: string, name: string) => `${code}:${name.slice(0, 64)}`;
+    for (const binding of inputs) {
+      if (!(operation.inputs ?? []).includes(binding.name))
+        return named("unknown_input", binding.name);
+      const source = this.jobs.get(binding.from.jobId);
+      if (
+        !source ||
+        source.request.machineId !== machineId ||
+        active.has(source.state) ||
+        !source.result?.outputs.some((output) => output.name === binding.from.output)
+      )
+        return named("input_source_unavailable", binding.name);
+      const node = {
+        kind: "job" as const,
+        machineId,
+        operationId: source.request.operationId,
+        jobId: source.request.jobId,
+      };
+      const install = this.resolve(node);
+      if (
+        source.request.pluginId !== pluginId &&
+        !install?.machine.operations[source.request.operationId]?.exports?.includes(
+          binding.from.output,
+        )
+      )
+        return named("input_not_exported", binding.name);
+      if (!this.dischargesJobCap(context, node, "jobs:read"))
+        return named("input_authority_refused", binding.name);
+    }
+    return null;
+  }
   private runtimeInstallation(policy: ServicePolicy, machineId: string): JobInstallation | null {
     const runtime = policy.runtime;
     if (!runtime) return null;
@@ -1543,6 +1611,7 @@ export class JobService {
       artifactSha256,
       inputDigest: digest(record.request.input),
       resourceBindingDigest: digest(record.request.resourceBindings ?? null),
+      ...(record.request.inputs ? { inputs: record.request.inputs } : {}),
       state: record.state,
       nextInputSeq:
         this.inputSync.get(jobId) === this.channels.get(machineId)?.channel &&
@@ -3451,6 +3520,12 @@ export class JobService {
       if (declared !== undefined && (requested === undefined || requested > declared))
         fail("limit_exceeded");
     }
+    // An input ceiling defaults to what this operation may itself produce, and only lowers.
+    const inputCeiling = ceiling.inputBytes ?? ceiling.outputBytes;
+    if (limits.inputBytes !== undefined && limits.inputBytes > inputCeiling) fail("limit_exceeded");
+    const inputs = args.inputs ?? [];
+    const inputReason = this.inputRefusal(auth, pluginId, args.machineId, op, inputs);
+    if (inputReason) fail(inputReason);
     const outputInstall = outputParent
       ? this.jobs.installation(outputParent.machineId, outputParent.pluginId)
       : install;
@@ -3487,13 +3562,14 @@ export class JobService {
       operationId: args.operationId,
       input: args.input,
       outputs: args.outputs,
-      limits,
+      limits: inputs.length ? { ...limits, inputBytes: limits.inputBytes ?? inputCeiling } : limits,
       pluginId,
       traceId: originalTraceId,
       installationRevision: install.revision,
       artifactSha256: install.artifact,
       ...(resourceBindings ? { resourceBindings } : {}),
       parent: null,
+      ...(inputs.length ? { inputs } : {}),
       credential: this.auth.credentialReference(auth),
       ...(terminal ? { terminal } : {}),
     };
@@ -3662,13 +3738,27 @@ export class JobService {
       if (!machine || machine.draining || !install?.ready) return null;
       const operationReason = this.operationRefusal(install, request.operationId);
       const context = this.auth.restoreCredential(request.credential);
+      // A deferred start asks the input questions again: a source output released, or the source
+      // installation's `jobs:read` consent revoked, between admission and launch must refuse
+      // rather than spawn a half-fed job. Withdrawing an export in a NEW revision does not reach
+      // a source job pinned to the old one; revoking that revision's consent is what does.
+      const operation = install.machine.operations[request.operationId];
       let refusal = !context
         ? "credential_revoked_or_expired"
         : (operationReason ??
           this.jobSchedules.startRefusal(request.jobId, this.runtime.now()) ??
           this.jobs.cancellation(request.jobId)?.reason ??
           this.invocationRefusal(request) ??
-          this.concurrencyRefusal(request));
+          this.concurrencyRefusal(request) ??
+          (operation
+            ? this.inputRefusal(
+                context,
+                request.pluginId,
+                request.machineId,
+                operation,
+                request.inputs ?? [],
+              )
+            : null));
       let requirements: AuthorityRequirement[] = [];
       try {
         requirements = this.requirements(request);
@@ -4624,6 +4714,26 @@ export class JobService {
       result: this.jobs.get(job.request.jobId)!.result!,
     });
   }
+  /**
+   * The authority walk every job door takes, WITHOUT the caller-plugin pin: the principal's
+   * capability, the grant that reaches this exact job node, and the consent row of the
+   * installation that job ran under. `authorizedJob` adds the pin; a bound input replaces it
+   * with the source operation's export declaration.
+   */
+  private dischargesJobCap(
+    context: AuthContext | null,
+    node: Extract<ManifoldRef, { kind: "job" } | { kind: "output" }>,
+    cap: "jobs:read" | "jobs:input" | "jobs:cancel",
+  ): boolean {
+    const install = this.resolve(node);
+    return (
+      context !== null &&
+      install !== null &&
+      (context.caps.includes("*") || context.caps.includes(cap)) &&
+      this.auth.allowsRef(context, cap, node) &&
+      this.consentFor(install, node, cap) !== null
+    );
+  }
   private authorizedJob(
     auth: AuthContext,
     node: ManifoldRef,
@@ -4632,15 +4742,7 @@ export class JobService {
   ): JobRecord {
     if (node.kind !== "job" && node.kind !== "output") return fail();
     const context = this.auth.restoreCredential(this.auth.credentialReference(auth));
-    const install = this.resolve(node);
-    if (
-      !this.callerOwnsNode(callerPluginId, node) ||
-      !context ||
-      !install ||
-      (!context.caps.includes("*") && !context.caps.includes(cap)) ||
-      !this.auth.allowsRef(context, cap, node) ||
-      !this.consentFor(install, node, cap)
-    )
+    if (!this.callerOwnsNode(callerPluginId, node) || !this.dischargesJobCap(context, node, cap))
       return fail();
     const job = this.jobs.get(node.jobId);
     if (!job) return fail("job_not_started");

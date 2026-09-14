@@ -12,7 +12,7 @@ import { ServiceTunnelFrameSchema } from "./services.ts";
 import { JobResourceBindingsSchema, JobResourceInventorySchema } from "./job-resources.ts";
 
 /** Native owner RPC changes independently of hub, session, and transport releases. */
-export const JOB_OWNER_PROTOCOL_VERSION = 35;
+export const JOB_OWNER_PROTOCOL_VERSION = 36;
 
 const id = z.string().min(1).max(128);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -39,11 +39,17 @@ export const JobInferenceLimitsSchema = z.strictObject({
   costMicros: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
 });
 export type JobInferenceLimits = z.infer<typeof JobInferenceLimitsSchema>;
+/**
+ * `inputBytes` is the ceiling on what a job's bound inputs may extract to, summed across them.
+ * Its default is the operation's own `outputBytes`, because an input is another job's sealed
+ * output: what this operation may produce is the natural measure of what it may be handed.
+ */
 export const JobLimitsSchema = z.strictObject({
   timeoutMs: z.number().int().positive().max(86400000),
   memoryBytes: z.number().int().positive().max(1099511627776),
   processes: z.number().int().positive().max(4096),
   outputBytes: z.number().int().positive().max(1073741824),
+  inputBytes: z.number().int().positive().max(1073741824).optional(),
   inference: JobInferenceLimitsSchema.optional(),
 });
 export type JobLimits = z.infer<typeof JobLimitsSchema>;
@@ -72,6 +78,7 @@ export function jobLimits(limits: MachineOperationLimits): JobLimits {
     memoryBytes: limits.memoryBytes,
     processes: limits.processes,
     outputBytes: limits.outputBytes,
+    ...(limits.inputBytes === undefined ? {} : { inputBytes: limits.inputBytes }),
     ...(limits.inference === undefined ? {} : { inference: limits.inference }),
   };
 }
@@ -228,6 +235,19 @@ export const MachineOperationSchema = z
       .array(z.strictObject({ locationId: id, access: z.enum(["read", "write", "create"]) }))
       .max(32),
     outputs: z.array(boundOutputName).max(32),
+    /**
+     * The bound inputs this workload reads, each at `/inputs/<name>`: a read-only directory
+     * holding another job's sealed output, extracted. A name here shares the `/inputs`
+     * namespace with `inputFiles`, so the two sets are disjoint.
+     */
+    inputs: z.array(boundOutputName).max(16).optional(),
+    /**
+     * Which of this operation's own `outputs` another plugin's job may bind as an input. It is
+     * reviewed with the rest of the declaration and pinned by the artifact every consent row
+     * names, so an operation that begins exporting an output needs a new deployment review.
+     * A job of the SAME plugin needs no export: this names what leaves the plugin.
+     */
+    exports: z.array(boundOutputName).max(16).optional(),
     network: z.enum(["none", "host"]),
     limits: MachineOperationLimitsSchema,
     stdin: z.boolean(),
@@ -276,6 +296,22 @@ export const MachineOperationSchema = z
       ),
     {
       message: "The working directory must name a declared location",
+    },
+  )
+  .refine(
+    (operation) =>
+      new Set(operation.inputs ?? []).size === (operation.inputs ?? []).length &&
+      (operation.inputs ?? []).every((name) => !Object.hasOwn(operation.inputFiles ?? {}, name)),
+    {
+      message: "Bound input names must be unique and must not collide with an input file",
+    },
+  )
+  .refine(
+    (operation) =>
+      new Set(operation.exports ?? []).size === (operation.exports ?? []).length &&
+      (operation.exports ?? []).every((name) => operation.outputs.includes(name)),
+    {
+      message: "An exported name must be one of the operation's own declared outputs",
     },
   );
 const platformArtifacts = z.partialRecord(
@@ -336,6 +372,17 @@ export const JobOutputRuleSchema = JobOutputBindingSchema.extend({
   maxSuffixComponents: z.number().int().nonnegative().max(16),
 }).refine((rule) => rule.components.length + rule.maxSuffixComponents <= 16);
 export type JobOutputRule = z.infer<typeof JobOutputRuleSchema>;
+/**
+ * The outputs primitive, inverted: `name` is the consumer operation's own declared input,
+ * mounted read-only at `/inputs/<name>`, and `from` names the sealed output it reads — a
+ * settled job of the SAME machine, whose operation exported that output or belongs to the
+ * same plugin. The producer's output name and the consumer's input name are independent.
+ */
+export const JobInputBindingSchema = z.strictObject({
+  name: boundOutputName,
+  from: z.strictObject({ jobId: id, output: boundOutputName }),
+});
+export type JobInputBinding = z.infer<typeof JobInputBindingSchema>;
 export const JobRequestSchema = z.strictObject({
   jobId: id,
   machineId: id,
@@ -353,6 +400,7 @@ export const JobRequestSchema = z.strictObject({
     ),
   limits: executionLimits,
   outputs: z.array(JobOutputBindingSchema).max(30),
+  inputs: z.array(JobInputBindingSchema).max(16).optional(),
   parent: z.strictObject({ parentJobId: id, invocationId: id }).nullable(),
   credential: JobCredentialSchema,
   traceId: id,
@@ -390,8 +438,11 @@ export const JobInvocationEdgeSchema = z.strictObject({
   outputs: z.array(JobOutputRuleSchema).max(30),
   maxDepth: z.number().int().positive().max(64),
   maxConcurrency: z.number().int().positive().max(4096),
-  /** Summed across the invocation tree; an inference ceiling is per job, never summed. */
-  aggregate: JobLimitsSchema.omit({ inference: true }),
+  /**
+   * Summed across the invocation tree. An inference ceiling and `inputBytes` are per job and
+   * never summed: each names what one job may spend or be handed, not what a tree may.
+   */
+  aggregate: JobLimitsSchema.omit({ inference: true, inputBytes: true }),
 });
 export type JobInvocationEdge = z.infer<typeof JobInvocationEdgeSchema>;
 export const InspectJobInvocationsArgsSchema = z.strictObject({ machineId: id, pluginId: id });
@@ -585,6 +636,8 @@ export const PublicJobSchema = z.strictObject({
   artifactSha256: hash,
   inputDigest: hash,
   resourceBindingDigest: hash,
+  /** The bound inputs the hub admitted, echoed so a reader sees what this job was handed. */
+  inputs: JobRequestSchema.shape.inputs,
   state: JobStateSchema,
   /** Owner-confirmed cursor; null while disconnected, awaiting receipt or reconciliation. */
   nextInputSeq: count.nullable(),

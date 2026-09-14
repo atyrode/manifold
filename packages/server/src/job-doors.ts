@@ -48,6 +48,7 @@ export const JobExecuteArgsSchema = JobRequestSchema.pick({
   operationId: true,
   input: true,
   outputs: true,
+  inputs: true,
 }).extend({
   limits: JobRequestSchema.shape.limits.optional(),
   installationRevision: JobRequestSchema.shape.installationRevision.optional(),

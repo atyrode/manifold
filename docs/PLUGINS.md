@@ -1653,8 +1653,9 @@ their handles. Hardened `GuestJobs`/stream handles use their asynchronous bridge
 artifacts with real archive/executable SHA256, bounded extraction and optional separately
 hashed bundled tool files; namespaced revisioned locations; and namespaced operations.
 Operations use fixed argv literals/typed input slots, bounded input, at most eight named
-`runtimeTools`, exact location read/write/create rights, output names, stdin, network mode
-and timeout/memory/process/output limits. An operation may also declare
+`runtimeTools`, exact location read/write/create rights, output names, the bound `inputs` it
+reads and the `exports` other plugins may bind, stdin, network mode
+and timeout/memory/process/output/input limits. An operation may also declare
 `limits.concurrentJobs`: while that many of its jobs on one machine are still unsettled, a
 further one is refused `concurrency_limit` instead of queueing behind them - an `execute`, a
 schedule occurrence and a nested invocation alike - so a fan-out controller is bounded by the
@@ -2049,6 +2050,36 @@ in `seq` are stdout/stderr passing and never loss; `firstSeq` is the oldest sequ
 kept and `nextAfter` continues the page. Browser halves dispatch `engine.jobs.outputs` and
 `engine.jobs.journal` with the same arguments. Neither is a substitute for `follow`: they
 answer after the fact, and following a running job is still the live plane.
+
+**Hand a job another job's sealed output.** This is how data flows between plugins' jobs, and
+it is the outputs primitive turned around. Three declarations and one request field:
+
+- The PRODUCING operation declares `outputs: ["material"]` as it always did, plus
+  `exports: ["material"]` — which of its own outputs another plugin's job may bind. An export
+  is part of the reviewed machine half, so the operator consents to it with the operation at
+  deployment review, and adding one to a shipped operation needs a new review. A plugin
+  feeding its OWN jobs declares no export.
+- The CONSUMING operation declares `inputs: ["material"]` — the names it reads. Each one is a
+  read-only directory at `/inputs/<name>` holding that sealed archive, extracted: a real
+  filesystem the workload can walk, open and search, with no page loop and no byte of it ever
+  crossing the wire. `/inputs` is shared with `inputFiles`, so a bound input cannot take a
+  name an input file already has.
+- The request binds them:
+  `ctx.jobs.execute({ ..., inputs: [{ name: "material", from: { jobId: prepareJobId, output: "material" } }] })`.
+  `name` is the consumer's own declared input and `from.output` is the producer's output name;
+  they need not match. `limits.inputBytes` caps what the bindings extract to, summed, and
+  defaults to the consuming operation's own `outputBytes`. The admitted job echoes what it was
+  handed on `PublicJob.inputs`.
+
+The source must be a settled job on the SAME machine that sealed that output, and the
+requesting principal must hold `jobs:read` at the source job's node with that installation's
+consent — the export declaration replaces the caller-plugin pin a job read normally carries,
+not the authority behind it. Refusals name the binding after a colon: `unknown_input:material`
+(undeclared name), `input_source_unavailable:material` (absent, unsettled, unsealed or another
+machine's job), `input_not_exported:material`, `input_authority_refused:material`, and
+`duplicate_input`. A deferred start asks all of it again, so releasing the output or revoking
+the consent between admission and launch refuses the launch. A nested invocation binds no
+input: an edge consents to resources and outputs, never to another job's archive.
 
 **Be woken when your own job ends.** A server half declares `lifecycle.onJobSettled(ctx, job)`
 and is handed, once per settled job IT started,
