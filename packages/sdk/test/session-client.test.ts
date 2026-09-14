@@ -21,7 +21,7 @@ import {
   writeElement,
   writeTileLeaf,
 } from "@manifold/scene";
-import { SessionClient } from "@manifold/sdk";
+import { SessionClient, SessionConnectionError } from "@manifold/sdk";
 import { z } from "zod";
 
 afterEach(() => {
@@ -304,6 +304,35 @@ describe("shared transport", () => {
     receiveOn(socket, first, initFor(first, "e-a", "in-a"));
     receiveOn(socket, second, initFor(second, "e-b", "in-b"));
     await Promise.all([firstConnect, secondConnect]);
+    first.close();
+    second.close();
+  });
+
+  test("a late room retains the current server correlation when it joins an open pool", async () => {
+    FakeSocket.instances = [];
+    const factory = (url: string): WebSocket => new FakeSocket(url) as unknown as WebSocket;
+    const options = {
+      url: "ws://test/ws/session",
+      token: "tok",
+      reconnect: false,
+      webSocketFactory: factory,
+    } as const;
+    const first = new SessionClient({ ...options, containerId: "container1" });
+    const firstConnect = first.connect();
+    const socket = FakeSocket.instances.at(-1);
+    if (!socket) throw new Error("no socket dialed");
+    socket.open();
+    socket.receive(JSON.stringify({ type: "session", connectionId: "server-late" }));
+    receiveOn(socket, first, initFor(first, "e-a", "in-a"));
+    await firstConnect;
+
+    const second = new SessionClient({ ...options, containerId: "container2" });
+    const secondConnect = second.connect();
+    expect(second.transportId).toBe(first.transportId);
+    expect(second.connectionId).toBe("server-late");
+    receiveOn(socket, second, initFor(second, "e-b", "in-b"));
+    await secondConnect;
+
     first.close();
     second.close();
   });
@@ -655,21 +684,32 @@ describe("shared transport", () => {
     second.close();
   });
 
-  test("a refusal before init rejects connect with the code and reason", async () => {
+  test("a refusal before init carries socket and channel correlation while its sibling survives", async () => {
     const { first, second, socket, firstConnect, secondConnect } = twoRooms();
     socket.open();
+    socket.receive(JSON.stringify({ type: "session", connectionId: "server-session-a" }));
+    const refusedChannel = channelOf(first);
     socket.receive({
-      ch: channelOf(first),
+      ch: refusedChannel,
       type: "channel_closed",
       code: 4404,
       reason: "container not found",
     });
 
-    // Report the server's code and reason, without prescribing the SDK's prose.
-    await expect(firstConnect).rejects.toThrow(/4404.*container not found/);
+    const failure: unknown = await firstConnect.catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(SessionConnectionError);
+    expect(failure).toMatchObject({
+      connectionId: "server-session-a",
+      channelId: refusedChannel,
+      code: 4404,
+      reason: "container not found",
+    });
+    expect((failure as Error).message).toContain("server-session-a");
     receiveOn(socket, second, initFor(second, "e-b", "in-b"));
     await secondConnect;
     expect(second.status).toBe("open");
+    expect(second.connectionId).toBe("server-session-a");
+    expect(socket.closedWith).toBeNull();
 
     second.close();
   });

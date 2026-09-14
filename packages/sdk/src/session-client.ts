@@ -113,6 +113,35 @@ import { type OpenStreamOptions, type StreamHandle } from "./stream.ts";
 
 export type ConnectionStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed";
 
+const MAX_SESSION_FAILURE_REASON_CHARS = 120;
+
+/**
+ * Consumer-visible session failure with the server socket and room channel correlation.
+ * The reason is bounded before it reaches a sticky browser notice; credentials and payloads
+ * never enter this object.
+ */
+export class SessionConnectionError extends Error {
+  override readonly name = "SessionConnectionError";
+  readonly reason: string;
+
+  constructor(
+    readonly connectionId: string | null,
+    readonly channelId: string | null,
+    readonly code: number,
+    reason: string,
+  ) {
+    const trimmed = reason.trim();
+    const bounded = (trimmed === "" ? "transport closed" : trimmed).slice(
+      0,
+      MAX_SESSION_FAILURE_REASON_CHARS,
+    );
+    const connection = connectionId ?? "pending";
+    const channel = channelId ?? "unassigned";
+    super(`session ${connection}/${channel} closed (${String(code)}: ${bounded})`);
+    this.reason = bounded;
+  }
+}
+
 /**
  * Subscribers see channel-agnostic BODIES: a handle already knows which room it is, so
  * making every listener carry a routing id would be noise. Wire frames satisfy these
@@ -237,6 +266,7 @@ export class SessionClient {
   selfConnId: string | null = null;
   private selfCapsState: readonly Cap[] = [];
   status: ConnectionStatus = "idle";
+  private connectionIdState: string | null = null;
 
   private readonly opts: Required<Pick<SessionClientOptions, "url" | "containerId" | "token">> &
     SessionClientOptions;
@@ -244,7 +274,7 @@ export class SessionClient {
   private channel: PooledChannel | null = null;
   private listeners = new Map<EventKey, Set<Handler>>();
   private outbox: ClientMessageBody[] = [];
-  private closeError: Error | null = null;
+  private closeError: SessionConnectionError | null = null;
   /**
    * The last plugin roster this connection delivered, with the developer-mode switch that
    * rode beside it, replayed to every late `onPlugins` subscriber. A roster is workspace
@@ -280,6 +310,16 @@ export class SessionClient {
   /** This room's channel id on that connection; it appears in every frame it exchanges. */
   get channelId(): string | null {
     return this.channel?.id ?? null;
+  }
+
+  /** Server-issued correlation for the current socket; null until its first frame arrives. */
+  get connectionId(): string | null {
+    return this.connectionIdState;
+  }
+
+  /** Last terminal connection failure, retained so a mounted view can render diagnostics. */
+  get connectionError(): SessionConnectionError | null {
+    return this.closeError;
   }
 
   /**
@@ -474,6 +514,7 @@ export class SessionClient {
           this.handleConnection(body);
         },
         transportPhase: (phase) => {
+          this.connectionIdState = null;
           this.setStatus(phase);
         },
         channelClosed: (code, reason, terminal) => {
@@ -483,21 +524,30 @@ export class SessionClient {
             this.setStatus("reconnecting");
             return;
           }
-          // Only this ROOM died; the CONNECTION the refcounts live on is alive and still
-          // carrying the tab's other rooms, so the holds are withdrawn rather than dropped.
+          const channelId = this.channel?.id ?? null;
           this.releaseSubscriptions();
           this.channel = null;
-          this.closeError = new Error(
-            reason.trim() === ""
-              ? `channel closed with code ${code}`
-              : `channel closed with code ${code}: ${reason.trim()}`,
+          this.closeError = new SessionConnectionError(
+            this.connectionIdState,
+            channelId,
+            code,
+            reason,
           );
           this.setStatus("closed");
         },
-        transportClosed: (error) => {
+        transportClosed: (failure) => {
+          const channelId = this.channel?.id ?? null;
           this.forgetSubscriptions();
           this.channel = null;
-          this.closeError = error;
+          this.closeError =
+            failure === null
+              ? null
+              : new SessionConnectionError(
+                  this.connectionIdState,
+                  channelId,
+                  failure.code,
+                  failure.reason,
+                );
           this.setStatus("closed");
         },
       },
@@ -549,6 +599,9 @@ export class SessionClient {
    */
   private handleConnection(body: ConnectionFrame): void {
     switch (body.type) {
+      case "session":
+        this.connectionIdState = body.connectionId;
+        return;
       case "plugins": {
         const developerMode = body.developerMode === true;
         this.pluginRoster = { roster: body.roster, developerMode };

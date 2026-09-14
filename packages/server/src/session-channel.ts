@@ -98,7 +98,12 @@ export class SessionChannel {
      */
     readonly spectator: boolean = false,
     /** Lets the owning connection retire the channel record when this channel dies. */
-    private readonly onClosed: (channel: SessionChannel) => void = () => {},
+    private readonly onClosed: (
+      channel: SessionChannel,
+      code: number,
+      reason: string,
+      connectionClosed: boolean,
+    ) => void = () => {},
   ) {
     this.prefix = `{"ch":"${channel}",`;
     this.prefixBytes = Buffer.byteLength(this.prefix);
@@ -131,11 +136,11 @@ export class SessionChannel {
   }
 
   /** Silently retires a membership and discards its queued frames, including init/resync. */
-  dispose(): void {
+  dispose(code = 1000, reason = "released"): void {
     if (this.closed) return;
     this.closed = true;
     this.sender.stop();
-    this.onClosed(this);
+    this.onClosed(this, code, reason, false);
   }
 
   /**
@@ -148,7 +153,7 @@ export class SessionChannel {
     if (this.closed) return;
     const frame = serializeServerMessage({ type: "channel_closed", code, reason });
     this.socket.send(this.tag(frame.body));
-    this.dispose();
+    this.dispose(code, reason);
   }
 
   /**
@@ -160,7 +165,7 @@ export class SessionChannel {
     this.closed = true;
     this.sender.stop();
     this.socket.close(code, reason);
-    if (!alreadyClosed) this.onClosed(this);
+    if (!alreadyClosed) this.onClosed(this, code, reason, true);
   }
 
   /** Whether this channel still holds a live membership. */

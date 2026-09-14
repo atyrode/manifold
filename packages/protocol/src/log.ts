@@ -106,6 +106,7 @@ export const LOG_EVENTS = [
   "session_channel_join",
   "session_channel_init",
   "session_channel_refused",
+  "session_channel_closed",
   "session_channel_released",
   "session_channel_limit",
   "session_liveness_timeout",
