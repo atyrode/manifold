@@ -57,9 +57,8 @@ export const ENGINE_AUTHOR_ACTION = `${ENGINE_PLUGINS_ID}.author`;
  * THE ENGINE DOOR'S EVENT KINDS (ADR 0012). The enablement door is the one door the engine
  * owns outright, so it is the one place the engine declares a vocabulary of its own; every
  * other kind belongs to the plugin that owns the concept, and the floor door that commits the
- * change emits under THAT plugin's id. A manifest titled "Plugin engine" declaring
- * `terminal_exited` would be a category error — and, since a kind is claimed globally, it
- * would also lock the terminals plugin out of its own word.
+ * change emits under THAT plugin's id. Local kinds belong to their declaring owner;
+ * identical words under different owners are independent event vocabulary.
  *
  * Three kinds, one per outcome the door has: a roster row turned on, turned off, or had its
  * data destroyed. They are the reason the plugin-manager section can stop polling the roster:

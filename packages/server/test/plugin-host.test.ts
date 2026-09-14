@@ -932,6 +932,63 @@ describe("PluginHost lifecycle", () => {
     fixture.store.close();
   });
 
+  test("held definitions cannot run migrations or lifecycle hooks during live changes", async () => {
+    const fixture = await hostFixture();
+    const log: HookLog = { calls: [] };
+    const bad = recorder(
+      "test.bad",
+      log,
+      {
+        actions: [
+          defineAction({
+            name: "write",
+            title: "Write",
+            caps: ["containers:write"],
+            input: z.strictObject({}),
+            result: z.strictObject({}),
+          }),
+        ],
+        lifecycle: {
+          onEnable: () => {
+            log.calls.push("held enable");
+          },
+          onAssemblyChanged: () => {
+            log.calls.push("held change");
+          },
+          onPurge: () => {
+            log.calls.push("held purge");
+          },
+        },
+        migrations: [
+          {
+            name: "to-two",
+            to: { major: 2, minor: 0 },
+            migrate: async (storage) => {
+              await storage.set("migrated", "yes");
+            },
+          },
+        ],
+      },
+      { dataVersion: { major: 2, minor: 0 } },
+    );
+    await fixture.store.pluginStorage("test.bad").stampDataVersion({ major: 1, minor: 0 });
+    const host = await customHost(fixture, [
+      bad,
+      recorder("test.dependent", log, {}, { dependencies: { "test.bad": { type: "required" } } }),
+      recorder("test.good", log),
+    ]);
+    const held = host.roster().find((row) => row.manifest.id === "test.bad")?.held;
+    if (held === undefined) throw new Error("expected the invalid plugin to be held");
+    expect(held.reason).toContain("outside its manifest capabilities");
+    expect(await host.setEnabled("test.bad", true, "admin")).toEqual({ refused: held.reason });
+    await host.setEnabled("test.good", false, "admin");
+    await host.setEnabled("test.good", true, "admin");
+    expect(await fixture.store.pluginStorage("test.bad").get("migrated")).toBeNull();
+    await host.purge("test.bad", "admin");
+    expect(log.calls).toEqual(["disable:test.good", "enable:test.good"]);
+    fixture.store.close();
+  });
+
   test("survivors hear onAssemblyChanged once, in assembly order, with the delta", async () => {
     const fixture = await hostFixture();
     const log: HookLog = { calls: [] };
@@ -1226,16 +1283,21 @@ describe("PluginHost storage, migrations and purge", () => {
     fixture.store.close();
   });
 
-  test("stored data a plugin's code cannot read refuses the enable, and boot", async () => {
+  test("unreadable stored data holds non-core at boot and refuses enable", async () => {
     const fixture = await hostFixture();
     const storage = fixture.store.pluginStorage(VERSIONED_ID);
     await storage.stampDataVersion({ major: 3, minor: 0 });
 
     // A DOWNGRADE. Old code cannot be trusted with newer data and no migration runs
     // backwards, so the honest answer is a refusal rather than a best-effort read.
-    await expect(
-      customHost(fixture, versioned({ major: 2, minor: 0, withMigration: true })),
-    ).rejects.toThrow(/data_downgrade|downgrade is refused/);
+    const held = await customHost(fixture, versioned({ major: 2, minor: 0, withMigration: true }));
+    const row = held.roster().find((entry) => entry.manifest.id === VERSIONED_ID);
+    if (row?.held === undefined) throw new Error("expected the unreadable plugin to be held");
+    expect(row?.enabled).toBe(false);
+    expect(row?.held?.reason).toMatch(/data_downgrade|downgrade is refused/);
+    expect(await held.setEnabled(VERSIONED_ID, true, "admin")).toEqual({
+      refused: row.held.reason,
+    });
 
     // Disabled, the same data is simply RETAINED: it cannot hurt anyone, so assembly
     // proceeds and the refusal moves to the door, where an actor is present to be told.
@@ -1247,13 +1309,14 @@ describe("PluginHost storage, migrations and purge", () => {
     fixture.store.close();
   });
 
-  test("a major bump with no migration to bridge it refuses too", async () => {
+  test("a major bump with no migration is held while minor changes remain readable", async () => {
     const fixture = await hostFixture();
     await fixture.store.pluginStorage(VERSIONED_ID).stampDataVersion({ major: 1, minor: 4 });
 
-    await expect(
-      customHost(fixture, versioned({ major: 2, minor: 0, withMigration: false })),
-    ).rejects.toThrow(/data_migration_missing|no unapplied migration/);
+    const held = await customHost(fixture, versioned({ major: 2, minor: 0, withMigration: false }));
+    expect(held.roster().find((entry) => entry.manifest.id === VERSIONED_ID)?.held?.reason).toMatch(
+      /data_migration_missing|no unapplied migration/,
+    );
 
     // A MINOR difference is safe in both directions by the definition of minor, so the same
     // data at 1.4 composes cleanly against code declaring 1.9 — and against 1.0.

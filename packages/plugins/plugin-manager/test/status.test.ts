@@ -87,6 +87,15 @@ describe("pluginStatus", () => {
     expect(needsAttention([], tampered)).toBe(true);
   });
 
+  test("an assembly hold retains the server reason and needs attention rather than looking disabled", () => {
+    const held = {
+      ...row("acme.x", { enabled: false, refusal: "dependency_disabled" }),
+      held: { reason: "held_by_dependency:acme.base", by: "acme.base" },
+    };
+    expect(pluginStatus([held], held).why).toBe(held.held.reason);
+    expect(needsAttention([held], held)).toBe(true);
+  });
+
   test("the isolate states are Crashed and Starting; the hook failures are Not ready and Off", () => {
     expect(
       pluginStatus([], row("acme.x", { install: {}, lifecycle: "isolate_crashed" })),

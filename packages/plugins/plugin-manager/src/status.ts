@@ -14,13 +14,11 @@ import {
 /**
  * WHAT A ROW SAYS ABOUT ITSELF, in a human's words (issue #239).
  *
- * The roster carries four facts about a plugin's condition — `enabled`, `lifecycle`, `refusal`
- * and `install.refusal` — each a CLASS from a closed vocabulary, because clients switch on
- * classes and agents branch on them (`packages/protocol/src/plugin.ts`). A reader does not: a
- * chip that says `dependency_disabled` or `hash_mismatch` hands them the enum and makes them
- * decode it. This module is the one place the four facts become ONE status — a word for the
- * chip, a tone for its colour, and a sentence saying why — so the list, the detail sheet and
- * the attention filter all read the same answer.
+ * The roster carries the plugin's enabled state, lifecycle and named refusals, plus the
+ * server's assembly hold verdict. This module turns those facts into ONE status — a word
+ * for the chip, a tone for its colour, and a sentence saying why — so the list, the detail
+ * sheet and the attention filter all read the same answer. Assembly holds keep the server's
+ * reason intact: the browser must not diagnose the conflict again.
  *
  * Every table below is keyed by the protocol's closed set, so a fifth lifecycle state or an
  * eleventh refusal class cannot be added without this file refusing to compile. A chip that
@@ -216,8 +214,8 @@ export function refusalWords(
 
 /**
  * THE STATUS, by precedence. The order is "what would a reader most want to know first":
- * a bundle the engine refused to load outranks anything its lifecycle says (there was no
- * lifecycle — nothing ran); a crashed or starting process outranks a hook's outcome; a hook
+ * an assembly hold or a bundle the engine refused to load outranks anything its lifecycle says
+ * (nothing ran); a crashed or starting process outranks a hook's outcome; a hook
  * failure outranks the plain on/off answer; and a refusal on an ENABLED row (an incompatible
  * peer) is attention, while a refusal on a DISABLED row (`dependency_disabled`) is merely the
  * reason the toggle is inert — the row is off exactly as its administrator left it, and
@@ -227,6 +225,9 @@ export function pluginStatus(
   roster: readonly PluginRosterEntry[],
   entry: PluginRosterEntry,
 ): PluginStatus {
+  if (entry.held !== undefined) {
+    return { word: "Held", tone: "attention", why: entry.held.reason };
+  }
   const installRefusal = entry.install?.refusal;
   if (installRefusal !== undefined) {
     return {

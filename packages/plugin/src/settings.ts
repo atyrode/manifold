@@ -71,6 +71,7 @@ export function composeSettings(
 ): readonly ComposedSetting[] {
   const composed: ComposedSetting[] = [];
   for (const entry of roster) {
+    if (entry.held !== undefined) continue;
     for (const setting of entry.manifest.contributes.settings ?? []) {
       const ref = settingRefId(entry.manifest.id, setting.id);
       const stored = values[ref];
@@ -166,6 +167,7 @@ export function settingWriteRefusal(
   if (entry === undefined) {
     return `no plugin "${plugin}" is composed, so it declares no setting "${setting}"`;
   }
+  if (entry.held !== undefined) return entry.held.reason;
   const declared = entry.manifest.contributes.settings ?? [];
   if (!declared.some((row) => row.id === setting)) {
     return `plugin "${plugin}" contributes no setting "${setting}"`;

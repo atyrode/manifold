@@ -374,7 +374,7 @@ export class EventHub {
     const at = this.runtime.now();
     const governing = topicContainer(topic, this.deps.terminals);
     this.history.addEvent(trailContainerId ?? governing, at, actor, kind, payload);
-    this.fanOut(topic, { kind: "plugin", pluginId: emitter }, governing, kind, at, actor, payload);
+    this.fanOut(emitter, topic, governing, kind, at, actor, payload);
   }
 
   /**
@@ -447,23 +447,25 @@ export class EventHub {
    *   OF EMISSION.
    */
   private fanOut(
+    plugin: string,
     topic: ManifoldRef,
-    collection: ManifoldRef,
     containerId: string | null,
     kind: EventKind,
     at: number,
     actor: string | null,
     payload: EventPayload,
   ): void {
+    const collection: ManifoldRef = { kind: "plugin", pluginId: plugin };
     const reached = new Set<string>();
-    this.deliverAt(topic, topic, containerId, kind, at, actor, payload, reached);
+    this.deliverAt(plugin, topic, topic, containerId, kind, at, actor, payload, reached);
     // Already the collection's own news (every floor door's shape): one address, not two.
     if (formatManifoldUri(collection) === formatManifoldUri(topic)) return;
-    this.deliverAt(collection, topic, containerId, kind, at, actor, payload, reached);
+    this.deliverAt(plugin, collection, topic, containerId, kind, at, actor, payload, reached);
   }
 
   /** One address's audience, deduplicated against every address already delivered. */
   private deliverAt(
+    plugin: string,
     topic: ManifoldRef,
     governingTopic: ManifoldRef,
     containerId: string | null,
@@ -503,7 +505,7 @@ export class EventHub {
       reached.add(id);
       if (frame === null) {
         frame = JSON.stringify(
-          CONNECTION_BODIES.event.parse({ type: "event", topic, kind, at, actor, payload }),
+          CONNECTION_BODIES.event.parse({ type: "event", topic, plugin, kind, at, actor, payload }),
         );
         bytes = Buffer.byteLength(frame);
       }

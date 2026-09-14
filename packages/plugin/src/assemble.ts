@@ -7,6 +7,7 @@ import {
   ENGINE_NAMESPACE_PREFIX,
   LocalNameSchema,
   hasCap,
+  PluginIdSchema,
   PluginManifestSchema,
   type ActionSummary,
   type DisciplineDeclaration,
@@ -238,6 +239,10 @@ export interface AssemblyEnv {
    * what makes the reservation real, and `verify:axioms` composes through it.
    */
   readonly distribution?: ReadonlySet<string>;
+  /** Installed manifests may drift against a newer distribution; candidates remain strict. */
+  readonly problemPolicy?: "strict" | "hold";
+  /** Host-specific definition checks, attributed before composition by the same hold policy. */
+  readonly problems?: readonly AssemblyProblem[];
   /**
    * Element-type reservations: wire type → the plugin that first claimed it. A reservation
    * OUTLIVES the plugin's presence in the build, which is the point — a canvas full of
@@ -311,16 +316,11 @@ export interface Assembly {
   readonly settings: ReadonlyMap<string, AssemblySetting>;
   readonly tools: readonly AssemblyTool[];
   /**
-   * THE DECLARED-TOPICS INDEX: event kind → the plugin that may originate it. Keyed by kind
-   * alone, because a kind is claimed globally (D5) and a topic says WHOSE — an index keyed by
-   * the pair would make a subscriber's match depend on which plugin currently implements a
-   * concept.
-   *
-   * Iteration order is SORTED by kind rather than by registration, because this index is
-   * published vocabulary: a reader diffing two builds' event surfaces should see what changed,
-   * not where somebody moved a registration line.
+   * THE DECLARED-TOPICS INDEX: originating plugin → local event kind → declaration.
+   * Both levels are sorted for published vocabulary. Subscriptions remain node-scoped;
+   * independent plugins may declare the same local kind without sharing its origin.
    */
-  readonly events: ReadonlyMap<string, AssemblyEvent>;
+  readonly events: ReadonlyMap<string, ReadonlyMap<string, AssemblyEvent>>;
   readonly streams: ReadonlyMap<string, AssemblyStream>;
   /**
    * THE order: topological over `dependencies` ∪ `after`, ties broken by lexicographic id.
@@ -347,8 +347,15 @@ export interface Assembly {
 }
 
 function refusalMessage(problems: readonly string[]): string {
-  const detail = problems.map((problem) => `  - ${problem}`).join("\n");
-  return `assembly refused (${problems.length}):\n${detail}`;
+  const unique = [...new Set(problems)];
+  const detail = unique.map((problem) => `  - ${problem}`).join("\n");
+  return `assembly refused (${unique.length}):\n${detail}`;
+}
+
+/** A structural problem and the definitions responsible, never inferred from its wording. */
+export interface AssemblyProblem {
+  readonly reason: string;
+  readonly plugins: readonly string[];
 }
 
 /**
@@ -359,11 +366,13 @@ function refusalMessage(problems: readonly string[]): string {
  */
 export class AssemblyError extends Error {
   readonly problems: readonly string[];
+  readonly attributed: readonly AssemblyProblem[];
 
-  constructor(problems: readonly string[]) {
+  constructor(problems: readonly string[], attributed: readonly AssemblyProblem[] = []) {
     super(refusalMessage(problems));
     this.name = "AssemblyError";
-    this.problems = [...problems];
+    this.problems = [...new Set(problems)];
+    this.attributed = attributed;
   }
 }
 
@@ -407,6 +416,7 @@ export function reportDuplicates(claims: Claims, noun: string, problems: string[
 export function rosterElementTraits(roster: PluginRoster): ReadonlyMap<string, PlacementTraits> {
   const traits = new Map<string, PlacementTraits>();
   for (const entry of roster) {
+    if (entry.held !== undefined) continue;
     for (const element of entry.manifest.contributes.elements) {
       // Absence resolves to the default HERE too, so a reader of this table never has to
       // know the rule — the same reason `assembleRoster` resolves it into its own registry.
@@ -489,6 +499,44 @@ export function panelRefId(pluginId: string, panelId: string): string {
   return `${pluginId}.${panelId}`;
 }
 
+/** Strongly connected components, excluding nodes merely blocked behind a cycle. */
+function dependencyCycles(
+  ids: readonly string[],
+  edges: ReadonlyMap<string, ReadonlySet<string>>,
+): readonly (readonly string[])[] {
+  const indices = new Map<string, number>();
+  const low = new Map<string, number>();
+  const stack: string[] = [];
+  const stacked = new Set<string>();
+  const cycles: string[][] = [];
+  const visit = (id: string): void => {
+    const index = indices.size;
+    indices.set(id, index);
+    low.set(id, index);
+    stack.push(id);
+    stacked.add(id);
+    for (const target of edges.get(id) ?? []) {
+      if (!indices.has(target)) {
+        visit(target);
+        low.set(id, Math.min(low.get(id)!, low.get(target)!));
+      } else if (stacked.has(target)) {
+        low.set(id, Math.min(low.get(id)!, indices.get(target)!));
+      }
+    }
+    if (low.get(id) !== index) return;
+    const component: string[] = [];
+    for (;;) {
+      const member = stack.pop()!;
+      stacked.delete(member);
+      component.push(member);
+      if (member === id) break;
+    }
+    if (component.length > 1) cycles.push(component.sort());
+  };
+  for (const id of ids) if (!indices.has(id)) visit(id);
+  return cycles;
+}
+
 /**
  * Build the assembly, or refuse.
  *
@@ -505,17 +553,105 @@ export function panelRefId(pluginId: string, panelId: string): string {
  * toggle CAN fix — a dependency that is merely disabled, an incompatible pair, an unknown id
  * — refuses at the door instead, where an actor is present to be told what is in the way
  * (ADR 0013 §5).
- * Assembly never disables a plugin nobody named: a cascade in workspace-global state is
- * other principals' refs vanishing without their consent.
+ * Holds are runtime exclusions, never writes to the administrator's disabled set. The
+ * original definitions remain available for a compatible replacement to recover.
  */
 export function assembleRoster(
   defs: readonly PluginDef[],
   disabled: ReadonlySet<string>,
   env: AssemblyEnv = {},
 ): Assembly {
+  try {
+    return assembleDefinitions(defs, disabled, env);
+  } catch (error) {
+    if (
+      env.problemPolicy !== "hold" ||
+      !(error instanceof AssemblyError) ||
+      error.attributed.length === 0
+    )
+      throw error;
+    const protectedIds = new Set(
+      defs
+        .filter(
+          ({ manifest }) =>
+            (typeof manifest.id === "string" && manifest.id.startsWith(CORE_NAMESPACE_PREFIX)) ||
+            env.builtins?.has(manifest.id) === true,
+        )
+        .map(({ manifest }) => manifest.id),
+    );
+    const held = new Map<string, NonNullable<PluginRosterEntry["held"]>>();
+    const fatal: string[] = [];
+    for (const problem of error.attributed) {
+      const offenders = problem.plugins.filter((id) => !protectedIds.has(id));
+      if (offenders.length === 0) {
+        fatal.push(problem.reason);
+        continue;
+      }
+      for (const id of offenders) {
+        const prior = held.get(id);
+        held.set(id, { reason: prior ? `${prior.reason}; ${problem.reason}` : problem.reason });
+      }
+    }
+    for (;;) {
+      let changed = false;
+      for (const { manifest } of defs) {
+        if (held.has(manifest.id)) continue;
+        const by = dependencyEntries(manifest).find(
+          ([id, dependency]) => dependency.type === "required" && held.has(id),
+        )?.[0];
+        if (by === undefined) continue;
+        const reason = `held_by_dependency:${by}`;
+        if (protectedIds.has(manifest.id)) {
+          fatal.push(`plugin "${manifest.id}" ${reason}`);
+          continue;
+        }
+        held.set(manifest.id, { reason, by });
+        changed = true;
+      }
+      if (!changed) break;
+    }
+    if (fatal.length > 0) throw new AssemblyError(fatal);
+    const active = defs.filter((def) => !held.has(def.manifest.id));
+    const assembly = assembleDefinitions(active, disabled, {
+      ...env,
+      problems: (env.problems ?? []).filter(
+        (problem) => !problem.plugins.some((id) => held.has(id)),
+      ),
+    });
+    const rows = new Map(assembly.roster.map((row) => [row.manifest.id, row]));
+    for (const { manifest } of defs) {
+      const hold = held.get(manifest.id);
+      if (hold === undefined) continue;
+      const attribution = env.attribution?.get(manifest.id);
+      const install = env.installs?.get(manifest.id);
+      rows.set(manifest.id, {
+        manifest,
+        enabled: false,
+        source: "plugin",
+        actions: [],
+        held: hold,
+        ...(attribution === undefined
+          ? {}
+          : { changedBy: attribution.by, changedAt: attribution.at }),
+        ...(install === undefined ? {} : { install }),
+      });
+    }
+    return {
+      ...assembly,
+      roster: [...new Set(defs.map((def) => def.manifest.id))].map((id) => rows.get(id)!),
+    };
+  }
+}
+
+function assembleDefinitions(
+  defs: readonly PluginDef[],
+  disabled: ReadonlySet<string>,
+  env: AssemblyEnv,
+): Assembly {
   const builtins = env.builtins ?? new Set<string>();
   const distribution = env.distribution ?? null;
-  const problems: string[] = [];
+  const attributed: AssemblyProblem[] = [...(env.problems ?? [])];
+  const declaredIds = new Set(defs.map((def) => def.manifest.id));
   const pluginIds: Claims = new Map();
   const actionNames: Claims = new Map();
   const panelIds: Claims = new Map();
@@ -523,7 +659,7 @@ export function assembleRoster(
   const elementTypes: Claims = new Map();
   const disciplineIds: Claims = new Map();
   const toolIds: Claims = new Map();
-  const eventIds: Claims = new Map();
+  const harnessIds: Claims = new Map();
   const streamKinds: Claims = new Map();
   const seatPanels: Claims = new Map();
   const routeSegments: Claims = new Map();
@@ -538,11 +674,12 @@ export function assembleRoster(
   const disciplines = new Map<string, AssemblyDiscipline>();
   const settings = new Map<string, AssemblySetting>();
   const tools: AssemblyTool[] = [];
-  const declaredEvents: [string, AssemblyEvent][] = [];
+  const declaredEvents: [string, ReadonlyMap<string, AssemblyEvent>][] = [];
   const declaredStreams: [string, AssemblyStream][] = [];
   const pendingMigrations = new Map<string, readonly PluginMigration[]>();
 
   for (const [index, def] of defs.entries()) {
+    const problems: string[] = [];
     const parsed = PluginManifestSchema.safeParse(def.manifest);
     if (!parsed.success) {
       // Named by whatever identity survived: an unparseable manifest may not even have an id.
@@ -553,7 +690,10 @@ export function assembleRoster(
       const issues = parsed.error.issues
         .map((issue) => `${issue.path.map(String).join(".") || "(root)"} ${issue.message}`)
         .join("; ");
-      problems.push(`invalid manifest ${label}: ${issues}`);
+      attributed.push({
+        reason: `invalid manifest ${label}: ${issues}`,
+        plugins: PluginIdSchema.safeParse(def.manifest.id).success ? [def.manifest.id] : [],
+      });
       continue;
     }
     const manifest = parsed.data;
@@ -790,14 +930,20 @@ export function assembleRoster(
     for (const route of manifest.contributes.routes ?? []) {
       claim(routeSegments, route.segment, manifest.id);
     }
-    // THE EVENT PLANE's vocabulary (ADR 0012). An event kind is claimed GLOBALLY, exactly as a
-    // section slot and an element type are: `terminal_exited` names one concept, and a second
-    // plugin claiming it would make a subscriber's match depend on which of the two emitted.
-    // Indexed as well as claimed, because the index is what makes emission checkable at all —
-    // an emission whose kind nobody declared is refused rather than fanned out.
+    // Local kinds are unique only inside their declaring manifest.
+    const eventIds: Claims = new Map();
+    const events: [string, AssemblyEvent][] = [];
     for (const event of manifest.contributes.events) {
       claim(eventIds, event.id, manifest.id);
-      declaredEvents.push([event.id, { plugin: manifest.id, title: event.title }]);
+      events.push([event.id, { plugin: manifest.id, title: event.title }]);
+    }
+    reportDuplicates(eventIds, "event", problems);
+    events.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    if (events.length > 0) declaredEvents.push([manifest.id, new Map(events)]);
+    if (manifest.contributes.harness !== undefined) {
+      const id = manifest.contributes.harness.id;
+      if (id === "external") problems.push(`duplicate harness "external" (engine, ${manifest.id})`);
+      else claim(harnessIds, id, manifest.id);
     }
     for (const descriptor of manifest.contributes.streams ?? []) {
       const kind = `${manifest.id}.${descriptor.id}`;
@@ -840,25 +986,37 @@ export function assembleRoster(
       if (plan.kind === "refused") problems.push(plan.detail);
       if (plan.kind === "migrate") pendingMigrations.set(manifest.id, plan.run);
     }
+    for (const reason of problems) attributed.push({ reason, plugins: [manifest.id] });
   }
 
-  reportDuplicates(pluginIds, "plugin id", problems);
-  reportDuplicates(actionNames, "action", problems);
-  reportDuplicates(panelIds, "panel", problems);
-  reportDuplicates(sectionIds, "section", problems);
-  reportDuplicates(elementTypes, "element type", problems);
-  reportDuplicates(disciplineIds, "discipline", problems);
-  reportDuplicates(settingRefs, "setting", problems);
-  reportDuplicates(toolIds, "tool", problems);
-  reportDuplicates(eventIds, "event", problems);
-  reportDuplicates(streamKinds, "stream", problems);
-  reportDuplicates(seatPanels, "seat", problems);
-  reportDuplicates(routeSegments, "route", problems);
+  const duplicates = (claims: Claims, noun: string): void => {
+    for (const [name, plugins] of claims) {
+      if (plugins.length < 2) continue;
+      const reason = `duplicate ${noun} "${name}" claimed by: ${plugins.join(", ")}`;
+      attributed.push({ reason, plugins: [...new Set(plugins)] });
+    }
+  };
+  duplicates(pluginIds, "plugin id");
+  duplicates(actionNames, "action");
+  duplicates(panelIds, "panel");
+  duplicates(sectionIds, "section");
+  duplicates(elementTypes, "element type");
+  duplicates(disciplineIds, "discipline");
+  duplicates(settingRefs, "setting");
+  duplicates(toolIds, "tool");
+  duplicates(streamKinds, "stream");
+  duplicates(seatPanels, "seat");
+  duplicates(routeSegments, "route");
+  for (const [id, plugins] of harnessIds) {
+    if (plugins.length > 1)
+      attributed.push({ reason: `duplicate harness "${id}" (${plugins.join(", ")})`, plugins });
+  }
 
   // Dependencies require presence; `after` only orders targets that are composed.
   const blockers = new Map<string, Set<string>>();
   for (const id of manifests.keys()) blockers.set(id, new Set());
   for (const [id, manifest] of manifests) {
+    const problems: string[] = [];
     const parent = id.slice(0, id.lastIndexOf("."));
     if (parent.includes(".") && manifest.dependencies?.[parent]?.type !== "required") {
       problems.push(
@@ -873,7 +1031,7 @@ export function assembleRoster(
         continue;
       }
       const present = manifests.has(target);
-      if (dependency.type === "required" && !present) {
+      if (dependency.type === "required" && !declaredIds.has(target)) {
         const reason = dependency.reason === undefined ? "" : ` (${dependency.reason})`;
         problems.push(`plugin "${id}" requires plugin "${target}", which is not composed${reason}`);
       }
@@ -888,14 +1046,20 @@ export function assembleRoster(
       }
       if (manifests.has(target)) edgeInto.add(target);
     }
+    for (const reason of problems) attributed.push({ reason, plugins: [id] });
   }
 
   const { order, cyclic } = topologicalOrder([...manifests.keys()], blockers);
   if (cyclic.length > 0) {
-    problems.push(`dependency cycle among: ${cyclic.join(", ")}`);
+    for (const plugins of dependencyCycles(cyclic, blockers))
+      attributed.push({ reason: `dependency cycle among: ${plugins.join(", ")}`, plugins });
   }
 
-  if (problems.length > 0) throw new AssemblyError(problems);
+  if (attributed.length > 0)
+    throw new AssemblyError(
+      attributed.map((problem) => problem.reason),
+      attributed,
+    );
 
   sections.sort((left, right) => left.order - right.order);
   // Sorted, not registration-ordered: this index is published vocabulary, and a diff of two

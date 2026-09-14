@@ -748,6 +748,7 @@ export class HttpApp {
             context.principal.id,
             this.plugins
               .roster()
+              .filter((entry) => entry.held === undefined)
               .flatMap((entry) =>
                 (entry.manifest.contributes.settings ?? [])
                   .filter((setting) => setting.scope === "workspace")

@@ -974,6 +974,7 @@ function toggleRefusal(
   entry: PluginRosterEntry,
   canManage: boolean,
 ): string | null {
+  if (entry.held !== undefined) return entry.held.reason;
   if (!canManage) return "Requires plugins:manage";
   const parentId = parentOf(roster, entry);
   if (parentId !== null && !entry.enabled) {

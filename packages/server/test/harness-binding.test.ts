@@ -716,10 +716,27 @@ test("harness session inventory bounds retained transcripts and reports truncati
   }
 });
 
-test("duplicate harness ids fail assembly instead of shadowing the owning runtime", async () => {
+test("duplicate non-core harnesses are held without shadowing a live runtime", async () => {
   const f = await fixture();
   try {
-    await expect(f.duplicate()).rejects.toThrow('duplicate harness "test-harness"');
+    const host = await f.duplicate();
+    try {
+      for (const id of [pluginId, "test.other-harness"]) {
+        const row = host.roster().find((entry) => entry.manifest.id === id);
+        if (row?.held === undefined) throw new Error("expected the duplicate harness to be held");
+        expect(row?.enabled).toBe(false);
+        expect(row?.held?.reason).toContain('duplicate harness "test-harness"');
+        expect(await host.setEnabled(id, true, f.root.principal.id)).toEqual({
+          refused: row.held.reason,
+        });
+      }
+      const inventory = ListHarnessesResultSchema.parse(
+        result(await host.dispatch(f.root, "core.access.listHarnesses", {})),
+      );
+      expect(inventory.harnesses.map((harness) => harness.id)).not.toContain("test-harness");
+    } finally {
+      host.close();
+    }
   } finally {
     f.close();
   }

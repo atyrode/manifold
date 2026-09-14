@@ -41,6 +41,7 @@ const TOPICS: readonly ManifoldRef[] = [
 const eventFrame = (over: Record<string, unknown> = {}) => ({
   type: "event" as const,
   topic: { kind: "container" as const, containerId: "c1" },
+  plugin: "core.index",
   kind: "container_created",
   at: 1_700_000_000_000,
   actor: "p1",
@@ -214,11 +215,30 @@ describe("the session correlation frame", () => {
 });
 
 describe("the event frame", () => {
-  test("it addresses the SOCKET and carries topic, kind, stamp, actor and payload", () => {
+  test("it addresses the SOCKET and carries topic, plugin, kind, stamp, actor and payload", () => {
     const frame = eventFrame();
     expect(ServerMessageSchema.parse(frame)).toEqual(frame);
     expect(CONNECTION_BODIES.event.safeParse(frame).success).toBe(true);
     expect(ServerMessageSchema.safeParse({ ...frame, ch: "c1" }).success).toBe(false);
+  });
+
+  test("the origin is required and must be a plugin id, independently of the topic", () => {
+    const { plugin: _dropped, ...withoutPlugin } = eventFrame();
+    void _dropped;
+    expect(ServerMessageSchema.safeParse(withoutPlugin).success).toBe(false);
+    expect(ServerMessageSchema.safeParse(eventFrame({ plugin: "" })).success).toBe(false);
+    expect(ServerMessageSchema.safeParse(eventFrame({ plugin: "not a plugin" })).success).toBe(
+      false,
+    );
+    expect(
+      ServerMessageSchema.parse(
+        eventFrame({
+          plugin: "atyrode.babel",
+          kind: "run_changed",
+          topic: { kind: "container", containerId: "c1" },
+        }),
+      ),
+    ).toMatchObject({ plugin: "atyrode.babel", kind: "run_changed" });
   });
 
   test("every address form is a legal topic, so no node is unsubscribable", () => {
@@ -266,6 +286,7 @@ describe("the event frame", () => {
     // subscriber written against it works on any socket.
     const body: ServerEvent = parsed as ServerEvent;
     expect(body.kind).toBe("container_created");
+    expect(body.plugin).toBe("core.index");
     expect(formatManifoldUri(body.topic)).toBe("manifold://container/c1");
   });
 });
@@ -327,6 +348,7 @@ describe("the event plane is published and classified", () => {
     // The topic is published as the ADDRESS grammar itself, so nobody reading this document
     // invents a string convention for it.
     expect(contract["topic"]).toMatchObject({ oneOf: expect.any(Array) });
+    expect(contract["origin"]).toMatchObject({ field: "plugin" });
     expect(contract["payload"]).toBeDefined();
   });
 });

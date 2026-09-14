@@ -18,6 +18,7 @@ import {
   type AssemblyDelta,
   type AssemblyEnv,
   type EmitEvent,
+  type AssemblyProblem,
   type JobSettledCtx,
   type LifecycleCtx,
   type HookOutcome,
@@ -158,6 +159,7 @@ import {
 import {
   InstallRefusal,
   installArtifact,
+  installLayout,
   removeInstall,
   verifyInstalledBundle,
   type InstalledArtifact,
@@ -1068,6 +1070,8 @@ export class PluginHost {
   /** Installed plugins by id: the row, the verified bundle, and the def the runner produced. */
   private readonly installed = new Map<string, InstalledPlugin>();
   private readonly installedDefs = new Map<string, ServerPluginDef>();
+  /** Verified bundles not imported because their declarations were held at boot. */
+  private readonly heldUnloaded = new Set<string>();
   /** Assembly mutations share the runner's one-child-per-id and data-commit boundary. */
   private assemblyChange: Promise<void> = Promise.resolve();
   private replacing: string | null = null;
@@ -1115,20 +1119,18 @@ export class PluginHost {
   );
   private jobs: JobService | null = null;
 
-  private assertHarnessDefinitions(defs: readonly ServerPluginDef[]): void {
-    const owners = new Map<string, string>([["external", "engine"]]);
+  private harnessProblems(defs: readonly ServerPluginDef[]): readonly AssemblyProblem[] {
+    const problems: AssemblyProblem[] = [];
     for (const def of defs) {
-      const declaration = def.manifest.contributes.harness;
+      const declaration = def.manifest.contributes?.harness;
       if (!declaration) {
-        if (def.harness) throw new AssemblyError([`${def.manifest.id}: undeclared harness`]);
+        if (def.harness)
+          problems.push({
+            reason: `${def.manifest.id}: undeclared harness`,
+            plugins: [def.manifest.id],
+          });
         continue;
       }
-      const owner = owners.get(declaration.id);
-      if (owner !== undefined)
-        throw new AssemblyError([
-          `duplicate harness "${declaration.id}" (${owner}, ${def.manifest.id})`,
-        ]);
-      owners.set(declaration.id, def.manifest.id);
       if (
         def.harness &&
         (typeof def.harness.profileSchema?.safeParse !== "function" ||
@@ -1137,12 +1139,19 @@ export class PluginHost {
           typeof def.harness.resolveSession !== "function" ||
           typeof def.harness.send !== "function")
       )
-        throw new AssemblyError([`${def.manifest.id}: invalid harness implementation`]);
+        problems.push({
+          reason: `${def.manifest.id}: invalid harness implementation`,
+          plugins: [def.manifest.id],
+        });
     }
+    return problems;
   }
 
   private harnessDefinition(id: string): ServerPluginDef & { harness: ServerHarness<ActionCtx> } {
-    const def = this.defs.find((def) => def.manifest.contributes.harness?.id === id);
+    const def = this.defs.find(
+      (def) =>
+        this.assembled.enabled(def.manifest.id) && def.manifest.contributes.harness?.id === id,
+    );
     if (
       !def?.harness ||
       !this.assembled.enabled(def.manifest.id) ||
@@ -1396,10 +1405,9 @@ export class PluginHost {
    * answering a request over data a pending migration has not touched yet: the socket is bound
    * after this returns, never before.
    *
-   * Installed plugins load BEFORE the first assembly, because their defs are members of it: a
-   * stranger's duplicate action name is an `AssemblyError` at install time (caught and rolled
-   * back there), never at boot, so nothing an install admitted can stop a server from
-   * starting — except by being what it was when it was admitted.
+   * Installed declarations are assembled before importing their modules. A manifest that
+   * drifted against the shipped distribution remains visible as held, but none of its
+   * contributions, migrations or lifecycle hooks run.
    */
   static async boot(
     defs: readonly ServerPluginDef[],
@@ -1444,10 +1452,8 @@ export class PluginHost {
     host.assembled = await host.reassemble();
     const migrated = await host.runPendingMigrations();
     await host.stampDeclaredVersions();
-    for (const def of host.defs) {
-      const types = def.manifest.contributes.elements.map((element) => element.type);
-      if (types.length > 0) store.claimElementTypes(def.manifest.id, types);
-    }
+    for (const [type, element] of host.assembled.elements)
+      store.claimElementTypes(element.plugin, [type]);
     if (migrated) host.assembled = await host.reassemble();
     authService.setAgentProfileValidator((harness, profile) =>
       host.validateAgentProfile(harness, profile),
@@ -1496,33 +1502,62 @@ export class PluginHost {
         web: webModuleOf(verdict.bundle),
         styles: stylesheetOf(verdict.bundle),
       });
-      try {
-        this.installedDefs.set(
-          row.pluginId,
-          row.hardened !== true && disabled.has(row.pluginId)
-            ? this.dormantDef(row, verdict.bundle)
-            : await this.loadBundle(verdict.bundle, verdict.dir, row.hardened === true),
-        );
-      } catch (error) {
-        // The bundle is what it was when admitted, so the row keeps its real manifest; only
-        // the doors are missing, and the roster says so rather than the boot failing.
-        this.installedDefs.set(row.pluginId, {
-          manifest: verdict.bundle.manifest,
-          actions: [],
-          handlers: {},
-        });
-        this.lifecycleStates.set(row.pluginId, "enable_failed");
-        this.logger.error("plugin_lifecycle", {
-          plugin: row.pluginId,
-          hook: "load",
-          error: error instanceof Error ? error.message : "load failed",
-        });
+      this.installedDefs.set(row.pluginId, this.dormantDef(row, verdict.bundle));
+      this.heldUnloaded.add(row.pluginId);
+    }
+    this.syncDefs();
+    // Admission from inert declarations precedes importing code or starting children.
+    this.assembled = await this.reassemble(true);
+    for (const id of this.assembled.order) {
+      const installed = this.installed.get(id);
+      if (installed === undefined || installed.bundle === null) continue;
+      if (
+        this.assembled.roster.some((entry) => entry.manifest.id === id && entry.held !== undefined)
+      ) {
+        continue;
       }
+      const row = installed.row;
+      if (row.hardened !== true && disabled.has(id)) {
+        this.heldUnloaded.delete(id);
+        continue;
+      }
+      await this.loadInstalledDefinition(installed);
+      this.heldUnloaded.delete(id);
+      this.syncDefs();
+      this.assembled = await this.reassemble(true);
     }
     this.syncDefs();
     this.isolates.runner.onState((pluginId) => {
       this.onIsolateState(pluginId);
     });
+  }
+
+  /** Rehydrate one verified installation; module failures retain the existing unavailable row. */
+  private async loadInstalledDefinition(installed: InstalledPlugin): Promise<void> {
+    if (this.isolates === null || installed.bundle === null) return;
+    const { row, bundle } = installed;
+    try {
+      this.installedDefs.set(
+        row.pluginId,
+        await this.loadBundle(
+          bundle,
+          installLayout(this.isolates.dataDir, row.pluginId, row.sha256).dir,
+          row.hardened === true,
+        ),
+      );
+    } catch (error) {
+      this.installedDefs.set(row.pluginId, {
+        manifest: bundle.manifest,
+        actions: [],
+        handlers: {},
+      });
+      this.lifecycleStates.set(row.pluginId, "enable_failed");
+      this.logger.error("plugin_lifecycle", {
+        plugin: row.pluginId,
+        hook: "load",
+        error: error instanceof Error ? error.message : "load failed",
+      });
+    }
   }
 
   /** Keeps the roster's doors without retaining any executable code while disabled. */
@@ -1611,7 +1646,6 @@ export class PluginHost {
   /** Rebuilds the live def list and the handler index after an install lands or leaves. */
   private syncDefs(): void {
     this.defs = [...this.firstParty, ...this.installedDefs.values()];
-    this.assertHarnessDefinitions(this.defs);
     this.handlers.clear();
     this.guestInputPlugins.clear();
     for (const def of this.defs) {
@@ -1666,8 +1700,38 @@ export class PluginHost {
   }
 
   /** One composition over the store's current enablement and the facts `env` reads fresh. */
-  private async reassemble(): Promise<Assembly> {
-    return assembleRoster(this.defs, this.store.disabledPlugins(), await this.env());
+  private async reassemble(declarationsOnly = false): Promise<Assembly> {
+    const env = await this.env();
+    const dataState = new Map(env.dataState);
+    // A dormant declaration has no migration code yet. Check its stored data after loading.
+    for (const id of this.heldUnloaded) dataState.delete(id);
+    const assembly = assembleRoster(this.defs, this.store.disabledPlugins(), {
+      ...env,
+      dataState,
+      problemPolicy: "hold",
+      problems: this.harnessProblems(this.defs),
+    });
+    if (!declarationsOnly) {
+      for (const id of assembly.order) {
+        if (!assembly.enabled(id) || !this.heldUnloaded.has(id)) continue;
+        const installed = this.installed.get(id);
+        if (installed === undefined) continue;
+        await this.loadInstalledDefinition(installed);
+        this.heldUnloaded.delete(id);
+        this.syncDefs();
+        return this.reassemble();
+      }
+    }
+    for (const entry of assembly.roster) {
+      if (entry.held === undefined) continue;
+      const id = entry.manifest.id;
+      this.handlers.delete(id);
+      this.guestInputPlugins.delete(id);
+      this.jobs?.disablePlugin(id);
+      this.retireDatabase(id);
+      if (this.installed.get(id)?.row.hardened === true) await this.isolates?.runner.unload(id);
+    }
+    return assembly;
   }
 
   /** The durable and runtime facts an assembly needs, read fresh on every reassembly. */
@@ -2094,6 +2158,7 @@ export class PluginHost {
   ): Promise<ActionRefused | { ok: true }> {
     const entry = this.assembled.roster.find((candidate) => candidate.manifest.id === id);
     if (entry === undefined) return refused("unknown_plugin", [id]);
+    if (entry.held !== undefined) return { refused: entry.held.reason };
     if (this.assembled.builtin(id)) return refused("builtin", [id]);
     if (entry.enabled === enabled) return { ok: true };
 
@@ -2120,6 +2185,7 @@ export class PluginHost {
         if (!verdict.ok) return installRefused(verdict.refusal, verdict.detail);
         try {
           this.installedDefs.set(id, await this.loadBundle(verdict.bundle, verdict.dir, false));
+          this.heldUnloaded.delete(id);
           this.syncDefs();
         } catch (error) {
           if (error instanceof IsolateLoadError)
@@ -2255,7 +2321,7 @@ export class PluginHost {
     this.streams.reconcile();
 
     const def = this.defs.find((candidate) => candidate.manifest.id === id);
-    const onPurge = def?.lifecycle?.onPurge;
+    const onPurge = entry.held === undefined ? def?.lifecycle?.onPurge : undefined;
     if (onPurge !== undefined) {
       const outcome = await this.runLifecycle(id, onPurge);
       if (!outcome.ok) {
@@ -2498,6 +2564,7 @@ export class PluginHost {
           : candidate,
       );
       this.lifecycleStates.delete(id);
+      this.heldUnloaded.delete(id);
       this.syncDefs();
     } catch (error) {
       try {
@@ -2526,6 +2593,8 @@ export class PluginHost {
       throw error;
     }
     this.assembled = await this.reassemble();
+    if (await this.runPendingMigrations()) this.assembled = await this.reassemble();
+    await this.stampDeclaredVersions();
     if (
       previous !== undefined &&
       (previous.bundle === null ||
@@ -2539,7 +2608,9 @@ export class PluginHost {
     if (previous !== undefined && previous.row.sha256 !== sha256) removeInstall(previous.row);
     if (previous !== undefined) wasEnabled.delete(id);
     const delta: AssemblyDelta = {
-      enabled: this.assembled.enabled(id) && !wasEnabled.has(id) ? [id] : [],
+      enabled: this.assembled.order.filter(
+        (pluginId) => this.assembled.enabled(pluginId) && !wasEnabled.has(pluginId),
+      ),
       disabled: [],
     };
     if (delta.enabled.length > 0) await this.fanOut(delta, wasEnabled);
@@ -2570,12 +2641,28 @@ export class PluginHost {
   private preflightInstall(id: string, candidate: ServerPluginDef, env: AssemblyEnv): Assembly {
     const defs = new Map(this.installedDefs);
     defs.set(id, candidate);
-    this.assertHarnessDefinitions([...this.firstParty, ...defs.values()]);
-    const assembly = assembleRoster(
-      [...this.firstParty, ...defs.values()],
-      this.store.disabledPlugins(),
-      env,
+    const prospective = [...this.firstParty, ...defs.values()];
+    const dataState = new Map(env.dataState);
+    for (const heldId of this.heldUnloaded) if (heldId !== id) dataState.delete(heldId);
+    const assembly = assembleRoster(prospective, this.store.disabledPlugins(), {
+      ...env,
+      dataState,
+      problemPolicy: "hold",
+      problems: this.harnessProblems(prospective),
+    });
+    // Existing, unrelated holds cannot make a compatible repair impossible. The candidate
+    // and every previously admitted definition must nevertheless pass strict admission.
+    const previouslyHeld = new Set(
+      this.assembled.roster.filter((row) => row.held !== undefined).map((row) => row.manifest.id),
     );
+    const problems = assembly.roster
+      .filter(
+        (row) =>
+          row.held !== undefined &&
+          (row.manifest.id === id || !previouslyHeld.has(row.manifest.id)),
+      )
+      .map((row) => row.held!.reason);
+    if (problems.length > 0) throw new AssemblyError(problems);
     for (const row of assembly.roster) {
       if (!row.enabled) continue;
       const pluginId = row.manifest.id;
@@ -2768,6 +2855,7 @@ export class PluginHost {
     this.store.clearPluginEnablement(id);
     this.installed.delete(id);
     this.installedDefs.delete(id);
+    this.heldUnloaded.delete(id);
     this.lifecycleStates.delete(id);
     // The row is gone, so the handle onto its file is too. The BYTES stay unless a purge took
     // them — an uninstall never destroys data — and the next install of this id opens afresh.

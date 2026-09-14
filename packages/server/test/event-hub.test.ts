@@ -18,7 +18,7 @@ import { FLOOR_EVENT_OWNERS } from "../src/assembly.ts";
 import { AuthService, type AuthContext } from "../src/auth.ts";
 import { silentLogger, type Logger, type LogLevel } from "../src/log.ts";
 import { assemblyPlacementVocabulary, assemblyItemNouns, PlaceExecutor } from "../src/placement.ts";
-import type { PluginHost } from "../src/plugin-host.ts";
+import type { PluginHost, ServerPluginDef } from "../src/plugin-host.ts";
 import { RoomManager } from "../src/room.ts";
 import { SessionGateway } from "../src/session-ws.ts";
 import type { ServerStore } from "../src/stores.ts";
@@ -94,6 +94,7 @@ function newContainer(runtime: FakeRuntime, name: string): Container {
 
 async function planeFixture(
   governedRead?: (auth: AuthService, context: AuthContext, node: ManifoldRef) => boolean,
+  plugins: readonly ServerPluginDef[] = [],
 ): Promise<PlaneFixture> {
   const runtime = new FakeRuntime();
   const clock = new FakeClock(runtime);
@@ -145,7 +146,11 @@ async function planeFixture(
         ? governedRead(auth, context, node)
         : (host?.canReadGoverned(context, node) ?? false),
   );
-  host = await testPluginHost(store, auth, rooms, broker, runtime, { events, logger });
+  host = await testPluginHost(store, auth, rooms, broker, runtime, {
+    events,
+    logger,
+    settingsPlugins: plugins,
+  });
   broker.setEvents(events);
   rooms.setEvents(events);
   const gateway = new SessionGateway(auth, rooms, broker, host, clock, logger, runtime, events);
@@ -553,6 +558,66 @@ describe("event plane matching", () => {
 });
 
 describe("event plane fan-out", () => {
+  test("same-named kinds retain their origin and reach only the subscribed plugin node", async () => {
+    const babel: ServerPluginDef = {
+      manifest: {
+        id: "atyrode.babel",
+        version: "1.0.0",
+        title: "Babel",
+        description: "",
+        capabilities: [],
+        contributes: {
+          panels: [],
+          sections: [],
+          elements: [],
+          tools: [],
+          events: [{ id: "run_changed", title: "Babel run changed" }],
+        },
+      },
+      actions: [],
+      handlers: {},
+    };
+    const fixture = await planeFixture(undefined, [babel]);
+    try {
+      const babelNode: ManifoldRef = { kind: "plugin", pluginId: "atyrode.babel" };
+      const accessNode: ManifoldRef = { kind: "plugin", pluginId: "core.access" };
+      const babelSocket = connect(fixture, "babel");
+      const accessSocket = connect(fixture, "access");
+      subscribe(fixture, "babel", [babelNode]);
+      subscribe(fixture, "access", [accessNode]);
+
+      fixture.events.emit("core.access", accessNode, "run_changed", null, { runId: "access-run" });
+      fixture.events.emit("atyrode.babel", babelNode, "run_changed", null, { runId: "babel-run" });
+
+      expect(eventsOn(babelSocket)).toEqual([
+        {
+          type: "event",
+          topic: babelNode,
+          plugin: "atyrode.babel",
+          kind: "run_changed",
+          at: fixture.runtime.now(),
+          actor: null,
+          payload: { runId: "babel-run" },
+        },
+      ]);
+      expect(eventsOn(accessSocket)).toEqual([
+        {
+          type: "event",
+          topic: accessNode,
+          plugin: "core.access",
+          kind: "run_changed",
+          at: fixture.runtime.now(),
+          actor: null,
+          payload: { runId: "access-run" },
+        },
+      ]);
+      expect(fixture.store.listEvents({ type: "run_changed", limit: 10 })).toHaveLength(2);
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
   test("a slow event subscriber drops overflow without losing its socket or subscriptions", async () => {
     const fixture = await planeFixture();
     try {
@@ -820,6 +885,23 @@ describe("event plane fan-out", () => {
     fixture.store.close();
   });
 
+  test("another plugin's declared kind cannot be emitted as the local plugin's kind", async () => {
+    const fixture = await planeFixture();
+    try {
+      const socket = connect(fixture, "tab");
+      subscribe(fixture, "tab", [INDEX_TOPIC]);
+
+      fixture.events.emit("core.index", INDEX_TOPIC, "run_changed", null, {});
+
+      expect(eventsOn(socket)).toEqual([]);
+      expect(fixture.store.listEvents({ type: "run_changed", limit: 10 })).toEqual([]);
+      expect(fixture.logs.some((line) => line.evt === "event_undeclared")).toBe(true);
+    } finally {
+      fixture.gateway.shutdown();
+      fixture.store.close();
+    }
+  });
+
   test("a plugin may not emit on another plugin's node", async () => {
     const fixture = await planeFixture();
     const socket = connect(fixture, "tab");
@@ -929,6 +1011,7 @@ describe("event frame shape", () => {
     expect(frame === undefined ? true : "ch" in frame).toBe(false);
     const parsed = CONNECTION_BODIES.event.parse(frame);
     expect(parsed.kind).toBe("container_created");
+    expect(parsed.plugin).toBe("core.index");
     expect(parsed.topic).toEqual(INDEX_TOPIC);
     expect(parsed.at).toBe(fixture.runtime.now());
     expect(parsed.actor).toBe(fixture.owner.principal.id);

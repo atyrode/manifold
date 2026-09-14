@@ -90,6 +90,7 @@ export {
   type AssemblyElement,
   type AssemblyEnv,
   type AssemblyPanel,
+  type AssemblyProblem,
   type AssemblySection,
   type AssemblySetting,
   type AssemblyTool,

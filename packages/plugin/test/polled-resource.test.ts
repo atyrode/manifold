@@ -158,7 +158,17 @@ function fakeSocket(status: SessionStatus = "open"): FakeSocket {
       return () => listeners.delete(fn);
     },
     fire() {
-      for (const record of [...subscriptions]) record.handler({ kind: "container_created" });
+      for (const record of [...subscriptions]) {
+        record.handler({
+          type: "event",
+          topic: INDEX_TOPIC,
+          plugin: "core.index",
+          kind: "container_created",
+          at: 0,
+          actor: null,
+          payload: {},
+        });
+      }
     },
     moveTo(next) {
       current = next;

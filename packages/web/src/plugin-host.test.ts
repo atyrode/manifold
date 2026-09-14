@@ -406,6 +406,54 @@ describe("buildBrowserAssembly collisions", () => {
     ]);
   });
 
+  test("server-held rows stay discoverable without shadowing admitted contributions", () => {
+    const held: PluginRosterEntry = {
+      ...entry(
+        {
+          id: "acme.links",
+          title: "Held links",
+          contributes: {
+            panels: [{ id: "home", title: "Home" }],
+            sections: [{ id: "held-links", title: "Links", order: 0 }],
+            routes: [{ segment: "uri", title: "Links" }],
+            elements: [{ type: "draw", title: "Held drawing" }],
+            tools: [{ id: "held-tool", title: "Held tool" }],
+            settings: [{ id: "visible", title: "Visible", kind: "boolean", default: true }],
+          },
+        },
+        false,
+      ),
+      source: "plugin",
+      held: { reason: 'duplicate route "uri" claimed by: core.uri, acme.links' },
+    };
+    const assembly = buildBrowserAssembly([entry(URI), entry(DRAW), held], 1, [
+      ...DEFS,
+      {
+        id: held.manifest.id,
+        panels: { home: Sidebar },
+        routes: { uri: UriRoute },
+        renderers: { canvas: ContainerView },
+        terminals: TERMINALS,
+        bindings: [{ id: "acme.links.held-key", label: "Held key", key: "F9", run: () => {} }],
+      },
+    ]);
+
+    expect(assembly.roster.find((row) => row.manifest.id === held.manifest.id)?.held).toEqual(
+      held.held,
+    );
+    expect(assembly.pluginTitle(held.manifest.id)).toBe("Held links");
+    expect(assembly.enabled(held.manifest.id)).toBe(false);
+    expect(assembly.routes.get("uri")?.plugin).toBe(URI.id);
+    expect(assembly.elements.get("draw")?.plugin).toBe(DRAW.id);
+    expect(assembly.panels.has("acme.links.home")).toBe(false);
+    expect(assembly.sections).toEqual([]);
+    expect(assembly.tools.map((tool) => tool.id)).toEqual(["draw"]);
+    expect(assembly.settings).toEqual([]);
+    expect(assembly.bindings).toEqual([]);
+    expect(assembly.renderers.has("canvas")).toBe(false);
+    expect(assembly.terminals).toBeNull();
+  });
+
   test("two plugins drawing one container discipline are refused, both named", () => {
     const roster: PluginRoster = [
       entry({ id: "core.canvas", title: "Canvas" }),
