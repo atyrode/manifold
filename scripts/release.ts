@@ -269,16 +269,17 @@ await $`gh pr merge ${pullUrl} --rebase --auto --delete-branch`;
 await waitForReleasePull(pullUrl);
 
 await $`git fetch origin main`;
-if ((await gitText(["rev-parse", "origin/main^{tree}"])) !== releaseTree) {
+const sha = await gitText(["rev-parse", "origin/main"]);
+if ((await gitText(["rev-parse", `${sha}^{tree}`])) !== releaseTree) {
   throw new Error(`Merged main differs from the release tree; no tag was created: ${pullUrl}`);
 }
 if (
+  (await gitText(["branch", "--show-current"])) !== "main" ||
   (await gitText(["rev-parse", "HEAD"])) !== releaseSha ||
   (await gitText(["status", "--porcelain"])) !== ""
 ) {
   throw new Error(`Local checkout changed while waiting; no tag was created: ${pullUrl}`);
 }
-const sha = await gitText(["rev-parse", "origin/main"]);
 await $`git reset --hard ${sha}`;
 await $`git tag ${tag} ${sha}`;
 await $`git push origin ${`refs/tags/${tag}`}`;
