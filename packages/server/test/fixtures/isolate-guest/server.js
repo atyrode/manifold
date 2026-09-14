@@ -106,6 +106,7 @@ onFrame(async (frame) => {
     case "load":
       send({
         t: "loaded",
+        ctxExtensions: ["traceId"],
         actions: Object.keys(handlers).map((name) => action(name)),
         hooks: {
           onEnable: true,
@@ -116,6 +117,7 @@ onFrame(async (frame) => {
       });
       return;
     case "dispatch": {
+      if (!Object.hasOwn(frame.ctx, "traceId")) return;
       const outcome = await handlers[frame.action](frame.id, frame.args);
       if (outcome !== null) send({ t: "dispatched", id: frame.id, outcome });
       return;

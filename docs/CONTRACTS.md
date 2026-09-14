@@ -1623,10 +1623,12 @@ plus exact field names `data`/`env`/`payload`/`terminalData`, also case-insensit
 [Data and credential boundaries](#data-and-credential-boundaries)) and bounded at 4 KiB, past which the row keeps
 `{ oversize, keys }` instead of the bytes.
 
-Every action handler receives `ctx.traceId: number`, the id of its already-durable write-ahead
-row — exactly the `id` returned by `core.events.list` with `kind: "trace"`. It is available
-in-realm and in the isolated dispatch context, not permission to append or settle traces.
-Dispatches refused before invocation never reach a handler; their ledger behavior is unchanged.
+Every current action handler receives `ctx.traceId: number`, the id of its already-durable
+write-ahead row — exactly the `id` returned by `core.events.list` with `kind: "trace"`. It is
+available in-realm and in a hardened child that advertises the `traceId` context extension; a
+legacy hardened child that omits extension negotiation receives the legacy baseline context
+without that field. The id is not permission to append or settle traces. Dispatches refused
+before invocation never reach a handler; their ledger behavior is unchanged.
 
 **Refusals are traced and unregistered names are not.** Every denial rung the ladder can answer
 with lands in the ledger; `unknown_action` does not, because there is no door, no declared
@@ -1852,19 +1854,26 @@ before either process assembles a string or calls `JSON.parse`. Every host envel
 unpredictable FIFO receipt; its frame count and bytes remain charged until the child returns that
 receipt, so merely writing more calls cannot hide an unread reply backlog:
 
-| Direction  | `t`           | Carries                                                                                                                                                                    |
-| ---------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| host→child | `load`        | `pluginId`, `manifest`, `dir` — the first frame; the child already runs from `dir`                                                                                         |
-| host→child | `dispatch`    | `id`, `action` (LOCAL name), `args`, `ctx: { traceId, principal, caps, isRoot, containerScope, now }` — the caller's authority captured per id                             |
-| host→child | `hook`        | `id`, `hook: "onEnable" \| "onDisable" \| "onAssemblyChanged"`, `delta?: { enabled, disabled }`                                                                            |
-| host→child | `reply`       | `id`, `ok: true, result` or `ok: false, error` — the answer to a child's `call`                                                                                            |
-| host→child | `shutdown`    | orderly exit; also what idle eviction sends                                                                                                                                |
-| child→host | `loaded`      | `actions: ActionSummary[]` (input/result as JSON Schema from the child's own zod), `hooks: { onEnable, onDisable, onAssemblyChanged }` booleans                            |
-| child→host | `load_failed` | `error`                                                                                                                                                                    |
-| child→host | `dispatched`  | `id`, `outcome: { ok: true, result, emits: { ref, kind, payload }[] } \| { ok: false, rule: "invalid_args" \| "refused", message }` — the only two rungs a child may grade |
-| child→host | `hooked`      | `id`, `ok`, `error?`                                                                                                                                                       |
-| child→host | `received`    | unpredictable receipt from one consumed host envelope; receipts are FIFO and cannot be guessed from outgoing calls                                                         |
-| child→host | `call`        | `id`, `method: IsolateCtxMethod`, `args: unknown[]`                                                                                                                        |
+| Direction  | `t`           | Carries                                                                                                                                                                                   |
+| ---------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| host→child | `load`        | `pluginId`, `manifest`, `dir` — the first frame; the child already runs from `dir`                                                                                                        |
+| host→child | `dispatch`    | `id`, `action` (LOCAL name), `args`, exact baseline `ctx: { principal, caps, isRoot, containerScope, now }`, plus `traceId` only when negotiated — the caller's authority captured per id |
+| host→child | `hook`        | `id`, `hook: "onEnable" \| "onDisable" \| "onAssemblyChanged"`, `delta?: { enabled, disabled }`                                                                                           |
+| host→child | `reply`       | `id`, `ok: true, result` or `ok: false, error` — the answer to a child's `call`                                                                                                           |
+| host→child | `shutdown`    | orderly exit; also what idle eviction sends                                                                                                                                               |
+| child→host | `loaded`      | `actions: ActionSummary[]` (input/result as JSON Schema from the child's own zod), `hooks: { onEnable, onDisable, onAssemblyChanged }` booleans, optional `ctxExtensions: ("traceId")[]`  |
+| child→host | `load_failed` | `error`                                                                                                                                                                                   |
+| child→host | `dispatched`  | `id`, `outcome: { ok: true, result, emits: { ref, kind, payload }[] } \| { ok: false, rule: "invalid_args" \| "refused", message }` — the only two rungs a child may grade                |
+| child→host | `hooked`      | `id`, `ok`, `error?`                                                                                                                                                                      |
+| child→host | `received`    | unpredictable receipt from one consumed host envelope; receipts are FIFO and cannot be guessed from outgoing calls                                                                        |
+| child→host | `call`        | `id`, `method: IsolateCtxMethod`, `args: unknown[]`                                                                                                                                       |
+
+Dispatch context grows only by negotiation in `loaded.ctxExtensions`. Omission is the legacy
+baseline: the host sends exactly `principal`, `caps`, `isRoot`, `containerScope` and `now`.
+Advertising `traceId` requires the host to add it on every dispatch to that child. Both baseline
+and current contexts are strict exact shapes, as are the frames around them: a child stays strict
+for the shape it advertised, unknown context or frame keys remain refusals, and a future additive
+field requires a new extension vocabulary member before the host may send it.
 
 The ctx slices served over `call` are exactly `ISOLATE_CTX_METHODS`: `storage.get` / `set` /
 `compareAndSet` / `delete` / `keys` (namespaced by plugin id), `auth.allows` (graded as the dispatching principal,

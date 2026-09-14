@@ -179,6 +179,57 @@ describe("the served ctx slices and host methods", () => {
 });
 
 describe("the isolate frames", () => {
+  test("dispatch accepts only the exact legacy baseline or exact traceId context", () => {
+    const baseline = {
+      principal: { id: "p1", kind: "human", name: "Pat", color: "#123456" },
+      caps: [],
+      isRoot: false,
+      containerScope: null,
+      now: 1_000,
+    };
+    const dispatch = (ctx: unknown): boolean =>
+      IsolateHostFrameSchema.safeParse({
+        t: "dispatch",
+        id: "1",
+        action: "echo",
+        args: {},
+        ctx,
+      }).success;
+
+    expect(dispatch(baseline)).toBe(true);
+    expect(dispatch({ traceId: 7, ...baseline })).toBe(true);
+    expect(dispatch({ ...baseline, future: true })).toBe(false);
+    expect(dispatch({ traceId: 7, ...baseline, future: true })).toBe(false);
+  });
+
+  test("loaded negotiates only the bounded traceId extension and stays strict", () => {
+    const loaded = {
+      t: "loaded",
+      actions: [],
+      hooks: {
+        onEnable: false,
+        onDisable: false,
+        onAssemblyChanged: false,
+        onJobSettled: false,
+      },
+    };
+
+    expect(IsolateChildFrameSchema.safeParse(loaded).success).toBe(true);
+    expect(
+      IsolateChildFrameSchema.safeParse({ ...loaded, ctxExtensions: ["traceId"] }).success,
+    ).toBe(true);
+    expect(
+      IsolateChildFrameSchema.safeParse({ ...loaded, ctxExtensions: ["future"] }).success,
+    ).toBe(false);
+    expect(
+      IsolateChildFrameSchema.safeParse({
+        ...loaded,
+        ctxExtensions: ["traceId", "traceId"],
+      }).success,
+    ).toBe(false);
+    expect(IsolateChildFrameSchema.safeParse({ ...loaded, future: true }).success).toBe(false);
+  });
+
   test("a reply is exactly one of two shapes, on both boundaries", () => {
     // `ok: true` carries a result and nothing else; `ok: false` carries an error sentence and
     // nothing else. A frame that carries both is a guest that cannot be believed either way.

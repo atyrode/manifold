@@ -226,20 +226,24 @@ export class IsolateSupervisor implements IsolateRunner {
   ): Promise<IsolateDispatchOutcome> {
     const frame = await this.request(
       pluginId,
-      (id) => ({
-        t: "dispatch",
-        id,
-        action,
-        args,
-        ctx: {
-          traceId: ctx.traceId,
+      (id) => {
+        const baseline = {
           principal: ctx.principal,
           caps: [...ctx.auth.caps],
           isRoot: ctx.auth.isRoot,
           containerScope: ctx.containerScope,
           now: ctx.now(),
-        },
-      }),
+        };
+        const advertisesTraceId =
+          this.isolates.get(pluginId)?.loaded?.ctxExtensions?.includes("traceId") === true;
+        return {
+          t: "dispatch",
+          id,
+          action,
+          args,
+          ctx: advertisesTraceId ? { traceId: ctx.traceId, ...baseline } : baseline,
+        };
+      },
       { kind: "dispatch", ctx },
     );
     if (frame.t !== "dispatched") {

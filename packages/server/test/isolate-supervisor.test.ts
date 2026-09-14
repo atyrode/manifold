@@ -16,6 +16,7 @@ import { FakeRuntime, testStore } from "./helpers.ts";
  */
 
 const GUEST_DIR = resolve(import.meta.dir, "fixtures/isolate-guest");
+const LEGACY_GUEST_DIR = resolve(import.meta.dir, "fixtures/isolate-guest-legacy");
 const SILENT_GUEST_DIR = resolve(import.meta.dir, "fixtures/isolate-guest-silent");
 const PLUGIN_ID = "test.guest";
 
@@ -204,6 +205,18 @@ describe("IsolateSupervisor", () => {
     ]);
     // A non-storage slice is served from the same dispatch's ctx.
     expect(await invoke(def, "slice", ctx, {})).toBe("id-1");
+  });
+
+  test("a legacy child receives the exact baseline ctx and dispatches instead of timing out", async () => {
+    const { supervisor, runtime, storage } = fixture({ dispatchDeadlineMs: 200 });
+    const { def } = await supervisor.load({
+      pluginId: PLUGIN_ID,
+      manifest,
+      dir: LEGACY_GUEST_DIR,
+    });
+    const { ctx } = actionCtx(storage, runtime);
+
+    expect(await invoke(def, "compatible", ctx, {})).toEqual({ compatible: true });
   });
 
   test("concurrent child dispatches increment durable state without losing an update", async () => {
