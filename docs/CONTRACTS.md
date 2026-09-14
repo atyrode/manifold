@@ -2338,19 +2338,19 @@ slice, which is a stage-2 decision, not something this proof may quietly widen.
 
 ## WS /ws/session — session channel (JSON text frames)
 
-**Frame grammar (v19).** One socket per tab, many rooms. Every frame is either
-connection-level or channel-level. v19 changed exactly one pair: the liveness frames now point
-the way every dialed pipe points — the server asks `ping`, the client answers `pong` (§Liveness
-below) — and the v18 spellings of that pair (client `ping`, server `pong`) are gone, which is
-why this is a bump rather than an addition.
+**Frame grammar (v35).** One socket per tab, many rooms or one roomless observer. Every frame is
+either connection-level or channel-level:
 
 ```
-connection-level   client → server  {"type":"pong"}
+connection-level   client → server  {"type":"observe","token":"…","protocolVersion":35}
+                   client → server  {"type":"pong"}
                    client → server  {"type":"subscribe","topics":[…]}
                    client → server  {"type":"unsubscribe","topics":[…]}
+                   server → client  {"type":"observed"}
                    server → client  {"type":"ping"}
+                   server → client  {"type":"session","connectionId":"…"}
                    server → client  {"type":"plugins","roster":[…]}
-                   server → client  {"type":"event","topic":{…},"kind":"…","at":…,"actor":…,"payload":{…}}
+                   server → client  {"type":"event","topic":{…},"plugin":"…","kind":"…","at":…,"actor":…,"payload":{…}}
 channel-level      both ways        {"ch":"<channelId>","type":"…", …}
 ```
 
@@ -2368,14 +2368,15 @@ frame twice from the same shapes — a channel-less BODY union and the wire unio
 **Connection frames address the SOCKET, not a channel.** `@manifold/protocol` publishes them as
 `CONNECTION_BODIES` and `CLIENT_CONNECTION_BODIES` beside the channelized `SERVER_BODIES` and
 `CLIENT_BODIES`, and they carry no `ch` because the thing they concern is the connection
-itself. `plugins { roster, developerMode? }` was the first such server→client frame: it is
-delivered once when the socket opens (before any `join`) and again whenever the roster changes —
-a developer-mode flip republishes the roster, its `developer_mode_off` marks moved, and nothing
-else — which is what makes enable/disable hot for every open tab. `developerMode` is additive and
-optional (absent ≡ off, the pre-#257 wire), so the frame grammar did not bump. The SDK pool
-demultiplexes connection frames to pool-level listeners (`SessionClient.onPlugins(roster,
-developerMode)`, which replays the latest pair to a late subscriber) instead of dropping them as
-frames for an unknown channel.
+itself. `observe { token, protocolVersion }` authenticates a socket that deliberately holds no
+room; `observed` acknowledges admission without inventing room state, presence or capabilities.
+`plugins { roster, developerMode? }` is delivered once when the socket opens (before any
+handshake) and again whenever the roster changes — a developer-mode flip republishes the roster,
+its `developer_mode_off` marks moved, and nothing else — which is what makes enable/disable hot
+for every open tab, including the workspace root. `developerMode` remains additive and optional
+(absent ≡ off, the pre-#257 wire). The SDK pool demultiplexes connection frames to pool-level
+listeners (`SessionClient.onPlugins(roster, developerMode)`, which replays the latest pair to a
+late subscriber) instead of dropping them as frames for an unknown channel.
 
 **The event plane (v17; owner-scoped origins in v34, ADR 0045 amending ADR 0012).**
 `subscribe`/`unsubscribe { topics: ManifoldRef[] }` declare and withdraw interest;
@@ -2395,10 +2396,11 @@ may not read is simply not subscribed, because a per-topic refusal frame would m
 permission oracle. There are no offsets, acknowledgements or replay: an event reaches the sockets
 subscribed AT THE INSTANT OF EMISSION and catch-up is reading state back through the ordinary
 door. Subscriptions are presence-class state — they die with the socket, and the SDK pool
-re-declares every live topic after each rejoin (never before it: the credential arrives on
-`join`). Bounds: `MAX_SUBSCRIBE_TOPICS` (64) topics per frame, over which the frame is malformed
-(4002), and `MAX_SUBSCRIPTIONS_PER_CONNECTION` (256) per socket, past which further topics are
-dropped and logged with the socket left alone.
+re-declares every live topic immediately after writing its handshake (`observe` or the room
+`join` frames). The wire is ordered, so the credential always reaches admission first. Bounds:
+`MAX_SUBSCRIBE_TOPICS` (64) topics per frame, over which the frame is malformed (4002), and
+`MAX_SUBSCRIPTIONS_PER_CONNECTION` (256) per socket, past which further topics are dropped and
+logged with the socket left alone.
 Event delivery shares the session channel's send bound (256 queued frames or 1 MiB per
 socket's event queue); past it, the event is dropped and logged as `socket_backpressure`
 with `connectionId` and `topic` while the socket and its subscriptions stay live, and catch-up
@@ -2440,33 +2442,34 @@ client uses — which is why the browser's shared feeds
 (`@manifold/plugin/hooks`, `usePolledResource`) still hold exactly one fetch function and traded
 only their cadence: one initial read at mount, then one read per burst of matching events, and a
 content compare so an unchanged answer reaches no subscriber. The cadence is NOT removed — it is
-the documented fallback, and it runs in exactly two states: while the socket is down (the
-reconnect gap, because a client with no channel learns nothing by waiting) and while a feed has
-no topics at all (the roomless workspace root of an instance with no containers). It never runs
-beside a live subscription; the two are mutually exclusive by construction, and `mode: "events"`
-is precisely the state in which no timer exists. `REGISTRY.md` §Budgets is the ceiling that keeps
-that honest — every network row is ZERO at idle.
+the documented fallback, and it runs while the socket is down or while a feed has no topics at
+all. It never runs beside a live subscription; the two are mutually exclusive by construction,
+and `mode: "events"` is precisely the state in which no timer exists. `REGISTRY.md` §Budgets is
+the ceiling that keeps that honest — every network row is ZERO at idle.
 
-Handshake: the FIRST client frame on a connection MUST be
-`join { ch, containerId, token, protocolVersion, spectator?, lastEpoch?, lastRev? }`; the server
-answers `init { ch, protocolVersion, epoch, rev, doc, attendance, terminals, self, selfCaps,
-selfConnId }` on that channel. The ten-second join deadline is re-armed whenever the last
-channel leaves: a socket MUST carry at least one room to stay open, and an idle connection
-is indistinguishable from one that never joined. Resume hints (`lastEpoch`/`lastRev`) ride
-each channel's own join, so a reconnect redials ONE socket and rejoins every channel on
-it; a mismatch simply yields a full init. `leave { ch }` frees one channel while every
-other keeps streaming — a client closing its LAST channel closes the socket instead,
-because the close already means "leave everything". `selfConnId` identifies the CHANNEL and
-changes on every join (a role swap is `leave`+`join` on one socket, never TCP churn);
-attendance keying, cursor echo-suppression, and the terminal viewer registry hang off it
-exactly as they hung off a socket before v12. `doc` is the base64-encoded full Yjs state
-update for the room. `selfCaps` mirrors the joining principal's granted caps so clients can
-gate UI affordances without a separate introspection round-trip. Presence is carried by
-`attendance`, whose entries are `PresenceState`; there is no separate `presences` field.
+Handshake: the FIRST client frame on a connection MUST be either
+`join { ch, containerId, token, protocolVersion, spectator?, lastEpoch?, lastRev? }` or
+`observe { token, protocolVersion }`. A join answers
+`init { ch, protocolVersion, epoch, rev, doc, attendance, terminals, self, selfCaps,
+selfConnId }` on that channel; a roomless observer answers `observed` at connection scope. Both
+authenticate the socket, seat event/stream subscriptions, arm credential expiry and start the
+same liveness watchdog. The ten-second deadline applies until one handshake survives. After an
+observer releases, the socket stays admitted while any room channel remains; after its last room
+leaves, it stays admitted while any observer remains. A socket with neither closes.
+Resume hints (`lastEpoch`/`lastRev`) ride each channel's own join, so a reconnect redials ONE
+socket and re-establishes every observer and channel; a mismatch simply yields a full init.
+`leave { ch }` frees one channel while every other channel and roomless observer keeps streaming.
+`selfConnId` identifies a CHANNEL and changes on every join (a role swap is `leave`+`join` on one
+socket, never TCP churn); attendance keying, cursor echo-suppression, and the terminal viewer
+registry hang off it exactly as they hung off a socket before v12. `doc` is the base64-encoded
+full Yjs state update for the room. `selfCaps` mirrors the joining principal's granted caps so
+room clients can gate UI affordances without a separate introspection round-trip; an observer has
+no room and therefore exposes empty `selfCaps()`. Presence is carried by `attendance`, whose
+entries are `PresenceState`; there is no separate `presences` field.
 
 **Liveness (v19, issue #55).** The session channel is a DIAL like the machine and instance
 channels, so it runs their one scheme rather than a second ([One authoritative implementation](#one-authoritative-implementation)) off the same
-constants. After a socket's FIRST surviving join the server sends `ping` every
+constants. After a socket's FIRST surviving handshake the server sends `ping` every
 `DIAL_PING_INTERVAL_MS` (30s) and closes 4008 `liveness timeout` when a ping is still
 unanswered as the next one fires, bounding detection at two intervals; the close runs the
 ordinary close path, so room membership, presence entries and terminal viewers are released

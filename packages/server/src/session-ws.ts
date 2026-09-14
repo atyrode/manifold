@@ -18,7 +18,7 @@ import {
   type ErrorCode,
   type RuntimeDeps,
 } from "@manifold/protocol";
-import { ServiceError, type AuthService } from "./auth.ts";
+import { ServiceError, type AuthContext, type AuthService } from "./auth.ts";
 import type { EventHub, EventSubscriber } from "./event-hub.ts";
 import type { Logger } from "./log.ts";
 import type { PluginHost } from "./plugin-host.ts";
@@ -39,6 +39,7 @@ type ClassifiedFrame =
 type CursorUpdate = Extract<ClientMessage, { type: "cursor" }>;
 type GestureUpdate = Extract<ClientMessage, { type: "gesture" }>;
 type JoinMessage = Extract<ClientMessage, { type: "join" }>;
+type ObserveMessage = Extract<ClientMessage, { type: "observe" }>;
 type SubscriptionUpdate = Extract<ClientMessage, { type: "subscribe" | "unsubscribe" }>;
 
 const KNOWN_CLIENT_TYPES: Readonly<Record<string, true>> = Object.fromEntries(
@@ -110,6 +111,7 @@ const DENIAL_ERROR_CODES: Readonly<Record<ActionDenialRule, ErrorCode>> = {
  */
 const SPECTATOR_MAY_SEND: Readonly<Record<ClientMessage["type"], boolean>> = {
   // A duplicate join closes the socket either way; the read-only refusal must not mask it.
+  observe: true,
   join: true,
   leave: true,
   resync_request: true,
@@ -176,31 +178,32 @@ interface SessionConnection {
    */
   nextPeerSeq: number;
   /**
-   * The socket's event-plane identity, seated on its FIRST successful join and never
+   * The socket's event-plane identity, seated on its FIRST successful handshake and never
    * re-seated. Subscriptions are the socket's, not a channel's — a topic is a NODE, and a
    * client watching the machine roster or a terminal in a container it never joined has no
-   * channel to hang the interest on — but the credential they are authorized against can only
-   * arrive with a join, which is why this is null until then and why a `subscribe` before the
-   * first join is refused by the handshake rule that refuses everything else.
+   * channel to hang the interest on. The credential arrives through `join` or `observe`, and
+   * a `subscribe` before either is refused by the handshake rule.
    *
-   * Never re-seated because a socket carries ONE credential's channels by construction (the
-   * SDK pools by token), and in the case that convention is broken the first join's context is
-   * the conservative choice: it can only be equal or NARROWER than a later join's authority,
-   * never wider, and it is a credential this socket demonstrably authenticated. A revoked
-   * credential closes the whole socket (`revokePrincipal`), so it cannot outlive its grant.
+   * Never re-seated because a socket carries ONE credential's handles by construction (the
+   * SDK pools by token), and in the case that convention is broken the first handshake's
+   * context is the conservative choice: it can only be equal or NARROWER than a later join's
+   * authority, never wider, and it is a credential this socket demonstrably authenticated. A
+   * revoked credential closes the whole socket (`revokePrincipal`), so it cannot outlive its
+   * grant.
    */
   subscriber: EventSubscriber | null;
   eventSender: SessionSender | null;
   streamSender: SessionSender | null;
   readonly streams: Map<string, () => void>;
+  /** Whether this socket deliberately holds connection-level state without a room. */
+  observer: boolean;
   cancelJoinTimeout: (() => void) | null;
   /**
-   * The liveness watchdog, armed at the first surviving join and never re-armed: a socket
-   * that never joined is already governed by the ten-second join deadline, so pinging
-   * before then would be a second answer to a question one timer already settles.
+   * The liveness watchdog, armed at the first surviving handshake and never re-armed: a socket
+   * that never joined or observed is already governed by the ten-second handshake deadline.
    */
   cancelPing: (() => void) | null;
-  /** Credential expiry fence, armed once with the first successful join. */
+  /** Credential expiry fence, armed once with the first successful handshake. */
   cancelExpiry: (() => void) | null;
   /** A ping is outstanding; the next tick reaps rather than asking again. */
   awaitingPong: boolean;
@@ -274,7 +277,7 @@ export class SessionGateway {
     });
   }
 
-  /** Starts the mandatory ten-second first-frame join deadline. */
+  /** Starts the mandatory ten-second first-frame handshake deadline. */
   open(id: string, socket: RawSocket): void {
     const connection: SessionConnection = {
       id,
@@ -286,6 +289,7 @@ export class SessionGateway {
       eventSender: null,
       streamSender: null,
       streams: new Map(),
+      observer: false,
       cancelJoinTimeout: null,
       cancelPing: null,
       cancelExpiry: null,
@@ -319,9 +323,8 @@ export class SessionGateway {
   }
 
   /**
-   * A socket must be carrying at least one room to stay open — at the handshake and
-   * again after its last channel leaves. One deadline, one close code: an idle
-   * connection is indistinguishable from one that never joined.
+   * A socket must complete one handshake to stay open. After its last room leaves it may
+   * remain as a deliberate observer; without either, the same deadline applies again.
    */
   private closeSocket(
     connection: SessionConnection,
@@ -339,8 +342,8 @@ export class SessionGateway {
     connection.cancelJoinTimeout?.();
     connection.cancelJoinTimeout = this.timers.schedule(() => {
       connection.cancelJoinTimeout = null;
-      if (connection.channels.size === 0) {
-        this.closeSocket(connection, 4002, "join timeout", "join_timeout");
+      if (connection.channels.size === 0 && !connection.observer) {
+        this.closeSocket(connection, 4002, "handshake timeout", "join_timeout");
       }
     }, JOIN_DEADLINE_MS);
   }
@@ -384,12 +387,26 @@ export class SessionGateway {
         return;
       case "message": {
         const message = classified.message;
-        if (connection.channels.size === 0 && message.type !== "join") {
-          this.closeSocket(connection, 4002, "first frame must be join", "protocol_error");
+        if (
+          connection.channels.size === 0 &&
+          !connection.observer &&
+          message.type !== "join" &&
+          message.type !== "observe"
+        ) {
+          this.closeSocket(
+            connection,
+            4002,
+            "first frame must be join or observe",
+            "protocol_error",
+          );
           return;
         }
         if (message.type === "pong") {
           connection.awaitingPong = false;
+          return;
+        }
+        if (message.type === "observe") {
+          this.observeConnection(connection, message);
           return;
         }
         if (message.type === "join") {
@@ -436,10 +453,9 @@ export class SessionGateway {
   private routeSubscription(connection: SessionConnection, message: SubscriptionUpdate): void {
     const subscriber = connection.subscriber;
     if (subscriber === null) {
-      // Unreachable through the grammar — the first frame must be a join and a join that
-      // completes seats this — so it is a close rather than a drop: a socket that got here
-      // is speaking a protocol this server does not have.
-      this.closeSocket(connection, 4002, "subscribe before join", "protocol_error");
+      // Unreachable through the grammar — the first frame must authenticate with `join` or
+      // `observe`, and a surviving handshake seats this.
+      this.closeSocket(connection, 4002, "subscribe before handshake", "protocol_error");
       return;
     }
     if (message.type === "subscribe") {
@@ -535,6 +551,89 @@ export class SessionGateway {
     connection.socket.send(`{"ch":"${ch}",${frame.body.slice(1)}`);
   }
 
+  /** Authenticates either session handshake and preserves its bounded refusal vocabulary. */
+  private authenticateHandshake(
+    connection: SessionConnection,
+    token: string,
+    protocolVersion: number,
+  ): AuthContext | null {
+    if (protocolVersion !== PROTOCOL_VERSION) {
+      this.closeSocket(connection, 4409, "protocol version mismatch", "protocol_skew");
+      return null;
+    }
+    try {
+      const context = this.auth.authenticate(token);
+      connection.principalId ??= context.principal.id;
+      return context;
+    } catch (error) {
+      if (error instanceof ServiceError && error.code === "forbidden") {
+        const named: readonly string[] = AUTH_REFUSALS;
+        this.closeSocket(
+          connection,
+          4403,
+          named.includes(error.message) ? error.message : "forbidden",
+          "credential_refused",
+        );
+      } else {
+        this.closeSocket(connection, 4401, "unauthorized", "credential_refused");
+      }
+      return null;
+    }
+  }
+
+  /** Seats connection-level liveness, expiry, events and streams after either handshake. */
+  private admitConnection(connection: SessionConnection, context: AuthContext): void {
+    connection.cancelJoinTimeout?.();
+    connection.cancelJoinTimeout = null;
+    if (connection.cancelPing === null) this.schedulePing(connection);
+    if (connection.cancelExpiry === null && context.expiresAt !== undefined) {
+      connection.cancelExpiry = this.timers.schedule(
+        () => {
+          connection.cancelExpiry = null;
+          if (!connection.closed) {
+            this.closeSocket(connection, 4403, "expired", "credential_expired");
+          }
+        },
+        Math.max(0, context.expiresAt - this.runtime.now()),
+      );
+    }
+    if (connection.subscriber !== null) return;
+    const close = (code: number, reason: string): void => {
+      this.closeSocket(connection, code, reason, "transport_overflow");
+      this.close(connection.id, code);
+    };
+    const sender = new SessionSender(connection.socket, (body) => body, 0, close, close, "drop");
+    connection.eventSender = sender;
+    connection.streamSender = new SessionSender(
+      connection.socket,
+      (body) => body,
+      0,
+      close,
+      close,
+      "drop",
+    );
+    connection.subscriber = {
+      id: connection.id,
+      auth: context,
+      deliver: (body, bytes) => {
+        return sender.sendSerialized({ type: "event", body, bytes, authoritative: false });
+      },
+    };
+  }
+
+  /** Authenticates a workspace observer without manufacturing room membership. */
+  private observeConnection(connection: SessionConnection, message: ObserveMessage): void {
+    if (connection.observer) {
+      this.closeSocket(connection, 4002, "duplicate observe", "protocol_error");
+      return;
+    }
+    const context = this.authenticateHandshake(connection, message.token, message.protocolVersion);
+    if (context === null) return;
+    connection.observer = true;
+    this.admitConnection(connection, context);
+    connection.socket.send(JSON.stringify(CONNECTION_BODIES.observed.parse({ type: "observed" })));
+  }
+
   /**
    * Binds one channel id to one room. Credential and wire failures close the SOCKET
    * (they invalidate everything it carries); room-scoped failures refuse just this
@@ -548,41 +647,12 @@ export class SessionGateway {
       containerId: message.containerId,
       spectator: message.spectator === true,
     });
-    if (message.protocolVersion !== PROTOCOL_VERSION) {
-      this.closeSocket(connection, 4409, "protocol version mismatch", "protocol_skew");
-      return;
-    }
     if (connection.channels.has(message.ch)) {
       this.closeSocket(connection, 4002, "duplicate join", "protocol_error");
       return;
     }
-
-    let context;
-    try {
-      context = this.auth.authenticate(message.token);
-    } catch (error) {
-      /*
-        THE REFUSAL CLASS, RELAYED VERBATIM (ADR 0019 §2). `AUTH_REFUSALS` is the closed set
-        of words a credential refusal can be, and the close reason is where a lens reads it:
-        `expired` says "come back with a fresh credential", `revoked` says "stop asking", and
-        anything else is the generic `forbidden` this line has always sent. Re-spelling the
-        words here — or mapping `expired` onto `forbidden` because the branch predates it —
-        would put the whole point of naming the class behind a translation nobody maintains.
-       */
-      if (error instanceof ServiceError && error.code === "forbidden") {
-        const named: readonly string[] = AUTH_REFUSALS;
-        this.closeSocket(
-          connection,
-          4403,
-          named.includes(error.message) ? error.message : "forbidden",
-          "credential_refused",
-        );
-      } else {
-        this.closeSocket(connection, 4401, "unauthorized", "credential_refused");
-      }
-      return;
-    }
-    connection.principalId ??= context.principal.id;
+    const context = this.authenticateHandshake(connection, message.token, message.protocolVersion);
+    if (context === null) return;
     if (!this.auth.allows(context, "containers:read", message.containerId)) {
       this.closeSocket(connection, 4403, "forbidden", "authorization_refused");
       return;
@@ -605,50 +675,7 @@ export class SessionGateway {
     }
     this.broker.pruneExitedUnhomedForContainer(message.containerId);
 
-    connection.cancelJoinTimeout?.();
-    connection.cancelJoinTimeout = null;
-    // Liveness starts where the join deadline stops governing: the ten-second deadline is
-    // the whole answer for a socket holding no rooms, and this watchdog is the answer for
-    // one that holds them (issue #55). Armed once — a second room on this socket is not a
-    // second transport.
-    if (connection.cancelPing === null) this.schedulePing(connection);
-    if (connection.cancelExpiry === null && context.expiresAt !== undefined) {
-      connection.cancelExpiry = this.timers.schedule(
-        () => {
-          connection.cancelExpiry = null;
-          if (!connection.closed) {
-            this.closeSocket(connection, 4403, "expired", "credential_expired");
-          }
-        },
-        Math.max(0, context.expiresAt - this.runtime.now()),
-      );
-    }
-    // THE EVENT-PLANE SEAT, taken once per socket at the first join that survives every
-    // refusal above. `context` is what the hub discharges every subscribe and every delivery
-    // against; the closure is the only thing the hub ever learns about a WebSocket.
-    if (connection.subscriber === null) {
-      const close = (code: number, reason: string): void => {
-        this.closeSocket(connection, code, reason, "transport_overflow");
-        this.close(connection.id, code);
-      };
-      const sender = new SessionSender(connection.socket, (body) => body, 0, close, close, "drop");
-      connection.eventSender = sender;
-      connection.streamSender = new SessionSender(
-        connection.socket,
-        (body) => body,
-        0,
-        close,
-        close,
-        "drop",
-      );
-      connection.subscriber = {
-        id: connection.id,
-        auth: context,
-        deliver: (body, bytes) => {
-          return sender.sendSerialized({ type: "event", body, bytes, authoritative: false });
-        },
-      };
-    }
+    this.admitConnection(connection, context);
     const peer = new SessionChannel(
       `${connection.id}.${(connection.nextPeerSeq += 1)}`,
       connection.socket,
@@ -708,7 +735,9 @@ export class SessionGateway {
     channel.cancelResyncFlush = null;
     channel.room.leave(channel.peer);
     this.broker.detachAll(channel.peer);
-    if (!connection.closed && connection.channels.size === 0) this.armJoinDeadline(connection);
+    if (!connection.closed && connection.channels.size === 0 && !connection.observer) {
+      this.armJoinDeadline(connection);
+    }
   }
 
   private retireChannel(
@@ -970,14 +999,15 @@ export class SessionGateway {
       return;
     }
     switch (message.type) {
+      case "observe":
       case "join":
       case "pong":
       case "subscribe":
       case "unsubscribe":
       case "stream_open":
       case "stream_close":
-        // Routed before dispatch: join creates channels, and the three connection-level frames
-        // address the socket, so none of them has a channel for this switch to apply it to.
+        // Routed before dispatch: handshakes admit the connection or create channels, and
+        // connection-level frames address the socket, so none has a room for this switch.
         return;
       case "leave":
         this.releaseChannel(connection, message.ch);
@@ -1158,15 +1188,19 @@ export class SessionGateway {
    */
   revokePrincipal(principalId: string, containerId: string | null = null): void {
     for (const [id, connection] of [...this.connections]) {
-      let fenced = false;
+      const admitted = connection.subscriber?.auth;
+      let fenced =
+        admitted?.principal.id === principalId &&
+        (containerId === null || admitted.containerScope === containerId) &&
+        this.auth.restoreCredential(this.auth.credentialReference(admitted)) === null;
       for (const channel of connection.channels.values()) {
+        if (fenced) break;
         const peer = channel.peer;
         if (peer.auth.principal.id !== principalId) continue;
         if (containerId !== null && peer.auth.containerScope !== containerId) continue;
         if (this.auth.restoreCredential(this.auth.credentialReference(peer.auth)) !== null)
           continue;
         fenced = true;
-        break;
       }
       if (!fenced) continue;
       this.closeSocket(connection, 4403, "revoked", "credential_revoked");

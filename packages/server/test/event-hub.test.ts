@@ -458,15 +458,15 @@ describe("event plane subscription authority", () => {
     fixture.store.close();
   });
 
-  test("a subscribe before any join is refused by the handshake rule, not by the hub", async () => {
+  test("a subscribe before either handshake is refused by the gateway, not by the hub", async () => {
     const fixture = await planeFixture();
     const socket = new FakeSocket();
     fixture.gateway.open("cold", socket);
 
     subscribe(fixture, "cold", [INDEX_TOPIC]);
 
-    // The credential arrives with `join`, so there is nothing to authorize against yet.
-    expect(socket.closed).toEqual({ code: 4002, reason: "first frame must be join" });
+    // No `join` or `observe` carried a credential, so there is nothing to authorize yet.
+    expect(socket.closed).toEqual({ code: 4002, reason: "first frame must be join or observe" });
     expect(fixture.events.held("cold")).toBe(0);
     fixture.gateway.shutdown();
     fixture.store.close();

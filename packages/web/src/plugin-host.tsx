@@ -1250,9 +1250,8 @@ export interface HostServicesGateProps {
   /** The application's own navigation; the gate translates `manifold://` into it. */
   readonly navigate: (path: string, options?: { readonly replace?: boolean }) => void;
   /**
-   * The routed container, when the route names one. It decides only whether the gate's
-   * client JOINS a room — which is what makes `selfCaps()` answer and the roster arrive
-   * live. Every HTTP door works either way.
+   * The routed container, when the route names one. It decides whether the gate joins that
+   * room as a spectator or authenticates a roomless workspace observer.
    */
   readonly containerId?: string | null;
   /**
@@ -1269,12 +1268,10 @@ export interface HostServicesGateProps {
  * plugin route (`/uri/<encoded>`) is a contribution too and must reach the same doors the
  * sidebar's sections do.
  *
- * Its session client is a SPECTATOR on the routed room: the gate watches, it never occupies.
- * That is what a workspace-level handle has to be — it must not fake an occupant avatar in a
- * room whose renderer already joined as one — and it is the reason `selfCaps()` and the
- * connection-level `plugins` frame reach plugin code at all. With no route to a container
- * (an empty workspace) the client stays unconnected: the HTTP doors still answer, and
- * `selfCaps()` is empty until a view exists, which reads correctly as "no view, no room".
+ * Its session client is a SPECTATOR on a routed room: the gate watches, it never occupies.
+ * At the workspace root the same client is a roomless observer, keeping roster and settings
+ * events live without inventing a room. In both cases plugin code receives one SDK transport
+ * and one roster state machine.
  *
  * A spectator may not send a terminal mutation, so the handle plugin code receives is not this
  * client itself but `panelSessionHandle` over it: every read stays here, and `openTerminal`,
@@ -1310,9 +1307,7 @@ export function HostServicesGate({
     () =>
       new SessionClient({
         url: sessionUrl(),
-        // The workspace is not a room. Unjoined, this is the id nothing is addressed by;
-        // it never reaches the wire, because an unconnected client sends no join.
-        containerId: containerId ?? "",
+        containerId,
         token: identity.token,
         ...(containerId === null ? {} : { spectator: true }),
       }),
@@ -1330,14 +1325,13 @@ export function HostServicesGate({
   );
 
   useEffect(() => {
-    if (containerId === null) return;
     void client.connect().catch((reason: unknown) => {
-      // The renderer's own occupant socket reports room failures to the operator; this
-      // handle failing only costs the workspace its live vocabulary, so it stays quiet.
-      console.error("evt=host_services_join_failed", reason);
+      // The renderer's occupant socket reports room failures; this handle failing costs the
+      // workspace its live vocabulary, so it stays diagnostic rather than user-facing.
+      console.error("evt=host_services_connect_failed", reason);
     });
     return () => client.close();
-  }, [client, containerId]);
+  }, [client]);
 
   useEffect(() => attachPluginsClient(client), [attachPluginsClient, client]);
 

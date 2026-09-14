@@ -2,6 +2,7 @@ import {
   DIAL_LIVENESS_TIMEOUT_MS,
   MAX_SESSION_BASE64_CHARS,
   MAX_SUBSCRIBE_TOPICS,
+  PROTOCOL_VERSION,
   SERVER_MESSAGE_TYPES,
   ServerMessageSchema,
   formatManifoldUri,
@@ -51,13 +52,13 @@ export type ChannelFrame = Exclude<
 >;
 
 /**
- * A frame that addresses the SOCKET rather than a room, minus the one the pool answers
- * itself: `ping` is liveness and stops here. Every handle on the connection hears the
- * same connection frame — that is what "connection-level" means.
+ * A frame that addresses the SOCKET rather than a room, minus the frames the pool answers
+ * itself: `ping` is liveness and `observed` completes the observer handshake here. Every
+ * handle on the connection hears the remaining connection frames.
  */
 export type ConnectionFrame = Exclude<
   Extract<ServerMessageBody, { type: (typeof CONNECTION_LEVEL_MESSAGE_TYPES)[number] }>,
-  { type: "ping" } | { subscriptionId: string }
+  { type: "ping" | "observed" } | { subscriptionId: string }
 >;
 
 /**
@@ -98,6 +99,15 @@ export interface ChannelSink {
   transportClosed(failure: ConnectionFailure | null): void;
 }
 
+/** What a roomless workspace observer needs from the socket it shares. */
+export interface ObserverSink {
+  connectionFrame(body: ConnectionFrame): void;
+  transportPhase(phase: TransportPhase): void;
+  observed(): void;
+  /** The connection is gone for good; null means this handle deliberately released it. */
+  transportClosed(failure: ConnectionFailure | null): void;
+}
+
 /** Bounded, non-secret transport failure data handed to each channel on a dead socket. */
 export interface ConnectionFailure {
   readonly code: number;
@@ -114,32 +124,28 @@ export interface AcquireOptions {
   readonly webSocketFactory?: WebSocketFactory;
 }
 
-/** A joined room on a shared socket, from the owning handle's point of view. */
-export interface PooledChannel {
-  readonly id: string;
-  /** Diagnostics: identifies the connection this channel rides, for tests and logs. */
+/** Common connection-level surface shared by room channels and roomless observers. */
+export interface PooledSession {
+  /** Diagnostics: identifies the physical connection this handle rides. */
   readonly transportId: string;
-  /** Whether frames may go on the wire (socket open and this channel initialized). */
   isOpen(): boolean;
-  send(body: ClientMessageBody): void;
-  /**
-   * Declares interest in a set of topics on the CONNECTION this channel rides, and answers
-   * the release. Refcounted per socket rather than per channel, because the server's
-   * subscription set is a property of the SOCKET: two handles watching one container must not
-   * be able to cancel each other's subscription by releasing first, and the wire must carry
-   * one `subscribe` for the pair rather than two.
-   *
-   * Subscriptions die with the socket, so the pool re-declares every live topic on reconnect —
-   * after the rejoins, because the credential arrives on `join`. A caller therefore never
-   * re-subscribes on a transport event; it subscribes once and releases once.
-   */
   subscribe(topics: readonly ManifoldRef[]): () => void;
   openStream(options: OpenStreamOptions): StreamHandle;
   /** Re-establishes the transport: an explicit `connect()` on a live handle asks for this. */
   redial(): void;
-  /** Leaves the room, closing the socket when this was its last channel. */
   release(): void;
 }
+
+/** A joined room on a shared socket, from the owning handle's point of view. */
+export interface PooledChannel extends PooledSession {
+  readonly id: string;
+  /** Whether room frames may go on the wire (socket open and this channel initialized). */
+  isOpen(): boolean;
+  send(body: ClientMessageBody): void;
+}
+
+/** A roomless observer on the same shared socket. */
+export type PooledObserver = PooledSession;
 
 const KNOWN_SERVER_TYPES: ReadonlySet<string> = new Set(SERVER_MESSAGE_TYPES);
 
@@ -278,6 +284,9 @@ function pageWindow(): PageWindow | undefined {
 class PooledConnection {
   private socket: WebSocket | null = null;
   private readonly channels = new Map<string, ChannelRecord>();
+  private readonly observers = new Set<ObserverSink>();
+  private observerSent = false;
+  private observerAdmitted = false;
   private readonly connectionState: ConnectionState = { session: null, plugins: null };
   /** Live subscriptions, keyed by the ONE joined form of their address. */
   private readonly topics = new Map<string, TopicRecord>();
@@ -315,6 +324,7 @@ class PooledConnection {
   constructor(
     readonly id: string,
     private readonly url: string,
+    private readonly token: string,
     private readonly factory: WebSocketFactory,
     private readonly reconnect: boolean,
     private readonly backoffCapMs: number,
@@ -387,6 +397,57 @@ class PooledConnection {
         this.release(record);
       },
     };
+  }
+
+  /** Registers a workspace observer without allocating a room channel. */
+  attachObserver(sink: ObserverSink): PooledObserver {
+    this.observers.add(sink);
+    if (this.socket !== null && this.socket.readyState === 1) {
+      sink.transportPhase("connecting");
+    } else {
+      sink.transportPhase(this.backoff.attempts === 0 ? "connecting" : "reconnecting");
+    }
+    for (const body of Object.values(this.connectionState)) {
+      if (body !== null) sink.connectionFrame(body);
+    }
+    if (this.socket !== null && this.socket.readyState === 1) {
+      this.sendObserve();
+      // Observation belongs to the socket. If a prior observer released while a room kept
+      // that socket alive, a later observer inherits the still-live admission immediately.
+      if (this.observerAdmitted) sink.observed();
+    } else if (this.socket === null && !this.backoff.pending) {
+      this.dial();
+    }
+    return {
+      transportId: this.id,
+      isOpen: () => this.socket?.readyState === 1 && this.observerAdmitted,
+      subscribe: (topics) => this.subscribe(topics),
+      openStream: (options) => this.openStream(options),
+      redial: () => {
+        this.dial();
+      },
+      release: () => {
+        if (!this.observers.delete(sink)) return;
+        if (this.observers.size === 0 && this.channels.size === 0) this.teardown(1000, null);
+      },
+    };
+  }
+
+  private sendObserve(): void {
+    if (
+      this.observerSent ||
+      this.observers.size === 0 ||
+      this.socket === null ||
+      this.socket.readyState !== 1
+    ) {
+      return;
+    }
+    this.observerSent = true;
+    this.writeConnection({
+      type: "observe",
+      token: this.token,
+      protocolVersion: PROTOCOL_VERSION,
+    });
   }
 
   private sendJoin(record: ChannelRecord): void {
@@ -533,9 +594,8 @@ class PooledConnection {
     this.channels.delete(record.id);
     record.rejoin.cancel();
     this.clearInit(record);
-    if (this.channels.size === 0) {
-      // The last room left: closing the socket IS leaving everything, so a `leave` frame
-      // here would be pure ceremony on a connection about to disappear.
+    if (this.channels.size === 0 && this.observers.size === 0) {
+      // The last handle left: closing the socket releases its connection-level state too.
       this.teardown(1000, null);
       return;
     }
@@ -555,6 +615,8 @@ class PooledConnection {
     previousSocket?.close(1000);
 
     this.connectionState.session = null;
+    this.observerSent = false;
+    this.observerAdmitted = false;
     const phase: TransportPhase = this.backoff.attempts === 0 ? "connecting" : "reconnecting";
     for (const record of this.channels.values()) {
       this.clearInit(record);
@@ -562,6 +624,7 @@ class PooledConnection {
       record.sent = false;
       record.sink.transportPhase(phase);
     }
+    for (const sink of this.observers) sink.transportPhase(phase);
     for (const state of this.streamsById.values()) state.reconnect();
 
     const socket = this.factory(this.url);
@@ -569,15 +632,14 @@ class PooledConnection {
 
     socket.onopen = () => {
       if (this.socket !== socket) return;
-      // One socket, one dial, every room rejoined: a reconnect is N joins, not N sockets.
+      // One socket, one admission: a roomless observer authenticates first when present,
+      // then every room joins. The server processes these writes in order.
+      this.sendObserve();
       for (const record of this.channels.values()) this.sendJoin(record);
       /*
         Subscriptions are presence-class state: they died with the previous socket, so they are
-        re-declared here rather than remembered by the server. AFTER the joins, because the
-        credential a subscription is authorized against arrives on `join` — a subscribe frame
-        ahead of it has nothing to be checked with. There is no catch-up for what happened
-        while the socket was down: a client reads state back through the door it already uses,
-        which is the whole no-replay rule arriving where it would have been tempting to break.
+        re-declared here rather than remembered by the server. AFTER the handshake frames,
+        because those carry the credential this declaration is authorized against.
       */
       this.declare(
         "subscribe",
@@ -628,6 +690,8 @@ class PooledConnection {
         this.clearInit(record);
         record.rejoin.cancel();
       }
+      this.observerSent = false;
+      this.observerAdmitted = false;
 
       // 44xx codes are permanent terminal rejections. Retrying them cannot succeed without
       // changed credentials/input, whereas our own 4002 protocol-healing close must redial.
@@ -653,6 +717,7 @@ class PooledConnection {
       this.backoff.schedule();
       for (const state of this.streamsById.values()) state.reconnect();
       for (const record of this.channels.values()) record.sink.transportPhase("reconnecting");
+      for (const sink of this.observers) sink.transportPhase("reconnecting");
     };
   }
 
@@ -674,6 +739,12 @@ class PooledConnection {
       if (this.socket?.readyState === 1) this.socket.send(PONG_FRAME);
       return;
     }
+    if (frame.type === "observed") {
+      this.observerAdmitted = true;
+      this.backoff.reset();
+      for (const sink of [...this.observers]) sink.observed();
+      return;
+    }
     if ("subscriptionId" in frame) {
       this.streamsById.get(frame.subscriptionId)?.receive(frame);
       return;
@@ -691,6 +762,11 @@ class PooledConnection {
       record.initTimeouts = 0;
       this.backoff.reset();
       record.rejoin.cancel();
+      if (this.observers.size > 0 && !this.observerAdmitted) {
+        // A room init also proves socket admission, but the explicit observe still completes
+        // so the server knows this connection may remain roomless.
+        this.sendObserve();
+      }
       record.rejoin.reset();
     }
     if (frame.type === "channel_closed") {
@@ -730,8 +806,9 @@ class PooledConnection {
         void exhaustive;
       }
     }
-    // Snapshot: a sink may release its channel while hearing this.
+    // Snapshot: a sink may release its handle while hearing this.
     for (const record of [...this.channels.values()]) record.sink.connectionFrame(frame);
+    for (const sink of [...this.observers]) sink.connectionFrame(frame);
   }
 
   /**
@@ -757,7 +834,7 @@ class PooledConnection {
       this.channels.delete(record.id);
       record.rejoin.cancel();
       record.sink.channelClosed(code, reason, true);
-      if (this.channels.size === 0) this.teardown(1000, null);
+      if (this.channels.size === 0 && this.observers.size === 0) this.teardown(1000, null);
       return;
     }
     if (record.rejoin.pending) return;
@@ -782,6 +859,8 @@ class PooledConnection {
     if (closeCode !== null) socket?.close(closeCode);
     const orphans = [...this.channels.values()];
     this.channels.clear();
+    const observerOrphans = [...this.observers];
+    this.observers.clear();
     this.onDead(this);
     for (const state of this.streamsById.values()) {
       state.receive({
@@ -797,6 +876,7 @@ class PooledConnection {
       this.clearInit(record);
       record.sink.transportClosed(failure);
     }
+    for (const sink of observerOrphans) sink.transportClosed(failure);
   }
 }
 
@@ -824,6 +904,7 @@ export function acquireChannel(options: AcquireOptions, sink: ChannelSink): Pool
     connection = new PooledConnection(
       `t${nextTransportSeq}`,
       options.url,
+      options.token,
       factory,
       options.reconnect !== false,
       options.backoffCapMs ?? 8000,
@@ -834,4 +915,33 @@ export function acquireChannel(options: AcquireOptions, sink: ChannelSink): Pool
     registry.set(key, connection);
   }
   return connection.attach(sink);
+}
+
+/** Returns a roomless observer on the same pooled transport as every room channel. */
+export function acquireObserver(options: AcquireOptions, sink: ObserverSink): PooledObserver {
+  const factory = options.webSocketFactory ?? DEFAULT_FACTORY;
+  let registry = registries.get(factory);
+  if (registry === undefined) {
+    registry = new Map();
+    registries.set(factory, registry);
+  }
+  const key = `${options.url}\u0000${options.token}`;
+  let connection = registry.get(key);
+  if (connection === undefined) {
+    nextTransportSeq += 1;
+    const owned = registry;
+    connection = new PooledConnection(
+      `t${nextTransportSeq}`,
+      options.url,
+      options.token,
+      factory,
+      options.reconnect !== false,
+      options.backoffCapMs ?? 8000,
+      (dead) => {
+        if (owned.get(key) === dead) owned.delete(key);
+      },
+    );
+    registry.set(key, connection);
+  }
+  return connection.attachObserver(sink);
 }

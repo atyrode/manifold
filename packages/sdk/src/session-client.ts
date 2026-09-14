@@ -84,31 +84,35 @@ import { bytesToBase64, textToBase64 } from "./base64.ts";
 import { invokeAction } from "./action-http.ts";
 import {
   acquireChannel,
+  acquireObserver,
   type ChannelFrame,
   type ConnectionFrame,
   type JoinBody,
   type PooledChannel,
+  type PooledSession,
 } from "./connection-pool.ts";
 import { type OpenStreamOptions, type StreamHandle } from "./stream.ts";
 
+function isPooledChannel(session: PooledSession): session is PooledChannel {
+  return "id" in session && "send" in session;
+}
+
 /**
- * THE per-room session client. Browsers, tests, and tools all speak to the server
- * through this state machine — never through a second WebSocket implementation (docs/CONTRACTS.md §Protocol and compatibility). It owns everything a ROOM means: the join handshake, epoch/rev tracking,
- * gap-triggered resync, optimistic local reconciliation, offline-edit rebase, and the
- * terminal subscription refcounts.
+ * THE session client. Browsers, tests, and tools all speak to the server through this state
+ * machine — never through a second WebSocket implementation (docs/CONTRACTS.md §Protocol and
+ * compatibility). With a container id it owns everything a ROOM means: join, epoch/rev
+ * tracking, reconciliation and terminal subscriptions. With `containerId: null` it observes
+ * workspace connection frames and events without manufacturing room state or authority.
  *
- * What it no longer owns is the SOCKET. Since v12 the transport is multiplexed: this
- * client is a channel handle on a pooled connection keyed by (url, token), so a tab
- * rendering a canvas plus five portal portals holds ONE TCP connection with six channels.
- * The public ref is unchanged — construct one per room, `connect()`, subscribe — and
- * reconnect, keepalive, and rejoin-every-channel live one layer down in
- * `connection-pool.ts`.
+ * Since v12 the socket is multiplexed and pooled by (url, token). A canvas plus five portals
+ * therefore holds one connection with six channels; a workspace root holds one roomless
+ * observer on that same transport.
  *
- * Some of its ref is WORKSPACE-level rather than room-level: the action door
- * (`action`), the workspace reads (`machines`, `index`, `attendance`, `terminalsByContainer`,
- * `terminals`), and the plugin roster (`onPlugins`). A plugin holds only this client, so
- * the questions it asks the workspace arrive through the same handle — over HTTP and the
- * connection-level frame category, never over a room channel.
+ * Some of its ref is WORKSPACE-level rather than room-level: the action door (`action`), the
+ * workspace reads (`machines`, `index`, `attendance`, `terminalsByContainer`, `terminals`), and
+ * the plugin roster (`onPlugins`). A plugin holds only this client, so those questions arrive
+ * through the same handle — over HTTP and the connection-level frame category, never through a
+ * second roster state machine.
  */
 
 export type ConnectionStatus = "idle" | "connecting" | "open" | "reconnecting" | "closed";
@@ -191,8 +195,8 @@ export interface SessionEvents {
 
 /**
  * One live subscription on this handle: the nodes it named, the handler that hears them, and
- * the pool-level refcount release — null while this handle holds no channel, because a
- * subscription outlives the sockets that carry it while a refcount cannot.
+ * the pool-level refcount release — null while this handle holds no pooled session ref,
+ * because a subscription outlives the sockets that carry it while a refcount cannot.
  */
 interface TopicSubscription {
   readonly topics: readonly ManifoldRef[];
@@ -220,9 +224,10 @@ export type AccessOutcome<T> =
   { readonly ok: true; readonly result: T } | { readonly ok: false; readonly denial: ActionDenial };
 
 export interface SessionClientOptions {
-  /** ws(s) URL of the terminal endpoint, e.g. ws://localhost:7777/ws/session */
+  /** ws(s) URL of the session endpoint, e.g. ws://localhost:7777/ws/session */
   url: string;
-  containerId: string;
+  /** Room to join, or null for an authenticated workspace observer with no room membership. */
+  containerId: string | null;
   token: string;
   /**
    * Joins as a spectator: this channel watches the room (state, doc updates, terminal
@@ -270,8 +275,8 @@ export class SessionClient {
 
   private readonly opts: Required<Pick<SessionClientOptions, "url" | "containerId" | "token">> &
     SessionClientOptions;
-  /** This room's channel on the shared socket; null before connect and after close. */
-  private channel: PooledChannel | null = null;
+  /** This handle's room channel or roomless observer; null before connect and after close. */
+  private channel: PooledSession | null = null;
   private listeners = new Map<EventKey, Set<Handler>>();
   private outbox: ClientMessageBody[] = [];
   private closeError: SessionConnectionError | null = null;
@@ -307,9 +312,9 @@ export class SessionClient {
     return this.channel?.transportId ?? null;
   }
 
-  /** This room's channel id on that connection; it appears in every frame it exchanges. */
+  /** This room's channel id, or null for a roomless observer. */
   get channelId(): string | null {
-    return this.channel?.id ?? null;
+    return this.channel !== null && isPooledChannel(this.channel) ? this.channel.id : null;
   }
 
   /** Server-issued correlation for the current socket; null until its first frame arrives. */
@@ -416,21 +421,27 @@ export class SessionClient {
   // ------------------------------------------------------------------ lifecycle
 
   /**
-   * Resolves on the first successful init; reconnects keep running afterwards. Calling it
-   * on a handle that already holds a channel is an explicit "reconnect now": the shared
-   * transport redials and every room on it rejoins.
+   * Resolves on the first successful room init or observer admission; reconnects continue
+   * afterwards. Calling it on a live handle explicitly redials the shared transport.
    */
   connect(): Promise<void> {
     this.closeError = null;
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     const offStatus = this.on("status", (s: ConnectionStatus) => {
-      // Both init and resync establish state. A join send never resolves connect().
+      // Room init/resync and observer acknowledgement both establish this handle.
       if (s === "open") {
         offStatus();
         resolve();
       } else if (s === "closed") {
         offStatus();
-        reject(this.closeError ?? new Error("channel closed before initialization"));
+        reject(
+          this.closeError ??
+            new Error(
+              this.opts.containerId === null
+                ? "observer closed before admission"
+                : "channel closed before initialization",
+            ),
+        );
       }
     });
     if (this.channel === null) this.attach();
@@ -473,89 +484,95 @@ export class SessionClient {
       record.release = null;
     }
     for (const stream of this.streams) stream.close();
-    // Releasing is the whole story: it leaves this room and, when this was the tab's last
-    // room, closes the socket — a close IS a leave, so no extra frame is spent.
+    // Releasing drops this room or observer and closes the socket only when no pooled handle remains.
     channel?.release();
     this.setStatus("closed");
   }
 
   /** The join THIS room wants, rebuilt per attempt so resume hints are current. */
   private joinBody(): JoinBody {
+    const containerId = this.opts.containerId;
+    if (containerId === null) throw new Error("roomless observer has no join body");
     return {
       type: "join",
-      containerId: this.opts.containerId,
+      containerId,
       token: this.opts.token,
       protocolVersion: PROTOCOL_VERSION,
-      // Omitted rather than sent as false: the flag's absence IS the occupant case, and
-      // every join must re-declare it because the server tracks it per channel.
       ...(this.opts.spectator === true ? { spectator: true } : {}),
       ...(this.epoch !== "" ? { lastEpoch: this.epoch, lastRev: this.rev } : {}),
     };
   }
 
-  /** Acquires this room's channel on the pooled connection its (url, token) names. */
+  /** Acquires this handle on the pooled connection its (url, token) names. */
   private attach(): void {
-    this.channel = acquireChannel(
-      {
-        url: this.opts.url,
-        token: this.opts.token,
-        ...(this.opts.reconnect !== undefined ? { reconnect: this.opts.reconnect } : {}),
-        ...(this.opts.backoffCapMs !== undefined ? { backoffCapMs: this.opts.backoffCapMs } : {}),
-        ...(this.opts.webSocketFactory !== undefined
-          ? { webSocketFactory: this.opts.webSocketFactory }
-          : {}),
-      },
-      {
-        joinBody: () => this.joinBody(),
-        receive: (body) => {
-          this.handle(body);
-        },
-        connectionFrame: (body) => {
-          this.handleConnection(body);
-        },
-        transportPhase: (phase) => {
-          this.connectionIdState = null;
-          this.setStatus(phase);
-        },
-        channelClosed: (code, reason, terminal) => {
-          if (!terminal) {
-            // The connection is rejoining this room on backoff; from this handle's point
-            // of view that is exactly a reconnect, and its outbox waits for the fresh init.
-            this.setStatus("reconnecting");
-            return;
-          }
-          const channelId = this.channel?.id ?? null;
-          this.releaseSubscriptions();
-          this.channel = null;
-          this.closeError = new SessionConnectionError(
-            this.connectionIdState,
-            channelId,
-            code,
-            reason,
-          );
-          this.setStatus("closed");
-        },
-        transportClosed: (failure) => {
-          const channelId = this.channel?.id ?? null;
-          this.forgetSubscriptions();
-          this.channel = null;
-          this.closeError =
-            failure === null
-              ? null
-              : new SessionConnectionError(
-                  this.connectionIdState,
-                  channelId,
-                  failure.code,
-                  failure.reason,
-                );
-          this.setStatus("closed");
-        },
-      },
-    );
-    // A handle may declare interest before it ever holds a channel, and it holds a NEW one
-    // after a terminal close. Either way the declarations go out here, once, against the
-    // connection that will carry them; the pool re-declares them on every redial of that
-    // socket, so a reconnect is not this layer's business.
+    const options = {
+      url: this.opts.url,
+      token: this.opts.token,
+      ...(this.opts.reconnect !== undefined ? { reconnect: this.opts.reconnect } : {}),
+      ...(this.opts.backoffCapMs !== undefined ? { backoffCapMs: this.opts.backoffCapMs } : {}),
+      ...(this.opts.webSocketFactory !== undefined
+        ? { webSocketFactory: this.opts.webSocketFactory }
+        : {}),
+    };
+    const connectionFrame = (body: ConnectionFrame): void => {
+      this.handleConnection(body);
+    };
+    const transportPhase = (phase: ConnectionStatus): void => {
+      this.connectionIdState = null;
+      this.setStatus(phase);
+    };
+    const transportClosed = (
+      failure: { readonly code: number; readonly reason: string } | null,
+    ): void => {
+      const channelId = this.channelId;
+      this.forgetSubscriptions();
+      this.channel = null;
+      this.closeError =
+        failure === null
+          ? null
+          : new SessionConnectionError(
+              this.connectionIdState,
+              channelId,
+              failure.code,
+              failure.reason,
+            );
+      this.setStatus("closed");
+    };
+    this.channel =
+      this.opts.containerId === null
+        ? acquireObserver(options, {
+            connectionFrame,
+            transportPhase,
+            observed: () => {
+              this.setStatus("open");
+            },
+            transportClosed,
+          })
+        : acquireChannel(options, {
+            joinBody: () => this.joinBody(),
+            receive: (body) => {
+              this.handle(body);
+            },
+            connectionFrame,
+            transportPhase,
+            channelClosed: (code, reason, terminal) => {
+              if (!terminal) {
+                this.setStatus("reconnecting");
+                return;
+              }
+              const channelId = this.channelId;
+              this.releaseSubscriptions();
+              this.channel = null;
+              this.closeError = new SessionConnectionError(
+                this.connectionIdState,
+                channelId,
+                code,
+                reason,
+              );
+              this.setStatus("closed");
+            },
+            transportClosed,
+          });
     for (const record of this.subscriptions) record.release = this.channel.subscribe(record.topics);
   }
 
@@ -837,13 +854,20 @@ export class SessionClient {
   // ------------------------------------------------------------------ outgoing
 
   private send(msg: ClientMessageBody): void {
-    if (this.channel !== null && this.channel.isOpen() && this.status === "open") {
+    if (this.opts.containerId === null) return;
+    const channel = this.channel;
+    if (
+      channel !== null &&
+      isPooledChannel(channel) &&
+      channel.isOpen() &&
+      this.status === "open"
+    ) {
       // Development guard: never put an invalid frame on the wire. High-volume binary
       // frame types are constructed entirely by this SDK, so avoid rescanning their payloads.
       if (msg.type !== "cursor" && msg.type !== "doc_update" && msg.type !== "terminal_input") {
         ClientMessageBodySchema.parse(msg);
       }
-      this.channel.send(msg);
+      channel.send(msg);
       return;
     }
     // High-rate ephemera is never worth replaying: a stale cursor or gesture is noise.
@@ -890,7 +914,9 @@ export class SessionClient {
    * never handed to the renderer. Read whole on every `layout_changed`.
    */
   layout(): TileLayout | null {
-    return readTileLayout(this.currentDoc, this.opts.containerId);
+    return this.opts.containerId === null
+      ? null
+      : readTileLayout(this.currentDoc, this.opts.containerId);
   }
 
   /**
