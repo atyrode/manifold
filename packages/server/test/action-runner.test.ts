@@ -8,8 +8,9 @@ import { EventsListResponseSchema } from "@manifold-plugin/events";
 import { ActionRunner, invokeAction } from "@manifold/sdk";
 import {
   ActionRunnerResponseSchema,
-  AgentPolicyChallengeSchema,
-  CreateAgentRunResultSchema,
+  CreateRunCredentialResultSchema,
+  InspectRunResultSchema,
+  RegisterAgentResultSchema,
   type ActionRunnerResponse,
   type RuntimeDeps,
 } from "@manifold/protocol";
@@ -40,7 +41,33 @@ async function fixture() {
   );
   const server = await startServer({ config, runtime, logger: silentLogger, announce: false });
   servers.push(server);
-  return { server, policyFile };
+  const registered = await invokeAction(
+    { origin: server.publicUrl, token: SPONSOR },
+    "core.access.registerAgent",
+    {
+      name: "runner probe",
+      purpose: "Read the approved workspace and delegate one reader.",
+      harness: "external",
+      grant: {
+        caps: ["agents:delegate", "containers:read"],
+        targets: ["manifold://"],
+        reach: "subtree",
+        maxRunLifetimeMs: 240_000,
+        delegation: { maxDepth: 4, maxDescendants: 32 },
+        expiresAt: 3_600_000,
+      },
+      context: { profile: {} },
+    },
+  );
+  if (!registered.outcome.ok) throw new Error("agent registration refused");
+  const registration = RegisterAgentResultSchema.parse(registered.outcome.result);
+  if (registration.credential === undefined) throw new Error("runner credential missing");
+  return {
+    server,
+    policyFile,
+    agentId: registration.agent.agentId,
+    token: registration.credential.token,
+  };
 }
 
 afterEach(async () => {
@@ -48,15 +75,6 @@ afterEach(async () => {
   for (const directory of directories.splice(0))
     rmSync(directory, { recursive: true, force: true });
 });
-
-const declaration = {
-  name: "runner probe",
-  purpose: "Read the approved workspace and delegate one reader.",
-  target: "manifold://",
-  reach: "subtree",
-  caps: ["agents:delegate", "containers:read"],
-  lifetimeMs: 120_000,
-};
 
 function policyFrame(frames: ActionRunnerResponse[]) {
   const frame = frames.findLast((frame) => frame.type === "policy");
@@ -87,15 +105,16 @@ async function ledger(origin: string) {
 
 describe("external action runner over real doors", () => {
   test("discovery, exact acknowledgement, refusal correlation, renewal, child attenuation and live re-ack share the ledger", async () => {
-    const { server, policyFile } = await fixture();
+    const { server, policyFile, agentId, token } = await fixture();
     const frames: ActionRunnerResponse[] = [];
     const runner = new ActionRunner({
       origin: server.publicUrl,
-      sponsorToken: SPONSOR,
+      token,
+      bind: { agentId },
       emit: (frame) => frames.push(frame),
     });
     try {
-      await runner.accept({ type: "start", id: "start", version: 1, declaration });
+      await runner.bind();
       const rootPolicy = policyFrame(frames);
       const rootId = rootPolicy.runId;
       expect(rootPolicy.policy.required.find((bundle) => bundle.source === "operator")?.body).toBe(
@@ -158,8 +177,6 @@ describe("external action runner over real doors", () => {
         id: "child",
         runId: rootId,
         declaration: {
-          ...declaration,
-          name: "child reader",
           caps: ["containers:read"],
           lifetimeMs: 60_000,
         },
@@ -167,6 +184,15 @@ describe("external action runner over real doors", () => {
       });
       const childPolicy = policyFrame(frames);
       expect(childPolicy.runId).not.toBe(rootId);
+      const inspected = await invokeAction(
+        { origin: server.publicUrl, token: SPONSOR },
+        "core.access.inspectRun",
+        { runId: childPolicy.runId },
+      );
+      if (!inspected.outcome.ok) throw new Error("child inspection refused");
+      const childRun = InspectRunResultSchema.parse(inspected.outcome.result);
+      if (childRun.availability !== "available") throw new Error("child unavailable");
+      expect(childRun.run).toMatchObject({ agentId, parentRunId: rootId });
       await runner.accept(ack("ack-child", childPolicy));
       await runner.accept({
         type: "renew",
@@ -233,15 +259,16 @@ describe("external action runner over real doors", () => {
   });
 
   test("an undiscovered door or nested credential cannot reach the dispatcher", async () => {
-    const { server } = await fixture();
+    const { server, agentId, token } = await fixture();
     const frames: ActionRunnerResponse[] = [];
     const runner = new ActionRunner({
       origin: server.publicUrl,
-      sponsorToken: SPONSOR,
+      token,
+      bind: { agentId },
       emit: (frame) => frames.push(frame),
     });
     try {
-      await runner.accept({ type: "start", id: "start", version: 1, declaration });
+      await runner.bind();
       const policy = policyFrame(frames);
       await runner.accept(ack("ack", policy));
       await expect(
@@ -275,42 +302,17 @@ describe("external action runner over real doors", () => {
   });
 
   for (const terminal of ["completed", "failed"] as const) {
-    test(`an accountable launcher can renew and ${terminal === "completed" ? "finish" : "clean up"} its owned root without revoking itself`, async () => {
-      const { server } = await fixture();
-      const owner = { origin: server.publicUrl, token: SPONSOR };
-      const admission = await invokeAction(owner, "core.access.createAgentRun", {
-        ...declaration,
-        lifetimeMs: 180_000,
-      });
-      if (!admission.outcome.ok) throw new Error("sponsor admission refused");
-      const sponsor = CreateAgentRunResultSchema.parse(admission.outcome.result);
-      const sponsorOptions = { origin: server.publicUrl, token: sponsor.credential.token };
-      const challenge = await invokeAction(sponsorOptions, "core.access.getAgentPolicy", {});
-      if (!challenge.outcome.ok) throw new Error("sponsor policy refused");
-      const policy = AgentPolicyChallengeSchema.parse(challenge.outcome.result);
-      const activated = await invokeAction(sponsorOptions, "core.access.acknowledgeAgentPolicy", {
-        revision: policy.revision,
-        acknowledgements: policy.required.map(({ id, digest }) => ({ id, digest })),
-      });
-      expect(activated.outcome.ok).toBe(true);
+    test(`a scoped runner can renew and ${terminal} its run without retiring its Agent`, async () => {
+      const { server, agentId, token } = await fixture();
       const frames: ActionRunnerResponse[] = [];
       const runner = new ActionRunner({
         origin: server.publicUrl,
-        sponsorToken: sponsor.credential.token,
+        token,
+        bind: { agentId },
         emit: (frame) => frames.push(frame),
       });
       try {
-        await runner.accept({
-          type: "start",
-          id: "start",
-          version: 1,
-          declaration: {
-            ...declaration,
-            caps: ["containers:read"],
-            lifetimeMs: 60_000,
-          },
-          justification: "Delegate the approved read-only task —\nwith a shorter lifetime.",
-        });
+        await runner.bind();
         const ownedPolicy = policyFrame(frames);
         await runner.accept(ack("ack", ownedPolicy));
         await runner.accept({
@@ -323,28 +325,91 @@ describe("external action runner over real doors", () => {
         expect(
           frames.find((frame) => frame.type === "result" && frame.id === "renew"),
         ).toMatchObject({ outcome: { ok: true }, expiresAt: 100_000 });
-        if (terminal === "completed") {
+        if (terminal === "completed")
           await runner.accept({
             type: "finish",
             id: "finish",
             runId: ownedPolicy.runId,
             outcome: terminal,
           });
-        } else expect(await runner.close(terminal)).toBe(true);
+        else expect(await runner.close(terminal)).toBe(true);
         expect(frames.at(-1)).toEqual({ type: "closed", outcome: terminal, cleanup: "confirmed" });
-        expect((await invokeAction(sponsorOptions, "core.machines.list", {})).outcome.ok).toBe(
-          true,
-        );
-        expect(JSON.stringify(frames)).not.toContain(sponsor.credential.token);
+        const next = new ActionRunner({
+          origin: server.publicUrl,
+          token,
+          bind: { agentId },
+          emit: (frame) => frames.push(frame),
+        });
+        try {
+          await next.bind();
+          expect(policyFrame(frames).runId).not.toBe(ownedPolicy.runId);
+        } finally {
+          expect(await next.close("completed")).toBe(true);
+        }
+        expect(JSON.stringify(frames)).not.toContain(token);
       } finally {
         await runner.close("failed");
-        await invokeAction(owner, "core.access.finishAgentRun", {
-          runId: sponsor.run.id,
-          outcome: "completed",
-        });
       }
     });
   }
+
+  test("adopting a prepared run renews its private bearer and records harness activity without another admission", async () => {
+    const { server, agentId, token } = await fixture();
+    const created = await invokeAction(
+      { origin: server.publicUrl, token },
+      "core.access.createRun",
+      { agentId },
+    );
+    if (!created.outcome.ok) throw new Error("run admission refused");
+    const admission = CreateRunCredentialResultSchema.parse(created.outcome.result);
+    const frames: ActionRunnerResponse[] = [];
+    const runner = new ActionRunner({
+      origin: server.publicUrl,
+      token: admission.credential.token,
+      bind: { runId: admission.run.id },
+      emit: (frame) => frames.push(frame),
+    });
+    try {
+      await runner.bind();
+      expect(policyFrame(frames).runId).toBe(admission.run.id);
+      await expect(
+        runner.accept({
+          type: "start",
+          id: "forged",
+          version: 1,
+          declaration: {},
+        }),
+      ).rejects.toMatchObject({ code: "invalid_frame" });
+      await runner.accept(ack("ack", policyFrame(frames)));
+      await runner.accept({
+        type: "renew",
+        id: "renew",
+        runId: admission.run.id,
+        lifetimeMs: 90_000,
+      });
+      await runner.reportActivity({ runId: admission.run.id, activity: "blocked" });
+      const inspection = await invokeAction(
+        { origin: server.publicUrl, token: SPONSOR },
+        "core.access.inspectRun",
+        { runId: admission.run.id },
+      );
+      if (!inspection.outcome.ok) throw new Error("run inspection refused");
+      expect(InspectRunResultSchema.parse(inspection.outcome.result).run.activity).toBe("blocked");
+      await runner.accept({
+        type: "finish",
+        id: "finish",
+        runId: admission.run.id,
+        outcome: "completed",
+      });
+      expect(runner.successful).toBe(true);
+      expect(
+        frames.some((frame) => frame.type === "result" && frame.door === "core.access.createRun"),
+      ).toBe(false);
+      expect(JSON.stringify(frames)).not.toContain(admission.credential.token);
+    } finally {
+      await runner.close("failed");
+    }
+  });
 
   for (const terminal of [
     "completed",
@@ -356,14 +421,15 @@ describe("external action runner over real doors", () => {
     "SIGTERM",
   ] as const) {
     test(`the executable settles its run on ${terminal} without secret-bearing output`, async () => {
-      const { server } = await fixture();
+      const { server, agentId, token } = await fixture();
       const child = Bun.spawn(
         [process.execPath, join(import.meta.dir, "../../sdk/src/action-runner-main.ts")],
         {
           env: {
             PATH: process.env["PATH"],
             MANIFOLD_ORIGIN: server.publicUrl,
-            MANIFOLD_SPONSOR_TOKEN: SPONSOR,
+            MANIFOLD_RUNNER_TOKEN: token,
+            MANIFOLD_AGENT_ID: agentId,
           },
           stdin: "pipe",
           stdout: "pipe",
@@ -374,10 +440,6 @@ describe("external action runner over real doors", () => {
       const frames: ActionRunnerResponse[] = [];
       let acted = false;
       try {
-        child.stdin.write(
-          `${JSON.stringify({ type: "start", id: "start", version: 1, declaration })}\n`,
-        );
-        await child.stdin.flush();
         for await (const line of lines) {
           const frame = ActionRunnerResponseSchema.parse(JSON.parse(line));
           frames.push(frame);

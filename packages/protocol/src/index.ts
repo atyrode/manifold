@@ -1,12 +1,15 @@
 export {
-  ACTION_RUNNER_VERSION,
   ACTION_RUNNER_MAX_FRAME_BYTES,
   ACTION_RUNNER_MAX_FRAMES,
   ACTION_RUNNER_IDLE_TIMEOUT_MS,
   ActionProtocolSchema,
+  ActionRunnerBindSchema,
+  ActionRunnerActivitySchema,
   ActionRunnerRequestSchema,
   ActionRunnerResponseSchema,
   type ActionProtocol,
+  type ActionRunnerBind,
+  type ActionRunnerActivity,
   type ActionRunnerRequest,
   type ActionRunnerResponse,
 } from "./action-runner.ts";

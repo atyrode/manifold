@@ -18,18 +18,31 @@ The package also declares the `manifold-action-runner` executable. Before starti
 
 - `MANIFOLD_ORIGIN`: one authorized HTTP(S) origin, without a path, username, password,
   query, fragment or credential-bearing link.
-- `MANIFOLD_SPONSOR_TOKEN`: a process-owned sponsor credential from the launcher's secret
-  store. Never paste its value into argv, a shell command, JSONL, a prompt, logs or files.
+- Exactly one binding:
+  - **Agent mode (Babel/external orchestrators):** `MANIFOLD_RUNNER_TOKEN`, the Agent-scoped
+    `agents:run` credential, and `MANIFOLD_AGENT_ID`. Optional `MANIFOLD_AGENT_SESSION` is
+    JSON `{harness,sessionId,machineId}` supplied by the trusted harness, and optional
+    `MANIFOLD_AGENT_MODEL` is JSON `{provider,model}`. The runner calls `core.access.createRun`
+    under the existing standing grant; it cannot create or broaden that grant.
+  - **Run mode (OMP/terminal admission):** `MANIFOLD_RUN_TOKEN` and `MANIFOLD_RUN_ID`, injected
+    through the hub's private machine channel. The runner adopts that already-admitted run
+    through `core.access.inspectRun`; it does not create another run.
+- Optional `MANIFOLD_ACTIVITY_FD`: a separately inherited harness pipe descriptor, at least 3.
+  Do not give that pipe to the model.
 
-The runner reads and deletes the inherited secret environment entry before reading stdin.
-The original sponsor is retained only in private process state and is never a teardown target.
-An accountable-agent launcher is supported: the runner's first owned run can be a server-side
-child, and renewal/finish still use the retained launcher credential. The launcher retains
-responsibility for its own run and policy acknowledgement; the runner never finishes it.
-Child credentials and replacements never leave that process. The trusted launcher must isolate
+The runner reads and deletes all inherited binding entries, including secrets, before reading
+either pipe. Mixing modes, partial bindings and the old `MANIFOLD_SPONSOR_TOKEN` are refused.
+For example, Babel registers `babel-analyst` once, retains its runner credential in its secret
+store, and launches an Agent-mode runner per analysis. OMP's `launchRun` instead prepares the
+transcript session and terminal admission supplies the Run-mode environment. Neither example
+puts a bearer in a shell command, argv, JSONL, a prompt, a log or a file.
+
+Agent-mode renewal and cleanup retain the scoped runner credential; Run-mode renewal replaces
+its own private bearer. Neither cleanup retires the Agent or withdraws the runner credential.
+Child credentials and replacements never leave the process. The trusted launcher must isolate
 its process memory/environment from the external agent; JSONL is the agent-facing interface,
 not a sandbox for arbitrary code running as the launcher's OS user. For a preview, the launcher
-needs an authorized sponsor **on that preview**. Human production-to-preview browser sign-in
+needs an authorized Agent/run credential **on that preview**. Human production-to-preview browser sign-in
 is unchanged and is not an automation enrollment shortcut.
 
 The runner accepts no argv except `--help`, never follows HTTP redirects and never uses browser
@@ -41,30 +54,15 @@ Responses are bounded to 16 MiB; a blocked output reader also terminates bounded
 
 ## First action
 
-Send a declaration containing the task's truthful purpose and its approved ceiling, for example:
-
-```json
-{
-  "type": "start",
-  "id": "start",
-  "version": 1,
-  "declaration": {
-    "name": "workspace reader",
-    "purpose": "Read the approved workspace inventory.",
-    "taskRef": "issue:553",
-    "target": "manifold://",
-    "reach": "subtree",
-    "caps": ["containers:read"],
-    "lifetimeMs": 60000
-  }
-}
-```
+Admission is automatic from the trusted binding, before stdin is consumed. There is no `start`
+or `bind` model frame, and the model cannot select a different Agent or invent a session.
 
 1. Read `discovery`: its `actions` are the live installed doors and their exact input/result
    schemas and metadata. Incompatible protocol versions, duplicate names and malformed
-   discovery stop the runner. The discovery request itself carries sponsor authentication.
-2. Read the `result` for `core.access.createAgentRun`. Its `runId` is a non-secret handle,
-   not a credential. Creation remains sponsor-authorized and starts in `pending_policy`.
+   discovery stop the runner. Discovery authenticates with the launcher-supplied credential.
+2. Read the `result` for `core.access.createRun` (Agent mode) or `core.access.inspectRun`
+   (Run mode). Its `runId` is a non-secret handle, not a credential. Launcher-driven responses
+   use `id: null`; newly admitted runs begin in `pending_policy`.
 3. Read the `policy` frame. Deliver **every exact `policy.required[].body`** to the acting
    agent. Policy source selection is the server's; repository text cannot replace it.
    The runner verifies each body's SHA-256 digest and never silently redacts policy bytes.
@@ -85,24 +83,23 @@ Send a declaration containing the task's truthful purpose and its approved ceili
    `traceId`. Finish the root run with the truthful terminal outcome before closing stdin.
 
 Never supply credentials in frames, including opaque action arguments. The runner rejects
-secret-bearing fields, bearer/key-link carriers and every held sponsor/child bearer value.
+secret-bearing fields, bearer/key-link carriers and every held launcher/child bearer value.
 Policy digests and artifact hashes are not credentials and remain usable as typed door input;
 they are never authority. This runner is not a secret-injection mechanism for plugin calls.
 
 ## Frame contract
 
 `id` is required on every request. `runId` always names a run owned by this runner.
-`start` occurs once; every other operation follows it.
+Launcher-only admission finishes before model frames are consumed.
 
 | Request `type` | Additional fields                                                 | Behavior                                                                                 |
 | -------------- | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `start`        | `version: 1`, `declaration`, optional `justification`             | Discover, create the root run, deliver exact policy                                      |
 | `discover`     | `runId`                                                           | Refresh the installed vocabulary; no compiled per-plugin bindings                        |
 | `policy`       | `runId`                                                           | Deliver the current challenge; explicitly ack before ordinary work resumes               |
 | `ack`          | `runId`, `policy: {revision, acknowledgements:[{id,digest}]}`     | Acknowledge exactly the delivered challenge through its action door                      |
 | `invoke`       | `runId`, `door`, `target`, `args`, optional `justification`       | Invoke a discovered ordinary door; lifecycle doors cannot be smuggled through this frame |
-| `child`        | parent `runId`, `declaration`, optional `justification`           | Sponsor an attenuated child; return its non-secret run id and its own policy challenge   |
-| `renew`        | child's or root's `runId`, `lifetimeMs`, optional `justification` | Invoke renewal as the retained direct sponsor and replace the private bearer             |
+| `child`        | parent `runId`, `declaration`, optional `justification`           | Narrow authority within the same Agent; return a distinct run id and policy challenge    |
+| `renew`        | child's or root's `runId`, `lifetimeMs`, optional `justification` | Renew through the authorized retained credential and replace the private bearer          |
 | `finish`       | `runId`, `outcome`                                                | Settle that subtree; finishing the root closes the process                               |
 
 Terminal outcomes are `completed`, `failed`, `cancelled` and `abandoned`. Children use their own
@@ -111,6 +108,18 @@ still enforces attenuation, depth/descendant budgets, renewal ceilings and live 
 Renew parent and child deliberately: changing a sponsor credential changes live lineage and may
 require renewed child authorization. A `policy_stale` refusal includes its trace id and is followed
 by the new exact challenge; explicitly acknowledge it before retrying, with no auto-assent.
+
+A child declaration may narrow `caps`, `target`, `reach`, `lifetimeMs` and `delegation`, or
+supply the external harness's `taskRef`. It cannot name `agentId`, `session` or `model`; those
+bindings belong to the launcher, never a model frame.
+
+The trusted harness writes `{runId,activity:"working"|"blocked"|"done"|"idle"}` JSONL to the
+separate activity pipe, or calls `ActionRunner.reportActivity` in-process. Reports invoke
+`core.access.reportRunActivity` with the owned run's credential. The pipe uses the same 64-KiB
+UTF-8 framing, has its own 1024-frame limit, and shares the serialized executor and process
+lifetime. Closing only the activity pipe does not finish work; model stdin EOF does. Activity
+does not acknowledge policy or settle a run, and is never inferred from terminal output.
+The model cannot write activity through stdin or smuggle the activity door through `invoke`.
 
 Responses are strict `discovery`, `policy`, `result`, `error` or `closed` objects, described by
 `ActionRunnerResponseSchema` in `@manifold/protocol`. `result.outcome` is `{ok:true}` or

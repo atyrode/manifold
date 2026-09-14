@@ -166,18 +166,27 @@ The optional `x-manifold-agent-justification` header uses the protocol's reversi
 and passes decoded Unicode through the dispatch option reserved for #557's semantic normalization. Shared HTTP deadlines and
 response ceilings are opt-in; the bounded runner explicitly supplies its own limits.
 
-The executable `manifold-action-runner` lives in the SDK; its trusted launcher supplies
-`MANIFOLD_ORIGIN` and process-owned `MANIFOLD_SPONSOR_TOKEN`, never credentials in argv or
-JSONL. It creates one root run, delivers live schemas and exact server-selected policy,
-requires an explicit exact acknowledgement, and retains every child/replacement bearer
-internally. `child`, `renew`, `policy`, `ack`, `discover`, `invoke` and `finish` frames consume
-the existing lifecycle/action doors. An ordinary `invoke` cannot impersonate a lifecycle
-frame. A policy-stale refusal is returned with its durable id and followed by fresh policy;
-the caller must acknowledge explicitly before retrying. The server remains the one argument
-validator and authorization decision; discovery never creates an alternate policy engine.
-The runner's owned root may itself be a server child of an accountable-agent launcher;
-renewal and teardown select that retained launcher credential by owned-root identity, not
-by an assumption that its server `parentRunId` is null.
+The executable `manifold-action-runner` lives in the SDK. Its trusted launcher supplies
+`MANIFOLD_ORIGIN` and exactly one environment binding: `MANIFOLD_RUNNER_TOKEN` plus
+`MANIFOLD_AGENT_ID` to create a run inside the Agent's standing grant, or `MANIFOLD_RUN_TOKEN`
+plus `MANIFOLD_RUN_ID` to adopt a run already admitted by a harness. Agent mode optionally
+accepts trusted `MANIFOLD_AGENT_SESSION` and `MANIFOLD_AGENT_MODEL` JSON. Every binding entry
+is withdrawn before either input pipe is read; credentials never travel in argv, model JSONL,
+prompts or logs. Mixed modes and the former sponsor-token carrier are refused.
+
+Admission delivers live schemas and exact server-selected policy before model input. There is
+no `start` or `bind` model frame. Explicit exact acknowledgement remains required; `child`,
+`renew`, `policy`, `ack`, `discover`, `invoke` and `finish` name owned run ids. Children narrow
+the same Agent and cannot bind a session or model through their declaration. Every child and
+replacement bearer remains private. An ordinary `invoke` cannot impersonate a lifecycle or
+activity frame. A policy-stale refusal is followed by fresh policy, never automatic assent.
+The server remains the one argument validator and authority decision.
+
+A trusted harness reports activity through `ActionRunner.reportActivity` or a separate inherited
+`MANIFOLD_ACTIVITY_FD` pipe (descriptor at least 3), using `{runId,activity}` with
+`working | blocked | done | idle`. It cannot share model stdin. Reports use the same
+`core.access.reportRunActivity` door and owned run credential, not terminal-output inference;
+both pipes share the serialized executor and process lifetime.
 
 JSONL results publish only mechanical success or the server's refusal rule, door, caller-declared
 target, run id, trace id and bounded lifecycle facts. They do not publish raw action results,
@@ -185,12 +194,14 @@ free-form refusal messages, arguments, environment/terminal/output bytes, creden
 credential hashes. Policy digests are public acknowledgement identifiers, not credential hashes.
 The target is a declaration, not a claim that the caller has reconstructed resolved ledger targets.
 Frames reject credential fields and bearer-shaped input even inside opaque action arguments.
-The runner bounds frames to 64 KiB, requests to 1024, idle time to five minutes, process lifetime
-to one hour and each HTTP request to 30 seconds. EOF abandons unfinished work; malformed input
-fails it; interruption cancels it. Teardown attempts the same finish door with the retained direct
-sponsor, including when the child's bearer has expired. Lost creation responses, network failure
-and uncatchable termination cannot guarantee cleanup: report failure and rely on server expiry
-only as the backstop. See [the operating contract](../packages/sdk/README.md) before launching.
+The runner bounds each pipe's frames to 64 KiB and frame count to 1024, model idle time to
+five minutes, process lifetime to one hour and each HTTP request to 30 seconds. Model EOF
+abandons unfinished work; malformed input fails it; interruption cancels it. Closing only the
+activity pipe does not finish the run. Teardown attempts the same finish door: Agent mode
+retains the scoped runner credential even after run expiry, while Run mode uses its current
+run bearer. Lost responses, network failure and uncatchable termination cannot guarantee
+cleanup: report failure and rely on server expiry only as the backstop.
+See [the operating contract](../packages/sdk/README.md) before launching.
 
 ### Agent run inspection and declarations
 
