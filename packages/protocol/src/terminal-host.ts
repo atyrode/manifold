@@ -62,6 +62,7 @@ export const TERMINAL_HOST_MACHINE_COMMAND_TYPES = [
   "input",
   "resize",
   "kill",
+  "terminal_restart",
   "snapshot_request",
   "drain",
 ] as const satisfies readonly ServerToAgentMessage["type"][];
@@ -73,6 +74,9 @@ export const TERMINAL_HOST_MACHINE_EVENT_TYPES = [
   "output",
   "snapshot",
   "exited",
+  "terminal_cwd",
+  "terminal_restarted",
+  "terminal_restart_error",
   "drain_status",
 ] as const satisfies readonly AgentMessage["type"][];
 
@@ -161,6 +165,8 @@ export const TerminalHostStatusSchema = z.strictObject({
   draining: z.boolean(),
   /** Older retained owners omit this; absence grants no unconfined terminal authority. */
   terminalExecution: TerminalExecutionSchema.optional(),
+  /** Feature detection belongs to the owner, not the independently upgraded transport. */
+  terminalRestart: z.boolean().optional(),
   transportAttached: z.boolean(),
   terminals: z.array(AdvertisedTerminalSchema),
 });

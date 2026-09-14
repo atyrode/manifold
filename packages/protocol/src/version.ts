@@ -1,5 +1,5 @@
 /** Wire revision; session joins require the current version (close 4409 otherwise). */
-export const PROTOCOL_VERSION = 32;
+export const PROTOCOL_VERSION = 33;
 
 /**
  * Machine-channel acceptance set. Agents are long-lived (they hold PTYs and
@@ -328,8 +328,17 @@ export const PROTOCOL_VERSION = 32;
  * the hub first, then upgrade spokes when ready; no fleet restart is forced.
  * Agent/Run refs and harness manifests are session/HTTP vocabulary. Federation
  * frames are unchanged, so the instance acceptance set also adds 32.
+ *
+ * v32 -> v33: TERMINAL CWD AND RESTART (issue #583). Owners may advertise their
+ * observed `cwd` and `terminalRestart` support. The hub only sends `terminal_restart`
+ * when the current owner declared support; an older retained owner is refused as
+ * unsupported without changing its wire. Cwd and restart-result events are additive,
+ * and absent cwd remains unknown. Machine acceptance ADDS 33. Session joins are
+ * strictly 33 for cwd/restarted events and terminal summaries. Owner loss retains
+ * exited tiles rather than removing their homes. IPC stays 2, and the unchanged
+ * instance wire adds 33. No terminal host is stopped to acquire this feature.
  */
-export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([30, 31, 32]);
+export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([30, 31, 32, 33]);
 
 /**
  * The first machine protocol that carries `repository_query`/`repository_fact` (issue #529).
@@ -337,6 +346,9 @@ export const MACHINE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([30
  * an unanswerable question must be refused by name rather than waited out.
  */
 export const MACHINE_REPOSITORY_PROTOCOL_VERSION = 31;
+
+/** A pre-v33 transport must never receive the restart command it cannot answer. */
+export const TERMINAL_RESTART_PROTOCOL_VERSION = 33;
 
 /**
  * Instance-channel acceptance set, and a SEPARATE set on purpose (ADR 0014).
@@ -370,10 +382,10 @@ export const MACHINE_REPOSITORY_PROTOCOL_VERSION = 31;
  * never receives a machine ref, so the instance wire is unchanged.
  * v26: image-aware terminal viewers; instance frames remain unchanged.
  * v27: governed jobs expand the closed share resource/capability vocabularies (ADR 0033);
- * instance compatibility resets to protocol 27. v28 through v32 leave that wire unchanged.
+ * instance compatibility resets to protocol 27. v28 through v33 leave that wire unchanged.
  */
 export const INSTANCE_PROTOCOL_COMPAT_VERSIONS: ReadonlySet<number> = new Set([
-  27, 28, 29, 30, 31, 32,
+  27, 28, 29, 30, 31, 32, 33,
 ]);
 
 /**
