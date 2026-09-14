@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   AgentRunInspectionSchema,
-  CreateAgentRunRequestSchema,
+  CreateRunCredentialResultSchema,
+  ListAgentsResultSchema,
   AgentRunInventorySchema,
   type ActionOutcome,
-  type CreateAgentRunResult,
+  type CreateRunCredentialResult,
 } from "@manifold/protocol";
 import { AuthService, ServiceError, type AuthContext } from "../src/auth.ts";
 import { silentLogger } from "../src/log.ts";
@@ -12,6 +13,7 @@ import { RoomManager } from "../src/room.ts";
 import { sha256Hex } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import { createExternalRun } from "./agent-fixtures.ts";
 
 async function fixture() {
   const runtime = new FakeRuntime();
@@ -41,21 +43,7 @@ async function fixture() {
     );
     return auth.authenticate(minted.token);
   };
-  const run = (
-    actor: AuthContext,
-    name: string,
-  ): { created: CreateAgentRunResult; actor: AuthContext } => {
-    const created = auth.createAgentRun(
-      CreateAgentRunRequestSchema.parse({
-        name,
-        purpose: "Read the sponsored workspace",
-        target: "manifold://",
-        reach: "subtree",
-        caps: ["agents:delegate", "containers:read"],
-        lifetimeMs: 60_000,
-      }),
-      actor,
-    );
+  const admitted = (created: CreateRunCredentialResult) => {
     const context = auth.authenticate(created.credential.token);
     const challenge = auth.agentPolicyChallenge(context);
     auth.acknowledgeAgentPolicy(
@@ -67,7 +55,20 @@ async function fixture() {
     );
     return { created, actor: context };
   };
-  return { runtime, store, auth, host, owner, sponsor, run };
+  const run = (actor: AuthContext, name: string) =>
+    admitted(createExternalRun({ auth, runtime, owner }, {
+      name,
+      purpose: "Read the sponsored workspace",
+      target: "manifold://",
+      reach: "subtree",
+      caps: ["agents:delegate", "containers:read"],
+      lifetimeMs: 60_000,
+    }, actor));
+  const child = (parent: { created: CreateRunCredentialResult; actor: AuthContext }) =>
+    admitted(CreateRunCredentialResultSchema.parse(auth.createChildRun({
+      runId: parent.created.run.id,
+    }, parent.actor)));
+  return { runtime, store, auth, host, owner, sponsor, run, child };
 }
 function result(outcome: ActionOutcome): unknown {
   if (!outcome.ok) throw new Error(`unexpected refusal: ${outcome.denial.rule}`);
@@ -79,53 +80,62 @@ function denied(outcome: ActionOutcome) {
 }
 
 describe("agent run inspection", () => {
-  test("self chain, durable sponsors and root are exact; siblings and missing runs are indistinguishable", async () => {
+  test("runs see only self and direct children; durable sponsors and root see descendants", async () => {
     const f = await fixture();
     try {
       const sponsor = f.sponsor();
       const otherSponsor = f.sponsor();
       const parent = f.run(sponsor, "password=short-secret");
-      const child = f.run(parent.actor, "child");
-      const sibling = f.run(parent.actor, "sibling");
+      const child = f.child(parent);
+      const sibling = f.child(parent);
+      const grandchild = f.child(child);
       const other = f.run(otherSponsor, "other");
       f.store.db
         .query("UPDATE agent_runs SET purpose=? WHERE id=?")
         .run("Basic dXNlcjpwYXNzd29yZA==", parent.created.run.id);
       const inspect = (actor: AuthContext, runId: string) =>
-        f.host.dispatch(actor, "core.access.inspectAgentRun", { runId });
+        f.host.dispatch(actor, "core.access.inspectRun", { runId });
       for (const actor of [f.owner, sponsor, parent.actor, child.actor]) {
         const projection = AgentRunInspectionSchema.parse(
           result(await inspect(actor, child.created.run.id)),
         );
         expect(projection.run.id).toBe(child.created.run.id);
       }
-      const ancestor = AgentRunInspectionSchema.parse(
-        result(await inspect(child.actor, parent.created.run.id)),
+      const direct = AgentRunInspectionSchema.parse(
+        result(await inspect(child.actor, grandchild.created.run.id)),
       );
-      expect(ancestor.lineage.map((entry) => entry.id)).toEqual([
-        parent.created.run.id,
+      expect(direct.lineage.map((entry) => entry.id).sort()).toEqual([
         child.created.run.id,
-      ]);
+        grandchild.created.run.id,
+      ].sort());
       const invisible = denied(await inspect(child.actor, sibling.created.run.id));
       expect(denied(await inspect(child.actor, "no-such-run"))).toEqual(invisible);
+      expect(denied(await inspect(child.actor, parent.created.run.id))).toEqual(invisible);
+      expect(denied(await inspect(parent.actor, grandchild.created.run.id))).toEqual(invisible);
       expect(denied(await inspect(otherSponsor, child.created.run.id))).toEqual(invisible);
       expect(denied(await inspect(sponsor, other.created.run.id))).toEqual(invisible);
       expect(denied(await f.host.dispatch(child.actor, "core.events.list", {})).rule).toBe(
         "forbidden",
       );
       const listed = AgentRunInventorySchema.parse(
-        result(await f.host.dispatch(child.actor, "core.access.listAgentRuns", {})),
+        result(await f.host.dispatch(child.actor, "core.access.listRuns", {})),
       );
-      expect(listed.runs.map((entry) => entry.principalId).sort()).toEqual(
-        [parent.actor.principal.id, child.actor.principal.id].sort(),
+      expect(listed.runs.map((entry) => entry.id).sort()).toEqual(
+        [child.created.run.id, grandchild.created.run.id].sort(),
       );
       const sponsored = AgentRunInventorySchema.parse(
-        result(await f.host.dispatch(sponsor, "core.access.listAgentRuns", {})),
+        result(await f.host.dispatch(sponsor, "core.access.listRuns", {})),
       );
-      expect(sponsored.runs.map((entry) => entry.principalId).sort()).toEqual(
-        [parent.actor.principal.id, child.actor.principal.id, sibling.actor.principal.id].sort(),
+      expect(sponsored.runs.map((entry) => entry.id).sort()).toEqual(
+        [parent.created.run.id, child.created.run.id, sibling.created.run.id, grandchild.created.run.id].sort(),
       );
-      for (const inventory of [listed, sponsored]) {
+      const parentInventory = AgentRunInventorySchema.parse(
+        result(await f.host.dispatch(parent.actor, "core.access.listRuns", {})),
+      );
+      expect(parentInventory.runs.map((entry) => entry.id).sort()).toEqual(
+        [parent.created.run.id, child.created.run.id, sibling.created.run.id].sort(),
+      );
+      for (const inventory of [parentInventory, sponsored]) {
         expect(inventory.runs.find((entry) => entry.id === parent.created.run.id)?.name).toBe(
           "[redacted]",
         );
@@ -144,15 +154,15 @@ describe("agent run inspection", () => {
         "forbidden",
       );
       expect(
-        f.auth
-          .listCredentials(f.owner)
-          .find((entry) => entry.principal.id === parent.actor.principal.id)?.sessions[0]?.id,
-      ).toBe(parent.actor.tokenId!);
+        f.auth.listCredentials(f.owner)
+          .find((entry) => entry.principal.id === parent.actor.principal.id)
+          ?.sessions.map((session) => session.id),
+      ).toContain(parent.actor.tokenId!);
       // A coincidentally shared root id is not a sponsorship edge.
       f.store.db
         .query("UPDATE agent_runs SET authorized_by_principal_id=? WHERE id=?")
         .run(otherSponsor.principal.id, child.created.run.id);
-      expect(denied(await inspect(sponsor, child.created.run.id))).toEqual(invisible);
+      expect(denied(await inspect(parent.actor, child.created.run.id))).toEqual(invisible);
     } finally {
       f.store.close();
     }
@@ -191,21 +201,21 @@ describe("agent run inspection", () => {
           ok: false,
         });
       }
-      expect(f.auth.listAgentRuns(sponsor).runs.map((entry) => entry.principalId)).toContain(
-        run.actor.principal.id,
+      expect(f.auth.listRuns({}, sponsor).runs.map((entry) => entry.id)).toContain(
+        run.created.run.id,
       );
       f.auth.revokePrincipal(sponsor.principal.id, f.owner);
-      expect(() => f.auth.listAgentRuns(sponsor)).toThrow(ServiceError);
-      expect(await f.host.dispatch(sponsor, "core.access.listAgentRuns", {})).toMatchObject({
+      expect(() => f.auth.listRuns({}, sponsor)).toThrow(ServiceError);
+      expect(await f.host.dispatch(sponsor, "core.access.listRuns", {})).toMatchObject({
         ok: false,
         denial: { rule: "refused" },
       });
       const expiring = f.run(f.owner, "expires during request");
-      expect(f.auth.listAgentRuns(expiring.actor).runs.map((entry) => entry.principalId)).toEqual([
-        expiring.actor.principal.id,
+      expect(f.auth.listRuns({}, expiring.actor).runs.map((entry) => entry.id)).toEqual([
+        expiring.created.run.id,
       ]);
       f.runtime.time = expiring.created.run.expiresAt;
-      expect(() => f.auth.listAgentRuns(expiring.actor)).toThrow(ServiceError);
+      expect(() => f.auth.listRuns({}, expiring.actor)).toThrow(ServiceError);
       expect(f.auth.listCredentials(f.owner).map((entry) => entry.principal.id)).toContain(
         expiring.actor.principal.id,
       );
@@ -224,12 +234,12 @@ describe("agent run inspection", () => {
         expected.push(f.run(f.owner, `new root ${String(index)}`).created.run.id);
       }
       const bounded = AgentRunInventorySchema.parse(
-        result(await f.host.dispatch(f.owner, "core.access.listAgentRuns", {})),
+        result(await f.host.dispatch(f.owner, "core.access.listRuns", {})),
       );
       expect(bounded.runs.map((entry) => entry.id)).toEqual(expected.reverse().slice(0, 100));
       expect(bounded.truncated).toBe(true);
       const self = AgentRunInventorySchema.parse(
-        result(await f.host.dispatch(own.actor, "core.access.listAgentRuns", {})),
+        result(await f.host.dispatch(own.actor, "core.access.listRuns", {})),
       );
       expect(self.runs.map((entry) => entry.id)).toEqual([own.created.run.id]);
       expect(self.truncated).toBe(false);
@@ -242,10 +252,11 @@ describe("agent run inspection", () => {
     const f = await fixture();
     try {
       const run = f.run(f.owner, "run");
-      const foreign = f.run(f.owner, "foreign");
+      const foreign = f.child(run);
       const first = f.store.appendTrace({
         ts: f.runtime.now(),
         actor: run.actor.principal.id,
+        runId: run.created.run.id,
         authority: "containers:read",
         door: "core.index.list",
         containerId: null,
@@ -264,6 +275,7 @@ describe("agent run inspection", () => {
       const second = f.store.appendTrace({
         ts: f.runtime.now(),
         actor: run.actor.principal.id,
+        runId: run.created.run.id,
         authority: "containers:write",
         door: "core.index.createContainer",
         containerId: null,
@@ -275,6 +287,7 @@ describe("agent run inspection", () => {
       const pending = f.store.appendTrace({
         ts: f.runtime.now(),
         actor: run.actor.principal.id,
+        runId: run.created.run.id,
         authority: "open",
         door: "engine.jobs.execute",
         containerId: null,
@@ -286,6 +299,7 @@ describe("agent run inspection", () => {
       const foreignTrace = f.store.appendTrace({
         ts: f.runtime.now(),
         actor: foreign.actor.principal.id,
+        runId: foreign.created.run.id,
         authority: "open",
         door: "core.index.list",
         containerId: null,
@@ -294,8 +308,8 @@ describe("agent run inspection", () => {
         outcome: "ok",
         targets: [],
       });
-      f.auth.setRunConnectionReader((principalId) =>
-        principalId === run.actor.principal.id ? ["live-connection"] : [],
+      f.auth.setRunConnectionReader((runId) =>
+        runId === run.created.run.id ? ["live-connection"] : [],
       );
       f.store.db
         .query(
@@ -313,7 +327,7 @@ describe("agent run inspection", () => {
             artifactSha256: "a".repeat(64),
             credential: {
               principalId: run.actor.principal.id,
-              tokenId: "SENSITIVE_TOKEN_ID",
+              tokenId: run.actor.tokenId!,
               hash: sha256Hex(run.created.credential.token),
             },
             input: { secret: "SENSITIVE_NATIVE_INPUT" },
@@ -357,7 +371,7 @@ describe("agent run inspection", () => {
       const inspect = async (extra: Record<string, unknown> = {}) =>
         AgentRunInspectionSchema.parse(
           result(
-            await f.host.dispatch(f.owner, "core.access.inspectAgentRun", {
+            await f.host.dispatch(f.owner, "core.access.inspectRun", {
               runId: run.created.run.id,
               ...extra,
             }),
@@ -405,6 +419,7 @@ describe("agent run inspection", () => {
         "SENSITIVE_",
         "DO_NOT_REVEAL",
         run.created.credential.token,
+        run.actor.tokenId!,
         sha256Hex(run.created.credential.token),
       ]) {
         expect(wire.includes(sensitive)).toBe(false);
@@ -467,24 +482,21 @@ describe("agent run inspection", () => {
     }
   });
 
-  test("pending policy, cleanup failures, revocation, expiry and unavailable legacy origins remain distinct", async () => {
+  test("pending policy, cleanup failures, revocation, expiry and unregistered legacy principals remain distinct", async () => {
     const f = await fixture();
     try {
-      const created = f.auth.createAgentRun(
-        CreateAgentRunRequestSchema.parse({
-          name: "pending",
-          purpose: "Wait for policy",
-          target: "manifold://",
-          reach: "subtree",
-          caps: ["containers:read"],
-          lifetimeMs: 60_000,
-        }),
-        f.owner,
-      );
+      const created = createExternalRun(f, {
+        name: "pending",
+        purpose: "Wait for policy",
+        target: "manifold://",
+        reach: "subtree",
+        caps: ["containers:read"],
+        lifetimeMs: 60_000,
+      });
       const pending = f.auth.authenticate(created.credential.token);
       const own = AgentRunInspectionSchema.parse(
         result(
-          await f.host.dispatch(pending, "core.access.inspectAgentRun", { runId: created.run.id }),
+          await f.host.dispatch(pending, "core.access.inspectRun", { runId: created.run.id }),
         ),
       );
       expect(own.run.state).toBe("pending_policy");
@@ -499,7 +511,7 @@ describe("agent run inspection", () => {
       );
       const failed = AgentRunInspectionSchema.parse(
         result(
-          await f.host.dispatch(f.owner, "core.access.inspectAgentRun", { runId: created.run.id }),
+          await f.host.dispatch(f.owner, "core.access.inspectRun", { runId: created.run.id }),
         ),
       );
       expect(failed.run.cleanup.status).toBe("failed");
@@ -508,7 +520,7 @@ describe("agent run inspection", () => {
       f.runtime.time += 60_001;
       const expiredProjection = AgentRunInspectionSchema.parse(
         result(
-          await f.host.dispatch(f.owner, "core.access.inspectAgentRun", {
+          await f.host.dispatch(f.owner, "core.access.inspectRun", {
             runId: expired.created.run.id,
           }),
         ),
@@ -519,7 +531,7 @@ describe("agent run inspection", () => {
       f.auth.finishAgentRun({ runId: live.created.run.id, outcome: "completed" }, f.owner);
       const closed = AgentRunInspectionSchema.parse(
         result(
-          await f.host.dispatch(f.owner, "core.access.inspectAgentRun", {
+          await f.host.dispatch(f.owner, "core.access.inspectRun", {
             runId: live.created.run.id,
           }),
         ),
@@ -533,11 +545,10 @@ describe("agent run inspection", () => {
         color: "#91a7ff",
       };
       f.store.createPrincipal(legacy, f.runtime.now());
-      expect(
-        result(
-          await f.host.dispatch(f.owner, "core.access.inspectAgentRun", { principalId: legacy.id }),
-        ),
-      ).toEqual({ availability: "origin_unavailable", principalId: legacy.id });
+      const agents = ListAgentsResultSchema.parse(
+        result(await f.host.dispatch(f.owner, "core.access.listAgents", {})),
+      );
+      expect(agents.agents.map((agent) => agent.principalId)).not.toContain(legacy.id);
     } finally {
       f.store.close();
     }

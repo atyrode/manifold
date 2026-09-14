@@ -1,12 +1,13 @@
 import "../src/shared-modules.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
-  CreateAgentRunRequestSchema,
+  CreateRunCredentialResultSchema,
   RenewAgentRunResultSchema,
   PublicJobSchema,
   formatManifoldUri,
   type ActionOutcome,
-  type CreateAgentRunRequest,
+  type CreateChildRunRequest,
+  type CreateRunCredentialResult,
   type MachineHalf,
   type IsolateChildFrame,
   type IsolateHostFrame,
@@ -27,6 +28,7 @@ import { RoomManager } from "../src/room.ts";
 import { TRACE_ROW_TYPE, type ServerStore } from "../src/stores.ts";
 import { TerminalBroker } from "../src/terminal-broker.ts";
 import { FakeClock, FakeRuntime, testPluginHost, testStore, testTileTrees } from "./helpers.ts";
+import { createExternalRun, type ExternalRunFixtureInput } from "./agent-fixtures.ts";
 
 const stores = new Set<ServerStore>();
 afterEach(() => {
@@ -78,8 +80,6 @@ const machinePlugin: ServerPluginDef = {
   handlers: {},
 };
 const child = {
-  name: "admission child",
-  purpose: "Read the assigned task.",
   target: "manifold://",
   reach: "subtree",
   caps: ["containers:read"],
@@ -121,16 +121,7 @@ async function fixture(settingsPlugins: readonly ServerPluginDef[] = []) {
     artifactSha256: artifact,
     machine,
   });
-  const newRun = (sponsor: AuthContext = owner, overrides: Partial<CreateAgentRunRequest> = {}) => {
-    const created = auth.createAgentRun(
-      CreateAgentRunRequestSchema.parse({
-        ...child,
-        caps: ["agents:delegate", "containers:read", "machines:run", "jobs:read"],
-        lifetimeMs: 600_000,
-        ...overrides,
-      }),
-      sponsor,
-    );
+  const admitted = (created: CreateRunCredentialResult) => {
     const actor = auth.authenticate(created.credential.token);
     const challenge = auth.agentPolicyChallenge(actor);
     auth.acknowledgeAgentPolicy(
@@ -141,6 +132,23 @@ async function fixture(settingsPlugins: readonly ServerPluginDef[] = []) {
       actor,
     );
     return { actor, created };
+  };
+  const newRun = (sponsor: AuthContext = owner, overrides: Partial<ExternalRunFixtureInput> = {}) =>
+    admitted(createExternalRun({ auth, runtime, owner }, {
+      name: `admission ${runtime.newId()}`,
+      purpose: "Read the assigned task.",
+      target: "manifold://",
+      reach: "subtree",
+      caps: ["agents:delegate", "containers:read", "machines:run", "jobs:read", "operations:invoke"],
+      lifetimeMs: 600_000,
+      ...overrides,
+    }, sponsor));
+  const newChildRun = (actor: AuthContext, overrides: Omit<CreateChildRunRequest, "runId">) => {
+    if (actor.agentRunId === undefined) throw new Error("child fixture requires a parent run");
+    return admitted(CreateRunCredentialResultSchema.parse(auth.createChildRun({
+      ...overrides,
+      runId: actor.agentRunId,
+    }, actor)));
   };
   const { actor, created } = newRun();
   const request = {
@@ -161,7 +169,7 @@ async function fixture(settingsPlugins: readonly ServerPluginDef[] = []) {
     expiresAt: 120_000,
     offlinePolicy: "skip",
   };
-  const consent = (cap: "machines:run" | "jobs:read", enabled = true) =>
+  const consent = (cap: "machines:run" | "jobs:read" | "operations:invoke", enabled = true) =>
     jobs.consent(owner, {
       machineId,
       pluginId,
@@ -186,6 +194,7 @@ async function fixture(settingsPlugins: readonly ServerPluginDef[] = []) {
     actor,
     created,
     newRun,
+    newChildRun,
     request,
     schedule,
     consent,
@@ -197,30 +206,35 @@ describe("declarations follow real first-party admission", () => {
   test("create target scope and delegated capability refusers precede a missing claim", async () => {
     const f = await fixture();
     const scoped = f.newRun(f.owner, { target: "manifold://container/inside" });
-    expect(await f.host.dispatch(scoped.actor, "core.access.createAgentRun", child)).toEqual({
+    expect(await f.host.dispatch(scoped.actor, "core.access.createChildRun", {
+      ...child,
+      runId: scoped.created.run.id,
+    })).toEqual({
       ok: false,
-      denial: { rule: "refused", message: "cannot widen container scope" },
+      denial: { rule: "refused", message: "target_exceeds_grant" },
     });
     expect(
-      await f.host.dispatch(f.actor, "core.access.createAgentRun", {
+      await f.host.dispatch(f.actor, "core.access.createChildRun", {
         ...child,
+        runId: f.created.run.id,
         caps: ["terminals:write"],
       }),
     ).toEqual({
       ok: false,
-      denial: { rule: "refused", message: "cannot delegate capability terminals:write at target" },
+      denial: { rule: "refused", message: "cap_exceeds_grant" },
     });
     expect(f.store.listAgentRunTree(f.created.run.id).map((run) => run.id)).toEqual([
       f.created.run.id,
     ]);
   });
 
-  test("renewal checks the actual sponsor before missing or invalid declarations", async () => {
+  test("renewal rejects an unrelated run before missing or invalid declarations", async () => {
     const f = await fixture();
+    const unrelated = f.newRun();
     for (const options of [undefined, { agentJustification: " " }]) {
       expect(
         await f.host.dispatch(
-          f.actor,
+          unrelated.actor,
           "core.access.renewAgentRun",
           {
             runId: f.created.run.id,
@@ -230,7 +244,7 @@ describe("declarations follow real first-party admission", () => {
         ),
       ).toEqual({
         ok: false,
-        denial: { rule: "refused", message: "only the current direct sponsor may renew this run" },
+        denial: { rule: "refused", message: "agent_unavailable" },
       });
       expect(f.trace().outcome).toBe("refused");
     }
@@ -239,7 +253,7 @@ describe("declarations follow real first-party admission", () => {
 
   test("renewal rechecks the sponsor's authority at the existing run target", async () => {
     const f = await fixture();
-    const sponsored = f.newRun(f.actor, {
+    const sponsored = f.newChildRun(f.actor, {
       target: "manifold://container/inside",
       caps: ["containers:read"],
       lifetimeMs: 60_000,
@@ -261,14 +275,17 @@ describe("declarations follow real first-party admission", () => {
       }),
     ).toEqual({
       ok: false,
-      denial: { rule: "refused", message: "sponsor no longer holds the run authority ceiling" },
+      denial: { rule: "refused", message: "sponsor_authority_unavailable" },
     });
     expect(f.store.getAgentRun(sponsored.created.run.id)?.renewals).toBe(0);
   });
 
   test("admitted create and renewal reject declarations before creating or replacing credentials", async () => {
     const f = await fixture();
-    expect(await f.host.dispatch(f.actor, "core.access.createAgentRun", child)).toMatchObject({
+    expect(await f.host.dispatch(f.actor, "core.access.createChildRun", {
+      ...child,
+      runId: f.created.run.id,
+    })).toMatchObject({
       ok: false,
       denial: { rule: "justification_required" },
     });
@@ -276,7 +293,7 @@ describe("declarations follow real first-party admission", () => {
     expect(f.store.listAgentRunTree(f.created.run.id).map((run) => run.id)).toEqual([
       f.created.run.id,
     ]);
-    const sponsored = f.newRun(f.actor, { caps: ["containers:read"], lifetimeMs: 60_000 });
+    const sponsored = f.newChildRun(f.actor, { caps: ["containers:read"], lifetimeMs: 60_000 });
     const before = f.store.getAgentRun(sponsored.created.run.id);
     expect(
       await f.host.dispatch(
@@ -295,8 +312,8 @@ describe("declarations follow real first-party admission", () => {
     });
     expect(f.trace().outcome).toBe("invalid_justification");
     expect(f.store.getAgentRun(sponsored.created.run.id)).toEqual(before);
-    expect(f.auth.authenticate(sponsored.created.credential.token).principal.id).toBe(
-      sponsored.actor.principal.id,
+    expect(f.auth.authenticate(sponsored.created.credential.token).agentRunId).toBe(
+      sponsored.created.run.id,
     );
     const renewed = RenewAgentRunResultSchema.parse(
       value(
@@ -384,7 +401,7 @@ describe("declarations follow real first-party admission", () => {
   test("schedule expiry and immutable revision refusers still precede declaration enforcement", async () => {
     const f = await fixture();
     f.consent("machines:run");
-    f.consent("jobs:read");
+    f.consent("operations:invoke");
     await expect(
       f.host.dispatch(f.actor, "engine.jobs.schedule", {
         ...f.schedule,

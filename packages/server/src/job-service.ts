@@ -119,6 +119,8 @@ interface JobReplay {
 }
 interface JobChannel {
   machineId: string;
+  /** Absent on legacy in-process channels; new private launch carriers fail closed. */
+  readonly protocolVersion?: number;
   send(message: { type: "job_command"; command: JobCommand }): boolean;
 }
 interface LiveJobOwner {
@@ -155,7 +157,7 @@ function fail(code = "governed_authority_refused"): never {
 const active = new Set(["queued", "admitted", "start-committed", "started"]);
 // Each current RPC must opt into its audited retirement-only predecessors; a future bump defaults closed.
 const legacyRetirementProtocols = new Map<number, ReadonlySet<number>>([
-  [34, new Set([30, 31, 32, 33])],
+  [35, new Set([30, 31, 32, 33, 34])],
 ]);
 const runCursorSchema = z.strictObject({
   filter: z.strictObject({
@@ -3509,6 +3511,29 @@ export class JobService {
     if (job.state === "queued") this.start(job);
     return this.jobs.get(request.jobId)!;
   }
+  /** Read the durable native association, never a caller-selected terminal or job id. */
+  runTerminal(auth: AuthContext, runId: string, pluginId: string): Extract<ManifoldRef, { kind: "job" }> {
+    this.auth.authorizeRunInput(runId, auth);
+    const job = this.jobs.active().find((job) =>
+      job.request.terminal?.runId === runId && job.request.pluginId === pluginId);
+    if (!job) throw new ServiceError("not_found", "run terminal unavailable");
+    const node = {
+      kind: "job" as const,
+      jobId: job.request.jobId,
+      machineId: job.request.machineId,
+      operationId: job.request.operationId,
+    };
+    this.authorizedJob(auth, node, "jobs:read", pluginId);
+    return node;
+  }
+
+  assertRunLaunchSupported(machineId: string): void {
+    const live = this.channels.get(machineId);
+    if (!live || (live.channel.protocolVersion ?? 0) < 32 || live.owner.protocolVersion < 35)
+      fail("run_launch_protocol_unsupported");
+    if (!live.proved || live.retirementOnly) fail("run_launch_owner_unavailable");
+  }
+
   /** Immediate native admission; unavailable/refused terminals never become retryable jobs. */
   admitTerminal(
     auth: AuthContext,
@@ -3516,8 +3541,11 @@ export class JobService {
     machineId: string,
     terminal: NonNullable<JobRequest["terminal"]>,
     traceId: number,
+    privateEnv?: Extract<JobCommand, { type: "start" }>["privateEnv"],
   ): Extract<JobCommand, { type: "start" }> {
     if (runtime.machineId !== machineId) fail("terminal_runtime_destination_changed");
+    if (privateEnv || runtime.launchBinding !== undefined || terminal.runId !== undefined)
+      this.assertRunLaunchSupported(machineId);
     const live = this.channels.get(machineId);
     const install = this.jobs.installation(machineId, runtime.pluginId);
     if (
@@ -3560,7 +3588,7 @@ export class JobService {
       fail("terminal_runtime_admission_refused");
     }
     this.changed(pinned);
-    return command;
+    return privateEnv ? { ...command, privateEnv } : command;
   }
   private start(
     job: JobRecord,
@@ -4605,8 +4633,8 @@ export class JobService {
     if (reason) fail(reason);
     if (
       job.state !== "started" ||
+      (job.request.terminal !== undefined && job.request.terminal.runId === undefined) ||
       job.stdinClosed ||
-      job.request.terminal ||
       !this.jobs.installation(
         job.request.machineId,
         job.request.pluginId,
@@ -4626,6 +4654,7 @@ export class JobService {
     traceId = "native-input",
   ): Promise<void> {
     const job = this.authorizedJob(auth, node, "jobs:input", callerPluginId);
+    if (job.request.terminal?.runId) this.auth.authorizeRunInput(job.request.terminal.runId, auth);
     this.inputAuthority(job);
     const live = this.channels.get(job.request.machineId);
     if (!live || !this.inputOwner(job, live.channel)) fail("job_input_owner_unavailable");

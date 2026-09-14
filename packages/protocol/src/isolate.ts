@@ -378,6 +378,7 @@ export const ISOLATE_CTX_METHODS = [
   "jobs.describeDeployment",
   "jobs.execute",
   "jobs.status",
+  "jobs.runTerminal",
   "jobs.listRuns",
   "jobs.input",
   "jobs.cancel",

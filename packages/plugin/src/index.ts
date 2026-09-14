@@ -7,6 +7,7 @@
  * design system is `@manifold/ui` (ADR 0025 §8), and this package re-exports nothing from it.
  */
 export { defineAction, type ActionDef, type AnyActionDef } from "./action.ts";
+export type { ServerHarness, Agent, AgentRun, HarnessTarget, SessionRef, TerminalRuntime } from "./harness.ts";
 export type {
   JobExecution,
   JobScheduleTiming,

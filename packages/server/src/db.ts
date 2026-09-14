@@ -6,9 +6,10 @@ import { migrateToGrantRows } from "./migrate-grants.ts";
 import { migrateToCanonLexicon, migrateToElementRefs } from "./migrate-lexicon.ts";
 import { migrateToSoloCompositions } from "./migrate-solo.ts";
 import { JOB_SCHEDULE_SCHEMA_SQL } from "./job-schedules.ts";
+import { migrateToDurableAgents } from "./migrate-agents.ts";
 
 /** Current durable schema revision. Migrations advance this monotonically. */
-export const SCHEMA_VERSION = 36;
+export const SCHEMA_VERSION = 37;
 
 /**
  * A migration is SQL, or CODE when the move is not expressible as SQL — schema 9 rewrites
@@ -866,6 +867,7 @@ SELECT 'agent-runs:declarations-after-event-id',
   ) AS TEXT);
 INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version','36');
 `,
+  37: { backup: true, apply: migrateToDurableAgents },
 };
 
 interface TableRow {
@@ -961,7 +963,12 @@ export function openDatabase(path: string): Database {
       else if ("sql" in migration) db.exec(migration.sql);
       else migration.apply(db, path);
     });
-    migrate();
+    try {
+      migrate();
+    } catch (error) {
+      db.close();
+      throw error;
+    }
   }
   return db;
 }
