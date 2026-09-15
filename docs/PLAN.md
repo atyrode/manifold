@@ -4,16 +4,16 @@ manifold is the successor to pad.ws (the proof of concept). It distills that pro
 core — an infinite canvas with terminals in it, multiplayer with strong presence — and
 rebuilds it agent-native, from scratch. No code is carried over; only lessons.
 
-## Axioms
+## Design principles
 
-| #   | Axiom                                             | Consequence                                                                                                                                                                                                                                   |
-| --- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A1  | manifold is the space, not the brain              | No agent runtime/orchestration/prompt tooling inside. Agents (pi, Claude Code, Codex, …) run in terminals; manifold gives them eyes (read scene, subscribe events) and hands (mutate scene, drive terminals). Bring your own brain + compute. |
-| A2  | Agents are principals; the human is root of trust | One identity model for humans and agents across presence, ownership, terminals. Uniform identity ≠ uniform authority: capability-scoped revocable tokens; freeze is a first-class verb.                                                       |
-| A3  | The protocol is the product                       | One typed contract (`@manifold/protocol`). Browser, SDK, CLI, MCP are adapters. If the protocol can't exercise a feature, the feature isn't done.                                                                                             |
-| A4  | Presence is the supervision surface               | Roster with agent states, cursors, selections, terminal focus, attribution. Watching includes intervening.                                                                                                                                    |
-| A5  | The repo is an agent habitat                      | One-command deterministic gates, zero-service tests, SDK-as-test-harness, machine-legible runtime. North star: manifold is developed inside manifold.                                                                                         |
-| A6  | Localhost-first, boring, small                    | One server + one agent daemon. SQLite. Exact-pinned, countable deps. Latest tech is a candidate, not a mandate.                                                                                                                               |
+| Principle                                         | Consequence                                                                                                                                                                                                                                   |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| manifold is the space, not the brain              | No agent runtime/orchestration/prompt tooling inside. Agents (pi, Claude Code, Codex, …) run in terminals; manifold gives them eyes (read scene, subscribe events) and hands (mutate scene, drive terminals). Bring your own brain + compute. |
+| Agents are principals; the human is root of trust | One identity model for humans and agents across presence, ownership, terminals. Uniform identity ≠ uniform authority: capability-scoped revocable tokens; freeze is a first-class verb.                                                       |
+| The protocol is the product                       | One typed contract (`@manifold/protocol`). Browser, SDK, CLI, MCP are adapters. If the protocol can't exercise a feature, the feature isn't done.                                                                                             |
+| Presence is the supervision surface               | Roster with agent states, cursors, selections, terminal focus, attribution. Watching includes intervening.                                                                                                                                    |
+| The repo is an agent habitat                      | One-command deterministic gates, zero-service tests, SDK-as-test-harness, machine-legible runtime. North star: manifold is developed inside manifold.                                                                                         |
+| Localhost-first, boring, small                    | One server + one agent daemon. SQLite. Exact-pinned, countable deps. Latest tech is a candidate, not a mandate.                                                                                                                               |
 
 ## Architecture
 
