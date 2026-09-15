@@ -3599,6 +3599,25 @@ provider handling and postconditions belong to plugins, never the common floor.
   for the old lifetime to close. Explicit job cancellation and credential, executor,
   installation or other authority revocation remain forceful; retirement cannot downgrade
   an already-requested cancellation.
+- **Instance-service readmission** ([#632](https://github.com/atyrode/manifold/issues/632)).
+  An enabled service whose recorded job ended after `plugin_held`, `installation_changed`,
+  `owner_fenced` or `owner_restart_effects_unknown` is reconciled from durable configuration
+  and cancellation evidence, not only transient start notifications. Once the hold clears,
+  the pinned installation is ready, the owner proves its current connection and the machine
+  is not draining, ordinary admission may create a fresh job without a configure toggle.
+  This also applies after rollback to a hub build that never held the plugin: owner proof
+  replays the installation, and even an unchanged installation returns a fresh `installed`
+  acknowledgement. No hold-clear callback or optimistic write of `ready=1` is required.
+  The retained job is never revived. Any unconfirmed sent permit still owns its lifetime;
+  `instance_service_lifetime_unconfirmed` blocks replacement until fenced `workload_empty`
+  proof. Admission retains the exact policy, resource pins, consent and authority checks.
+  The new job's `readmitted` lifecycle trace at `engine.services.configureInstance` names
+  `previousJobId` and `cancelReason`, and emits the ordinary `job_changed` notification.
+  Disabled configurations, `instance_service_disabled`, explicit `credential_revoked`
+  cancellations (including retained `core.access.revoke` outcomes), other explicit job
+  cancellations and retire-mode cancellations are not readmitted. Automatic authority
+  reconciliation preserves an existing force-cancel reason rather than relabeling an
+  explicit revoke as recoverable managed-credential loss.
 - **Metered inference** ([ADR 0038](decisions/0038-brokered-inference.md)). A job that drives a
   model never holds the model's credential: inference is an Instance Service whose origin is a
   provider and whose credential only the machine owner resolves, and the job is handed a loopback
