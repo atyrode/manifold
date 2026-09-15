@@ -3967,9 +3967,12 @@ is not a commit point any action owns.
 
 ## Persistence (SQLite, WAL; server-only)
 
-Every server SQLite connection sets `busy_timeout = 5000` (milliseconds) before configuring
-WAL and applying migrations. Writes wait up to five seconds for competing write locks,
-including Litestream's short checkpoint locks, before returning `SQLITE_BUSY`.
+Every server SQLite connection sets `busy_timeout = 5000` (milliseconds), configures WAL and
+sets `synchronous = FULL` before applying migrations. Writes wait up to five seconds for competing
+write locks, including Litestream's short checkpoint locks, before returning `SQLITE_BUSY`; FULL
+synchronization makes the plugin-image journal durable before filesystem activation.
+`packages/server/src/db.ts` remains the authoritative migration source; the handwritten
+inventory below records its schema through version 40 rather than acting as a second runner.
 
 ```
 containers(id TEXT PK, name TEXT, created_at INTEGER, sort_order INTEGER, folder_id TEXT,
@@ -3979,32 +3982,45 @@ container_folders(id TEXT PK, name TEXT, created_at INTEGER, parent_folder_id TE
 scene_docs(container_id TEXT, epoch TEXT, rev INTEGER, ts INTEGER, hash TEXT, doc BLOB,
            PRIMARY KEY (container_id, epoch, rev))     -- keep newest 30 valid docs each
 events(id INTEGER PK AUTOINCREMENT, container_id TEXT, ts INTEGER, principal_id TEXT,
-       type TEXT, payload TEXT,
-       door TEXT, authority TEXT, targets TEXT, outcome TEXT, session TEXT)
+       type TEXT, payload TEXT, door TEXT, authority TEXT, targets TEXT, outcome TEXT,
+       session TEXT, run_id TEXT, credential_id TEXT)
                             -- THE JOURNAL, two row families. door IS NULL: an event row
                             -- (lifecycle/caps/join-leave). door IS NOT NULL and type='trace':
                             -- axiom A6's ledger — one exercise of authority at one door, with
                             -- the authority discharged, the manifold:// nodes it named (JSON
                             -- array), its outcome (NULL = in flight), and the session it
                             -- arrived on (NULL = the HTTP action door). One retention for both
+                            -- open-time indexes: events_by_timestamp(ts),
+                            -- events_by_container_recency(container_id, ts DESC, id DESC)
 principals(id TEXT PK, kind TEXT, name TEXT, color TEXT, created_at INTEGER, origin TEXT)
                             -- origin NULL means THIS instance; a remote principal carries
                             -- the guest origin its share was minted for
 tokens(id TEXT PK, hash TEXT UNIQUE, principal_id TEXT, caps TEXT, container_id TEXT,
-       created_at INTEGER, revoked_at INTEGER, minted_by TEXT)  -- HASH only, never raw
+       created_at INTEGER, revoked_at INTEGER, minted_by TEXT, grant_id TEXT,
+       expires_at INTEGER, runner_agent_id TEXT REFERENCES agents(agent_id),
+       run_id TEXT)                                      -- HASH only, never raw
+grants(id TEXT PK, principal_kind TEXT NOT NULL, principal_id TEXT, node TEXT NOT NULL,
+       caps TEXT NOT NULL, effect TEXT NOT NULL, reach TEXT NOT NULL,
+       created_by TEXT NOT NULL, created_at INTEGER NOT NULL)
+                            -- authority bookkeeping, never bearer secrets; deleting a row
+                            -- revokes it. Indexes: grants_by_principal(principal_kind,
+                            -- principal_id, node), grants_by_node(node), tokens_by_grant(grant_id)
 machines(id TEXT PK, name TEXT UNIQUE, token_id TEXT, last_seen INTEGER,
          owner_host_id TEXT, draining INTEGER NOT NULL DEFAULT 0)
                             -- continuity identity and persistent admission latch, not PTY data
 terminals(id TEXT PK, machine_id TEXT, container_id TEXT, created_by TEXT, status TEXT,
-         exit_code INTEGER, created_at INTEGER, agent_principal_id TEXT, name TEXT)
+         exit_code INTEGER, created_at INTEGER, agent_principal_id TEXT, name TEXT,
+         run_id TEXT, cwd TEXT, launch_recipe TEXT)
                             -- container_id IS the home composition; no element_id, no pool
-                            -- order
+                            -- order. launch_recipe retains bounded opener program/env/runtime
+                            -- intent verbatim; reserved MANIFOLD_* credentials are never stored
 plugin_kv(plugin_id TEXT, key TEXT, value TEXT, PRIMARY KEY (plugin_id, key))
                             -- WITHOUT ROWID; per-plugin storage, `$`-prefixed keys are
                             -- engine-reserved ($version stamp, $migration:<name> ledger)
 plugin_installs(plugin_id TEXT PK, sha256 TEXT, source TEXT, granted_caps TEXT,
-                installed_by TEXT, installed_at INTEGER, bundle_path TEXT,
-                actions TEXT)
+                installed_by TEXT, installed_at INTEGER, bundle_path TEXT, actions TEXT,
+                hardened INTEGER NOT NULL DEFAULT 0, built_against TEXT,
+                mode TEXT NOT NULL DEFAULT 'bundle', installer_credential TEXT)
                             -- WITHOUT ROWID; one row per INSTALLED plugin (ADR 0016 stage 2):
                             -- the pin, the source as given, the grant (JSON caps), who and
                             -- when, where the bundle sits under <data>/plugins/<id>/, and the
@@ -4012,9 +4028,79 @@ plugin_installs(plugin_id TEXT PK, sha256 TEXT, source TEXT, granted_caps TEXT,
                             -- ActionSummary[]; '[]' for a row admitted before schema 18) —
                             -- what a boot that cannot re-verify the bundle puts on the
                             -- roster. No manifest column: it is read from the bundle after
-                            -- the file re-hashes to the pin, never from a stored copy
+                            -- the file re-hashes to the pin, never from a stored copy.
+                            -- installer_credential is nullable JSON non-secret lineage;
+                            -- NULL means a historical/rebuild-loop row has no jobs slice
+machine_job_owners(machine_id TEXT PK, owner_id TEXT NOT NULL, public_key TEXT NOT NULL,
+                   generation INTEGER NOT NULL)
+machine_job_installs(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, revision TEXT NOT NULL,
+                     artifact TEXT NOT NULL, manifest TEXT NOT NULL, enabled INTEGER NOT NULL,
+                     ready INTEGER NOT NULL DEFAULT 0, purge_requested INTEGER NOT NULL DEFAULT 0,
+                     resource_bindings TEXT, PRIMARY KEY(machine_id, plugin_id))
+machine_job_installations(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL,
+                          revision TEXT NOT NULL, artifact TEXT NOT NULL, manifest TEXT NOT NULL,
+                          resource_bindings TEXT, PRIMARY KEY(machine_id, plugin_id, revision))
+machine_job_consents(machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL, node TEXT NOT NULL,
+                     cap TEXT NOT NULL, installation_revision TEXT NOT NULL, artifact TEXT NOT NULL,
+                     revision TEXT NOT NULL, enabled INTEGER NOT NULL,
+                     PRIMARY KEY(machine_id, plugin_id, installation_revision, node, cap))
+machine_jobs(job_id TEXT PK, machine_id TEXT NOT NULL, plugin_id TEXT NOT NULL,
+             digest TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL, permit TEXT,
+             result TEXT, created_at INTEGER NOT NULL, audit_origin TEXT, decision_id TEXT,
+             cancel_reason TEXT, event_seq INTEGER NOT NULL DEFAULT 0, output_seq INTEGER,
+             next_input_seq INTEGER, stdin_closed INTEGER NOT NULL DEFAULT 0,
+             owner_closed INTEGER NOT NULL DEFAULT 0 CHECK(owner_closed IN (0, 1)),
+             cancel_mode TEXT NOT NULL DEFAULT 'cancel' CHECK(cancel_mode IN ('cancel', 'retire')),
+             run_id TEXT)
+machine_job_inputs(job_id TEXT NOT NULL, request_id TEXT NOT NULL, seq INTEGER NOT NULL,
+                   actor TEXT NOT NULL, trace_id TEXT NOT NULL, decision_id TEXT,
+                   state TEXT NOT NULL, reason TEXT, PRIMARY KEY(job_id, request_id))
+machine_job_decisions(id TEXT PK, created_at INTEGER NOT NULL, plugin_id TEXT NOT NULL,
+                      action TEXT NOT NULL, credential TEXT NOT NULL, policy_revision TEXT NOT NULL,
+                      evidence TEXT NOT NULL, consents TEXT NOT NULL)
+machine_job_outputs(node TEXT PK, job_id TEXT NOT NULL, plugin_id TEXT NOT NULL,
+                    metadata TEXT NOT NULL, released INTEGER NOT NULL DEFAULT 0)
+machine_job_revisions(kind TEXT NOT NULL, identity TEXT NOT NULL, revision INTEGER NOT NULL,
+                      digest TEXT NOT NULL, PRIMARY KEY(kind, identity))
+native_service_configurations(machine_id TEXT PK, revision TEXT NOT NULL,
+                              configuration TEXT NOT NULL)
+native_instance_services(service_id TEXT PK, revision TEXT NOT NULL, machine_id TEXT NOT NULL,
+                         plugin_id TEXT NOT NULL, configuration TEXT NOT NULL, credential TEXT,
+                         job_id TEXT, configured_by TEXT NOT NULL, configured_at INTEGER NOT NULL)
+machine_job_deployments(deployment_id TEXT PK, plugin_id TEXT NOT NULL, revision INTEGER NOT NULL,
+                        approved_at INTEGER NOT NULL, cancelled INTEGER NOT NULL DEFAULT 0
+                        CHECK(cancelled IN (0, 1)), approval TEXT NOT NULL)
+machine_job_deployment_targets(deployment_id TEXT NOT NULL REFERENCES
+                               machine_job_deployments(deployment_id), machine_id TEXT NOT NULL,
+                               plugin_id TEXT NOT NULL, phase TEXT NOT NULL CHECK(phase IN
+                               ('pending', 'applying', 'applied', 'needs_review', 'cancelled')),
+                               attempt TEXT, reason TEXT, receipt TEXT,
+                               PRIMARY KEY(deployment_id, machine_id))
+machine_job_journal(job_id TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL,
+                    event TEXT NOT NULL, PRIMARY KEY(job_id, seq))
+job_schedules(schedule_id TEXT NOT NULL, revision TEXT NOT NULL, spec TEXT NOT NULL,
+              next_nominal INTEGER NOT NULL, disabled_reason TEXT, audit_origin TEXT,
+              PRIMARY KEY(schedule_id, revision))
+job_schedule_occurrences(schedule_id TEXT NOT NULL, revision TEXT NOT NULL,
+                         nominal INTEGER NOT NULL, job_id TEXT NOT NULL UNIQUE,
+                         request TEXT NOT NULL, deadline INTEGER NOT NULL, state TEXT NOT NULL,
+                         reason TEXT, run_id TEXT, PRIMARY KEY(schedule_id, revision, nominal))
+job_invocation_reservations(parent_job_id TEXT NOT NULL, invocation_id TEXT NOT NULL,
+                            job_id TEXT NOT NULL UNIQUE, root_job_id TEXT NOT NULL,
+                            depth INTEGER NOT NULL, request TEXT NOT NULL, edge TEXT NOT NULL,
+                            active INTEGER NOT NULL, PRIMARY KEY(parent_job_id, invocation_id))
+job_invocation_edges(caller TEXT NOT NULL, operation_id TEXT NOT NULL, edge TEXT NOT NULL,
+                     enabled INTEGER NOT NULL, revision TEXT NOT NULL DEFAULT '',
+                     PRIMARY KEY(caller, operation_id))
+                            -- indexes: machine_jobs_active(machine_id, state),
+                            -- machine_jobs_instance_service (partial expression index),
+                            -- machine_job_deployments_plugin(plugin_id),
+                            -- machine_job_deployment_pending (partial unique machine/plugin
+                            -- pending-or-applying), job_invocation_root(root_job_id);
+                            -- grant/token write triggers maintain machine_job_revisions
 shares(id TEXT PK, hash TEXT UNIQUE, container_id TEXT, caps TEXT, origin TEXT,
-       minted_by TEXT, created_at INTEGER, revoked_at INTEGER)  -- HASH only, never raw
+       minted_by TEXT, created_at INTEGER, revoked_at INTEGER, grant_id TEXT)
+                                                          -- HASH only, never raw
 share_tickets(share_id TEXT, guest_principal_id TEXT, principal_id TEXT, created_at INTEGER,
               PRIMARY KEY (share_id, guest_principal_id))
                             -- WITHOUT ROWID; the dedupe map from one of the GUEST's
@@ -4031,16 +4117,74 @@ dials(id TEXT PK, origin TEXT, secret TEXT, ref TEXT, caps TEXT, title TEXT,
                             -- cached to draw a row while the socket is down — never an
                             -- authority the guest evaluates. `ref` is NULL only between the
                             -- row's creation and the first welcome
+plugin_database_journal(plugin_id TEXT PK,
+                        phase TEXT NOT NULL CHECK(phase IN ('prepared', 'committed')),
+                        previous TEXT, next TEXT)
+                            -- engine-private plugin image activation/recovery journal
+agents(agent_id TEXT PK, principal_id TEXT NOT NULL UNIQUE, sponsor_principal_id TEXT NOT NULL,
+       name TEXT NOT NULL, purpose TEXT NOT NULL, harness TEXT NOT NULL, grant_json TEXT NOT NULL,
+       context_json TEXT NOT NULL, policy_revision_acknowledged TEXT,
+       status TEXT NOT NULL CHECK(status IN ('enabled', 'disabled', 'retired')),
+       authorization_path TEXT NOT NULL CHECK(authorization_path IN ('owner_key', 'principal')),
+       authorization_credential TEXT NOT NULL, created_at INTEGER NOT NULL,
+       updated_at INTEGER NOT NULL, UNIQUE(sponsor_principal_id, name))
+agent_runs(id TEXT PK, principal_id TEXT NOT NULL, root_run_id TEXT NOT NULL,
+           parent_run_id TEXT, authorized_by_principal_id TEXT NOT NULL,
+           authorization_path TEXT NOT NULL CHECK(authorization_path IN ('owner_key', 'principal')),
+           authorizer_token_id TEXT, authorizer_grant_id TEXT, authorizer_caps TEXT NOT NULL,
+           authorizer_container_scope TEXT, authorizer_expires_at INTEGER, purpose TEXT NOT NULL,
+           task_ref TEXT, target TEXT NOT NULL,
+           reach TEXT NOT NULL CHECK(reach IN ('node', 'subtree')), caps TEXT NOT NULL,
+           created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, renewals INTEGER NOT NULL,
+           max_depth INTEGER NOT NULL, max_descendants INTEGER NOT NULL, depth INTEGER NOT NULL,
+           cleanup_owner_principal_id TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN
+           ('pending_policy', 'active', 'policy_stale', 'completed', 'failed', 'cancelled',
+            'abandoned', 'expired', 'revoked', 'cleanup_failed')),
+           policy_revision TEXT NOT NULL, acknowledged_policy_revision TEXT,
+           cleanup_revoked_credentials INTEGER NOT NULL DEFAULT 0,
+           cleanup_revoked_grants INTEGER NOT NULL DEFAULT 0, finished_at INTEGER,
+           cleanup_failure TEXT, agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+           session_harness TEXT, session_id TEXT, session_machine_id TEXT, model TEXT,
+           activity TEXT NOT NULL CHECK(activity IN ('working', 'blocked', 'done', 'idle',
+           'unknown')), CHECK((session_harness IS NULL AND session_id IS NULL AND
+           session_machine_id IS NULL) OR (session_harness IS NOT NULL AND session_id IS NOT NULL
+           AND session_machine_id IS NOT NULL)))
+agent_run_policy_snapshots(run_id TEXT NOT NULL, revision TEXT NOT NULL, bundles TEXT NOT NULL,
+                           issued_at INTEGER NOT NULL, acknowledged_at INTEGER,
+                           PRIMARY KEY(run_id, revision))
+                            -- indexes: agent_runs_root_depth(root_run_id, depth, id),
+                            -- agent_runs_parent(parent_run_id, id),
+                            -- agent_runs_agent(agent_id, created_at, id),
+                            -- agent_runs_principal(principal_id, id),
+                            -- tokens_runner_agent(runner_agent_id, id),
+                            -- tokens_agent_run(run_id, created_at, id),
+                            -- events_agent_run(run_id, id DESC),
+                            -- machine_jobs_agent_run(run_id),
+                            -- job_schedule_occurrences_agent_run(run_id),
+                            -- terminals_agent_run(run_id)
+machine_job_inference_usage(job_id TEXT PK,
+                            usage TEXT CHECK(usage IS NULL OR json_valid(usage)))
+                            -- one whole-job aggregate; NULL is the legacy/incomplete sentinel
 meta(key TEXT PK, value TEXT)                         -- schema_version, plugins:disabled,
+                                                      -- owner_principal_id,
+                                                      -- plugins:developer-mode,
                                                       -- plugins:attribution,
                                                       -- plugins:element-owners,
-                                                      -- layout:<principalId>
+                                                      -- layout:<principalId>,
+                                                      -- bindings:<principalId>,
+                                                      -- settings:<principalId>,
+                                                      -- workspace-setting:<ref>,
+                                                      -- native_local_machine_id,
+                                                      -- jobs:signing-key,
+                                                      -- agent-runs:declarations-after-event-id
 ```
 
 An object-store replica of `manifold.db` is a sensitive, authority-bearing backup. It contains
-principal and grant state, token and share hashes, plugin-install state, and the raw outbound
-`dials.secret` values a guest must present to another hub. Anyone who can read it can recover
-those dial bearers; anyone who can replace it can replace persisted authority and installed-plugin
+principal and grant state, token and share hashes, plugin-install state, bounded opener-supplied
+terminal launch environment, the raw outbound `dials.secret` values a guest must present to
+another hub, and the raw Ed25519 private key in `meta['jobs:signing-key']` that signs job permits.
+Anyone who can read it can recover those secrets; anyone who can replace it can replace persisted
+authority and installed-plugin
 state on the next restore. Replica read/write administration is therefore trusted access to the
 hub, not ordinary storage administration. The supported posture assumes a trusted store isolated
 to this hub with least-privilege credentials and provider-appropriate integrity and recovery
@@ -4065,7 +4209,21 @@ new table and nothing rewritten; 18 adds `plugin_installs.actions`, defaulted to
 28 records owner workload closure and instance-service ownership;
 29 distinguishes cancellation from cooperative retirement;
 30 adds reviewed native deployment approvals and their fenced per-destination phases;
-31 retains a finished job's lifecycle frames).
+31 retains a finished job's lifecycle frames;
+32 adds nullable `plugin_installs.installer_credential`, preserving the non-secret credential
+lineage required to restore an installer's delayed jobs authority; NULL means the historical or
+rebuild-loop row has no jobs slice. 33 adds `plugin_database_journal`, the engine-private
+prepared/committed image-activation recovery journal. 34 adds `job_invocation_edges.revision`
+and migrates stored deployment approvals: declarations that prove no service invocation edges
+receive empty edge evidence and receipts; other non-cancelled targets become `needs_review`
+with `deployment_review_stale`, without inferring historical runtime scope. 35 adds sponsor-bound
+`agent_runs` plus exact `agent_run_policy_snapshots`. 36 records the exclusive event-id cutoff
+before which caller-authored agent declarations remain untrusted. 37 is the backed-up code
+migration to durable `agents`: it rebuilds `agent_runs` without one-run-per-principal uniqueness
+and adds exact agent/run correlation columns across credentials, events, jobs, schedules and
+terminals. 38 reclassifies proved native service principals. 39 adds terminal cwd and launch
+recipes and backfills missing terminal run IDs from matching governed jobs. 40 adds the whole-job
+inference-usage aggregate).
 Migration 30 adds `machine_job_deployments` and `machine_job_deployment_targets`, including
 the partial unique index that permits only one pending/applying approval per machine/plugin.
 It does not rewrite existing installation or consent rows. Those rows remain the authority
@@ -4073,6 +4231,19 @@ for committed effects; deployment rows retain reviewed scope, lifecycle and effe
 Migration 31 adds `machine_job_journal`, keyed by job and sequence. It rewrites nothing:
 a job that finished before the upgrade simply has no frames to read, which is what an empty
 page already means.
+Migration 36 writes only `agent-runs:declarations-after-event-id`, as decimal text: the greater
+of the retained event maximum, the `events` AUTOINCREMENT high-water mark and zero. It is an
+exclusive trust boundary, not reconstructed agent authority; missing or corrupt metadata on an
+upgraded database remains fail-closed.
+Migration 37 takes its snapshot, then validates legacy run lineage inside the transaction before
+creating one durable `agents` row for each legacy agent-run principal. It rebuilds `agent_runs`
+without the old unique principal constraint and preserves every old run column before adding
+agent/session/model/activity bindings. It backfills run correlation while principal identity is
+still one-to-one; later code
+never infers run identity from a principal-wide fallback.
+Migration 39 adds nullable `terminals.cwd` and `terminals.launch_recipe`, then backfills only a
+missing terminal `run_id` from the newest governed job whose terminal, container and machine
+identity match and whose request names a nonempty run ID. It is additive SQL and takes no snapshot.
 Migration 38 reclassifies only `agent` principals identifiable as native service credentials:
 current `native_instance_services.credential` principal references and historical
 `token_minted { subjectPrincipalId, serviceId, machineId }` events. It preserves unrelated
@@ -4089,11 +4260,12 @@ NULL origin means "this instance", a NULL `door` means "this row is an event, no
 NULL `expires_at` means "never", and an empty `actions` list is the doorless row an elder install
 already composed. A NULL machine owner means no persisted host identity; `draining=0`
 means admission is open. Migration 20 does not infer terminal loss or rewrite inventory.
-None takes a pre-migration snapshot, and that is the house rule rather than an exception to it:
-the snapshot belongs to a one-way DATA move (9, 11, 13, 16, 19, 23 and 24 — 16 is SQL, but a DELETE
-nothing can run backwards), and adding nullable columns is reversible by a later migration
-that drops them. A migration is SQL, or CODE when it rewrites documents or must propagate each
-statement's failure separately:
+None takes a pre-migration snapshot. Snapshot creation is an explicit migration declaration, not
+an inference from SQL versus code: the current set is 9, 11, 13, 16, 19, 23, 24 and 37. Those
+destructive or rebuilding migrations take a consistent pre-image; additive migrations and the
+narrow code/data migrations 34, 38, 39 and 40 declare none. Migration 16 is SQL, but its DELETE
+cannot run backwards. A migration is SQL, or CODE when it rewrites documents or must propagate
+each statement's failure separately:
 migration 9 (solo compositions) rewrites Yjs documents — every `terminal` element becomes a
 `portal` onto a newly created solo composition, keeping id, geometry and z-order so
 collaborators' element references survive; a terminal already living in a composition was
@@ -4156,13 +4328,19 @@ The public authority projection reads the stored decision evidence, including wi
 grant creators and revisions, rather than substituting the requester as authorizer.
 Schedule occurrence and invocation records determine origin; the committed permit determines
 executor identity. Missing decisions, executors or original trace context remain explicit.
-A code migration declares whether it is recoverable, and
-a one-way data move is not: 9, 11, 13, 16, 19, 23 and 24 each take a consistent `VACUUM INTO` snapshot BEFORE the
-transaction opens (a VACUUM cannot run inside one, which is also what
-makes it a true pre-migration image), skipped only for an in-memory or not-yet-existing
-database.
+Migrations 26–31 are additive job-lifecycle storage steps described above; 32 and 33 are
+additive; 34 is a no-snapshot code migration that preserves existing invocation-edge rows,
+assigns fresh per-row revisions, and reclassifies only deployment reviews whose historical
+service-invocation scope cannot be proven; 35 is additive agent-run and exact-policy-snapshot
+storage. Migration 36 adds the declaration trust cutoff; 37 is the backed-up durable-agent
+rebuild and correlation cutover; 38 reclassifies proved service principals; 39 adds terminal
+restart state and a bounded run-id backfill; and 40 adds inference aggregates with an explicit
+legacy-incomplete sentinel.
+Migrations 9, 11, 13, 16, 19, 23, 24 and 37 each take a consistent `VACUUM INTO` snapshot BEFORE
+the transaction opens (a VACUUM cannot run inside one, which is also what makes it a true
+pre-migration image), skipped only for an in-memory or not-yet-existing database.
 The snapshot lands beside the database as `<db>.pre-v<version>.bak`, so a `manifold.db` opened
-at schema 8 leaves the images for 9, 11, 13, 16, 19, 23 and 24 once the replay finishes, and
+at schema 8 leaves the images for 9, 11, 13, 16, 19, 23, 24 and 37 once the replay finishes, and
 **the operator prunes them**. The server never deletes an elder VERSION's
 snapshot: that set is the recovery path for moves nothing can run backwards, and a process
 that silently deletes a recovery image is a worse failure than a full disk. The one exception
@@ -4185,6 +4363,13 @@ the backup is the state before migration, not a reverse transform of subsequent 
 For the drawing identity cutover, stop the server before rollback and restore
 `manifold.db.pre-v23.bak` with a compatible pre-rename build. Preserve later writes separately;
 the backup does not reverse edits made after the upgrade.
+The durable-agent cutover likewise leaves `manifold.db.pre-v37.bak` before rebuilding run
+identity and adding correlation columns; it is the pre-cutover image, not a reverse transform
+of agent, credential, event, job, schedule or terminal writes made after migration.
+Migrations 34 and 40 are code but declare no pre-v34 or pre-v40 snapshot. Migration 34 preserves
+invocation-edge rows and either derives review evidence only when the stored declaration proves it
+or fences the deployment for fresh review; migration 40 preserves running legacy jobs with an
+explicit incomplete-usage sentinel. Neither provides an independent database-image rollback path.
 
 The server snapshots a full encoded Yjs document 1.5s after the last change, at least every
 10s under sustained edits, on room eviction, and on graceful shutdown. Loading scans the
