@@ -1552,6 +1552,82 @@ test("a schedule occurrence at the ceiling is refused, not started beside the jo
   }
 });
 
+test("proved reconnect admits queued work in durable reservation order at the concurrency ceiling", () => {
+  const f = fixture(":memory:", bounded);
+  try {
+    for (const cap of ["machines:run", "jobs:read"] as const) consent(f, cap);
+    f.service.offline(f.channel);
+    expect([execute(f, "A").state, execute(f, "B").state]).toEqual(["queued", "queued"]);
+
+    f.service.online(f.channel, f.owner, "epoch");
+    const challenge = f.commands.at(-1);
+    if (challenge?.type !== "owner_challenge") throw new Error("owner challenge missing");
+    const body = {
+      nonce: challenge.nonce,
+      serverEpoch: challenge.serverEpoch,
+      machineId: f.machineId,
+      owner: f.owner,
+    };
+    f.service.event(f.channel, {
+      type: "owner_proof",
+      ...body,
+      signature: sign(null, Buffer.from(canonicalJobJson(body)), f.privateKey).toString("base64"),
+    });
+
+    f.service.schedule(f.root, pluginId, "trace-1", {
+      jobId: "template",
+      machineId: f.machineId,
+      operationId,
+      input: { value: "safe" },
+      outputs: [],
+      scheduleId: "S",
+      revision: "r1",
+      firstNominalAt: f.runtime.now(),
+      intervalMs: 100,
+      deadlineMs: 50,
+      expiresAt: f.runtime.now() + 1000,
+      offlinePolicy: "skip",
+    });
+    f.service.tick();
+    const occurrence = f.service
+      .listRuns(f.root, pluginId, { machineId: f.machineId })
+      .runs.find((row) => row.occurrence)!.occurrence!;
+    expect(f.service.jobs.get(occurrence.jobId)?.state).toBe("queued");
+    expect(f.commands.filter((command) => command.type === "start")).toEqual([]);
+
+    f.service.event(f.channel, {
+      type: "installed",
+      pluginId,
+      installationRevision: "r1",
+      artifactSha256: hash,
+    });
+    expect(
+      f.commands
+        .filter((command) => command.type === "start")
+        .map((command) => command.request.jobId),
+    ).toEqual(["A", "B"]);
+    expect([f.service.jobs.get("A")?.state, f.service.jobs.get("B")?.state]).toEqual([
+      "start-committed",
+      "start-committed",
+    ]);
+    const scheduled = f.service.jobs.get(occurrence.jobId)!;
+    expect(scheduled.state).toBe("refused");
+    expect(f.service.jobs.authority(scheduled).decision?.refusal).toBe("concurrency_limit");
+
+    const admittedA = f.service.jobs.get("A")!;
+    const retriedA = execute(f, "A");
+    expect(retriedA.state).toBe("start-committed");
+    expect(retriedA.permit).toEqual(admittedA.permit);
+    expect(
+      f.commands
+        .filter((command) => command.type === "start")
+        .map((command) => command.request.jobId),
+    ).toEqual(["A", "B"]);
+  } finally {
+    f.store.close();
+  }
+});
+
 test("uncertain service completion holds its lifetime until a fenced empty-tree proof arrives", () => {
   const f = fixture();
   try {

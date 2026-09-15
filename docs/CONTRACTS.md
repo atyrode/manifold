@@ -3253,6 +3253,8 @@ provider handling and postconditions belong to plugins, never the common floor.
   admission transaction and refuses the job past the ceiling with `concurrency_limit`,
   whether a plugin executed it or the hub posted it from a schedule or an invocation; the
   ceiling is the operation author's, so no request or invocation aggregate carries it.
+  At that ceiling, durable reservation order is FIFO: an admission counts every active
+  non-queued sibling, but only queued siblings reserved before it.
   Requests cannot supply an executable, shell, cwd or environment. Installation binds
   authenticated machine identity, plugin, installation revision and artifact digest.
   Canonical operation/location nodes belong under that machine, jobs under their admitted
