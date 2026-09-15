@@ -11,6 +11,7 @@ const MAX_TEXT = 120;
 const MARKER_PREFIX = "ci-feedback";
 const AUTOMATION_CREATOR = "github-actions[bot]";
 const REPAIR_LABELS = ["p1", "bug", "area:infra", "needs-triage"] as const;
+const RUN_INCIDENT_MARKER = `<!-- ${MARKER_PREFIX}:kind=full-main-run-incident -->`;
 const READY_LABELS = ["p1", "bug", "area:infra", "agent-ready"] as const;
 const FAILURE_CONCLUSIONS: Readonly<Record<string, true>> = {
   failure: true,
@@ -249,6 +250,10 @@ export function issueMarker(runId: number): string {
 
 function shaMarker(sha: string): string {
   return `<!-- ${MARKER_PREFIX}:sha=${sha} -->`;
+}
+
+function recoveryMarker(runId: number, sha: string): string {
+  return `<!-- ${MARKER_PREFIX}:recovery-run=${String(runId)} sha=${sha} -->`;
 }
 
 const MANAGED_SECTION =
@@ -613,6 +618,89 @@ async function associatedPulls(
     .slice(0, MAX_PRS);
 }
 
+function recoveryComment(repository: string, run: TrustedRun): string {
+  const shaUrl = `https://github.com/${repository}/commit/${run.sha}`;
+  return [
+    recoveryMarker(run.id, run.sha),
+    `Full main CI passed for the same exact revision [\`${run.sha}\`](${shaUrl}) in [run ${String(run.id)}](${run.url}).`,
+    "The automation-owned run incident is recovered and is being closed. This evidence does not diagnose a root cause or resolve a separate defect or deployment incident.",
+  ].join("\n");
+}
+
+function isRecoveryComment(body: string, repository: string, sha: string): boolean {
+  const newMatch = /^<!-- ci-feedback:recovery-run=(\d+) sha=([0-9a-f]{40}) -->\r?\n/.exec(body);
+  if (newMatch?.[1] && newMatch[2] === sha) {
+    const runId = newMatch[1];
+    const normalized = body.replace(/\r\n/g, "\n");
+    return (
+      normalized ===
+      [
+        recoveryMarker(Number(runId), sha),
+        `Full main CI passed for the same exact revision [\`${sha}\`](https://github.com/${repository}/commit/${sha}) in [run ${runId}](https://github.com/${repository}/actions/runs/${runId}).`,
+        "The automation-owned run incident is recovered and is being closed. This evidence does not diagnose a root cause or resolve a separate defect or deployment incident.",
+      ].join("\n")
+    );
+  }
+  const oldMatch = /^<!-- ci-feedback:recovery-run=(\d+) -->\r?\n/.exec(body);
+  if (!oldMatch?.[1]) return false;
+  const runId = oldMatch[1];
+  return (
+    body.replace(/\r\n/g, "\n") ===
+    [
+      `<!-- ${MARKER_PREFIX}:recovery-run=${runId} -->`,
+      `Full main CI later passed for the same exact revision in [run ${runId}](https://github.com/${repository}/actions/runs/${runId}). This is recovery evidence only; the defect is not auto-closed.`,
+    ].join("\n")
+  );
+}
+
+function recoveryEligible(
+  issue: RepairIssue,
+  commentBodies: readonly string[],
+  repository: string,
+  sha: string,
+): boolean {
+  const managed = managedParts(issue.body);
+  if (
+    managed?.valid !== true ||
+    managed.prefix.trim().length > 0 ||
+    managed.suffix.trim().length > 0
+  ) {
+    return false;
+  }
+  const runMarkers = [...managed.content.matchAll(/<!-- ci-feedback:run=(\d+) -->/g)];
+  const shaMarkers = [...managed.content.matchAll(/<!-- ci-feedback:sha=([0-9a-f]{40}) -->/g)];
+  if (
+    runMarkers.length !== 1 ||
+    shaMarkers.length !== 1 ||
+    shaMarkers[0]?.[1] !== sha ||
+    (!sameStrings(issue.labels, REPAIR_LABELS) && !sameStrings(issue.labels, READY_LABELS)) ||
+    issue.assignees.length !== 1 ||
+    validLogin(issue.assignees[0]) !== issue.assignees[0]
+  ) {
+    return false;
+  }
+  const runId = runMarkers[0]?.[1];
+  if (!runId) return false;
+  const expectedSuffix = `main ${sha.slice(0, 12)} (run ${runId})`;
+  if (
+    issue.title !== `CI run incident: ${expectedSuffix}` &&
+    issue.title !== `CI repair: ${expectedSuffix}`
+  ) {
+    return false;
+  }
+  const explicitlyIdentified = managed.content.includes(RUN_INCIDENT_MARKER);
+  const legacyGeneratedIncident =
+    managed.content.includes("## Reproduce and repair") &&
+    managed.content.includes("Issue #574 authorizes diagnosis and repository/CI repair") &&
+    managed.content.includes(
+      "Automation promotes this issue only after concrete failed-job evidence, ownership, scope, and acceptance are complete.",
+    );
+  return (
+    (explicitlyIdentified || legacyGeneratedIncident) &&
+    commentBodies.every((body) => isRecoveryComment(body, repository, sha))
+  );
+}
+
 async function resolvableOwner(repository: string, candidates: readonly string[]): Promise<string> {
   for (const candidate of [...new Set(candidates.map(validLogin).filter(Boolean))]) {
     const child = Bun.spawn(["gh", "api", `repos/${repository}/assignees/${candidate}`], {
@@ -658,6 +746,7 @@ function renderRepairBody(
   const content = [
     issueMarker(run.id),
     shaMarker(run.sha),
+    RUN_INCIDENT_MARKER,
     "## Problem",
     "",
     `Full main verification did not pass for [\`${run.sha}\`](${shaUrl}) in [CI run ${String(run.id)}](${run.url}).`,
@@ -687,10 +776,10 @@ function renderRepairBody(
     "",
     "## Acceptance",
     "",
-    "- The failure is reproduced or the run evidence explains why it cannot be reproduced, and the root cause is recorded here.",
-    "- The focused failed check passes on the repair revision without weakening assertions or mandatory boundary checks.",
-    "- The risk-plan baseline selected for the repair passes, and full main CI is green for the exact integrated repair revision.",
-    "- The repair or reviewed revert is linked here; uncertain defects remain open for triage rather than being auto-closed.",
+    "- Full main CI succeeding for this exact failed revision automatically records recovery and closes an otherwise untouched run incident. An owner may instead close it after documenting a verified repair/revert or preserving its remaining work in a linked defect issue.",
+    "- Recovery does not diagnose the failure or prove that a durable defect, deployment incident, or failure on another revision is resolved. Track those independently and keep diagnosed or repurposed records open.",
+    "- If recovery has not occurred, the failure is reproduced or the run evidence explains why it cannot be reproduced, and the next repair or reviewed-revert action is linked here.",
+    "- Any repair must pass the focused failed check and risk-plan baseline without weakening assertions or mandatory boundary checks; integration still requires full main CI for its exact revision.",
     "",
     "Automation promotes this issue only after concrete failed-job evidence, ownership, scope, and acceptance are complete.",
   ].join("\n");
@@ -726,7 +815,7 @@ async function routeFailure(repository: string, run: TrustedRun, dryRun = false)
   const existing = await searchIssues(repository, issueMarker(run.id), run.createdAt);
   const actionable = repairIsActionable(body, owner, jobs);
   const decision = decideRepairIssue(run.id, body, owner, actionable, existing);
-  const title = `CI repair: main ${run.sha.slice(0, 12)} (run ${String(run.id)})`;
+  const title = `CI run incident: main ${run.sha.slice(0, 12)} (run ${String(run.id)})`;
   const createPayload = { title, body, labels: [...REPAIR_LABELS], assignees: [owner] };
   if (dryRun) {
     process.stdout.write(
@@ -862,8 +951,9 @@ async function annotateRecovery(repository: string, run: TrustedRun): Promise<vo
     shaMarker(run.sha),
     await earliestRunCreation(repository, run.sha),
   );
-  const marker = `<!-- ${MARKER_PREFIX}:recovery-run=${String(run.id)} -->`;
+  const marker = recoveryMarker(run.id, run.sha);
   for (const issue of issues.slice(0, MAX_ISSUES)) {
+    if (!recoveryEligible(issue, [], repository, run.sha)) continue;
     const comments = array(
       await ghJson([
         "api",
@@ -875,27 +965,37 @@ async function annotateRecovery(repository: string, run: TrustedRun): Promise<vo
       throw new Error(
         `repair issue #${String(issue.number)} has too many comments for idempotent recovery`,
       );
-    if (
-      comments.some(
-        (value) =>
-          typeof record(value, "repair issue comment")["body"] === "string" &&
-          String(record(value, "repair issue comment")["body"]).includes(marker),
-      )
-    )
-      continue;
-    await ghJson(
-      [
-        "api",
-        "--method",
-        "POST",
-        `repos/${repository}/issues/${String(issue.number)}/comments`,
-        "--input",
-        "-",
-      ],
-      {
-        body: `${marker}\nFull main CI later passed for the same exact revision in [run ${String(run.id)}](${run.url}). This is recovery evidence only; the defect is not auto-closed.`,
-      },
-    );
+    const commentBodies = comments.map((value) => {
+      const body = record(value, "repair issue comment")["body"];
+      return typeof body === "string" ? body : "";
+    });
+    if (!recoveryEligible(issue, commentBodies, repository, run.sha)) continue;
+    if (!commentBodies.some((body) => body.includes(marker))) {
+      await ghJson(
+        [
+          "api",
+          "--method",
+          "POST",
+          `repos/${repository}/issues/${String(issue.number)}/comments`,
+          "--input",
+          "-",
+        ],
+        { body: recoveryComment(repository, run) },
+      );
+    }
+    if (issue.state === "open") {
+      await ghJson(
+        [
+          "api",
+          "--method",
+          "PATCH",
+          `repos/${repository}/issues/${String(issue.number)}`,
+          "--input",
+          "-",
+        ],
+        { state: "closed", state_reason: "completed" },
+      );
+    }
   }
 }
 

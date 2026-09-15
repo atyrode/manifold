@@ -1,3 +1,6 @@
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
   buildStatus,
@@ -28,7 +31,7 @@ function event(overrides: Record<string, unknown> = {}): Record<string, unknown>
       head_sha: SHA,
       status: "completed",
       conclusion: "failure",
-      html_url: "https://github.com/example/manifold/actions/runs/77",
+      html_url: `https://github.com/example/manifold/actions/runs/${String(overrides["id"] ?? 77)}`,
       head_repository: { full_name: REPOSITORY },
       created_at: "2026-09-13T12:00:00Z",
       repository: { full_name: REPOSITORY },
@@ -361,5 +364,201 @@ describe("bounded machine-readable status", () => {
     expect(parsed.full.failedJobs[0]!.name.length).toBeLessThanOrEqual(120);
     expect(parsed.repairIssues).toEqual(["https://github.com/example/manifold/issues/2"]);
     expect(output.length).toBeLessThan(10_000);
+  });
+});
+
+describe("exact-revision incident recovery", () => {
+  test("closes only untouched bot run incidents and resumes after an interrupted comment", async () => {
+    const fixture = await mkdtemp(join(tmpdir(), "ci-feedback-recovery-"));
+    const executable = join(import.meta.dir, "ci-feedback.ts");
+    const gh = join(fixture, "gh");
+    const statePath = join(fixture, "state.json");
+    const eventPath = join(fixture, "event.json");
+    const labels = ["p1", "bug", "area:infra", "agent-ready"].map((name) => ({ name }));
+    const assignees = [{ login: "maintainer" }];
+    const incidentContent = (runId: number, sha: string, explicit = true) =>
+      [
+        issueMarker(runId),
+        `<!-- ci-feedback:sha=${sha} -->`,
+        ...(explicit ? ["<!-- ci-feedback:kind=full-main-run-incident -->"] : []),
+        "## Problem",
+        "Full main verification did not pass.",
+        "## Standing scope",
+        "Issue #574 authorizes diagnosis and repository/CI repair for this failure.",
+        "## Reproduce and repair",
+        "Inspect the failed run.",
+        "## Acceptance",
+        "Repair or recover.",
+        "Automation promotes this issue only after concrete failed-job evidence, ownership, scope, and acceptance are complete.",
+      ].join("\n");
+    const issue = (
+      number: number,
+      body: string,
+      overrides: Record<string, unknown> = {},
+    ): Record<string, unknown> => ({
+      number,
+      user: { login: "github-actions[bot]" },
+      title: `CI run incident: main ${SHA.slice(0, 12)} (run 77)`,
+      state: "open",
+      body,
+      labels,
+      assignees,
+      html_url: `https://github.com/${REPOSITORY}/issues/${String(number)}`,
+      ...overrides,
+    });
+    const otherSha = "a".repeat(40);
+    const pristine = managedRepairBody(incidentContent(77, SHA));
+    const legacy = managedRepairBody(incidentContent(78, SHA, false));
+    const oldRecovery =
+      `<!-- ci-feedback:recovery-run=88 -->\n` +
+      `Full main CI later passed for the same exact revision in [run 88](https://github.com/${REPOSITORY}/actions/runs/88). This is recovery evidence only; the defect is not auto-closed.`;
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        issues: [
+          issue(1, pristine),
+          issue(2, legacy, {
+            title: `CI repair: main ${SHA.slice(0, 12)} (run 78)`,
+          }),
+          issue(3, managedRepairBody(incidentContent(77, otherSha)), {
+            title: `CI run incident: main ${otherSha.slice(0, 12)} (run 77)`,
+          }),
+          issue(4, pristine, { user: { login: "human" } }),
+          issue(5, `${pristine}\n\n## Diagnosis\nRepurposed as a durable defect.`),
+          issue(6, pristine),
+          issue(
+            7,
+            managedRepairBody(
+              `${issueMarker(77)}\n<!-- ci-feedback:sha=${SHA} -->\n## Deployment incident`,
+            ),
+            { title: `Deployment incident for ${SHA}` },
+          ),
+          issue(8, pristine.replace("Full main verification", "Diagnosed verification")),
+          issue(9, pristine, {
+            labels: [{ name: "p1" }, { name: "needs-operator" }],
+            assignees: [{ login: "operator" }],
+          }),
+        ],
+        comments: {
+          "1": [],
+          "2": [{ body: oldRecovery }],
+          "3": [],
+          "4": [],
+          "5": [],
+          "6": [{ body: "Root cause diagnosed; preserve this defect record." }],
+          "7": [],
+          "8": [],
+          "9": [],
+        },
+        mutations: [],
+        interruptClose: true,
+      }),
+    );
+    await writeFile(eventPath, JSON.stringify(event({ id: 88, conclusion: "success" })));
+    await writeFile(
+      gh,
+      `#!/usr/bin/env bun
+const statePath = process.env.CI_FEEDBACK_FIXTURE_STATE;
+if (!statePath) throw new Error("missing fixture state");
+const state = await Bun.file(statePath).json();
+const args = process.argv.slice(2);
+const endpoint = args.find((arg) => arg.startsWith("repos/"));
+if (!endpoint) throw new Error("unexpected gh args: " + args.join(" "));
+const save = async () => await Bun.write(statePath, JSON.stringify(state));
+if (endpoint === "repos/${REPOSITORY}/actions/runs/88") {
+  console.log(JSON.stringify(${JSON.stringify(event({ id: 88, conclusion: "success" }).workflow_run)}));
+} else if (endpoint.startsWith("repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=")) {
+  console.log(JSON.stringify({ total_count: 2, workflow_runs: [{ created_at: "2026-09-13T12:00:00Z" }, { created_at: "2026-09-14T12:00:00Z" }] }));
+} else if (endpoint.startsWith("repos/${REPOSITORY}/issues?")) {
+  console.log(JSON.stringify(state.issues));
+} else {
+  const comments = /^repos\\/${REPOSITORY.replace("/", "\\/")}\\/issues\\/(\\d+)\\/comments(?:\\?per_page=100)?$/.exec(endpoint);
+  const issue = /^repos\\/${REPOSITORY.replace("/", "\\/")}\\/issues\\/(\\d+)$/.exec(endpoint);
+  if (comments) {
+    const number = comments[1];
+    if (args.includes("POST")) {
+      const payload = await Bun.stdin.json();
+      state.comments[number].push({ body: payload.body });
+      state.mutations.push({ issue: Number(number), action: "comment", payload });
+      await save();
+      console.log(JSON.stringify({ id: state.mutations.length }));
+    } else {
+      console.log(JSON.stringify(state.comments[number]));
+    }
+  } else if (issue && args.includes("PATCH")) {
+    if (state.interruptClose) {
+      state.interruptClose = false;
+      await save();
+      console.error("simulated interrupted close");
+      process.exit(1);
+    }
+    const payload = await Bun.stdin.json();
+    const target = state.issues.find((candidate) => candidate.number === Number(issue[1]));
+    Object.assign(target, payload);
+    state.mutations.push({ issue: Number(issue[1]), action: "close", payload });
+    await save();
+    console.log(JSON.stringify(target));
+  } else {
+    throw new Error("unexpected endpoint: " + endpoint);
+  }
+}
+`,
+    );
+    await chmod(gh, 0o755);
+    const runCli = async (expectedExit = 0) => {
+      const child = Bun.spawn([process.execPath, executable, "--event", eventPath], {
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          ...process.env,
+          PATH: `${fixture}:${process.env.PATH ?? ""}`,
+          GITHUB_REPOSITORY: REPOSITORY,
+          CI_FEEDBACK_FIXTURE_STATE: statePath,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stderr, exitCode] = await Promise.all([
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      expect(exitCode, stderr).toBe(expectedExit);
+      if (expectedExit !== 0) expect(stderr).toContain("simulated interrupted close");
+    };
+    try {
+      await runCli(1);
+      await runCli();
+      await runCli();
+      const state = JSON.parse(await readFile(statePath, "utf8")) as {
+        issues: Array<{ number: number; state: string; body: string }>;
+        mutations: Array<{
+          issue: number;
+          action: string;
+          payload: Record<string, unknown>;
+        }>;
+      };
+      expect(state.mutations).toHaveLength(4);
+      expect(state.mutations.map(({ issue: number, action }) => [number, action])).toEqual([
+        [1, "comment"],
+        [1, "close"],
+        [2, "comment"],
+        [2, "close"],
+      ]);
+      expect(state.mutations[0]?.payload["body"]).toContain(
+        `ci-feedback:recovery-run=88 sha=${SHA}`,
+      );
+      expect(state.mutations[1]?.payload).toEqual({
+        state: "closed",
+        state_reason: "completed",
+      });
+      expect(state.issues.slice(0, 2).map(({ state, body }) => [state, body])).toEqual([
+        ["closed", pristine],
+        ["closed", legacy],
+      ]);
+      expect(
+        state.issues.filter(({ number }) => number > 2).every(({ state }) => state === "open"),
+      ).toBe(true);
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
   });
 });
