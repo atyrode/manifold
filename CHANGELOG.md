@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.16.2] - 2026-09-15
+
+### Changed
+
+- The browser bundle now uses one compatible Radix internal dependency family for popovers, reducing initial JavaScript without changing disclosure, scrolling, or generated form behavior. (#394, #639)
+
+### Fixed
+
+- Terminal reference resolution no longer reveals whether an unreadable terminal exists: scoped readers now receive the same successful nonexistence response for foreign and missing terminal IDs, while readable terminals still resolve normally. (#390, #637)
+- Machine-local terminal creation diagnostics no longer mislabel every missing launch path as a missing program: ambiguous runtime errors name both the program and working-directory possibilities, while clients retain the generic creation failure. (#406, #643)
+- Oversized terminal-open traces now retain a deterministic, redacted, hard-bounded summary of the executable, arguments, and working directory, while generic oversized traces safely bound attacker-controlled key metadata. (#407, #645)
+- Server and agent JSONL logs now use the same recursive field-name redaction policy, consistently removing nested credential and terminal-content fields while retaining useful diagnostic IDs, codes and counts. This structural safeguard does not scan arbitrary free-form strings for embedded secrets. (#416, #621)
+- Workspace panels re-seated from the Arrange shelf now stay in their recorded workspace leaf when nested canvas portals reuse the same local tile identifier, including after equalizing or repeatedly shelving and re-seating the panel. (#420, #624)
+- Instance services retired during launch now keep their worker context available for the first valid workload request to receive its applicable response, including `service_closed` for service readiness, then drain pending replies before closing instead of abruptly breaking the context channel. (#494, #627)
+- Metered jobs now retain an exact durable inference-usage total outside their bounded call history, so journal pages and reconnecting followers report complete counters and the latest model without weakening the settled result's authority. (#550, #631)
+- Queued machine jobs now resume in durable FIFO reservation order, so reconnecting at an operation's concurrency ceiling admits the earliest work and durably refuses only later excess reservations. (#555, #630)
+- Deployment live verification no longer refuses a switch because an installed plugin declares no argument-less read door. Such a plugin is verified through its roster row (present, enablement unchanged, not held, healthy lifecycle); plugins with an argument-less read door are still probed through it. (#625, #626)
+- Enabled native instance services automatically recover after a plugin hold, installation interruption or owner restart clears, including when the hub rolls back to a build that never held the plugin. Recovery waits for confirmed workload closure and current admission checks, records the previous job and cancellation reason, and never overrides disabling, explicit credential revocation or retirement. (#632, #635)
+- The first upgrade from older plugin packages can now use an explicit maintenance step while compatible replacements are installed, including hubs that predate native execution. It distinguishes compatibility holds from saved plugin enablement, reports unverified plugin and native workloads explicitly, preserves enrolled machines and unrelated deployment and rollback checks, and holds machine updates until ordinary verification passes. (#633, #650)
+
 ## [0.16.1] - 2026-09-15
 
 ### Fixed

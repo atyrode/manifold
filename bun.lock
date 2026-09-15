@@ -421,7 +421,7 @@
     },
     "packages/web": {
       "name": "@manifold/web",
-      "version": "0.16.1",
+      "version": "0.16.2",
       "dependencies": {
         "@manifold-plugin/access": "workspace:*",
         "@manifold-plugin/arrange": "workspace:*",
